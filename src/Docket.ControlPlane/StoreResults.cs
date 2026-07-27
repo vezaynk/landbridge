@@ -1,0 +1,27 @@
+using Docket.Core;
+
+namespace Docket.ControlPlane;
+
+/// <summary>
+/// Outcome of a store operation. Wraps the engine's <see cref="TransitionResult"/>
+/// with the store-level outcomes the engine cannot express: the row was gone,
+/// or an optimistic-concurrency race lost.
+/// </summary>
+public abstract record StoreResult
+{
+    private StoreResult() { }
+
+    public sealed record Applied(TaskRecord Task, IReadOnlyList<Effect> Effects) : StoreResult;
+
+    /// <summary>The engine refused the transition; nothing was written.</summary>
+    public sealed record Rejected(Rule Rule, string Reason) : StoreResult;
+
+    /// <summary>No task with that id (or, for dispatch, no eligible task).</summary>
+    public sealed record NotFound(string Reason) : StoreResult;
+
+    /// <summary>
+    /// A concurrent writer moved the row first (xmin mismatch). The caller
+    /// re-reads and retries — the transition was not applied.
+    /// </summary>
+    public sealed record Conflict(string Reason) : StoreResult;
+}
