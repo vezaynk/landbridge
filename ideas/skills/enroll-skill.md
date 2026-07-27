@@ -18,11 +18,11 @@ The config must cover:
 | Section | What it answers |
 |---|---|
 | Harness invocation | How to start the harness headlessly with a task, and where it reads its MCP config |
-| Process control | What signal stops it gracefully, how long that normally takes, how to confirm exit |
+| Process control | How `stop` is delivered — an injected message turn where the harness supports one, a signal otherwise — what kills it hard, how long wind-down normally takes, how to confirm exit |
 | Event sources | How lifecycle events are observed — hooks, structured output, OTel endpoint |
 | Event mapping | How this harness's event names map to `started` / `tool-call` / `subagent-spawned` / `exited` |
 | Log tail | Path and format of the session transcript |
-| Slots | How many concurrent agents this machine will accept |
+| Back-pressure | Thresholds for when this machine stops accepting dispatch — defaults are sensible (see Concurrency below) |
 
 ## Check the prerequisites first
 
@@ -31,6 +31,8 @@ Two bars, neither negotiable, neither degrading gracefully. Confirm both by runn
 **1. Is it an MCP client?** A worker's only channel to Docket is `docket-mcp` — claiming, reporting, blockers, service registration all happen there. A harness without MCP cannot participate at all, no matter how good it is. Most current agents qualify; Aider is the notable exception.
 
 **2. Does it run to completion without asking permission?** A headless agent that waits for approval hangs until the liveness timeout, which is the most expensive way to find a misconfiguration — it looks like a hung task, not a bad config. The bypass flag differs per harness and is the most important line in `command`. Find it, and check what else it disables while you are there; several bypass sandboxing along with approvals.
+
+Three sharp edges to check at the same time: managed settings on corporate machines can forbid the bypass mode outright — confirm it is actually permitted before writing it into `command`; "don't ask" postures typically *deny* tools that require user interaction rather than prompting, which silently removes capabilities instead of hanging; and where the harness supports a permission-prompt tool, that is the middle path — approvals become `request_input` escalations to the Lead instead of hangs or a blanket bypass.
 
 If either bar fails, stop. Report to the human rather than working around it.
 
@@ -44,7 +46,8 @@ Do not assume the harness or its version. Find out:
 4. What lifecycle hooks it offers, and their names *in this version*.
 5. Whether it emits OTel, and with what attributes. Per-subagent attribution is valuable if available.
 6. Where it writes session transcripts, and whether that path is static or only knowable once running.
-7. Whether it can resume a prior session, and how.
+7. Whether it can resume a prior session, and how — including whether resume is scoped to the directory that created the session, since parked-task resume depends on returning to it.
+8. Whether a running session accepts injected input — a stdin message stream or equivalent — because that is how a graceful `stop` reaches the agent as a turn rather than a signal.
 
 Version matters more than you'd expect. Hook names and event payloads change between releases, and a config written against last quarter's names will silently produce a machine that looks alive and reports nothing.
 
@@ -63,7 +66,7 @@ If the harness has no subagent lifecycle events, or no OTel, say so in the confi
 Two specific degradations worth declaring accurately:
 
 - **`events.source: terminal`** — the harness emits one structured result at exit rather than a stream. `started` and `exited` work; there is no progress signal, so a hung agent cannot be told from a busy one until it times out. Common for harnesses whose JSON output is one object per invocation.
-- **`telemetry.otel: false`** — token spend is invisible for this profile, and its Team's budget ceiling cannot be enforced against it. Surface this to the human at enrollment rather than letting them find it in a bill.
+- **`telemetry.otel: false`** — token spend is invisible for this profile. The Team ceiling cannot meter what it cannot see; only the harness-local hard cap `docketd` passes at dispatch still binds. Surface this to the human at enrollment rather than letting them find it in a bill.
 
 ## Registering the daemon — hand this to the human
 
@@ -80,9 +83,11 @@ It checks:
 - `started` and tool-call events arrive, attributed to the right task id
 - Heartbeat cadence matches what the config claims
 - Two concurrent tasks are independently trackable
-- `stop` with a short TTL is acknowledged
+- `stop` with a short TTL is acknowledged — and where the profile declares message delivery, the stop demonstrably reaches the agent as a turn
 - `TTL=0` kills one process and leaves its sibling running
 - A relay forward round-trips and the local listener closes on release
+- A task that would normally prompt for approval completes without hanging
+- A parked task resumes on this machine from its recorded directory with context intact
 
 **Failures here are configuration bugs, and they are worth fixing carefully.** A machine that passes dispatch but fails kill looks fine right up until someone needs to stop a runaway agent — the worst possible time to discover it. Same for task attribution: a machine that reports events without task ids will misattribute every event once it runs two agents.
 
