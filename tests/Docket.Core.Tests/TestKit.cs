@@ -1,0 +1,70 @@
+namespace Docket.Core.Tests;
+
+internal static class Given
+{
+    public static readonly TeamId Team = new(Guid.Parse("11111111-1111-1111-1111-111111111111"));
+    public static readonly TeamId OtherTeam = new(Guid.Parse("22222222-2222-2222-2222-222222222222"));
+    public static readonly TaskId Id = new(Guid.Parse("33333333-3333-3333-3333-333333333333"));
+
+    public static LeadClaim Lead => new(Team);
+    public static LeadClaim ForeignLead => new(OtherTeam);
+    public static HumanSession Human => new();
+    public static VerifierCredential Verifier => new();
+
+    public static MachineSnapshot Machine(
+        bool ready = true,
+        bool backPressure = false,
+        params string[] profiles) =>
+        new("machine-a", ready, backPressure,
+            profiles.Length == 0 ? new HashSet<string> { "default" } : new HashSet<string>(profiles));
+
+    public static ParkRecord Park => new("machine-a", "/work/task-3", "sess-abc", Attempt: 1);
+
+    public static TaskRecord Task(
+        TaskState state = TaskState.Submitted,
+        CompletionMode mode = CompletionMode.Automated,
+        WorkerInstanceId? instance = null,
+        int verificationFailures = 0,
+        int retryLimit = 3,
+        string? profile = null) => new()
+    {
+        Id = Id,
+        Team = Team,
+        Namespace = $"team-{Team}/task-{Id}",
+        CompletionMode = mode,
+        State = state,
+        Profile = profile,
+        Attempt = state == TaskState.Submitted ? 0 : 1,
+        VerificationFailures = verificationFailures,
+        VerificationRetryLimit = retryLimit,
+        CurrentInstance = instance ??
+            (state is TaskState.Working or TaskState.BlockedOnInput or TaskState.Verifying
+                ? WorkerInstanceId.New()
+                : null),
+    };
+
+    public static WorkerCaller IncumbentOf(TaskRecord task) =>
+        new(task.Team, task.Id, task.CurrentInstance!.Value);
+}
+
+internal static class Expect
+{
+    public static TaskRecord Transitioned(TransitionResult result, TaskState state)
+    {
+        var ok = Assert.IsType<TransitionResult.Transitioned>(result);
+        Assert.Equal(state, ok.Task.State);
+        return ok.Task;
+    }
+
+    public static IReadOnlyList<Effect> Effects(TransitionResult result)
+    {
+        var ok = Assert.IsType<TransitionResult.Transitioned>(result);
+        return ok.Effects;
+    }
+
+    public static void Rejected(TransitionResult result, Rule rule)
+    {
+        var rejected = Assert.IsType<TransitionResult.Rejected>(result);
+        Assert.Equal(rule, rejected.Rule);
+    }
+}
