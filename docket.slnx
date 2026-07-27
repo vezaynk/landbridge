@@ -3,9 +3,11 @@
     <Project Path="spikes/Docket.Spikes/Docket.Spikes.csproj" />
   </Folder>
   <Folder Name="/src/">
+    <Project Path="src/Docket.ControlPlane/Docket.ControlPlane.csproj" />
     <Project Path="src/Docket.Core/Docket.Core.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Docket.ControlPlane.Tests/Docket.ControlPlane.Tests.csproj" />
     <Project Path="tests/Docket.Core.Tests/Docket.Core.Tests.csproj" />
   </Folder>
 </Solution>
