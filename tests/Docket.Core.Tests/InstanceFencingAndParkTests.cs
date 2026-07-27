@@ -1,0 +1,191 @@
+namespace Docket.Core.Tests;
+
+/// <summary>
+/// §9 check 14 (incumbent-only transitions), the zombie-replay scenario it
+/// exists for, and the park/recovery paths of §11.
+/// </summary>
+public class InstanceFencingAndParkTests
+{
+    [Fact]
+    public void A_non_incumbent_instance_cannot_report_a_result()
+    {
+        var task = Given.Task(TaskState.Working);
+        var zombie = new WorkerCaller(task.Team, task.Id, WorkerInstanceId.New());
+
+        Expect.Rejected(
+            TaskStateMachine.Apply(task, new ReportResult(zombie, "half-done-ref")),
+            Rule.IncumbentInstanceOnly);
+    }
+
+    [Fact]
+    public void A_non_incumbent_instance_cannot_block_the_task_on_input()
+    {
+        var task = Given.Task(TaskState.Working);
+        var zombie = new WorkerCaller(task.Team, task.Id, WorkerInstanceId.New());
+
+        Expect.Rejected(
+            TaskStateMachine.Apply(task, new RequestInput(zombie, InputRequestKind.Question)),
+            Rule.IncumbentInstanceOnly);
+    }
+
+    [Fact]
+    public void A_worker_token_scoped_to_another_task_lacks_authority_entirely()
+    {
+        var task = Given.Task(TaskState.Working);
+        var foreign = new WorkerCaller(task.Team, TaskId.New(), task.CurrentInstance!.Value);
+
+        Expect.Rejected(
+            TaskStateMachine.Apply(task, new ReportResult(foreign, "ref")),
+            Rule.ActorLacksAuthority);
+    }
+
+    [Fact]
+    public void Zombie_replay_after_requeue_is_fenced_end_to_end()
+    {
+        // M3 scenario from the audit: liveness loss requeues the task, a new
+        // instance is dispatched, and the orphaned predecessor tries to flip
+        // the state under it.
+        var task = Given.Task(TaskState.Working);
+        var zombieInstance = task.CurrentInstance!.Value;
+
+        var requeued = Expect.Transitioned(
+            TaskStateMachine.Apply(task, new LivenessLost(LivenessLossReason.LivenessTimeout)),
+            TaskState.Submitted);
+
+        var successor = WorkerInstanceId.New();
+        var redispatched = Expect.Transitioned(
+            TaskStateMachine.Apply(requeued, new Dispatch(Given.Machine(), successor)),
+            TaskState.Working);
+        Assert.Equal(2, redispatched.Attempt);
+
+        var zombie = new WorkerCaller(task.Team, task.Id, zombieInstance);
+        Expect.Rejected(
+            TaskStateMachine.Apply(redispatched, new ReportResult(zombie, "stale-ref")),
+            Rule.IncumbentInstanceOnly);
+        Expect.Rejected(
+            TaskStateMachine.Apply(redispatched, new RequestInput(zombie, InputRequestKind.Question)),
+            Rule.IncumbentInstanceOnly);
+
+        // The incumbent proceeds untouched.
+        Expect.Transitioned(
+            TaskStateMachine.Apply(redispatched,
+                new ReportResult(new WorkerCaller(task.Team, task.Id, successor), "real-ref")),
+            TaskState.Verifying);
+    }
+
+    [Fact]
+    public void Requeue_from_blocked_on_input_uses_the_infrastructure_counter_and_skips_service_cleanup()
+    {
+        // Services were already cleared when the task left working (§6).
+        var task = Given.Task(TaskState.BlockedOnInput);
+
+        var result = TaskStateMachine.Apply(task, new LivenessLost(LivenessLossReason.MachineReboot));
+
+        var next = Expect.Transitioned(result, TaskState.Submitted);
+        Assert.Equal(1, next.InfrastructureRequeues);
+        Assert.DoesNotContain(new ClearServicesAndForwards(), Expect.Effects(result));
+    }
+
+    [Fact]
+    public void An_answer_arriving_after_the_lease_lapsed_cannot_resume_in_place()
+    {
+        Expect.Rejected(
+            TaskStateMachine.Apply(
+                Given.Task(TaskState.BlockedOnInput),
+                new AnswerInput(Given.Lead, LeaseStillHeld: false)),
+            Rule.LeaseNoLongerHeld);
+    }
+
+    [Fact]
+    public void Workers_cannot_answer_input_requests()
+    {
+        var task = Given.Task(TaskState.BlockedOnInput);
+        Expect.Rejected(
+            TaskStateMachine.Apply(task, new AnswerInput(Given.IncumbentOf(task), true)),
+            Rule.ActorLacksAuthority);
+    }
+
+    [Fact]
+    public void Request_input_requires_a_typed_kind()
+    {
+        var task = Given.Task(TaskState.Working);
+        Expect.Rejected(
+            TaskStateMachine.Apply(task, new RequestInput(Given.IncumbentOf(task), Kind: null)),
+            Rule.TypedRequestKindRequired);
+    }
+
+    [Fact]
+    public void Report_result_requires_a_result_reference()
+    {
+        var task = Given.Task(TaskState.Working);
+        Expect.Rejected(
+            TaskStateMachine.Apply(task, new ReportResult(Given.IncumbentOf(task), " ")),
+            Rule.ResultReferenceRequired);
+    }
+
+    [Fact]
+    public void Only_the_lead_may_park_a_working_task()
+    {
+        var task = Given.Task(TaskState.Working);
+        Expect.Rejected(
+            TaskStateMachine.Apply(task, new StopPreserveAndPark(Given.ForeignLead, Given.Park)),
+            Rule.ActorLacksAuthority);
+    }
+
+    [Fact]
+    public void Park_wake_redispatch_chain_preserves_affinity_and_counts_attempts()
+    {
+        // blocked → parked → submitted → working: the §11 recovery path.
+        var task = Given.Task(TaskState.BlockedOnInput) with { Attempt = 1 };
+
+        var parked = Expect.Transitioned(
+            TaskStateMachine.Apply(task, new WaitTtlExpired(Given.Park)), TaskState.Parked);
+
+        var woken = Expect.Transitioned(
+            TaskStateMachine.Apply(parked, new WakeParked()), TaskState.Submitted);
+        Assert.Equal(Given.Park, woken.Park); // redispatch reads this for affinity
+
+        var resumed = Expect.Transitioned(
+            TaskStateMachine.Apply(woken, new Dispatch(Given.Machine(), WorkerInstanceId.New())),
+            TaskState.Working);
+        Assert.Equal(2, resumed.Attempt); // successor can see it inherited a workspace
+    }
+
+    [Theory]
+    [InlineData(TaskState.Submitted)]
+    [InlineData(TaskState.Working)]
+    [InlineData(TaskState.Verifying)]
+    public void Wait_ttl_only_applies_to_blocked_tasks(TaskState state)
+    {
+        Expect.Rejected(
+            TaskStateMachine.Apply(Given.Task(state), new WaitTtlExpired(Given.Park)),
+            Rule.InvalidSourceState);
+    }
+
+    [Theory]
+    [InlineData(TaskState.Submitted)]
+    [InlineData(TaskState.Working)]
+    [InlineData(TaskState.BlockedOnInput)]
+    public void Wake_only_applies_to_parked_tasks(TaskState state)
+    {
+        Expect.Rejected(
+            TaskStateMachine.Apply(Given.Task(state), new WakeParked()),
+            Rule.InvalidSourceState);
+    }
+
+    [Fact]
+    public void Cancel_reaches_every_non_terminal_state()
+    {
+        foreach (var state in new[]
+                 {
+                     TaskState.Submitted, TaskState.Working, TaskState.Verifying,
+                     TaskState.BlockedOnInput, TaskState.Parked,
+                 })
+        {
+            var result = TaskStateMachine.Apply(
+                Given.Task(state),
+                new Cancel(Given.Lead, CancelDisposition.Preserve));
+            Expect.Transitioned(result, TaskState.Canceled);
+        }
+    }
+}

@@ -1,0 +1,11 @@
+<Solution>
+  <Folder Name="/spikes/">
+    <Project Path="spikes/Docket.Spikes/Docket.Spikes.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Docket.Core/Docket.Core.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Docket.Core.Tests/Docket.Core.Tests.csproj" />
+  </Folder>
+</Solution>
