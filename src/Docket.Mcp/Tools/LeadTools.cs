@@ -43,9 +43,13 @@ public sealed class LeadTools(TaskStore store, RunnerConnectionRegistry registry
     }
 
     [McpServerTool(Name = "create_task"),
-     Description("Create a task for this Team. Only a Lead may create tasks. The completion criteria " +
-                 "must be non-empty; the control plane never parses it. Returns the new task id.")]
+     Description("Create a task for this Team. Only a Lead may create tasks. The description (prose " +
+                 "instructions) and completion criteria must both be non-empty; the control plane never " +
+                 "parses either. Assign a workspace so concurrent tasks don't collide. Returns the new task id.")]
     public async Task<string> CreateTask(
+        [Description("Opaque, non-empty prose instructions for the worker: what to accomplish and the " +
+                     "context to meet the criteria. Read by the worker, never parsed by the control plane.")]
+        string description,
         [Description("Opaque, non-empty completion criteria. In automated mode a verifier interprets it; " +
                      "in review mode a person reads it. Never parsed by the control plane.")]
         string completionCriteria,
@@ -53,8 +57,14 @@ public sealed class LeadTools(TaskStore store, RunnerConnectionRegistry registry
         string mode,
         [Description("Optional runner profile name for exact-match routing. Omit for the default profile.")]
         string? profile,
+        [Description("Optional opaque workspace blob: where the work happens, how it is isolated, which " +
+                     "ports it may use. Assigned by the Lead so concurrent tasks never collide (§7).")]
+        string? workspace,
         CancellationToken ct)
     {
+        if (string.IsNullOrWhiteSpace(description))
+            throw new McpException("description must be non-empty; it is the worker's instructions.");
+
         if (!Enum.TryParse<CompletionMode>(mode, ignoreCase: true, out var parsedMode))
             throw new McpException(
                 $"unknown completion mode '{mode}'; expected one of: {string.Join(", ", Enum.GetNames<CompletionMode>())}");
@@ -62,8 +72,11 @@ public sealed class LeadTools(TaskStore store, RunnerConnectionRegistry registry
         var lead = Lead;
         // TeamBudgetRemains is the store's to compute from budget accounting (§9
         // check 9); the seam is here — a budget-aware store would supply it.
+        // Description/workspace ride the command as opaque content the store
+        // persists and the engine never reads (§7).
         var result = await store.CreateAsync(
-            new CreateTask(lead, lead.Team, completionCriteria, parsedMode, profile, TeamBudgetRemains: true), ct);
+            new CreateTask(lead, lead.Team, completionCriteria, parsedMode, profile, TeamBudgetRemains: true,
+                Description: description, Workspace: workspace), ct);
 
         return result switch
         {

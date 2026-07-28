@@ -46,13 +46,29 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         Skip.IfNot(pg.Available, pg.SkipReason);
         var tools = LeadFor(new Principal.Lead(Team));
 
-        var idText = await tools.CreateTask("ship it", "automated", null, CancellationToken.None);
+        var idText = await tools.CreateTask("build the thing", "ship it", "automated", null, "ws:main", CancellationToken.None);
 
         var id = Guid.Parse(idText);
         await using var v = pg.NewContext();
         var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id);
         Assert.Equal(TaskState.Submitted, row.State);
         Assert.Equal(Team.Value, row.TeamId);
+        // Description/workspace are persisted verbatim as opaque content (§7).
+        Assert.Equal("build the thing", row.Description);
+        Assert.Equal("ws:main", row.Workspace);
+    }
+
+    [SkippableFact]
+    public async Task Create_task_rejects_an_empty_description()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var tools = LeadFor(new Principal.Lead(Team));
+
+        // The description is the worker's instructions; the tool refuses an empty
+        // one before the command ever reaches the store.
+        var ex = await Assert.ThrowsAsync<McpException>(
+            () => tools.CreateTask("   ", "ship it", "automated", null, null, CancellationToken.None));
+        Assert.Contains("description", ex.Message);
     }
 
     [SkippableFact]
@@ -62,7 +78,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         var tools = LeadFor(new Principal.Lead(Team));
 
         var ex = await Assert.ThrowsAsync<McpException>(
-            () => tools.CreateTask("   ", "automated", null, CancellationToken.None));
+            () => tools.CreateTask("build the thing", "   ", "automated", null, null, CancellationToken.None));
         Assert.Contains(nameof(Rule.CompletionCriteriaNonEmpty), ex.Message);
     }
 
@@ -73,7 +89,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         var tools = LeadFor(new Principal.Lead(Team));
 
         await Assert.ThrowsAsync<McpException>(
-            () => tools.CreateTask("ship it", "eventually", null, CancellationToken.None));
+            () => tools.CreateTask("build the thing", "ship it", "eventually", null, null, CancellationToken.None));
     }
 
     [SkippableFact]
@@ -103,8 +119,8 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var tools = LeadFor(new Principal.Lead(Team));
-        await tools.CreateTask("a", "automated", null, CancellationToken.None);
-        await tools.CreateTask("b", "review", null, CancellationToken.None);
+        await tools.CreateTask("first", "a", "automated", null, null, CancellationToken.None);
+        await tools.CreateTask("second", "b", "review", null, null, CancellationToken.None);
 
         var view = await tools.GetTeamState(CancellationToken.None);
 
@@ -119,7 +135,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var tools = LeadFor(new Principal.Lead(Team));
-        var idText = await tools.CreateTask("a", "automated", null, CancellationToken.None);
+        var idText = await tools.CreateTask("build the thing", "a", "automated", null, null, CancellationToken.None);
 
         var msg = await tools.CancelTask(idText, "preserve", CancellationToken.None);
 
@@ -170,7 +186,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
 
         // §4: not a bare authorization error — the reason names who and when.
         var ex = await Assert.ThrowsAsync<McpException>(
-            () => tools.CreateTask("a", "automated", null, CancellationToken.None));
+            () => tools.CreateTask("build the thing", "a", "automated", null, null, CancellationToken.None));
         Assert.Contains("taken over", ex.Message);
         Assert.Contains(evictedBy.ToString("N"), ex.Message);
 
@@ -186,7 +202,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         var tools = LeadFor(worker);
 
         await Assert.ThrowsAsync<McpException>(
-            () => tools.CreateTask("a", "automated", null, CancellationToken.None));
+            () => tools.CreateTask("build the thing", "a", "automated", null, null, CancellationToken.None));
     }
 
     /// <summary>Drives a task to blocked_on_input via dispatch + a worker's request.</summary>

@@ -1,3 +1,4 @@
+using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using Docket.Contracts;
 using Docket.ControlPlane.Auth;
@@ -30,6 +31,10 @@ public sealed class DispatchService : IHostedService
     private readonly ILogger<DispatchService> _logger;
     private readonly TaskEventListener? _listener;
     private readonly TimeSpan _livenessWindow;
+    private readonly string _publicMcpUrl;
+
+    /// <summary>The default plane MCP URL a worker dials when config supplies none (§10).</summary>
+    public const string DefaultPublicMcpUrl = "http://127.0.0.1:5000";
 
     // Single-slot wake signal: many nudges collapse to one pending pass.
     private readonly Channel<bool> _wake =
@@ -46,7 +51,8 @@ public sealed class DispatchService : IHostedService
         TimeProvider clock,
         ILogger<DispatchService> logger,
         TaskEventListener? listener = null,
-        TimeSpan? livenessWindow = null)
+        TimeSpan? livenessWindow = null,
+        string? publicMcpUrl = null)
     {
         _scopes = scopes;
         _registry = registry;
@@ -54,6 +60,7 @@ public sealed class DispatchService : IHostedService
         _logger = logger;
         _listener = listener;
         _livenessWindow = livenessWindow ?? TimeSpan.FromSeconds(60);
+        _publicMcpUrl = string.IsNullOrWhiteSpace(publicMcpUrl) ? DefaultPublicMcpUrl : publicMcpUrl;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
@@ -176,9 +183,11 @@ public sealed class DispatchService : IHostedService
         var task = applied.Task;
         var profile = task.Profile ?? MachineSnapshot.DefaultProfile;
 
-        // §5, §13: mint the worker token for this instance; docketd injects it.
+        // §5, §13: mint the worker token for this instance; docketd injects it,
+        // wrapped in the MCP client config the worker dials the plane with.
         var minted = await tokens.MintWorkerTokenAsync(task.Team, task.Id, instance, ct);
-        var command = new DispatchCommand(task.Id, profile, minted.Token);
+        var command = new DispatchCommand(
+            task.Id, profile, minted.Token, McpConfigJson: BuildWorkerMcpConfig(minted.Token));
 
         _registry.TrackDispatch(machineId, task.Id);
         var sent = await _registry.SendAsync(machineId, command, ct);
@@ -192,6 +201,31 @@ public sealed class DispatchService : IHostedService
         _logger.LogWarning("dispatch send failed for task {Task} on {Machine}; requeued", task.Id, machineId);
         return DispatchOutcome.SendFailed;
     }
+
+    /// <summary>
+    /// The MCP client config a worker uses to reach the plane (§13): Claude Code's
+    /// <c>--mcp-config</c> HTTP shape, with the freshly-minted worker token as a
+    /// bearer header. docketd writes it to <c>{work_dir}/mcp.json</c> (0600) and
+    /// substitutes the path into the profile's spawn argv — the runner never
+    /// interprets it, it is transport (§10). Built with the DOM so the token is
+    /// escaped correctly and no serializer reflection is needed.
+    /// </summary>
+    private string BuildWorkerMcpConfig(string workerToken) =>
+        new JsonObject
+        {
+            ["mcpServers"] = new JsonObject
+            {
+                ["docket"] = new JsonObject
+                {
+                    ["type"] = "http",
+                    ["url"] = _publicMcpUrl,
+                    ["headers"] = new JsonObject
+                    {
+                        ["Authorization"] = $"Bearer {workerToken}",
+                    },
+                },
+            },
+        }.ToJsonString();
 
     private async Task CheckLivenessSafeAsync(CancellationToken ct)
     {

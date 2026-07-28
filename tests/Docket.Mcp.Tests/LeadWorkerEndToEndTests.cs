@@ -66,9 +66,11 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         {
             var created = await lead.CallToolAsync("create_task", new Dictionary<string, object?>
             {
+                ["description"] = "make the suite pass",
                 ["completionCriteria"] = "the suite is green",
                 ["mode"] = "automated",
                 ["profile"] = null,
+                ["workspace"] = null,
             }, cancellationToken: ct);
 
             Assert.NotEqual(true, created.IsError);
@@ -143,9 +145,11 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         await using var worker = await ConnectAsync(baseUri, workerToken, ct);
         var result = await worker.CallToolAsync("create_task", new Dictionary<string, object?>
         {
+            ["description"] = "should not happen",
             ["completionCriteria"] = "should not happen",
             ["mode"] = "automated",
             ["profile"] = null,
+            ["workspace"] = null,
         }, cancellationToken: ct);
 
         // The tool throws (no lead claim); the SDK surfaces it as a tool error.

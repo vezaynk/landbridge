@@ -24,6 +24,10 @@ The config must cover:
 | Log tail | Path and format of the session transcript |
 | Back-pressure | Thresholds for when this machine stops accepting dispatch — defaults are sensible (see Concurrency below) |
 
+The full config schema and a worked Claude Code profile — including the exact
+headless `spawn` argv, the `{mcp_config}` injection, and the generated MCP config
+a worker dials the plane with — are in `references/runner-config.md`.
+
 ## Check the prerequisites first
 
 Two bars, neither negotiable, neither degrading gracefully. Confirm both by running the harness once, headless, before writing any config.

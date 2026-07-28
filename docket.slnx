@@ -16,5 +16,6 @@
     <Project Path="tests/Docket.Mcp.Tests/Docket.Mcp.Tests.csproj" />
     <Project Path="tests/Docket.Runner.Tests/Docket.Runner.Tests.csproj" />
     <Project Path="tests/Docket.Runner.TestHarness/Docket.Runner.TestHarness.csproj" />
+    <Project Path="tests/Docket.WorkerHarness/Docket.WorkerHarness.csproj" />
   </Folder>
 </Solution>

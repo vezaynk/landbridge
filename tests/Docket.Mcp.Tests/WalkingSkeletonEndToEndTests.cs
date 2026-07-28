@@ -1,0 +1,275 @@
+using Docket.Contracts;
+using Docket.ControlPlane;
+using Docket.ControlPlane.Auth;
+using Docket.ControlPlane.Tests;
+using Docket.Core;
+using Docket.Mcp.Auth;
+using Docket.Mcp.Tools;
+using Docket.Runner;
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
+using ModelContextProtocol.Client;
+using ModelContextProtocol.Protocol;
+
+namespace Docket.Mcp.Tests;
+
+/// <summary>
+/// The walking skeleton (spec §17 build order, §10): the whole dispatch loop
+/// proven end to end with a REAL spawned worker process speaking REAL MCP — no
+/// LLM. A Lead creates a task <em>with a description</em> over the wire; the real
+/// <see cref="DispatchService"/> claims it, mints the worker token, and builds
+/// the worker's <c>--mcp-config</c> (§13); the real <see cref="ProcessSupervisor"/>
+/// spawns the fake worker harness, writing that config to
+/// <c>{work_dir}/mcp.json</c> (0600) and substituting its path into the argv; the
+/// harness authenticates back to the real <c>/mcp</c> endpoint with the
+/// dispatched token, calls <c>get_task</c> to read its assignment, then
+/// <c>report_result</c> — driving the task working → verifying.
+///
+/// This closes the loop the design leans on: a dispatched task reaches a worker
+/// that learns what to do and reports back, over real MCP, with the actual auth
+/// handler and state machine in the path. Real <c>claude -p</c> execution is the
+/// operator-run validation (§17.0 spikes) and out of scope for automated tests.
+/// </summary>
+[Collection(PostgresCollection.Name)]
+public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLifetime
+{
+    public async Task InitializeAsync()
+    {
+        if (pg.Available) await pg.ResetAsync();
+    }
+
+    public Task DisposeAsync() => Task.CompletedTask;
+
+    [SkippableFact]
+    public async Task Dispatched_task_spawns_a_worker_that_authenticates_back_and_reports()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var ct = cts.Token;
+
+        await using var app = BuildServer();
+        await app.StartAsync(ct);
+        var baseUrl = app.Urls.First(u => u.StartsWith("http://"));
+
+        var team = TeamId.New();
+
+        // A human claims the Lead of the Team (§5), as an OAuth callback would.
+        string leadToken;
+        await using (var db = pg.NewContext())
+        {
+            var tokens = new TokenService(db, TimeProvider.System);
+            var human = await tokens.IssueHumanSessionAsync(ct);
+            var claim = Assert.IsType<LeadClaimResult.Claimed>(await tokens.ClaimLeadAsync(human.Token, team, ct: ct));
+            leadToken = claim.Token.Token;
+        }
+
+        // ── Lead: create a task WITH a description + workspace over real MCP ──
+        const string description = "make the suite pass";
+        const string criteria = "the suite is green";
+        const string workspace = "git:repo@main#task-branch";
+        TaskId taskId;
+        await using (var lead = await ConnectAsync(new Uri(baseUrl + "/"), leadToken, ct))
+        {
+            var created = await lead.CallToolAsync("create_task", new Dictionary<string, object?>
+            {
+                ["description"] = description,
+                ["completionCriteria"] = criteria,
+                ["mode"] = "automated",
+                ["profile"] = null,
+                ["workspace"] = workspace,
+            }, cancellationToken: ct);
+            Assert.NotEqual(true, created.IsError);
+            taskId = new TaskId(Guid.Parse(Assert.Single(created.Content.OfType<TextContentBlock>()).Text));
+        }
+
+        // ── The runner side: the real supervisor spawns the fake worker harness ──
+        var workRoot = NewWorkRoot();
+        var ring = new OutboundEventRing(capacity: 256);
+        var supervisor = new ProcessSupervisor(
+            new MachineConfig(workRoot, TimeSpan.FromSeconds(15), BackPressureThresholds.Default),
+            ring, TimeProvider.System);
+
+        // The profile runs the harness with the injected --mcp-config path (§13).
+        var profile = new ProfileConfig(
+            "default",
+            [WorkerHarnessPath(), "--mcp-config", "{mcp_config}"],
+            new StopConfig(StopMode.Signal, Signal: null, MessageTemplate: null, WindDown: TimeSpan.FromSeconds(30)),
+            Resume: null,
+            new EventsConfig(EventsSource.None, new Dictionary<string, string>()),
+            new TelemetryConfig(Otel: false, Endpoint: null),
+            new LogsConfig(Path: null, Format: null),
+            MaxConcurrent: null);
+
+        try
+        {
+            // A registered ready machine whose send delegate hands the real
+            // DispatchCommand — token + generated MCP config and all — to the real
+            // supervisor. This is the seam a socket would occupy in production.
+            var registry = new RunnerConnectionRegistry(TimeProvider.System);
+            registry.Register("m1", new HashSet<string> { "default" }, (command, _) =>
+            {
+                if (command is DispatchCommand d)
+                    supervisor.Spawn(d, profile, "m1");
+                return Task.CompletedTask;
+            });
+            registry.ApplyHeartbeat("m1", new MachineHeartbeat(
+                "m1", Ready: true, UnderBackPressure: false,
+                new SystemLoad(0, 0, 0), RunningTasks: 0, ["default"], DateTimeOffset.UtcNow));
+
+            // The real dispatch pass, pointed at THIS server's MCP URL so the
+            // generated mcp.json reaches the loopback plane the harness dials.
+            var dispatch = new DispatchService(
+                app.Services.GetRequiredService<IServiceScopeFactory>(),
+                registry, TimeProvider.System, NullLogger<DispatchService>.Instance,
+                publicMcpUrl: baseUrl);
+            await dispatch.RunDispatchPassAsync(ct);
+
+            // ── The harness authenticated and reported: working → verifying ──
+            var workDir = Path.Combine(workRoot, taskId.ToString());
+            var reached = await WaitUntilAsync(
+                async () => await StateAsync(taskId, ct) == TaskState.Verifying,
+                TimeSpan.FromSeconds(60));
+            if (!reached)
+            {
+                var errPath = Path.Combine(workDir, "harness_error.txt");
+                var detail = File.Exists(errPath) ? await File.ReadAllTextAsync(errPath, ct) : "(no harness_error.txt)";
+                Assert.Fail($"worker harness never drove the task to verifying. Harness diagnostic:\n{detail}");
+            }
+
+            // ── §13: docketd wrote the generated MCP config, owner-only ──
+            var mcpPath = Path.Combine(workDir, "mcp.json");
+            Assert.True(File.Exists(mcpPath), "docketd did not write the injected mcp.json");
+            var mcpJson = await File.ReadAllTextAsync(mcpPath, ct);
+            Assert.Contains("\"type\":\"http\"", mcpJson);
+            Assert.Contains("Bearer dkt_w_", mcpJson); // the minted worker token
+            if (!OperatingSystem.IsWindows())
+                Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(mcpPath));
+
+            // ── get_task delivered the assignment over the wire (§7) ──
+            var assignmentPath = Path.Combine(workDir, "get_task.json");
+            Assert.True(File.Exists(assignmentPath), "the harness never recorded its get_task response");
+            var assignmentJson = await File.ReadAllTextAsync(assignmentPath, ct);
+            Assert.Contains(description, assignmentJson);
+            Assert.Contains(criteria, assignmentJson);
+            Assert.Contains(workspace, assignmentJson);
+            Assert.Contains($"team-{team}/task-{taskId}", assignmentJson); // server-assigned namespace
+            Assert.Contains("\"attempt\":1", assignmentJson);
+
+            // ── report_result drove the record through the real state machine ──
+            // (Persisting the opaque result reference / result_summary onto the row
+            // is a separate §7-content concern the store does not yet capture — the
+            // skeleton's proof is that the transition committed, not its content.)
+            await using (var v = pg.NewContext())
+                Assert.Equal(TaskState.Verifying,
+                    (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == taskId.Value, ct)).State);
+        }
+        finally
+        {
+            supervisor.KillAll();
+            TryDeleteRoot(workRoot);
+            await app.StopAsync(ct);
+        }
+    }
+
+    private async Task<TaskState?> StateAsync(TaskId id, CancellationToken ct)
+    {
+        await using var db = pg.NewContext();
+        return await new TaskStore(db, TimeProvider.System).GetStateAsync(id, ct);
+    }
+
+    private WebApplication BuildServer()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.Logging.ClearProviders();
+        builder.WebHost.UseUrls("http://127.0.0.1:0");
+
+        builder.Services.AddDbContext<DocketDbContext>(o =>
+            o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
+        builder.Services.AddScoped<TaskStore>();
+        builder.Services.AddScoped<TokenService>();
+        builder.Services.AddSingleton(TimeProvider.System);
+        builder.Services.AddSingleton<RunnerConnectionRegistry>();
+        builder.Services.AddHttpContextAccessor();
+
+        builder.Services.AddAuthentication(DocketAuthenticationHandler.SchemeName)
+            .AddScheme<AuthenticationSchemeOptions, DocketAuthenticationHandler>(
+                DocketAuthenticationHandler.SchemeName, configureOptions: null);
+        builder.Services.AddAuthorization();
+
+        builder.Services.AddMcpServer()
+            .WithHttpTransport()
+            .WithTools<WorkerTools>()
+            .WithTools<LeadTools>();
+
+        var app = builder.Build();
+        app.UseAuthentication();
+        app.UseAuthorization();
+        app.MapMcp().RequireAuthorization();
+        return app;
+    }
+
+    private static async Task<McpClient> ConnectAsync(Uri endpoint, string bearer, CancellationToken ct)
+    {
+        var transport = new HttpClientTransport(new HttpClientTransportOptions
+        {
+            Endpoint = endpoint,
+            TransportMode = HttpTransportMode.StreamableHttp,
+            AdditionalHeaders = new Dictionary<string, string> { ["Authorization"] = $"Bearer {bearer}" },
+        });
+        return await McpClient.CreateAsync(transport, cancellationToken: ct);
+    }
+
+    /// <summary>
+    /// The apphost of the built <see cref="Docket.WorkerHarness"/>, spawned
+    /// directly (argv, no shell — §10). It is resolved from the harness's <b>own</b>
+    /// build output, not the copy beside this test assembly: the harness is a
+    /// plain console whose MCP-client dependency closure (Logging.Abstractions et
+    /// al.) is copied local to its own bin, whereas this test project draws those
+    /// same assemblies from the ASP.NET shared framework and so never copies them —
+    /// so the copy beside the test cannot start. The ProjectReference guarantees
+    /// the harness is built first; its output lives at the sibling project path.
+    /// </summary>
+    private static string WorkerHarnessPath()
+    {
+        const string stem = "Docket.WorkerHarness";
+        var testDir = Path.GetDirectoryName(typeof(WalkingSkeletonEndToEndTests).Assembly.Location)!;
+        var harnessDir = testDir.Replace(
+            Path.Combine("Docket.Mcp.Tests", "bin"),
+            Path.Combine(stem, "bin"),
+            StringComparison.Ordinal);
+        var apphost = Path.Combine(harnessDir, OperatingSystem.IsWindows() ? stem + ".exe" : stem);
+        return File.Exists(apphost)
+            ? apphost
+            : throw new FileNotFoundException(
+                $"worker harness apphost not found at {apphost}; is Docket.WorkerHarness built?");
+    }
+
+    private static string NewWorkRoot()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "docket-skeleton-tests", Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        return dir;
+    }
+
+    private static void TryDeleteRoot(string dir)
+    {
+        try { Directory.Delete(dir, recursive: true); } catch { /* best effort */ }
+    }
+
+    private static async Task<bool> WaitUntilAsync(Func<Task<bool>> condition, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (await condition())
+                return true;
+            await Task.Delay(100);
+        }
+        return await condition();
+    }
+}

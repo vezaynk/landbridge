@@ -31,7 +31,11 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
             State = task.State,
             Profile = task.Profile,
             VerificationRetryLimit = task.VerificationRetryLimit,
+            // Opaque content the engine never interpreted (§7): persisted verbatim
+            // straight off the command, alongside the criteria.
             CompletionCriteria = command.CompletionCriteria,
+            Description = command.Description,
+            Workspace = command.Workspace,
         });
         AppendEvent(id.Value, task.Team.Value, "created", from: null, to: task.State, detail: null);
         await CommitAsync(id.Value, ct);
@@ -124,6 +128,27 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
         });
         await db.SaveChangesAsync(ct);
         return new StoreResult.Applied(row.ToDomain(), []);
+    }
+
+    /// <summary>
+    /// The worker's own assignment (§7, worker-skill.md): the prose description,
+    /// completion criteria, workspace, namespace, and attempt count a dispatched
+    /// worker reads before starting. A pure read gated by the same authority as a
+    /// worker transition — returned <b>only</b> for the caller's own task and
+    /// <b>only</b> while the caller is that task's incumbent instance (the
+    /// RegisterServiceAsync gate, §9 check 14). Anything else returns null, so a
+    /// zombie or a cross-task token learns nothing — never another task's content.
+    /// </summary>
+    public async Task<WorkerAssignment?> GetAssignmentAsync(WorkerCaller caller, CancellationToken ct = default)
+    {
+        var row = await db.Tasks.AsNoTracking().FirstOrDefaultAsync(t => t.Id == caller.Task.Value, ct);
+        if (row is null)
+            return null;
+        if (row.TeamId != caller.Team.Value || row.CurrentInstanceId != caller.Instance.Value)
+            return null;
+
+        return new WorkerAssignment(
+            row.Namespace, row.Description, row.CompletionCriteria, row.Workspace, row.Attempt);
     }
 
     /// <summary>
