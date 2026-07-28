@@ -1,3 +1,4 @@
+using Docket.Contracts;
 using Docket.Core;
 
 namespace Docket.Runner;
@@ -158,6 +159,9 @@ public sealed class RunnerDaemon
             UnderBackPressure: reading.UnderPressure,
             reading.Load,
             _supervisor.RunningTotal,
+            // §7, §10: the machine's declared profiles ride the heartbeat — the
+            // only channel by which the control plane learns them for routing.
+            _config.DeclaredProfiles.ToArray(),
             _clock.GetUtcNow());
         // Best-effort, fire-and-forget: never queue a command against the runner (§10).
         _ = _channel.HeartbeatAsync(heartbeat, _cts.Token);

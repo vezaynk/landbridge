@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
+using Docket.Contracts;
 
 namespace Docket.Runner;
 

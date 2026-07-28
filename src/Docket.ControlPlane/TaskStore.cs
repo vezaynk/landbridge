@@ -158,6 +158,18 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
         return new TeamStateView(team.Value, rows.Count, counts, summaries);
     }
 
+    /// <summary>
+    /// A pure read of a task's current state, or null if it does not exist. The
+    /// dispatch loop and the runner event sink read state to decide whether an
+    /// inbound runner event still bears on a working task — e.g. an
+    /// <c>exited</c> after the worker already reported result is moot (§10).
+    /// </summary>
+    public async Task<TaskState?> GetStateAsync(TaskId id, CancellationToken ct = default) =>
+        await db.Tasks.AsNoTracking()
+            .Where(t => t.Id == id.Value)
+            .Select(t => (TaskState?)t.State)
+            .FirstOrDefaultAsync(ct);
+
     private async Task<StoreResult> RunTransition(
         TaskRow row, TaskCommand command, CancellationToken ct,
         Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction? outerTx = null)

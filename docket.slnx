@@ -3,6 +3,7 @@
     <Project Path="spikes/Docket.Spikes/Docket.Spikes.csproj" />
   </Folder>
   <Folder Name="/src/">
+    <Project Path="src/Docket.Contracts/Docket.Contracts.csproj" />
     <Project Path="src/Docket.ControlPlane/Docket.ControlPlane.csproj" />
     <Project Path="src/Docket.Core/Docket.Core.csproj" />
     <Project Path="src/Docket.Mcp/Docket.Mcp.csproj" />
@@ -10,6 +11,7 @@
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Docket.ControlPlane.Tests/Docket.ControlPlane.Tests.csproj" />
+    <Project Path="tests/Docket.Contracts.Tests/Docket.Contracts.Tests.csproj" />
     <Project Path="tests/Docket.Core.Tests/Docket.Core.Tests.csproj" />
     <Project Path="tests/Docket.Mcp.Tests/Docket.Mcp.Tests.csproj" />
     <Project Path="tests/Docket.Runner.Tests/Docket.Runner.Tests.csproj" />

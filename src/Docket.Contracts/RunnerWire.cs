@@ -1,0 +1,201 @@
+using System.Text.Json;
+using System.Text.Json.Nodes;
+using System.Text.Json.Serialization.Metadata;
+
+namespace Docket.Contracts;
+
+/// <summary>
+/// The wire boundary for the frozen contract (§10). Both sides talk through it:
+/// <c>docketd</c> encodes events/heartbeats and decodes commands; the control
+/// plane encodes commands and decodes events/heartbeats. The rule that defines
+/// the contract holds on decode — <b>anything outside the vocabulary is
+/// rejected</b> (returns <c>null</c>) rather than guessed at.
+///
+/// The envelope is a type-discriminated object: the record's own fields plus a
+/// <c>type</c> property. Encoding serializes the record through the source-gen
+/// context (AOT-clean) into a <see cref="JsonObject"/> and adds <c>type</c>;
+/// decoding switches on <c>type</c> and deserializes the concrete record, which
+/// ignores the extra discriminator.
+/// </summary>
+public static class RunnerWire
+{
+    public const string Dispatch = "dispatch";
+    public const string Stop = "stop";
+    public const string Kill = "kill";
+    public const string OpenForward = "open-forward";
+
+    public const string Started = "started";
+    public const string Alive = "alive";
+    public const string ToolCall = "tool-call";
+    public const string SubagentSpawned = "subagent-spawned";
+    public const string Exited = "exited";
+    public const string AuthFailed = "auth-failed";
+    public const string ForwardClosed = "forward-closed";
+    public const string Rebooted = "rebooted";
+
+    /// <summary>The machine-heartbeat envelope discriminator (§10 — docketd's own timer).
+    /// Not part of the frozen command/event enum; the heartbeat is the runner's
+    /// periodic self-report, carried on the same channel.</summary>
+    public const string Heartbeat = "heartbeat";
+
+    /// <summary>The closed outbound (control plane → runner) vocabulary.</summary>
+    public static IReadOnlySet<string> Commands { get; } =
+        new HashSet<string>(StringComparer.Ordinal) { Dispatch, Stop, Kill, OpenForward };
+
+    /// <summary>The closed inbound (runner → control plane) vocabulary.</summary>
+    public static IReadOnlySet<string> Events { get; } =
+        new HashSet<string>(StringComparer.Ordinal)
+        {
+            Started, Alive, ToolCall, SubagentSpawned, Exited, AuthFailed, ForwardClosed, Rebooted,
+        };
+
+    public static bool IsKnownCommand(string? type) => type is not null && Commands.Contains(type);
+
+    public static bool IsKnownEvent(string? type) => type is not null && Events.Contains(type);
+
+    // ── Encode ────────────────────────────────────────────────────────────────
+
+    /// <summary>Encodes a command to its type-discriminated JSON envelope.</summary>
+    public static string EncodeCommand(RunnerCommand command)
+    {
+        var (obj, type) = command switch
+        {
+            DispatchCommand d => (ToObject(d, RunnerWireContext.Default.DispatchCommand), Dispatch),
+            StopCommand s => (ToObject(s, RunnerWireContext.Default.StopCommand), Stop),
+            KillCommand k => (ToObject(k, RunnerWireContext.Default.KillCommand), Kill),
+            OpenForwardCommand o => (ToObject(o, RunnerWireContext.Default.OpenForwardCommand), OpenForward),
+            // Unreachable: the hierarchy is closed (§10). Explicit so a future
+            // member cannot silently serialize as a typeless envelope.
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(command), command.GetType().Name, "outside the runner command vocabulary"),
+        };
+        obj["type"] = type;
+        return obj.ToJsonString();
+    }
+
+    /// <summary>Encodes an event to its type-discriminated JSON envelope.</summary>
+    public static string EncodeEvent(RunnerEvent evt)
+    {
+        var (obj, type) = evt switch
+        {
+            StartedEvent e => (ToObject(e, RunnerWireContext.Default.StartedEvent), Started),
+            AliveEvent e => (ToObject(e, RunnerWireContext.Default.AliveEvent), Alive),
+            ToolCallEvent e => (ToObject(e, RunnerWireContext.Default.ToolCallEvent), ToolCall),
+            SubagentSpawnedEvent e => (ToObject(e, RunnerWireContext.Default.SubagentSpawnedEvent), SubagentSpawned),
+            ExitedEvent e => (ToObject(e, RunnerWireContext.Default.ExitedEvent), Exited),
+            AuthFailedEvent e => (ToObject(e, RunnerWireContext.Default.AuthFailedEvent), AuthFailed),
+            ForwardClosedEvent e => (ToObject(e, RunnerWireContext.Default.ForwardClosedEvent), ForwardClosed),
+            RebootedEvent e => (ToObject(e, RunnerWireContext.Default.RebootedEvent), Rebooted),
+            _ => throw new ArgumentOutOfRangeException(
+                nameof(evt), evt.GetType().Name, "outside the runner event vocabulary"),
+        };
+        obj["type"] = type;
+        return obj.ToJsonString();
+    }
+
+    /// <summary>Encodes a machine heartbeat to its type-discriminated JSON envelope.</summary>
+    public static string EncodeHeartbeat(MachineHeartbeat heartbeat)
+    {
+        var obj = ToObject(heartbeat, RunnerWireContext.Default.MachineHeartbeat);
+        obj["type"] = Heartbeat;
+        return obj.ToJsonString();
+    }
+
+    // ── Decode ────────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Decodes one command from its JSON envelope, or returns <c>null</c> when
+    /// the <c>type</c> is missing or outside the vocabulary — the rejection §10
+    /// requires. The concrete-type deserialize ignores the <c>type</c> property.
+    /// </summary>
+    public static RunnerCommand? DecodeCommand(string json)
+    {
+        if (!TryParse(json, out var doc))
+            return null;
+        using (doc)
+        {
+            if (!TryReadType(doc.RootElement, out var type))
+                return null;
+            return type switch
+            {
+                Dispatch => doc.RootElement.Deserialize(RunnerWireContext.Default.DispatchCommand),
+                Stop => doc.RootElement.Deserialize(RunnerWireContext.Default.StopCommand),
+                Kill => doc.RootElement.Deserialize(RunnerWireContext.Default.KillCommand),
+                OpenForward => doc.RootElement.Deserialize(RunnerWireContext.Default.OpenForwardCommand),
+                _ => null, // §10: reject anything outside the vocabulary.
+            };
+        }
+    }
+
+    /// <summary>Decodes one event, or <c>null</c> when the <c>type</c> is missing
+    /// or outside the vocabulary (§10 symmetry with <see cref="DecodeCommand"/>).</summary>
+    public static RunnerEvent? DecodeEvent(string json)
+    {
+        if (!TryParse(json, out var doc))
+            return null;
+        using (doc)
+        {
+            if (!TryReadType(doc.RootElement, out var type))
+                return null;
+            return type switch
+            {
+                Started => doc.RootElement.Deserialize(RunnerWireContext.Default.StartedEvent),
+                Alive => doc.RootElement.Deserialize(RunnerWireContext.Default.AliveEvent),
+                ToolCall => doc.RootElement.Deserialize(RunnerWireContext.Default.ToolCallEvent),
+                SubagentSpawned => doc.RootElement.Deserialize(RunnerWireContext.Default.SubagentSpawnedEvent),
+                Exited => doc.RootElement.Deserialize(RunnerWireContext.Default.ExitedEvent),
+                AuthFailed => doc.RootElement.Deserialize(RunnerWireContext.Default.AuthFailedEvent),
+                ForwardClosed => doc.RootElement.Deserialize(RunnerWireContext.Default.ForwardClosedEvent),
+                Rebooted => doc.RootElement.Deserialize(RunnerWireContext.Default.RebootedEvent),
+                _ => null,
+            };
+        }
+    }
+
+    /// <summary>Decodes a machine heartbeat, or <c>null</c> when the envelope is
+    /// not a heartbeat.</summary>
+    public static MachineHeartbeat? DecodeHeartbeat(string json)
+    {
+        if (!TryParse(json, out var doc))
+            return null;
+        using (doc)
+        {
+            if (!TryReadType(doc.RootElement, out var type) || type != Heartbeat)
+                return null;
+            return doc.RootElement.Deserialize(RunnerWireContext.Default.MachineHeartbeat);
+        }
+    }
+
+    // ── Internals ───────────────────────────────────────────────────────────────
+
+    private static JsonObject ToObject<T>(T value, JsonTypeInfo<T> typeInfo) =>
+        JsonSerializer.SerializeToNode(value, typeInfo) as JsonObject
+        ?? throw new InvalidOperationException("wire envelope must serialize to a JSON object");
+
+    private static bool TryParse(string json, out JsonDocument doc)
+    {
+        try
+        {
+            doc = JsonDocument.Parse(json);
+            return true;
+        }
+        catch (JsonException)
+        {
+            doc = null!;
+            return false;
+        }
+    }
+
+    private static bool TryReadType(JsonElement root, out string type)
+    {
+        type = "";
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("type", out var typeElement) ||
+            typeElement.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+        type = typeElement.GetString()!;
+        return true;
+    }
+}

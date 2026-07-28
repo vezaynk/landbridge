@@ -1,0 +1,184 @@
+using System.Collections.Concurrent;
+using Docket.Contracts;
+using Docket.Core;
+
+namespace Docket.ControlPlane;
+
+/// <summary>
+/// The in-memory registry of live runner connections, spec §10. Single-node v1:
+/// docketd only dials outbound, so a connection is a WebSocket the control plane
+/// accepted and the send delegate that writes command frames back down it. The
+/// registry holds, per machine, that delegate, the profiles it declares (learned
+/// from its heartbeat), its readiness, its last heartbeat, and the set of tasks
+/// dispatched to it (each with its last activity time, for the liveness window).
+///
+/// It is transport-agnostic — nothing here knows about WebSockets — so it is
+/// driven directly in tests. All state is process-local and evaporates on
+/// restart; machine-assignment persistence across a control-plane restart is a
+/// documented follow-up (§10 is single control plane for v1).
+/// </summary>
+public sealed class RunnerConnectionRegistry(TimeProvider clock)
+{
+    private readonly ConcurrentDictionary<string, RunnerConnection> _connections = new(StringComparer.Ordinal);
+
+    /// <summary>Registers a dialed-in machine. Starts not-ready with no profiles;
+    /// its first heartbeat supplies both (§10).</summary>
+    public void Register(string machineId, IReadOnlySet<string> profiles, Func<RunnerCommand, CancellationToken, Task> send)
+    {
+        _connections[machineId] = new RunnerConnection(send)
+        {
+            Profiles = profiles,
+            LastHeartbeat = clock.GetUtcNow(),
+        };
+    }
+
+    /// <summary>Drops a machine's connection (socket closed). Its tracked tasks are
+    /// returned by <see cref="TasksOn"/> first so the caller can requeue them.</summary>
+    public void Unregister(string machineId) => _connections.TryRemove(machineId, out _);
+
+    /// <summary>
+    /// Folds a heartbeat into connection state: readiness (ready unless under
+    /// back-pressure), declared profiles, and the heartbeat timestamp (§10). Keyed
+    /// by the <b>authenticated</b> machine id (the caller's token identity), never
+    /// the heartbeat's self-reported <see cref="MachineHeartbeat.MachineId"/> — a
+    /// machine must not be able to steer another's connection state (§13).
+    /// </summary>
+    public void ApplyHeartbeat(string machineId, MachineHeartbeat heartbeat)
+    {
+        if (!_connections.TryGetValue(machineId, out var conn))
+            return;
+        lock (conn.Gate)
+        {
+            conn.Ready = heartbeat.Ready && !heartbeat.UnderBackPressure;
+            conn.UnderBackPressure = heartbeat.UnderBackPressure;
+            conn.Profiles = new HashSet<string>(heartbeat.Profiles, StringComparer.Ordinal);
+            conn.LastHeartbeat = clock.GetUtcNow();
+        }
+    }
+
+    /// <summary>Records that a task was dispatched to a machine, stamping activity now.</summary>
+    public void TrackDispatch(string machineId, TaskId task)
+    {
+        if (!_connections.TryGetValue(machineId, out var conn))
+            return;
+        lock (conn.Gate)
+            conn.Dispatched[task] = clock.GetUtcNow();
+    }
+
+    /// <summary>Refreshes a tracked task's last-activity time from an inbound liveness
+    /// signal (started/alive/tool-call) (§10 per-task liveness).</summary>
+    public void RecordActivity(TaskId task)
+    {
+        foreach (var conn in _connections.Values)
+        {
+            lock (conn.Gate)
+            {
+                if (conn.Dispatched.ContainsKey(task))
+                {
+                    conn.Dispatched[task] = clock.GetUtcNow();
+                    return;
+                }
+            }
+        }
+    }
+
+    /// <summary>Stops tracking a task on every machine (exit, requeue, reboot).</summary>
+    public void Untrack(TaskId task)
+    {
+        foreach (var conn in _connections.Values)
+            lock (conn.Gate)
+                conn.Dispatched.Remove(task);
+    }
+
+    /// <summary>The tasks currently tracked as dispatched to a machine.</summary>
+    public IReadOnlyList<TaskId> TasksOn(string machineId)
+    {
+        if (!_connections.TryGetValue(machineId, out var conn))
+            return [];
+        lock (conn.Gate)
+            return conn.Dispatched.Keys.ToArray();
+    }
+
+    /// <summary>Picks a ready machine declaring <paramref name="requiredProfile"/>, or null.</summary>
+    public string? TryPickMachine(string requiredProfile)
+    {
+        foreach (var (id, conn) in _connections)
+        {
+            lock (conn.Gate)
+                if (conn.Ready && conn.Profiles.Contains(requiredProfile))
+                    return id;
+        }
+        return null;
+    }
+
+    /// <summary>The machine-eligibility snapshot dispatch runs against, or null if gone.</summary>
+    public MachineSnapshot? SnapshotFor(string machineId)
+    {
+        if (!_connections.TryGetValue(machineId, out var conn))
+            return null;
+        lock (conn.Gate)
+            return new MachineSnapshot(
+                machineId, conn.Ready, conn.UnderBackPressure,
+                new HashSet<string>(conn.Profiles, StringComparer.Ordinal));
+    }
+
+    /// <summary>The machine ids currently ready to accept dispatch.</summary>
+    public IReadOnlyList<string> ReadyMachines()
+    {
+        var ready = new List<string>();
+        foreach (var (id, conn) in _connections)
+        {
+            lock (conn.Gate)
+                if (conn.Ready)
+                    ready.Add(id);
+        }
+        return ready;
+    }
+
+    /// <summary>Every tracked (task, machine, last-activity) triple, for the liveness scan.</summary>
+    public IReadOnlyList<TrackedTask> AllTracked()
+    {
+        var all = new List<TrackedTask>();
+        foreach (var (id, conn) in _connections)
+        {
+            lock (conn.Gate)
+                foreach (var (task, at) in conn.Dispatched)
+                    all.Add(new TrackedTask(task, id, at));
+        }
+        return all;
+    }
+
+    /// <summary>
+    /// Sends a command down a machine's connection. Best-effort against a live
+    /// connection (§10): returns false if the machine is gone or the write
+    /// fails, never throws and never queues.
+    /// </summary>
+    public async Task<bool> SendAsync(string machineId, RunnerCommand command, CancellationToken ct)
+    {
+        if (!_connections.TryGetValue(machineId, out var conn))
+            return false;
+        try
+        {
+            await conn.Send(command, ct);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    /// <summary>A tracked dispatch: the task, the machine holding it, and its last activity.</summary>
+    public readonly record struct TrackedTask(TaskId Task, string Machine, DateTimeOffset LastActivity);
+
+    private sealed class RunnerConnection(Func<RunnerCommand, CancellationToken, Task> send)
+    {
+        public object Gate { get; } = new();
+        public Func<RunnerCommand, CancellationToken, Task> Send { get; } = send;
+        public IReadOnlySet<string> Profiles { get; set; } = new HashSet<string>(StringComparer.Ordinal);
+        public bool Ready { get; set; }
+        public bool UnderBackPressure { get; set; }
+        public DateTimeOffset LastHeartbeat { get; set; }
+        public Dictionary<TaskId, DateTimeOffset> Dispatched { get; } = new();
+    }
+}

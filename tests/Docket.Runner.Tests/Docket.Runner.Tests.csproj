@@ -7,6 +7,13 @@
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
+  <!-- The WebSocket channel test hosts a minimal loopback control plane on
+       Kestrel that speaks the runner contract, so it needs the ASP.NET Core
+       shared framework. -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="6.0.4" />
     <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" Version="10.8.0" />
@@ -17,6 +24,10 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
+    <!-- The runner wire vocabulary (commands, events, heartbeat, SystemLoad)
+         moved to Docket.Contracts; a global using keeps the existing tests
+         referencing those types unchanged. -->
+    <Using Include="Docket.Contracts" />
   </ItemGroup>
 
   <ItemGroup>
