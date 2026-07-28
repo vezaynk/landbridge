@@ -1,0 +1,18 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Docket.WorkerHarness</RootNamespace>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <!-- A real MCP client, because the whole point of the walking skeleton is a
+       REAL process speaking REAL MCP back to the plane (no LLM). -->
+  <ItemGroup>
+    <PackageReference Include="ModelContextProtocol" Version="2.0.0-rc.1" />
+  </ItemGroup>
+
+</Project>

@@ -9,14 +9,25 @@ namespace Docket.Core;
 /// </summary>
 public abstract record TaskCommand(Actor Actor);
 
-/// <summary>→ submitted. Only a lead claim may create tasks (§9 check 3).</summary>
+/// <summary>
+/// → submitted. Only a lead claim may create tasks (§9 check 3).
+///
+/// <see cref="Description"/> (prose instructions, §7) and <see cref="Workspace"/>
+/// (the Lead-assigned opaque isolation blob, §7) ride along as content the
+/// <em>engine never interprets</em> — exactly like <see cref="CompletionCriteria"/>,
+/// which <see cref="TaskStateMachine.Create"/> only checks for non-emptiness and
+/// never lands on the pure-state <see cref="TaskRecord"/>. The store persists all
+/// three verbatim; the state machine stays free of task content (§2 principle 1).
+/// </summary>
 public sealed record CreateTask(
     Actor Actor,
     TeamId Team,
     string CompletionCriteria,
     CompletionMode Mode,
     string? Profile,
-    bool TeamBudgetRemains) : TaskCommand(Actor);
+    bool TeamBudgetRemains,
+    string Description = "",
+    string? Workspace = null) : TaskCommand(Actor);
 
 /// <summary>
 /// submitted → working. The dispatch transaction is the claim (§6); the

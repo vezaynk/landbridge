@@ -40,7 +40,19 @@ builder.Services.AddMcpServer()
 builder.Services.AddSingleton<RunnerConnectionRegistry>();
 builder.Services.AddSingleton<RunnerEventSink>();
 builder.Services.AddSingleton(new TaskEventListener(connectionString));
-builder.Services.AddSingleton<DispatchService>();
+
+// §13: the public MCP URL a worker dials the plane with. docketd wraps it plus
+// the minted worker token into the harness's --mcp-config at dispatch.
+var publicMcpUrl = builder.Configuration["Docket:PublicMcpUrl"]
+    ?? Environment.GetEnvironmentVariable("DOCKET_PUBLIC_MCP_URL")
+    ?? DispatchService.DefaultPublicMcpUrl;
+builder.Services.AddSingleton(sp => new DispatchService(
+    sp.GetRequiredService<IServiceScopeFactory>(),
+    sp.GetRequiredService<RunnerConnectionRegistry>(),
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<ILogger<DispatchService>>(),
+    sp.GetRequiredService<TaskEventListener>(),
+    publicMcpUrl: publicMcpUrl));
 builder.Services.AddHostedService(sp => sp.GetRequiredService<DispatchService>());
 
 var app = builder.Build();

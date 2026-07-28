@@ -32,6 +32,14 @@ public sealed class TaskRow
 
     // Opaque to the control plane: stored, returned, never dereferenced (§7).
     public string CompletionCriteria { get; set; } = "";
+
+    /// <summary>
+    /// The Lead's prose instructions (§7 <c>description</c>). Opaque: the worker
+    /// reads it (worker-skill.md), the control plane never parses it. Captured at
+    /// creation and handed back by <c>get_task</c>.
+    /// </summary>
+    public string Description { get; set; } = "";
+
     public string? Workspace { get; set; }
     public string? ResultReference { get; set; }
 
