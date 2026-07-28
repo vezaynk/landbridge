@@ -77,11 +77,10 @@ public sealed class PostgresFixture : IAsyncLifetime
 
     private async Task MigrateAsync()
     {
-        // Builds the schema directly from the model. Switch to MigrateAsync()
-        // once the InitialSchema migration is generated (see PR note: the
-        // `dotnet ef` design host can't run in the current build environment).
+        // Applies the checked-in InitialSchema migration, so the tests validate
+        // the migration produces a working schema (not just the EF model).
         await using var db = NewContext();
-        await db.Database.EnsureCreatedAsync();
+        await db.Database.MigrateAsync();
     }
 
     public async Task DisposeAsync()
