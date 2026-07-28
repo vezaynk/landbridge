@@ -117,6 +117,62 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task Report_result_persists_the_reference_for_the_verifier_to_read()
+    {
+        // #23, §5, §7: report_result's opaque reference is dropped by CopyFrom; the
+        // store must capture it on working → verifying, both on the row and through
+        // the verifier's read scope.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await CreateSubmitted(db);
+        var instance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), instance);
+
+        var applied = Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(id,
+            new ReportResult(new WorkerCaller(Team, id, instance), "git:branch/result-42")));
+        Assert.Equal(TaskState.Verifying, applied.Task.State);
+
+        // A plain store read sees the persisted reference…
+        await using (var v = pg.NewContext())
+            Assert.Equal("git:branch/result-42",
+                (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value)).ResultReference);
+
+        // …and so does the verifier's poll, alongside the criteria it interprets (§5).
+        var view = Assert.Single(await store.ListVerifyingAsync());
+        Assert.Equal(id.Value, view.TaskId);
+        Assert.Equal("git:branch/result-42", view.ResultReference);
+        Assert.Equal("pnpm test", view.CompletionCriteria);
+    }
+
+    [SkippableFact]
+    public async Task List_verifying_returns_only_automated_tasks_never_review_mode()
+    {
+        // §7, §10: a review-mode task in verifying takes its verdict through the
+        // Lead's submit_review (human-confirmed), never the automated webhook — so
+        // it must not surface on the verifier's poll.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+
+        // Drive one automated task to verifying (only submitted → dispatch is deterministic).
+        var automated = await CreateSubmitted(db, mode: CompletionMode.Automated);
+        var autoInstance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), autoInstance);
+        await store.ApplyAsync(automated, new ReportResult(new WorkerCaller(Team, automated, autoInstance), "auto-ref"));
+
+        // Then one review task the same way — now the only submitted row.
+        var review = await CreateSubmitted(db, mode: CompletionMode.Review);
+        var reviewInstance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), reviewInstance);
+        await store.ApplyAsync(review, new ReportResult(new WorkerCaller(Team, review, reviewInstance), "review-ref"));
+
+        var view = Assert.Single(await store.ListVerifyingAsync());
+        Assert.Equal(automated.Value, view.TaskId);
+        Assert.Equal("auto-ref", view.ResultReference);
+    }
+
+    [SkippableFact]
     public async Task Incumbent_worker_registers_a_service_only_while_working()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);

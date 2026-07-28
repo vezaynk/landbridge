@@ -29,3 +29,19 @@ public sealed record TeamTaskSummary(
     CompletionMode Mode,
     int Attempt,
     bool Parked);
+
+/// <summary>
+/// The verifier's narrow read scope (§5, §10 verifier webhook): one automated
+/// task in <see cref="TaskState.Verifying"/> the verifier may run its check
+/// against. It carries exactly what §5 permits — the namespace, the opaque
+/// completion criteria the verifier interprets (§7), and the result reference
+/// the worker reported — and nothing else. Review-mode tasks are excluded: their
+/// verdict arrives through the Lead's <c>submit_review</c> (human-confirmed, §7),
+/// not this webhook. The <see cref="ResultReference"/> is null only if the worker
+/// somehow reached verifying without one, which the state machine forbids (§6).
+/// </summary>
+public sealed record VerifyingTaskView(
+    Guid TaskId,
+    string Namespace,
+    string CompletionCriteria,
+    string? ResultReference);

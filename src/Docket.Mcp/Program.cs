@@ -69,6 +69,12 @@ app.MapMcp().RequireAuthorization();
 // The control plane ↔ runner WebSocket (machine-only, §10).
 app.MapRunnerEndpoint();
 
+// The verifier webhook (§5, §10): plain HTTP, verifier-credential-only. Not MCP —
+// the verifier posts verdicts to Docket, it is not an agent. RequireAuthorization
+// is applied inside on the /verify group; each handler further narrows to the
+// verifier principal.
+app.MapVerifierEndpoints();
+
 app.Run();
 
 /// <summary>Exposed so WebApplicationFactory-based tests can host the app.</summary>
