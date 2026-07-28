@@ -94,6 +94,38 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
         return result;
     }
 
+    /// <summary>
+    /// Records a live endpoint for a working task (§8.2). Only the incumbent
+    /// worker of a task that is currently working may register — the same
+    /// authority check as a state transition, though registration is not one.
+    /// "Register after a successful bind" is the worker's discipline (§8.2);
+    /// the store only records what it's told.
+    /// </summary>
+    public async Task<StoreResult> RegisterServiceAsync(
+        WorkerCaller caller, string name, int port, CancellationToken ct = default)
+    {
+        var row = await db.Tasks.AsNoTracking().FirstOrDefaultAsync(t => t.Id == caller.Task.Value, ct);
+        if (row is null)
+            return new StoreResult.NotFound($"no task {caller.Task}");
+        if (row.State != TaskState.Working)
+            return new StoreResult.Rejected(Rule.InvalidSourceState,
+                $"services register only while working, not {row.State}");
+        if (row.TeamId != caller.Team.Value || row.CurrentInstanceId != caller.Instance.Value)
+            return new StoreResult.Rejected(Rule.IncumbentInstanceOnly,
+                "only the incumbent worker of this task may register a service");
+
+        db.RegisteredServices.Add(new RegisteredServiceRow
+        {
+            TaskId = caller.Task.Value,
+            TeamId = caller.Team.Value,
+            Name = name,
+            Port = port,
+            CreatedAt = clock.GetUtcNow(),
+        });
+        await db.SaveChangesAsync(ct);
+        return new StoreResult.Applied(row.ToDomain(), []);
+    }
+
     private async Task<StoreResult> RunTransition(
         TaskRow row, TaskCommand command, CancellationToken ct,
         Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction? outerTx = null)

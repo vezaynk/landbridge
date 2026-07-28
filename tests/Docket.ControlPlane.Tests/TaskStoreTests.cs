@@ -117,6 +117,33 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task Incumbent_worker_registers_a_service_only_while_working()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await CreateSubmitted(db);
+        var instance = WorkerInstanceId.New();
+        var caller = new WorkerCaller(Team, id, instance);
+
+        // Submitted → not working yet: refused.
+        Assert.IsType<StoreResult.Rejected>(await store.RegisterServiceAsync(caller, "api", 5001));
+
+        await store.DispatchNextAsync(Machine(), instance);
+        Assert.IsType<StoreResult.Applied>(await store.RegisterServiceAsync(caller, "api", 5001));
+
+        // A non-incumbent worker cannot register on this task.
+        var zombie = new WorkerCaller(Team, id, WorkerInstanceId.New());
+        var rejected = Assert.IsType<StoreResult.Rejected>(await store.RegisterServiceAsync(zombie, "api", 5002));
+        Assert.Equal(Rule.IncumbentInstanceOnly, rejected.Rule);
+
+        await using var verify = pg.NewContext();
+        var svc = await verify.RegisteredServices.AsNoTracking().SingleAsync(s => s.TaskId == id.Value);
+        Assert.Equal("api", svc.Name);
+        Assert.Equal(5001, svc.Port);
+    }
+
+    [SkippableFact]
     public async Task Liveness_loss_requeues_and_revokes_the_instance_row()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
