@@ -76,6 +76,13 @@ public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) :
             e.HasIndex(c => c.TokenHash).IsUnique();
             e.HasIndex(c => c.MachineId);
             e.Property(c => c.Kind).HasConversion<string>();
+            // One live Lead per Team is the database's invariant, not a read's
+            // (§9 check 6): a partial unique index makes two concurrent claims
+            // impossible to both win, exactly as dispatch trusts the row lock
+            // rather than a check-then-act read.
+            e.HasIndex(c => c.TeamId).IsUnique()
+                .HasFilter("kind = 'Lead' AND revoked = false")
+                .HasDatabaseName("ix_credentials_one_live_lead_per_team");
         });
 
         b.Entity<MachineRow>(e =>

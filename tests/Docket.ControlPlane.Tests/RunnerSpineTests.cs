@@ -83,6 +83,41 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(TaskState.Submitted, await StateAsync(clock, taskId));
     }
 
+    // ── Lease liveness ──────────────────────────────────────────────────────────
+
+    [Fact]
+    public void Lease_is_held_while_tracked_on_a_connected_machine_and_lost_when_it_goes()
+    {
+        var clock = new FakeTimeProvider();
+        var registry = new RunnerConnectionRegistry(clock);
+        var task = TaskId.New();
+
+        // Never dispatched: no lease.
+        Assert.False(registry.IsLeaseHeld(task));
+
+        registry.Register("m1", Set("default"), (_, _) => Task.CompletedTask);
+        registry.TrackDispatch("m1", task);
+        Assert.True(registry.IsLeaseHeld(task));
+
+        // Socket closed: the machine is gone, and its lease with it (§10) — an
+        // answered input must not resume the task onto a dead machine.
+        registry.Unregister("m1");
+        Assert.False(registry.IsLeaseHeld(task));
+    }
+
+    [Fact]
+    public void Lease_is_lost_when_the_task_is_untracked()
+    {
+        var registry = new RunnerConnectionRegistry(new FakeTimeProvider());
+        var task = TaskId.New();
+        registry.Register("m1", Set("default"), (_, _) => Task.CompletedTask);
+        registry.TrackDispatch("m1", task);
+
+        registry.Untrack(task); // exit / requeue / reboot
+
+        Assert.False(registry.IsLeaseHeld(task));
+    }
+
     // ── Event sink: liveness / requeue ──────────────────────────────────────────
 
     [SkippableFact]

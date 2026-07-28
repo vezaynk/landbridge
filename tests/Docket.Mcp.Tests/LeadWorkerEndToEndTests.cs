@@ -166,6 +166,7 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         builder.Services.AddScoped<TaskStore>();
         builder.Services.AddScoped<TokenService>();
         builder.Services.AddSingleton(TimeProvider.System);
+        builder.Services.AddSingleton<RunnerConnectionRegistry>();
         builder.Services.AddHttpContextAccessor();
 
         builder.Services.AddAuthentication(DocketAuthenticationHandler.SchemeName)

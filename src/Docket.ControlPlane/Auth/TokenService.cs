@@ -54,6 +54,12 @@ public sealed class TokenService(DocketDbContext db, TimeProvider clock)
     /// <paramref name="takeover"/> is set, in which case the incumbent is
     /// evicted — its token revoked with attribution so its next call learns why
     /// (§4) — and the takeover is written to the lead event log.
+    ///
+    /// The incumbent read is only advisory: the invariant itself is the
+    /// database's partial unique index (one unrevoked Lead row per Team), so
+    /// two concurrent claimants cannot both win — the loser's insert fails and
+    /// is returned as the same <see cref="LeadClaimResult.Refused"/> a
+    /// sequential second claimant would get.
     /// </summary>
     public async Task<LeadClaimResult> ClaimLeadAsync(
         string humanToken, TeamId team, bool takeover = false, CancellationToken ct = default)
@@ -99,7 +105,22 @@ public sealed class TokenService(DocketDbContext db, TimeProvider clock)
 
         var (token, row) = NewCredential(CredentialKind.Lead, ttl: null, teamId: team.Value, humanId: human.HumanId);
         db.Set<CredentialRow>().Add(row);
-        await db.SaveChangesAsync(ct);
+        try
+        {
+            await db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException ex) when (ex.InnerException is Npgsql.PostgresException { SqlState: "23505" } pg
+                                           && pg.ConstraintName == "ix_credentials_one_live_lead_per_team")
+        {
+            // A concurrent claimant won the race between our incumbent read and
+            // our insert. The unique index made the loss safe; report it exactly
+            // like an ordinary refusal, naming the winner (best-effort — the
+            // winner could release in the same instant).
+            db.ChangeTracker.Clear();
+            var winner = await db.Set<CredentialRow>().AsNoTracking()
+                .FirstOrDefaultAsync(c => c.Kind == CredentialKind.Lead && c.TeamId == team.Value && !c.Revoked, ct);
+            return new LeadClaimResult.Refused(winner?.HumanId ?? Guid.Empty, winner?.CreatedAt ?? clock.GetUtcNow());
+        }
         return new LeadClaimResult.Claimed(new IssuedToken(token, row.Id, null), team);
     }
 
@@ -226,11 +247,20 @@ public sealed class TokenService(DocketDbContext db, TimeProvider clock)
     /// </summary>
     public async Task<Principal?> ValidateAsync(string token, CancellationToken ct = default)
     {
-        var row = await FindLive(token, ct);
+        // One lookup serves both the live path and the evicted-lead reason: the
+        // row is fetched dead-or-alive, so an ordinary invalid/expired token
+        // costs a single query.
+        var row = await Find(token, ct);
         if (row is null)
+            return null;
+        if (!IsLive(row))
             // A dead token might still be an evicted lead that is owed an
-            // explicit reason (§4); everything else is a clean null.
-            return await ResolveEvictedLeadAsync(token, ct);
+            // explicit reason — evicted by whom, when (§4). A voluntarily
+            // released lead (revoked, no eviction attribution) and every other
+            // dead token stay a clean null.
+            return row is { Kind: CredentialKind.Lead, EvictedByHuman: { } by, EvictedAt: { } at }
+                ? new Principal.EvictedLead(new TeamId(row.TeamId!.Value), by, at)
+                : null;
 
         switch (row.Kind)
         {
@@ -267,22 +297,6 @@ public sealed class TokenService(DocketDbContext db, TimeProvider clock)
         }
     }
 
-    /// <summary>
-    /// If the (already-dead) token is a lead credential revoked by takeover,
-    /// resolve it to <see cref="Principal.EvictedLead"/> carrying who evicted it
-    /// and when (§4). A voluntarily released lead (revoked, no eviction
-    /// attribution) stays a clean null.
-    /// </summary>
-    private async Task<Principal?> ResolveEvictedLeadAsync(string token, CancellationToken ct)
-    {
-        var hash = Hash(token);
-        var row = await db.Set<CredentialRow>().AsNoTracking()
-            .FirstOrDefaultAsync(c => c.TokenHash == hash && c.Kind == CredentialKind.Lead, ct);
-        if (row?.EvictedByHuman is { } by && row.EvictedAt is { } at)
-            return new Principal.EvictedLead(new TeamId(row.TeamId!.Value), by, at);
-        return null;
-    }
-
     // ── Revocation (§5: un-trusting a machine must take seconds) ───────────
 
     public async Task RevokeMachineAsync(Guid machineId, CancellationToken ct = default)
@@ -314,8 +328,8 @@ public sealed class TokenService(DocketDbContext db, TimeProvider clock)
         Guid? machineId = null, Guid? teamId = null, Guid? taskId = null, Guid? instanceId = null,
         Guid? humanId = null)
     {
-        var token = $"dkt_{Prefix(kind)}_{Convert.ToBase64String(RandomNumberGenerator.GetBytes(32))
-            .TrimEnd('=').Replace('+', '-').Replace('/', '_')}";
+        // 64 hex chars = 256 bits of entropy, URL-safe with no munging.
+        var token = $"dkt_{Prefix(kind)}_{RandomNumberGenerator.GetHexString(64)}";
         var now = clock.GetUtcNow();
         return (token, new CredentialRow
         {
@@ -332,20 +346,25 @@ public sealed class TokenService(DocketDbContext db, TimeProvider clock)
         });
     }
 
-    private async Task<CredentialRow?> FindLive(string token, CancellationToken ct, bool tracking = false)
+    /// <summary>The credential row for a presented token, dead or alive.</summary>
+    private async Task<CredentialRow?> Find(string token, CancellationToken ct, bool tracking = false)
     {
         var hash = Hash(token);
         // Validation reads no-tracking: revocation is applied via ExecuteUpdate
         // (which bypasses the change tracker), so a tracked read could return a
         // stale, still-live entity. Only mutate-then-save callers track.
         var query = tracking ? db.Set<CredentialRow>() : db.Set<CredentialRow>().AsNoTracking();
-        var row = await query.FirstOrDefaultAsync(c => c.TokenHash == hash, ct);
-        if (row is null || row.Revoked)
-            return null;
-        if (row.ExpiresAt is { } expiry && expiry <= clock.GetUtcNow())
-            return null;
-        return row;
+        return await query.FirstOrDefaultAsync(c => c.TokenHash == hash, ct);
     }
+
+    private async Task<CredentialRow?> FindLive(string token, CancellationToken ct, bool tracking = false)
+    {
+        var row = await Find(token, ct, tracking);
+        return row is not null && IsLive(row) ? row : null;
+    }
+
+    private bool IsLive(CredentialRow row) =>
+        !row.Revoked && !(row.ExpiresAt is { } expiry && expiry <= clock.GetUtcNow());
 
     private async Task<bool> MachineIsLive(Guid machineId, CancellationToken ct) =>
         await db.Set<MachineRow>().AsNoTracking().AnyAsync(m => m.Id == machineId && !m.Revoked, ct);

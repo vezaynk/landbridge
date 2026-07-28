@@ -5,6 +5,7 @@ using Docket.Mcp.Auth;
 using Microsoft.AspNetCore.Http;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
+using static Docket.Mcp.Tools.ToolResults;
 
 namespace Docket.Mcp.Tools;
 
@@ -64,15 +65,6 @@ public sealed class WorkerTools(TaskStore store, IHttpContextAccessor http)
         var caller = Caller;
         return Describe(await store.RegisterServiceAsync(caller, name, port, ct));
     }
-
-    private static string Describe(StoreResult result) => result switch
-    {
-        StoreResult.Applied a => $"ok: task is now {a.Task.State}",
-        StoreResult.Rejected r => throw new McpException($"rejected ({r.Rule}): {r.Reason}"),
-        StoreResult.NotFound n => throw new McpException(n.Reason),
-        StoreResult.Conflict c => throw new McpException($"conflict: {c.Reason}"),
-        _ => throw new McpException("unknown store result"),
-    };
 
     private static McpException Unauthorized() =>
         new("this tool requires a worker credential");

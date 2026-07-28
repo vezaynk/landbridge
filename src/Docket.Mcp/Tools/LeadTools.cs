@@ -5,6 +5,7 @@ using Docket.Mcp.Auth;
 using Microsoft.AspNetCore.Http;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
+using static Docket.Mcp.Tools.ToolResults;
 
 namespace Docket.Mcp.Tools;
 
@@ -20,7 +21,7 @@ namespace Docket.Mcp.Tools;
 /// for review, disposition for cancel), so nothing here interprets task content.
 /// </summary>
 [McpServerToolType]
-public sealed class LeadTools(TaskStore store, IHttpContextAccessor http)
+public sealed class LeadTools(TaskStore store, RunnerConnectionRegistry registry, IHttpContextAccessor http)
 {
     /// <summary>
     /// The lead claim behind this call. An evicted claim (§4) is refused with an
@@ -98,10 +99,10 @@ public sealed class LeadTools(TaskStore store, IHttpContextAccessor http)
     {
         var id = ParseTaskId(taskId);
         // LeaseStillHeld is a control-plane fact (does the dispatched machine
-        // still hold the lease?). A Lead answering in-session implies it does;
-        // if the lease had been lost the task would already have parked via the
-        // wait-TTL path (§6, §11), and the wake path handles it instead.
-        return Describe(await store.ApplyAsync(id, new AnswerInput(Lead, LeaseStillHeld: true), ct));
+        // still hold the lease?), so it is read from the connection registry —
+        // never assumed. If the machine is gone the engine refuses the resume
+        // (LeaseNoLongerHeld) and the task parks and wakes instead (§6, §11).
+        return Describe(await store.ApplyAsync(id, new AnswerInput(Lead, registry.IsLeaseHeld(id)), ct));
     }
 
     [McpServerTool(Name = "submit_review"),
@@ -138,20 +139,6 @@ public sealed class LeadTools(TaskStore store, IHttpContextAccessor http)
         Guid.TryParse(taskId, out var g)
             ? new TaskId(g)
             : throw new McpException($"'{taskId}' is not a valid task id.");
-
-    private static string Describe(StoreResult result) => result switch
-    {
-        StoreResult.Applied a => $"ok: task is now {a.Task.State}",
-        _ => throw Rejection(result),
-    };
-
-    private static McpException Rejection(StoreResult result) => result switch
-    {
-        StoreResult.Rejected r => new McpException($"rejected ({r.Rule}): {r.Reason}"),
-        StoreResult.NotFound n => new McpException(n.Reason),
-        StoreResult.Conflict c => new McpException($"conflict: {c.Reason}"),
-        _ => new McpException("unknown store result"),
-    };
 
     private static McpException Unauthorized() =>
         new("this tool requires a live lead claim; claim the Team first.");

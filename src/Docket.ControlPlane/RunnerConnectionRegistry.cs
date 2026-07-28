@@ -135,6 +135,21 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
         return ready;
     }
 
+    /// <summary>
+    /// Whether the dispatch lease for <paramref name="task"/> is still held: the
+    /// task is tracked on some machine AND that machine's connection is still
+    /// registered (§10). This is the control-plane fact behind
+    /// <c>AnswerInput.LeaseStillHeld</c> — answering a blocked task must not
+    /// resume it onto a machine that is gone; the engine parks it instead (§6).
+    /// </summary>
+    public bool IsLeaseHeld(TaskId task)
+    {
+        foreach (var tracked in AllTracked())
+            if (tracked.Task == task)
+                return SnapshotFor(tracked.Machine) is not null;
+        return false;
+    }
+
     /// <summary>Every tracked (task, machine, last-activity) triple, for the liveness scan.</summary>
     public IReadOnlyList<TrackedTask> AllTracked()
     {
