@@ -1,0 +1,71 @@
+# Build + test on every push to master and every PR.
+#
+# Postgres-backed test projects honour DOCKET_TEST_PG (see PostgresFixture):
+# when set, they use that server instead of spinning a local cluster. Each
+# such project gets its OWN database (docket_cp / docket_mcp), created on
+# demand by EF Core's EnsureCreated, so the projects stay isolated regardless
+# of scheduling. When a new test project is added, give it its own step —
+# and its own database here if it touches Postgres.
+name: CI
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-test:
+    runs-on: ubuntu-latest
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: 1
+      DOTNET_NOLOGO: 1
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: docket
+          POSTGRES_PASSWORD: docket
+          POSTGRES_DB: docket
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U docket"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore
+
+      # TreatWarningsAsErrors is on (Directory.Build.props), so this gates on
+      # compiler warnings too. Builds the whole solution, including the runner
+      # test harness the runner tests spawn.
+      - name: Build
+        run: dotnet build --no-restore -c Release
+
+      - name: Test - Docket.Core (pure engine)
+        run: dotnet test tests/Docket.Core.Tests --no-build -c Release
+
+      - name: Test - Docket.Runner (process supervision)
+        run: dotnet test tests/Docket.Runner.Tests --no-build -c Release
+
+      - name: Test - Docket.ControlPlane (Postgres)
+        run: dotnet test tests/Docket.ControlPlane.Tests --no-build -c Release
+        env:
+          DOCKET_TEST_PG: Host=localhost;Port=5432;Username=docket;Password=docket;Database=docket_cp
+
+      - name: Test - Docket.Mcp (Postgres + MCP end-to-end)
+        run: dotnet test tests/Docket.Mcp.Tests --no-build -c Release
+        env:
+          DOCKET_TEST_PG: Host=localhost;Port=5432;Username=docket;Password=docket;Database=docket_mcp
