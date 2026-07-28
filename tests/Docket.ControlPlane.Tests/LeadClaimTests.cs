@@ -135,6 +135,74 @@ public sealed class LeadClaimTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task Two_concurrent_claims_on_one_team_yield_exactly_one_lead()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        // Two independent sessions race the same Team, each on its own
+        // connection. Whatever the interleaving, the partial unique index
+        // (§9 check 6) admits exactly one live Lead row — a loser whose
+        // incumbent read raced sees the same Refused as a sequential second
+        // claimant.
+        await using var dbA = pg.NewContext();
+        await using var dbB = pg.NewContext();
+        var tokensA = new TokenService(dbA, new FakeTimeProvider());
+        var tokensB = new TokenService(dbB, new FakeTimeProvider());
+
+        var alice = await tokensA.IssueHumanSessionAsync();
+        var bob = await tokensB.IssueHumanSessionAsync();
+
+        var results = await Task.WhenAll(
+            tokensA.ClaimLeadAsync(alice.Token, Team),
+            tokensB.ClaimLeadAsync(bob.Token, Team));
+
+        Assert.Single(results, r => r is LeadClaimResult.Claimed);
+        Assert.Single(results, r => r is LeadClaimResult.Refused);
+
+        // The database agrees: one live Lead row for the Team, not two.
+        await using var v = pg.NewContext();
+        Assert.Equal(1, await v.Credentials.AsNoTracking()
+            .CountAsync(c => c.Kind == CredentialKind.Lead && c.TeamId == Team.Value && !c.Revoked));
+    }
+
+    [SkippableFact]
+    public async Task A_lost_claim_race_is_reported_as_an_ordinary_refusal_naming_the_winner()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+
+        // The winner's live Lead row is inserted but left uncommitted, so the
+        // loser's advisory incumbent read cannot see it — only the unique index
+        // stands between the two claims. This pins the exact interleaving the
+        // check-then-insert bug allowed.
+        var winnerHuman = Guid.NewGuid();
+        await using var winnerDb = pg.NewContext();
+        await using var winnerTx = await winnerDb.Database.BeginTransactionAsync();
+        winnerDb.Credentials.Add(new CredentialRow
+        {
+            Id = Guid.NewGuid(),
+            TokenHash = "winner-hash-never-presented",
+            Kind = CredentialKind.Lead,
+            TeamId = Team.Value,
+            HumanId = winnerHuman,
+            CreatedAt = clock.GetUtcNow(),
+        });
+        await winnerDb.SaveChangesAsync();
+
+        await using var loserDb = pg.NewContext();
+        var tokens = new TokenService(loserDb, clock);
+        var human = await tokens.IssueHumanSessionAsync();
+
+        // The loser's insert blocks on the winner's uncommitted unique-index
+        // entry; committing the winner turns the block into a unique violation.
+        var loser = tokens.ClaimLeadAsync(human.Token, Team);
+        await Task.Delay(TimeSpan.FromMilliseconds(250));
+        await winnerTx.CommitAsync();
+
+        var refused = Assert.IsType<LeadClaimResult.Refused>(await loser);
+        Assert.Equal(winnerHuman, refused.HeldByHuman);
+    }
+
+    [SkippableFact]
     public async Task Release_makes_the_team_claimable_again_and_the_token_stops_authenticating()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);

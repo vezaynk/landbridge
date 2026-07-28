@@ -34,8 +34,8 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     private static IHttpContextAccessor AccessorFor(Principal principal) =>
         new HttpContextAccessor { HttpContext = new DefaultHttpContext { User = DocketClaims.ToClaimsPrincipal(principal) } };
 
-    private LeadTools LeadFor(Principal principal) =>
-        new(new TaskStore(pg.NewContext(), _clock), AccessorFor(principal));
+    private LeadTools LeadFor(Principal principal, RunnerConnectionRegistry? registry = null) =>
+        new(new TaskStore(pg.NewContext(), _clock), registry ?? new RunnerConnectionRegistry(_clock), AccessorFor(principal));
 
     private static MachineSnapshot Machine() =>
         new("m1", Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });
@@ -127,6 +127,40 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task Answer_input_request_refuses_when_the_dispatched_machine_is_gone()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var taskId = await SeedBlockedOnInputTask();
+        // An empty registry: the dispatched machine's connection is gone, so
+        // the lease is not held (§10) — the answer must not resume the task
+        // onto a dead machine; it parks and wakes instead (§6, §11).
+        var tools = LeadFor(new Principal.Lead(Team));
+
+        var ex = await Assert.ThrowsAsync<McpException>(
+            () => tools.AnswerInputRequest(taskId.ToString(), CancellationToken.None));
+        Assert.Contains(nameof(Rule.LeaseNoLongerHeld), ex.Message);
+
+        await using var v = pg.NewContext();
+        Assert.Equal(TaskState.BlockedOnInput,
+            (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == taskId.Value)).State);
+    }
+
+    [SkippableFact]
+    public async Task Answer_input_request_resumes_the_task_while_its_machine_holds_the_lease()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var taskId = await SeedBlockedOnInputTask();
+        var registry = new RunnerConnectionRegistry(_clock);
+        registry.Register("m1", new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
+        registry.TrackDispatch("m1", taskId);
+        var tools = LeadFor(new Principal.Lead(Team), registry);
+
+        var msg = await tools.AnswerInputRequest(taskId.ToString(), CancellationToken.None);
+
+        Assert.Contains("Working", msg);
+    }
+
+    [SkippableFact]
     public async Task An_evicted_lead_is_refused_every_tool_with_an_explicit_reason()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
@@ -153,6 +187,20 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
 
         await Assert.ThrowsAsync<McpException>(
             () => tools.CreateTask("a", "automated", null, CancellationToken.None));
+    }
+
+    /// <summary>Drives a task to blocked_on_input via dispatch + a worker's request.</summary>
+    private async Task<TaskId> SeedBlockedOnInputTask()
+    {
+        await using var db = pg.NewContext();
+        var store = new TaskStore(db, _clock);
+        var created = (StoreResult.Applied)await store.CreateAsync(
+            new CreateTask(new LeadClaim(Team), Team, "needs input", CompletionMode.Automated, null, TeamBudgetRemains: true));
+        var instance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), instance);
+        await store.ApplyAsync(created.Task.Id,
+            new RequestInput(new WorkerCaller(Team, created.Task.Id, instance), InputRequestKind.Question));
+        return created.Task.Id;
     }
 
     /// <summary>Drives a review-mode task all the way to verifying via the store.</summary>
