@@ -1,3 +1,4 @@
+using Docket.ControlPlane.Auth;
 using Docket.Core;
 using Microsoft.EntityFrameworkCore;
 
@@ -9,6 +10,8 @@ public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) :
     public DbSet<WorkerInstanceRow> WorkerInstances => Set<WorkerInstanceRow>();
     public DbSet<RegisteredServiceRow> RegisteredServices => Set<RegisteredServiceRow>();
     public DbSet<TaskEventRow> TaskEvents => Set<TaskEventRow>();
+    public DbSet<CredentialRow> Credentials => Set<CredentialRow>();
+    public DbSet<MachineRow> Machines => Set<MachineRow>();
 
     /// <summary>The channel dispatch/transition NOTIFYs land on (§3.1 LISTEN/NOTIFY).</summary>
     public const string EventChannel = "docket_task_events";
@@ -63,6 +66,21 @@ public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) :
             e.HasIndex(ev => ev.TaskId);
             e.Property(ev => ev.FromState).HasConversion<string>();
             e.Property(ev => ev.ToState).HasConversion<string>();
+        });
+
+        b.Entity<CredentialRow>(e =>
+        {
+            e.ToTable("credentials");
+            e.HasKey(c => c.Id);
+            e.HasIndex(c => c.TokenHash).IsUnique();
+            e.HasIndex(c => c.MachineId);
+            e.Property(c => c.Kind).HasConversion<string>();
+        });
+
+        b.Entity<MachineRow>(e =>
+        {
+            e.ToTable("machines");
+            e.HasKey(m => m.Id);
         });
     }
 }
