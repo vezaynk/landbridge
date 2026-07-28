@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Docket.Contracts</RootNamespace>
+    <!-- Shared by the AOT runner (docketd), so the wire vocabulary stays
+         AOT-clean: no reflection, JSON via a source-gen'd context (§10). The
+         analyzers here catch trim/AOT drift at build time under
+         warnings-as-errors, exactly as they do in Docket.Runner. -->
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Docket.Core\Docket.Core.csproj" />
+  </ItemGroup>
+
+</Project>

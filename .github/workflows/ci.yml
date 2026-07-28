@@ -57,7 +57,10 @@ jobs:
       - name: Test - Docket.Core (pure engine)
         run: dotnet test tests/Docket.Core.Tests --no-build -c Release
 
-      - name: Test - Docket.Runner (process supervision)
+      - name: Test - Docket.Contracts (wire vocabulary)
+        run: dotnet test tests/Docket.Contracts.Tests --no-build -c Release
+
+      - name: Test - Docket.Runner (process supervision + WebSocket channel)
         run: dotnet test tests/Docket.Runner.Tests --no-build -c Release
 
       - name: Test - Docket.ControlPlane (Postgres)

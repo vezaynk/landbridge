@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
+using Docket.Contracts;
 using Docket.Core;
 
 namespace Docket.Runner;

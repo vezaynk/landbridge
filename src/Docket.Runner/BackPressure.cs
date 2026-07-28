@@ -1,10 +1,6 @@
-namespace Docket.Runner;
+using Docket.Contracts;
 
-/// <summary>
-/// A point-in-time reading of the three signals §10 says docketd observes:
-/// load, memory, disk. Ratios in [0, 1].
-/// </summary>
-public readonly record struct SystemLoad(double CpuLoad, double MemoryLoad, double DiskUsage);
+namespace Docket.Runner;
 
 /// <summary>Reads current system load. Abstracted so tests drive pressure deterministically.</summary>
 public interface ISystemLoadReader

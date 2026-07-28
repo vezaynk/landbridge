@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using Docket.Contracts;
 
 namespace Docket.Runner;
 
@@ -49,12 +50,33 @@ public static class Program
         var supervisor = new ProcessSupervisor(config.Machine, ring, clock, reaper);
         var backPressure = new BackPressureMonitor(
             new PortableSystemLoadReader(config.Machine.WorkRoot), config.Machine.BackPressure);
-        var channel = new ConsoleControlPlaneChannel();
+
+        // §10: dial the control plane outbound when a URL + machine token are
+        // configured; otherwise fall back to the console placeholder. The WS
+        // channel's receive loop is wired to the daemon after it exists.
+        var controlUrl = Environment.GetEnvironmentVariable("DOCKET_CONTROL_URL");
+        var machineToken = Environment.GetEnvironmentVariable("DOCKET_MACHINE_TOKEN");
+        WebSocketControlPlaneChannel? wsChannel = null;
+        IControlPlaneChannel channel;
+        if (!string.IsNullOrWhiteSpace(controlUrl) && !string.IsNullOrWhiteSpace(machineToken))
+        {
+            wsChannel = new WebSocketControlPlaneChannel(new Uri(controlUrl), machineToken, clock, Console.WriteLine);
+            channel = wsChannel;
+        }
+        else
+        {
+            channel = new ConsoleControlPlaneChannel();
+        }
 
         var daemon = new RunnerDaemon(machineId, config, supervisor, backPressure, channel, ring, reaper, clock);
         await daemon.StartAsync();
 
-        Console.WriteLine($"docketd up: machine={machineId} profiles=[{string.Join(", ", config.DeclaredProfiles)}] strays_reaped={daemon.StraysReaped}");
+        // Outbound-only: the receive loop runs on the socket docketd dialed, not
+        // a listener (§10). Commands arriving on it drive the daemon.
+        wsChannel?.Start((command, ct) => daemon.HandleAsync(command, ct));
+
+        var channelMode = wsChannel is null ? "console" : controlUrl;
+        Console.WriteLine($"docketd up: machine={machineId} profiles=[{string.Join(", ", config.DeclaredProfiles)}] strays_reaped={daemon.StraysReaped} control={channelMode}");
 
         using var shutdown = new CancellationTokenSource();
         using var sigint = PosixSignalRegistration.Create(PosixSignal.SIGINT, ctx => { ctx.Cancel = true; shutdown.Cancel(); });
@@ -71,6 +93,8 @@ public static class Program
 
         Console.WriteLine("docketd shutting down; killing everything it started");
         await daemon.ShutdownAsync();
+        if (wsChannel is not null)
+            await wsChannel.DisposeAsync();
         return 0;
     }
 

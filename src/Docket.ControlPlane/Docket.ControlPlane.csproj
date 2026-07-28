@@ -2,10 +2,14 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Docket.Core\Docket.Core.csproj" />
+    <ProjectReference Include="..\Docket.Contracts\Docket.Contracts.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="EFCore.NamingConventions" Version="10.0.0-rc.1" />
+    <!-- IHostedService (DispatchService) lives here; the DI/logging abstractions
+         come transitively with EF Core. -->
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.0" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.10">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>

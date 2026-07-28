@@ -38,6 +38,9 @@
 
   <ItemGroup>
     <ProjectReference Include="..\..\src\Docket.Mcp\Docket.Mcp.csproj" />
+    <!-- The end-to-end spine test dials the control plane with the real docketd
+         WebSocket channel, so it references the runner. -->
+    <ProjectReference Include="..\..\src\Docket.Runner\Docket.Runner.csproj" />
   </ItemGroup>
 
 </Project>

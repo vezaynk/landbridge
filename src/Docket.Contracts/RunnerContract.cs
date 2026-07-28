@@ -1,6 +1,6 @@
 using Docket.Core;
 
-namespace Docket.Runner;
+namespace Docket.Contracts;
 
 /// <summary>
 /// The control-plane ↔ runner contract, spec §10 — <b>the only frozen
@@ -16,7 +16,9 @@ namespace Docket.Runner;
 /// construction — it is emitted precisely when the runner holds no tasks to
 /// reference (§10 runner restart).
 ///
-/// Nothing here is domain-specific: the runner is transport (§2.6).
+/// Nothing here is domain-specific: the runner is transport (§2.6). It lives in
+/// <c>Docket.Contracts</c> so both sides — <c>docketd</c> and the control
+/// plane — share one wire vocabulary rather than each redeclaring it.
 /// </summary>
 public abstract record RunnerMessage
 {

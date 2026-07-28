@@ -1,18 +1,6 @@
-namespace Docket.Runner;
+using Docket.Contracts;
 
-/// <summary>
-/// The machine-level heartbeat, spec §10: docketd on its own timer. Loss means
-/// every task on the machine is suspect. Carries the derived readiness the
-/// control plane dispatches against — <c>ready</c> unless under back-pressure,
-/// in which case the machine shows as <c>saturated</c> (§10 concurrency).
-/// </summary>
-public sealed record MachineHeartbeat(
-    string MachineId,
-    bool Ready,
-    bool UnderBackPressure,
-    SystemLoad Load,
-    int RunningTasks,
-    DateTimeOffset At);
+namespace Docket.Runner;
 
 /// <summary>
 /// The runner's link to the control plane, spec §10 channel separation.

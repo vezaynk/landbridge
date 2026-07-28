@@ -16,6 +16,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Docket.Core\Docket.Core.csproj" />
+    <ProjectReference Include="..\Docket.Contracts\Docket.Contracts.csproj" />
   </ItemGroup>
 
 </Project>
