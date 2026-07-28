@@ -126,6 +126,38 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
         return new StoreResult.Applied(row.ToDomain(), []);
     }
 
+    /// <summary>
+    /// The Team view read (§10, §12): task counts by state plus a per-task
+    /// structural summary, scoped to one Team. A pure read — it runs no
+    /// transition and returns no prose (§10). The caller's Team comes from its
+    /// lead claim, never a parameter, so a Lead only ever sees its own Team.
+    /// </summary>
+    public async Task<TeamStateView> GetTeamStateAsync(TeamId team, CancellationToken ct = default)
+    {
+        var rows = await db.Tasks.AsNoTracking()
+            .Where(t => t.TeamId == team.Value)
+            .Select(t => new
+            {
+                t.Id,
+                t.Namespace,
+                t.State,
+                t.CompletionMode,
+                t.Attempt,
+                Parked = t.ParkMachine != null,
+            })
+            .ToListAsync(ct);
+
+        var counts = rows
+            .GroupBy(t => t.State)
+            .ToDictionary(g => g.Key, g => g.Count());
+
+        var summaries = rows
+            .Select(t => new TeamTaskSummary(t.Id, t.Namespace, t.State, t.CompletionMode, t.Attempt, t.Parked))
+            .ToList();
+
+        return new TeamStateView(team.Value, rows.Count, counts, summaries);
+    }
+
     private async Task<StoreResult> RunTransition(
         TaskRow row, TaskCommand command, CancellationToken ct,
         Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction? outerTx = null)

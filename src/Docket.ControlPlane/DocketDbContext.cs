@@ -12,6 +12,7 @@ public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) :
     public DbSet<TaskEventRow> TaskEvents => Set<TaskEventRow>();
     public DbSet<CredentialRow> Credentials => Set<CredentialRow>();
     public DbSet<MachineRow> Machines => Set<MachineRow>();
+    public DbSet<LeadEventRow> LeadEvents => Set<LeadEventRow>();
 
     /// <summary>The channel dispatch/transition NOTIFYs land on (§3.1 LISTEN/NOTIFY).</summary>
     public const string EventChannel = "docket_task_events";
@@ -81,6 +82,15 @@ public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) :
         {
             e.ToTable("machines");
             e.HasKey(m => m.Id);
+        });
+
+        b.Entity<LeadEventRow>(e =>
+        {
+            e.ToTable("lead_events");
+            e.HasKey(ev => ev.Seq);
+            e.Property(ev => ev.Seq).UseIdentityAlwaysColumn();
+            e.HasIndex(ev => ev.TeamId);
+            e.Property(ev => ev.Kind).HasConversion<string>();
         });
     }
 }

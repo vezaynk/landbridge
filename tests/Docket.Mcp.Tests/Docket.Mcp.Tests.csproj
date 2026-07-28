@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
@@ -7,15 +7,33 @@
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 
+  <!-- The end-to-end test hosts the real MCP server on a loopback Kestrel port and
+       drives it with the MCP C# SDK client, so it needs the ASP.NET Core shared
+       framework plus a Postgres-backed store. -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
   <ItemGroup>
     <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.10" />
+    <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" Version="10.8.0" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="ModelContextProtocol" Version="2.0.0-rc.1" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <PackageReference Include="Xunit.SkippableFact" Version="1.5.61" />
   </ItemGroup>
 
   <ItemGroup>
     <Using Include="Xunit" />
+  </ItemGroup>
+
+  <!-- Reuse the ControlPlane test suite's ephemeral-Postgres fixture verbatim
+       (single source of truth) rather than duplicating it. -->
+  <ItemGroup>
+    <Compile Include="..\Docket.ControlPlane.Tests\PostgresFixture.cs" Link="PostgresFixture.cs" />
   </ItemGroup>
 
   <ItemGroup>

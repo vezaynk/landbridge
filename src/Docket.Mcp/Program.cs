@@ -29,7 +29,8 @@ builder.Services.AddAuthorization();
 
 builder.Services.AddMcpServer()
     .WithHttpTransport()
-    .WithTools<WorkerTools>();
+    .WithTools<WorkerTools>()
+    .WithTools<LeadTools>();
 
 var app = builder.Build();
 
