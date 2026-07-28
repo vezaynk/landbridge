@@ -65,9 +65,52 @@ public class DocketClaimsTests
     }
 
     [Fact]
+    public void Human_principal_round_trips_and_is_reachable_as_a_human_session()
+    {
+        var humanId = Guid.NewGuid();
+        var user = DocketClaims.ToClaimsPrincipal(new Principal.Human(humanId));
+
+        Assert.Equal(humanId, Assert.IsType<Principal.Human>(DocketClaims.ToPrincipal(user)).HumanId);
+        Assert.NotNull(DocketClaims.AsHuman(user));
+        Assert.Null(DocketClaims.AsLead(user));
+    }
+
+    [Fact]
+    public void Lead_principal_round_trips_and_is_reachable_as_a_lead_claim()
+    {
+        var team = TeamId.New();
+        var user = DocketClaims.ToClaimsPrincipal(new Principal.Lead(team));
+
+        Assert.Equal(team, Assert.IsType<Principal.Lead>(DocketClaims.ToPrincipal(user)).Team);
+        Assert.Equal(new LeadClaim(team), DocketClaims.AsLead(user));
+        Assert.Null(DocketClaims.AsHuman(user));
+        Assert.Null(DocketClaims.AsEvictedLead(user));
+    }
+
+    [Fact]
+    public void Evicted_lead_principal_round_trips_with_its_attribution()
+    {
+        var team = TeamId.New();
+        var by = Guid.NewGuid();
+        var at = DateTimeOffset.UtcNow;
+        var user = DocketClaims.ToClaimsPrincipal(new Principal.EvictedLead(team, by, at));
+
+        var evicted = Assert.IsType<Principal.EvictedLead>(DocketClaims.ToPrincipal(user));
+        Assert.Equal(team, evicted.Team);
+        Assert.Equal(by, evicted.EvictedByHuman);
+        Assert.Equal(at, evicted.EvictedAt);
+
+        // An evicted claim is not a live lead claim (§4).
+        Assert.Null(DocketClaims.AsLead(user));
+        Assert.NotNull(DocketClaims.AsEvictedLead(user));
+    }
+
+    [Fact]
     public void An_unauthenticated_user_maps_to_no_principal()
     {
         Assert.Null(DocketClaims.ToPrincipal(new ClaimsPrincipal(new ClaimsIdentity())));
         Assert.Null(DocketClaims.AsWorker(new ClaimsPrincipal(new ClaimsIdentity())));
+        Assert.Null(DocketClaims.AsLead(new ClaimsPrincipal(new ClaimsIdentity())));
+        Assert.Null(DocketClaims.AsHuman(new ClaimsPrincipal(new ClaimsIdentity())));
     }
 }
