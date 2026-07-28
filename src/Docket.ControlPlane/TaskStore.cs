@@ -184,6 +184,24 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
     }
 
     /// <summary>
+    /// The verifier's poll (§5, §10 verifier webhook): every task in
+    /// <see cref="TaskState.Verifying"/> with an <see cref="CompletionMode.Automated"/>
+    /// completion mode, so an automated verifier can find the tasks it may rule on
+    /// and fetch each one's result reference. Review-mode tasks are deliberately
+    /// omitted — their verdict comes through the Lead's <c>submit_review</c>
+    /// (human-confirmed, §7), not this path. A cross-Team read by design: the
+    /// verifier is an Instance-scoped credential (§5), not attached to any Team, so
+    /// it sees every automated task awaiting its check. A pure read — no transition,
+    /// and the only prose it returns is the completion criteria §5 explicitly grants.
+    /// </summary>
+    public async Task<IReadOnlyList<VerifyingTaskView>> ListVerifyingAsync(CancellationToken ct = default) =>
+        await db.Tasks.AsNoTracking()
+            .Where(t => t.State == TaskState.Verifying && t.CompletionMode == CompletionMode.Automated)
+            .OrderBy(t => t.Namespace)
+            .Select(t => new VerifyingTaskView(t.Id, t.Namespace, t.CompletionCriteria, t.ResultReference))
+            .ToListAsync(ct);
+
+    /// <summary>
     /// A pure read of a task's current state, or null if it does not exist. The
     /// dispatch loop and the runner event sink read state to decide whether an
     /// inbound runner event still bears on a working task — e.g. an
@@ -206,6 +224,14 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
 
         var ok = (TransitionResult.Transitioned)result;
         row.CopyFrom(ok.Task);
+        // #23, §7: the reported result reference is opaque content the store
+        // captures on the working → verifying transition. The engine and
+        // TaskRecord stay content-free (the reference never lands on the pure
+        // state), and CopyFrom deliberately does not carry it — so a succeeding
+        // ReportResult is the one place the row's ResultReference is written,
+        // where the verifier's read scope (§5) later fetches it.
+        if (command is ReportResult reported)
+            row.ResultReference = reported.ResultReference;
         ApplyEffects(row, ok.Effects);
         AppendEvent(row.Id, row.TeamId, command.GetType().Name, before, row.State,
             detail: DescribeEffects(ok.Effects));
