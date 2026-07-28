@@ -1,0 +1,159 @@
+using System.Diagnostics;
+
+namespace Docket.Runner;
+
+/// <summary>A running process carrying docket tags, as discovered by an inventory.</summary>
+public readonly record struct TaggedProcess(int Pid, string MachineId, string? TaskId);
+
+/// <summary>
+/// Enumerates processes that carry a <c>DOCKET_MACHINE_ID</c> env var. This is
+/// the discovery half of stray cleanup (§10 runner restart) and is inherently
+/// platform-specific: reading another process's environment is
+/// <c>/proc/&lt;pid&gt;/environ</c> on Linux, and needs privileged syscalls on
+/// macOS/Windows — see <see cref="ProcessInventory.ForCurrentPlatform"/>.
+/// </summary>
+public interface IProcessInventory
+{
+    IReadOnlyList<TaggedProcess> ListDocketProcesses();
+}
+
+/// <summary>Factory + a no-op inventory for platforms without a discovery path yet.</summary>
+public static class ProcessInventory
+{
+    /// <summary>
+    /// The best available inventory for the current OS. Linux reads
+    /// <c>/proc</c>; other platforms return the empty
+    /// <see cref="NullProcessInventory"/> — a documented deferral, not a silent
+    /// failure. The <b>kill</b> half of stray cleanup is portable regardless
+    /// (see <see cref="StrayReaper"/>).
+    /// </summary>
+    public static IProcessInventory ForCurrentPlatform() =>
+        OperatingSystem.IsLinux() ? new ProcFsProcessInventory() : new NullProcessInventory();
+}
+
+/// <summary>Discovers nothing. Used where env-scan discovery is not yet implemented.</summary>
+public sealed class NullProcessInventory : IProcessInventory
+{
+    public IReadOnlyList<TaggedProcess> ListDocketProcesses() => [];
+}
+
+/// <summary>
+/// Linux inventory: scans <c>/proc/&lt;pid&gt;/environ</c> for the docket tags.
+/// Guarded to Linux; on other platforms the factory hands back
+/// <see cref="NullProcessInventory"/> instead.
+/// </summary>
+public sealed class ProcFsProcessInventory : IProcessInventory
+{
+    public IReadOnlyList<TaggedProcess> ListDocketProcesses()
+    {
+        if (!OperatingSystem.IsLinux())
+            return [];
+
+        var found = new List<TaggedProcess>();
+        foreach (var dir in Directory.EnumerateDirectories("/proc"))
+        {
+            var name = Path.GetFileName(dir);
+            if (!int.TryParse(name, out var pid))
+                continue;
+
+            string machineId;
+            string? taskId;
+            try
+            {
+                var raw = File.ReadAllText(Path.Combine(dir, "environ"));
+                var env = ParseEnviron(raw);
+                if (!env.TryGetValue("DOCKET_MACHINE_ID", out machineId!))
+                    continue;
+                env.TryGetValue("DOCKET_TASK_ID", out taskId);
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                continue; // process gone or not ours to read
+            }
+
+            found.Add(new TaggedProcess(pid, machineId, taskId));
+        }
+
+        return found;
+    }
+
+    private static Dictionary<string, string> ParseEnviron(string raw)
+    {
+        var env = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var entry in raw.Split('\0', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var eq = entry.IndexOf('=', StringComparison.Ordinal);
+            if (eq > 0)
+                env[entry[..eq]] = entry[(eq + 1)..];
+        }
+        return env;
+    }
+}
+
+/// <summary>Kills stray harness processes on restart (§10 runner restart).</summary>
+public interface IStrayReaper
+{
+    /// <summary>Kills every stray tagged with <paramref name="machineId"/>; returns the count.</summary>
+    int Reap(string machineId);
+}
+
+/// <summary>
+/// Spec §10: <b>on start, docketd kills any stray harness processes before
+/// accepting dispatch</b> — the guarantee that survives a SIGKILLed daemon,
+/// since clean shutdown cannot be relied on. Discovery is delegated to an
+/// <see cref="IProcessInventory"/> (platform-specific); the kill itself is
+/// portable via <see cref="Process.Kill(bool)"/> with the whole tree, matching
+/// the group-kill semantics of live tasks (§10).
+/// </summary>
+public sealed class StrayReaper(IProcessInventory inventory, int selfPid) : IStrayReaper
+{
+    public int Reap(string machineId)
+    {
+        var reaped = 0;
+        foreach (var proc in inventory.ListDocketProcesses())
+        {
+            if (proc.Pid == selfPid || !string.Equals(proc.MachineId, machineId, StringComparison.Ordinal))
+                continue;
+            if (KillTree(proc.Pid))
+                reaped++;
+        }
+        return reaped;
+    }
+
+    /// <summary>
+    /// Per-task exit cleanup (§10): a dev server that <c>setsid</c>ed out of the
+    /// task's group survives group kill and keeps the port. This catches it
+    /// while the task id is still known.
+    /// </summary>
+    public int ReapTask(string machineId, string taskId)
+    {
+        var reaped = 0;
+        foreach (var proc in inventory.ListDocketProcesses())
+        {
+            if (proc.Pid == selfPid
+                || !string.Equals(proc.MachineId, machineId, StringComparison.Ordinal)
+                || !string.Equals(proc.TaskId, taskId, StringComparison.Ordinal))
+            {
+                continue;
+            }
+            if (KillTree(proc.Pid))
+                reaped++;
+        }
+        return reaped;
+    }
+
+    private static bool KillTree(int pid)
+    {
+        try
+        {
+            using var process = Process.GetProcessById(pid);
+            if (!process.HasExited)
+                process.Kill(entireProcessTree: true);
+            return true;
+        }
+        catch (Exception e) when (e is ArgumentException or InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            return false; // already gone, or not killable
+        }
+    }
+}
