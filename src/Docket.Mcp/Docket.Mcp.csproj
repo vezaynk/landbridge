@@ -2,6 +2,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Docket.ControlPlane\Docket.ControlPlane.csproj" />
+    <ProjectReference Include="..\Docket.ServiceDefaults\Docket.ServiceDefaults.csproj" />
   </ItemGroup>
 
   <ItemGroup>

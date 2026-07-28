@@ -1,0 +1,21 @@
+<Project Sdk="Aspire.AppHost.Sdk/13.4.6">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <UserSecretsId>2fa1335d-4ad1-4a17-9840-6ee1ba80110a</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Aspire.Hosting.PostgreSQL" Version="13.4.6" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Marked as an Aspire project resource so the SDK generates the
+         Projects.Docket_Mcp metadata the app host references below. -->
+    <ProjectReference Include="..\Docket.Mcp\Docket.Mcp.csproj" IsAspireProjectResource="true" />
+  </ItemGroup>
+
+</Project>
