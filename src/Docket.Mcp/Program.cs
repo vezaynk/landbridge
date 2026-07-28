@@ -8,6 +8,13 @@ using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
 
+// Aspire service defaults: OpenTelemetry (traces/metrics/logs), health checks,
+// service discovery, and HTTP resilience. The OTLP exporter only activates when
+// OTEL_EXPORTER_OTLP_ENDPOINT is set — the Aspire app host sets it, so the
+// dashboard captures the plane's telemetry; standalone runs and tests leave it
+// unset and simply don't export.
+builder.AddServiceDefaults();
+
 var connectionString = builder.Configuration.GetConnectionString("Docket")
     ?? Environment.GetEnvironmentVariable("DOCKET_DB")
     ?? "Host=localhost;Database=docket;Username=docket";
@@ -56,6 +63,20 @@ builder.Services.AddSingleton(sp => new DispatchService(
 builder.Services.AddHostedService(sp => sp.GetRequiredService<DispatchService>());
 
 var app = builder.Build();
+
+// Dev-loop only (set by the Aspire app host): apply the checked-in EF migration
+// so a fresh Postgres container comes up with the schema. Production applies
+// migrations out of band and the tests migrate through their fixture — neither
+// sets this flag, so their startup behaviour is unchanged.
+if (app.Configuration.GetValue<bool>("Docket:MigrateOnStartup"))
+{
+    using var scope = app.Services.CreateScope();
+    await scope.ServiceProvider.GetRequiredService<DocketDbContext>()
+        .Database.MigrateAsync();
+}
+
+// Aspire health endpoints (/health, /alive), mapped in Development only.
+app.MapDefaultEndpoints();
 
 // docketd dials the runner endpoint outbound as a WebSocket (§10).
 app.UseWebSockets();
