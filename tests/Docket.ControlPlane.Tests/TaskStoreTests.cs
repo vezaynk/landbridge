@@ -276,6 +276,143 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task Answer_wakes_a_parked_task_and_leaves_it_ready_for_redispatch()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await SeedBlocked(store);
+
+        // The sweeper's outcome (§11): the task parked with the record the plane held.
+        var park = new ParkRecord("m1", "/work/task", "sess-1", Attempt: 1);
+        await store.ApplyAsync(id, new WaitTtlExpired(park));
+
+        // The Lead answers — through the routing method — with no knowledge that
+        // it parked; the answer landing wakes it (§6, §11).
+        var woken = Assert.IsType<StoreResult.Applied>(
+            await store.AnswerOrWakeAsync(Lead, id, leaseStillHeld: false));
+        Assert.Equal(TaskState.Submitted, woken.Task.State);
+
+        await using (var v = pg.NewContext())
+        {
+            var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+            Assert.Equal(TaskState.Submitted, row.State);
+            // Park record survives into submitted for redispatch affinity (§11).
+            Assert.Equal("m1", row.ParkMachine);
+            Assert.Equal("/work/task", row.ParkDirectory);
+        }
+
+        // Redispatch resumes it; the successor sees the incremented attempt (§11).
+        var successor = WorkerInstanceId.New();
+        var dispatched = Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(Machine(), successor));
+        Assert.Equal(id, dispatched.Task.Id);
+        Assert.Equal(2, dispatched.Task.Attempt);
+    }
+
+    [SkippableFact]
+    public async Task Answer_resumes_a_still_blocked_task_when_the_lease_is_held()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await SeedBlocked(store);
+
+        // Still blocked_on_input and the machine holds the lease: it resumes in
+        // place, exactly as before the routing method existed (§6).
+        var applied = Assert.IsType<StoreResult.Applied>(
+            await store.AnswerOrWakeAsync(Lead, id, leaseStillHeld: true));
+        Assert.Equal(TaskState.Working, applied.Task.State);
+    }
+
+    [SkippableFact]
+    public async Task Answering_a_blocked_task_whose_lease_is_gone_is_refused_and_it_stays_blocked()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await SeedBlocked(store);
+
+        // The dispatched machine is gone: the engine refuses the in-place resume,
+        // and the task waits for the sweeper to park it instead (§6, §11).
+        var rejected = Assert.IsType<StoreResult.Rejected>(
+            await store.AnswerOrWakeAsync(Lead, id, leaseStillHeld: false));
+        Assert.Equal(Rule.LeaseNoLongerHeld, rejected.Rule);
+        await using var v = pg.NewContext();
+        Assert.Equal(TaskState.BlockedOnInput,
+            (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value)).State);
+    }
+
+    [SkippableFact]
+    public async Task Waking_a_parked_task_from_a_foreign_leads_claim_is_refused()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await SeedBlocked(store);
+        await store.ApplyAsync(id, new WaitTtlExpired(new ParkRecord("m1", null, null, Attempt: 1)));
+
+        // A Lead for another Team cannot wake this Team's parked task (§4, §5) —
+        // the same Team scope the AnswerInput engine check enforces on the blocked
+        // path, applied here because parked → submitted carries no engine actor check.
+        var foreign = new LeadClaim(TeamId.New());
+        var rejected = Assert.IsType<StoreResult.Rejected>(
+            await store.AnswerOrWakeAsync(foreign, id, leaseStillHeld: false));
+        Assert.Equal(Rule.ActorLacksAuthority, rejected.Rule);
+        await using var v = pg.NewContext();
+        Assert.Equal(TaskState.Parked, (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value)).State);
+    }
+
+    [SkippableFact]
+    public async Task Answer_racing_the_sweep_answer_first_the_answer_wins()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await SeedBlocked(store);
+
+        // The Lead answers a beat before the sweep decides to park: the task resumes…
+        Assert.IsType<StoreResult.Applied>(await store.AnswerOrWakeAsync(Lead, id, leaseStillHeld: true));
+        // …and the sweep's park lands on a now-working task, which the engine refuses.
+        // Exactly one transition, no lost answer, no double move.
+        var rejected = Assert.IsType<StoreResult.Rejected>(
+            await store.ApplyAsync(id, new WaitTtlExpired(new ParkRecord("m1", null, null, Attempt: 1))));
+        Assert.Equal(Rule.InvalidSourceState, rejected.Rule);
+        await using var v = pg.NewContext();
+        Assert.Equal(TaskState.Working, (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value)).State);
+    }
+
+    [SkippableFact]
+    public async Task Answer_racing_the_sweep_sweep_first_the_wake_wins()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await SeedBlocked(store);
+
+        // The sweep parks a beat before the Lead answers…
+        Assert.IsType<StoreResult.Applied>(
+            await store.ApplyAsync(id, new WaitTtlExpired(new ParkRecord("m1", null, null, Attempt: 1))));
+        // …and the same one answer call now routes to the wake and requeues it.
+        // One call, correct outcome either way — exactly one transition, no double move.
+        var woken = Assert.IsType<StoreResult.Applied>(await store.AnswerOrWakeAsync(Lead, id, leaseStillHeld: false));
+        Assert.Equal(TaskState.Submitted, woken.Task.State);
+        await using var v = pg.NewContext();
+        Assert.Equal(TaskState.Submitted, (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value)).State);
+    }
+
+    /// <summary>Create → dispatch → block, so the task sits in blocked_on_input.</summary>
+    private async Task<TaskId> SeedBlocked(TaskStore store)
+    {
+        var created = (StoreResult.Applied)await store.CreateAsync(
+            new CreateTask(Lead, Team, "needs input", CompletionMode.Automated, null, TeamBudgetRemains: true));
+        var instance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), instance);
+        await store.ApplyAsync(created.Task.Id,
+            new RequestInput(new WorkerCaller(Team, created.Task.Id, instance), InputRequestKind.Question));
+        return created.Task.Id;
+    }
+
+    [SkippableFact]
     public async Task Rejected_transition_writes_nothing()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);

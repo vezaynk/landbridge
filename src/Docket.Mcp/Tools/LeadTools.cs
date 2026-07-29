@@ -107,15 +107,20 @@ public sealed class LeadTools(TaskStore store, RunnerConnectionRegistry registry
                  "the worker escalated. If the task's wait TTL has already expired it will have parked; " +
                  "answering then wakes it on its next redispatch.")]
     public async Task<string> AnswerInputRequest(
-        [Description("The task id that is blocked on input.")] string taskId,
+        [Description("The task id that is blocked on input (or already parked, if its wait TTL expired first).")]
+        string taskId,
         CancellationToken ct)
     {
         var id = ParseTaskId(taskId);
-        // LeaseStillHeld is a control-plane fact (does the dispatched machine
-        // still hold the lease?), so it is read from the connection registry —
-        // never assumed. If the machine is gone the engine refuses the resume
-        // (LeaseNoLongerHeld) and the task parks and wakes instead (§6, §11).
-        return Describe(await store.ApplyAsync(id, new AnswerInput(Lead, registry.IsLeaseHeld(id)), ct));
+        // The store routes on the task's current state so this one call is correct
+        // whether or not the wait-TTL sweeper (§11) parked the task first: a task
+        // still blocked_on_input resumes in place, a task already parked is woken
+        // and requeued (§6, §11). LeaseStillHeld is a control-plane fact (does the
+        // dispatched machine still hold the lease?) read from the connection
+        // registry — never assumed; it gates only the in-place resume, and if the
+        // machine is gone the engine refuses (LeaseNoLongerHeld) so the task parks
+        // and wakes instead.
+        return Describe(await store.AnswerOrWakeAsync(Lead, id, registry.IsLeaseHeld(id), ct));
     }
 
     [McpServerTool(Name = "submit_review"),
