@@ -75,6 +75,20 @@ builder.Services.AddSingleton(sp => new DispatchService(
     publicMcpUrl: publicMcpUrl));
 builder.Services.AddHostedService(sp => sp.GetRequiredService<DispatchService>());
 
+// §11 wait-TTL sweeper: parks a task whose Lead never answered (wait TTL) and
+// requeues one whose machine went silent while it waited. A hosted service on a
+// TimeProvider timer, mirroring DispatchService; the intervals are configurable
+// (TimeSpan format, e.g. "00:30:00") and fall back to the sweeper's documented
+// defaults when unset.
+builder.Services.AddHostedService(sp => new WaitTtlSweeper(
+    sp.GetRequiredService<IServiceScopeFactory>(),
+    sp.GetRequiredService<RunnerConnectionRegistry>(),
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<ILogger<WaitTtlSweeper>>(),
+    waitTtl: builder.Configuration.GetValue<TimeSpan?>("Docket:WaitTtl"),
+    machineLivenessWindow: builder.Configuration.GetValue<TimeSpan?>("Docket:MachineLivenessTtl"),
+    sweepInterval: builder.Configuration.GetValue<TimeSpan?>("Docket:WaitTtlSweepInterval")));
+
 var app = builder.Build();
 
 // Dev-loop only (set by the Aspire app host): apply the checked-in EF migration

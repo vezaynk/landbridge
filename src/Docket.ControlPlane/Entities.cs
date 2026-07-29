@@ -30,6 +30,16 @@ public sealed class TaskRow
     public string? ParkSessionRef { get; set; }
     public int? ParkAttempt { get; set; }
 
+    /// <summary>
+    /// When the task most recently entered <see cref="TaskState.BlockedOnInput"/>,
+    /// or null when it is not blocked. Opaque plane plumbing captured in
+    /// <see cref="TaskStore.RunTransition"/> on the RequestInput path and cleared
+    /// on the way out — never an engine field, so <see cref="TaskRecord"/> stays
+    /// free of clocks (§6: timers live in the control plane). The wait-TTL sweeper
+    /// (§11) ages this against the configured wait TTL to decide when to park.
+    /// </summary>
+    public DateTimeOffset? BlockedAt { get; set; }
+
     // Opaque to the control plane: stored, returned, never dereferenced (§7).
     public string CompletionCriteria { get; set; } = "";
 
@@ -70,7 +80,7 @@ public sealed class TaskRow
         VerificationRetryLimit = VerificationRetryLimit,
         CurrentInstance = CurrentInstanceId is { } i ? new WorkerInstanceId(i) : null,
         Park = ParkMachine is { } m
-            ? new ParkRecord(m, ParkDirectory!, ParkSessionRef!, ParkAttempt!.Value)
+            ? new ParkRecord(m, ParkDirectory, ParkSessionRef, ParkAttempt!.Value)
             : null,
     };
 

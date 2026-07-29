@@ -90,6 +90,40 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
                 conn.Dispatched.Remove(task);
     }
 
+    /// <summary>
+    /// The machine a task is currently tracked as dispatched to, or null when it
+    /// is tracked nowhere. The wait-TTL sweeper (§11) uses this to find a blocked
+    /// task's dispatched machine — both to judge that machine's liveness and to
+    /// record it in the park record for redispatch affinity. Null means the plane
+    /// no longer holds the assignment (e.g. after a control-plane restart drops
+    /// this in-memory registry — machine-assignment persistence is a documented
+    /// §10 follow-up), and the sweeper leaves such a task alone.
+    /// </summary>
+    public string? MachineFor(TaskId task)
+    {
+        foreach (var (id, conn) in _connections)
+            lock (conn.Gate)
+                if (conn.Dispatched.ContainsKey(task))
+                    return id;
+        return null;
+    }
+
+    /// <summary>
+    /// A machine's most recent heartbeat, or null when it has no live connection.
+    /// A blocked task's own per-task activity is frozen — its worker has exited
+    /// (§11) — so the wait-TTL sweeper judges the machine's liveness by this
+    /// machine-level heartbeat, not the task's activity, and requeues a blocked
+    /// task whose machine has gone silent past the liveness window (§6:
+    /// blocked_on_input → submitted on machine liveness loss).
+    /// </summary>
+    public DateTimeOffset? LastHeartbeatFor(string machineId)
+    {
+        if (!_connections.TryGetValue(machineId, out var conn))
+            return null;
+        lock (conn.Gate)
+            return conn.LastHeartbeat;
+    }
+
     /// <summary>The tasks currently tracked as dispatched to a machine.</summary>
     public IReadOnlyList<TaskId> TasksOn(string machineId)
     {
