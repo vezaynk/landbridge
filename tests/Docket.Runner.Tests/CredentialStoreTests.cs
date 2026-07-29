@@ -76,15 +76,23 @@ public class CredentialStoreTests
     }
 
     [Theory]
-    [InlineData("/explicit", "/env", "/xdg", "/home/user", "/explicit")]     // --state-dir wins
-    [InlineData(null, "/env", "/xdg", "/home/user", "/env")]                 // then DOCKET_STATE_DIR
-    [InlineData(null, null, "/xdg", "/home/user", "/xdg/docket")]            // then $XDG_STATE_HOME/docket
-    [InlineData(null, null, null, "/home/user", "/home/user/.docket")]      // else ~/.docket
+    [InlineData("/explicit", "/env", "/xdg", "/home/user")]  // --state-dir wins (verbatim)
+    [InlineData(null, "/env", "/xdg", "/home/user")]         // then DOCKET_STATE_DIR (verbatim)
+    [InlineData(null, null, "/xdg", "/home/user")]           // then $XDG_STATE_HOME/docket
+    [InlineData(null, null, null, "/home/user")]             // else ~/.docket
     public void ResolveStateDir_follows_documented_precedence(
-        string? arg, string? env, string? xdg, string home, string expected)
+        string? arg, string? env, string? xdg, string home)
     {
-        var resolved = CredentialStore.ResolveStateDir(arg, env, xdg, home);
-        Assert.Equal(expected.Replace('/', Path.DirectorySeparatorChar), resolved);
+        // Mirror the production contract exactly, OS-agnostically: an explicit
+        // arg/env directory is returned verbatim; the xdg/home fallbacks are
+        // Path.Combine'd (so the separator matches the OS, unlike a hardcoded '/').
+        var expected =
+            arg is not null ? arg
+            : env is not null ? env
+            : xdg is not null ? Path.Combine(xdg, "docket")
+            : Path.Combine(home, ".docket");
+
+        Assert.Equal(expected, CredentialStore.ResolveStateDir(arg, env, xdg, home));
     }
 
     [Theory]

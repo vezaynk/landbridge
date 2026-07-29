@@ -16,12 +16,14 @@ public static class Program
 {
     public static async Task<int> Main(string[] args)
     {
-        // §5 Bootstrap: `docketd --enroll <token> --control-url <https://plane>` is
-        // a one-shot, non-interactive mode — exchange the human-issued enrollment
-        // token for machine credentials, persist them (atomic, 0600), print the
-        // machine id, and exit. It never starts the daemon.
-        if (ArgValue(args, "--enroll") is { } enrollmentToken)
-            return await RunEnrollAsync(args, enrollmentToken);
+        // §5 Bootstrap: `docketd --enroll --control-url <https://plane>` is a
+        // one-shot mode — exchange the human-issued enrollment token for machine
+        // credentials, persist them (atomic, 0600), print the machine id, and exit.
+        // It never starts the daemon. The token is read from --enroll-token-file or
+        // stdin, NEVER argv (§13: an argument lands in shell history and the process
+        // list); see RunEnrollAsync.
+        if (HasFlag(args, "--enroll"))
+            return await RunEnrollAsync(args);
 
         var configPath = ArgValue(args, "--config");
         if (configPath is null)
@@ -161,14 +163,30 @@ public static class Program
     /// to stdout (scriptable) and a human note to stderr. Purpose/name/permission
     /// level are declared here and bound server-side (§13); os is auto-filled.
     /// </summary>
-    private static async Task<int> RunEnrollAsync(string[] args, string enrollmentToken)
+    private static async Task<int> RunEnrollAsync(string[] args)
     {
         var controlUrl = ArgValue(args, "--control-url");
         if (string.IsNullOrWhiteSpace(controlUrl))
         {
             Console.Error.WriteLine(
-                "usage: docketd --enroll <token> --control-url <https://plane> " +
-                "[--state-dir <dir>] [--name <n>] [--purpose <p>] [--permission-level <l>]");
+                "usage: docketd --enroll --control-url <https://plane> " +
+                "[--enroll-token-file <path>] [--state-dir <dir>] [--name <n>] [--purpose <p>] [--permission-level <l>]\n" +
+                "  The enrollment token is read from --enroll-token-file, or from stdin if omitted " +
+                "(`docketd --enroll < token` or an interactive prompt) — never from argv (§13).");
+            return 2;
+        }
+
+        // §13: enrollment tokens must NOT be passed as arguments — an argv token
+        // lands in shell history and is world-readable in the process list, and the
+        // machine token it yields is the highest-value secret on the machine. Read
+        // it from a file or from stdin instead.
+        var enrollmentToken = await ReadEnrollmentTokenAsync(ArgValue(args, "--enroll-token-file"));
+        if (enrollmentToken is null)
+            return 2; // the reader already explained why
+        if (string.IsNullOrWhiteSpace(enrollmentToken))
+        {
+            Console.Error.WriteLine(
+                "enrollment token is empty; provide --enroll-token-file <path> or pipe/enter it on stdin");
             return 2;
         }
 
@@ -201,6 +219,32 @@ public static class Program
             return 1;
         }
     }
+
+    /// <summary>
+    /// Reads the enrollment token from a file (<paramref name="tokenFile"/>) or,
+    /// when none is given, one line from stdin — a prompt to stderr when interactive,
+    /// a clean read when piped (`docketd --enroll &lt; token`). Never argv (§13).
+    /// Returns null (having printed why) when a named file can't be read.
+    /// </summary>
+    internal static async Task<string?> ReadEnrollmentTokenAsync(string? tokenFile)
+    {
+        if (tokenFile is not null)
+        {
+            try { return (await File.ReadAllTextAsync(tokenFile)).Trim(); }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                Console.Error.WriteLine($"enrollment failed: cannot read token file {tokenFile}: {e.Message}");
+                return null;
+            }
+        }
+
+        // Prompt only on a TTY, so a piped `< token` stays clean and scriptable.
+        if (!Console.IsInputRedirected)
+            Console.Error.Write("Enrollment token: ");
+        return (await Console.In.ReadLineAsync())?.Trim() ?? "";
+    }
+
+    private static bool HasFlag(string[] args, string flag) => Array.IndexOf(args, flag) >= 0;
 
     private static string? ArgValue(string[] args, string flag)
     {
