@@ -308,6 +308,8 @@ consumer's client
 5. Relay sends `open-forward{id}` to the producer's `docketd`, which dials its local port and opens its own outbound tunnel.
 6. Relay splices by forward id.
 
+**Implementation note (this deployment).** The relay holds no `docketd` channel of its own, so the **control plane** — which does — relays `open-forward` to *both* ends over the runner channel: the producer end (step 5) and the consumer end (which carries the bind instruction of step 3). Both ends receive the same single-use-per-role grant and dial the relay themselves. The consumer's bound loopback port returns to the control plane as a `forward-opened` event, and `open_forward` hands the worker a ready `{host, port}` — the grant and relay URL stay inside `docketd` and never reach the agent. v1 is one tunnel per forward id (the grant is single-use per role and the relay pairs exactly two ends), so the consumer listener accepts exactly one connection; the step-4 "one listener, N tunnels" generalization is deferred.
+
 **Both ends authenticate independently. Neither authenticates to the other.** No peer key exchange, no service credentials, nothing to distribute.
 
 **Only registered services are forwardable.** Otherwise it is a fleet-wide port scanner, and local-trust services like Postgres with `trust` in `pg_hba.conf` become reachable from any agent in the Team.
@@ -363,7 +365,7 @@ Skills ship as MCP resources, reaching every agent on connect where the client s
 **The only frozen interface in the system.** A runner rejects anything outside the vocabulary.
 
 **Outbound:** `dispatch` · `stop(ttl, disposition)` · `kill` · `open-forward`
-**Inbound:** `started` · `alive` · `tool-call` · `subagent-spawned` · `exited` · `auth-failed` · `forward-closed` · `rebooted`
+**Inbound:** `started` · `alive` · `tool-call` · `subagent-spawned` · `exited` · `auth-failed` · `forward-opened` · `forward-closed` · `rebooted`
 
 **Every message carries a task id.** A machine runs many agents concurrently; there is no implied current task in either direction. This is the change most expensive to retrofit — get it right before anyone enrolls.
 

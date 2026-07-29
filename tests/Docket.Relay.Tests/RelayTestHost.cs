@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.WebSockets;
+using Docket.Contracts;
 using Docket.Relay;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -76,9 +77,9 @@ internal sealed class RelayTestHost : IAsyncDisposable
     {
         var ws = new ClientWebSocket();
         ws.Options.CollectHttpResponseDetails = true;
-        ws.Options.SetRequestHeader(TunnelEndpoint.ForwardIdHeader, forwardId);
-        ws.Options.SetRequestHeader(TunnelEndpoint.GrantHeader, grant);
-        ws.Options.SetRequestHeader(TunnelEndpoint.RoleHeader, role);
+        ws.Options.SetRequestHeader(RelayTunnel.ForwardIdHeader, forwardId);
+        ws.Options.SetRequestHeader(RelayTunnel.GrantHeader, grant);
+        ws.Options.SetRequestHeader(RelayTunnel.RoleHeader, role);
         await ws.ConnectAsync(TunnelUri, ct);
         return ws;
     }
@@ -92,9 +93,9 @@ internal sealed class RelayTestHost : IAsyncDisposable
     {
         using var ws = new ClientWebSocket();
         ws.Options.CollectHttpResponseDetails = true;
-        ws.Options.SetRequestHeader(TunnelEndpoint.ForwardIdHeader, forwardId);
-        ws.Options.SetRequestHeader(TunnelEndpoint.GrantHeader, grant);
-        ws.Options.SetRequestHeader(TunnelEndpoint.RoleHeader, role);
+        ws.Options.SetRequestHeader(RelayTunnel.ForwardIdHeader, forwardId);
+        ws.Options.SetRequestHeader(RelayTunnel.GrantHeader, grant);
+        ws.Options.SetRequestHeader(RelayTunnel.RoleHeader, role);
         try
         {
             await ws.ConnectAsync(TunnelUri, ct);

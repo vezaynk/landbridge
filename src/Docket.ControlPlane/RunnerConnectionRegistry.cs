@@ -90,6 +90,23 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
                 conn.Dispatched.Remove(task);
     }
 
+    /// <summary>
+    /// The machine currently holding <paramref name="task"/> as a tracked
+    /// dispatch, or null if no live connection has it (§8.3: the plane resolves
+    /// the producer and consumer machines of a forward from their tasks). A task
+    /// is tracked on at most one machine — dispatch is single (§9 check 5).
+    /// </summary>
+    public string? MachineFor(TaskId task)
+    {
+        foreach (var (id, conn) in _connections)
+        {
+            lock (conn.Gate)
+                if (conn.Dispatched.ContainsKey(task))
+                    return id;
+        }
+        return null;
+    }
+
     /// <summary>The tasks currently tracked as dispatched to a machine.</summary>
     public IReadOnlyList<TaskId> TasksOn(string machineId)
     {

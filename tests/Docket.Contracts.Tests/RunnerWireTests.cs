@@ -72,13 +72,55 @@ public class RunnerWireTests
     }
 
     [Fact]
-    public void Open_forward_command_round_trips()
+    public void Open_forward_command_round_trips_with_only_the_frozen_required_fields()
     {
         var original = new OpenForwardCommand(TaskId.New(), "fwd-1", "postgres");
 
         var decoded = Assert.IsType<OpenForwardCommand>(RunnerWire.DecodeCommand(RunnerWire.EncodeCommand(original)));
 
         Assert.Equal(original, decoded);
+        // The increment-3 additions default to empty/0 when the sender set none.
+        Assert.Equal("", decoded.Role);
+        Assert.Equal("", decoded.Grant);
+        Assert.Equal("", decoded.RelayUrl);
+        Assert.Equal(0, decoded.Port);
+    }
+
+    [Fact]
+    public void Open_forward_command_round_trips_with_the_added_data_plane_fields()
+    {
+        var original = new OpenForwardCommand(
+            TaskId.New(), "fwd-1", "postgres",
+            Role: "producer", Grant: "dkt_g_abc", RelayUrl: "http://127.0.0.1:5100", Port: 5432);
+
+        var decoded = Assert.IsType<OpenForwardCommand>(RunnerWire.DecodeCommand(RunnerWire.EncodeCommand(original)));
+
+        Assert.Equal(original, decoded);
+        Assert.Equal("producer", decoded.Role);
+        Assert.Equal("dkt_g_abc", decoded.Grant);
+        Assert.Equal("http://127.0.0.1:5100", decoded.RelayUrl);
+        Assert.Equal(5432, decoded.Port);
+    }
+
+    [Fact]
+    public void Open_forward_envelope_without_the_new_fields_decodes_back_compatibly()
+    {
+        // An envelope from a pre-increment-3 sender carries only the frozen
+        // fields; the added ones must decode to empty Role / 0 Port, never crash
+        // (§10, §8.3 — additions are wire-compatible).
+        var task = TaskId.New();
+        var legacy = $$"""
+            { "type": "open-forward", "task": { "value": "{{task.Value}}" },
+              "forward_id": "fwd-legacy", "service_name": "postgres" }
+            """;
+
+        var decoded = Assert.IsType<OpenForwardCommand>(RunnerWire.DecodeCommand(legacy));
+
+        Assert.Equal(task, decoded.Task);
+        Assert.Equal("fwd-legacy", decoded.ForwardId);
+        Assert.Equal("postgres", decoded.ServiceName);
+        Assert.True(string.IsNullOrEmpty(decoded.Role));
+        Assert.Equal(0, decoded.Port);
     }
 
     // ── Traceparent: opaque transport metadata on the envelope (§1 tracing) ───
@@ -192,6 +234,15 @@ public class RunnerWireTests
     }
 
     [Fact]
+    public void Forward_opened_event_round_trips_including_the_bound_port()
+    {
+        var original = new ForwardOpenedEvent(TaskId.New(), "fwd-8", 54321);
+        var decoded = Assert.IsType<ForwardOpenedEvent>(RunnerWire.DecodeEvent(RunnerWire.EncodeEvent(original)));
+        Assert.Equal(original, decoded);
+        Assert.Equal(54321, decoded.Port);
+    }
+
+    [Fact]
     public void Forward_closed_event_round_trips()
     {
         var original = new ForwardClosedEvent(TaskId.New(), "fwd-9");
@@ -268,7 +319,7 @@ public class RunnerWireTests
             new HashSet<string> { "dispatch", "stop", "kill", "open-forward" },
             new HashSet<string>(RunnerWire.Commands));
         Assert.Equal(
-            new HashSet<string> { "started", "alive", "tool-call", "subagent-spawned", "exited", "auth-failed", "forward-closed", "rebooted" },
+            new HashSet<string> { "started", "alive", "tool-call", "subagent-spawned", "exited", "auth-failed", "forward-opened", "forward-closed", "rebooted" },
             new HashSet<string>(RunnerWire.Events));
     }
 }
