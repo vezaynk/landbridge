@@ -5,7 +5,7 @@ using Microsoft.Extensions.Time.Testing;
 namespace Docket.Runner.Tests;
 
 /// <summary>
-/// The dedicated spawner thread (§35). docketd must fork every worker from ONE
+/// The dedicated spawner thread (PDEATHSIG thread affinity). docketd must fork every worker from ONE
 /// long-lived, non-thread-pool OS thread: on Linux the harness arms PDEATHSIG, which
 /// the kernel keys to the forking <em>thread</em>, so forking from a thread-pool
 /// thread that the pool later retires would spuriously SIGKILL a healthy worker.
@@ -70,7 +70,7 @@ public sealed class SpawnerThreadTests : IDisposable
 
         var obs = supervisor.LastSpawnThreadObservation;
         Assert.NotNull(obs);
-        Assert.False(obs!.Value.IsThreadPoolThread); // §35: not a retiring pool thread
+        Assert.False(obs!.Value.IsThreadPoolThread); // PDEATHSIG thread affinity: not a retiring pool thread
         Assert.Equal(supervisor.SpawnerManagedThreadId, obs.Value.ManagedThreadId);
         Assert.NotEqual(Environment.CurrentManagedThreadId, obs.Value.ManagedThreadId); // not inline
 

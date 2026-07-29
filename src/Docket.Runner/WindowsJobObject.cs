@@ -6,7 +6,7 @@ namespace Docket.Runner;
 
 /// <summary>
 /// A Windows Job Object with <c>JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE</c> — the Windows
-/// half of stray cleanup (§10 / §20). docketd seals every worker it spawns into its
+/// half of stray cleanup (§10 / §10 Windows containment). docketd seals every worker it spawns into its
 /// own job (one job per task) and owns the only handle. When docketd dies by
 /// <em>any</em> cause — clean exit, unhandled crash, or the process being killed —
 /// the OS closes that handle, and kill-on-close makes the kernel terminate every
@@ -105,7 +105,7 @@ internal sealed partial class WindowsJobObject
     }
 
     /// <summary>
-    /// Explicit kill (§20): terminate every process in the job with a deterministic
+    /// Explicit kill (§10 Windows containment): terminate every process in the job with a deterministic
     /// exit code, then close the handle. Used on the supervisor's Kill/KillAll/TTL
     /// paths on top of the portable tree-kill. Idempotent with <see cref="Close"/>.
     /// </summary>

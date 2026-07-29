@@ -27,7 +27,7 @@ public static class ProcessInventory
     /// <see cref="MacOsProcessInventory"/>). On <b>Windows</b> this is the empty
     /// <see cref="NullProcessInventory"/> <em>by design</em>, not a deferral: each
     /// worker is sealed at spawn into a kill-on-close Job Object
-    /// (<see cref="WindowsJobObject"/>, §20), so docketd's death — by any cause —
+    /// (<see cref="WindowsJobObject"/>, §10 Windows containment), so docketd's death — by any cause —
     /// makes the OS terminate the whole worker tree with no discovery to run. Any
     /// other platform also returns <see cref="NullProcessInventory"/>, there as a
     /// documented deferral. The <b>kill</b> half of stray cleanup is portable
@@ -41,7 +41,7 @@ public static class ProcessInventory
 
 /// <summary>
 /// Discovers nothing. On Windows this is <em>by design</em> — the per-worker
-/// kill-on-close Job Object (<see cref="WindowsJobObject"/>, §20) is the containment
+/// kill-on-close Job Object (<see cref="WindowsJobObject"/>, §10 Windows containment) is the containment
 /// guarantee, so there is nothing to discover on restart. On any other unsupported
 /// platform it is a documented deferral of env-scan discovery, never a silent
 /// failure.
@@ -120,7 +120,7 @@ public interface IStrayReaper
 /// the group-kill semantics of live tasks (§10).
 ///
 /// <para>On Windows there are no strays to reap: each worker lives in a
-/// kill-on-close Job Object (<see cref="WindowsJobObject"/>, §20) that the OS tears
+/// kill-on-close Job Object (<see cref="WindowsJobObject"/>, §10 Windows containment) that the OS tears
 /// down the instant docketd dies, so the inventory there is
 /// <see cref="NullProcessInventory"/> by design and this restart sweep simply finds
 /// nothing.</para>

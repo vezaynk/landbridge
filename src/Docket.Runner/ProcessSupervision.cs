@@ -65,7 +65,7 @@ public sealed class SupervisedTask
     internal ITimer? TtlTimer { get; set; }
 
     /// <summary>
-    /// §20 Windows: the kill-on-close Job Object this worker's whole process tree is
+    /// §10 Windows containment: the kill-on-close Job Object this worker's whole process tree is
     /// sealed into, or null off Windows / when assignment degraded (an incompatible
     /// nested outer job). Owned here and closed on the kill/exit cleanup paths. When
     /// docketd dies by any cause the OS closes this handle and the kernel kills every
@@ -97,11 +97,11 @@ public sealed class SupervisedTask
 /// tree, so a kill leaves siblings untouched.
 ///
 /// <para>Every worker <see cref="Process.Start()"/> is marshalled onto one dedicated
-/// long-lived OS thread (<see cref="SpawnerThread"/>, §35): the Linux harness arms
+/// long-lived OS thread (<see cref="SpawnerThread"/>, PDEATHSIG thread affinity): the Linux harness arms
 /// PDEATHSIG, which the kernel keys to the forking <em>thread</em>, so forking from a
 /// transient thread-pool thread would spuriously SIGKILL a healthy worker once the
 /// pool retired that thread. On Windows each worker is additionally sealed into a
-/// kill-on-close Job Object (<see cref="WindowsJobObject"/>, §20) so docketd's death
+/// kill-on-close Job Object (<see cref="WindowsJobObject"/>, §10 Windows containment) so docketd's death
 /// takes the whole tree down with no discovery needed.</para>
 /// </summary>
 public sealed class ProcessSupervisor : IProcessSupervisor
@@ -134,17 +134,17 @@ public sealed class ProcessSupervisor : IProcessSupervisor
     internal readonly record struct SpawnThreadObservation(int ManagedThreadId, bool IsThreadPoolThread);
 
     /// <summary>
-    /// Test seam (§35): captured inside the marshalled spawn delegate on the last
+    /// Test seam (PDEATHSIG thread affinity): captured inside the marshalled spawn delegate on the last
     /// spawn, so a test can prove the fork ran on the dedicated, non-thread-pool
     /// spawner thread rather than inline on the caller. Null until the first spawn.
     /// </summary>
     internal SpawnThreadObservation? LastSpawnThreadObservation { get; private set; }
 
-    /// <summary>Test seam (§35): managed id of the one dedicated spawner thread.</summary>
+    /// <summary>Test seam (PDEATHSIG thread affinity): managed id of the one dedicated spawner thread.</summary>
     internal int? SpawnerManagedThreadId => _spawner.ManagedThreadId;
 
     /// <summary>
-    /// Test/observability seam (§20): the reason the last Windows Job Object
+    /// Test/observability seam (§10 Windows containment): the reason the last Windows Job Object
     /// assignment degraded (e.g. an incompatible nested outer job), or null if the
     /// most recent Windows spawn was contained successfully.
     /// </summary>
@@ -228,7 +228,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
 
         try
         {
-            // §35: marshal the actual Process.Start onto the one dedicated spawner
+            // PDEATHSIG thread affinity: marshal the actual Process.Start onto the one dedicated spawner
             // thread. The psi construction and SupervisedTask bookkeeping stay on the
             // caller; only the fork must run on a thread that outlives the worker, so
             // Linux PDEATHSIG — keyed to the forking thread — is never tripped by a
@@ -236,7 +236,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             // context, so the failure handling below is unchanged.
             _spawner.Run(() =>
             {
-                // Test seam (§35): captured on the thread that actually forks, so a
+                // Test seam (PDEATHSIG thread affinity): captured on the thread that actually forks, so a
                 // test can prove the Start ran on the dedicated non-pool thread.
                 LastSpawnThreadObservation = new SpawnThreadObservation(
                     Environment.CurrentManagedThreadId, Thread.CurrentThread.IsThreadPoolThread);
@@ -244,7 +244,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
                 if (!process.Start())
                     throw new InvalidOperationException("Process.Start returned false");
 
-                // §20 Windows: seal the worker into a kill-on-close Job Object right
+                // §10 Windows containment: seal the worker into a kill-on-close Job Object right
                 // after Start (the tiny, standard create→assign race is accepted).
                 if (OperatingSystem.IsWindows())
                     supervised.Job = CreateJobForWorker(process);
@@ -341,7 +341,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         _tasks.TryRemove(supervised.Task, out _);
         supervised.TtlTimer?.Dispose();
 
-        // §20 Windows: close the job handle now the process is gone. Kill-on-close
+        // §10 Windows containment: close the job handle now the process is gone. Kill-on-close
         // sweeps up any grandchild that outlived the parent. Idempotent with an
         // explicit kill's TerminateAndClose.
         if (OperatingSystem.IsWindows())
@@ -371,7 +371,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             // Already exited, or the OS refused — either way the task is gone.
         }
 
-        // §20 Windows: on top of the portable tree-kill, terminate the job so any
+        // §10 Windows containment: on top of the portable tree-kill, terminate the job so any
         // process that escaped the managed tree walk (detached/reparented) is swept
         // up and the exit code is deterministic. No-op off Windows (Job is only ever
         // set there). OnExited's Close is idempotent with this.
@@ -380,7 +380,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
     }
 
     /// <summary>
-    /// §20: creates a kill-on-close Job Object and assigns the freshly-started worker
+    /// §10 Windows containment: creates a kill-on-close Job Object and assigns the freshly-started worker
     /// to it. Never throws — on creation/assignment failure it records the reason,
     /// logs to stderr (docketd's log sink), and returns null so the spawn survives.
     /// CI runners wrap processes in their own Job Objects; Windows 8+ nests jobs, but

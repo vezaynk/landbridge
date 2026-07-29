@@ -6,7 +6,7 @@ using Microsoft.Extensions.Time.Testing;
 namespace Docket.Runner.Tests;
 
 /// <summary>
-/// The Windows half of stray cleanup (§10 / §20): a per-worker kill-on-close Job
+/// The Windows half of stray cleanup (§10): a per-worker kill-on-close Job
 /// Object (<see cref="WindowsJobObject"/>). Gated to Windows — these run for real on
 /// the OS-matrix CI <c>windows-latest</c> leg and skip cleanly on this macOS box,
 /// exactly like <see cref="MacOsProcessInventoryTests"/> is gated to darwin. They use

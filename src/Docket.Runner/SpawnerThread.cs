@@ -4,7 +4,7 @@ namespace Docket.Runner;
 
 /// <summary>
 /// One dedicated, long-lived OS thread that every worker
-/// <see cref="System.Diagnostics.Process.Start()"/> is marshalled onto (§35).
+/// <see cref="System.Diagnostics.Process.Start()"/> is marshalled onto (PDEATHSIG thread affinity).
 ///
 /// <para><b>Why.</b> The Linux harness arms <c>prctl(PR_SET_PDEATHSIG, SIGKILL)</c>
 /// so it dies the instant docketd does — but the kernel keys that death signal to
@@ -32,7 +32,7 @@ internal sealed class SpawnerThread
 
     /// <summary>
     /// Managed id of the dedicated spawner thread, or null before the first spawn.
-    /// A test seam (§35) — lets a test confirm every spawn ran on the one thread.
+    /// A test seam (PDEATHSIG thread affinity) — lets a test confirm every spawn ran on the one thread.
     /// </summary>
     internal int? ManagedThreadId
     {
