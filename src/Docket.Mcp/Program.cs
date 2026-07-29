@@ -70,6 +70,11 @@ builder.Services.AddSingleton<RunnerConnectionRegistry>();
 builder.Services.AddSingleton<RunnerEventSink>();
 builder.Services.AddSingleton(new TaskEventListener(connectionString));
 
+// §8.3: open_forward drives both docketd ends of a forward. The orchestrator +
+// forward-opened waiter are singletons sharing the connection registry above; the
+// event sink completes the waiter when the consumer reports its bound port.
+builder.Services.AddDocketForwarding();
+
 // §13: the public MCP URL a worker dials the plane with. docketd wraps it plus
 // the minted worker token into the harness's --mcp-config at dispatch.
 var publicMcpUrl = builder.Configuration["Docket:PublicMcpUrl"]
@@ -88,6 +93,20 @@ builder.Services.AddSingleton(sp => new DispatchService(
     sp.GetRequiredService<TaskEventListener>(),
     publicMcpUrl: publicMcpUrl));
 builder.Services.AddHostedService(sp => sp.GetRequiredService<DispatchService>());
+
+// §11 wait-TTL sweeper: parks a task whose Lead never answered (wait TTL) and
+// requeues one whose machine went silent while it waited. A hosted service on a
+// TimeProvider timer, mirroring DispatchService; the intervals are configurable
+// (TimeSpan format, e.g. "00:30:00") and fall back to the sweeper's documented
+// defaults when unset.
+builder.Services.AddHostedService(sp => new WaitTtlSweeper(
+    sp.GetRequiredService<IServiceScopeFactory>(),
+    sp.GetRequiredService<RunnerConnectionRegistry>(),
+    sp.GetRequiredService<TimeProvider>(),
+    sp.GetRequiredService<ILogger<WaitTtlSweeper>>(),
+    waitTtl: builder.Configuration.GetValue<TimeSpan?>("Docket:WaitTtl"),
+    machineLivenessWindow: builder.Configuration.GetValue<TimeSpan?>("Docket:MachineLivenessTtl"),
+    sweepInterval: builder.Configuration.GetValue<TimeSpan?>("Docket:WaitTtlSweepInterval")));
 
 var app = builder.Build();
 

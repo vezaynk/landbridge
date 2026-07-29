@@ -131,7 +131,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         registry.TrackDispatch("m1", task); // stamped at t0
 
         clock.Advance(TimeSpan.FromSeconds(30));
-        var sink = new RunnerEventSink(ScopeFactory(clock), registry, NullLogger<RunnerEventSink>.Instance);
+        var sink = new RunnerEventSink(ScopeFactory(clock), registry, new ForwardWaiters(), NullLogger<RunnerEventSink>.Instance);
         await sink.HandleAsync(new StartedEvent(task, clock.GetUtcNow()));
 
         // Activity advanced to t0+30 and the task stays tracked (started confirms
@@ -154,7 +154,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         registry.Register("m1", Set("default"), (_, _) => Task.CompletedTask);
         registry.TrackDispatch("m1", taskId);
 
-        var sink = new RunnerEventSink(scopes, registry, NullLogger<RunnerEventSink>.Instance);
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), NullLogger<RunnerEventSink>.Instance);
         await sink.HandleAsync(new ExitedEvent(taskId, ExitCode: 0, clock.GetUtcNow()));
 
         Assert.Equal(TaskState.Submitted, await StateAsync(clock, taskId));
@@ -176,7 +176,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         registry.TrackDispatch("m1", first);
         registry.TrackDispatch("m1", second);
 
-        var sink = new RunnerEventSink(scopes, registry, NullLogger<RunnerEventSink>.Instance);
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), NullLogger<RunnerEventSink>.Instance);
         await sink.HandleAsync(new RebootedEvent("m1", clock.GetUtcNow()));
 
         Assert.Equal(TaskState.Submitted, await StateAsync(clock, first));

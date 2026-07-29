@@ -3,6 +3,7 @@ using System;
 using Docket.ControlPlane;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Docket.ControlPlane.Migrations
 {
     [DbContext(typeof(DocketDbContext))]
-    partial class DocketDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260729174214_AddBlockedAt")]
+    partial class AddBlockedAt
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -187,63 +190,6 @@ namespace Docket.ControlPlane.Migrations
                         .HasName("pk_machines");
 
                     b.ToTable("machines", (string)null);
-                });
-
-            modelBuilder.Entity("Docket.ControlPlane.Auth.OAuthAuthorizationCodeRow", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasColumnName("id");
-
-                    b.Property<string>("ClientId")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("client_id");
-
-                    b.Property<string>("CodeChallenge")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("code_challenge");
-
-                    b.Property<string>("CodeHash")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("code_hash");
-
-                    b.Property<DateTimeOffset?>("ConsumedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("consumed_at");
-
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_at");
-
-                    b.Property<DateTimeOffset>("ExpiresAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("expires_at");
-
-                    b.Property<string>("RedirectUri")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("redirect_uri");
-
-                    b.Property<string>("Resource")
-                        .HasColumnType("text")
-                        .HasColumnName("resource");
-
-                    b.Property<string>("Scope")
-                        .HasColumnType("text")
-                        .HasColumnName("scope");
-
-                    b.HasKey("Id")
-                        .HasName("pk_oauth_authorization_codes");
-
-                    b.HasIndex("CodeHash")
-                        .IsUnique()
-                        .HasDatabaseName("ix_oauth_authorization_codes_code_hash");
-
-                    b.ToTable("oauth_authorization_codes", (string)null);
                 });
 
             modelBuilder.Entity("Docket.ControlPlane.Auth.RelayGrantRow", b =>

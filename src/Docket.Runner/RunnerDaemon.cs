@@ -49,6 +49,7 @@ public sealed class RunnerDaemon
     private readonly OutboundEventRing _ring;
     private readonly IStrayReaper _reaper;
     private readonly TimeProvider _clock;
+    private readonly RelayForwarder _forwarder;
 
     private readonly CancellationTokenSource _cts = new();
     private ITimer? _heartbeatTimer;
@@ -62,7 +63,8 @@ public sealed class RunnerDaemon
         IControlPlaneChannel channel,
         OutboundEventRing ring,
         IStrayReaper reaper,
-        TimeProvider clock)
+        TimeProvider clock,
+        TimeSpan? forwardAcceptTimeout = null)
     {
         _machineId = machineId;
         _config = config;
@@ -72,6 +74,11 @@ public sealed class RunnerDaemon
         _ring = ring;
         _reaper = reaper;
         _clock = clock;
+        // §8.3 data planes: the forwarder owns all live relay tunnels and emits
+        // forward-opened/-closed onto the same ring as every other event. The
+        // accept-timeout override keeps the consumer plane's bounded wait short in
+        // tests; production uses the grant-TTL ceiling.
+        _forwarder = new RelayForwarder(ring, forwardAcceptTimeout);
     }
 
     /// <summary>Strays killed on the last <see cref="StartAsync"/> (diagnostics/tests).</summary>
@@ -121,14 +128,31 @@ public sealed class RunnerDaemon
                 return new CommandOutcome.Acknowledged(killed ? "killed" : "not running");
 
             case OpenForwardCommand forward:
-                // §8.3 relay forwarding internals are deferred; the vocabulary
-                // member is handled so an unknown command still can't slip in.
-                return new CommandOutcome.Acknowledged($"open-forward {forward.ForwardId} (relay internals deferred)");
+                return HandleOpenForward(forward);
 
             default:
                 // Unreachable: the hierarchy is closed (§10). Kept explicit so a
                 // future member can't be silently ignored.
                 throw new ArgumentOutOfRangeException(nameof(command), command.GetType().Name, "outside the runner vocabulary");
+        }
+    }
+
+    /// <summary>
+    /// §8.3: stand up one end of a relay forward. Kicks the concurrent I/O off on
+    /// a tracked background task and returns at once — the command handler never
+    /// blocks (§10). A missing/unknown role (a pre-increment-3 envelope, whose new
+    /// fields decode to empty) is acknowledged and ignored, never crashed on.
+    /// </summary>
+    private CommandOutcome HandleOpenForward(OpenForwardCommand forward)
+    {
+        switch (forward.Role)
+        {
+            case RelayTunnel.ConsumerRole:
+            case RelayTunnel.ProducerRole:
+                _forwarder.Open(forward);
+                return new CommandOutcome.Acknowledged($"open-forward {forward.ForwardId} ({forward.Role})");
+            default:
+                return new CommandOutcome.Acknowledged($"open-forward {forward.ForwardId} (no role; ignored)");
         }
     }
 
@@ -187,6 +211,11 @@ public sealed class RunnerDaemon
     public async Task ShutdownAsync()
     {
         _supervisor.KillAll();
+
+        // §8.3/§10: tearing the machine down also tears down every live relay
+        // tunnel it owns. Done before the ring completes so each forward's final
+        // forward-closed can still drain.
+        await _forwarder.DisposeAsync();
 
         if (_heartbeatTimer is not null)
             await _heartbeatTimer.DisposeAsync();

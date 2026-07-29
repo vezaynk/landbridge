@@ -30,6 +30,7 @@ public static class RunnerWire
     public const string SubagentSpawned = "subagent-spawned";
     public const string Exited = "exited";
     public const string AuthFailed = "auth-failed";
+    public const string ForwardOpened = "forward-opened";
     public const string ForwardClosed = "forward-closed";
     public const string Rebooted = "rebooted";
 
@@ -46,7 +47,7 @@ public static class RunnerWire
     public static IReadOnlySet<string> Events { get; } =
         new HashSet<string>(StringComparer.Ordinal)
         {
-            Started, Alive, ToolCall, SubagentSpawned, Exited, AuthFailed, ForwardClosed, Rebooted,
+            Started, Alive, ToolCall, SubagentSpawned, Exited, AuthFailed, ForwardOpened, ForwardClosed, Rebooted,
         };
 
     public static bool IsKnownCommand(string? type) => type is not null && Commands.Contains(type);
@@ -97,6 +98,7 @@ public static class RunnerWire
             SubagentSpawnedEvent e => (ToObject(e, RunnerWireContext.Default.SubagentSpawnedEvent), SubagentSpawned),
             ExitedEvent e => (ToObject(e, RunnerWireContext.Default.ExitedEvent), Exited),
             AuthFailedEvent e => (ToObject(e, RunnerWireContext.Default.AuthFailedEvent), AuthFailed),
+            ForwardOpenedEvent e => (ToObject(e, RunnerWireContext.Default.ForwardOpenedEvent), ForwardOpened),
             ForwardClosedEvent e => (ToObject(e, RunnerWireContext.Default.ForwardClosedEvent), ForwardClosed),
             RebootedEvent e => (ToObject(e, RunnerWireContext.Default.RebootedEvent), Rebooted),
             _ => throw new ArgumentOutOfRangeException(
@@ -172,6 +174,7 @@ public static class RunnerWire
                 SubagentSpawned => doc.RootElement.Deserialize(RunnerWireContext.Default.SubagentSpawnedEvent),
                 Exited => doc.RootElement.Deserialize(RunnerWireContext.Default.ExitedEvent),
                 AuthFailed => doc.RootElement.Deserialize(RunnerWireContext.Default.AuthFailedEvent),
+                ForwardOpened => doc.RootElement.Deserialize(RunnerWireContext.Default.ForwardOpenedEvent),
                 ForwardClosed => doc.RootElement.Deserialize(RunnerWireContext.Default.ForwardClosedEvent),
                 Rebooted => doc.RootElement.Deserialize(RunnerWireContext.Default.RebootedEvent),
                 _ => null,

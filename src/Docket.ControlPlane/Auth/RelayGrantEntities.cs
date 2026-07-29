@@ -79,8 +79,16 @@ public abstract record RelayGrantResult
 {
     private RelayGrantResult() { }
 
-    /// <summary>The grant was minted. The plaintext exists only in this value, once.</summary>
-    public sealed record Issued(string Grant, Guid ForwardId, DateTimeOffset ExpiresAt) : RelayGrantResult;
+    /// <summary>
+    /// The grant was minted. The plaintext exists only in this value, once.
+    /// <see cref="Producer"/> is the working task that registered the service —
+    /// the plane resolves its machine to send the producer-side <c>open-forward</c>
+    /// — and <see cref="Port"/> is that service's loopback port for the producer to
+    /// dial (§8.3). Both are already known from the issuance lookup, so they ride
+    /// the result rather than being re-queried by the orchestrator.
+    /// </summary>
+    public sealed record Issued(
+        string Grant, Guid ForwardId, DateTimeOffset ExpiresAt, TaskId Producer, int Port) : RelayGrantResult;
 
     /// <summary>
     /// Refused (§9 check 11 — forwards resolve only to registered services owned

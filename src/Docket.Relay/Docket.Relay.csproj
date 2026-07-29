@@ -5,6 +5,11 @@
        service defaults (health, OTel) like the other hosts do. -->
   <ItemGroup>
     <ProjectReference Include="..\Docket.ServiceDefaults\Docket.ServiceDefaults.csproj" />
+    <!-- §8.3: the tunnel header names + role strings are shared with the runner's
+         tunnel client via Docket.Contracts (RelayTunnel), so the two ends agree on
+         one set of constants. The relay references Contracts; the runner never
+         references Docket.Relay. -->
+    <ProjectReference Include="..\Docket.Contracts\Docket.Contracts.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

@@ -90,6 +90,44 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
                 conn.Dispatched.Remove(task);
     }
 
+    /// <summary>
+    /// The machine a task is currently tracked as dispatched to, or null when it
+    /// is tracked nowhere. Two callers: the wait-TTL sweeper (§11) uses it to find
+    /// a blocked task's machine — to judge that machine's liveness and record it
+    /// in the park record — and the forward orchestrator (§8.3) resolves the
+    /// producer and consumer machines of a forward from their tasks. A task is
+    /// tracked on at most one machine (dispatch is single, §9 check 5). Null
+    /// means the plane no longer holds the assignment (e.g. after a control-plane
+    /// restart drops this in-memory registry — machine-assignment persistence is
+    /// a documented §10 follow-up); callers treat that conservatively.
+    /// </summary>
+    public string? MachineFor(TaskId task)
+    {
+        foreach (var (id, conn) in _connections)
+        {
+            lock (conn.Gate)
+                if (conn.Dispatched.ContainsKey(task))
+                    return id;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// A machine's most recent heartbeat, or null when it has no live connection.
+    /// A blocked task's own per-task activity is frozen — its worker has exited
+    /// (§11) — so the wait-TTL sweeper judges the machine's liveness by this
+    /// machine-level heartbeat, not the task's activity, and requeues a blocked
+    /// task whose machine has gone silent past the liveness window (§6:
+    /// blocked_on_input → submitted on machine liveness loss).
+    /// </summary>
+    public DateTimeOffset? LastHeartbeatFor(string machineId)
+    {
+        if (!_connections.TryGetValue(machineId, out var conn))
+            return null;
+        lock (conn.Gate)
+            return conn.LastHeartbeat;
+    }
+
     /// <summary>The tasks currently tracked as dispatched to a machine.</summary>
     public IReadOnlyList<TaskId> TasksOn(string machineId)
     {

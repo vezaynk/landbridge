@@ -5,11 +5,22 @@ namespace Docket.Core;
 /// directory because harness transcripts are machine- and directory-local.
 /// All fields are opaque to the control plane; it stores and returns them,
 /// never dereferences them.
+///
+/// <see cref="Directory"/> and <see cref="HarnessSessionRef"/> are nullable
+/// because they originate <em>runner-side</em> (§11's resume seam): a harness
+/// working directory and Claude Code session id are machine-local facts the
+/// control plane does not hold. When a park is written by the wait-TTL sweeper —
+/// which knows only the machine it dispatched to and the attempt — they are null,
+/// and redispatch cold-starts from the workspace plus the worker's persisted
+/// notes (§11 explicitly allows this when the recorded directory is absent). The
+/// real-harness resume milestone (§11) supplies them via a runner event; until
+/// then null honestly means "not known to the plane" rather than an empty path.
+/// A <see cref="StopPreserveAndPark"/> issued through a runner may carry them.
 /// </summary>
 public sealed record ParkRecord(
     string Machine,
-    string Directory,
-    string HarnessSessionRef,
+    string? Directory,
+    string? HarnessSessionRef,
     int Attempt);
 
 /// <summary>

@@ -1,6 +1,9 @@
 using System.Text.Json;
+using Docket.Contracts;
 using Docket.Core;
+using Docket.ControlPlane;
 using Docket.ControlPlane.Tests;
+using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 
@@ -8,10 +11,11 @@ namespace Docket.Mcp.Tests;
 
 /// <summary>
 /// The <c>open_forward</c> worker tool over a real MCP connection (spec §8.3,
-/// §10): a dispatched worker obtains a grant to reach another task's registered
-/// service, and the authority gates hold — an unknown service is refused, and a
-/// Lead (no worker credential) cannot call it at all. This increment ends here:
-/// a worker can obtain a grant over MCP; the docketd data planes are increment 3.
+/// §10). The authority gates hold — an unknown service is refused, and a Lead (no
+/// worker credential) cannot call it at all — and the happy path returns a
+/// <c>{host, port}</c> loopback address, with the plane driving both docketd ends
+/// (here their send delegates are stubbed to report a bound port; the full
+/// no-fakes splice loop is <see cref="ForwardDataPlaneEndToEndTests"/>).
 /// </summary>
 [Collection(PostgresCollection.Name)]
 public sealed class OpenForwardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
@@ -24,23 +28,40 @@ public sealed class OpenForwardEndToEndTests(PostgresFixture pg) : IAsyncLifetim
     public Task DisposeAsync() => Task.CompletedTask;
 
     [SkippableFact]
-    public async Task Worker_opens_a_forward_and_receives_a_grant_forward_id_and_relay_url()
+    public async Task Worker_opens_a_forward_and_receives_a_loopback_host_and_port()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var ct = cts.Token;
 
+        const int boundPort = 45999; // the port the consumer docketd would report
+
         var team = TeamId.New();
         // Producer first (only submitted task → deterministic dispatch), then the
         // consumer worker whose token we drive open_forward with.
-        await RelayGrantTestKit.RegisterWorkingServiceAsync(pg, team, "db", ct);
-        var workerToken = await RelayGrantTestKit.SeedWorkingWorkerTokenAsync(pg, team, ct);
+        var producerTask = await RelayGrantTestKit.RegisterWorkingServiceAsync(pg, team, "db", ct);
+        var consumer = await RelayGrantTestKit.SeedWorkingWorkerAsync(pg, team, ct);
 
         await using var plane = RelayGrantTestKit.BuildPlane(pg.ConnectionString, relayValidationBearer: null);
         await plane.StartAsync(ct);
         var baseUri = RelayGrantTestKit.BaseUri(plane);
 
-        await using (var worker = await RelayGrantTestKit.ConnectMcpAsync(baseUri, workerToken, ct))
+        // Two "machines" the plane will send the two open-forward commands to. The
+        // consumer's stub reports a bound port via the real event sink, exactly as
+        // a real consumer docketd would after binding its loopback listener.
+        var registry = plane.Services.GetRequiredService<RunnerConnectionRegistry>();
+        var sink = plane.Services.GetRequiredService<RunnerEventSink>();
+
+        registry.Register("mc", new HashSet<string> { "default" }, async (command, token) =>
+        {
+            if (command is OpenForwardCommand { Role: RelayTunnel.ConsumerRole } c)
+                await sink.HandleAsync(new ForwardOpenedEvent(c.Task, c.ForwardId, boundPort), token);
+        });
+        registry.Register("mp", new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
+        registry.TrackDispatch("mc", consumer.Task);
+        registry.TrackDispatch("mp", producerTask);
+
+        await using (var worker = await RelayGrantTestKit.ConnectMcpAsync(baseUri, consumer.Token, ct))
         {
             var result = await worker.CallToolAsync("open_forward", new Dictionary<string, object?>
             {
@@ -55,10 +76,13 @@ public sealed class OpenForwardEndToEndTests(PostgresFixture pg) : IAsyncLifetim
                 : string.Concat(result.Content.OfType<TextContentBlock>().Select(b => b.Text));
             using var doc = JsonDocument.Parse(json);
             var payload = doc.RootElement;
-            Assert.StartsWith("dkt_g_", payload.GetProperty("grant").GetString());
+            Assert.Equal("127.0.0.1", payload.GetProperty("host").GetString());
+            Assert.Equal(boundPort, payload.GetProperty("port").GetInt32());
             Assert.True(Guid.TryParse(payload.GetProperty("forward_id").GetString(), out _));
-            Assert.Equal(Docket.Mcp.Tools.WorkerTools.DefaultRelayUrl, payload.GetProperty("relay_url").GetString());
             Assert.True(payload.TryGetProperty("expires_at", out _));
+            // The grant and relay URL are docketd's business — never handed to the agent.
+            Assert.False(payload.TryGetProperty("grant", out _));
+            Assert.False(payload.TryGetProperty("relay_url", out _));
         }
 
         await plane.StopAsync(ct);

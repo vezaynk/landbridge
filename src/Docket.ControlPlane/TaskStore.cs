@@ -214,6 +214,23 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
             .ToListAsync(ct);
 
     /// <summary>
+    /// The wait-TTL sweeper's poll (§11): every task in
+    /// <see cref="TaskState.BlockedOnInput"/> with the timestamp it entered that
+    /// state (<see cref="TaskRow.BlockedAt"/>) and its current attempt. A pure
+    /// read — no transition, no prose. The sweeper ages <c>BlockedAt</c> against
+    /// the configured wait TTL and cross-references the connection registry for
+    /// the dispatched machine's liveness, then expresses the outcome as a
+    /// <see cref="WaitTtlExpired"/> or <see cref="LivenessLost"/> command through
+    /// the store — the engine, never raw SQL, owns every transition (§15).
+    /// </summary>
+    public async Task<IReadOnlyList<BlockedTaskView>> ListBlockedAsync(CancellationToken ct = default) =>
+        await db.Tasks.AsNoTracking()
+            .Where(t => t.State == TaskState.BlockedOnInput)
+            .OrderBy(t => t.BlockedAt)
+            .Select(t => new BlockedTaskView(t.Id, t.BlockedAt, t.Attempt))
+            .ToListAsync(ct);
+
+    /// <summary>
     /// A pure read of a task's current state, or null if it does not exist. The
     /// dispatch loop and the runner event sink read state to decide whether an
     /// inbound runner event still bears on a working task — e.g. an
@@ -244,6 +261,14 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
         // where the verifier's read scope (§5) later fetches it.
         if (command is ReportResult reported)
             row.ResultReference = reported.ResultReference;
+        // §11 wait-TTL: stamp when the task entered blocked_on_input so the sweeper
+        // can age its wait deadline, and clear it on the way out. Opaque plane
+        // plumbing captured here (like ResultReference above), never an engine field —
+        // the pure state machine holds no clock (§6: timers live in the control plane).
+        if (command is RequestInput && row.State == TaskState.BlockedOnInput)
+            row.BlockedAt = clock.GetUtcNow();
+        else if (before == TaskState.BlockedOnInput && row.State != TaskState.BlockedOnInput)
+            row.BlockedAt = null;
         ApplyEffects(row, ok.Effects);
         AppendEvent(row.Id, row.TeamId, command.GetType().Name, before, row.State,
             detail: DescribeEffects(ok.Effects));

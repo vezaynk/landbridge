@@ -45,3 +45,17 @@ public sealed record VerifyingTaskView(
     string Namespace,
     string CompletionCriteria,
     string? ResultReference);
+
+/// <summary>
+/// One blocked_on_input task as the wait-TTL sweeper reads it (§11):
+/// <see cref="BlockedAt"/> is when it entered the state (null only if it blocked
+/// before the column existed), and <see cref="Attempt"/> is the running attempt
+/// the sweeper stamps into a park record so the successor knows it inherited a
+/// workspace (§7). No prose and no machine — the machine comes from the live
+/// connection registry, not the row (§10 single control plane; machine-assignment
+/// persistence across a restart is a documented follow-up).
+/// </summary>
+public sealed record BlockedTaskView(
+    Guid TaskId,
+    DateTimeOffset? BlockedAt,
+    int Attempt);
