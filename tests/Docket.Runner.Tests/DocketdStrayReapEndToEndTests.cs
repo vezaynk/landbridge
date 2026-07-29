@@ -43,10 +43,23 @@ public sealed class DocketdStrayReapEndToEndTests
             {
                 WorkingDirectory = strayDir,
                 UseShellExecute = false,
+                // A planted stray must SURVIVE its spawner until docketd reaps it —
+                // that is what makes it a stray. So the test holds its stdin open
+                // (in CI the runner's own stdin is closed, and an inherited closed
+                // stdin trips the harness's dead-man switch instantly)…
+                RedirectStandardInput = true,
             };
             psi.ArgumentList.Add("spawn-child");
             psi.Environment["DOCKET_MACHINE_ID"] = machineId;
             psi.Environment["DOCKET_TASK_ID"] = Guid.NewGuid().ToString();
+            // …and disables PDEATHSIG for the planted tree: on Linux the arm is
+            // keyed to the spawning THREAD (an xunit pool thread here), whose
+            // retirement mid-test would kill the stray early. Real strays outlive
+            // a SIGKILLed docketd precisely because nothing fires — the reaper is
+            // what must find them; pinning to no-mechanism reproduces that.
+            // (Literal must match ParentDeathSignal.DisableEnvVar, internal to the
+            // harness assemblies.)
+            psi.Environment["DOCKET_TEST_DISABLE_PDEATHSIG"] = "1";
             stray = Process.Start(psi)!;
 
             var pidPath = Path.Combine(strayDir, "child.pid");

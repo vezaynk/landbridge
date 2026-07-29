@@ -7,6 +7,16 @@
     <Nullable>enable</Nullable>
     <RootNamespace>Docket.Runner.TestHarness</RootNamespace>
     <IsPackable>false</IsPackable>
+    <!-- The dead-man's switch arms PDEATHSIG via [LibraryImport]; its source-gen'd
+         marshalling stubs need an unsafe context (see ParentDeathSignal). -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
+
+  <!-- The dead-man's switch's Linux (PDEATHSIG) half is identical across both
+       reference harnesses; share it as a linked source file so each carries the
+       exact convention a BYO harness would copy (§10). -->
+  <ItemGroup>
+    <Compile Include="../HarnessSupport/ParentDeathSignal.cs" Link="ParentDeathSignal.cs" />
+  </ItemGroup>
 
 </Project>

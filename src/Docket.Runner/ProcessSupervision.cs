@@ -144,10 +144,17 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         {
             WorkingDirectory = workDir,
             UseShellExecute = false,
-            // stdin is redirected only for message-mode stop delivery (§10). Not
-            // redirecting stdout/stderr keeps us off the drain-or-deadlock hook —
-            // the transcript is tailed from logs.path, not scraped from stdout.
-            RedirectStandardInput = profile.Stop.Mode == StopMode.Message,
+            // stdin is redirected for EVERY spawn and its write end is held open for
+            // the child's lifetime (we never close StandardInput here). That held
+            // pipe IS the dead-man's signal: if docketd dies — even under SIGKILL —
+            // the OS closes the write end and a well-behaved harness sees EOF on
+            // stdin and kills its own process tree. This is the cooperative first
+            // line of defence the StrayReaper only backstops on restart (§10).
+            // Message-mode stop reuses the SAME pipe to inject a stop turn (see
+            // StopAsync), so the two uses are compatible. Not redirecting
+            // stdout/stderr keeps us off the drain-or-deadlock hook — the transcript
+            // is tailed from logs.path, not scraped from stdout.
+            RedirectStandardInput = true,
         };
         for (var i = 1; i < argv.Length; i++)
             psi.ArgumentList.Add(argv[i]);
