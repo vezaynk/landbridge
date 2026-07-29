@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Docket.HarnessSupport;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 using OpenTelemetry;
@@ -34,6 +35,16 @@ public static class Program
         var cwd = Directory.GetCurrentDirectory();
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         var ct = cts.Token;
+
+        // Dead-man's switch (§10). Linux: SIGKILL us if docketd (our parent) dies.
+        if (ParentDeathSignal.ArmAndParentAlreadyDead())
+            return 1;
+        // Portable: docketd holds the write end of our stdin for our lifetime, so
+        // EOF means docketd is gone. Watch it in the background and cancel the run —
+        // the worker's only channel to the plane is MCP, so stdin carries no data,
+        // just liveness. Cancellation unwinds the MCP calls below into a non-zero
+        // exit. Uniform with the convention even though the worker is short-lived.
+        _ = WatchStdinForEofAsync(cts);
 
         // §1 tracing: root the worker's span on the traceparent docketd injected
         // (DOCKET_TRACEPARENT), so this process — and its MCP calls back to the
@@ -80,6 +91,33 @@ public static class Program
             catch { /* best effort */ }
             return 1;
         }
+    }
+
+    /// <summary>
+    /// Portable dead-man watch: reads stdin to EOF and cancels <paramref name="cts"/>
+    /// when it arrives. docketd holds the write end for our lifetime, so EOF is its
+    /// death; any bytes are ignored (MCP, not stdin, is the worker's channel). On a
+    /// normal run the process exits before this ever completes.
+    /// </summary>
+    private static async Task WatchStdinForEofAsync(CancellationTokenSource cts)
+    {
+        try
+        {
+            using var stdin = Console.OpenStandardInput();
+            using var reader = new StreamReader(stdin);
+            while (await reader.ReadLineAsync(cts.Token) is not null) { }
+        }
+        catch (OperationCanceledException)
+        {
+            return; // the run finished and cancelled us — not a dead-man event
+        }
+        catch
+        {
+            // fall through: a read failure is treated the same as EOF
+        }
+
+        if (!cts.IsCancellationRequested)
+            cts.Cancel();
     }
 
     /// <summary>
