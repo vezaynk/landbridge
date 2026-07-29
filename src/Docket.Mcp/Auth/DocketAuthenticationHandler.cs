@@ -1,6 +1,7 @@
 using System.Text.Encodings.Web;
 using Docket.ControlPlane.Auth;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
 namespace Docket.Mcp.Auth;
@@ -21,6 +22,30 @@ public sealed class DocketAuthenticationHandler(
     : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
 {
     public const string SchemeName = "DocketToken";
+
+    /// <summary>
+    /// The RFC 9728 §5.1 challenge on a 401 (spec §5): point the MCP client at
+    /// this resource server's protected-resource metadata so it can discover the
+    /// authorization server and run the OAuth 2.1 flow. This is the whole of the
+    /// OAuth-related change to the handler — token validation
+    /// (<see cref="HandleAuthenticateAsync"/>) stays a store lookup, untouched.
+    ///
+    /// <para><see cref="OAuthServerConfig"/> is resolved from request services
+    /// rather than the constructor so the handler keeps its existing dependency
+    /// surface (hosts that don't wire the OAuth endpoints still construct it). The
+    /// canonical resource-metadata URI is used when configured; otherwise it is
+    /// derived from the request so the challenge is always well-formed.</para>
+    /// </summary>
+    protected override Task HandleChallengeAsync(AuthenticationProperties properties)
+    {
+        var oauth = Context.RequestServices.GetService<OAuthServerConfig>();
+        var resourceMetadata = oauth?.ResourceMetadataUri
+            ?? $"{Request.Scheme}://{Request.Host}/.well-known/oauth-protected-resource";
+
+        Response.StatusCode = StatusCodes.Status401Unauthorized;
+        Response.Headers.Append("WWW-Authenticate", $"Bearer resource_metadata=\"{resourceMetadata}\"");
+        return Task.CompletedTask;
+    }
 
     protected override async Task<AuthenticateResult> HandleAuthenticateAsync()
     {

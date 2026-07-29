@@ -14,6 +14,7 @@ public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) :
     public DbSet<MachineRow> Machines => Set<MachineRow>();
     public DbSet<LeadEventRow> LeadEvents => Set<LeadEventRow>();
     public DbSet<RelayGrantRow> RelayGrants => Set<RelayGrantRow>();
+    public DbSet<OAuthAuthorizationCodeRow> OAuthAuthorizationCodes => Set<OAuthAuthorizationCodeRow>();
 
     /// <summary>The channel dispatch/transition NOTIFYs land on (§3.1 LISTEN/NOTIFY).</summary>
     public const string EventChannel = "docket_task_events";
@@ -113,6 +114,16 @@ public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) :
             // Revocation targets every live grant a leaving-working task produced
             // (ClearServicesAndForwards); index the column that join keys on.
             e.HasIndex(g => g.ProducerTaskId);
+        });
+
+        b.Entity<OAuthAuthorizationCodeRow>(e =>
+        {
+            e.ToTable("oauth_authorization_codes");
+            e.HasKey(c => c.Id);
+            // The code hash is the lookup key on the token-exchange hot path, and
+            // its uniqueness is the invariant (one row per issued code), not a
+            // read's — exactly like every other opaque credential's hash (§5).
+            e.HasIndex(c => c.CodeHash).IsUnique();
         });
     }
 }
