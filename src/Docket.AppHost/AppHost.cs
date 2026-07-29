@@ -15,6 +15,7 @@
 // Scope note: OTel on docketd/the worker is out of scope (docketd is not a Host
 // builder, so it gets no ServiceDefaults); its console logs stream to the
 // dashboard as a resource. Propagating runner traces is a follow-up.
+using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
@@ -27,6 +28,24 @@ var builder = DistributedApplication.CreateBuilder(args);
 const string mcpHost = "127.0.0.1";
 const int mcpPort = 5000;
 var mcpUrl = $"http://{mcpHost}:{mcpPort}";
+
+// The relay's fixed dev URL (spec §8.3). Pinned and UN-proxied like the plane:
+// docketd's two data planes dial ws://127.0.0.1:5100/tunnel directly at this
+// known loopback address, so an ephemeral DCP proxy port would be invisible to
+// them. The worker never learns it — the plane injects it per open_forward
+// (WorkerTools reads Docket:RelayUrl, set on the mcp resource below).
+const string relayHost = "127.0.0.1";
+const int relayPort = 5100;
+var relayUrl = $"http://{relayHost}:{relayPort}";
+
+// One shared bearer per AppHost run authenticates the relay to the plane's
+// /relay/validate endpoint (§8.3). Minted fresh here and handed to exactly the
+// two hosts that need it — the plane checks it (Docket:RelayValidation:Bearer),
+// the relay presents it (Relay:ControlPlane:Bearer) — never persisted. Setting
+// it, together with Relay:ControlPlane:Url below, makes ControlPlaneGrantValidator
+// the ACTIVE validator in the dev loop; the fail-closed StaticSecretGrantValidator
+// must not be what stands (a tunnel spliced on an unvalidated grant is the §13 risk).
+var relayValidationBearer = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
 
 // A per-run scratch area under the temp dir: the machine-token seed file the MCP
 // host writes and docketd reads, and docketd's work_root for per-task dirs.
@@ -71,6 +90,29 @@ var mcp = builder.AddProject<Projects.Docket_Mcp>("mcp", options => options.Excl
     .WithEnvironment("ASPNETCORE_ENVIRONMENT", "Development")
     .WithEnvironment("Docket__MigrateOnStartup", "true")
     .WithEnvironment("Docket__DevSeed__TokenFile", seedTokenFile)
+    // §8.3: the shared bearer the plane's /relay/validate endpoint requires (fail-
+    // closed 503 without it), and the relay URL WorkerTools hands docketd per
+    // open_forward. Both are read from IConfiguration by Docket.Mcp; set as env.
+    .WithEnvironment("Docket__RelayValidation__Bearer", relayValidationBearer)
+    .WithEnvironment("Docket__RelayUrl", relayUrl)
+    .WithHttpHealthCheck("/health");
+
+// docket-relay as a dev-loop resource (§8.3). Same fixed, un-proxied endpoint
+// treatment as the plane: docketd dials 127.0.0.1:5100 directly, so an ephemeral
+// DCP proxy port would be invisible. ExcludeLaunchProfile drops the launchSettings
+// endpoints for the one fixed port; ASPNETCORE_URLS binds Kestrel there and
+// ASPNETCORE_ENVIRONMENT=Development makes ServiceDefaults map /health (the
+// WithHttpHealthCheck gate). Relay:ControlPlane:Url points the validator at the
+// plane — so ControlPlaneGrantValidator, not the static stub, is active — and it
+// presents the shared bearer on /relay/validate. WaitFor(mcp): the validator
+// calls the plane, so the plane must be serving first.
+builder.AddProject<Projects.Docket_Relay>("relay", options => options.ExcludeLaunchProfile = true)
+    .WaitFor(mcp)
+    .WithHttpEndpoint(port: relayPort, targetPort: relayPort, isProxied: false)
+    .WithEnvironment("ASPNETCORE_URLS", relayUrl)
+    .WithEnvironment("ASPNETCORE_ENVIRONMENT", "Development")
+    .WithEnvironment("Relay__ControlPlane__Url", mcpUrl)
+    .WithEnvironment("Relay__ControlPlane__Bearer", relayValidationBearer)
     .WithHttpHealthCheck("/health");
 
 // docketd's config: read the committed template, resolve the two AppHost-owned
