@@ -92,19 +92,23 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
 
     /// <summary>
     /// The machine a task is currently tracked as dispatched to, or null when it
-    /// is tracked nowhere. The wait-TTL sweeper (§11) uses this to find a blocked
-    /// task's dispatched machine — both to judge that machine's liveness and to
-    /// record it in the park record for redispatch affinity. Null means the plane
-    /// no longer holds the assignment (e.g. after a control-plane restart drops
-    /// this in-memory registry — machine-assignment persistence is a documented
-    /// §10 follow-up), and the sweeper leaves such a task alone.
+    /// is tracked nowhere. Two callers: the wait-TTL sweeper (§11) uses it to find
+    /// a blocked task's machine — to judge that machine's liveness and record it
+    /// in the park record — and the forward orchestrator (§8.3) resolves the
+    /// producer and consumer machines of a forward from their tasks. A task is
+    /// tracked on at most one machine (dispatch is single, §9 check 5). Null
+    /// means the plane no longer holds the assignment (e.g. after a control-plane
+    /// restart drops this in-memory registry — machine-assignment persistence is
+    /// a documented §10 follow-up); callers treat that conservatively.
     /// </summary>
     public string? MachineFor(TaskId task)
     {
         foreach (var (id, conn) in _connections)
+        {
             lock (conn.Gate)
                 if (conn.Dispatched.ContainsKey(task))
                     return id;
+        }
         return null;
     }
 

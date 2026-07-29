@@ -64,11 +64,34 @@ public sealed record StopCommand(
 public sealed record KillCommand(TaskId Task) : RunnerCommand;
 
 /// <summary>
-/// <c>open-forward</c> — the relay asks this runner (the producer side) to dial
-/// a registered local service and open its outbound tunnel (§8.3). Forwarding
-/// internals are deferred; the vocabulary member is frozen here.
+/// <c>open-forward</c> — the control plane asks this runner to stand up one end
+/// of a relay forward (§8.3). In this deployment the plane (not the relay, which
+/// holds no docketd channel of its own) sends this to <em>both</em> ends over the
+/// runner channel: the <c>producer</c> dials <see cref="Port"/> on loopback and
+/// opens its outbound tunnel; the <c>consumer</c> binds a loopback listener,
+/// reports the bound port via <see cref="ForwardOpenedEvent"/>, and opens its
+/// tunnel per accepted connection.
+///
+/// <para>The <see cref="Role"/>/<see cref="Grant"/>/<see cref="RelayUrl"/>/<see cref="Port"/>
+/// fields were <b>added</b> to the frozen §10 member once §8.3's internals were
+/// implemented — additions are wire-compatible because the envelope decode ignores
+/// unknown properties and fills absent ones with these defaults. An older envelope
+/// carrying none decodes to an empty <see cref="Role"/> and <c>0</c>
+/// <see cref="Port"/>, which the runner treats as "acknowledge, do nothing"
+/// (§10, the pre-increment-3 stub behaviour) rather than crashing.</para>
 /// </summary>
-public sealed record OpenForwardCommand(TaskId Task, string ForwardId, string ServiceName) : RunnerCommand;
+/// <param name="Role"><c>consumer</c>|<c>producer</c> (<see cref="RelayTunnel"/>); empty on a legacy envelope.</param>
+/// <param name="Grant">The opaque connection grant both ends present to the relay, each for its own role.</param>
+/// <param name="RelayUrl">The relay base URL this end dials (http/https → ws/wss <c>/tunnel</c>).</param>
+/// <param name="Port">Producer: the registered service's loopback port to dial. Consumer: <c>0</c> (it binds one).</param>
+public sealed record OpenForwardCommand(
+    TaskId Task,
+    string ForwardId,
+    string ServiceName,
+    string Role = "",
+    string Grant = "",
+    string RelayUrl = "",
+    int Port = 0) : RunnerCommand;
 
 /// <summary>
 /// Stop dispositions, spec §11. Distinct from <see cref="CancelDisposition"/>:
@@ -117,6 +140,14 @@ public sealed record ExitedEvent(TaskId Task, int ExitCode, DateTimeOffset At) :
 /// target, error code, missing scope. The control plane renders remediation.</summary>
 public sealed record AuthFailedEvent(
     TaskId Task, string Operation, string Target, string ErrorCode, string? MissingScope) : RunnerEvent;
+
+/// <summary>
+/// <c>forward-opened</c> — the consumer end bound its loopback listener and is
+/// ready (§8.3). <see cref="Port"/> is the <c>127.0.0.1</c> port the worker's
+/// client connects to; the control plane hands it back from <c>open_forward</c>.
+/// Only the consumer end emits this — the producer dials an already-known port.
+/// </summary>
+public sealed record ForwardOpenedEvent(TaskId Task, string ForwardId, int Port) : RunnerEvent;
 
 /// <summary><c>forward-closed</c> — a relay forward for this task closed (§8.3).</summary>
 public sealed record ForwardClosedEvent(TaskId Task, string ForwardId) : RunnerEvent;

@@ -19,6 +19,7 @@ namespace Docket.ControlPlane;
 public sealed class RunnerEventSink(
     IServiceScopeFactory scopes,
     RunnerConnectionRegistry registry,
+    ForwardWaiters forwards,
     ILogger<RunnerEventSink> logger)
 {
     public async Task HandleAsync(RunnerEvent evt, CancellationToken ct = default)
@@ -59,8 +60,21 @@ public sealed class RunnerEventSink(
                     af.Task, af.Operation, af.Target, af.ErrorCode, af.MissingScope);
                 break;
 
-            case ForwardClosedEvent:
-                // §8.3 relay forwarding internals deferred; nothing to record yet.
+            case ForwardOpenedEvent fo:
+                // §8.3: the consumer end bound its loopback listener and reported
+                // the port. Hand it to the open_forward call parked on this
+                // forward id so it can return {host, port} to the worker.
+                forwards.Complete(fo.ForwardId, fo.Port);
+                break;
+
+            case ForwardClosedEvent fc:
+                // §8.3: a forward's splice ended (either side closed) or it never
+                // opened. Unblock any open_forward still waiting on this id — a
+                // no-op once the forward opened and the waiter was removed. The
+                // grant is single-use and expires on its own, so there is no other
+                // per-forward bookkeeping to unwind here.
+                forwards.Fail(fc.ForwardId, "the producer or consumer end closed");
+                logger.LogInformation("runner forward-closed: task={Task} forward={ForwardId}", fc.Task, fc.ForwardId);
                 break;
         }
     }

@@ -53,15 +53,18 @@ public sealed class RelayGrantService(DocketDbContext db, TimeProvider clock)
         // Owned by a task that is still working? (§9 check 11.) A registered row
         // normally implies a working owner — ClearServicesAndForwards deletes them
         // on the way out — but check explicitly rather than trust the invariant.
-        var producerTaskId = await (
+        // Grab the producer task id AND the service's loopback port in one read:
+        // both ride the Issued result so the plane can send the producer end its
+        // dial target without re-querying (§8.3).
+        var producer = await (
                 from s in db.RegisteredServices.AsNoTracking()
                 join t in db.Tasks.AsNoTracking() on s.TaskId equals t.Id
                 where s.TeamId == consumer.Team.Value
                       && s.Name == serviceName
                       && t.State == TaskState.Working
-                select (Guid?)t.Id)
+                select new { t.Id, s.Port })
             .FirstOrDefaultAsync(ct);
-        if (producerTaskId is null)
+        if (producer is null)
             return new RelayGrantResult.Refused(Rule.ForwardsRequireRegistration,
                 $"service '{serviceName}' is registered but its task is no longer working");
 
@@ -76,13 +79,14 @@ public sealed class RelayGrantService(DocketDbContext db, TimeProvider clock)
             ConsumerTaskId = consumer.Task.Value,
             ConsumerInstanceId = consumer.Instance.Value,
             ServiceName = serviceName,
-            ProducerTaskId = producerTaskId.Value,
+            ProducerTaskId = producer.Id,
             TeamId = consumer.Team.Value,
             CreatedAt = now,
             ExpiresAt = now + GrantTtl,
         });
         await db.SaveChangesAsync(ct);
-        return new RelayGrantResult.Issued(grant, forwardId, now + GrantTtl);
+        return new RelayGrantResult.Issued(
+            grant, forwardId, now + GrantTtl, new TaskId(producer.Id), producer.Port);
     }
 
     /// <summary>

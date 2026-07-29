@@ -156,14 +156,15 @@ public class RunnerDaemonTests
 
         var stop = await h.Daemon.HandleAsync(new StopCommand(task, TimeSpan.FromSeconds(30), StopDisposition.Preserve));
         var kill = await h.Daemon.HandleAsync(new KillCommand(task));
+        // A legacy open-forward with no role (the pre-increment-3 envelope shape)
+        // is acknowledged and ignored — never crashed on (§8.3, §10).
         var forward = await h.Daemon.HandleAsync(new OpenForwardCommand(task, "fwd-1", "postgres"));
 
         Assert.IsType<CommandOutcome.Acknowledged>(stop);
         Assert.IsType<CommandOutcome.Acknowledged>(kill);
         Assert.Contains(task, h.Supervisor.Stopped);
         Assert.Contains(task, h.Supervisor.Killed);
-        // §8.3 relay internals are deferred, but the vocabulary member is handled.
-        Assert.Contains("deferred", Assert.IsType<CommandOutcome.Acknowledged>(forward).Detail);
+        Assert.Contains("no role", Assert.IsType<CommandOutcome.Acknowledged>(forward).Detail);
 
         await h.Daemon.ShutdownAsync();
     }

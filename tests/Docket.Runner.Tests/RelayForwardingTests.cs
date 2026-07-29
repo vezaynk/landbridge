@@ -1,0 +1,388 @@
+using System.Net;
+using System.Net.Sockets;
+using System.Net.WebSockets;
+using Docket.Contracts;
+using Docket.Core;
+using Microsoft.AspNetCore.Builder;
+using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Time.Testing;
+
+namespace Docket.Runner.Tests;
+
+/// <summary>
+/// The docketd relay data planes (spec §8.3), each end driven in isolation
+/// against a <em>fake</em> relay — a minimal loopback WebSocket server, the same
+/// shape <see cref="WebSocketControlPlaneChannelTests"/> uses for the control
+/// plane. The consumer plane binds loopback-only, reports its bound port via
+/// <c>forward-opened</c>, and splices an accepted TCP connection to the relay; the
+/// producer plane dials a local service and splices it. Both emit
+/// <c>forward-closed</c> when their splice ends, and a consumer nobody connects to
+/// closes within the bounded wait.
+/// </summary>
+public sealed class RelayForwardingTests
+{
+    private static CancellationToken Timeout(out CancellationTokenSource cts)
+    {
+        cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        return cts.Token;
+    }
+
+    [Fact]
+    public async Task Consumer_plane_binds_loopback_reports_its_port_and_splices_one_connection()
+    {
+        var ct = Timeout(out var cts);
+        using var _ = cts;
+
+        var ring = new OutboundEventRing(256);
+        var channel = new InMemoryControlPlaneChannel();
+        var daemon = BuildDaemon(ring, channel, acceptTimeout: TimeSpan.FromSeconds(30));
+        await daemon.StartAsync();
+        await using var relay = await FakeRelay.StartAsync();
+
+        var task = TaskId.New();
+        const string forwardId = "fwd-consumer";
+        var outcome = await daemon.HandleAsync(new OpenForwardCommand(
+            task, forwardId, "db", RelayTunnel.ConsumerRole, "dkt_g_x", relay.HttpUrl, Port: 0));
+        Assert.IsType<CommandOutcome.Acknowledged>(outcome);
+
+        // The consumer bound its loopback listener and reported the port.
+        var opened = await WaitForEventAsync<ForwardOpenedEvent>(channel, forwardId, ct);
+        Assert.True(opened.Port > 0, "consumer did not report a bound port");
+
+        // Connect to 127.0.0.1:port as the worker's client would — proving the
+        // bind is on loopback, not 0.0.0.0. docketd accepts and opens its tunnel.
+        using var client = new TcpClient();
+        await client.ConnectAsync(IPAddress.Loopback, opened.Port, ct);
+        await using var tcp = client.GetStream();
+
+        // The relay end echoes: bytes the consumer sends come straight back, which
+        // exercises the splice both directions through the one TCP connection.
+        var relaySocket = await relay.Accepted.WaitAsync(ct);
+        var echo = Task.Run(() => EchoWebSocketAsync(relaySocket, ct), ct);
+
+        var payload = RandomBytes(96 * 1024); // > 64 KiB buffer: proves streaming
+        await tcp.WriteAsync(payload, ct);
+        var echoed = await ReadExactlyAsync(tcp, payload.Length, ct);
+        Assert.True(payload.AsSpan().SequenceEqual(echoed), "consumer splice did not round-trip the bytes");
+
+        // Worker closes → the splice ends → forward-closed.
+        client.Client.Shutdown(SocketShutdown.Send);
+        var closed = await WaitForEventAsync<ForwardClosedEvent>(channel, forwardId, ct);
+        Assert.Equal(forwardId, closed.ForwardId);
+
+        await echo.WaitAsync(TimeSpan.FromSeconds(5), ct).ContinueWith(_ => { }, TaskScheduler.Default);
+        await daemon.ShutdownAsync();
+    }
+
+    [Fact]
+    public async Task Consumer_plane_that_nobody_connects_to_closes_within_the_bounded_wait()
+    {
+        var ct = Timeout(out var cts);
+        using var _ = cts;
+
+        var ring = new OutboundEventRing(256);
+        var channel = new InMemoryControlPlaneChannel();
+        // Short accept timeout so the bounded wait elapses quickly in the test.
+        var daemon = BuildDaemon(ring, channel, acceptTimeout: TimeSpan.FromMilliseconds(500));
+        await daemon.StartAsync();
+        await using var relay = await FakeRelay.StartAsync();
+
+        var task = TaskId.New();
+        const string forwardId = "fwd-lonely";
+        await daemon.HandleAsync(new OpenForwardCommand(
+            task, forwardId, "db", RelayTunnel.ConsumerRole, "dkt_g_x", relay.HttpUrl, Port: 0));
+
+        // It still binds and reports its port…
+        await WaitForEventAsync<ForwardOpenedEvent>(channel, forwardId, ct);
+        // …then closes cleanly once nobody connects within the wait — no hang.
+        var closed = await WaitForEventAsync<ForwardClosedEvent>(channel, forwardId, ct);
+        Assert.Equal(forwardId, closed.ForwardId);
+
+        await daemon.ShutdownAsync();
+    }
+
+    [Fact]
+    public async Task Producer_plane_dials_the_local_service_and_splices_it_to_the_relay()
+    {
+        var ct = Timeout(out var cts);
+        using var _ = cts;
+
+        await using var service = await TcpEchoServer.StartAsync(); // the "registered service"
+        var ring = new OutboundEventRing(256);
+        var channel = new InMemoryControlPlaneChannel();
+        var daemon = BuildDaemon(ring, channel, acceptTimeout: TimeSpan.FromSeconds(30));
+        await daemon.StartAsync();
+        await using var relay = await FakeRelay.StartAsync();
+
+        var task = TaskId.New();
+        const string forwardId = "fwd-producer";
+        await daemon.HandleAsync(new OpenForwardCommand(
+            task, forwardId, "db", RelayTunnel.ProducerRole, "dkt_g_x", relay.HttpUrl, service.Port));
+
+        // Producer opened its tunnel and dialed the echo service. Drive bytes in
+        // from the relay end: they reach the service, echo back, and return on the
+        // tunnel — the producer splice both directions.
+        var relaySocket = await relay.Accepted.WaitAsync(ct);
+        var payload = RandomBytes(80 * 1024);
+        await relaySocket.SendAsync(payload, WebSocketMessageType.Binary, endOfMessage: true, ct);
+        var echoed = await ReceiveExactlyAsync(relaySocket, payload.Length, ct);
+        Assert.True(payload.AsSpan().SequenceEqual(echoed), "producer splice did not round-trip through the service");
+
+        await relaySocket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "done", ct);
+        var closed = await WaitForEventAsync<ForwardClosedEvent>(channel, forwardId, ct);
+        Assert.Equal(forwardId, closed.ForwardId);
+
+        await daemon.ShutdownAsync();
+    }
+
+    [Fact]
+    public async Task Producer_plane_dial_failure_surfaces_as_forward_closed()
+    {
+        var ct = Timeout(out var cts);
+        using var _ = cts;
+
+        var ring = new OutboundEventRing(256);
+        var channel = new InMemoryControlPlaneChannel();
+        var daemon = BuildDaemon(ring, channel, acceptTimeout: TimeSpan.FromSeconds(30));
+        await daemon.StartAsync();
+
+        // A port with nothing listening: a service that died between registration
+        // and dial must surface as forward-closed, not a hang (§8.3).
+        var deadPort = ReserveClosedPort();
+        var task = TaskId.New();
+        const string forwardId = "fwd-deadservice";
+        await daemon.HandleAsync(new OpenForwardCommand(
+            task, forwardId, "db", RelayTunnel.ProducerRole, "dkt_g_x", "http://127.0.0.1:1", deadPort));
+
+        var closed = await WaitForEventAsync<ForwardClosedEvent>(channel, forwardId, ct);
+        Assert.Equal(forwardId, closed.ForwardId);
+        // The producer never binds a listener, so it never reports forward-opened.
+        Assert.DoesNotContain(channel.Events, e => e.Event is ForwardOpenedEvent);
+
+        await daemon.ShutdownAsync();
+    }
+
+    // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private static RunnerDaemon BuildDaemon(
+        OutboundEventRing ring, InMemoryControlPlaneChannel channel, TimeSpan acceptTimeout)
+    {
+        var config = RunnerConfig.Load("""
+            { "machine": { "work_root": "/tmp/docketd-forward-test" },
+              "profiles": [ { "name": "default", "spawn": ["noop"] } ] }
+            """);
+        var clock = new FakeTimeProvider();
+        return new RunnerDaemon(
+            "machine-fwd", config, new FakeProcessSupervisor(),
+            new BackPressureMonitor(new FakeLoadReader(), config.Machine.BackPressure),
+            channel, ring, new FakeStrayReaper(0), clock, forwardAcceptTimeout: acceptTimeout);
+    }
+
+    private static async Task<T> WaitForEventAsync<T>(
+        InMemoryControlPlaneChannel channel, string forwardId, CancellationToken ct)
+        where T : RunnerEvent
+    {
+        while (!ct.IsCancellationRequested)
+        {
+            var match = channel.Events
+                .Select(e => e.Event)
+                .OfType<T>()
+                .FirstOrDefault(e => ForwardIdOf(e) == forwardId);
+            if (match is not null)
+                return match;
+            await Task.Delay(20, ct);
+        }
+        throw new OperationCanceledException($"never observed {typeof(T).Name} for {forwardId}");
+    }
+
+    private static string? ForwardIdOf(RunnerEvent e) => e switch
+    {
+        ForwardOpenedEvent o => o.ForwardId,
+        ForwardClosedEvent c => c.ForwardId,
+        _ => null,
+    };
+
+    private static byte[] RandomBytes(int n)
+    {
+        var b = new byte[n];
+        Random.Shared.NextBytes(b);
+        return b;
+    }
+
+    private static async Task<byte[]> ReadExactlyAsync(Stream stream, int count, CancellationToken ct)
+    {
+        var buffer = new byte[count];
+        var offset = 0;
+        while (offset < count)
+        {
+            var read = await stream.ReadAsync(buffer.AsMemory(offset), ct);
+            if (read == 0)
+                throw new InvalidOperationException($"stream closed after {offset}/{count} bytes");
+            offset += read;
+        }
+        return buffer;
+    }
+
+    private static async Task<byte[]> ReceiveExactlyAsync(WebSocket ws, int count, CancellationToken ct)
+    {
+        var received = new byte[count];
+        var offset = 0;
+        var buffer = new byte[64 * 1024];
+        while (offset < count)
+        {
+            var result = await ws.ReceiveAsync(buffer, ct);
+            if (result.MessageType == WebSocketMessageType.Close)
+                throw new InvalidOperationException($"peer closed after {offset}/{count} bytes");
+            Buffer.BlockCopy(buffer, 0, received, offset, result.Count);
+            offset += result.Count;
+        }
+        return received;
+    }
+
+    private static async Task EchoWebSocketAsync(WebSocket ws, CancellationToken ct)
+    {
+        var buffer = new byte[64 * 1024];
+        try
+        {
+            while (ws.State == WebSocketState.Open)
+            {
+                var result = await ws.ReceiveAsync(buffer, ct);
+                if (result.MessageType == WebSocketMessageType.Close)
+                    return;
+                await ws.SendAsync(
+                    new ArraySegment<byte>(buffer, 0, result.Count), result.MessageType, result.EndOfMessage, ct);
+            }
+        }
+        catch (Exception) { /* teardown */ }
+    }
+
+    private static int ReserveClosedPort()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
+        listener.Stop();
+        return port;
+    }
+}
+
+/// <summary>
+/// A minimal loopback relay: accepts one WebSocket on <c>/tunnel</c> and hands it
+/// to the test, which drives / echoes bytes on it. It never validates the grant —
+/// grant policy is the real relay's job (covered elsewhere); this exercises the
+/// docketd side of the tunnel in isolation.
+/// </summary>
+internal sealed class FakeRelay : IAsyncDisposable
+{
+    private readonly WebApplication _app;
+    private readonly CancellationTokenSource _hold = new();
+    private readonly TaskCompletionSource<WebSocket> _accepted =
+        new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    private FakeRelay(WebApplication app) => _app = app;
+
+    public Task<WebSocket> Accepted => _accepted.Task;
+
+    public string HttpUrl => _app.Urls.First(u => u.StartsWith("http://", StringComparison.Ordinal));
+
+    public static async Task<FakeRelay> StartAsync()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.Logging.ClearProviders();
+        builder.WebHost.UseUrls("http://127.0.0.1:0");
+        var app = builder.Build();
+        var relay = new FakeRelay(app);
+        app.UseWebSockets();
+        app.Map("/tunnel", async (HttpContext http) =>
+        {
+            if (!http.WebSockets.IsWebSocketRequest)
+            {
+                http.Response.StatusCode = StatusCodes.Status400BadRequest;
+                return;
+            }
+            var socket = await http.WebSockets.AcceptWebSocketAsync();
+            relay._accepted.TrySetResult(socket);
+            // Park while the test uses the socket; released on dispose or abort.
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(relay._hold.Token, http.RequestAborted);
+            try { await Task.Delay(System.Threading.Timeout.Infinite, linked.Token); }
+            catch (OperationCanceledException) { }
+        });
+        await app.StartAsync();
+        return relay;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await _hold.CancelAsync();
+        await _app.StopAsync();
+        await _app.DisposeAsync();
+        _hold.Dispose();
+    }
+}
+
+/// <summary>A loopback TCP echo server standing in for a registered local service.</summary>
+internal sealed class TcpEchoServer : IAsyncDisposable
+{
+    private readonly TcpListener _listener;
+    private readonly CancellationTokenSource _cts = new();
+    private readonly Task _loop;
+
+    private TcpEchoServer(TcpListener listener)
+    {
+        _listener = listener;
+        _loop = Task.Run(AcceptLoopAsync);
+    }
+
+    public int Port => ((IPEndPoint)_listener.LocalEndpoint).Port;
+
+    public static Task<TcpEchoServer> StartAsync()
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        return Task.FromResult(new TcpEchoServer(listener));
+    }
+
+    private async Task AcceptLoopAsync()
+    {
+        try
+        {
+            while (!_cts.IsCancellationRequested)
+            {
+                var socket = await _listener.AcceptSocketAsync(_cts.Token);
+                _ = Task.Run(() => EchoAsync(socket));
+            }
+        }
+        catch (Exception) { /* stopped */ }
+    }
+
+    private async Task EchoAsync(Socket socket)
+    {
+        using (socket)
+        await using (var stream = new NetworkStream(socket, ownsSocket: false))
+        {
+            var buffer = new byte[64 * 1024];
+            try
+            {
+                while (true)
+                {
+                    var read = await stream.ReadAsync(buffer, _cts.Token);
+                    if (read == 0)
+                        return;
+                    await stream.WriteAsync(buffer.AsMemory(0, read), _cts.Token);
+                }
+            }
+            catch (Exception) { /* peer closed / stopped */ }
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await _cts.CancelAsync();
+        _listener.Stop();
+        try { await _loop; } catch (Exception) { /* stopped */ }
+        _cts.Dispose();
+    }
+}

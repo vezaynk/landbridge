@@ -1,4 +1,5 @@
 using System.Net.WebSockets;
+using Docket.Contracts;
 using Microsoft.Extensions.Options;
 
 namespace Docket.Relay;
@@ -18,14 +19,8 @@ namespace Docket.Relay;
 /// </summary>
 public static class TunnelEndpoint
 {
-    /// <summary>The forward id that pairs the two ends of a tunnel.</summary>
-    public const string ForwardIdHeader = "X-Docket-Forward-Id";
-
-    /// <summary>The opaque connection-establishment grant (spec §8.3).</summary>
-    public const string GrantHeader = "X-Docket-Grant";
-
-    /// <summary><c>consumer</c> or <c>producer</c>.</summary>
-    public const string RoleHeader = "X-Docket-Role";
+    // Header names + role strings live in Docket.Contracts (RelayTunnel) so the
+    // runner's tunnel client presents exactly what this endpoint reads (§8.3).
 
     public static void MapRelayTunnel(this WebApplication app) =>
         app.Map("/tunnel", HandleAsync);
@@ -46,9 +41,9 @@ public static class TunnelEndpoint
             return;
         }
 
-        var forwardId = context.Request.Headers[ForwardIdHeader].ToString();
-        var grant = context.Request.Headers[GrantHeader].ToString();
-        var roleText = context.Request.Headers[RoleHeader].ToString();
+        var forwardId = context.Request.Headers[RelayTunnel.ForwardIdHeader].ToString();
+        var grant = context.Request.Headers[RelayTunnel.GrantHeader].ToString();
+        var roleText = context.Request.Headers[RelayTunnel.RoleHeader].ToString();
 
         if (string.IsNullOrEmpty(forwardId) || string.IsNullOrEmpty(grant)
             || !TryParseRole(roleText, out var role))
@@ -107,13 +102,13 @@ public static class TunnelEndpoint
 
     private static bool TryParseRole(string value, out RelayRole role)
     {
-        if (string.Equals(value, "consumer", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(value, RelayTunnel.ConsumerRole, StringComparison.OrdinalIgnoreCase))
         {
             role = RelayRole.Consumer;
             return true;
         }
 
-        if (string.Equals(value, "producer", StringComparison.OrdinalIgnoreCase))
+        if (string.Equals(value, RelayTunnel.ProducerRole, StringComparison.OrdinalIgnoreCase))
         {
             role = RelayRole.Producer;
             return true;

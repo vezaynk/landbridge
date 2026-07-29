@@ -138,6 +138,8 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
             .WithTools<LeadTools>();
 
         builder.Services.AddSingleton<RunnerConnectionRegistry>();
+
+        builder.Services.AddDocketForwarding(); // §8.3: WorkerTools needs the forward orchestrator
         builder.Services.AddSingleton<RunnerEventSink>();
         builder.Services.AddSingleton(new TaskEventListener(pg.ConnectionString));
         builder.Services.AddSingleton<DispatchService>();
