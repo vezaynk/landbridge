@@ -207,6 +207,15 @@ public sealed record BackPressureThresholds(double MaxCpuLoad, double MaxMemoryL
 /// One named runner configuration (§10). Describes <b>how</b> to run an agent,
 /// never <b>what</b> work it does — profiles are identifiers a human chose, not
 /// a capability manifest (§10, §15).
+///
+/// <para><b>Dead-man's switch convention (§10).</b> docketd redirects a worker's
+/// stdin to a pipe and holds the write end for the worker's whole lifetime (see
+/// <see cref="ProcessSupervisor.Spawn"/>). A well-behaved harness must therefore
+/// exit — killing anything it spawned — when it observes EOF on stdin: EOF means
+/// docketd is gone (crashed or SIGKILLed), and the worker is burning tokens
+/// against a task the control plane has already requeued. This is cooperative and
+/// immediate; <see cref="StrayReaper"/> is the non-cooperative backstop that runs
+/// on the next docketd start.</para>
 /// </summary>
 public sealed record ProfileConfig(
     string Name,
