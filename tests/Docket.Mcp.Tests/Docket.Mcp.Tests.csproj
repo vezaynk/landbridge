@@ -41,6 +41,9 @@
     <!-- The end-to-end spine test dials the control plane with the real docketd
          WebSocket channel, so it references the runner. -->
     <ProjectReference Include="..\..\src\Docket.Runner\Docket.Runner.csproj" />
+    <!-- The relay grant-validator crown test stands up the real relay host next to
+         the plane and splices two ClientWebSockets over a real issued grant (§8.3). -->
+    <ProjectReference Include="..\..\src\Docket.Relay\Docket.Relay.csproj" />
     <!-- Referenced so the fake worker harness binary is built and locatable; the
          walking-skeleton E2E spawns it as a real MCP-speaking child process
          (§10 conventions — a real spawnable child, no shell). -->

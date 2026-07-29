@@ -191,6 +191,7 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
         builder.Services.AddDbContext<DocketDbContext>(o =>
             o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
         builder.Services.AddScoped<TaskStore>();
+        builder.Services.AddScoped<RelayGrantService>();
         builder.Services.AddScoped<TokenService>();
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<RunnerConnectionRegistry>();
