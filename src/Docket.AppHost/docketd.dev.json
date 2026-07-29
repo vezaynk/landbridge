@@ -1,0 +1,26 @@
+{
+  // docketd's config for the Aspire dev loop (§10 runner config). The AppHost
+  // reads this template at startup and resolves two placeholders before writing
+  // it out and passing --config to docketd:
+  //   {work_root}      -> a temp scratch root the AppHost creates for this run
+  //   {worker_harness} -> the absolute path to the built Docket.WorkerHarness
+  // {mcp_config} is left untouched on purpose: docketd's ProcessSupervisor
+  // substitutes it per task with the generated mcp.json path (§13).
+  //
+  // This is the seam an operator edits to run a REAL agent instead of the no-LLM
+  // harness: swap the profile's "spawn" to e.g. ["claude", "-p", ...] — docketd
+  // needs no code change, only this data (§10). The worker still learns its
+  // assignment from the injected {mcp_config}.
+  "machine": {
+    "work_root": "{work_root}",
+    // Short cadence so a freshly-connected machine reports ready in ~2s and the
+    // dispatch loop can hand it work promptly (the §10 default is 15s).
+    "heartbeat_seconds": 2
+  },
+  "profiles": [
+    {
+      "name": "default",
+      "spawn": ["{worker_harness}", "--mcp-config", "{mcp_config}"]
+    }
+  ]
+}
