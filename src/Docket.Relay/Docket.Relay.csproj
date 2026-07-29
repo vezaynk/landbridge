@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <!-- docket-relay is a standalone, separately-deployable module (spec §3): its
+       own ASP.NET host, NOT part of Docket.Mcp. It reuses the shared Aspire
+       service defaults (health, OTel) like the other hosts do. -->
+  <ItemGroup>
+    <ProjectReference Include="..\Docket.ServiceDefaults\Docket.ServiceDefaults.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+</Project>
