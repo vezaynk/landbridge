@@ -38,8 +38,17 @@ builder.Services.AddDbContext<DocketDbContext>(o =>
 builder.Services.AddScoped<TaskStore>();
 builder.Services.AddScoped<TokenService>();
 builder.Services.AddScoped<RelayGrantService>();
+builder.Services.AddScoped<OAuthAuthorizationCodeService>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddHttpContextAccessor();
+
+// OAuth 2.1 authorization-server support (§5). The operator verifier and CIMD
+// client are singletons: the verifier caches the configured passphrase hash, and
+// the CIMD client holds one SSRF-fenced HttpClient. The CIMD insecure flag relaxes
+// the https/private-host guard for dev/test loopback fetches only — off by default.
+builder.Services.AddSingleton<IOperatorVerifier, ConfiguredOperatorVerifier>();
+builder.Services.AddSingleton<ICimdClient>(sp =>
+    new CimdClient(sp.GetRequiredService<IConfiguration>().GetValue<bool>(CimdClient.AllowInsecureKey)));
 
 // Opaque bearer tokens validated against the store (§5). Every MCP request
 // authenticates as its token's principal; a worker can only reach worker tools.
@@ -71,6 +80,11 @@ builder.Services.AddDocketForwarding();
 var publicMcpUrl = builder.Configuration["Docket:PublicMcpUrl"]
     ?? Environment.GetEnvironmentVariable("DOCKET_PUBLIC_MCP_URL")
     ?? DispatchService.DefaultPublicMcpUrl;
+
+// The canonical OAuth identity (§5): resource id, issuer, and the two endpoint
+// URLs all derive from the same public URL, so the RFC 9728 challenge, the
+// well-known metadata documents, and authorize/token validation never disagree.
+builder.Services.AddSingleton(OAuthServerConfig.FromPublicMcpUrl(publicMcpUrl));
 builder.Services.AddSingleton(sp => new DispatchService(
     sp.GetRequiredService<IServiceScopeFactory>(),
     sp.GetRequiredService<RunnerConnectionRegistry>(),
@@ -175,6 +189,13 @@ app.MapVerifierEndpoints();
 // this is the real control-plane validator behind Docket.Relay's IGrantValidator.
 // Not in the Principal system — the relay is not a §5 credential class.
 app.MapRelayValidationEndpoint();
+
+// OAuth 2.1 authorization server (§5): the two anonymous well-known discovery
+// documents (RFC 9728 / RFC 8414) and the authorize + token endpoints. Together
+// with the RFC 9728 challenge on the MCP 401, these make the plane a real
+// authorization server whose completed flow mints the existing human session.
+app.MapOAuthMetadataEndpoints();
+app.MapOAuthEndpoints();
 
 app.Run();
 

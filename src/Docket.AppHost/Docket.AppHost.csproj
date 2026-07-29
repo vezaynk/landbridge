@@ -18,6 +18,8 @@
          references. Docket.Runner is docketd, brought into the dev loop here. -->
     <ProjectReference Include="..\Docket.Mcp\Docket.Mcp.csproj" IsAspireProjectResource="true" />
     <ProjectReference Include="..\Docket.Runner\Docket.Runner.csproj" IsAspireProjectResource="true" />
+    <!-- docket-relay, brought into the dev loop as its own host (§8.3). -->
+    <ProjectReference Include="..\Docket.Relay\Docket.Relay.csproj" IsAspireProjectResource="true" />
 
     <!-- Build-only edge to the no-LLM worker harness: the app host resolves the
          built harness's path at startup (for docketd's spawn), but never links

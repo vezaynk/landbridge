@@ -1,3 +1,4 @@
+using Docket.Contracts;
 using Docket.ControlPlane;
 using Docket.ControlPlane.Auth;
 using Docket.ControlPlane.Tests;
@@ -6,6 +7,8 @@ using Docket.Mcp.Auth;
 using Docket.Mcp.Tools;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
 using ModelContextProtocol;
 
@@ -177,6 +180,48 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task Answering_a_task_the_sweeper_already_parked_wakes_it_and_it_redispatches()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+
+        // ask: a dispatched worker on m1 requests input → blocked_on_input.
+        var taskId = await SeedBlockedOnInputTask();
+
+        // The registry dispatch set up: m1 live, heartbeating on the fake clock,
+        // tracking the task. The sweep is about to park it and untrack the machine.
+        var registry = LiveMachine("m1", taskId);
+
+        // sweeper parks it once the wait TTL elapses — its own seam, FakeTimeProvider.
+        var sweeper = NewSweeper(registry, waitTtl: TimeSpan.FromMinutes(30), machineWindow: TimeSpan.FromHours(2));
+        _clock.Advance(TimeSpan.FromMinutes(31));
+        await sweeper.SweepAsync(CancellationToken.None);
+        await using (var v = pg.NewContext())
+            Assert.Equal(TaskState.Parked, (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == taskId.Value)).State);
+
+        // The Lead answers through the SAME tool, unaware the sweeper got there
+        // first — one call, correct outcome either way (§11). It wakes and requeues.
+        var tools = LeadFor(new Principal.Lead(Team), registry);
+        var msg = await tools.AnswerInputRequest(taskId.ToString(), CancellationToken.None);
+        Assert.Contains("Submitted", msg); // requeued for redispatch, not resumed in place
+
+        // Redispatch the woken task and confirm a fresh worker instance reads its
+        // assignment via the same read get_task delegates to. There is no separate
+        // "answer" field to carry (the blocked path persists none either — §11's
+        // resume-with-answer-as-prompt path is runner-side and not yet built); the
+        // channel the woken worker learns through is the redispatch itself, with the
+        // attempt incremented so the successor knows it inherited a workspace.
+        await using var db = pg.NewContext();
+        var store = new TaskStore(db, _clock);
+        var successor = WorkerInstanceId.New();
+        var dispatched = Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(Machine(), successor));
+        Assert.Equal(taskId, dispatched.Task.Id);
+
+        var assignment = await store.GetAssignmentAsync(new WorkerCaller(Team, taskId, successor));
+        Assert.NotNull(assignment);
+        Assert.Equal(2, assignment!.Attempt);
+    }
+
+    [SkippableFact]
     public async Task An_evicted_lead_is_refused_every_tool_with_an_explicit_reason()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
@@ -218,6 +263,39 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
             new RequestInput(new WorkerCaller(Team, created.Task.Id, instance), InputRequestKind.Question));
         return created.Task.Id;
     }
+
+    /// <summary>A registry with one ready machine heartbeating on the fake clock,
+    /// tracking the task — exactly what dispatch would have set up.</summary>
+    private RunnerConnectionRegistry LiveMachine(string machineId, TaskId task)
+    {
+        var registry = new RunnerConnectionRegistry(_clock);
+        registry.Register(machineId, new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
+        registry.ApplyHeartbeat(machineId, Heartbeat(machineId, "default"));
+        registry.TrackDispatch(machineId, task);
+        return registry;
+    }
+
+    private WaitTtlSweeper NewSweeper(
+        RunnerConnectionRegistry registry, TimeSpan? waitTtl = null, TimeSpan? machineWindow = null) =>
+        new(ScopeFactory(), registry, _clock, NullLogger<WaitTtlSweeper>.Instance,
+            waitTtl, machineWindow, sweepInterval: null);
+
+    /// <summary>A scope factory over the same Postgres + fake clock, so the sweeper's
+    /// per-pass scoped TaskStore writes to the DB these tools read.</summary>
+    private IServiceScopeFactory ScopeFactory()
+    {
+        var services = new ServiceCollection();
+        services.AddDbContext<DocketDbContext>(o =>
+            o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
+        services.AddScoped<TaskStore>();
+        services.AddScoped<TokenService>();
+        services.AddSingleton<TimeProvider>(_clock);
+        return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
+    }
+
+    private static MachineHeartbeat Heartbeat(string machineId, params string[] profiles) =>
+        new(machineId, Ready: true, UnderBackPressure: false,
+            new SystemLoad(0, 0, 0), RunningTasks: 0, profiles, DateTimeOffset.UtcNow);
 
     /// <summary>Drives a review-mode task all the way to verifying via the store.</summary>
     private async Task<TaskId> SeedReviewTaskInVerifying()
