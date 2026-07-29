@@ -176,6 +176,12 @@ app.MapVerifierEndpoints();
 // Not in the Principal system — the relay is not a §5 credential class.
 app.MapRelayValidationEndpoint();
 
+// The machine bootstrap surface (§5 Bootstrap, §13): /enroll exchanges a
+// human-issued enrollment token for machine credentials; /machine/refresh
+// re-mints docketd's short-lived access token. Both anonymous — the presented
+// token is the credential, validated by TokenService, not a Principal.
+app.MapEnrollmentEndpoints();
+
 app.Run();
 
 /// <summary>Exposed so WebApplicationFactory-based tests can host the app.</summary>

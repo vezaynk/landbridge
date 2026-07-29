@@ -16,10 +16,17 @@ public static class Program
 {
     public static async Task<int> Main(string[] args)
     {
+        // §5 Bootstrap: `docketd --enroll <token> --control-url <https://plane>` is
+        // a one-shot, non-interactive mode — exchange the human-issued enrollment
+        // token for machine credentials, persist them (atomic, 0600), print the
+        // machine id, and exit. It never starts the daemon.
+        if (ArgValue(args, "--enroll") is { } enrollmentToken)
+            return await RunEnrollAsync(args, enrollmentToken);
+
         var configPath = ArgValue(args, "--config");
         if (configPath is null)
         {
-            Console.Error.WriteLine("usage: docketd --config <path> [--machine-id <id>]");
+            Console.Error.WriteLine("usage: docketd --config <path> [--machine-id <id>] [--state-dir <dir>]");
             return 2;
         }
 
@@ -56,21 +63,64 @@ public static class Program
         var backPressure = new BackPressureMonitor(
             new PortableSystemLoadReader(config.Machine.WorkRoot), config.Machine.BackPressure);
 
-        // §10: dial the control plane outbound when a URL + machine token are
-        // configured; otherwise fall back to the console placeholder. The WS
-        // channel's receive loop is wired to the daemon after it exists.
+        // §10 + §5: dial the control plane outbound. Credential source, in
+        // priority order:
+        //   1. DOCKET_MACHINE_TOKEN env — the Aspire dev loop's fixed token, NEVER
+        //      refreshed (unchanged behaviour). DOCKET_CONTROL_URL is the ws(s) URL.
+        //   2. else credentials.json in the state dir — the enrolled machine's
+        //      access/refresh pair. The access token is refreshed at half-life and
+        //      on a 401 reconnect (§13); the ws URL is DOCKET_CONTROL_URL when set,
+        //      else derived from the enrolled HTTP base (http→ws, https→wss, /runner).
+        //   3. else the console placeholder.
         var controlUrl = Environment.GetEnvironmentVariable("DOCKET_CONTROL_URL");
-        var machineToken = Environment.GetEnvironmentVariable("DOCKET_MACHINE_TOKEN");
+        var envMachineToken = Environment.GetEnvironmentVariable("DOCKET_MACHINE_TOKEN");
+        var stateDir = CredentialStore.ResolveStateDir(ArgValue(args, "--state-dir"));
+
         WebSocketControlPlaneChannel? wsChannel = null;
+        MachineTokenRefresher? refresher = null;
+        HttpClient? refreshHttp = null;
         IControlPlaneChannel channel;
-        if (!string.IsNullOrWhiteSpace(controlUrl) && !string.IsNullOrWhiteSpace(machineToken))
+        string channelMode;
+
+        if (!string.IsNullOrWhiteSpace(envMachineToken))
         {
-            wsChannel = new WebSocketControlPlaneChannel(new Uri(controlUrl), machineToken, clock, Console.WriteLine);
+            if (string.IsNullOrWhiteSpace(controlUrl))
+            {
+                channel = new ConsoleControlPlaneChannel();
+                channelMode = "console";
+            }
+            else
+            {
+                wsChannel = new WebSocketControlPlaneChannel(new Uri(controlUrl), envMachineToken, clock, Console.WriteLine);
+                channel = wsChannel;
+                channelMode = controlUrl;
+            }
+        }
+        else if (CredentialStore.Load(stateDir) is { } creds)
+        {
+            machineId = creds.MachineId;
+            refreshHttp = new HttpClient();
+            refresher = new MachineTokenRefresher(
+                creds,
+                (refreshToken, refreshCt) => CredentialStore.RefreshAsync(refreshHttp, creds.ControlUrl, refreshToken, refreshCt),
+                updated => CredentialStore.Save(stateDir, updated),
+                clock,
+                Console.WriteLine);
+
+            var wsUri = !string.IsNullOrWhiteSpace(controlUrl)
+                ? new Uri(controlUrl)
+                : CredentialStore.DeriveRunnerWsUrl(creds.ControlUrl);
+            wsChannel = new WebSocketControlPlaneChannel(
+                wsUri, () => refresher.CurrentAccessToken, clock, Console.WriteLine,
+                onAuthRejected: refresher.RefreshOnceAsync);
             channel = wsChannel;
+            channelMode = wsUri.ToString();
+            refresher.Start();
         }
         else
         {
             channel = new ConsoleControlPlaneChannel();
+            channelMode = "console";
         }
 
         var daemon = new RunnerDaemon(machineId, config, supervisor, backPressure, channel, ring, reaper, clock);
@@ -80,7 +130,6 @@ public static class Program
         // a listener (§10). Commands arriving on it drive the daemon.
         wsChannel?.Start((command, ct) => daemon.HandleAsync(command, ct));
 
-        var channelMode = wsChannel is null ? "console" : controlUrl;
         Console.WriteLine($"docketd up: machine={machineId} profiles=[{string.Join(", ", config.DeclaredProfiles)}] strays_reaped={daemon.StraysReaped} control={channelMode}");
 
         using var shutdown = new CancellationTokenSource();
@@ -100,7 +149,57 @@ public static class Program
         await daemon.ShutdownAsync();
         if (wsChannel is not null)
             await wsChannel.DisposeAsync();
+        if (refresher is not null)
+            await refresher.DisposeAsync();
+        refreshHttp?.Dispose();
         return 0;
+    }
+
+    /// <summary>
+    /// The <c>--enroll</c> one-shot (§5 Bootstrap). Exchanges the enrollment token
+    /// for machine credentials over HTTP and persists them; prints the machine id
+    /// to stdout (scriptable) and a human note to stderr. Purpose/name/permission
+    /// level are declared here and bound server-side (§13); os is auto-filled.
+    /// </summary>
+    private static async Task<int> RunEnrollAsync(string[] args, string enrollmentToken)
+    {
+        var controlUrl = ArgValue(args, "--control-url");
+        if (string.IsNullOrWhiteSpace(controlUrl))
+        {
+            Console.Error.WriteLine(
+                "usage: docketd --enroll <token> --control-url <https://plane> " +
+                "[--state-dir <dir>] [--name <n>] [--purpose <p>] [--permission-level <l>]");
+            return 2;
+        }
+
+        var stateDir = CredentialStore.ResolveStateDir(ArgValue(args, "--state-dir"));
+        var request = new EnrollRequest(
+            EnrollmentToken: enrollmentToken,
+            Name: ArgValue(args, "--name") ?? Environment.MachineName,
+            Purpose: ArgValue(args, "--purpose") ?? "general",
+            Os: RuntimeInformation.OSDescription,
+            PermissionLevel: ArgValue(args, "--permission-level") ?? "standard");
+
+        using var http = new HttpClient();
+        try
+        {
+            var creds = await CredentialStore.EnrollAsync(http, controlUrl, request, CancellationToken.None);
+            CredentialStore.Save(stateDir, creds);
+            Console.WriteLine(creds.MachineId);
+            Console.Error.WriteLine(
+                $"docketd enrolled: machine={creds.MachineId} credentials={CredentialStore.PathIn(stateDir)}");
+            return 0;
+        }
+        catch (EnrollmentException e)
+        {
+            Console.Error.WriteLine($"enrollment failed: {e.Message}");
+            return 1;
+        }
+        catch (HttpRequestException e)
+        {
+            Console.Error.WriteLine($"enrollment failed: could not reach {controlUrl}: {e.Message}");
+            return 1;
+        }
     }
 
     private static string? ArgValue(string[] args, string flag)
