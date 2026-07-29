@@ -22,13 +22,17 @@ public static class ProcessInventory
 {
     /// <summary>
     /// The best available inventory for the current OS. Linux reads
-    /// <c>/proc</c>; other platforms return the empty
-    /// <see cref="NullProcessInventory"/> — a documented deferral, not a silent
-    /// failure. The <b>kill</b> half of stray cleanup is portable regardless
-    /// (see <see cref="StrayReaper"/>).
+    /// <c>/proc</c>; macOS reads each process's environment via libproc +
+    /// <c>sysctl(KERN_PROCARGS2)</c> (unprivileged, see
+    /// <see cref="MacOsProcessInventory"/>); any other platform returns the
+    /// empty <see cref="NullProcessInventory"/> — a documented deferral, not a
+    /// silent failure. The <b>kill</b> half of stray cleanup is portable
+    /// regardless (see <see cref="StrayReaper"/>).
     /// </summary>
     public static IProcessInventory ForCurrentPlatform() =>
-        OperatingSystem.IsLinux() ? new ProcFsProcessInventory() : new NullProcessInventory();
+        OperatingSystem.IsLinux() ? new ProcFsProcessInventory()
+        : OperatingSystem.IsMacOS() ? new MacOsProcessInventory()
+        : new NullProcessInventory();
 }
 
 /// <summary>Discovers nothing. Used where env-scan discovery is not yet implemented.</summary>
