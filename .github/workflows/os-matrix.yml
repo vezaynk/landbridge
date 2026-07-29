@@ -1,0 +1,62 @@
+# Cross-OS build + test for the platform-sensitive suites — above all the
+# process-supervision / stray-cleanup machinery (spec §10 restart-is-reboot),
+# whose whole point is per-OS behavior: ProcFs discovery on Linux,
+# KERN_PROCARGS2 discovery on macOS, Job-Object containment on Windows
+# (pending). Tests gate themselves per-OS with SkippableFact, so each leg runs
+# what its OS supports and skips the rest — a skip is a documented deferral,
+# a failure is a real regression.
+#
+# The Postgres-backed suites (ControlPlane, Mcp) stay in ci.yml on ubuntu:
+# GitHub-hosted service containers are Linux-only, and those suites are not
+# platform-sensitive. This matrix runs the pure suites: Core, Contracts,
+# Runner (the per-OS one), Relay.
+name: OS Matrix
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+concurrency:
+  group: os-matrix-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    strategy:
+      fail-fast: false # every OS reports; one leg's failure shouldn't hide another's
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: 1
+      DOTNET_NOLOGO: 1
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore
+
+      # TreatWarningsAsErrors is on; this also builds the runner/worker test
+      # harness apphosts and the real docketd binary the E2E tests spawn.
+      - name: Build
+        run: dotnet build --no-restore -c Release
+
+      - name: Test - Docket.Core (pure engine)
+        run: dotnet test tests/Docket.Core.Tests --no-build -c Release
+
+      - name: Test - Docket.Contracts (wire vocabulary)
+        run: dotnet test tests/Docket.Contracts.Tests --no-build -c Release
+
+      - name: Test - Docket.Runner (per-OS supervision, discovery, reap E2E)
+        run: dotnet test tests/Docket.Runner.Tests --no-build -c Release
+
+      - name: Test - Docket.Relay (splice core)
+        run: dotnet test tests/Docket.Relay.Tests --no-build -c Release
