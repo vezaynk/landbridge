@@ -4,6 +4,7 @@ using Docket.ControlPlane;
 using Docket.ControlPlane.Auth;
 using Docket.Mcp;
 using Docket.Mcp.Auth;
+using Docket.Mcp.Dashboard;
 using Docket.Mcp.Tools;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.EntityFrameworkCore;
@@ -38,6 +39,9 @@ builder.Services.AddDbContext<DocketDbContext>(o =>
 builder.Services.AddScoped<TaskStore>();
 builder.Services.AddScoped<TokenService>();
 builder.Services.AddScoped<RelayGrantService>();
+// §12 dashboard read side: scoped (per-request DbContext) + the in-memory
+// connection registry singleton it injects for live machine state.
+builder.Services.AddScoped<DashboardQueries>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddHttpContextAccessor();
 
@@ -169,6 +173,12 @@ app.MapRunnerEndpoint();
 // is applied inside on the /verify group; each handler further narrows to the
 // verifier principal.
 app.MapVerifierEndpoints();
+
+// The §12 web dashboard — the primary human surface (Machine Group, Team view,
+// Human inbox, event log), server-rendered HTML with a JSON twin. Gated by its own
+// bearer-or-cookie resolution (DashboardAuth), not RequireAuthorization, so the
+// browser path never trips the MCP challenge.
+app.MapDashboard();
 
 // The relay grant-validation endpoint (§8.3): plain HTTP, shared-bearer auth,
 // fail-closed. The relay asks whether a presented grant is valid for a tunnel;
