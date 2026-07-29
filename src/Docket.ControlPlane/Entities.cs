@@ -43,6 +43,16 @@ public sealed class TaskRow
     public string? Workspace { get; set; }
     public string? ResultReference { get; set; }
 
+    /// <summary>
+    /// The ambient W3C trace context (traceparent) captured when the Lead created
+    /// the task. Opaque transport metadata, exactly like <see cref="ResultReference"/>:
+    /// stored verbatim, never dereferenced by the control plane, never entering
+    /// <c>Docket.Core</c>. Dispatch continues the Lead's trace from here so one
+    /// trace spans create_task → dispatch → runner → worker. Null when no Activity
+    /// was sampling at creation.
+    /// </summary>
+    public string? TraceContext { get; set; }
+
     /// <summary>Postgres system column, used as the optimistic-concurrency token.</summary>
     public uint Version { get; set; }
 

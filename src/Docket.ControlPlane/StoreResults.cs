@@ -11,7 +11,15 @@ public abstract record StoreResult
 {
     private StoreResult() { }
 
-    public sealed record Applied(TaskRecord Task, IReadOnlyList<Effect> Effects) : StoreResult;
+    /// <summary>
+    /// The transition committed. <paramref name="TraceContext"/> is opaque
+    /// transport metadata the store surfaces only where a caller needs it — the
+    /// dispatch path reads it to parent its span on the Lead's create_task trace.
+    /// Null everywhere else; it never touches the engine (<see cref="TaskRecord"/>
+    /// stays content-free).
+    /// </summary>
+    public sealed record Applied(
+        TaskRecord Task, IReadOnlyList<Effect> Effects, string? TraceContext = null) : StoreResult;
 
     /// <summary>The engine refused the transition; nothing was written.</summary>
     public sealed record Rejected(Rule Rule, string Reason) : StoreResult;

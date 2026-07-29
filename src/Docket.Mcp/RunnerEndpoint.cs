@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.WebSockets;
 using System.Text;
 using Docket.Contracts;
@@ -51,7 +52,13 @@ public static class RunnerEndpoint
 
         async Task Send(RunnerCommand command, CancellationToken ct)
         {
-            var bytes = Encoding.UTF8.GetBytes(RunnerWire.EncodeCommand(command));
+            // §1 tracing: stamp the current dispatch span's W3C id onto the
+            // envelope so the runner continues the same trace. Activity.Current
+            // here is the DispatchService dispatch span, which flows in ambiently
+            // across the await from the send call; null when nothing is tracing,
+            // leaving the envelope exactly as before (backward compatible).
+            var bytes = Encoding.UTF8.GetBytes(
+                RunnerWire.EncodeCommand(command, Activity.Current?.Id));
             await sendLock.WaitAsync(ct);
             try
             {

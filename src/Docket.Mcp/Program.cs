@@ -7,6 +7,8 @@ using Docket.Mcp.Auth;
 using Docket.Mcp.Tools;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.EntityFrameworkCore;
+using OpenTelemetry;
+using OpenTelemetry.Trace;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -16,6 +18,14 @@ var builder = WebApplication.CreateBuilder(args);
 // dashboard captures the plane's telemetry; standalone runs and tests leave it
 // unset and simply don't export.
 builder.AddServiceDefaults();
+
+// §1 tracing: register the control-plane dispatch span source with the tracer
+// ServiceDefaults configured, so DispatchService's `dispatch {task}` span exports
+// to the same OTLP endpoint (the Aspire dashboard) as the AspNetCore/HTTP spans.
+// AddOpenTelemetry() returns the same builder ServiceDefaults set up; WithTracing
+// accumulates onto it.
+builder.Services.AddOpenTelemetry()
+    .WithTracing(tracing => tracing.AddSource(DispatchService.ActivitySourceName));
 
 var connectionString = builder.Configuration.GetConnectionString("Docket")
     ?? Environment.GetEnvironmentVariable("DOCKET_DB")

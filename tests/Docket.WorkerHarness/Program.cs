@@ -1,7 +1,11 @@
+using System.Diagnostics;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
+using OpenTelemetry;
+using OpenTelemetry.Resources;
+using OpenTelemetry.Trace;
 
 namespace Docket.WorkerHarness;
 
@@ -30,6 +34,13 @@ public static class Program
         var cwd = Directory.GetCurrentDirectory();
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(60));
         var ct = cts.Token;
+
+        // §1 tracing: root the worker's span on the traceparent docketd injected
+        // (DOCKET_TRACEPARENT), so this process — and its MCP calls back to the
+        // plane — continue the one trace that began at the Lead's create_task. The
+        // root span stays current for the whole run; disposed last so it (and, when
+        // a collector is configured, the export) flushes before the process exits.
+        using var telemetry = WorkerTelemetry.Start(cwd);
 
         try
         {
@@ -120,5 +131,105 @@ public static class Program
             return structured.GetRawText();
         return string.Join(
             "\n", result.Content.OfType<TextContentBlock>().Select(b => b.Text));
+    }
+}
+
+/// <summary>
+/// The worker's OpenTelemetry setup (§1). Roots a span on <c>DOCKET_TRACEPARENT</c>
+/// so the worker sits inside the trace that began at the Lead's <c>create_task</c>,
+/// and — when <c>OTEL_EXPORTER_OTLP_ENDPOINT</c> is set — exports it plus the MCP
+/// calls it makes (HttpClient instrumentation nests them and injects the
+/// traceparent, so the plane continues the trace on <c>get_task</c>/<c>report_result</c>).
+///
+/// When no collector is configured (e.g. the deterministic continuity test) a bare
+/// <see cref="ActivityListener"/> still makes the root span sample, so its trace id
+/// is real and lands in the <c>trace.json</c> marker the test asserts on.
+/// </summary>
+internal sealed class WorkerTelemetry : IDisposable
+{
+    private const string SourceName = "Docket.WorkerHarness";
+
+    private readonly Activity? _rootActivity;
+    private readonly TracerProvider? _tracerProvider;
+    private readonly ActivityListener? _listener;
+    private readonly ActivitySource _source;
+
+    private WorkerTelemetry(
+        ActivitySource source, Activity? root, TracerProvider? tracer, ActivityListener? listener)
+    {
+        _source = source;
+        _rootActivity = root;
+        _tracerProvider = tracer;
+        _listener = listener;
+    }
+
+    public static WorkerTelemetry Start(string workDir)
+    {
+        var source = new ActivitySource(SourceName);
+
+        ActivityContext parentContext = default;
+        var traceparent = Environment.GetEnvironmentVariable("DOCKET_TRACEPARENT");
+        if (!string.IsNullOrWhiteSpace(traceparent))
+            ActivityContext.TryParse(traceparent, null, out parentContext);
+
+        TracerProvider? tracer = null;
+        ActivityListener? listener = null;
+        if (!string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("OTEL_EXPORTER_OTLP_ENDPOINT")))
+        {
+            tracer = Sdk.CreateTracerProviderBuilder()
+                .AddSource(SourceName)
+                .ConfigureResource(r => r.AddService("docket-worker"))
+                .AddHttpClientInstrumentation()
+                .AddOtlpExporter()
+                .Build();
+        }
+        else
+        {
+            listener = new ActivityListener
+            {
+                ShouldListenTo = s => s.Name == SourceName,
+                Sample = (ref ActivityCreationOptions<ActivityContext> _) => ActivitySamplingResult.AllData,
+            };
+            ActivitySource.AddActivityListener(listener);
+        }
+
+        var root = parentContext == default
+            ? source.StartActivity("worker-run", ActivityKind.Internal)
+            : source.StartActivity("worker-run", ActivityKind.Internal, parentContext);
+
+        WriteTraceMarker(workDir, root, parentContext);
+        return new WorkerTelemetry(source, root, tracer, listener);
+    }
+
+    /// <summary>
+    /// Records the resolved trace id / span ids to <c>trace.json</c> in the work
+    /// dir so the continuity test can assert the worker's span shares the Lead's
+    /// trace id without needing a live collector.
+    /// </summary>
+    private static void WriteTraceMarker(string workDir, Activity? root, ActivityContext parentContext)
+    {
+        if (root is null)
+            return;
+        var marker = new JsonObject
+        {
+            ["traceId"] = root.TraceId.ToHexString(),
+            ["spanId"] = root.SpanId.ToHexString(),
+            ["parentSpanId"] = parentContext == default ? null : parentContext.SpanId.ToHexString(),
+            ["traceparent"] = root.Id,
+        };
+        try { File.WriteAllText(Path.Combine(workDir, "trace.json"), marker.ToJsonString()); }
+        catch { /* best effort — the marker is a test aid, not part of the run */ }
+    }
+
+    public void Dispose()
+    {
+        _rootActivity?.Dispose();
+        if (_tracerProvider is not null)
+        {
+            _tracerProvider.ForceFlush(5000);
+            _tracerProvider.Dispose();
+        }
+        _listener?.Dispose();
+        _source.Dispose();
     }
 }

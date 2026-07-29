@@ -81,6 +81,65 @@ public class RunnerWireTests
         Assert.Equal(original, decoded);
     }
 
+    // ── Traceparent: opaque transport metadata on the envelope (§1 tracing) ───
+
+    [Fact]
+    public void Traceparent_round_trips_on_a_dispatch_envelope()
+    {
+        const string traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+        var original = new DispatchCommand(TaskId.New(), "default", WorkerToken: "dkt_w_abc");
+
+        var encoded = RunnerWire.EncodeCommand(original, traceparent);
+        var decoded = Assert.IsType<DispatchCommand>(RunnerWire.DecodeCommand(encoded, out var decodedTp));
+
+        Assert.Equal(traceparent, decodedTp);
+        // The domain record is untouched by the envelope's transport metadata.
+        Assert.Equal(original, decoded);
+    }
+
+    [Fact]
+    public void Command_encoded_without_a_traceparent_decodes_to_null()
+    {
+        var original = new DispatchCommand(TaskId.New(), "default");
+
+        // Default (no traceparent) encode is byte-for-byte the old envelope.
+        var withoutTp = RunnerWire.EncodeCommand(original);
+        Assert.DoesNotContain("traceparent", withoutTp);
+
+        var decoded = Assert.IsType<DispatchCommand>(RunnerWire.DecodeCommand(withoutTp, out var decodedTp));
+        Assert.Null(decodedTp);
+        Assert.Equal(original, decoded);
+    }
+
+    [Fact]
+    public void Traceparent_does_not_change_the_decoded_domain_record()
+    {
+        const string traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
+        var original = new DispatchCommand(
+            TaskId.New(), "restricted", WorkerToken: "dkt_w_x", BudgetUsd: 5m);
+
+        var withTp = Assert.IsType<DispatchCommand>(
+            RunnerWire.DecodeCommand(RunnerWire.EncodeCommand(original, traceparent)));
+        var withoutTp = Assert.IsType<DispatchCommand>(
+            RunnerWire.DecodeCommand(RunnerWire.EncodeCommand(original)));
+
+        // Same record whether or not the envelope carried a traceparent.
+        Assert.Equal(withoutTp, withTp);
+        Assert.Equal(original, withTp);
+    }
+
+    [Fact]
+    public void The_single_arg_decode_still_works_alongside_the_traceparent_overload()
+    {
+        var original = new KillCommand(TaskId.New());
+        var encoded = RunnerWire.EncodeCommand(
+            original, "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01");
+
+        // The convenience overload discards the traceparent but still decodes.
+        var decoded = Assert.IsType<KillCommand>(RunnerWire.DecodeCommand(encoded));
+        Assert.Equal(original, decoded);
+    }
+
     // ── Events ──────────────────────────────────────────────────────────────
 
     [Fact]

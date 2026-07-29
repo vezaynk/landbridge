@@ -44,6 +44,11 @@ public static class Program
             ?? Environment.GetEnvironmentVariable("DOCKET_MACHINE_ID")
             ?? Guid.NewGuid().ToString("N");
 
+        // §1 tracing: stand up OTLP export when the environment provides a
+        // collector (the Aspire dev loop does; a standalone runner leaves it unset
+        // and this no-ops). Disposed last so the handle spans flush on shutdown.
+        using var otelExport = RunnerTelemetry.TryStartOtelExport();
+
         var clock = TimeProvider.System;
         var ring = new OutboundEventRing(capacity: 1024);
         var reaper = new StrayReaper(ProcessInventory.ForCurrentPlatform(), Environment.ProcessId);
