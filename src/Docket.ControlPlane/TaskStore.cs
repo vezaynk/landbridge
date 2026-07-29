@@ -59,6 +59,51 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
     }
 
     /// <summary>
+    /// A Lead's answer to a task awaiting input, routed to whichever §6
+    /// transition the task's current state needs — so a Lead answering never has
+    /// to know whether the wait-TTL sweeper (§11) parked the task first. One
+    /// call, correct outcome either way:
+    ///
+    ///   blocked_on_input → working   (<see cref="AnswerInput"/>): the task is
+    ///     still waiting in-lease; it resumes in place, gated on the dispatched
+    ///     machine still holding the lease (<paramref name="leaseStillHeld"/>, §6).
+    ///   parked → submitted           (<see cref="WakeParked"/>): the sweeper
+    ///     already parked it; the answer landing wakes it so redispatch requeues
+    ///     it with the park record's machine/directory affinity (§6, §11 — "the
+    ///     awaited answer … landed"). parked → submitted is the control plane's
+    ///     transition (§6), so the store applies it as the plane once it has
+    ///     checked the Lead's Team scope — the same store-level guard
+    ///     <see cref="RegisterServiceAsync"/> applies, and exactly the Team check
+    ///     the engine enforces on the <see cref="AnswerInput"/> path.
+    ///
+    /// Any other state falls through to <see cref="AnswerInput"/> and surfaces the
+    /// engine's wrong-state rejection unchanged — the behaviour before this method
+    /// existed. The answer-vs-sweep race is resolved by the store's optimistic
+    /// concurrency exactly as everywhere else: whichever transition commits first
+    /// wins, and the loser sees a rejected wrong-state command (the sweeper's
+    /// <see cref="WaitTtlExpired"/> on a now-working task) or a
+    /// <see cref="StoreResult.Conflict"/> — never a lost answer or a double
+    /// transition.
+    /// </summary>
+    public async Task<StoreResult> AnswerOrWakeAsync(
+        LeadClaim lead, TaskId id, bool leaseStillHeld, CancellationToken ct = default)
+    {
+        var row = await db.Tasks.FirstOrDefaultAsync(t => t.Id == id.Value, ct);
+        if (row is null)
+            return new StoreResult.NotFound($"no task {id}");
+
+        if (row.State == TaskState.Parked)
+        {
+            if (row.TeamId != lead.Team.Value)
+                return new StoreResult.Rejected(Rule.ActorLacksAuthority,
+                    "input requests are answered by the Lead or a human");
+            return await RunTransition(row, new WakeParked(), ct);
+        }
+
+        return await RunTransition(row, new AnswerInput(lead, leaseStillHeld), ct);
+    }
+
+    /// <summary>
     /// The dispatch transaction and the one raw-SQL path (§3.1). Selects a
     /// single eligible submitted task with FOR UPDATE SKIP LOCKED so
     /// concurrent dispatchers never pick the same row (§9 check 5), then runs
