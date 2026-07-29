@@ -37,7 +37,7 @@ public static class Program
                 await WriteStartedAsync(cwd);
                 using (var grandchild = SpawnChild())
                 {
-                    await File.WriteAllTextAsync(Path.Combine(cwd, "child.pid"), grandchild.Id.ToString());
+                    await WriteMarkerAtomicAsync(Path.Combine(cwd, "child.pid"), grandchild.Id.ToString());
                     await Task.Delay(MaxLifetime);
                 }
                 return 0;
@@ -49,7 +49,7 @@ public static class Program
                 {
                     if (line.Contains("stop", StringComparison.OrdinalIgnoreCase))
                     {
-                        await File.WriteAllTextAsync(Path.Combine(cwd, "stopped"), line);
+                        await WriteMarkerAtomicAsync(Path.Combine(cwd, "stopped"), line);
                         return 0;
                     }
                 }
@@ -66,7 +66,26 @@ public static class Program
     {
         var taskId = Environment.GetEnvironmentVariable("DOCKET_TASK_ID") ?? "none";
         var machineId = Environment.GetEnvironmentVariable("DOCKET_MACHINE_ID") ?? "none";
-        await File.WriteAllTextAsync(Path.Combine(cwd, "started"), $"{taskId}\n{machineId}");
+        await WriteMarkerAtomicAsync(Path.Combine(cwd, "started"), $"{taskId}\n{machineId}");
+    }
+
+    /// <summary>
+    /// Writes a marker atomically so the harnessing test — which polls
+    /// <c>File.Exists</c> and then reads the content — sees either no file or the
+    /// complete content, never the create-then-write gap.
+    /// <see cref="File.WriteAllTextAsync(string,string?)"/> truncates then streams,
+    /// so a concurrent reader can catch an empty or partial file; under heavy
+    /// concurrent test load that raced the supervisor tests into an empty
+    /// <c>child.pid</c> (FormatException) or a one-line <c>started</c>
+    /// (IndexOutOfRange). Writing a temp sibling and renaming is atomic on POSIX
+    /// and Windows (same directory = same volume), so a visible marker is always
+    /// whole. Keep marker writes going through here.
+    /// </summary>
+    private static async Task WriteMarkerAtomicAsync(string path, string content)
+    {
+        var tmp = path + ".tmp";
+        await File.WriteAllTextAsync(tmp, content);
+        File.Move(tmp, path, overwrite: true);
     }
 
     private static Process SpawnChild()
