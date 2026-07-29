@@ -3,6 +3,7 @@ using System;
 using Docket.ControlPlane;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Docket.ControlPlane.Migrations
 {
     [DbContext(typeof(DocketDbContext))]
-    partial class DocketDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260729183631_AddOAuthAuthorizationCodes")]
+    partial class AddOAuthAuthorizationCodes
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -419,10 +422,6 @@ namespace Docket.ControlPlane.Migrations
                     b.Property<int>("Attempt")
                         .HasColumnType("integer")
                         .HasColumnName("attempt");
-
-                    b.Property<DateTimeOffset?>("BlockedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("blocked_at");
 
                     b.Property<string>("CompletionCriteria")
                         .IsRequired()
