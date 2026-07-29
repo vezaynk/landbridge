@@ -287,6 +287,14 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
 
                 case ClearServicesAndForwards:
                     db.RegisteredServices.Where(s => s.TaskId == row.Id).ExecuteDelete();
+                    // §8.3: leaving working also releases the task's relay forwards.
+                    // Revoke every live grant this task produced, so a grant issued
+                    // against a now-gone service can never open a tunnel — the same
+                    // moment its registered services are cleared, no schema churn.
+                    // Established splices are untouched; a grant only gates open.
+                    db.RelayGrants
+                        .Where(g => g.ProducerTaskId == row.Id && !g.Revoked)
+                        .ExecuteUpdate(s => s.SetProperty(g => g.Revoked, true));
                     break;
 
                 // WriteParkRecord is already reflected by CopyFrom (row park columns).

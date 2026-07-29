@@ -13,6 +13,7 @@ public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) :
     public DbSet<CredentialRow> Credentials => Set<CredentialRow>();
     public DbSet<MachineRow> Machines => Set<MachineRow>();
     public DbSet<LeadEventRow> LeadEvents => Set<LeadEventRow>();
+    public DbSet<RelayGrantRow> RelayGrants => Set<RelayGrantRow>();
 
     /// <summary>The channel dispatch/transition NOTIFYs land on (§3.1 LISTEN/NOTIFY).</summary>
     public const string EventChannel = "docket_task_events";
@@ -98,6 +99,20 @@ public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) :
             e.Property(ev => ev.Seq).UseIdentityAlwaysColumn();
             e.HasIndex(ev => ev.TeamId);
             e.Property(ev => ev.Kind).HasConversion<string>();
+        });
+
+        b.Entity<RelayGrantRow>(e =>
+        {
+            e.ToTable("relay_grants");
+            e.HasKey(g => g.Id);
+            // One row per grant, one grant per forward pairing (§8.3): both are
+            // looked up on the tunnel-open hot path, and the uniqueness is the
+            // invariant, not a read's.
+            e.HasIndex(g => g.GrantHash).IsUnique();
+            e.HasIndex(g => g.ForwardId).IsUnique();
+            // Revocation targets every live grant a leaving-working task produced
+            // (ClearServicesAndForwards); index the column that join keys on.
+            e.HasIndex(g => g.ProducerTaskId);
         });
     }
 }

@@ -37,6 +37,7 @@ builder.Services.AddDbContext<DocketDbContext>(o =>
     o.UseNpgsql(connectionString).UseSnakeCaseNamingConvention());
 builder.Services.AddScoped<TaskStore>();
 builder.Services.AddScoped<TokenService>();
+builder.Services.AddScoped<RelayGrantService>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddHttpContextAccessor();
 
@@ -149,6 +150,12 @@ app.MapRunnerEndpoint();
 // is applied inside on the /verify group; each handler further narrows to the
 // verifier principal.
 app.MapVerifierEndpoints();
+
+// The relay grant-validation endpoint (§8.3): plain HTTP, shared-bearer auth,
+// fail-closed. The relay asks whether a presented grant is valid for a tunnel;
+// this is the real control-plane validator behind Docket.Relay's IGrantValidator.
+// Not in the Principal system — the relay is not a §5 credential class.
+app.MapRelayValidationEndpoint();
 
 app.Run();
 

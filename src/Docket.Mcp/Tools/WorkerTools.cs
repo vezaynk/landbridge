@@ -1,8 +1,11 @@
 using System.ComponentModel;
+using System.Text.Json.Serialization;
 using Docket.ControlPlane;
+using Docket.ControlPlane.Auth;
 using Docket.Core;
 using Docket.Mcp.Auth;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Configuration;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
 using static Docket.Mcp.Tools.ToolResults;
@@ -18,11 +21,19 @@ namespace Docket.Mcp.Tools;
 /// state, and every other rule.
 /// </summary>
 [McpServerToolType]
-public sealed class WorkerTools(TaskStore store, IHttpContextAccessor http)
+public sealed class WorkerTools(TaskStore store, RelayGrantService grants, IHttpContextAccessor http, IConfiguration config)
 {
+    /// <summary>The relay a worker dials when config supplies none (§8.3), mirroring <see cref="DispatchService.DefaultPublicMcpUrl"/>.</summary>
+    public const string DefaultRelayUrl = "http://127.0.0.1:5100";
+
     private WorkerCaller Caller =>
         DocketClaims.AsWorker(http.HttpContext?.User ?? throw Unauthorized())
         ?? throw Unauthorized();
+
+    private string RelayUrl =>
+        config["Docket:RelayUrl"]
+        ?? Environment.GetEnvironmentVariable("DOCKET_RELAY_URL")
+        ?? DefaultRelayUrl;
 
     [McpServerTool(Name = "get_task"),
      Description("Fetch your assignment: the namespace, prose description, completion criteria, " +
@@ -81,6 +92,43 @@ public sealed class WorkerTools(TaskStore store, IHttpContextAccessor http)
         return Describe(await store.RegisterServiceAsync(caller, name, port, ct));
     }
 
+    [McpServerTool(Name = "open_forward"),
+     Description("Open a forward to another task's registered service in your Team (spec §8.3). Returns a " +
+                 "short-lived grant, a forward id, and the relay URL your docketd uses to establish the " +
+                 "tunnel. Only services registered by a currently-working task in your Team are forwardable; " +
+                 "the grant is single-use per tunnel end and expires in minutes — establish the connection " +
+                 "promptly. An established connection is never severed by the grant expiring.")]
+    public async Task<OpenForwardResult> OpenForward(
+        [Description("The name of a service registered by another task in your Team.")]
+        string serviceName,
+        CancellationToken ct)
+    {
+        var caller = Caller;
+        var result = await grants.IssueAsync(caller, serviceName, ct);
+        return result switch
+        {
+            RelayGrantResult.Issued i => new OpenForwardResult(i.Grant, i.ForwardId.ToString(), RelayUrl, i.ExpiresAt),
+            // The refusal names §9 check 11 with the grant service's own reason —
+            // never leaking whether the name exists in another Team (§8.2).
+            RelayGrantResult.Refused r => throw new McpException($"rejected ({r.Rule}): {r.Reason}"),
+            _ => throw new McpException("unknown grant result"),
+        };
+    }
+
     private static McpException Unauthorized() =>
         new("this tool requires a worker credential");
 }
+
+/// <summary>
+/// What <c>open_forward</c> hands back (spec §8.3): the opaque connection grant,
+/// the forward id that pairs the two tunnel ends, the relay URL the consumer's
+/// docketd dials, and when the grant stops being usable to <em>open</em> a tunnel
+/// (an established splice outlives it). Property names are pinned to snake_case so
+/// the wire shape a worker harness parses is stable regardless of serializer
+/// policy, exactly like <see cref="WorkerAssignment"/>.
+/// </summary>
+public sealed record OpenForwardResult(
+    [property: JsonPropertyName("grant")] string Grant,
+    [property: JsonPropertyName("forward_id")] string ForwardId,
+    [property: JsonPropertyName("relay_url")] string RelayUrl,
+    [property: JsonPropertyName("expires_at")] DateTimeOffset ExpiresAt);
