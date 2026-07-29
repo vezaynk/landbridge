@@ -17,7 +17,7 @@ public sealed class DeadMansSwitchTests : IDisposable
     private readonly string _workRoot = TestKit.NewWorkRoot();
     private readonly List<Process> _spawned = [];
 
-    private Process StartHarness(string mode, string workDir, bool holdStdin)
+    private Process StartHarness(string mode, string workDir, bool holdStdin, bool disablePdeathsig = false)
     {
         var psi = new ProcessStartInfo(TestKit.HarnessPath())
         {
@@ -25,6 +25,11 @@ public sealed class DeadMansSwitchTests : IDisposable
             WorkingDirectory = workDir,
             RedirectStandardInput = holdStdin,
         };
+        // Inherited by the whole planted tree: pins a rig to ONE mechanism so the
+        // test is deterministic (must match ParentDeathSignal.DisableEnvVar, which
+        // is internal to the harness assemblies).
+        if (disablePdeathsig)
+            psi.Environment["DOCKET_TEST_DISABLE_PDEATHSIG"] = "1";
         psi.ArgumentList.Add(mode);
         var process = Process.Start(psi)!;
         _spawned.Add(process);
@@ -75,8 +80,12 @@ public sealed class DeadMansSwitchTests : IDisposable
     public async Task Killing_the_true_parent_trips_the_inner_switch()
     {
         // We hold the middleman's stdin like docketd would, and never close it — the
-        // SIGKILL below, not a pipe close, is what ends it.
-        var middleman = StartHarness("middleman", _workRoot, holdStdin: true);
+        // SIGKILL below, not a pipe close, is what ends it. PDEATHSIG is disabled for
+        // the whole planted tree so this test deterministically exercises the
+        // PORTABLE EOF path on every OS: on Linux the SIGKILL delivered by PDEATHSIG
+        // would otherwise preempt the inner's graceful grandchild-kill and win the
+        // race (PDEATHSIG is isolated by its own test below).
+        var middleman = StartHarness("middleman", _workRoot, holdStdin: true, disablePdeathsig: true);
 
         var innerPidPath = Path.Combine(_workRoot, "inner.pid");
         Assert.True(await TestKit.WaitUntilAsync(() => File.Exists(innerPidPath), TimeSpan.FromSeconds(15)),

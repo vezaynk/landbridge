@@ -42,9 +42,22 @@ internal static partial class ParentDeathSignal
     /// </summary>
     /// <returns><c>true</c> when the caller should self-terminate immediately (the
     /// parent is already gone); otherwise <c>false</c>.</returns>
+    /// <summary>
+    /// Test-rig knob (harness-support code only, never production): a rig that
+    /// plants a process tree and needs deterministic behaviour sets this to pin
+    /// the tree to ONE mechanism. The portable-EOF test disables PDEATHSIG so the
+    /// graceful stdin path always runs (on Linux the SIGKILL would otherwise
+    /// preempt it and win the race); the stray-reap E2E disables it because its
+    /// planted "stray" must SURVIVE its spawner (the whole point of a stray).
+    /// Inherited by the whole planted tree via the environment.
+    /// </summary>
+    public const string DisableEnvVar = "DOCKET_TEST_DISABLE_PDEATHSIG";
+
     public static bool ArmAndParentAlreadyDead()
     {
         if (!OperatingSystem.IsLinux())
+            return false;
+        if (Environment.GetEnvironmentVariable(DisableEnvVar) is not null)
             return false;
         return ArmLinux();
     }
