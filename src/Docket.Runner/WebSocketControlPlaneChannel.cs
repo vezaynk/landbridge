@@ -148,8 +148,13 @@ public sealed class WebSocketControlPlaneChannel : IControlPlaneChannel, IAsyncD
 
             // §10: the command channel decodes commands only; anything outside
             // the vocabulary is rejected (DecodeCommand returns null).
-            if (RunnerWire.DecodeCommand(message) is { } command && _onCommand is { } handler)
+            if (RunnerWire.DecodeCommand(message, out var traceparent) is { } command && _onCommand is { } handler)
             {
+                // §1 tracing: open the docketd handle span, parented on the plane's
+                // dispatch span via the wire traceparent, and hold it open across
+                // the handler — so a worker spawned during handling inherits it
+                // through Activity.Current (→ DOCKET_TRACEPARENT in the child env).
+                using var activity = RunnerTelemetry.StartHandleActivity(command, traceparent);
                 try
                 {
                     await handler(command, ct);

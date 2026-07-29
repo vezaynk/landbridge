@@ -157,6 +157,15 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         if (dispatch.WorkerToken.Length > 0)
             psi.Environment["DOCKET_WORKER_TOKEN"] = dispatch.WorkerToken;
 
+        // §1 tracing: hand the worker the current handle span's W3C id so its root
+        // span — and its MCP calls back to the plane — continue the one trace.
+        // Null when nothing is tracing. The child inherits the rest of docketd's
+        // environment as a copy (ProcessStartInfo does not clear it under
+        // UseShellExecute=false), so OTEL_EXPORTER_OTLP_ENDPOINT/…_PROTOCOL flow
+        // through unchanged and the worker exports to the same collector.
+        if (Activity.Current?.Id is { } traceparent)
+            psi.Environment["DOCKET_TRACEPARENT"] = traceparent;
+
         var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
         var supervised = new SupervisedTask
         {

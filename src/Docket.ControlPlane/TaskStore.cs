@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Docket.Core;
 using Microsoft.EntityFrameworkCore;
 
@@ -36,6 +37,11 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
             CompletionCriteria = command.CompletionCriteria,
             Description = command.Description,
             Workspace = command.Workspace,
+            // Opaque transport metadata: the ambient W3C traceparent at creation,
+            // captured so dispatch can continue the Lead's trace over the wire.
+            // Read straight off the ambient Activity here, never through a command
+            // field — the engine stays content-free (§7). Null when nothing samples.
+            TraceContext = Activity.Current?.Id,
         });
         AppendEvent(id.Value, task.Team.Value, "created", from: null, to: task.State, detail: null);
         await CommitAsync(id.Value, ct);
@@ -93,8 +99,14 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
         var claimed = await db.Tasks.FirstAsync(t => t.Id == claimedId, ct);
 
         var result = await RunTransition(claimed, new Dispatch(machine, newInstance), ct, tx);
-        if (result is StoreResult.Applied)
+        if (result is StoreResult.Applied applied)
+        {
             await tx.CommitAsync(ct);
+            // Surface the row's opaque trace context so DispatchService can parent
+            // the dispatch span on the Lead's create_task trace (transport metadata
+            // only — it never reaches the engine).
+            return applied with { TraceContext = claimed.TraceContext };
+        }
         return result;
     }
 

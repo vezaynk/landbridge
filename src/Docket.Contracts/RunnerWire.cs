@@ -53,10 +53,21 @@ public static class RunnerWire
 
     public static bool IsKnownEvent(string? type) => type is not null && Events.Contains(type);
 
+    /// <summary>The optional envelope property carrying the W3C traceparent (§1
+    /// end-to-end tracing). Transport metadata alongside <c>type</c> — NOT part of
+    /// the frozen §10 command vocabulary, and ignored by the concrete-record
+    /// deserialize, so the domain <see cref="RunnerCommand"/> is unchanged.</summary>
+    public const string TraceParent = "traceparent";
+
     // ── Encode ────────────────────────────────────────────────────────────────
 
-    /// <summary>Encodes a command to its type-discriminated JSON envelope.</summary>
-    public static string EncodeCommand(RunnerCommand command)
+    /// <summary>
+    /// Encodes a command to its type-discriminated JSON envelope. When
+    /// <paramref name="traceparent"/> is non-null it rides the envelope alongside
+    /// <c>type</c> as opaque transport metadata (§1 tracing); a null leaves the
+    /// envelope byte-for-byte as before (backward compatible).
+    /// </summary>
+    public static string EncodeCommand(RunnerCommand command, string? traceparent = null)
     {
         var (obj, type) = command switch
         {
@@ -70,6 +81,8 @@ public static class RunnerWire
                 nameof(command), command.GetType().Name, "outside the runner command vocabulary"),
         };
         obj["type"] = type;
+        if (traceparent is not null)
+            obj[TraceParent] = traceparent;
         return obj.ToJsonString();
     }
 
@@ -108,22 +121,36 @@ public static class RunnerWire
     /// the <c>type</c> is missing or outside the vocabulary — the rejection §10
     /// requires. The concrete-type deserialize ignores the <c>type</c> property.
     /// </summary>
-    public static RunnerCommand? DecodeCommand(string json)
+    public static RunnerCommand? DecodeCommand(string json) => DecodeCommand(json, out _);
+
+    /// <summary>
+    /// Decodes one command and also surfaces the optional <c>traceparent</c>
+    /// envelope property (§1 tracing), or <c>null</c> when the command is missing
+    /// or outside the §10 vocabulary. <paramref name="traceparent"/> is <c>null</c>
+    /// when the envelope carries none (an older sender, or a non-traced dispatch).
+    /// The domain record is identical either way — the traceparent lives only on
+    /// the envelope, never on the concrete record.
+    /// </summary>
+    public static RunnerCommand? DecodeCommand(string json, out string? traceparent)
     {
+        traceparent = null;
         if (!TryParse(json, out var doc))
             return null;
         using (doc)
         {
             if (!TryReadType(doc.RootElement, out var type))
                 return null;
-            return type switch
+            var command = type switch
             {
-                Dispatch => doc.RootElement.Deserialize(RunnerWireContext.Default.DispatchCommand),
+                Dispatch => (RunnerCommand?)doc.RootElement.Deserialize(RunnerWireContext.Default.DispatchCommand),
                 Stop => doc.RootElement.Deserialize(RunnerWireContext.Default.StopCommand),
                 Kill => doc.RootElement.Deserialize(RunnerWireContext.Default.KillCommand),
                 OpenForward => doc.RootElement.Deserialize(RunnerWireContext.Default.OpenForwardCommand),
                 _ => null, // §10: reject anything outside the vocabulary.
             };
+            if (command is not null && TryReadString(doc.RootElement, TraceParent, out var tp))
+                traceparent = tp;
+            return command;
         }
     }
 
@@ -196,6 +223,19 @@ public static class RunnerWire
             return false;
         }
         type = typeElement.GetString()!;
+        return true;
+    }
+
+    private static bool TryReadString(JsonElement root, string name, out string? value)
+    {
+        value = null;
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty(name, out var element) ||
+            element.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+        value = element.GetString();
         return true;
     }
 }

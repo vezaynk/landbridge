@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text.Json.Nodes;
 using System.Threading.Channels;
 using Docket.Contracts;
@@ -35,6 +36,16 @@ public sealed class DispatchService : IHostedService
 
     /// <summary>The default plane MCP URL a worker dials when config supplies none (§10).</summary>
     public const string DefaultPublicMcpUrl = "http://127.0.0.1:5000";
+
+    /// <summary>
+    /// The plane's tracing source (§1). The dispatch span opened here continues
+    /// the Lead's create_task trace and its W3C id is what rides the wire to the
+    /// runner. Register it with the host's TracerProvider (Docket.Mcp/Program.cs)
+    /// so the span exports.
+    /// </summary>
+    public const string ActivitySourceName = "Docket.ControlPlane";
+
+    internal static readonly ActivitySource ActivitySource = new(ActivitySourceName);
 
     // Single-slot wake signal: many nudges collapse to one pending pass.
     private readonly Channel<bool> _wake =
@@ -183,6 +194,15 @@ public sealed class DispatchService : IHostedService
         var task = applied.Task;
         var profile = task.Profile ?? MachineSnapshot.DefaultProfile;
 
+        // §1 tracing: open the dispatch span, parented on the Lead's create_task
+        // trace context stored on the row (opaque transport metadata). This span's
+        // W3C id is what the send delegate stamps onto the wire envelope, so the
+        // runner — and the worker it spawns — continue the same trace. A null
+        // context (or no listener) yields a root span (or no span); dispatch is
+        // unaffected either way. Held open across the send so Activity.Current
+        // flows into the encode call on the send path.
+        using var activity = StartDispatchActivity(task.Id, machineId, profile, applied.TraceContext);
+
         // §5, §13: mint the worker token for this instance; docketd injects it,
         // wrapped in the MCP client config the worker dials the plane with.
         var minted = await tokens.MintWorkerTokenAsync(task.Team, task.Id, instance, ct);
@@ -200,6 +220,28 @@ public sealed class DispatchService : IHostedService
         await store.ApplyAsync(task.Id, new LivenessLost(LivenessLossReason.AckTimeout), ct);
         _logger.LogWarning("dispatch send failed for task {Task} on {Machine}; requeued", task.Id, machineId);
         return DispatchOutcome.SendFailed;
+    }
+
+    /// <summary>
+    /// Opens the dispatch span (§1), parented on the row's stored create_task
+    /// trace context when present so one trace spans create_task → dispatch →
+    /// runner → worker. Returns null when nothing is listening — tracing then
+    /// no-ops and dispatch proceeds unchanged.
+    /// </summary>
+    private static Activity? StartDispatchActivity(
+        TaskId task, string machineId, string profile, string? parentTraceparent)
+    {
+        var activity = parentTraceparent is not null
+            && ActivityContext.TryParse(parentTraceparent, null, out var parent)
+                ? ActivitySource.StartActivity($"dispatch {task}", ActivityKind.Producer, parent)
+                : ActivitySource.StartActivity($"dispatch {task}", ActivityKind.Producer);
+        if (activity is not null)
+        {
+            activity.SetTag("docket.task_id", task.ToString());
+            activity.SetTag("docket.machine_id", machineId);
+            activity.SetTag("docket.profile", profile);
+        }
+        return activity;
     }
 
     /// <summary>
