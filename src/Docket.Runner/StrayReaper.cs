@@ -24,9 +24,13 @@ public static class ProcessInventory
     /// The best available inventory for the current OS. Linux reads
     /// <c>/proc</c>; macOS reads each process's environment via libproc +
     /// <c>sysctl(KERN_PROCARGS2)</c> (unprivileged, see
-    /// <see cref="MacOsProcessInventory"/>); any other platform returns the
-    /// empty <see cref="NullProcessInventory"/> — a documented deferral, not a
-    /// silent failure. The <b>kill</b> half of stray cleanup is portable
+    /// <see cref="MacOsProcessInventory"/>). On <b>Windows</b> this is the empty
+    /// <see cref="NullProcessInventory"/> <em>by design</em>, not a deferral: each
+    /// worker is sealed at spawn into a kill-on-close Job Object
+    /// (<see cref="WindowsJobObject"/>, §20), so docketd's death — by any cause —
+    /// makes the OS terminate the whole worker tree with no discovery to run. Any
+    /// other platform also returns <see cref="NullProcessInventory"/>, there as a
+    /// documented deferral. The <b>kill</b> half of stray cleanup is portable
     /// regardless (see <see cref="StrayReaper"/>).
     /// </summary>
     public static IProcessInventory ForCurrentPlatform() =>
@@ -35,7 +39,13 @@ public static class ProcessInventory
         : new NullProcessInventory();
 }
 
-/// <summary>Discovers nothing. Used where env-scan discovery is not yet implemented.</summary>
+/// <summary>
+/// Discovers nothing. On Windows this is <em>by design</em> — the per-worker
+/// kill-on-close Job Object (<see cref="WindowsJobObject"/>, §20) is the containment
+/// guarantee, so there is nothing to discover on restart. On any other unsupported
+/// platform it is a documented deferral of env-scan discovery, never a silent
+/// failure.
+/// </summary>
 public sealed class NullProcessInventory : IProcessInventory
 {
     public IReadOnlyList<TaggedProcess> ListDocketProcesses() => [];
@@ -108,6 +118,12 @@ public interface IStrayReaper
 /// <see cref="IProcessInventory"/> (platform-specific); the kill itself is
 /// portable via <see cref="Process.Kill(bool)"/> with the whole tree, matching
 /// the group-kill semantics of live tasks (§10).
+///
+/// <para>On Windows there are no strays to reap: each worker lives in a
+/// kill-on-close Job Object (<see cref="WindowsJobObject"/>, §20) that the OS tears
+/// down the instant docketd dies, so the inventory there is
+/// <see cref="NullProcessInventory"/> by design and this restart sweep simply finds
+/// nothing.</para>
 /// </summary>
 public sealed class StrayReaper(IProcessInventory inventory, int selfPid) : IStrayReaper
 {

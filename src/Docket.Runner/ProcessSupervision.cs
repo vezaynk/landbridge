@@ -64,6 +64,17 @@ public sealed class SupervisedTask
     public bool StopRequested { get; set; }
     internal ITimer? TtlTimer { get; set; }
 
+    /// <summary>
+    /// §20 Windows: the kill-on-close Job Object this worker's whole process tree is
+    /// sealed into, or null off Windows / when assignment degraded (an incompatible
+    /// nested outer job). Owned here and closed on the kill/exit cleanup paths. When
+    /// docketd dies by any cause the OS closes this handle and the kernel kills every
+    /// process in the job — detached grandchildren included — which is the Windows
+    /// containment guarantee the <see cref="StrayReaper"/> reconstructs by discovery
+    /// on other platforms.
+    /// </summary>
+    internal WindowsJobObject? Job { get; set; }
+
     public bool ProcessAlive
     {
         get
@@ -84,6 +95,14 @@ public sealed class SupervisedTask
 /// process groups). The portable tree-kill (<see cref="Process.Kill(bool)"/>)
 /// is the group-kill baseline the conventions call for; each task is its own
 /// tree, so a kill leaves siblings untouched.
+///
+/// <para>Every worker <see cref="Process.Start()"/> is marshalled onto one dedicated
+/// long-lived OS thread (<see cref="SpawnerThread"/>, §35): the Linux harness arms
+/// PDEATHSIG, which the kernel keys to the forking <em>thread</em>, so forking from a
+/// transient thread-pool thread would spuriously SIGKILL a healthy worker once the
+/// pool retired that thread. On Windows each worker is additionally sealed into a
+/// kill-on-close Job Object (<see cref="WindowsJobObject"/>, §20) so docketd's death
+/// takes the whole tree down with no discovery needed.</para>
 /// </summary>
 public sealed class ProcessSupervisor : IProcessSupervisor
 {
@@ -92,6 +111,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
     private readonly TimeProvider _clock;
     private readonly StrayReaper? _taskReaper;
     private readonly ConcurrentDictionary<TaskId, SupervisedTask> _tasks = new();
+    private readonly SpawnerThread _spawner = new();
 
     public ProcessSupervisor(MachineConfig machine, OutboundEventRing ring, TimeProvider clock, StrayReaper? taskReaper = null)
     {
@@ -109,6 +129,26 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         _tasks.Values.Count(t => string.Equals(t.Profile, profile, StringComparison.Ordinal));
 
     public bool TryGet(TaskId task, out SupervisedTask supervised) => _tasks.TryGetValue(task, out supervised!);
+
+    /// <summary>Identity of the thread that executed a spawn's <c>Process.Start</c>.</summary>
+    internal readonly record struct SpawnThreadObservation(int ManagedThreadId, bool IsThreadPoolThread);
+
+    /// <summary>
+    /// Test seam (§35): captured inside the marshalled spawn delegate on the last
+    /// spawn, so a test can prove the fork ran on the dedicated, non-thread-pool
+    /// spawner thread rather than inline on the caller. Null until the first spawn.
+    /// </summary>
+    internal SpawnThreadObservation? LastSpawnThreadObservation { get; private set; }
+
+    /// <summary>Test seam (§35): managed id of the one dedicated spawner thread.</summary>
+    internal int? SpawnerManagedThreadId => _spawner.ManagedThreadId;
+
+    /// <summary>
+    /// Test/observability seam (§20): the reason the last Windows Job Object
+    /// assignment degraded (e.g. an incompatible nested outer job), or null if the
+    /// most recent Windows spawn was contained successfully.
+    /// </summary>
+    internal string? LastJobAssignmentFailure { get; private set; }
 
     public TaskId Spawn(DispatchCommand dispatch, ProfileConfig profile, string machineId)
     {
@@ -188,12 +228,33 @@ public sealed class ProcessSupervisor : IProcessSupervisor
 
         try
         {
-            if (!process.Start())
-                throw new InvalidOperationException("Process.Start returned false");
+            // §35: marshal the actual Process.Start onto the one dedicated spawner
+            // thread. The psi construction and SupervisedTask bookkeeping stay on the
+            // caller; only the fork must run on a thread that outlives the worker, so
+            // Linux PDEATHSIG — keyed to the forking thread — is never tripped by a
+            // retiring thread-pool thread. Run blocks and re-throws in the caller's
+            // context, so the failure handling below is unchanged.
+            _spawner.Run(() =>
+            {
+                // Test seam (§35): captured on the thread that actually forks, so a
+                // test can prove the Start ran on the dedicated non-pool thread.
+                LastSpawnThreadObservation = new SpawnThreadObservation(
+                    Environment.CurrentManagedThreadId, Thread.CurrentThread.IsThreadPoolThread);
+
+                if (!process.Start())
+                    throw new InvalidOperationException("Process.Start returned false");
+
+                // §20 Windows: seal the worker into a kill-on-close Job Object right
+                // after Start (the tiny, standard create→assign race is accepted).
+                if (OperatingSystem.IsWindows())
+                    supervised.Job = CreateJobForWorker(process);
+            });
         }
         catch
         {
             _tasks.TryRemove(dispatch.Task, out _);
+            if (OperatingSystem.IsWindows())
+                supervised.Job?.Close();
             process.Dispose();
             throw;
         }
@@ -280,6 +341,12 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         _tasks.TryRemove(supervised.Task, out _);
         supervised.TtlTimer?.Dispose();
 
+        // §20 Windows: close the job handle now the process is gone. Kill-on-close
+        // sweeps up any grandchild that outlived the parent. Idempotent with an
+        // explicit kill's TerminateAndClose.
+        if (OperatingSystem.IsWindows())
+            supervised.Job?.Close();
+
         int exitCode;
         try { exitCode = supervised.Process.ExitCode; }
         catch (InvalidOperationException) { exitCode = -1; }
@@ -303,6 +370,32 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         {
             // Already exited, or the OS refused — either way the task is gone.
         }
+
+        // §20 Windows: on top of the portable tree-kill, terminate the job so any
+        // process that escaped the managed tree walk (detached/reparented) is swept
+        // up and the exit code is deterministic. No-op off Windows (Job is only ever
+        // set there). OnExited's Close is idempotent with this.
+        if (OperatingSystem.IsWindows())
+            supervised.Job?.TerminateAndClose();
+    }
+
+    /// <summary>
+    /// §20: creates a kill-on-close Job Object and assigns the freshly-started worker
+    /// to it. Never throws — on creation/assignment failure it records the reason,
+    /// logs to stderr (docketd's log sink), and returns null so the spawn survives.
+    /// CI runners wrap processes in their own Job Objects; Windows 8+ nests jobs, but
+    /// an incompatible outer job can still refuse the assignment, and the held-stdin
+    /// dead-man pipe plus the portable tree-kill still cover those cases. The job is
+    /// the Windows <em>extra</em>, never the only guarantee.
+    /// </summary>
+    [System.Runtime.Versioning.SupportedOSPlatform("windows")]
+    private WindowsJobObject? CreateJobForWorker(Process process)
+    {
+        var job = WindowsJobObject.TryCreateAndAssign(process.Handle, out var failure);
+        LastJobAssignmentFailure = failure;
+        if (job is null)
+            Console.Error.WriteLine($"docketd: Job Object containment degraded for a worker: {failure}");
+        return job;
     }
 
     private static string Substitute(string arg, IReadOnlyDictionary<string, string> substitutions)
