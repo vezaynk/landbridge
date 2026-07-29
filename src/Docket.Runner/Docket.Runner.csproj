@@ -12,6 +12,10 @@
          the normal warnings-as-errors build rather than at publish time. -->
     <IsAotCompatible>true</IsAotCompatible>
     <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- macOS stray discovery reads process env via LibraryImport'd libproc /
+         sysctl with pointer signatures (MacOsProcessInventory); the source-gen'd
+         P/Invoke stubs and our mib/buffer marshalling need an unsafe context. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>
