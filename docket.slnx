@@ -19,6 +19,8 @@
     <Project Path="tests/Docket.Core.Tests/Docket.Core.Tests.csproj" />
     <Project Path="tests/Docket.Mcp.Tests/Docket.Mcp.Tests.csproj" />
     <Project Path="tests/Docket.Relay.Tests/Docket.Relay.Tests.csproj" />
+    <Project Path="tests/Docket.CollabHarness/Docket.CollabHarness.csproj" />
+    <Project Path="tests/Docket.MultiMachine.Tests/Docket.MultiMachine.Tests.csproj" />
     <Project Path="tests/Docket.Runner.Tests/Docket.Runner.Tests.csproj" />
     <Project Path="tests/Docket.Runner.TestHarness/Docket.Runner.TestHarness.csproj" />
     <Project Path="tests/Docket.WorkerHarness/Docket.WorkerHarness.csproj" />
