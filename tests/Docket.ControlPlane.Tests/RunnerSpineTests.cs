@@ -246,6 +246,109 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Empty(registry.TasksOn("m1"));
     }
 
+    // ── Event sink: exit while blocked stays tracked (§6/§11) ────────────────────
+
+    [SkippableFact]
+    public async Task Exited_while_blocked_on_input_leaves_the_task_tracked_so_the_sweeper_can_park_it()
+    {
+        // The live path a store-only test cannot prove: a headless worker asks a
+        // question (working → blocked_on_input) and its process exits — the NORMAL
+        // claude -p behaviour, and per §6/§11 not a failure. The exit must NOT
+        // untrack the task, or the wait-TTL sweeper's MachineFor look-up returns
+        // null and the task strands in blocked_on_input forever (never parked on
+        // TTL, never requeued on machine death). Here: the exit leaves it tracked,
+        // and the sweeper then parks it on TTL expiry — the transition that was
+        // unreachable before the fix.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var (id, _) = await SeedBlockedTaskAsync(clock, team, "m1");
+        var registry = LiveMachine(clock, "m1", id);
+
+        // Worker exits while blocked — expected, not a disconnect.
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), NullLogger<RunnerEventSink>.Instance);
+        await sink.HandleAsync(new ExitedEvent(id, ExitCode: 0, clock.GetUtcNow()));
+
+        // Still blocked, still tracked: the machine keeps the lease so the sweeper
+        // can find it (before the fix the exit untracked it here and the sweeper
+        // skipped it — MachineFor was null).
+        Assert.Equal(TaskState.BlockedOnInput, await StateAsync(clock, id));
+        Assert.Equal("m1", registry.MachineFor(id));
+
+        // Wait TTL elapses with the machine still heartbeating → the sweeper parks.
+        var sweeper = NewSweeper(clock, registry,
+            waitTtl: TimeSpan.FromMinutes(30), machineWindow: TimeSpan.FromHours(2));
+        clock.Advance(TimeSpan.FromMinutes(31));
+        await sweeper.SweepAsync(CancellationToken.None);
+
+        await using var v = pg.NewContext();
+        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(TaskState.Parked, row.State);
+        Assert.Equal("m1", row.ParkMachine);
+        Assert.Empty(registry.TasksOn("m1")); // sweeper untracks on the park
+    }
+
+    [SkippableFact]
+    public async Task Exited_while_blocked_on_a_silent_machine_leaves_it_tracked_so_the_sweeper_requeues_it()
+    {
+        // Same exit-while-blocked, but the machine then goes silent past the
+        // liveness window: because the exit left the task tracked, the sweeper
+        // still resolves its machine, judges it dead, and requeues the task
+        // (blocked_on_input → submitted, infra counter) instead of stranding it.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var (id, instance) = await SeedBlockedTaskAsync(clock, team, "m1");
+        var registry = LiveMachine(clock, "m1", id);
+
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), NullLogger<RunnerEventSink>.Instance);
+        await sink.HandleAsync(new ExitedEvent(id, ExitCode: 0, clock.GetUtcNow()));
+        Assert.Equal("m1", registry.MachineFor(id));
+
+        // Heartbeat goes stale before the wait TTL; the sweep requeues.
+        var sweeper = NewSweeper(clock, registry,
+            waitTtl: TimeSpan.FromMinutes(30), machineWindow: TimeSpan.FromSeconds(90));
+        clock.Advance(TimeSpan.FromMinutes(2));
+        await sweeper.SweepAsync(CancellationToken.None);
+
+        await using var v = pg.NewContext();
+        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(TaskState.Submitted, row.State);
+        Assert.Equal(1, row.InfrastructureRequeues); // infra counter, never verification (§6)
+        Assert.Null(row.ParkMachine);                 // requeued, not parked
+        Assert.True((await v.WorkerInstances.AsNoTracking().SingleAsync(w => w.Id == instance.Value)).Revoked);
+        Assert.Empty(registry.TasksOn("m1"));
+    }
+
+    [SkippableFact]
+    public async Task Exited_while_verifying_untracks_and_is_moot()
+    {
+        // Regression for the state-aware untrack: a task that reached verifying (the
+        // worker reported a result before its process ended) is done on this
+        // machine, so the exit still untracks it and changes no state — only
+        // blocked_on_input is held tracked across an exit.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = TimeProvider.System;
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var (id, instance) = await SeedWorkingTaskWithInstanceAsync(clock, team, "m1");
+        await using (var db = pg.NewContext())
+            await new TaskStore(db, clock).ApplyAsync(
+                id, new ReportResult(new WorkerCaller(team, id, instance), "git:ref-1"));
+
+        var registry = new RunnerConnectionRegistry(clock);
+        registry.Register("m1", Set("default"), (_, _) => Task.CompletedTask);
+        registry.TrackDispatch("m1", id);
+
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), NullLogger<RunnerEventSink>.Instance);
+        await sink.HandleAsync(new ExitedEvent(id, ExitCode: 0, clock.GetUtcNow()));
+
+        Assert.Equal(TaskState.Verifying, await StateAsync(clock, id));
+        Assert.Empty(registry.TasksOn("m1"));
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────────────
 
     private IServiceScopeFactory ScopeFactory(TimeProvider clock)
@@ -270,14 +373,58 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
 
     private async Task<TaskId> SeedWorkingTaskAsync(TimeProvider clock, TeamId team, string machineId)
     {
+        var (id, _) = await SeedWorkingTaskWithInstanceAsync(clock, team, machineId);
+        return id;
+    }
+
+    /// <summary>Create → dispatch, returning both the task and the dispatched
+    /// worker instance so a caller can act as that worker (e.g. report a result).</summary>
+    private async Task<(TaskId Id, WorkerInstanceId Instance)> SeedWorkingTaskWithInstanceAsync(
+        TimeProvider clock, TeamId team, string machineId)
+    {
+        await using var db = pg.NewContext();
+        var store = new TaskStore(db, clock);
+        await store.CreateAsync(
+            new CreateTask(new LeadClaim(team), team, "completion criteria", CompletionMode.Automated, null, TeamBudgetRemains: true));
+        var instance = WorkerInstanceId.New();
+        var applied = (StoreResult.Applied)await store.DispatchNextAsync(
+            new MachineSnapshot(machineId, Ready: true, UnderBackPressure: false, Set("default")), instance);
+        return (applied.Task.Id, instance);
+    }
+
+    /// <summary>Create → dispatch → block, so the task sits in blocked_on_input with
+    /// BlockedAt stamped at the current clock reading — the §11 wait shape.</summary>
+    private async Task<(TaskId Id, WorkerInstanceId Instance)> SeedBlockedTaskAsync(
+        TimeProvider clock, TeamId team, string machineId)
+    {
         await using var db = pg.NewContext();
         var store = new TaskStore(db, clock);
         var created = (StoreResult.Applied)await store.CreateAsync(
             new CreateTask(new LeadClaim(team), team, "completion criteria", CompletionMode.Automated, null, TeamBudgetRemains: true));
-        var applied = (StoreResult.Applied)await store.DispatchNextAsync(
-            new MachineSnapshot(machineId, Ready: true, UnderBackPressure: false, Set("default")), WorkerInstanceId.New());
-        return applied.Task.Id;
+        var id = created.Task.Id;
+        var instance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(
+            new MachineSnapshot(machineId, Ready: true, UnderBackPressure: false, Set("default")), instance);
+        await store.ApplyAsync(id, new RequestInput(new WorkerCaller(team, id, instance), InputRequestKind.Question));
+        return (id, instance);
     }
+
+    /// <summary>A registry with one ready machine heartbeating now and tracking the
+    /// task — what DispatchService would have set up at dispatch.</summary>
+    private static RunnerConnectionRegistry LiveMachine(TimeProvider clock, string machineId, TaskId task)
+    {
+        var registry = new RunnerConnectionRegistry(clock);
+        registry.Register(machineId, Set("default"), (_, _) => Task.CompletedTask);
+        registry.ApplyHeartbeat(machineId, Heartbeat(machineId, "default"));
+        registry.TrackDispatch(machineId, task);
+        return registry;
+    }
+
+    private WaitTtlSweeper NewSweeper(
+        TimeProvider clock, RunnerConnectionRegistry registry,
+        TimeSpan? waitTtl = null, TimeSpan? machineWindow = null, TimeSpan? sweepInterval = null) =>
+        new(ScopeFactory(clock), registry, clock, NullLogger<WaitTtlSweeper>.Instance,
+            waitTtl, machineWindow, sweepInterval);
 
     private async Task<TaskState?> StateAsync(TimeProvider clock, TaskId id)
     {

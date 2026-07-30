@@ -91,9 +91,10 @@ public sealed class RunnerEventSink(
 
     private async Task HandleExitedAsync(ExitedEvent e, CancellationToken ct)
     {
+        TaskState? state = null;
         await WithStoreAsync(async store =>
         {
-            var state = await store.GetStateAsync(e.Task, ct);
+            state = await store.GetStateAsync(e.Task, ct);
             // §10: a death after started may have side effects, so a still-working
             // task requeues against the infrastructure counter. If it already
             // reached verifying/terminal (worker reported first), the exit is
@@ -101,7 +102,24 @@ public sealed class RunnerEventSink(
             if (state == TaskState.Working)
                 await store.ApplyAsync(e.Task, new LivenessLost(LivenessLossReason.LivenessTimeout), ct);
         });
-        registry.Untrack(e.Task);
+
+        // §6/§11: blocked_on_input holds a task whose harness process is *expected*
+        // to be gone — a headless worker that asks a question ends its turn and its
+        // process exits, and per-task liveness is suspended there. That exit is not
+        // a failure and it is not a disconnect: the machine still holds the lease
+        // until the wait-TTL sweeper parks it (blocked_on_input → parked) or the
+        // machine itself dies (blocked_on_input → submitted). The sweeper resolves a
+        // blocked task's machine through RunnerConnectionRegistry.MachineFor, so
+        // untracking here would hide the task from it — stranding the task in
+        // blocked_on_input forever (never parked on TTL, never requeued on machine
+        // death). So leave a blocked task tracked: the sweeper untracks on its own
+        // park/requeue transition (WaitTtlSweeper.TryApplyAsync), and a
+        // wake→redispatch re-tracks it, so this is consistent, not a leak. Every
+        // other state is done here or already handled — working just requeued;
+        // verifying/terminal are moot; a parked task's affinity lives in its park
+        // record — so untrack as before.
+        if (state != TaskState.BlockedOnInput)
+            registry.Untrack(e.Task);
     }
 
     private async Task HandleRebootedAsync(RebootedEvent r, CancellationToken ct)
