@@ -109,14 +109,14 @@ machine and the fourteen §9 checks; Postgres store with `SKIP LOCKED` dispatch
 and `LISTEN/NOTIFY` push; opaque-token auth across all five credential classes;
 OAuth 2.1 authorization-code + PKCE (S256) + Client ID Metadata Documents;
 machine enrollment and token refresh; `docketd` process supervision, stop/kill,
-heartbeats, terminal-source tool-call events, and per-OS stray cleanup; the
-relay TCP splice with fail-closed control-plane grant validation; the reference
-verifier; and the plain web dashboard.
+heartbeats, terminal-source tool-call events, and per-OS stray cleanup; §11
+park → resume, where a redispatch continues the parked harness transcript via
+the profile's resume argv (the harness session ref round-trips through the
+store); the relay TCP splice with fail-closed control-plane grant validation;
+the reference verifier; and the plain web dashboard.
 
 Deliberately deferred or in progress on this branch — do not assume these work:
 
-- **Real-harness park → resume** (spec §11): the harness session id is captured
-  but not yet used to resume a parked transcript; redispatch cold-starts.
 - **Budget accounting / byte metering** (spec §9.9, §12): the task's budget is
   handed to the harness at dispatch as the `{budget}` substitution (the intended
   hard-cap backstop), but token attribution and the per-Team byte counter/rate

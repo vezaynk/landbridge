@@ -11,8 +11,8 @@ namespace Docket.Runner;
 /// command queue is explicitly not built — §10, §15). Runner→control-plane
 /// buffering is the caller's <see cref="OutboundEventRing"/>, not this channel.
 ///
-/// The real wire transport is deferred; tests use
-/// <see cref="InMemoryControlPlaneChannel"/>.
+/// The production transport is <see cref="WebSocketControlPlaneChannel"/>
+/// (outbound ws/wss); tests use <see cref="InMemoryControlPlaneChannel"/>.
 /// </summary>
 public interface IControlPlaneChannel
 {
@@ -24,10 +24,9 @@ public interface IControlPlaneChannel
 }
 
 /// <summary>
-/// An in-memory <see cref="IControlPlaneChannel"/> for tests and for the
-/// daemon skeleton until the real wire lands. Records everything shipped and
-/// models a droppable connection via <see cref="Connected"/> — best-effort,
-/// never throwing, never queuing.
+/// An in-memory <see cref="IControlPlaneChannel"/> for tests. Records everything
+/// shipped and models a droppable connection via <see cref="Connected"/> —
+/// best-effort, never throwing, never queuing.
 /// </summary>
 public sealed class InMemoryControlPlaneChannel : IControlPlaneChannel
 {

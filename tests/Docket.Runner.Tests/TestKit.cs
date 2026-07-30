@@ -111,6 +111,10 @@ internal static class TestKit
 internal sealed class FakeLoadReader : ISystemLoadReader
 {
     public SystemLoad Load { get; set; } = new(0, 0, 0);
+
+    /// <summary>Whether CPU is a real reading; flip false to model a reader that cannot observe it.</summary>
+    public bool ObservesCpu { get; set; } = true;
+
     public SystemLoad Read() => Load;
 }
 
