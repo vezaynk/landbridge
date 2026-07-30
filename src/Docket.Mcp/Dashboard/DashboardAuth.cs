@@ -13,10 +13,11 @@ namespace Docket.Mcp.Dashboard;
 /// <see cref="Principal.Human"/> or a live <see cref="Principal.Lead"/> may view
 /// the dashboard.
 ///
-/// The cookie is set by the token paste-box on <c>/dashboard/login</c> — the
-/// deliberate v1 seam the in-flight OAuth 2.1 human flow (§5) replaces with a
-/// redirect that drops exactly this cookie after a verified callback. Nothing else
-/// about the dashboard changes when that lands.
+/// The cookie is set by the first-party operator door on <c>/dashboard/login</c>:
+/// an operator passphrase verified by the same <see cref="IOperatorVerifier"/> the
+/// OAuth flow uses (minting a fresh human session), or a directly-pasted token.
+/// Third-party MCP clients (Claude Code) authenticate through the OAuth 2.1 flow
+/// (§5) rather than this same-origin form.
 /// </summary>
 internal static class DashboardAuth
 {

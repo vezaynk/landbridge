@@ -27,6 +27,11 @@ public static class DashboardEndpoints
         DictionaryKeyPolicy = JsonNamingPolicy.CamelCase,
     };
 
+    /// <summary>Fixed delay added to a wrong-passphrase login, mirroring
+    /// <c>/oauth/authorize</c>'s brute-force friction (§5). Kept in lockstep with
+    /// that endpoint's <c>FailedAttemptDelay</c>.</summary>
+    private static readonly TimeSpan WrongPassphraseDelay = TimeSpan.FromMilliseconds(500);
+
     public static IEndpointRouteBuilder MapDashboard(this IEndpointRouteBuilder app)
     {
         // Open: the single stylesheet, and the login/logout seam.
@@ -97,26 +102,69 @@ public static class DashboardEndpoints
     }
 
     /// <summary>
-    /// POST /dashboard/login — the v1 token paste-box (the OAuth seam). Validates
-    /// the pasted token as a human or Lead and, on success, drops the
-    /// <c>docket_session</c> cookie and lands on the dashboard; otherwise re-renders
-    /// the login with an error. The only state-changing POST besides logout, and it
-    /// only sets the caller's own session from a token they already hold — so there
-    /// is no CSRF surface to protect in v1 (noted for the OAuth follow-up).
+    /// POST /dashboard/login — the first-party operator door. The dashboard is a
+    /// same-origin surface on the authorization server itself, so there is no OAuth
+    /// redirect dance here: third-party MCP clients (Claude Code) use the OAuth 2.1
+    /// flow (§5), while the operator signs in directly with the <b>same</b>
+    /// <see cref="IOperatorVerifier"/> passphrase that flow verifies.
+    ///
+    /// Two mutually-exclusive submissions, decided by which field is filled:
+    /// <list type="bullet">
+    /// <item>the operator passphrase (the primary door) — fail-closed 503 when no
+    /// operator credential is configured, a fixed <see cref="WrongPassphraseDelay"/>
+    /// on a wrong guess (both mirroring <c>/oauth/authorize</c>), and on success a
+    /// freshly-minted human session (§5) dropped as the <c>docket_session</c>
+    /// cookie;</item>
+    /// <item>a pasted token (the secondary door) — for a Lead token or a
+    /// headless-minted human session; validated through the same
+    /// <see cref="TokenService.ValidateAsync"/> as every other §5 path and set as
+    /// the cookie only if it resolves to a human or a live Lead.</item>
+    /// </list>
+    /// The only state-changing POST besides logout, and it only sets the caller's
+    /// own session — from a passphrase they present or a token they already hold —
+    /// so there is no CSRF surface to protect in v1.
     /// </summary>
-    private static async Task<IResult> HandleLoginAsync(HttpContext http, TokenService tokens, CancellationToken ct)
+    private static async Task<IResult> HandleLoginAsync(
+        HttpContext http, IOperatorVerifier verifier, TokenService tokens, CancellationToken ct)
     {
         var form = await http.Request.ReadFormAsync(ct);
+        var passphrase = form["passphrase"].ToString();
         var token = form["token"].ToString().Trim();
-        if (string.IsNullOrEmpty(token))
-            return Html(DashboardRenderer.Login("Enter a token."), 400);
 
-        var principal = await tokens.ValidateAsync(token, ct);
-        if (principal is not (Principal.Human or Principal.Lead))
-            return Html(DashboardRenderer.Login("That token is not a valid human session."), 401);
+        // Secondary door: a pasted token. Taken only when the passphrase field is
+        // blank, so the operator's normal path is never ambiguous.
+        if (string.IsNullOrEmpty(passphrase))
+        {
+            if (string.IsNullOrEmpty(token))
+                return Html(DashboardRenderer.Login("Enter the operator passphrase."), 400);
 
-        // The cookie tracks the token's own lifetime; a human session is 12h (§5).
-        DashboardAuth.SetSessionCookie(http, token, DateTimeOffset.UtcNow.Add(TokenService.HumanSessionTtl));
+            var principal = await tokens.ValidateAsync(token, ct);
+            if (principal is not (Principal.Human or Principal.Lead))
+                return Html(DashboardRenderer.Login("That token is not a valid human or Lead session."), 401);
+
+            // A session cookie (no Expires): the pasted token's real lifetime lives
+            // server-side and ValidateAsync re-checks it on every request, so the
+            // browser hint need not — and for a no-expiry Lead token must not —
+            // fabricate one.
+            DashboardAuth.SetSessionCookie(http, token, expiresAt: null);
+            return Results.Redirect("/dashboard/machines");
+        }
+
+        // Primary door: the operator passphrase. Fail-closed when unconfigured — the
+        // server can verify no one, so it mints nothing (mirrors /oauth/authorize).
+        if (!verifier.IsConfigured)
+            return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+
+        if (!verifier.Verify(passphrase))
+        {
+            await Task.Delay(WrongPassphraseDelay, ct); // brute-force friction (§5)
+            return Html(DashboardRenderer.Login("Incorrect operator passphrase."), 401);
+        }
+
+        // Verified operator → mint a fresh human session (§5, the root credential)
+        // and drop the cookie for its own 12h lifetime.
+        var issued = await tokens.IssueHumanSessionAsync(ct);
+        DashboardAuth.SetSessionCookie(http, issued.Token, issued.ExpiresAt);
         return Results.Redirect("/dashboard/machines");
     }
 

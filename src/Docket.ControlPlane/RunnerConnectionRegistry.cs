@@ -174,6 +174,17 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     }
 
     /// <summary>
+    /// Every currently-registered machine id, regardless of readiness or whether it
+    /// holds a tracked task — the full-enumeration snapshot the §12 Machine Group
+    /// view needs so a connected, back-pressured, zero-task machine is still visible
+    /// (neither <see cref="ReadyMachines"/> nor <see cref="AllTracked"/> would name
+    /// it). Membership lives in the concurrent dictionary, so the key snapshot is
+    /// consistent without taking any connection's <c>Gate</c> — that lock guards a
+    /// connection's mutable fields, which this read does not touch.
+    /// </summary>
+    public IReadOnlyList<string> MachineIds() => _connections.Keys.ToArray();
+
+    /// <summary>
     /// Whether the dispatch lease for <paramref name="task"/> is still held: the
     /// task is tracked on some machine AND that machine's connection is still
     /// registered (§10). This is the control-plane fact behind
