@@ -14,7 +14,7 @@ argv a worker is launched with.
 | `machine` | `back_pressure` | `max_cpu_load` / `max_memory_load` / `max_disk_usage` in [0,1]; defaults `0.90` / `0.90` / `0.95`, tune per box (§10). CPU is not yet observed cross-platform, so `max_cpu_load` is currently inert — memory and disk carry the signal (§10). |
 | `profiles[]` | `name` | Profile identifier. `profiles` is a JSON **array**; exactly one entry MUST be named `default` (§10). |
 | `profiles[]` | `spawn` | argv passed to `execve` — **never a shell** (§10). Substitutions below. |
-| `profiles[]` | `stop` | `mode` (`message` \| `signal`), `signal`, `message`, `wind_down_seconds`. Message delivery lets the agent honour the disposition (§10, §11). |
+| `profiles[]` | `stop` | `mode` (`message` \| `signal`), `signal`, `message`, `wind_down_seconds` (default `30`). Message delivery lets the agent honour the disposition; docketd injects the turn, then waits `min(ttl, wind_down_seconds)` for a voluntary exit before a hard tree-kill backstops it. A `signal` profile injects nothing, but the worker still gets the full `ttl` the plane granted to exit on its own before the kill (`wind_down_seconds` does not apply). Only `ttl=0` is killed immediately (§10, §11). |
 | `profiles[]` | `resume` | `args`: argv to resume a parked task's transcript, directory-scoped (§11). |
 | `profiles[]` | `events` | `source` (`hooks` \| `otel` \| `terminal` \| `none`) + name `mapping` → `started`/`tool-call`/`subagent-spawned`/`exited`. `none` is honest (§10). |
 | `profiles[]` | `telemetry` | `otel` bool + `endpoint` for budget attribution (§10). |
@@ -83,9 +83,13 @@ dispatched instance, and its token dies with the instance (§9 check 14).
         "--allowedTools", "Bash,Edit,Write,Read,Glob,Grep,mcp__docket__get_task,mcp__docket__report_result,mcp__docket__request_input,mcp__docket__register_service"
       ],
       "stop": {
-        // Injected turn so the agent reads the disposition and winds down (§10/§11).
+        // Injected as a claude stream-json user turn so the agent reads the
+        // disposition and winds down (§10/§11): it reports current progress via
+        // report_result, then stops. docketd substitutes {disposition}/{ttl_seconds}/
+        // {reason} and writes it as one line to the harness's held-open stdin, then
+        // waits min(ttl, wind_down_seconds) for the agent to exit before hard-killing.
         "mode": "message",
-        "message": "{\"type\":\"stop\",\"disposition\":\"{disposition}\",\"ttl_seconds\":{ttl_seconds},\"reason\":\"{reason}\"}",
+        "message": "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Docket is winding this task down (disposition={disposition}, ~{ttl_seconds}s left; reason: {reason}). Immediately call report_result with a reference to your current progress, then stop — do not begin new work.\"}}",
         "wind_down_seconds": 30
       },
       "resume": { "args": ["claude", "-p", "Resume your task.", "--resume", "{session_id}", "--mcp-config", "{mcp_config}"] },
@@ -111,7 +115,14 @@ dispatched instance, and its token dies with the instance (§9 check 14).
   most important line in `spawn`.
 - **`--input-format stream-json`** is what lets a graceful `stop` reach the agent
   as an injected turn rather than a signal (§10) — required for the `message`
-  stop mode above.
+  stop mode above. docketd writes one turn to stdin and waits
+  `min(ttl, wind_down_seconds)` for the agent to persist and exit; if it does not,
+  the process tree is hard-killed at that deadline. A `signal`-mode profile injects
+  no turn, but the worker still gets the full `ttl` the plane granted to exit on its
+  own before the kill (`wind_down_seconds` does not apply — it is the message-path
+  budget); only `ttl=0` skips the wait and is killed outright. The `message`
+  template may reference `{disposition}`, `{ttl_seconds}`, and `{reason}`, which
+  docketd substitutes per stop.
 - **`{mcp_config}`** is the injected path; the worker reads the plane URL and its
   bearer token from that file. Nothing else carries the token to the harness.
 

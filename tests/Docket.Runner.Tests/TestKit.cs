@@ -77,11 +77,12 @@ internal static class TestKit
         StopMode stopMode = StopMode.Signal,
         string name = "default",
         EventsSource events = EventsSource.None,
-        IReadOnlyDictionary<string, string>? mapping = null) =>
+        IReadOnlyDictionary<string, string>? mapping = null,
+        TimeSpan? windDown = null) =>
         new(
             name,
             [HarnessPath(), harnessMode],
-            new StopConfig(stopMode, Signal: null, MessageTemplate: null, WindDown: TimeSpan.FromSeconds(30)),
+            new StopConfig(stopMode, Signal: null, MessageTemplate: null, WindDown: windDown ?? TimeSpan.FromSeconds(30)),
             Resume: null,
             new EventsConfig(events, mapping ?? new Dictionary<string, string>()),
             new TelemetryConfig(Otel: false, Endpoint: null),
