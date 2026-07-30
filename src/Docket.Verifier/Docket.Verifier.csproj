@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Docket.Verifier</RootNamespace>
+    <AssemblyName>docket-verifier</AssemblyName>
+    <!-- The reference automated verifier (spec §5 verifier credential, §6
+         verdicts, §10 "the verifier posts to Docket, not the reverse"). A tiny
+         standalone console that a real CI-driven verifier copies: it speaks only
+         plain HTTP + JSON to the plane's verifier webhook and references no other
+         Docket project — it holds its own credential and treats
+         completionCriteria/resultReference as opaque strings (§7).
+
+         AOT-clean like docketd: no reflection JSON (source-gen'd
+         VerifierJsonContext), so IsAotCompatible catches trim/AOT drift in the
+         warnings-as-errors build rather than at publish. -->
+    <IsAotCompatible>true</IsAotCompatible>
+    <InvariantGlobalization>true</InvariantGlobalization>
+  </PropertyGroup>
+
+</Project>

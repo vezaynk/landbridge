@@ -72,3 +72,8 @@ jobs:
         run: dotnet test tests/Docket.Mcp.Tests --no-build -c Release
         env:
           DOCKET_TEST_PG: Host=localhost;Port=5432;Username=docket;Password=docket;Database=docket_mcp
+
+      - name: Test - Docket.Verifier (reference verifier vs a real plane)
+        run: dotnet test tests/Docket.Verifier.Tests --no-build -c Release
+        env:
+          DOCKET_TEST_PG: Host=localhost;Port=5432;Username=docket;Password=docket;Database=docket_verifier
