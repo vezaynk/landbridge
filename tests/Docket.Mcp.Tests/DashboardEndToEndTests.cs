@@ -1,4 +1,7 @@
+using System.Diagnostics;
 using System.Net;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json;
 using Docket.Contracts;
 using Docket.ControlPlane;
@@ -83,18 +86,46 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task Login_post_sets_session_cookie_and_lands_on_dashboard()
+    public async Task Login_form_renders_operator_passphrase_and_serves_its_css()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var ct = cts.Token;
 
-        await using var app = BuildPlane();
+        await using var app = BuildPlane(OperatorPassphraseHash);
         await app.StartAsync(ct);
         using var client = Client(app);
 
-        var humanToken = await IssueHumanTokenAsync(ct);
-        using var form = new FormUrlEncodedContent(new Dictionary<string, string> { ["token"] = humanToken });
+        var login = await client.GetAsync("/dashboard/login", ct);
+        Assert.Equal(HttpStatusCode.OK, login.StatusCode);
+        var body = await login.Content.ReadAsStringAsync(ct);
+        Assert.Contains("Operator passphrase", body, StringComparison.Ordinal);       // the primary door
+        Assert.Contains("name=\"passphrase\"", body, StringComparison.Ordinal);
+        Assert.Contains("or paste a token", body, StringComparison.Ordinal);          // the secondary door
+        Assert.Contains("name=\"token\"", body, StringComparison.Ordinal);
+        Assert.Contains("OAuth 2.1", body, StringComparison.Ordinal);                 // third-party clients note
+
+        // The one static asset every page links must be served, unauthenticated.
+        var css = await client.GetAsync("/dashboard/dashboard.css", ct);
+        Assert.Equal(HttpStatusCode.OK, css.StatusCode);
+        Assert.Equal("text/css", css.Content.Headers.ContentType!.MediaType);
+
+        await app.StopAsync(ct);
+    }
+
+    [SkippableFact]
+    public async Task Correct_passphrase_mints_a_session_sets_the_cookie_and_the_views_work()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var ct = cts.Token;
+
+        await using var app = BuildPlane(OperatorPassphraseHash);
+        await app.StartAsync(ct);
+        using var client = Client(app);
+
+        using var form = new FormUrlEncodedContent(
+            new Dictionary<string, string> { ["passphrase"] = OperatorPassphrase });
         var res = await client.PostAsync("/dashboard/login", form, ct);
 
         Assert.Equal(HttpStatusCode.Redirect, res.StatusCode);
@@ -103,10 +134,98 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Contains(DashboardAuth.CookieName, setCookie, StringComparison.Ordinal);
         Assert.Contains("httponly", setCookie, StringComparison.OrdinalIgnoreCase);
 
-        // The one static asset every page links must be served, unauthenticated.
-        var css = await client.GetAsync("/dashboard/dashboard.css", ct);
-        Assert.Equal(HttpStatusCode.OK, css.StatusCode);
-        Assert.Equal("text/css", css.Content.Headers.ContentType!.MediaType);
+        // The minted cookie is a real human session: it opens the gated views.
+        var token = SessionCookieValue(res);
+        using var req = new HttpRequestMessage(HttpMethod.Get, "/dashboard/machines");
+        req.Headers.Add("Cookie", $"{DashboardAuth.CookieName}={token}");
+        var view = await client.SendAsync(req, ct);
+        Assert.Equal(HttpStatusCode.OK, view.StatusCode);
+        Assert.Contains("Machine Group", await view.Content.ReadAsStringAsync(ct), StringComparison.Ordinal);
+
+        await app.StopAsync(ct);
+    }
+
+    [SkippableFact]
+    public async Task Wrong_passphrase_re_renders_the_form_sets_no_cookie_and_applies_the_delay()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var ct = cts.Token;
+
+        await using var app = BuildPlane(OperatorPassphraseHash);
+        await app.StartAsync(ct);
+        using var client = Client(app);
+
+        using var form = new FormUrlEncodedContent(
+            new Dictionary<string, string> { ["passphrase"] = "not-the-passphrase" });
+
+        var sw = Stopwatch.StartNew();
+        var res = await client.PostAsync("/dashboard/login", form, ct);
+        sw.Stop();
+
+        Assert.Equal(HttpStatusCode.Unauthorized, res.StatusCode);
+        Assert.False(res.Headers.Contains("Set-Cookie"));
+        Assert.Contains("Incorrect operator passphrase", await res.Content.ReadAsStringAsync(ct), StringComparison.Ordinal);
+        // The brute-force friction delay (~500ms) was applied (allow timer slack).
+        Assert.True(sw.Elapsed >= TimeSpan.FromMilliseconds(400), $"expected the delay, took {sw.ElapsedMilliseconds}ms");
+
+        await app.StopAsync(ct);
+    }
+
+    [SkippableFact]
+    public async Task Unconfigured_verifier_fails_closed_with_503_on_a_passphrase_login()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var ct = cts.Token;
+
+        await using var app = BuildPlane(operatorPassphraseHash: null); // no operator credential
+        await app.StartAsync(ct);
+        using var client = Client(app);
+
+        using var form = new FormUrlEncodedContent(
+            new Dictionary<string, string> { ["passphrase"] = "anything" });
+        var res = await client.PostAsync("/dashboard/login", form, ct);
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, res.StatusCode);
+        Assert.False(res.Headers.Contains("Set-Cookie"));
+
+        await app.StopAsync(ct);
+    }
+
+    [SkippableFact]
+    public async Task Token_paste_door_sets_the_cookie_for_a_valid_token_and_rejects_an_invalid_one()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var ct = cts.Token;
+
+        // Unconfigured verifier on purpose: the paste door is the headless/Lead
+        // path and must work even when no operator passphrase is configured.
+        await using var app = BuildPlane(operatorPassphraseHash: null);
+        await app.StartAsync(ct);
+        using var client = Client(app);
+
+        // Valid: a real human-session token → cookie set, land on the dashboard.
+        var humanToken = await IssueHumanTokenAsync(ct);
+        using (var form = new FormUrlEncodedContent(new Dictionary<string, string> { ["token"] = humanToken }))
+        {
+            var ok = await client.PostAsync("/dashboard/login", form, ct);
+            Assert.Equal(HttpStatusCode.Redirect, ok.StatusCode);
+            Assert.Contains("/dashboard/machines", ok.Headers.Location!.ToString(), StringComparison.Ordinal);
+            var setCookie = Assert.Single(ok.Headers.GetValues("Set-Cookie"));
+            Assert.Contains(DashboardAuth.CookieName, setCookie, StringComparison.Ordinal);
+            Assert.Contains("httponly", setCookie, StringComparison.OrdinalIgnoreCase);
+        }
+
+        // Invalid: a garbage token → re-rendered form, no cookie.
+        using (var form = new FormUrlEncodedContent(new Dictionary<string, string> { ["token"] = "dkt_h_not-a-real-token" }))
+        {
+            var bad = await client.PostAsync("/dashboard/login", form, ct);
+            Assert.Equal(HttpStatusCode.Unauthorized, bad.StatusCode);
+            Assert.False(bad.Headers.Contains("Set-Cookie"));
+            Assert.Contains("not a valid human or Lead session", await bad.Content.ReadAsStringAsync(ct), StringComparison.Ordinal);
+        }
 
         await app.StopAsync(ct);
     }
@@ -140,6 +259,45 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Contains(ns, body, StringComparison.Ordinal);                       // the running task
         Assert.Contains(ShortId(team.Value), body, StringComparison.Ordinal);      // its owning Team
         Assert.Contains("no subagents reported", body, StringComparison.Ordinal);  // honest empty tree
+
+        await app.StopAsync(ct);
+    }
+
+    // ── (b2) Machine Group view: a back-pressured, zero-task machine is visible ─
+
+    [SkippableFact]
+    public async Task Machine_view_shows_a_backpressured_idle_machine_with_no_tasks()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var ct = cts.Token;
+
+        await using var app = BuildPlane();
+        await app.StartAsync(ct);
+
+        // A connected machine that is under back-pressure (so not ready) and holds
+        // no dispatched task: invisible to ReadyMachines() and AllTracked() alike,
+        // and only surfaced by the registry's full MachineIds() enumeration.
+        var registry = app.Services.GetRequiredService<RunnerConnectionRegistry>();
+        registry.Register("idle-box", new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
+        registry.ApplyHeartbeat("idle-box", new MachineHeartbeat(
+            "idle-box", Ready: false, UnderBackPressure: true, new SystemLoad(0, 0, 0),
+            RunningTasks: 0, ["default"], DateTimeOffset.UtcNow));
+
+        // HTML: the machine and its back-pressure badge appear, with an empty task list.
+        var html = await GetAuthedAsync(app, "/dashboard/machines", ct);
+        Assert.Contains("idle-box", html, StringComparison.Ordinal);
+        Assert.Contains("back-pressure", html, StringComparison.Ordinal);
+        Assert.Contains("No tasks running on this machine.", html, StringComparison.Ordinal);
+
+        // JSON twin: same machine, flagged back-pressured, not ready, zero tasks.
+        var json = await GetAuthedAsync(app, "/dashboard/machines?format=json", ct);
+        using var doc = JsonDocument.Parse(json);
+        Assert.Contains(doc.RootElement.EnumerateArray(), m =>
+            m.GetProperty("machineId").GetString() == "idle-box"
+            && m.GetProperty("underBackPressure").GetBoolean()
+            && !m.GetProperty("ready").GetBoolean()
+            && m.GetProperty("runningTasks").GetArrayLength() == 0);
 
         await app.StopAsync(ct);
     }
@@ -284,7 +442,14 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
 
     // ── Host + seeding helpers ────────────────────────────────────────────────
 
-    private WebApplication BuildPlane()
+    /// <summary>The operator passphrase a configured verifier accepts, and its SHA-256 hex.</summary>
+    private const string OperatorPassphrase = "correct-operator-passphrase";
+    private static string OperatorPassphraseHash =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(OperatorPassphrase)));
+
+    /// <param name="operatorPassphraseHash">The SHA-256 hex the operator verifier
+    /// compares against; null leaves the verifier unconfigured (fail-closed 503).</param>
+    private WebApplication BuildPlane(string? operatorPassphraseHash = null)
     {
         var builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
@@ -297,6 +462,7 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         builder.Services.AddScoped<DashboardQueries>();
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<RunnerConnectionRegistry>();
+        builder.Services.AddSingleton<IOperatorVerifier>(new ConfiguredOperatorVerifier(operatorPassphraseHash));
         builder.Services.AddHttpContextAccessor();
 
         builder.Services.AddAuthentication(DocketAuthenticationHandler.SchemeName)
@@ -337,6 +503,15 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         await using var db = pg.NewContext();
         var tokens = new TokenService(db, TimeProvider.System);
         return (await tokens.IssueHumanSessionAsync(ct)).Token;
+    }
+
+    /// <summary>Extracts the <c>docket_session</c> value from a response's Set-Cookie.</summary>
+    private static string SessionCookieValue(HttpResponseMessage res)
+    {
+        var prefix = DashboardAuth.CookieName + "=";
+        var header = res.Headers.GetValues("Set-Cookie")
+            .First(c => c.StartsWith(prefix, StringComparison.Ordinal));
+        return header.Split(';')[0][prefix.Length..];
     }
 
     /// <summary>Claims a Lead for the Team and returns the claiming human's short id.</summary>

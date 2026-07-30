@@ -279,24 +279,30 @@ internal static class DashboardRenderer
         return Page("Event log", "events", sb.ToString());
     }
 
-    // ── Login (the OAuth seam) ────────────────────────────────────────────────
+    // ── Login (the first-party operator door) ─────────────────────────────────
 
     public static string Login(string? error)
     {
         var sb = new StringBuilder();
         sb.Append("<div class=\"login-wrap card\">");
         sb.Append("<h1>Sign in</h1>");
-        sb.Append("<p class=\"sub\">Paste a human-session token to open the dashboard.</p>");
+        sb.Append("<p class=\"sub\">Enter the operator passphrase to open the dashboard.</p>");
         if (!string.IsNullOrEmpty(error))
             sb.Append($"<p class=\"err\">{E(error)}</p>");
         sb.Append("<form method=\"post\" action=\"/dashboard/login\">");
-        sb.Append("<input type=\"password\" name=\"token\" placeholder=\"dkt_h_…\" autofocus autocomplete=\"off\">");
+        sb.Append("<input type=\"password\" name=\"passphrase\" placeholder=\"Operator passphrase\" " +
+                  "autofocus autocomplete=\"current-password\">");
+        // Secondary door: paste a token directly (a Lead token, or a
+        // headless-minted human session). Left blank on the normal operator path.
+        sb.Append("<label class=\"or\">or paste a token</label>");
+        sb.Append("<input type=\"password\" name=\"token\" placeholder=\"dkt_h_… / dkt_l_…\" autocomplete=\"off\">");
         sb.Append("<button type=\"submit\">Sign in</button>");
         sb.Append("</form>");
-        // The deliberate v1 seam: the in-flight OAuth 2.1 human flow (§5) replaces
-        // this paste-box with a redirect that drops the same docket_session cookie.
-        sb.Append("<p class=\"seam\">Temporary: the OAuth 2.1 human flow replaces this paste-box " +
-                  "with a redirect that sets the same session cookie.</p>");
+        // This same-origin form is the first-party operator door on the
+        // authorization server itself; third-party MCP clients (e.g. Claude Code)
+        // sign in through the OAuth 2.1 flow (§5) instead.
+        sb.Append("<p class=\"seam\">Third-party clients (e.g. Claude Code) sign in through the OAuth 2.1 " +
+                  "flow. This form is the first-party operator door on the authorization server.</p>");
         sb.Append("</div>");
         return Page("Sign in", "", sb.ToString(), autoRefresh: false);
     }

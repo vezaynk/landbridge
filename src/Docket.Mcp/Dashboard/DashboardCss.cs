@@ -96,6 +96,7 @@ internal static class DashboardCss
       margin-top: 10px; width: 100%; padding: 10px; border: none; border-radius: 8px;
       background: var(--accent); color: var(--accent-ink); font: inherit; font-weight: 600; cursor: pointer;
     }
+    .login-wrap .or { display: block; color: var(--muted); font-size: 12px; margin: 12px 0 4px; }
     .login-wrap .err { color: var(--bad); margin: 8px 0; }
     .login-wrap .seam { color: var(--muted); font-size: 12px; margin-top: 14px; }
     """;

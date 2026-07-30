@@ -32,19 +32,16 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
 
     /// <summary>
     /// Live machines with their running tasks (each tagged with its owning Team).
-    /// Machines come from the connection registry, which is in-memory and exposes
-    /// no full enumeration: we take the union of the ready set and every machine
-    /// currently holding a tracked task. A machine that is connected, under
-    /// back-pressure, and holding no dispatched task is therefore not visible here
-    /// — a registry read-surface limitation, not a schema gap. The subagent tree
-    /// is a documented empty state: subagent events reach the plane only as
+    /// Machines come from the connection registry's full enumeration
+    /// (<see cref="RunnerConnectionRegistry.MachineIds"/>), so a machine that is
+    /// connected, under back-pressure, and holding no dispatched task still appears
+    /// — exactly the operator signal this view exists to surface (§12). The subagent
+    /// tree is a documented empty state: subagent events reach the plane only as
     /// liveness pings (§10), nothing is persisted, so there is nothing to nest.
     /// </summary>
     public async Task<IReadOnlyList<MachineView>> GetMachinesAsync(CancellationToken ct = default)
     {
-        var ids = new HashSet<string>(registry.ReadyMachines(), StringComparer.Ordinal);
-        foreach (var tracked in registry.AllTracked())
-            ids.Add(tracked.Machine);
+        var ids = registry.MachineIds();
 
         // Resolve owning Team + namespace + state for every tracked task in one read.
         var taskIds = ids.SelectMany(id => registry.TasksOn(id).Select(t => t.Value)).Distinct().ToArray();
