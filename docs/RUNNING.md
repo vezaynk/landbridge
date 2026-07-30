@@ -1,0 +1,306 @@
+# Running Docket
+
+The operator / developer guide: bring the system up locally, authenticate,
+enroll a real machine, point a worker at a real harness, and the full config-key
+reference. For the *why*, see [ARCHITECTURE.md](ARCHITECTURE.md) and the
+authoritative [`ideas/spec.md`](../ideas/spec.md).
+
+## Prerequisites
+
+- **.NET 10 SDK** (`Directory.Build.props` targets `net10.0`; CI uses `10.0.x`).
+- **Docker** — the dev loop runs Postgres in a container via .NET Aspire.
+- No shell scripts are involved anywhere: `docketd` invokes harnesses via argv
+  through `execve`, never a shell (spec §10).
+
+## The dev loop (one command)
+
+```bash
+dotnet run --project src/Docket.AppHost
+```
+
+`Docket.AppHost` is a .NET Aspire orchestrator. It is a **dev-time inner loop
+only** — not a production deployment path (in production `docketd` runs
+standalone on each machine, and nothing couples the runtime to Aspire). It
+brings up, in dependency order:
+
+| Resource | What it is | Endpoint |
+|---|---|---|
+| `postgres` | Managed Postgres 16 with a persistent data volume (survives restarts) | container |
+| `mcp` | The control plane + MCP host (`Docket.Mcp`), migrated on startup and dev-seeded | `http://127.0.0.1:5000` (fixed, un-proxied) |
+| `relay` | `docket-relay` | `http://127.0.0.1:5100` (fixed, un-proxied) |
+| `docketd` | A real runner, enrolled via a dev-seeded machine token, dialing `ws://127.0.0.1:5000/runner` | outbound only |
+| `docket-verifier` | The reference automated verifier, polling the plane (`--accept-pattern .*`, dev-only) | outbound only |
+
+The endpoints for `mcp` and `relay` are pinned to fixed loopback ports and *not*
+proxied by Aspire's DCP, because the sibling `docketd`/worker/relay processes
+dial those addresses directly and would not see an ephemeral proxy port.
+
+Two dashboards:
+
+- **Aspire dashboard** — the URL is printed on the console at startup. It shows
+  every resource, its console logs, and the host's OpenTelemetry traces, metrics,
+  and logs (`Docket.ServiceDefaults` wires OTel; the host exports to the Aspire
+  collector automatically in this loop).
+- **Docket web dashboard** (spec §12) — served by the host at
+  `http://127.0.0.1:5000/dashboard`. See [authentication](#authenticating-a-human)
+  below; it needs an operator passphrase you must set yourself.
+
+The loop stands up a *standing fleet* and does **not** auto-create a task. Create
+work as a Lead over MCP, exactly as in production. The dispatched worker is
+`Docket.WorkerHarness`, a scripted no-LLM MCP client that exercises the full
+dispatch → `get_task` → `report_result` protocol; see
+[running a real harness](#pointing-a-worker-at-a-real-harness) to swap it for
+`claude -p`.
+
+### Dev-seed shortcut
+
+In the dev loop the host bootstraps a machine identity out of band (the real
+enrollment handshake an operator performs — below — is skipped) and writes a
+JSON file with `machineId`, `machineToken`, and `verifierToken` to a temp path.
+The AppHost reads it and hands `docketd` its `DOCKET_MACHINE_TOKEN` /
+`DOCKET_MACHINE_ID` and the verifier its `DOCKET_VERIFIER_TOKEN`. This is gated
+by `Docket:DevSeed:TokenFile` and **production never sets it**. The dev machine
+token is fixed and never refreshed.
+
+## Authenticating a human
+
+Two doors, both gated by an **operator passphrase** you configure. The plane
+stores only the SHA-256 hex of the passphrase, never the plaintext. When it is
+unset, both `/oauth/authorize` and the dashboard login are **fail-closed (503)** —
+so the dev loop ships with dashboard login disabled until you set it.
+
+Generate the hash and set it (illustrative — any way of producing the SHA-256 hex
+works):
+
+```bash
+printf '%s' 'your-passphrase' | shasum -a 256    # → the hex to store
+```
+
+Then supply it to the host as `Docket:Operator:PassphraseHash`, e.g. via user
+secrets or the environment variable `Docket__Operator__PassphraseHash` (see the
+[config reference](#control-plane-configuration-docketmcp) for the exact key).
+
+- **Dashboard** — browse to `/dashboard`, land on `/dashboard/login`, enter the
+  passphrase. On success you get a `docket_session` cookie (12h, HttpOnly,
+  `Path=/dashboard`) and can view `/dashboard/machines` (Machine Group),
+  `/dashboard/teams` + `/dashboard/teams/{id}` (Team views), `/dashboard/inbox`
+  (human inbox), and `/dashboard/events`. Pages carry a 5-second auto-refresh and
+  each has a JSON twin (`?format=json` or an `Accept: application/json` request).
+  A pasted human/Lead token is accepted as a secondary door.
+- **MCP / harness (OAuth 2.1)** — a harness acting as a Lead authenticates via the
+  authorization-code flow with PKCE (S256 only). The plane advertises
+  `/.well-known/oauth-protected-resource` (RFC 9728) and
+  `/.well-known/oauth-authorization-server` (RFC 8414), and identifies clients by
+  **Client ID Metadata Document** (the `client_id` is a URL), not Dynamic Client
+  Registration. The `/oauth/authorize` consent step verifies the same operator
+  passphrase; `/oauth/token` mints an opaque human session.
+
+Lead identity is then *derived from the authenticated token*, not claimed through
+a tool call on this branch — a human-session/lead principal is what the MCP Lead
+tools require. (Spec §10's `claim_lead` / `release_lead` / `list_teams` /
+`get_machine_group_status` tools and slash-command prompts are not yet exposed as
+MCP tools; Team and Machine Group enumeration is served by the web dashboard.)
+
+## Enrolling a real second machine
+
+On production machines `docketd` runs standalone. Enrollment exchanges a
+**human-issued enrollment token** (single-use, short-lived — 15 minutes) for
+persistent machine credentials. The token is read from a file or stdin,
+**never from argv** (it would leak into shell history and `/proc/<pid>/cmdline` —
+spec §13):
+
+```bash
+# token in a file (0600):
+docketd --enroll \
+  --control-url https://plane.example.com \
+  --enroll-token-file ./enroll.token \
+  --state-dir /var/lib/docketd \
+  --name web-builder-01 --purpose "CI worker" --permission-level standard
+
+# or piped on stdin (no --enroll-token-file):
+docketd --enroll --control-url https://plane.example.com < enroll.token
+```
+
+This POSTs to `POST /enroll` and persists the machine credentials — access token,
+refresh token, machine id, and the control URL — to `credentials.json` under the
+state dir, written `0600` in a `0700` directory. `--name`/`--purpose`/
+`--permission-level` default to the hostname / `general` / `standard`; the OS
+string is filled automatically.
+
+State-dir resolution order: `--state-dir` → `$DOCKET_STATE_DIR` →
+`$XDG_STATE_HOME/docket` → `~/.docket`.
+
+Then run the daemon against a config (see below); it loads the stored
+credentials, derives the `/runner` WebSocket URL from the saved control URL, and
+connects:
+
+```bash
+docketd --config /etc/docketd/config.json --state-dir /var/lib/docketd
+```
+
+The access token is short-lived and re-minted at `POST /machine/refresh` —
+proactively at ~50% of its remaining lifetime and reactively on a 401 reconnect.
+The long-lived refresh token is the only durable secret and is bound to the
+machine id, so a copied credential file fails on another host.
+
+> **Not yet built.** Spec §11 describes an agent-guided `/docket-enroll` wizard
+> that writes the runner config and a control-plane **conformance run** that
+> dispatches trivial tasks and judges the machine before it joins as `ready`.
+> Neither the wizard prompt nor the conformance run exists on this branch; today
+> enrollment yields credentials and you author the runner config yourself.
+
+## The runner config
+
+`docketd` contains no harness knowledge — everything specific is data (spec §10).
+`--config <path>` points at a JSON file with a `machine` section and one or more
+`profiles` (exactly one must be named `default`). The full schema and a worked
+Claude Code profile live in
+[`ideas/skills/references/runner-config.md`](../ideas/skills/references/runner-config.md).
+The dev-loop template is
+[`src/Docket.AppHost/docketd.dev.json`](../src/Docket.AppHost/docketd.dev.json).
+
+`machine`: `work_root` (per-task scratch dirs — `docketd` spawns each task in
+`{work_root}/{task_id}`, which is *not* the workspace), `heartbeat_seconds`
+(default 15s), and `back_pressure` thresholds (`max_cpu_load` / `max_memory_load`
+/ `max_disk_usage` in `[0,1]`).
+
+Each `profile` carries `spawn` (argv), `stop`, `resume`, `events`, `telemetry`,
+`logs`, and an optional `max_concurrent`. `docketd` substitutes `{...}` tokens
+into each `spawn` arg at dispatch: `{task_id}`, `{machine_id}`, `{work_dir}`
+(`= {work_root}/{task_id}`, the cwd), `{budget}` (the harness-local hard cap in
+USD, if any), and `{mcp_config}` (the path to the worker MCP config `docketd`
+writes to `{work_dir}/mcp.json`, mode `0600`). It also stamps `DOCKET_MACHINE_ID`,
+`DOCKET_TASK_ID`, and `DOCKET_WORKER_TOKEN` on the child.
+
+> Note: `{work_root}` and `{worker_harness}` in `docketd.dev.json` are
+> **AppHost** placeholders resolved *before* the file reaches `docketd` (the
+> AppHost writes out a resolved copy); they are not `docketd` substitution tokens.
+> `docketd`'s tokens are the five listed above.
+
+### Pointing a worker at a real harness
+
+This is the config-only swap the whole design turns on: to run a real agent
+instead of the no-LLM harness, change the `default` profile's `spawn` argv — no
+code change to `docketd` (spec §10). The dev template's
+
+```json
+"spawn": ["{worker_harness}", "--mcp-config", "{mcp_config}"]
+```
+
+becomes a real `claude -p` invocation (abridged from the worked example in the
+runner-config reference):
+
+```json
+"spawn": [
+  "claude", "-p", "<bootstrap prompt: read get_task, do the work, report_result>",
+  "--mcp-config", "{mcp_config}",
+  "--output-format", "stream-json",
+  "--input-format", "stream-json",
+  "--permission-mode", "bypassPermissions",
+  "--strict-mcp-config",
+  "--allowedTools", "Bash,Edit,Write,Read,Glob,Grep,mcp__docket__get_task,mcp__docket__report_result,mcp__docket__request_input,mcp__docket__register_service"
+]
+```
+
+The load-bearing arguments:
+
+- **`{mcp_config}`** is the only thing that carries the worker's identity to the
+  harness. `docketd` writes an HTTP MCP config pointing at the plane's public URL
+  with the minted worker-instance bearer token (`Authorization: Bearer dkt_w_…`).
+  Pass **`--strict-mcp-config`** so the harness uses *only* that file and ignores
+  any ambient user/project MCP config — the worker must be exactly the dispatched
+  instance and nothing more.
+- **`--permission-mode bypassPermissions`** is the headless prerequisite: a worker
+  must run to completion without prompting (spec §10). Managed settings on a
+  corporate machine can forbid bypass outright — confirm it is permitted first.
+- **`--input-format stream-json`** is what lets a graceful `stop` reach the agent
+  as an injected turn (`stop.mode: "message"`) rather than a signal.
+
+### Event sources — what works today
+
+`events.source` selects how harness activity maps to the frozen runner events.
+On this branch only **`terminal`** (parse Claude Code stream-json stdout →
+`tool-call`, capture the session id) and **`none`** (honest degradation: liveness
+falls back to process-alive, progress renders as "not reported") are implemented.
+The `hooks` and `otel` sources are valid config values but **not yet wired** —
+the worked example in the runner-config reference uses `hooks`, which is the
+intended shape, not what runs today. `subagent-spawned`, `alive`, and
+`auth-failed` events are not produced yet.
+
+## Configuration reference
+
+Keys are shown in `:`-separated form; as environment variables, replace `:` with
+`__` (e.g. `Docket__PublicMcpUrl`). Every key below is grepped from the code on
+this branch.
+
+### Control plane / host (`Docket.Mcp`)
+
+| Key | Default | Purpose |
+|---|---|---|
+| `ConnectionStrings:Docket` (or env `DOCKET_DB`) | `Host=localhost;Database=docket;Username=docket` | Postgres connection string. |
+| `Docket:PublicMcpUrl` (or env `DOCKET_PUBLIC_MCP_URL`) | `http://127.0.0.1:5000` | The plane's public MCP endpoint dialed by workers; also the OAuth 2.1 canonical resource id / issuer. Set to the real public **https** URL in production. |
+| `Docket:Operator:PassphraseHash` | *(empty → fail-closed)* | SHA-256 hex of the operator passphrase gating `/oauth/authorize` and dashboard login. Store the hash, never the plaintext. |
+| `Docket:WaitTtl` | `00:30:00` | How long a `blocked_on_input` task waits before parking (spec §11). |
+| `Docket:MachineLivenessTtl` | `00:01:30` | Heartbeat-age window past which a machine is treated as rebooted and its waiting tasks requeue (≈ six missed 15s heartbeats). |
+| `Docket:WaitTtlSweepInterval` | `00:01:00` | How often the `WaitTtlSweeper` background loop runs. |
+| `Docket:RelayUrl` | *(unset)* | The `docket-relay` URL the plane hands `docketd` per `open_forward`. |
+| `Docket:RelayValidation:Bearer` | *(unset → 503)* | Shared bearer the relay must present to `POST /relay/validate`. Fail-closed when unset. |
+| `Docket:Oauth:AllowInsecureClientMetadata` | `false` | DEV/TEST ONLY. Disables the CIMD SSRF address fence (accepts http / loopback `client_id` hosts). Never enable in production. |
+| `Docket:MigrateOnStartup` | `false` | Apply the checked-in EF migration on boot. Set by the dev loop; production migrates out of band. |
+| `Docket:DevSeed:TokenFile` | *(unset)* | Dev-loop only: bootstrap a machine + verifier identity and write the seed file here. Never set in production. |
+| env `OTEL_EXPORTER_OTLP_ENDPOINT` | *(unset)* | When set, the host exports OpenTelemetry via OTLP (the Aspire dashboard sets this in the dev loop). |
+
+### Relay (`Docket.Relay`)
+
+| Key | Default | Purpose |
+|---|---|---|
+| `Relay:ControlPlane:Url` | *(unset)* | When set, activates the real `ControlPlaneGrantValidator`, which validates each grant against `{Url}/relay/validate`. When unset, the fail-closed `StaticSecretGrantValidator` is used instead. |
+| `Relay:ControlPlane:Bearer` | *(unset)* | Bearer presented to the plane's `/relay/validate`. Must match the plane's `Docket:RelayValidation:Bearer`. |
+| `Relay:ControlPlane:Timeout` | `00:00:05` | Validation call timeout; a timeout refuses the tunnel (fail-closed). |
+| `Relay:Grant:AllowAll` | `false` | DEV/SMOKE ONLY. Accept every grant (logs a loud warning). |
+| `Relay:Grant:SharedSecret` | *(null)* | Static shared-secret grant for the stub validator. With neither this nor `AllowAll`, the static validator refuses everything. |
+| `Relay:PairWaitTimeout` | `00:00:30` | How long a tunnel waits for its opposite end to arrive before giving up. |
+
+The dev loop sets `Relay:ControlPlane:Url` and a freshly-minted shared
+`Relay:ControlPlane:Bearer` on both `mcp` and `relay`, so the real
+control-plane validator is active — not the static stub.
+
+### Runner (`docketd`)
+
+Flags: `--config <path>` (required for a normal run), `--machine-id <id>`,
+`--state-dir <dir>`; and for enrollment `--enroll --control-url <url>`
+`[--enroll-token-file <path>]` `[--name <n>]` `[--purpose <p>]`
+`[--permission-level <l>]`.
+
+| Env var | Purpose |
+|---|---|
+| `DOCKET_CONTROL_URL` | The `ws(s)://…/runner` URL to dial. In the dev loop the AppHost sets it; with file credentials it is derived from the saved control URL. |
+| `DOCKET_MACHINE_TOKEN` | A fixed machine bearer (dev-loop path — never refreshed). When unset, `docketd` loads persisted credentials from the state dir and refreshes them. |
+| `DOCKET_MACHINE_ID` | Machine id (else `--machine-id`, else a random id). |
+| `DOCKET_STATE_DIR` / `XDG_STATE_HOME` | State-dir resolution (see enrollment). |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | Enables OTLP export from the runner when set. |
+
+### Verifier (`docket-verifier`)
+
+Flags: `--plane <url>` (required), `--interval <seconds>` (default 15),
+`--accept-pattern <regex>` (default `.*`). The bearer verifier token comes from
+the environment variable **`DOCKET_VERIFIER_TOKEN`** — never a flag. The verifier
+polls `GET /verify/pending`, accepts a task iff its result reference is non-empty
+and matches the pattern, and posts the verdict to `POST /verify/{taskId}`. It
+gives up (exit 3) after three consecutive auth failures so you rotate the token.
+
+> The dev loop runs the verifier with `--accept-pattern .*`, which accepts any
+> non-empty result reference — a **dev-only** choice so the lifecycle closes with
+> nobody in the loop. A real deployment narrows the pattern to the shapes its
+> workers actually produce (a commit SHA, a CI artifact URL); an over-broad
+> pattern in production rubber-stamps every task.
+
+## Running the tests
+
+See the [Tests section of the README](../README.md#tests). In short: `dotnet
+build -c Release` gates on warnings (`TreatWarningsAsErrors`), then run each
+suite with `dotnet test … --no-build -c Release`. The two Postgres-backed suites
+(`Docket.ControlPlane.Tests`, `Docket.Mcp.Tests`) honor `DOCKET_TEST_PG`; when it
+is set they use that server (each with its own database) instead of spinning a
+local cluster. CI splits into `ci.yml` (ubuntu + Postgres) and `os-matrix.yml`
+(the platform-sensitive suites on ubuntu/macOS/Windows).

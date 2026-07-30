@@ -62,12 +62,13 @@ public sealed class SupervisedTask
     public DateTimeOffset LastActivityAt { get; set; }
 
     /// <summary>
-    /// §11 resume seam: the harness session id captured from the events stream
-    /// (claude <c>system/init</c>), set by the <see cref="TerminalEventReader"/>
-    /// when <see cref="EventsSource.Terminal"/> is configured; null otherwise.
-    /// <b>Reserved for resume (§11) and deliberately NOT wired to resume in this
-    /// increment</b> — captured and logged only, so the resume increment has the id
-    /// waiting for it.
+    /// §11 resume: the harness session id captured from the events stream (claude
+    /// <c>system/init</c>), set by the <see cref="TerminalEventReader"/> when
+    /// <see cref="EventsSource.Terminal"/> is configured; null otherwise. On
+    /// capture the supervisor also emits a <see cref="SessionStartedEvent"/> so the
+    /// plane stamps the ref onto the task row (opaque metadata) — a later park
+    /// carries it and redispatch resumes the transcript. Also the one-per-task
+    /// guard: non-null means the ref has already been emitted.
     /// </summary>
     public string? SessionId { get; set; }
 
@@ -172,8 +173,15 @@ public sealed class ProcessSupervisor : IProcessSupervisor
 
     public TaskId Spawn(DispatchCommand dispatch, ProfileConfig profile, string machineId)
     {
-        if (profile.Spawn.Count == 0)
-            throw new InvalidOperationException($"profile '{profile.Name}' has an empty spawn argv");
+        // §11 resume: continue a parked transcript when the plane hands back a
+        // harness session ref for a task that was worked before AND this profile
+        // declares how to resume (resume.args). A ref with no resume config, or no
+        // ref at all, falls back to a normal spawn — a documented cold start (§11).
+        var resuming = dispatch.ResumeSessionRef is { Length: > 0 } && profile.Resume is not null;
+        var spawnArgv = resuming ? profile.Resume!.Args : profile.Spawn;
+        if (spawnArgv.Count == 0)
+            throw new InvalidOperationException(
+                $"profile '{profile.Name}' has an empty {(resuming ? "resume" : "spawn")} argv");
 
         var workDir = Path.Combine(_machine.WorkRoot, dispatch.Task.ToString());
         Directory.CreateDirectory(workDir);
@@ -185,11 +193,18 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             ["work_dir"] = workDir,
             ["budget"] = dispatch.BudgetUsd?.ToString(CultureInfo.InvariantCulture) ?? "",
         };
+        // §11 resume: the opaque session ref fills the {session_id} placeholder in
+        // resume.args (e.g. `--resume {session_id}`). Only present when resuming;
+        // a cold-start argv carries no {session_id}.
+        if (resuming)
+            substitutions["session_id"] = dispatch.ResumeSessionRef!;
         if (dispatch.SpawnSubstitutions is not null)
             foreach (var (key, value) in dispatch.SpawnSubstitutions)
                 substitutions[key] = value;
 
         // §13: the worker token's generated MCP config lives in the task dir, 0600.
+        // A resumed claude still needs its MCP config (and a fresh worker token in
+        // the env below), so {mcp_config} substitutes on the resume path too.
         if (dispatch.McpConfigJson is not null)
         {
             var mcpPath = Path.Combine(workDir, "mcp.json");
@@ -198,7 +213,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             substitutions["mcp_config"] = mcpPath;
         }
 
-        var argv = profile.Spawn.Select(a => Substitute(a, substitutions)).ToArray();
+        var argv = spawnArgv.Select(a => Substitute(a, substitutions)).ToArray();
 
         // §10 event relay: only the Terminal events source redirects stdout, and
         // only because it then MUST drain it continuously (see below) — the
@@ -310,11 +325,14 @@ public sealed class ProcessSupervisor : IProcessSupervisor
                 _clock,
                 onSessionId: sessionId =>
                 {
+                    // §11 resume: emit the ref to the plane the moment it is captured,
+                    // so the task row carries it before any park. Once per task — the
+                    // reader only fires this on the first system/init, and this guard
+                    // makes a re-emit impossible even if that ever changed.
+                    if (supervised.SessionId is not null)
+                        return;
                     supervised.SessionId = sessionId;
-                    // §11 resume seam: captured and logged only — resume is a later
-                    // increment and is deliberately not wired here.
-                    Console.Error.WriteLine(
-                        $"docketd: task {dispatch.Task} harness session {sessionId} (captured for §11 resume)");
+                    _ring.Enqueue(new SessionStartedEvent(dispatch.Task, sessionId, _clock.GetUtcNow()));
                 });
             // The CTS is disposed by the reader task's own completion, so OnExited's
             // backstop cancel never races a live-then-freed handle.

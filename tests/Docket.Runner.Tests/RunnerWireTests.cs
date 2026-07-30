@@ -55,7 +55,7 @@ public class RunnerWireTests
             new HashSet<string> { "dispatch", "stop", "kill", "open-forward" },
             new HashSet<string>(RunnerWire.Commands));
         Assert.Equal(
-            new HashSet<string> { "started", "alive", "tool-call", "subagent-spawned", "exited", "auth-failed", "forward-opened", "forward-closed", "rebooted" },
+            new HashSet<string> { "started", "session-started", "alive", "tool-call", "subagent-spawned", "exited", "auth-failed", "forward-opened", "forward-closed", "rebooted" },
             new HashSet<string>(RunnerWire.Events));
     }
 }

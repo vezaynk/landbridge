@@ -49,6 +49,8 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(taskId, command.Task);
         Assert.Equal("default", command.Profile);
         Assert.NotEqual("", command.WorkerToken);
+        // A first dispatch has never parked, so it carries no resume ref (§11).
+        Assert.Null(command.ResumeSessionRef);
 
         // The task moved submitted → working, and it is tracked on the machine.
         Assert.Equal(TaskState.Working, await StateAsync(clock, taskId));
@@ -81,6 +83,37 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
 
         Assert.Empty(captured);
         Assert.Equal(TaskState.Submitted, await StateAsync(clock, taskId));
+    }
+
+    [SkippableFact]
+    public async Task Dispatch_of_a_task_with_a_stored_session_ref_sets_resume_session_ref_on_the_command()
+    {
+        // §11 resume: a task worked before and requeued/parked carries a harness
+        // session ref on its row; (re)dispatch surfaces it (opaque, via the store)
+        // and DispatchService rides it back on the DispatchCommand so docketd can
+        // continue the transcript.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = TimeProvider.System;
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var taskId = await SeedSubmittedTaskAsync(clock, team, profile: null);
+
+        // Stamp the prior work session's ref exactly as the SessionStartedEvent sink
+        // would have, before this dispatch.
+        await using (var db = pg.NewContext())
+            await new TaskStore(db, clock).StampHarnessSessionRefAsync(taskId, "sess-prior");
+
+        var registry = new RunnerConnectionRegistry(clock);
+        var captured = new List<RunnerCommand>();
+        registry.Register("m1", Set("default"), (cmd, _) => { captured.Add(cmd); return Task.CompletedTask; });
+        registry.ApplyHeartbeat("m1", Heartbeat("m1", "default"));
+
+        var dispatch = new DispatchService(scopes, registry, clock, NullLogger<DispatchService>.Instance);
+        await dispatch.RunDispatchPassAsync(CancellationToken.None);
+
+        var command = Assert.IsType<DispatchCommand>(Assert.Single(captured));
+        Assert.Equal(taskId, command.Task);
+        Assert.Equal("sess-prior", command.ResumeSessionRef);
     }
 
     // ── Lease liveness ──────────────────────────────────────────────────────────
@@ -138,6 +171,35 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         // the harness is up; requeue-on-disconnect still applies).
         var tracked = Assert.Single(registry.AllTracked());
         Assert.Equal(task, tracked.Task);
+        Assert.Equal(clock.GetUtcNow(), tracked.LastActivity);
+    }
+
+    [SkippableFact]
+    public async Task Session_started_event_stamps_the_harness_session_ref_on_the_row()
+    {
+        // §11 resume: the sink writes the opaque ref verbatim onto the task row
+        // (never interpreted, like ResultReference) and refreshes activity like any
+        // other liveness signal. Later a park copies it and redispatch resumes.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var taskId = await SeedWorkingTaskAsync(clock, team, "m1");
+
+        var registry = new RunnerConnectionRegistry(clock);
+        registry.Register("m1", Set("default"), (_, _) => Task.CompletedTask);
+        registry.TrackDispatch("m1", taskId); // stamped at t0
+        clock.Advance(TimeSpan.FromSeconds(30));
+
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), NullLogger<RunnerEventSink>.Instance);
+        await sink.HandleAsync(new SessionStartedEvent(taskId, "sess-xyz", clock.GetUtcNow()));
+
+        await using var db = pg.NewContext();
+        var row = await db.Tasks.AsNoTracking().SingleAsync(t => t.Id == taskId.Value);
+        Assert.Equal("sess-xyz", row.HarnessSessionRef);
+        // The task stays working and tracked; activity advanced to t0+30.
+        Assert.Equal(TaskState.Working, row.State);
+        var tracked = Assert.Single(registry.AllTracked());
         Assert.Equal(clock.GetUtcNow(), tracked.LastActivity);
     }
 

@@ -25,6 +25,7 @@ public static class RunnerWire
     public const string OpenForward = "open-forward";
 
     public const string Started = "started";
+    public const string SessionStarted = "session-started";
     public const string Alive = "alive";
     public const string ToolCall = "tool-call";
     public const string SubagentSpawned = "subagent-spawned";
@@ -47,7 +48,7 @@ public static class RunnerWire
     public static IReadOnlySet<string> Events { get; } =
         new HashSet<string>(StringComparer.Ordinal)
         {
-            Started, Alive, ToolCall, SubagentSpawned, Exited, AuthFailed, ForwardOpened, ForwardClosed, Rebooted,
+            Started, SessionStarted, Alive, ToolCall, SubagentSpawned, Exited, AuthFailed, ForwardOpened, ForwardClosed, Rebooted,
         };
 
     public static bool IsKnownCommand(string? type) => type is not null && Commands.Contains(type);
@@ -93,6 +94,7 @@ public static class RunnerWire
         var (obj, type) = evt switch
         {
             StartedEvent e => (ToObject(e, RunnerWireContext.Default.StartedEvent), Started),
+            SessionStartedEvent e => (ToObject(e, RunnerWireContext.Default.SessionStartedEvent), SessionStarted),
             AliveEvent e => (ToObject(e, RunnerWireContext.Default.AliveEvent), Alive),
             ToolCallEvent e => (ToObject(e, RunnerWireContext.Default.ToolCallEvent), ToolCall),
             SubagentSpawnedEvent e => (ToObject(e, RunnerWireContext.Default.SubagentSpawnedEvent), SubagentSpawned),
@@ -169,6 +171,7 @@ public static class RunnerWire
             return type switch
             {
                 Started => doc.RootElement.Deserialize(RunnerWireContext.Default.StartedEvent),
+                SessionStarted => doc.RootElement.Deserialize(RunnerWireContext.Default.SessionStartedEvent),
                 Alive => doc.RootElement.Deserialize(RunnerWireContext.Default.AliveEvent),
                 ToolCall => doc.RootElement.Deserialize(RunnerWireContext.Default.ToolCallEvent),
                 SubagentSpawned => doc.RootElement.Deserialize(RunnerWireContext.Default.SubagentSpawnedEvent),

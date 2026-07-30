@@ -47,6 +47,40 @@ public class RunnerWireTests
         Assert.Null(decoded.McpConfigJson);
         Assert.Null(decoded.BudgetUsd);
         Assert.Null(decoded.SpawnSubstitutions);
+        Assert.Null(decoded.ResumeSessionRef);
+    }
+
+    [Fact]
+    public void Dispatch_command_round_trips_with_a_resume_session_ref()
+    {
+        // §11 resume: the opaque session ref rides the dispatch envelope so the
+        // runner can continue a parked transcript.
+        var original = new DispatchCommand(
+            TaskId.New(), "default", WorkerToken: "dkt_w_abc", ResumeSessionRef: "sess-a4bbb0fd");
+
+        var decoded = Assert.IsType<DispatchCommand>(RunnerWire.DecodeCommand(RunnerWire.EncodeCommand(original)));
+
+        Assert.Equal(original, decoded);
+        Assert.Equal("sess-a4bbb0fd", decoded.ResumeSessionRef);
+    }
+
+    [Fact]
+    public void Dispatch_envelope_without_a_resume_session_ref_decodes_back_compatibly()
+    {
+        // A dispatch envelope from a sender that predates the resume field (or a
+        // first, never-parked dispatch) carries none; it must decode to a null
+        // ResumeSessionRef, never crash (§11 — the addition is wire-compatible,
+        // exactly like the OpenForward relay fields).
+        var task = TaskId.New();
+        var legacy = $$"""
+            { "type": "dispatch", "task": { "value": "{{task.Value}}" }, "profile": "default" }
+            """;
+
+        var decoded = Assert.IsType<DispatchCommand>(RunnerWire.DecodeCommand(legacy));
+
+        Assert.Equal(task, decoded.Task);
+        Assert.Equal("default", decoded.Profile);
+        Assert.Null(decoded.ResumeSessionRef);
     }
 
     [Fact]
@@ -193,6 +227,15 @@ public class RunnerWireTests
     }
 
     [Fact]
+    public void Session_started_event_round_trips_including_the_session_ref()
+    {
+        var original = new SessionStartedEvent(TaskId.New(), "sess-a4bbb0fd", DateTimeOffset.UtcNow);
+        var decoded = Assert.IsType<SessionStartedEvent>(RunnerWire.DecodeEvent(RunnerWire.EncodeEvent(original)));
+        Assert.Equal(original, decoded);
+        Assert.Equal("sess-a4bbb0fd", decoded.SessionRef);
+    }
+
+    [Fact]
     public void Alive_event_round_trips()
     {
         var original = new AliveEvent(TaskId.New(), DateTimeOffset.UtcNow);
@@ -319,7 +362,7 @@ public class RunnerWireTests
             new HashSet<string> { "dispatch", "stop", "kill", "open-forward" },
             new HashSet<string>(RunnerWire.Commands));
         Assert.Equal(
-            new HashSet<string> { "started", "alive", "tool-call", "subagent-spawned", "exited", "auth-failed", "forward-opened", "forward-closed", "rebooted" },
+            new HashSet<string> { "started", "session-started", "alive", "tool-call", "subagent-spawned", "exited", "auth-failed", "forward-opened", "forward-closed", "rebooted" },
             new HashSet<string>(RunnerWire.Events));
     }
 }
