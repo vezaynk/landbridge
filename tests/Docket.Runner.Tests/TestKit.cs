@@ -118,6 +118,30 @@ internal sealed class FakeLoadReader : ISystemLoadReader
     public SystemLoad Read() => Load;
 }
 
+/// <summary>
+/// A CPU sampler that hands back a scripted sequence of snapshots so
+/// <see cref="SystemLoadReader"/>'s delta math is exercised without a real
+/// syscall. <see cref="SystemLoadReader.Read"/> samples twice per call, so queue
+/// two snapshots per read. An empty queue models a failed sample (returns false).
+/// </summary>
+internal sealed class FakeCpuSampler : ICpuSampler
+{
+    private readonly Queue<CpuSample> _samples;
+
+    public FakeCpuSampler(params CpuSample[] samples) => _samples = new Queue<CpuSample>(samples);
+
+    public bool TrySample(out CpuSample sample)
+    {
+        if (_samples.Count == 0)
+        {
+            sample = default;
+            return false;
+        }
+        sample = _samples.Dequeue();
+        return true;
+    }
+}
+
 /// <summary>An inventory the tests seed with known pids — the discovery half of
 /// stray cleanup, so the portable kill half (StrayReaper) is exercised for real.</summary>
 internal sealed class FakeProcessInventory(params TaggedProcess[] processes) : IProcessInventory
