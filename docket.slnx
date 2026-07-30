@@ -8,6 +8,7 @@
     <Project Path="src/Docket.ControlPlane/Docket.ControlPlane.csproj" />
     <Project Path="src/Docket.Core/Docket.Core.csproj" />
     <Project Path="src/Docket.Mcp/Docket.Mcp.csproj" />
+    <Project Path="src/Docket.Preview/Docket.Preview.csproj" />
     <Project Path="src/Docket.Relay/Docket.Relay.csproj" />
     <Project Path="src/Docket.Runner/Docket.Runner.csproj" />
     <Project Path="src/Docket.ServiceDefaults/Docket.ServiceDefaults.csproj" />
@@ -18,6 +19,7 @@
     <Project Path="tests/Docket.Contracts.Tests/Docket.Contracts.Tests.csproj" />
     <Project Path="tests/Docket.Core.Tests/Docket.Core.Tests.csproj" />
     <Project Path="tests/Docket.Mcp.Tests/Docket.Mcp.Tests.csproj" />
+    <Project Path="tests/Docket.Preview.Tests/Docket.Preview.Tests.csproj" />
     <Project Path="tests/Docket.Relay.Tests/Docket.Relay.Tests.csproj" />
     <Project Path="tests/Docket.CollabHarness/Docket.CollabHarness.csproj" />
     <Project Path="tests/Docket.MultiMachine.Tests/Docket.MultiMachine.Tests.csproj" />

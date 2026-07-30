@@ -90,6 +90,38 @@ public sealed class ForwardOrchestrator(
             return new ForwardEstablishResult.Failed($"the forward closed before it opened: {e.Message}");
         }
     }
+
+    /// <summary>
+    /// Relay a single <c>open-forward</c> to the <b>producer</b> end only, for an
+    /// §8.4 HTTP-preview connection. Unlike <see cref="EstablishAsync"/> there is
+    /// no consumer <c>docketd</c> to command and no <c>forward-opened</c> to wait
+    /// for — the preview frontend is the consumer and dials the relay itself — so
+    /// this just resolves the producer's machine and sends it its dial target.
+    /// The producer dials on demand: a fresh grant + forward id per browser
+    /// connection, so this is called once per connection. Returns <c>false</c>
+    /// (never throws) when the producer machine is gone or the send fails, so the
+    /// endpoint renders a clean status rather than a hang.
+    /// </summary>
+    public async Task<bool> SendProducerDialAsync(
+        TaskId producer, string forwardId, string serviceName, string grant, string relayUrl, int port,
+        CancellationToken ct = default)
+    {
+        var producerMachine = registry.MachineFor(producer);
+        if (producerMachine is null)
+        {
+            logger.LogInformation(
+                "preview forward {ForwardId}: producer task {Producer} is not connected", forwardId, producer);
+            return false;
+        }
+
+        var command = new OpenForwardCommand(
+            producer, forwardId, serviceName, RelayTunnel.ProducerRole, grant, relayUrl, port);
+        var sent = await registry.SendAsync(producerMachine, command, ct);
+        if (!sent)
+            logger.LogInformation(
+                "preview forward {ForwardId}: could not reach producer machine {Machine}", forwardId, producerMachine);
+        return sent;
+    }
 }
 
 /// <summary>

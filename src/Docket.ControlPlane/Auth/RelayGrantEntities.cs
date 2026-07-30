@@ -42,9 +42,14 @@ public sealed class RelayGrantRow
     /// <summary>The forward id that pairs the two tunnel ends. One grant, one forward.</summary>
     public Guid ForwardId { get; set; }
 
-    // Who this grant was issued to (§8.3: bound to the consumer).
-    public Guid ConsumerTaskId { get; set; }
-    public Guid ConsumerInstanceId { get; set; }
+    // Who this grant was issued to (§8.3: bound to the consumer). Nullable because
+    // an §8.4 HTTP-preview consumer is the preview frontend, not a task — the mint
+    // records the producer + Team but has no consumer worker instance to bind. A
+    // forward grant (§8.3) always sets both; a preview grant leaves both null.
+    // Neither validation (ValidateAsync) nor revocation (ClearServicesAndForwards,
+    // keyed on ProducerTaskId) reads these, so binding is attribution only.
+    public Guid? ConsumerTaskId { get; set; }
+    public Guid? ConsumerInstanceId { get; set; }
 
     /// <summary>The registered service name the forward resolves to (§8.2).</summary>
     public string ServiceName { get; set; } = "";

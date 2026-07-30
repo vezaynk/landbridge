@@ -14,6 +14,7 @@ public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) :
     public DbSet<MachineRow> Machines => Set<MachineRow>();
     public DbSet<LeadEventRow> LeadEvents => Set<LeadEventRow>();
     public DbSet<RelayGrantRow> RelayGrants => Set<RelayGrantRow>();
+    public DbSet<PreviewMappingRow> PreviewMappings => Set<PreviewMappingRow>();
     public DbSet<OAuthAuthorizationCodeRow> OAuthAuthorizationCodes => Set<OAuthAuthorizationCodeRow>();
 
     /// <summary>The channel dispatch/transition NOTIFYs land on (§3.1 LISTEN/NOTIFY).</summary>
@@ -114,6 +115,17 @@ public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) :
             // Revocation targets every live grant a leaving-working task produced
             // (ClearServicesAndForwards); index the column that join keys on.
             e.HasIndex(g => g.ProducerTaskId);
+        });
+
+        b.Entity<PreviewMappingRow>(e =>
+        {
+            e.ToTable("preview_mappings");
+            e.HasKey(m => m.Id);
+            // The label hash is the resolve hot-path lookup key (§8.4), and its
+            // uniqueness is the invariant (one mapping per label), not a read's —
+            // the same shape as every opaque credential's hash (§5).
+            e.HasIndex(m => m.LabelHash).IsUnique();
+            e.Property(m => m.AuthPolicy).HasConversion<string>();
         });
 
         b.Entity<OAuthAuthorizationCodeRow>(e =>

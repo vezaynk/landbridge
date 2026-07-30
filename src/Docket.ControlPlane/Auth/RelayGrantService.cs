@@ -38,14 +38,40 @@ public sealed class RelayGrantService(DocketDbContext db, TimeProvider clock)
     /// still <c>working</c>. On success mints an opaque <c>dkt_g_</c> grant
     /// (hashed at rest), a fresh forward id, and a short expiry.
     /// </summary>
-    public async Task<RelayGrantResult> IssueAsync(
-        WorkerCaller consumer, string serviceName, CancellationToken ct = default)
+    public Task<RelayGrantResult> IssueAsync(
+        WorkerCaller consumer, string serviceName, CancellationToken ct = default) =>
+        // The §8.3 consumer is a worker task; bind it for attribution.
+        MintAsync(consumer.Team, serviceName, consumer.Task.Value, consumer.Instance.Value, ct);
+
+    /// <summary>
+    /// Issues a grant for an §8.4 HTTP preview: the consumer is the preview
+    /// frontend, not a task, so there is no consumer worker instance to bind — the
+    /// mint records only the producer + Team. Runs the identical check-11 gate as
+    /// <see cref="IssueAsync"/> (registered service owned by a working task in
+    /// <paramref name="team"/>), and the resulting grant validates and revokes
+    /// through the same paths (validation ignores the consumer binding; revocation
+    /// keys on <c>ProducerTaskId</c> via <see cref="ClearServicesAndForwards"/>).
+    /// The producer machine dials on demand — a fresh grant + forward id per
+    /// browser connection (§8.4) — so the plane calls this once per connection.
+    /// </summary>
+    public Task<RelayGrantResult> IssueForPreviewAsync(
+        TeamId team, string serviceName, CancellationToken ct = default) =>
+        MintAsync(team, serviceName, consumerTaskId: null, consumerInstanceId: null, ct);
+
+    /// <summary>
+    /// The shared check-11 gate + mint behind <see cref="IssueAsync"/> (§8.3) and
+    /// <see cref="IssueForPreviewAsync"/> (§8.4). Everything is scoped to
+    /// <paramref name="team"/> so another Team's services never leak (§8.2).
+    /// </summary>
+    private async Task<RelayGrantResult> MintAsync(
+        TeamId team, string serviceName, Guid? consumerTaskId, Guid? consumerInstanceId,
+        CancellationToken ct)
     {
-        // Registered in the consumer's Team at all? Scoped to the caller's Team,
-        // so a service that exists only in another Team is indistinguishable from
-        // one that does not exist — cross-Team reads as not-registered (§8.2).
+        // Registered in this Team at all? Scoped to the Team, so a service that
+        // exists only in another Team is indistinguishable from one that does not
+        // exist — cross-Team reads as not-registered (§8.2).
         var registered = await db.RegisteredServices.AsNoTracking()
-            .AnyAsync(s => s.TeamId == consumer.Team.Value && s.Name == serviceName, ct);
+            .AnyAsync(s => s.TeamId == team.Value && s.Name == serviceName, ct);
         if (!registered)
             return new RelayGrantResult.Refused(Rule.ForwardsRequireRegistration,
                 $"no service '{serviceName}' is registered in your Team");
@@ -59,7 +85,7 @@ public sealed class RelayGrantService(DocketDbContext db, TimeProvider clock)
         var producer = await (
                 from s in db.RegisteredServices.AsNoTracking()
                 join t in db.Tasks.AsNoTracking() on s.TaskId equals t.Id
-                where s.TeamId == consumer.Team.Value
+                where s.TeamId == team.Value
                       && s.Name == serviceName
                       && t.State == TaskState.Working
                 select new { t.Id, s.Port })
@@ -76,11 +102,11 @@ public sealed class RelayGrantService(DocketDbContext db, TimeProvider clock)
             Id = Guid.NewGuid(),
             GrantHash = hash,
             ForwardId = forwardId,
-            ConsumerTaskId = consumer.Task.Value,
-            ConsumerInstanceId = consumer.Instance.Value,
+            ConsumerTaskId = consumerTaskId,
+            ConsumerInstanceId = consumerInstanceId,
             ServiceName = serviceName,
             ProducerTaskId = producer.Id,
-            TeamId = consumer.Team.Value,
+            TeamId = team.Value,
             CreatedAt = now,
             ExpiresAt = now + GrantTtl,
         });

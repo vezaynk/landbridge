@@ -72,7 +72,7 @@ public sealed class PostgresFixture : IAsyncLifetime
     {
         await using var db = NewContext();
         await db.Database.ExecuteSqlRawAsync(
-            "TRUNCATE tasks, worker_instances, registered_services, task_events, credentials, machines, lead_events RESTART IDENTITY CASCADE");
+            "TRUNCATE tasks, worker_instances, registered_services, task_events, credentials, machines, lead_events, preview_mappings RESTART IDENTITY CASCADE");
     }
 
     private async Task MigrateAsync()

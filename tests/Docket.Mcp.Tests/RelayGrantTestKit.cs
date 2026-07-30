@@ -41,7 +41,8 @@ internal static class RelayGrantTestKit
     /// the plane and relay can be brought up in either order without a config race.
     /// </param>
     public static WebApplication BuildPlane(
-        string connectionString, string? relayValidationBearer, string? relayUrl = null)
+        string connectionString, string? relayValidationBearer, string? relayUrl = null,
+        string? previewConnectBearer = null)
     {
         var builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
@@ -52,6 +53,9 @@ internal static class RelayGrantTestKit
             settings[RelayValidationEndpoints.BearerConfigKey] = relayValidationBearer;
         if (relayUrl is not null)
             settings["Docket:RelayUrl"] = relayUrl;
+        // §8.4: the shared bearer the preview frontend presents to /preview/connect.
+        if (previewConnectBearer is not null)
+            settings[PreviewConnectEndpoints.BearerConfigKey] = previewConnectBearer;
         if (settings.Count > 0)
             builder.Configuration.AddInMemoryCollection(settings);
 
@@ -60,6 +64,9 @@ internal static class RelayGrantTestKit
         builder.Services.AddScoped<TaskStore>();
         builder.Services.AddScoped<TokenService>();
         builder.Services.AddScoped<RelayGrantService>();
+        // §8.4: the preview mapping store + the per-connection connect orchestrator.
+        builder.Services.AddScoped<PreviewMappingService>();
+        builder.Services.AddScoped<PreviewConnectService>();
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<RunnerConnectionRegistry>();
         // §8.3: the forward orchestrator + waiter, and the event sink that completes
@@ -83,6 +90,7 @@ internal static class RelayGrantTestKit
         app.UseAuthorization();
         app.MapMcp().RequireAuthorization();
         app.MapRelayValidationEndpoint();
+        app.MapPreviewConnectEndpoint();
         return app;
     }
 

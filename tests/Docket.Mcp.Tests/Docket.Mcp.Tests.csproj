@@ -44,6 +44,9 @@
     <!-- The relay grant-validator crown test stands up the real relay host next to
          the plane and splices two ClientWebSockets over a real issued grant (§8.3). -->
     <ProjectReference Include="..\..\src\Docket.Relay\Docket.Relay.csproj" />
+    <!-- The §8.4 preview crown drives the real preview frontend through the real
+         relay + a real producer docketd, so it references the preview module. -->
+    <ProjectReference Include="..\..\src\Docket.Preview\Docket.Preview.csproj" />
     <!-- Referenced so the fake worker harness binary is built and locatable; the
          walking-skeleton E2E spawns it as a real MCP-speaking child process
          (§10 conventions — a real spawnable child, no shell). -->
