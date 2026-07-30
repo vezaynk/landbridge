@@ -1,3 +1,4 @@
+using System.Net;
 using System.Net.WebSockets;
 using System.Text;
 using Docket.Contracts;
@@ -19,7 +20,8 @@ namespace Docket.Runner;
 public sealed class WebSocketControlPlaneChannel : IControlPlaneChannel, IAsyncDisposable
 {
     private readonly Uri _controlUrl;
-    private readonly string _machineToken;
+    private readonly Func<string> _tokenProvider;
+    private readonly Func<CancellationToken, Task>? _onAuthRejected;
     private readonly TimeProvider _clock;
     private readonly Action<string>? _log;
     private readonly SemaphoreSlim _sendLock = new(1, 1);
@@ -29,10 +31,32 @@ public sealed class WebSocketControlPlaneChannel : IControlPlaneChannel, IAsyncD
     private Func<RunnerCommand, CancellationToken, Task>? _onCommand;
     private Task? _connectLoop;
 
+    /// <summary>
+    /// Env-token mode (the Aspire dev loop): a fixed bearer, never refreshed. The
+    /// provider is a constant and no auth-rejected hook is wired, so a 401 simply
+    /// backs off and retries with the same token — unchanged behaviour.
+    /// </summary>
     public WebSocketControlPlaneChannel(Uri controlUrl, string machineToken, TimeProvider clock, Action<string>? log = null)
+        : this(controlUrl, () => machineToken, clock, log) { }
+
+    /// <summary>
+    /// File-credential mode (§5, §13): the bearer is read fresh from
+    /// <paramref name="tokenProvider"/> on every (re)connect, so a token refreshed
+    /// mid-run is picked up on the next dial. When a dial is rejected 401 and
+    /// <paramref name="onAuthRejected"/> is supplied, it is invoked before the
+    /// backoff — the seam the <see cref="MachineTokenRefresher"/> hangs its
+    /// reactive refresh on, so the retry carries a fresh token.
+    /// </summary>
+    public WebSocketControlPlaneChannel(
+        Uri controlUrl,
+        Func<string> tokenProvider,
+        TimeProvider clock,
+        Action<string>? log = null,
+        Func<CancellationToken, Task>? onAuthRejected = null)
     {
         _controlUrl = controlUrl;
-        _machineToken = machineToken;
+        _tokenProvider = tokenProvider;
+        _onAuthRejected = onAuthRejected;
         _clock = clock;
         _log = log;
     }
@@ -99,10 +123,16 @@ public sealed class WebSocketControlPlaneChannel : IControlPlaneChannel, IAsyncD
         while (!ct.IsCancellationRequested)
         {
             ClientWebSocket? socket = null;
+            var authRejected = false;
             try
             {
                 socket = new ClientWebSocket();
-                socket.Options.SetRequestHeader("Authorization", $"Bearer {_machineToken}");
+                // Surface the handshake's HTTP status so a rejected upgrade can be
+                // told apart from a transport drop (the 401 refresh hook below).
+                socket.Options.CollectHttpResponseDetails = true;
+                // Read the bearer fresh each dial: a refresh that landed since the
+                // last attempt is presented now (§13).
+                socket.Options.SetRequestHeader("Authorization", $"Bearer {_tokenProvider()}");
                 await socket.ConnectAsync(_controlUrl, ct);
                 _socket = socket;
                 _log?.Invoke($"control plane connected: {_controlUrl}");
@@ -116,6 +146,11 @@ public sealed class WebSocketControlPlaneChannel : IControlPlaneChannel, IAsyncD
             catch (Exception e)
             {
                 _log?.Invoke($"control plane connection lost: {e.Message}");
+                // A 401 on the upgrade means the machine access token expired or
+                // was revoked under a live daemon — invoke the refresh hook so the
+                // next dial (after backoff) carries a fresh token. Env-token mode
+                // leaves the hook null and simply retries the same token.
+                authRejected = socket?.HttpStatusCode == HttpStatusCode.Unauthorized;
             }
             finally
             {
@@ -125,6 +160,22 @@ public sealed class WebSocketControlPlaneChannel : IControlPlaneChannel, IAsyncD
 
             if (ct.IsCancellationRequested)
                 break;
+
+            if (authRejected && _onAuthRejected is not null)
+            {
+                try
+                {
+                    await _onAuthRejected(ct);
+                }
+                catch (OperationCanceledException)
+                {
+                    break;
+                }
+                catch (Exception e)
+                {
+                    _log?.Invoke($"token refresh after 401 failed: {e.Message}");
+                }
+            }
             try
             {
                 await Task.Delay(backoff, _clock, ct);
