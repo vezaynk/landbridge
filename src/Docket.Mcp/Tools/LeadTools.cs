@@ -103,9 +103,10 @@ public sealed class LeadTools(TaskStore store, RunnerConnectionRegistry registry
     }
 
     [McpServerTool(Name = "answer_input_request"),
-     Description("Answer a task blocked on input, returning it to work. Use for a question or a decision " +
-                 "the worker escalated. If the task's wait TTL has already expired it will have parked; " +
-                 "answering then wakes it on its next redispatch.")]
+     Description("Answer a task blocked on input, returning it to the dispatch queue. Use for a question " +
+                 "or a decision the worker escalated. The answered task is redispatched with its transcript " +
+                 "resumed; if its wait TTL already expired it will have parked, and answering wakes it the " +
+                 "same way.")]
     public async Task<string> AnswerInputRequest(
         [Description("The task id that is blocked on input (or already parked, if its wait TTL expired first).")]
         string taskId,
@@ -114,13 +115,13 @@ public sealed class LeadTools(TaskStore store, RunnerConnectionRegistry registry
         var id = ParseTaskId(taskId);
         // The store routes on the task's current state so this one call is correct
         // whether or not the wait-TTL sweeper (§11) parked the task first: a task
-        // still blocked_on_input resumes in place, a task already parked is woken
-        // and requeued (§6, §11). LeaseStillHeld is a control-plane fact (does the
-        // dispatched machine still hold the lease?) read from the connection
-        // registry — never assumed; it gates only the in-place resume, and if the
-        // machine is gone the engine refuses (LeaseNoLongerHeld) so the task parks
-        // and wakes instead.
-        return Describe(await store.AnswerOrWakeAsync(Lead, id, registry.IsLeaseHeld(id), ct));
+        // still blocked_on_input is requeued for redispatch-with-resume, a task
+        // already parked is woken the same way (§6, §11). The worker process is gone
+        // the moment the task blocked (§11), so there is no in-place resume — the
+        // machine still holding the lease is a control-plane fact read from the
+        // connection registry (null if it is gone) and becomes the park record's
+        // preferred machine; redispatch cold-starts elsewhere when it is null.
+        return Describe(await store.AnswerOrWakeAsync(Lead, id, registry.MachineFor(id), ct));
     }
 
     [McpServerTool(Name = "submit_review"),

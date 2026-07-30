@@ -87,13 +87,24 @@ public class InstanceFencingAndParkTests
     }
 
     [Fact]
-    public void An_answer_arriving_after_the_lease_lapsed_cannot_resume_in_place()
+    public void An_answer_after_the_machine_is_gone_still_requeues_for_a_cold_start()
     {
-        Expect.Rejected(
-            TaskStateMachine.Apply(
-                Given.Task(TaskState.BlockedOnInput),
-                new AnswerInput(Given.Lead, LeaseStillHeld: false)),
-            Rule.LeaseNoLongerHeld);
+        // The dispatched machine is gone, so there is no park record to write (null
+        // park). The answer still requeues the task (→ submitted) rather than
+        // rejecting: redispatch cold-starts it elsewhere from the workspace (§11).
+        // No park record is written and the infrastructure counter is untouched (§6).
+        var task = Given.Task(TaskState.BlockedOnInput);
+        var incumbent = task.CurrentInstance!.Value;
+
+        var result = TaskStateMachine.Apply(task, new AnswerInput(Given.Lead, Park: null));
+
+        var next = Expect.Transitioned(result, TaskState.Submitted);
+        Assert.Null(next.Park);
+        Assert.Null(next.CurrentInstance);
+        Assert.Equal(0, next.InfrastructureRequeues);
+        var effects = Expect.Effects(result);
+        Assert.Contains(new RevokeWorkerInstanceToken(incumbent), effects);
+        Assert.DoesNotContain(effects, e => e is WriteParkRecord);
     }
 
     [Fact]
@@ -101,7 +112,7 @@ public class InstanceFencingAndParkTests
     {
         var task = Given.Task(TaskState.BlockedOnInput);
         Expect.Rejected(
-            TaskStateMachine.Apply(task, new AnswerInput(Given.IncumbentOf(task), true)),
+            TaskStateMachine.Apply(task, new AnswerInput(Given.IncumbentOf(task), Given.Park)),
             Rule.ActorLacksAuthority);
     }
 

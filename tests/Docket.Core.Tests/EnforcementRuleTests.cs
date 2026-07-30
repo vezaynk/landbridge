@@ -227,7 +227,7 @@ public class EnforcementRuleTests
         "accept" => new VerdictAccept(Given.Verifier),
         "fail" => new VerdictFail(Given.Verifier),
         "request" => new RequestInput(new WorkerCaller(task.Team, task.Id, WorkerInstanceId.New()), InputRequestKind.Question),
-        "answer" => new AnswerInput(Given.Lead, true),
+        "answer" => new AnswerInput(Given.Lead, Given.Park),
         "ttl" => new WaitTtlExpired(Given.Park),
         "wake" => new WakeParked(),
         "stop-park" => new StopPreserveAndPark(Given.Lead, Given.Park),

@@ -146,26 +146,28 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task Answer_input_request_refuses_when_the_dispatched_machine_is_gone()
+    public async Task Answer_input_request_requeues_for_a_cold_start_when_the_dispatched_machine_is_gone()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var taskId = await SeedBlockedOnInputTask();
-        // An empty registry: the dispatched machine's connection is gone, so
-        // the lease is not held (§10) — the answer must not resume the task
-        // onto a dead machine; it parks and wakes instead (§6, §11).
+        // An empty registry: the dispatched machine's connection is gone, so there
+        // is no held-lease machine (§10). The worker process is gone the moment the
+        // task blocked (§11), so the answer cannot resume in place regardless — it
+        // requeues the task (→ submitted) and redispatch cold-starts it elsewhere
+        // from the workspace (§6, §11), rather than refusing.
         var tools = LeadFor(new Principal.Lead(Team));
 
-        var ex = await Assert.ThrowsAsync<McpException>(
-            () => tools.AnswerInputRequest(taskId.ToString(), CancellationToken.None));
-        Assert.Contains(nameof(Rule.LeaseNoLongerHeld), ex.Message);
+        var msg = await tools.AnswerInputRequest(taskId.ToString(), CancellationToken.None);
+        Assert.Contains("Submitted", msg);
 
         await using var v = pg.NewContext();
-        Assert.Equal(TaskState.BlockedOnInput,
-            (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == taskId.Value)).State);
+        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == taskId.Value);
+        Assert.Equal(TaskState.Submitted, row.State);
+        Assert.Null(row.ParkMachine); // no machine to prefer; cold start
     }
 
     [SkippableFact]
-    public async Task Answer_input_request_resumes_the_task_while_its_machine_holds_the_lease()
+    public async Task Answer_input_request_requeues_a_blocked_task_for_redispatch_with_resume()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var taskId = await SeedBlockedOnInputTask();
@@ -174,9 +176,16 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         registry.TrackDispatch("m1", taskId);
         var tools = LeadFor(new Principal.Lead(Team), registry);
 
+        // m1 still holds the lease, so the park record prefers it — but the task
+        // still requeues for redispatch (→ submitted), never resumes in place: the
+        // worker process is gone and resume must go back through dispatch (§11).
         var msg = await tools.AnswerInputRequest(taskId.ToString(), CancellationToken.None);
+        Assert.Contains("Submitted", msg);
 
-        Assert.Contains("Working", msg);
+        await using var v = pg.NewContext();
+        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == taskId.Value);
+        Assert.Equal(TaskState.Submitted, row.State);
+        Assert.Equal("m1", row.ParkMachine); // held-lease machine preferred (§11)
     }
 
     [SkippableFact]

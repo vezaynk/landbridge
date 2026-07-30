@@ -288,9 +288,10 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         await store.ApplyAsync(id, new WaitTtlExpired(park));
 
         // The Lead answers — through the routing method — with no knowledge that
-        // it parked; the answer landing wakes it (§6, §11).
+        // it parked; the answer landing wakes it (§6, §11). The task is already
+        // parked, so the held-lease machine is moot (the wake keeps the park record).
         var woken = Assert.IsType<StoreResult.Applied>(
-            await store.AnswerOrWakeAsync(Lead, id, leaseStillHeld: false));
+            await store.AnswerOrWakeAsync(Lead, id, leaseMachine: null));
         Assert.Equal(TaskState.Submitted, woken.Task.State);
 
         await using (var v = pg.NewContext())
@@ -310,36 +311,73 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task Answer_resumes_a_still_blocked_task_when_the_lease_is_held()
+    public async Task Answering_a_blocked_worker_gone_task_parks_with_resume_and_redispatches()
     {
+        // The twin-bug fix (#60), end to end through the store: a headless worker
+        // blocked and its process exited (§11), then the Lead answers. The answer
+        // must NOT sit the task in working with no process — it writes a park record
+        // preferring the held-lease machine and the stamped resume ref, requeues
+        // (→ submitted), and the very next dispatch pass redispatches it WITH resume.
         Skip.IfNot(pg.Available, pg.SkipReason);
-        await using var db = pg.NewContext();
-        var store = NewStore(db);
-        var id = await SeedBlocked(store);
+        TaskId id;
+        await using (var seed = pg.NewContext())
+            id = await SeedBlocked(NewStore(seed));
 
-        // Still blocked_on_input and the machine holds the lease: it resumes in
-        // place, exactly as before the routing method existed (§6).
-        var applied = Assert.IsType<StoreResult.Applied>(
-            await store.AnswerOrWakeAsync(Lead, id, leaseStillHeld: true));
-        Assert.Equal(TaskState.Working, applied.Task.State);
+        // The work session reported its harness session id before blocking; the sink
+        // stamped it on the row (§11 resume). Own context, mirroring RunnerEventSink.
+        await using (var stamp = pg.NewContext())
+            await NewStore(stamp).StampHarnessSessionRefAsync(id, "sess-answer");
+
+        // The Lead answers on a fresh per-request store; m1 still holds the lease.
+        await using (var db = pg.NewContext())
+        {
+            var applied = Assert.IsType<StoreResult.Applied>(
+                await NewStore(db).AnswerOrWakeAsync(Lead, id, leaseMachine: "m1"));
+            Assert.Equal(TaskState.Submitted, applied.Task.State);
+        }
+
+        await using (var v = pg.NewContext())
+        {
+            var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+            Assert.Equal(TaskState.Submitted, row.State);      // requeued, not left working
+            Assert.Equal("m1", row.ParkMachine);               // preferred machine (§11)
+            Assert.Equal("sess-answer", row.ParkSessionRef);   // resume ref rides the park
+            Assert.Equal(0, row.InfrastructureRequeues);       // a Lead answer is not an infra requeue (§6)
+            Assert.Null(row.CurrentInstanceId);
+        }
+
+        // No liveness-timeout self-heal needed: the dispatch pass claims it now and
+        // surfaces the resume session ref on the dispatch (§11).
+        await using (var db = pg.NewContext())
+        {
+            var dispatched = Assert.IsType<StoreResult.Applied>(
+                await NewStore(db).DispatchNextAsync(Machine(), WorkerInstanceId.New()));
+            Assert.Equal(id, dispatched.Task.Id);
+            Assert.Equal("sess-answer", dispatched.HarnessSessionRef);
+            Assert.Equal(2, dispatched.Task.Attempt);
+        }
     }
 
     [SkippableFact]
-    public async Task Answering_a_blocked_task_whose_lease_is_gone_is_refused_and_it_stays_blocked()
+    public async Task Answering_a_blocked_task_whose_machine_is_gone_requeues_for_a_cold_start()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         await using var db = pg.NewContext();
         var store = NewStore(db);
         var id = await SeedBlocked(store);
 
-        // The dispatched machine is gone: the engine refuses the in-place resume,
-        // and the task waits for the sweeper to park it instead (§6, §11).
-        var rejected = Assert.IsType<StoreResult.Rejected>(
-            await store.AnswerOrWakeAsync(Lead, id, leaseStillHeld: false));
-        Assert.Equal(Rule.LeaseNoLongerHeld, rejected.Rule);
+        // The dispatched machine is gone (no held lease), so there is no park record
+        // to write. The answer still requeues the task rather than rejecting: it goes
+        // to submitted and redispatch cold-starts it elsewhere from the workspace
+        // (§6, §11). No park machine, and the infrastructure counter is untouched.
+        var applied = Assert.IsType<StoreResult.Applied>(
+            await store.AnswerOrWakeAsync(Lead, id, leaseMachine: null));
+        Assert.Equal(TaskState.Submitted, applied.Task.State);
         await using var v = pg.NewContext();
-        Assert.Equal(TaskState.BlockedOnInput,
-            (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value)).State);
+        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(TaskState.Submitted, row.State);
+        Assert.Null(row.ParkMachine);
+        Assert.Equal(0, row.InfrastructureRequeues);
     }
 
     [SkippableFact]
@@ -356,7 +394,7 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         // path, applied here because parked → submitted carries no engine actor check.
         var foreign = new LeadClaim(TeamId.New());
         var rejected = Assert.IsType<StoreResult.Rejected>(
-            await store.AnswerOrWakeAsync(foreign, id, leaseStillHeld: false));
+            await store.AnswerOrWakeAsync(foreign, id, leaseMachine: null));
         Assert.Equal(Rule.ActorLacksAuthority, rejected.Rule);
         await using var v = pg.NewContext();
         Assert.Equal(TaskState.Parked, (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value)).State);
@@ -370,15 +408,16 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         var store = NewStore(db);
         var id = await SeedBlocked(store);
 
-        // The Lead answers a beat before the sweep decides to park: the task resumes…
-        Assert.IsType<StoreResult.Applied>(await store.AnswerOrWakeAsync(Lead, id, leaseStillHeld: true));
-        // …and the sweep's park lands on a now-working task, which the engine refuses.
+        // The Lead answers a beat before the sweep decides to park: the task requeues
+        // for redispatch (→ submitted)…
+        Assert.IsType<StoreResult.Applied>(await store.AnswerOrWakeAsync(Lead, id, leaseMachine: "m1"));
+        // …and the sweep's park lands on a now-submitted task, which the engine refuses.
         // Exactly one transition, no lost answer, no double move.
         var rejected = Assert.IsType<StoreResult.Rejected>(
             await store.ApplyAsync(id, new WaitTtlExpired(new ParkRecord("m1", null, null, Attempt: 1))));
         Assert.Equal(Rule.InvalidSourceState, rejected.Rule);
         await using var v = pg.NewContext();
-        Assert.Equal(TaskState.Working, (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value)).State);
+        Assert.Equal(TaskState.Submitted, (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value)).State);
     }
 
     [SkippableFact]
@@ -394,7 +433,7 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
             await store.ApplyAsync(id, new WaitTtlExpired(new ParkRecord("m1", null, null, Attempt: 1))));
         // …and the same one answer call now routes to the wake and requeues it.
         // One call, correct outcome either way — exactly one transition, no double move.
-        var woken = Assert.IsType<StoreResult.Applied>(await store.AnswerOrWakeAsync(Lead, id, leaseStillHeld: false));
+        var woken = Assert.IsType<StoreResult.Applied>(await store.AnswerOrWakeAsync(Lead, id, leaseMachine: null));
         Assert.Equal(TaskState.Submitted, woken.Task.State);
         await using var v = pg.NewContext();
         Assert.Equal(TaskState.Submitted, (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value)).State);

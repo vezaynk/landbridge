@@ -60,10 +60,17 @@ public sealed record VerdictFail(Actor Actor, bool HumanConfirmed = false) : Tas
 public sealed record RequestInput(Actor Actor, InputRequestKind? Kind) : TaskCommand(Actor);
 
 /// <summary>
-/// blocked_on_input → working: the answer landed within the wait TTL and the
-/// dispatched machine still holds the lease (§6).
+/// blocked_on_input → submitted: the Lead or a human answered. §11 guarantees a
+/// headless worker's process is gone the moment it blocked ("waiting is always
+/// the park shape"), so the answer cannot resume in place — it routes through the
+/// same park→redispatch path the wait-TTL sweeper uses. <see cref="Park"/> is the
+/// record written for redispatch affinity (§11), built by the control plane from
+/// the held-lease machine and the row's stamped harness session ref; it is null
+/// only when the dispatched machine is gone, and redispatch then cold-starts
+/// elsewhere. This never touches the infrastructure counter — a Lead answering is
+/// not an infrastructure requeue (§6, two counters).
 /// </summary>
-public sealed record AnswerInput(Actor Actor, bool LeaseStillHeld) : TaskCommand(Actor);
+public sealed record AnswerInput(Actor Actor, ParkRecord? Park) : TaskCommand(Actor);
 
 /// <summary>blocked_on_input → parked: wait TTL expired, lease released (§6, §11).</summary>
 public sealed record WaitTtlExpired(ParkRecord Park) : TaskCommand(ControlPlaneActor.Instance);
