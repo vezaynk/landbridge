@@ -13,6 +13,11 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
+  # Manual opt-in trigger for the token-spending real-claude E2E job below. It is
+  # NOT part of the per-push/PR matrix — GitHub forbids referencing secrets in a
+  # job-level `if:`, so gating the job on workflow_dispatch (rather than the secret)
+  # is what keeps every ordinary push from ever spending API tokens.
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -82,3 +87,62 @@ jobs:
         run: dotnet test tests/Docket.MultiMachine.Tests --no-build -c Release
         env:
           DOCKET_TEST_PG: Host=localhost;Port=5432;Username=docket;Password=docket;Database=docket_multimachine
+
+  # ── Opt-in real-claude multi-machine E2E (spec §8.3 real tier, task #57) ────────
+  #
+  # Spawns REAL `claude -p` workers across a two-machine fleet and drives a task —
+  # and a two-machine handoff — to completion through the live plane + relay. This
+  # spends Anthropic tokens, so it is DELIBERATELY isolated from the per-push matrix:
+  #   * it runs ONLY on a manual workflow_dispatch (never push/PR), and
+  #   * it runs ONLY the RealClaude trait (`--filter Category=RealClaude`).
+  # If the ANTHROPIC_KEY repo secret is unset, the tests SKIP cleanly (SkippableFact),
+  # so a dispatch without the secret still passes without spending anything. The
+  # secret is mapped to ANTHROPIC_API_KEY, which the spawned claude inherits.
+  real-claude-e2e:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: 1
+      DOTNET_NOLOGO: 1
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: docket
+          POSTGRES_PASSWORD: docket
+          POSTGRES_DB: docket
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U docket"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # The worker binary docketd spawns. Installed to PATH as `claude`; the test
+      # resolves it via PATH (or DOCKET_CLAUDE_BIN) and skips if it is missing.
+      - name: Install claude CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build (Release)
+        run: dotnet build tests/Docket.MultiMachine.Tests --no-restore -c Release
+
+      # Only the real-claude trait — the scripted tier is already covered per-push.
+      - name: Test - real claude -p multi-machine E2E
+        run: dotnet test tests/Docket.MultiMachine.Tests --no-build -c Release --filter "Category=RealClaude"
+        env:
+          DOCKET_TEST_PG: Host=localhost;Port=5432;Username=docket;Password=docket;Database=docket_realclaude
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_KEY }}
