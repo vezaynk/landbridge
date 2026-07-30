@@ -61,8 +61,28 @@ public sealed class SupervisedTask
     /// <summary>Last per-task liveness signal (started/tool-call), §10.</summary>
     public DateTimeOffset LastActivityAt { get; set; }
 
+    /// <summary>
+    /// §11 resume seam: the harness session id captured from the events stream
+    /// (claude <c>system/init</c>), set by the <see cref="TerminalEventReader"/>
+    /// when <see cref="EventsSource.Terminal"/> is configured; null otherwise.
+    /// <b>Reserved for resume (§11) and deliberately NOT wired to resume in this
+    /// increment</b> — captured and logged only, so the resume increment has the id
+    /// waiting for it.
+    /// </summary>
+    public string? SessionId { get; set; }
+
     public bool StopRequested { get; set; }
     internal ITimer? TtlTimer { get; set; }
+
+    /// <summary>
+    /// §10 <see cref="EventsSource.Terminal"/>: cancels the background stdout
+    /// drain (<see cref="TerminalEventReader"/>) on teardown. Null for every other
+    /// events source, where stdout is left unredirected and no drain runs.
+    /// </summary>
+    internal CancellationTokenSource? EventReaderCts { get; set; }
+
+    /// <summary>The stdout-drain task itself, for a clean join on shutdown.</summary>
+    internal Task? EventReaderTask { get; set; }
 
     /// <summary>
     /// §10 Windows containment: the kill-on-close Job Object this worker's whole process tree is
@@ -180,6 +200,15 @@ public sealed class ProcessSupervisor : IProcessSupervisor
 
         var argv = profile.Spawn.Select(a => Substitute(a, substitutions)).ToArray();
 
+        // §10 event relay: only the Terminal events source redirects stdout, and
+        // only because it then MUST drain it continuously (see below) — the
+        // TerminalEventReader IS that drain, so the "drain-or-deadlock" worry the
+        // old comment guarded against is satisfied, not violated. Every other
+        // source (None/Hooks/Otel) leaves stdout unredirected exactly as before:
+        // Hooks/Otel arrive out-of-band in later increments, and None's transcript
+        // is tailed from logs.path, never scraped from stdout.
+        var drainStdout = profile.Events.Source == EventsSource.Terminal;
+
         var psi = new ProcessStartInfo(argv[0])
         {
             WorkingDirectory = workDir,
@@ -191,10 +220,14 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             // stdin and kills its own process tree. This is the cooperative first
             // line of defence the StrayReaper only backstops on restart (§10).
             // Message-mode stop reuses the SAME pipe to inject a stop turn (see
-            // StopAsync), so the two uses are compatible. Not redirecting
-            // stdout/stderr keeps us off the drain-or-deadlock hook — the transcript
-            // is tailed from logs.path, not scraped from stdout.
+            // StopAsync), so the two uses are compatible.
             RedirectStandardInput = true,
+
+            // Terminal events source only: redirect stdout so the reader can map the
+            // harness's NDJSON to runner events. If it is redirected it MUST be
+            // drained for the process's whole lifetime or a full OS pipe buffer will
+            // block the worker's writes — which is exactly what the reader does.
+            RedirectStandardOutput = drainStdout,
         };
         for (var i = 1; i < argv.Length; i++)
             psi.ArgumentList.Add(argv[i]);
@@ -257,6 +290,39 @@ public sealed class ProcessSupervisor : IProcessSupervisor
                 supervised.Job?.Close();
             process.Dispose();
             throw;
+        }
+
+        // §10 Terminal events source: start the stdout drain now that the worker is
+        // up. It runs for the process's whole lifetime, mapping NDJSON lines to
+        // events and bumping this task's liveness on every well-formed line. Running
+        // continuously is the anti-deadlock requirement — a redirected-but-undrained
+        // stdout blocks the worker once the pipe buffer fills. EOF (worker exit) or
+        // the CTS (teardown) ends it cleanly; OnExited cancels the CTS as a backstop.
+        if (drainStdout)
+        {
+            var cts = new CancellationTokenSource();
+            supervised.EventReaderCts = cts;
+            var reader = new TerminalEventReader(
+                dispatch.Task,
+                _ring,
+                RecordActivity,
+                profile.Events.Mapping,
+                _clock,
+                onSessionId: sessionId =>
+                {
+                    supervised.SessionId = sessionId;
+                    // §11 resume seam: captured and logged only — resume is a later
+                    // increment and is deliberately not wired here.
+                    Console.Error.WriteLine(
+                        $"docketd: task {dispatch.Task} harness session {sessionId} (captured for §11 resume)");
+                });
+            // The CTS is disposed by the reader task's own completion, so OnExited's
+            // backstop cancel never races a live-then-freed handle.
+            supervised.EventReaderTask = Task
+                .Run(() => reader.ReadToEndAsync(process.StandardOutput, cts.Token), CancellationToken.None)
+                .ContinueWith(
+                    static (_, state) => ((CancellationTokenSource)state!).Dispose(),
+                    cts, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         }
 
         // §10: started (harness up) is distinct from dispatch ack. Process-spawned
@@ -340,6 +406,21 @@ public sealed class ProcessSupervisor : IProcessSupervisor
     {
         _tasks.TryRemove(supervised.Task, out _);
         supervised.TtlTimer?.Dispose();
+
+        // §10 Terminal events source: the worker is gone, so its stdout is at (or
+        // draining toward) EOF and the reader is unwinding on its own. Arm a short
+        // grace cancel rather than cancelling now: an immediate cancel would make a
+        // ReadLineAsync with buffered lines still waiting throw instead of returning
+        // them, truncating the worker's final events. The grace also backstops the
+        // rare case where a detached grandchild inherited stdout and holds the pipe
+        // open past the worker's exit. Disposal is owned by the reader task's
+        // continuation, so a double-dispose here is impossible. No-op for every
+        // other source (EventReaderCts is null there).
+        if (supervised.EventReaderCts is { } readerCts)
+        {
+            try { readerCts.CancelAfter(TimeSpan.FromSeconds(5)); }
+            catch (ObjectDisposedException) { /* reader already finished and freed it */ }
+        }
 
         // §10 Windows containment: close the job handle now the process is gone. Kill-on-close
         // sweeps up any grandchild that outlived the parent. Idempotent with an
