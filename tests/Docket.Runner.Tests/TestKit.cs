@@ -87,6 +87,24 @@ internal static class TestKit
             new TelemetryConfig(Otel: false, Endpoint: null),
             new LogsConfig(Path: null, Format: null),
             MaxConcurrent: null);
+
+    /// <summary>
+    /// A §11 resume profile: a cold <c>Spawn</c> (the given <paramref name="coldMode"/>)
+    /// and a <c>Resume</c> argv that re-runs the harness in <c>echo-argv</c> mode with
+    /// the <c>{session_id}</c>/<c>{mcp_config}</c> placeholders the supervisor
+    /// substitutes when a dispatch carries a resume session ref. Both modes write the
+    /// argv they received, so a test can read the marker either way.
+    /// </summary>
+    public static ProfileConfig ResumeProfile(string coldMode = "echo-argv", string name = "default") =>
+        new(
+            name,
+            [HarnessPath(), coldMode],
+            new StopConfig(StopMode.Signal, Signal: null, MessageTemplate: null, WindDown: TimeSpan.FromSeconds(30)),
+            new ResumeConfig([HarnessPath(), "echo-argv", "--resume", "{session_id}", "--mcp-config", "{mcp_config}"]),
+            new EventsConfig(EventsSource.None, new Dictionary<string, string>()),
+            new TelemetryConfig(Otel: false, Endpoint: null),
+            new LogsConfig(Path: null, Format: null),
+            MaxConcurrent: null);
 }
 
 /// <summary>A back-pressure reader the tests flip to simulate load (§10 concurrency).</summary>

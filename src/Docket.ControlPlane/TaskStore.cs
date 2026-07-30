@@ -147,10 +147,17 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
         if (result is StoreResult.Applied applied)
         {
             await tx.CommitAsync(ct);
-            // Surface the row's opaque trace context so DispatchService can parent
-            // the dispatch span on the Lead's create_task trace (transport metadata
-            // only — it never reaches the engine).
-            return applied with { TraceContext = claimed.TraceContext };
+            // Surface the row's opaque transport metadata so DispatchService can act
+            // on it (neither reaches the engine): the trace context parents the
+            // dispatch span on the Lead's create_task trace, and the harness session
+            // ref — present when the task was worked before and parked/requeued —
+            // rides the DispatchCommand back so the runner can resume the transcript
+            // (§11). Null on a task dispatched for the first time.
+            return applied with
+            {
+                TraceContext = claimed.TraceContext,
+                HarnessSessionRef = claimed.HarnessSessionRef,
+            };
         }
         return result;
     }
@@ -272,7 +279,7 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
         await db.Tasks.AsNoTracking()
             .Where(t => t.State == TaskState.BlockedOnInput)
             .OrderBy(t => t.BlockedAt)
-            .Select(t => new BlockedTaskView(t.Id, t.BlockedAt, t.Attempt))
+            .Select(t => new BlockedTaskView(t.Id, t.BlockedAt, t.Attempt, t.HarnessSessionRef))
             .ToListAsync(ct);
 
     /// <summary>
@@ -286,6 +293,22 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
             .Where(t => t.Id == id.Value)
             .Select(t => (TaskState?)t.State)
             .FirstOrDefaultAsync(ct);
+
+    /// <summary>
+    /// Stamps the opaque harness session ref onto a task row (§11 resume), from a
+    /// <see cref="Docket.Contracts.SessionStartedEvent"/> the runner event sink
+    /// received. Not a state transition — this is transport metadata the plane
+    /// never interprets (like <see cref="TaskRow.ResultReference"/>/<c>TraceContext</c>),
+    /// so it is a targeted set-based write that runs no engine transition, takes no
+    /// xmin token, and fires no NOTIFY — exactly the shape of the token-revoke
+    /// effect. Latest write wins: a resumed or restarted session overwrites the ref
+    /// so a subsequent park carries the current session. A no-op row count when the
+    /// task no longer exists, which is fine — the ref is only ever read on dispatch.
+    /// </summary>
+    public async Task StampHarnessSessionRefAsync(TaskId id, string sessionRef, CancellationToken ct = default) =>
+        await db.Tasks
+            .Where(t => t.Id == id.Value)
+            .ExecuteUpdateAsync(s => s.SetProperty(t => t.HarnessSessionRef, sessionRef), ct);
 
     private async Task<StoreResult> RunTransition(
         TaskRow row, TaskCommand command, CancellationToken ct,

@@ -92,10 +92,49 @@ public sealed class TerminalEventsSupervisorTests : IDisposable
         supervisor.Kill(plainTask);
     }
 
+    [Fact]
+    public async Task Terminal_source_emits_exactly_one_session_started_event_from_system_init()
+    {
+        // §11 resume: the supervisor emits ONE SessionStartedEvent carrying the
+        // harness session ref the moment the terminal reader captures system/init —
+        // so the plane can stamp it on the task row before any park.
+        var task = TaskId.New();
+        var supervisor = Supervisor();
+
+        var drained = new List<RunnerEvent>();
+        using var drainCts = new CancellationTokenSource();
+        var drainLoop = Task.Run(async () =>
+        {
+            await foreach (var item in _ring.ReadAllAsync(drainCts.Token))
+                lock (drained) drained.Add(item.Event);
+        });
+
+        supervisor.Spawn(TestKit.Dispatch(task), TerminalProfile(), "machine-term");
+
+        Assert.True(
+            await TestKit.WaitUntilAsync(() => SessionEvents(drained).Count >= 1, TimeSpan.FromSeconds(20)),
+            "supervisor never emitted a session-started event");
+
+        supervisor.Kill(task);
+        _ring.Complete();
+        await drainLoop;
+
+        // Exactly one, carrying the fixture's known session id and the task id.
+        var evt = Assert.Single(SessionEvents(drained));
+        Assert.Equal(task, evt.Task);
+        Assert.Equal(HarnessProgram.EmitStreamSessionId, evt.SessionRef);
+    }
+
     private static List<string> ToolNames(List<RunnerEvent> drained)
     {
         lock (drained)
             return drained.OfType<ToolCallEvent>().Select(e => e.Tool).ToList();
+    }
+
+    private static List<SessionStartedEvent> SessionEvents(List<RunnerEvent> drained)
+    {
+        lock (drained)
+            return drained.OfType<SessionStartedEvent>().ToList();
     }
 
     public void Dispose()

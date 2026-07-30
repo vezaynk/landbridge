@@ -207,7 +207,12 @@ public sealed class DispatchService : IHostedService
         // wrapped in the MCP client config the worker dials the plane with.
         var minted = await tokens.MintWorkerTokenAsync(task.Team, task.Id, instance, ct);
         var command = new DispatchCommand(
-            task.Id, profile, minted.Token, McpConfigJson: BuildWorkerMcpConfig(minted.Token));
+            task.Id, profile, minted.Token, McpConfigJson: BuildWorkerMcpConfig(minted.Token),
+            // §11 resume: pass the prior work session's ref (present when this task
+            // was worked before and parked/requeued) so docketd continues the
+            // transcript. Opaque metadata surfaced by the store; docketd resumes
+            // only if the resolved profile declares resume.args, else cold-starts.
+            ResumeSessionRef: applied.HarnessSessionRef);
 
         _registry.TrackDispatch(machineId, task.Id);
         var sent = await _registry.SendAsync(machineId, command, ct);

@@ -238,7 +238,22 @@ public sealed record StopConfig(StopMode Mode, string? Signal, string? MessageTe
 /// </summary>
 public enum StopMode { Message, Signal }
 
-/// <summary>§11: how to resume a parked task's transcript (directory-scoped).</summary>
+/// <summary>
+/// §11: how to resume a parked task's transcript (directory-scoped). When a
+/// dispatch carries a <see cref="DispatchCommand.ResumeSessionRef"/> and this
+/// profile declares <see cref="Args"/>, the supervisor spawns
+/// <see cref="Args"/> instead of <see cref="ProfileConfig.Spawn"/>, substituting
+/// two placeholders (the same brace syntax as the spawn argv):
+/// <list type="bullet">
+///   <item><c>{session_id}</c> — the opaque harness session ref to resume.</item>
+///   <item><c>{mcp_config}</c> — the path to the generated MCP config; a resumed
+///     harness still dials the plane, so it needs it exactly as a cold start does.</item>
+/// </list>
+/// A claude example:
+/// <c>["claude","-p","Resume your task.","--resume","{session_id}",
+/// "--mcp-config","{mcp_config}","--strict-mcp-config", ...]</c>. Absent this
+/// config a resume ref is ignored and the task cold-starts (documented fallback).
+/// </summary>
 public sealed record ResumeConfig(IReadOnlyList<string> Args);
 
 /// <summary>§10 event relay: where lifecycle events come from and how names map.</summary>
