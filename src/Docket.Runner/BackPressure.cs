@@ -18,16 +18,18 @@ public interface ISystemLoadReader
 }
 
 /// <summary>
-/// A cross-platform best-effort reader. Disk uses <see cref="DriveInfo"/> and
-/// memory uses <see cref="GC.GetGCMemoryInfo(GCKind)"/> — both portable. CPU
-/// load has no portable BCL surface (getloadavg on POSIX, <c>GetSystemTimes</c>
-/// on Windows are the platform hooks, each a per-OS P/Invoke), so this reader
-/// does <b>not</b> observe it: <see cref="ObservesCpu"/> is <c>false</c> and the
+/// The portable <b>fallback</b> reader for platforms with no CPU backend. Disk
+/// uses <see cref="DriveInfo"/> and memory uses
+/// <see cref="GC.GetGCMemoryInfo(GCKind)"/> — both portable. CPU load has no
+/// portable BCL surface (each OS needs its own P/Invoke), so this reader does
+/// <b>not</b> observe it: <see cref="ObservesCpu"/> is <c>false</c> and the
 /// CpuLoad field is a placeholder <c>0</c>, not a reading.
 /// <see cref="BackPressureMonitor"/> consults <see cref="ObservesCpu"/> and drops
 /// the CPU term rather than letting that <c>0</c> silently defeat
-/// <c>max_cpu_load</c>; disk and memory carry the portable back-pressure signal in
-/// the meantime, and a real per-OS CPU read is tracked as its own follow-up (§10).
+/// <c>max_cpu_load</c>; disk and memory carry the back-pressure signal here.
+/// <para>Linux, macOS, and Windows instead get <see cref="SystemLoadReader"/>
+/// (<see cref="ISystemLoadReader.ObservesCpu"/> <c>true</c>), which reads real
+/// host CPU utilization; see <see cref="SystemLoadReader.ForCurrentPlatform"/>.</para>
 /// </summary>
 public sealed class PortableSystemLoadReader(string workRoot) : ISystemLoadReader
 {
@@ -35,7 +37,10 @@ public sealed class PortableSystemLoadReader(string workRoot) : ISystemLoadReade
 
     public SystemLoad Read() => new(CpuLoad: 0.0, MemoryLoad: ReadMemory(), DiskUsage: ReadDisk(workRoot));
 
-    private static double ReadMemory()
+    // Memory and disk are portable and platform-independent, so the real per-OS
+    // reader (SystemLoadReader) reuses them verbatim and layers only a genuine CPU
+    // read on top. They live here as the single home for the portable primitives.
+    internal static double ReadMemory()
     {
         var info = GC.GetGCMemoryInfo();
         return info.TotalAvailableMemoryBytes > 0
@@ -43,7 +48,7 @@ public sealed class PortableSystemLoadReader(string workRoot) : ISystemLoadReade
             : 0;
     }
 
-    private static double ReadDisk(string path)
+    internal static double ReadDisk(string path)
     {
         try
         {
