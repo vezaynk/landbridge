@@ -133,11 +133,21 @@ public static class Program
     // ── Handshake: prove cross-machine bytes carry an unforgeable nonce ─────────
 
     /// <summary>
-    /// <c>handshake-serve</c>: mint a nonce, bind a loopback server that writes it to
-    /// any caller, register the service, and stay working (never reporting) so the row
+    /// <c>handshake-serve</c>: mint a nonce, bind a loopback server that hands it back on
+    /// request, register the service, and stay working (never reporting) so the row
     /// survives and stays forwardable. The nonce is written atomically to
     /// <c>./handshake-nonce.txt</c> so the harnessing test can read exactly what this
     /// machine generated and assert the consumer received it byte-for-byte.
+    ///
+    /// <para><b>Client-first, deliberately.</b> The server waits for the consumer's
+    /// request line before answering, exactly like the compute/datastore services. A
+    /// server that spoke first and closed immediately raced the forward's mechanics: the
+    /// producer docketd dials this service the instant it gets its open-forward command,
+    /// so an unsolicited write+close could reach — and tear down — the producer end
+    /// <em>before</em> the consumer end was paired at the relay, delivering the consumer
+    /// an EOF instead of the nonce (a CI-only failure under slower scheduling). Requiring
+    /// the request first proves the full bidirectional tunnel is established before any
+    /// byte flows back, and keeps the connection open (no write-then-close).</para>
     /// </summary>
     private static Task<int> RunHandshakeServeAsync(McpClient client, string cwd, CancellationToken ct)
     {
@@ -147,16 +157,21 @@ public static class Program
             marker: ("handshake-nonce.txt", nonce),
             handleConnection: async (stream, connCt) =>
             {
-                using var writer = new StreamWriter(stream, new UTF8Encoding(false)) { AutoFlush = true, NewLine = "\n" };
-                await writer.WriteLineAsync(nonce.AsMemory(), connCt);
+                using var reader = new StreamReader(stream, Encoding.UTF8);
+                await using var writer = new StreamWriter(stream, new UTF8Encoding(false)) { AutoFlush = true, NewLine = "\n" };
+                // Answer each request line with the nonce; loop until the peer closes.
+                while (await reader.ReadLineAsync(connCt) is not null)
+                    await writer.WriteLineAsync(nonce.AsMemory(), connCt);
             },
             ct);
     }
 
     /// <summary>
-    /// <c>handshake-consume</c>: open the forward, read the one line the server hands
-    /// back, and report <c>handshake:&lt;nonce&gt;</c>. The nonce it reports is the
-    /// proof the bytes crossed the relay from the other machine intact.
+    /// <c>handshake-consume</c>: open the forward, send a request line, then read the
+    /// nonce the server hands back, and report <c>handshake:&lt;nonce&gt;</c>. Speaking
+    /// first (client-first, like compute/datastore) is what makes this reliable — see
+    /// <see cref="RunHandshakeServeAsync"/>. The nonce it reports is the proof the bytes
+    /// crossed the relay from the other machine intact.
     /// </summary>
     private static async Task<int> RunHandshakeConsumeAsync(McpClient client, string cwd, CancellationToken ct)
     {
@@ -171,6 +186,8 @@ public static class Program
             await tcp.ConnectAsync(IPAddress.Parse(host), port, opCt);
             await using var stream = tcp.GetStream();
             using var reader = new StreamReader(stream, Encoding.UTF8);
+            await using var writer = new StreamWriter(stream, new UTF8Encoding(false)) { AutoFlush = true, NewLine = "\n" };
+            await writer.WriteLineAsync("nonce".AsMemory(), opCt); // request first: prove the tunnel before the server answers
             nonce = (await reader.ReadLineAsync(opCt))
                 ?? throw new InvalidOperationException("handshake server closed before sending a nonce");
         }
