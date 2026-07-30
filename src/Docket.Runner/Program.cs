@@ -66,11 +66,12 @@ public static class Program
         var reaper = new StrayReaper(ProcessInventory.ForCurrentPlatform(), Environment.ProcessId);
         var supervisor = new ProcessSupervisor(config.Machine, ring, clock, reaper);
         var backPressure = new BackPressureMonitor(
-            new PortableSystemLoadReader(config.Machine.WorkRoot), config.Machine.BackPressure);
+            SystemLoadReader.ForCurrentPlatform(config.Machine.WorkRoot), config.Machine.BackPressure);
 
-        // §10 back-pressure: CPU has no portable read yet, so surface that
-        // max_cpu_load is inert on this platform rather than letting it look
-        // enforced. Memory and disk still gate.
+        // §10 back-pressure: Linux/macOS/Windows get a real CPU-observing reader
+        // (max_cpu_load enforced). Only an unknown platform falls back to the
+        // portable reader that can't observe CPU — surface that max_cpu_load is
+        // inert there rather than letting it look enforced; memory and disk still gate.
         if (!backPressure.ObservesCpu)
             Console.WriteLine("docketd: cpu back-pressure unavailable on this platform; max_cpu_load is inert (memory and disk still gate).");
 
