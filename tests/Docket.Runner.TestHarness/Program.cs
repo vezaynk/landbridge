@@ -34,10 +34,23 @@ namespace Docket.Runner.TestHarness;
 ///                     isolates PDEATHSIG for the CI-only test.
 ///   sleeper         — arm PDEATHSIG, write a `ready` marker, sleep; does NOT watch
 ///                     stdin (so the PDEATHSIG test cannot pass via stdin EOF).
+///   emit-stream     — write a canned claude-style stream-json (NDJSON) transcript to
+///                     stdout, flush, then watch stdin like `run`. Exercises the
+///                     supervisor's EventsSource.Terminal stdout drain: the reader
+///                     maps the transcript to ToolCallEvents and per-task liveness.
+///                     Waiting on stdin keeps the dead-man pipe governing lifetime.
 /// </summary>
 public static class Program
 {
     private static readonly TimeSpan MaxLifetime = TimeSpan.FromSeconds(120);
+
+    /// <summary>Session id the <c>emit-stream</c> fixture reports in its <c>system/init</c>
+    /// line — the Terminal supervisor test asserts the reader captured exactly this.</summary>
+    public const string EmitStreamSessionId = "sess-emit-stream";
+
+    /// <summary>Tool names the <c>emit-stream</c> fixture's <c>tool_use</c> blocks carry,
+    /// in order — the supervisor test asserts ToolCallEvents drain in this sequence.</summary>
+    public static readonly string[] EmitStreamToolNames = ["Bash", "Read"];
 
     /// <summary>
     /// Exit code the dead-man's switch takes on stdin EOF. 66 == sysexits'
@@ -122,10 +135,54 @@ public static class Program
                 }
                 return 0;
 
+            case "emit-stream":
+                await WriteStartedAsync(cwd);
+                // Emit the fixture transcript to stdout (the supervisor redirects and
+                // drains it under EventsSource.Terminal), flush, then behave like
+                // `run`: watch stdin so the dead-man pipe still governs our lifetime.
+                await EmitStreamFixtureAsync();
+                return await WatchStdinAsync(cwd, grandchildren: [], onLine: null);
+
             default: // "run"
                 await WriteStartedAsync(cwd);
                 return await WatchStdinAsync(cwd, grandchildren: [], onLine: null);
         }
+    }
+
+    /// <summary>
+    /// Writes a small claude <c>--output-format stream-json</c>-shaped transcript,
+    /// one JSON object per line, to stdout. It covers the shapes the Terminal
+    /// reader maps: a <c>system/init</c> carrying <see cref="EmitStreamSessionId"/>,
+    /// a thinking-only assistant turn (liveness, no tool call), single- and
+    /// multi-block assistant turns whose <c>tool_use</c> blocks name
+    /// <see cref="EmitStreamToolNames"/>, a stray non-JSON banner line the reader
+    /// must skip, a tool_result turn, and a final <c>result</c>.
+    /// </summary>
+    private static async Task EmitStreamFixtureAsync()
+    {
+        // Plain raw literals (JSON braces would collide with raw-string
+        // interpolation). The session id and tool names are hardcoded to match
+        // EmitStreamSessionId / EmitStreamToolNames, asserted below so the two
+        // never drift.
+        string[] lines =
+        [
+            """{"type":"system","subtype":"init","session_id":"sess-emit-stream","tools":["Bash","Read"],"model":"claude-test"}""",
+            """{"type":"assistant","message":{"role":"assistant","content":[{"type":"thinking","thinking":"planning the work"}]}}""",
+            """{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_1","name":"Bash","input":{"command":"ls"}}]}}""",
+            "a stray non-JSON banner line the reader must skip",
+            """{"type":"assistant","message":{"role":"assistant","content":[{"type":"tool_use","id":"toolu_2","name":"Read","input":{"file":"x"}},{"type":"text","text":"reading now"}]}}""",
+            """{"type":"user","message":{"role":"user","content":[{"tool_use_id":"toolu_1","type":"tool_result","content":"ok"}]}}""",
+            """{"type":"result","subtype":"success","session_id":"sess-emit-stream","is_error":false,"num_turns":2}""",
+        ];
+
+        // Guard the hardcoded/const agreement (single source in spirit).
+        if (EmitStreamSessionId != "sess-emit-stream"
+            || EmitStreamToolNames is not ["Bash", "Read"])
+            throw new InvalidOperationException("emit-stream fixture drifted from its published constants");
+
+        foreach (var line in lines)
+            await Console.Out.WriteLineAsync(line);
+        await Console.Out.FlushAsync();
     }
 
     private enum StdinAction { Continue, GracefulStop }

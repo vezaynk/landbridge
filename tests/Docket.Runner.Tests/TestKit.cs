@@ -69,14 +69,21 @@ internal static class TestKit
     public static MachineConfig Machine(string workRoot) =>
         new(workRoot, TimeSpan.FromSeconds(15), BackPressureThresholds.Default);
 
-    /// <summary>A profile that runs the test harness in the given mode.</summary>
-    public static ProfileConfig Profile(string harnessMode, StopMode stopMode = StopMode.Signal, string name = "default") =>
+    /// <summary>A profile that runs the test harness in the given mode. Defaults to
+    /// the honest <see cref="EventsSource.None"/>; pass <see cref="EventsSource.Terminal"/>
+    /// (optionally with a mapping) to exercise the stdout event drain.</summary>
+    public static ProfileConfig Profile(
+        string harnessMode,
+        StopMode stopMode = StopMode.Signal,
+        string name = "default",
+        EventsSource events = EventsSource.None,
+        IReadOnlyDictionary<string, string>? mapping = null) =>
         new(
             name,
             [HarnessPath(), harnessMode],
             new StopConfig(stopMode, Signal: null, MessageTemplate: null, WindDown: TimeSpan.FromSeconds(30)),
             Resume: null,
-            new EventsConfig(EventsSource.None, new Dictionary<string, string>()),
+            new EventsConfig(events, mapping ?? new Dictionary<string, string>()),
             new TelemetryConfig(Otel: false, Endpoint: null),
             new LogsConfig(Path: null, Format: null),
             MaxConcurrent: null);
