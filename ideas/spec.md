@@ -213,7 +213,7 @@ Additional states: `blocked_on_input`, `parked`, `canceled`. `blocked_on_input` 
 | `verifying` → `submitted` | verifier | verification retries remain |
 | `verifying` → `rejected` | verifier | verification retries exhausted |
 | `working` → `blocked_on_input` | working agent | typed request kind present; caller is the incumbent worker instance |
-| `blocked_on_input` → `working` | Lead or human | answer landed within the wait TTL and the dispatched machine still holds the lease |
+| `blocked_on_input` → `submitted` | Lead or human | answer landed; a park record is written (preferring the held-lease machine and the stamped harness session ref) and redispatch resumes the transcript (§11). The worker process is gone the moment the task blocked, so there is no in-place resume. Does **not** touch the infrastructure counter — a Lead answering is not an infrastructure requeue |
 | `blocked_on_input` → `parked` | control plane | wait TTL expired; lease released; park record written (§11) |
 | `blocked_on_input` → `submitted` | control plane | machine liveness lost while waiting; infrastructure counter |
 | `working` → `parked` | Lead | `stop` with disposition `preserve_and_park`; park record written after the agent's wind-down |

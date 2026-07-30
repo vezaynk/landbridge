@@ -187,9 +187,11 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// <summary>
     /// Whether the dispatch lease for <paramref name="task"/> is still held: the
     /// task is tracked on some machine AND that machine's connection is still
-    /// registered (§10). This is the control-plane fact behind
-    /// <c>AnswerInput.LeaseStillHeld</c> — answering a blocked task must not
-    /// resume it onto a machine that is gone; the engine parks it instead (§6).
+    /// registered (§10). The blocked-input answer path reads the held-lease machine
+    /// itself via <see cref="MachineFor"/> (it becomes the redispatch park record's
+    /// preferred machine); this boolean predicate is the same fact for callers that
+    /// only need the yes/no — the lease is what a blocked task's recovery affinity
+    /// hangs on (§11).
     /// </summary>
     public bool IsLeaseHeld(TaskId task)
     {

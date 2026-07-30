@@ -143,9 +143,9 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
     public async Task Wait_ttl_expiry_is_rejected_once_a_lead_has_answered()
     {
         // The answer-vs-sweep race at the store: a sweep decided to park a task a
-        // Lead answered a beat earlier. WaitTtlExpired lands on a now-working task
-        // and the engine rejects it (wrong source state) — nothing is written, the
-        // answer stands.
+        // Lead answered a beat earlier. WaitTtlExpired lands on a now-submitted task
+        // (the answer requeued it for redispatch) and the engine rejects it (wrong
+        // source state) — nothing is written, the answer stands.
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
         var team = TeamId.New();
@@ -153,14 +153,15 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
 
         await using var db = pg.NewContext();
         var store = new TaskStore(db, clock);
+        var answerPark = new ParkRecord("m1", Directory: null, HarnessSessionRef: null, Attempt: 1);
         Assert.IsType<StoreResult.Applied>(
-            await store.ApplyAsync(id, new AnswerInput(new LeadClaim(team), LeaseStillHeld: true)));
+            await store.ApplyAsync(id, new AnswerInput(new LeadClaim(team), answerPark)));
 
         var park = new ParkRecord("m1", Directory: null, HarnessSessionRef: null, Attempt: 1);
         var rejected = Assert.IsType<StoreResult.Rejected>(
             await store.ApplyAsync(id, new WaitTtlExpired(park)));
         Assert.Equal(Rule.InvalidSourceState, rejected.Rule);
-        Assert.Equal(TaskState.Working, await StateAsync(clock, id));
+        Assert.Equal(TaskState.Submitted, await StateAsync(clock, id));
     }
 
     [SkippableFact]
@@ -168,22 +169,23 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
     {
         // The same race one layer up: once the Lead's answer lands, the task is no
         // longer blocked, so a full sweep pass finds nothing to park even past the
-        // TTL — the task keeps working.
+        // TTL — the task is already requeued for redispatch (submitted), not parked.
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
         var team = TeamId.New();
         var (id, _) = await SeedBlockedTaskAsync(clock, team, "m1");
         var registry = LiveMachine(clock, "m1", id);
 
+        var answerPark = new ParkRecord("m1", Directory: null, HarnessSessionRef: null, Attempt: 1);
         await using (var db = pg.NewContext())
-            await new TaskStore(db, clock).ApplyAsync(id, new AnswerInput(new LeadClaim(team), LeaseStillHeld: true));
+            await new TaskStore(db, clock).ApplyAsync(id, new AnswerInput(new LeadClaim(team), answerPark));
 
         var sweeper = NewSweeper(clock, registry,
             waitTtl: TimeSpan.FromMinutes(30), machineWindow: TimeSpan.FromHours(2));
         clock.Advance(TimeSpan.FromMinutes(31)); // past what would have been the TTL
         await sweeper.SweepAsync(CancellationToken.None);
 
-        Assert.Equal(TaskState.Working, await StateAsync(clock, id));
+        Assert.Equal(TaskState.Submitted, await StateAsync(clock, id));
     }
 
     [SkippableFact]

@@ -62,11 +62,16 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
     /// A Lead's answer to a task awaiting input, routed to whichever §6
     /// transition the task's current state needs — so a Lead answering never has
     /// to know whether the wait-TTL sweeper (§11) parked the task first. One
-    /// call, correct outcome either way:
+    /// call, correct outcome either way, and both outcomes requeue for redispatch
+    /// rather than resuming in place (§11: "waiting is always the park shape"):
     ///
-    ///   blocked_on_input → working   (<see cref="AnswerInput"/>): the task is
-    ///     still waiting in-lease; it resumes in place, gated on the dispatched
-    ///     machine still holding the lease (<paramref name="leaseStillHeld"/>, §6).
+    ///   blocked_on_input → submitted (<see cref="AnswerInput"/>): the task is
+    ///     still waiting; the answer requeues it with a park record built from the
+    ///     held-lease machine (<paramref name="leaseMachine"/>) and the row's
+    ///     stamped harness session ref, so redispatch resumes the transcript. When
+    ///     the machine is gone (<paramref name="leaseMachine"/> is null) the task
+    ///     still requeues and redispatch cold-starts elsewhere (§6, §11). This does
+    ///     not touch the infrastructure counter (§6, two counters).
     ///   parked → submitted           (<see cref="WakeParked"/>): the sweeper
     ///     already parked it; the answer landing wakes it so redispatch requeues
     ///     it with the park record's machine/directory affinity (§6, §11 — "the
@@ -81,12 +86,12 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
     /// existed. The answer-vs-sweep race is resolved by the store's optimistic
     /// concurrency exactly as everywhere else: whichever transition commits first
     /// wins, and the loser sees a rejected wrong-state command (the sweeper's
-    /// <see cref="WaitTtlExpired"/> on a now-working task) or a
+    /// <see cref="WaitTtlExpired"/> on a now-submitted task) or a
     /// <see cref="StoreResult.Conflict"/> — never a lost answer or a double
     /// transition.
     /// </summary>
     public async Task<StoreResult> AnswerOrWakeAsync(
-        LeadClaim lead, TaskId id, bool leaseStillHeld, CancellationToken ct = default)
+        LeadClaim lead, TaskId id, string? leaseMachine, CancellationToken ct = default)
     {
         var row = await db.Tasks.FirstOrDefaultAsync(t => t.Id == id.Value, ct);
         if (row is null)
@@ -100,7 +105,17 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
             return await RunTransition(row, new WakeParked(), ct);
         }
 
-        return await RunTransition(row, new AnswerInput(lead, leaseStillHeld), ct);
+        // §11: build the redispatch park record from what the plane holds — the
+        // machine still holding the lease (preferred for transcript resume) and the
+        // session ref stamped from this work session's SessionStartedEvent. Same
+        // shape the wait-TTL sweeper writes; the working directory originates
+        // runner-side and is null here. Null when the machine is gone, so redispatch
+        // cold-starts elsewhere from the workspace (§11). Ignored by the engine on
+        // any non-blocked state (the fall-through wrong-state rejection).
+        var park = leaseMachine is { } machine
+            ? new ParkRecord(machine, Directory: null, HarnessSessionRef: row.HarnessSessionRef, row.Attempt)
+            : null;
+        return await RunTransition(row, new AnswerInput(lead, park), ct);
     }
 
     /// <summary>

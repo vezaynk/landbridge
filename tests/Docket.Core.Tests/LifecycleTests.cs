@@ -107,13 +107,27 @@ public class LifecycleTests
     [Theory]
     [InlineData(true)]  // Lead answers
     [InlineData(false)] // Human answers
-    public void Answer_within_ttl_resumes_the_blocked_task_in_place(bool byLead)
+    public void Answer_requeues_the_blocked_task_for_redispatch_with_resume(bool byLead)
     {
-        var result = TaskStateMachine.Apply(
-            Given.Task(TaskState.BlockedOnInput),
-            new AnswerInput(byLead ? Given.Lead : Given.Human, LeaseStillHeld: true));
+        // §11: the worker process is gone the moment the task blocked, so the answer
+        // cannot resume in place — it writes a park record and requeues (→ submitted),
+        // never → working. The predecessor token is revoked (§5) and the
+        // infrastructure counter is untouched — a Lead answering is not an
+        // infrastructure requeue (§6, two counters).
+        var task = Given.Task(TaskState.BlockedOnInput);
+        var incumbent = task.CurrentInstance!.Value;
 
-        Expect.Transitioned(result, TaskState.Working);
+        var result = TaskStateMachine.Apply(
+            task,
+            new AnswerInput(byLead ? Given.Lead : Given.Human, Given.Park));
+
+        var next = Expect.Transitioned(result, TaskState.Submitted);
+        Assert.Equal(Given.Park, next.Park);
+        Assert.Null(next.CurrentInstance);
+        Assert.Equal(0, next.InfrastructureRequeues);
+        var effects = Expect.Effects(result);
+        Assert.Contains(new WriteParkRecord(Given.Park), effects);
+        Assert.Contains(new RevokeWorkerInstanceToken(incumbent), effects);
     }
 
     [Fact]

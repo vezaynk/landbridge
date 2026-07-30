@@ -32,8 +32,9 @@ namespace Docket.ControlPlane;
 /// Race safety: a Lead answering (<see cref="AnswerInput"/>) at the same instant
 /// must win cleanly. Because both outcomes go through the store's optimistic
 /// concurrency (xmin) and the engine's source-state check, a sweep that loses the
-/// race sees the task already <see cref="TaskState.Working"/> (or a concurrency
-/// conflict) and no-ops — the answer stands, the task keeps working.
+/// race sees the task already <see cref="TaskState.Submitted"/> — the answer
+/// requeued it for redispatch — (or a concurrency conflict) and no-ops; the answer
+/// stands and the task is redispatched with its transcript resumed.
 /// </summary>
 public sealed class WaitTtlSweeper : IHostedService
 {

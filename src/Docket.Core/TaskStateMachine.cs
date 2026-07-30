@@ -212,11 +212,29 @@ public static class TaskStateMachine
             return TransitionResult.Reject(Rule.ActorLacksAuthority,
                 "input requests are answered by the Lead or a human");
 
-        if (!c.LeaseStillHeld)
-            return TransitionResult.Reject(Rule.LeaseNoLongerHeld,
-                "the dispatched machine no longer holds the lease; the task parks and wakes instead");
+        // §11: a headless worker that blocked has already ended its turn and its
+        // process is gone — "resume does not restore in place". The answer therefore
+        // drives blocked_on_input → submitted through the same park→redispatch path
+        // the wait-TTL sweeper uses (never → working): revoke the predecessor
+        // instance's token first (§5), write the park record so redispatch resumes
+        // the transcript on the preferred machine (§11), and leave the infrastructure
+        // counter untouched — a Lead answering is not an infrastructure requeue (§6,
+        // two counters). A null park means the dispatched machine is gone; the task
+        // still requeues and redispatch cold-starts elsewhere.
+        var effects = new List<Effect>();
+        if (task.CurrentInstance is { } instance)
+            effects.Add(new RevokeWorkerInstanceToken(instance));
+        if (c.Park is { } park)
+            effects.Add(new WriteParkRecord(park));
 
-        return TransitionResult.Ok(task with { State = TaskState.Working });
+        return TransitionResult.Ok(
+            task with
+            {
+                State = TaskState.Submitted,
+                CurrentInstance = null,
+                Park = c.Park ?? task.Park,
+            },
+            effects.ToArray());
     }
 
     private static TransitionResult ApplyWaitTtlExpired(TaskRecord task, WaitTtlExpired c)

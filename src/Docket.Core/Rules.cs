@@ -38,7 +38,6 @@ public enum Rule
     MachineIneligibleForDispatch = 103,
     ResultReferenceRequired = 104,
     TypedRequestKindRequired = 105,
-    LeaseNoLongerHeld = 106,
 }
 
 public abstract record TransitionResult
