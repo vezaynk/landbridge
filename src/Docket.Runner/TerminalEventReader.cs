@@ -62,9 +62,10 @@ public sealed class TerminalEventReader
     /// </param>
     /// <param name="onSessionId">
     /// Invoked once with the harness session id from <c>system/init</c>. The
-    /// supervisor stores it on <see cref="SupervisedTask.SessionId"/> and logs it.
-    /// <b>Reserved for §11 resume; deliberately NOT wired to resume in this
-    /// increment</b> — this reader does events and liveness only.
+    /// supervisor stores it on <see cref="SupervisedTask.SessionId"/> and emits a
+    /// <see cref="SessionStartedEvent"/> so the plane can stamp the ref for §11
+    /// resume. This reader itself does events and liveness only — the ref is
+    /// opaque to it.
     /// </param>
     public TerminalEventReader(
         TaskId task,

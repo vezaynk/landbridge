@@ -63,6 +63,19 @@ public sealed class TaskRow
     /// </summary>
     public string? TraceContext { get; set; }
 
+    /// <summary>
+    /// The opaque harness session ref of the task's most recent work session (§11
+    /// resume), stamped from a <see cref="Docket.Contracts.SessionStartedEvent"/>
+    /// the moment docketd captures it. Transport metadata exactly like
+    /// <see cref="ResultReference"/>/<see cref="TraceContext"/>: stored verbatim,
+    /// never dereferenced, never entering <c>Docket.Core</c> — so it is set outside
+    /// the state machine (a targeted column write) and survives state transitions
+    /// untouched. A park copies it into the park record so redispatch can resume the
+    /// transcript; distinct from <see cref="ParkSessionRef"/>, which is that park
+    /// record's own snapshot. Null until the first session-init is observed.
+    /// </summary>
+    public string? HarnessSessionRef { get; set; }
+
     /// <summary>Postgres system column, used as the optimistic-concurrency token.</summary>
     public uint Version { get; set; }
 

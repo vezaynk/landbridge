@@ -39,6 +39,16 @@ public abstract record RunnerCommand : RunnerMessage
 /// (§5, §13), the harness-local budget cap (§10, §9 check 9), and opaque
 /// substitutions for the profile's spawn argv. The runner never interprets any
 /// of it — it is transport.
+///
+/// <para><see cref="ResumeSessionRef"/> was <b>added</b> for §11 resume — an
+/// additive, wire-compatible field exactly like the relay fields on
+/// <see cref="OpenForwardCommand"/>: an older envelope carrying none decodes to
+/// <c>null</c>. It is the opaque harness session ref of a task that was worked
+/// before and parked/requeued; the plane passes it back whenever the row holds
+/// one, and the runner resumes the transcript only if the resolved profile also
+/// declares how (<c>resume.args</c>) — otherwise it cold-starts (documented
+/// fallback). Opaque transport metadata: the runner substitutes it into
+/// <c>resume.args</c> and never interprets it (§11 resume seam).</para>
 /// </summary>
 public sealed record DispatchCommand(
     TaskId Task,
@@ -46,7 +56,8 @@ public sealed record DispatchCommand(
     string WorkerToken = "",
     string? McpConfigJson = null,
     decimal? BudgetUsd = null,
-    Dictionary<string, string>? SpawnSubstitutions = null) : RunnerCommand;
+    Dictionary<string, string>? SpawnSubstitutions = null,
+    string? ResumeSessionRef = null) : RunnerCommand;
 
 /// <summary>
 /// <c>stop(ttl, disposition)</c> — graceful wind-down (§10, §11). Delivered as
@@ -119,6 +130,17 @@ public abstract record RunnerEvent : RunnerMessage
 /// death after <c>started</c> means side effects may exist, so requeue is not
 /// free (§10).</summary>
 public sealed record StartedEvent(TaskId Task, DateTimeOffset At) : RunnerEvent;
+
+/// <summary>
+/// <c>session-started</c> — the harness reported its opaque session ref (§11
+/// resume seam). Emitted once per task the moment the events source captures it
+/// (claude <c>system/init</c>); the control plane stamps <see cref="SessionRef"/>
+/// verbatim onto the task row — opaque transport metadata like
+/// <c>ResultReference</c>/<c>traceparent</c>, never interpreted — so a later park
+/// can carry it and redispatch can resume the transcript. A frozen-vocabulary
+/// addition, precedented by <see cref="ForwardOpenedEvent"/>.
+/// </summary>
+public sealed record SessionStartedEvent(TaskId Task, string SessionRef, DateTimeOffset At) : RunnerEvent;
 
 /// <summary><c>alive</c> — per-task liveness signal (§10 concurrency).</summary>
 public sealed record AliveEvent(TaskId Task, DateTimeOffset At) : RunnerEvent;

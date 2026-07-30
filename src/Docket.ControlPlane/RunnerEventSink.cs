@@ -32,6 +32,16 @@ public sealed class RunnerEventSink(
                 registry.RecordActivity(s.Task);
                 break;
 
+            case SessionStartedEvent ss:
+                // §11 resume: the harness reported its opaque session ref. Stamp it
+                // onto the task row verbatim (never interpreted — like
+                // ResultReference/TraceContext) so a later park carries it and
+                // redispatch resumes the transcript. A session-init is also forward
+                // progress, so refresh activity like the other liveness signals.
+                registry.RecordActivity(ss.Task);
+                await WithStoreAsync(store => store.StampHarnessSessionRefAsync(ss.Task, ss.SessionRef, ct));
+                break;
+
             case AliveEvent a:
                 registry.RecordActivity(a.Task);
                 break;

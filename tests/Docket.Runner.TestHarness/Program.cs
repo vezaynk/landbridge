@@ -39,6 +39,11 @@ namespace Docket.Runner.TestHarness;
 ///                     supervisor's EventsSource.Terminal stdout drain: the reader
 ///                     maps the transcript to ToolCallEvents and per-task liveness.
 ///                     Waiting on stdin keeps the dead-man pipe governing lifetime.
+///   echo-argv       — write the argv this process received (one token per line,
+///                     including this mode word at [0]) to an atomic `argv` marker,
+///                     then watch stdin like `run`. Lets the §11 resume tests assert
+///                     the supervisor built the spawn argv from resume.args with the
+///                     {session_id}/{mcp_config} placeholders substituted.
 /// </summary>
 public static class Program
 {
@@ -141,6 +146,14 @@ public static class Program
                 // drains it under EventsSource.Terminal), flush, then behave like
                 // `run`: watch stdin so the dead-man pipe still governs our lifetime.
                 await EmitStreamFixtureAsync();
+                return await WatchStdinAsync(cwd, grandchildren: [], onLine: null);
+
+            case "echo-argv":
+                // §11 resume: record the argv we were actually spawned with — one
+                // token per line, this mode word at [0] — so the test can prove the
+                // supervisor substituted {session_id}/{mcp_config} into resume.args.
+                // Then watch stdin like `run` so the dead-man pipe governs lifetime.
+                await WriteMarkerAtomicAsync(Path.Combine(cwd, "argv"), string.Join('\n', args));
                 return await WatchStdinAsync(cwd, grandchildren: [], onLine: null);
 
             default: // "run"
