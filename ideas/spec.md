@@ -316,11 +316,27 @@ consumer's client
 
 **Only registered services are forwardable.** Otherwise it is a fleet-wide port scanner, and local-trust services like Postgres with `trust` in `pg_hba.conf` become reachable from any agent in the Team.
 
-**Generic TCP is the primitive.** An HTTP layer sits on top: subdomain per service, never path prefix, wildcard cert, websocket upgrade from day one. Its justification is human-to-service access. Build TCP first.
+**Generic TCP is the primitive.** An HTTP layer sits on top: subdomain per service, never path prefix, wildcard cert, websocket upgrade from day one. Its justification is human-to-service access. Build TCP first; the HTTP layer is specified in §8.4.
 
 **A grant is a connection-establishment credential.** It is checked when a tunnel opens; an established splice persists until the owning task leaves `working`. A database session or websocket is never severed mid-flight by grant expiry, and no renewal path needs to exist.
 
 Per-Team byte counters and rate limits alongside the token budget.
+
+### 8.4 HTTP preview layer
+
+The HTTP layer of §8.3 (subdomain per service, wildcard cert, websocket upgrade), specified now that the TCP primitive is built. Its sole justification is **human-to-service access** — a shareable preview URL for a registered service, needing no `docketd` install on the human's side. It supplements, and does not replace, the `docketd`-loopback path of §8.3, which remains the mechanism for non-HTTP services (e.g. Postgres) and machine-to-machine forwards.
+
+**Topology.** The relay gains a TLS frontend on a wildcard origin (`*.preview.<domain>`; domain and cert are `docket-relay` config — a provided PEM to start, ACME DNS-01 later). It terminates HTTPS and routes strictly by **Host header** — subdomain label, never path prefix, so cookies and absolute paths in the served app are never rewritten. The frontend *is* the consumer end: there is no consumer `docketd`. For each browser connection it opens a producer-role tunnel for the mapped forward and reverse-proxies the request — including a websocket upgrade — through to the producer's `docketd` and its `127.0.0.1:<port>`. The grant and splice rules of §8.3 hold unchanged (grant checked on connect; a live splice survives until the owning task leaves `working`).
+
+**Subdomain labels are opaque and unguessable.** A label is a random token, never `service-task-team`; structure is never encoded in the hostname. The label is the lookup key into a preview mapping `{team, task, service, expiry, auth-policy}`.
+
+**Two v1 deferrals of §8.3 lift here, for the preview path only.** A browser opens many parallel connections, so *one listener, N tunnels* applies — the mapping accepts N browser connections against one preview — and the producer `docketd` **dials on demand**, opening a fresh producer tunnel per browser connection as the relay signals each arrival, rather than the single pre-dial of the machine-to-machine path.
+
+**Auth is per-mint, gated by default.** A preview defaults to requiring the operator session of §12 (the same cookie/bearer as the dashboard); the relay admits a gated preview only when the request carries a valid operator session, delegating that check to the control plane on connect alongside the grant. A mint may explicitly opt into a **public capability URL** — the unguessable label alone admits the request — which then carries a short mandatory TTL. Public is the exception and always time-boxed; gated is the default.
+
+**Minted two ways (§10, §12).** The owning task's worker mints via `open_preview(name)`, receiving the URL to hand back in a report; a human mints from the §12 dashboard's registered-service list. Both produce the same mapping; the public/gated choice is set at mint. Only a registered service owned by a `working` task in the caller's Team is previewable (check 11).
+
+Preview traffic rides the same per-Team byte counters and rate limits (§9.10).
 
 ---
 
@@ -336,7 +352,7 @@ Per-Team byte counters and rate limits alongside the token budget.
 8. Verification retries exhausted → `rejected`.
 9. Team token budget ceiling — **containment, not metering**: attribution is best-effort telemetry (§10), so the ceiling drives refuse-new-dispatch and `stop`, and the per-dispatch harness-local hard cap is the backstop that holds when telemetry is absent.
 10. Team byte allowance and forward rate limit.
-11. Forwards resolve only to registered services in the same Team owned by a `working` task.
+11. Forwards and previews (§8.4) resolve only to registered services in the same Team owned by a `working` task.
 12. Cancellation carries a disposition enum; `TTL=0` means immediate kill.
 13. Token exchange is strictly narrowing.
 14. Worker-triggered transitions are accepted only from the incumbent worker instance; requeue and redispatch revoke the predecessor's token first.
@@ -352,7 +368,7 @@ Nothing else. Any addition that requires knowing what a task is *about* should b
 ### Agent → control plane (MCP)
 
 **Lead:** `create_task` · `answer_input_request` · `submit_review` (human-confirmed, §7) · `cancel_task` · `get_team_state`
-**Worker:** `get_task` · `report_result` · `request_input` · `register_service` · `open_forward`
+**Worker:** `get_task` · `report_result` · `request_input` · `register_service` · `open_forward` · `open_preview` (§8.4)
 
 There is no `claim_task`. Workers are dispatched, never claimants (§5, §6) — the first thing a worker does with its minted token is work, and its calls identify it.
 
@@ -361,6 +377,7 @@ There is no `claim_task`. Workers are dispatched, never claimants (§5, §6) —
 - **No `list_teams` / `get_machine_group_status` tools.** The cross-Team and machine-group views are a *human* surface, served by the §12 web dashboard (with a structured-data twin for a reattaching Lead) — not agent MCP tools. An agent sees only its own scope via `get_team_state`.
 - **`report_blocker` folded into `request_input`.** Blocking is a single typed request (§6/§11), so the one `request_input` tool carries the kind; there is no separate blocker tool.
 - **`get_task` added (worker).** A dispatched worker's opening move is to read its own assignment; this is that read, scoped to `{team, task, worker, instance}`.
+- **`open_preview` added (worker, §8.4).** The reversed decision to build the HTTP preview layer adds a worker tool that mints a shareable preview URL for a service the task has registered; the human-facing mint is the §12 dashboard. Scoped like `open_forward` (worker owns the service); the public-vs-gated auth choice is set at mint.
 
 This keeps §5's rule intact — authority is structural, from the credential, not from which tools exist — and moves human-facing reads to the human-facing surface (§12).
 
