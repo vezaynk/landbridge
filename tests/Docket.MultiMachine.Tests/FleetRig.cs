@@ -31,8 +31,14 @@ namespace Docket.MultiMachine.Tests;
 /// chosen machine marked ready — so the SKIP-LOCKED claim can only land the one
 /// submitted task on that one machine. No background loop, no timers, no
 /// sleeps-as-sync: every wait is a bounded poll of committed control-plane state.</para>
+///
+/// <para><paramref name="spawnArgv"/> overrides what each machine's <c>default</c>
+/// profile spawns. Left null (the scripted tier's use) it spawns the no-LLM
+/// <c>Docket.CollabHarness</c>; the key-gated real-<c>claude -p</c> tier passes the
+/// validated claude recipe instead (§10 config-only harness seam), so the very same
+/// fleet drives a real agent with no code change on any surface below this line.</para>
 /// </summary>
-internal sealed class FleetRig(PostgresFixture pg) : IAsyncDisposable
+internal sealed class FleetRig(PostgresFixture pg, IReadOnlyList<string>? spawnArgv = null) : IAsyncDisposable
 {
     private const string RelayBearer = "multimachine-relay-shared-secret-under-test";
 
@@ -69,7 +75,7 @@ internal sealed class FleetRig(PostgresFixture pg) : IAsyncDisposable
 
         _profile = new ProfileConfig(
             "default",
-            [CollabHarnessPath(), "--mcp-config", "{mcp_config}"],
+            spawnArgv ?? [CollabHarnessPath(), "--mcp-config", "{mcp_config}"],
             new StopConfig(StopMode.Signal, Signal: null, MessageTemplate: null, WindDown: TimeSpan.FromSeconds(30)),
             Resume: null,
             new EventsConfig(EventsSource.None, new Dictionary<string, string>()),
