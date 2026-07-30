@@ -48,6 +48,10 @@
          walking-skeleton E2E spawns it as a real MCP-speaking child process
          (§10 conventions — a real spawnable child, no shell). -->
     <ProjectReference Include="..\Docket.WorkerHarness\Docket.WorkerHarness.csproj" />
+    <!-- The §11 resume crown spawns the runner test harness for real (emit-stream to
+         report a session id, echo-argv to prove the resume argv), so it references
+         it to build and locate that binary. -->
+    <ProjectReference Include="..\Docket.Runner.TestHarness\Docket.Runner.TestHarness.csproj" />
   </ItemGroup>
 
 </Project>

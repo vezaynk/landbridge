@@ -351,14 +351,22 @@ Nothing else. Any addition that requires knowing what a task is *about* should b
 
 ### Agent → control plane (MCP)
 
-**Lead:** `claim_lead` · `release_lead` · `create_task` · `answer_input_request` · `submit_review` (human-confirmed, §7) · `cancel_task` · `get_team_state` · `list_teams` · `get_machine_group_status`
-**Worker:** `report_result` · `report_blocker` · `request_input` · `register_service` · `open_forward`
+**Lead:** `create_task` · `answer_input_request` · `submit_review` (human-confirmed, §7) · `cancel_task` · `get_team_state`
+**Worker:** `get_task` · `report_result` · `request_input` · `register_service` · `open_forward`
 
 There is no `claim_task`. Workers are dispatched, never claimants (§5, §6) — the first thing a worker does with its minted token is work, and its calls identify it.
 
+**As-built reconciliation (2026-07-30).** The tool surface implemented deliberately differs from an earlier draft of this list, and this list now reflects what shipped:
+- **No `claim_lead` / `release_lead` tools.** A Lead is not an agent that claims a tool — Lead identity *is* the credential: a human authenticates (§5 OAuth), claims the Team through the lead-claim flow, and holds a Lead session token. There is nothing for an MCP agent turn to call; claiming/releasing is the credential lifecycle, not a task action.
+- **No `list_teams` / `get_machine_group_status` tools.** The cross-Team and machine-group views are a *human* surface, served by the §12 web dashboard (with a structured-data twin for a reattaching Lead) — not agent MCP tools. An agent sees only its own scope via `get_team_state`.
+- **`report_blocker` folded into `request_input`.** Blocking is a single typed request (§6/§11), so the one `request_input` tool carries the kind; there is no separate blocker tool.
+- **`get_task` added (worker).** A dispatched worker's opening move is to read its own assignment; this is that read, scoped to `{team, task, worker, instance}`.
+
+This keeps §5's rule intact — authority is structural, from the credential, not from which tools exist — and moves human-facing reads to the human-facing surface (§12).
+
 Status tools return counts and states — **never prose**. Free text is fetched deliberately, one item at a time, delimited as untrusted. Responses are scoped by credential: a Lead gets full Team state, a worker gets its own task plus registered services and whether a Lead is attached.
 
-**Slash commands are a convenience layer, not the API.** `/docket-teams`, `/docket-machines`, `/docket-lead`, `/docket-status`, `/docket-enroll` ship as MCP prompts. Surfacing prompts as slash commands is client behaviour and not universal, so every command must map onto independently-callable tools. Nothing may be reachable only through a prompt.
+**Slash commands are a convenience layer, not the API.** `/docket-teams`, `/docket-machines`, `/docket-lead`, `/docket-status`, `/docket-enroll` ship as MCP prompts. Surfacing prompts as slash commands is client behaviour and not universal, so every command must map onto an independently-reachable surface — nothing may be reachable *only* through a prompt. Per the as-built reconciliation above, that surface is a tool for agent actions (`/docket-status` → `get_team_state`), the §12 dashboard and its structured-data twin for the human cross-Team/machine views (`/docket-teams`, `/docket-machines`), the credential/lead-claim flow for `/docket-lead`, and the enrollment flow for `/docket-enroll`.
 
 Skills ship as MCP resources, reaching every agent on connect where the client supports auto-discovery (`skill://`, SEP-2640, is draft — see §5); the guaranteed path is the dispatch prompt directing the worker to read the skill resource before starting.
 

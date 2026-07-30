@@ -183,6 +183,77 @@ public sealed class ProcessSupervisorTests : IDisposable
         Assert.True(await TestKit.WaitUntilAsync(() => supervisor.RunningTotal == 0, TimeSpan.FromSeconds(10)));
     }
 
+    // ── §11 resume: spawn argv selection ────────────────────────────────────────
+
+    [Fact]
+    public async Task Resume_spawns_from_resume_args_substituting_session_id_and_mcp_config()
+    {
+        var task = TaskId.New();
+        var supervisor = Supervisor();
+
+        // A dispatch that carries a resume ref against a profile that declares
+        // resume.args → the supervisor builds the argv from resume.args, filling
+        // {session_id} with the ref and {mcp_config} with the written config path.
+        var dispatch = new DispatchCommand(
+            task, "default", McpConfigJson: """{"mcpServers":{}}""", ResumeSessionRef: "sess-abc");
+        supervisor.Spawn(dispatch, TestKit.ResumeProfile(), "m");
+
+        var argv = await ReadArgvMarker(task);
+        Assert.Equal("echo-argv", argv[0]); // resume.args re-runs the harness in echo mode
+        var resumeIdx = Array.IndexOf(argv, "--resume");
+        Assert.True(resumeIdx >= 0, "resume argv did not carry --resume");
+        Assert.Equal("sess-abc", argv[resumeIdx + 1]); // {session_id} substituted
+        var mcpIdx = Array.IndexOf(argv, "--mcp-config");
+        Assert.True(mcpIdx >= 0, "resume argv did not carry --mcp-config");
+        Assert.Equal(Path.Combine(_workRoot, task.ToString(), "mcp.json"), argv[mcpIdx + 1]); // {mcp_config} substituted
+
+        supervisor.Kill(task);
+    }
+
+    [Fact]
+    public async Task A_resume_ref_with_no_resume_config_cold_starts()
+    {
+        var task = TaskId.New();
+        var supervisor = Supervisor();
+
+        // The profile has NO resume config, so even a dispatch carrying a resume ref
+        // spawns the normal (cold) argv — the documented fallback (§11).
+        supervisor.Spawn(
+            new DispatchCommand(task, "default", ResumeSessionRef: "sess-abc"),
+            TestKit.Profile("echo-argv"), "m");
+
+        var argv = await ReadArgvMarker(task);
+        Assert.Equal(["echo-argv"], argv);          // just the cold spawn argv…
+        Assert.DoesNotContain("--resume", argv);     // …no resume flag, no {session_id}
+
+        supervisor.Kill(task);
+    }
+
+    [Fact]
+    public async Task A_resume_config_with_no_ref_cold_starts()
+    {
+        var task = TaskId.New();
+        var supervisor = Supervisor();
+
+        // The profile declares resume.args, but this dispatch carries no ref (a first
+        // dispatch), so the supervisor spawns the cold argv, not resume.args (§11).
+        supervisor.Spawn(new DispatchCommand(task, "default"), TestKit.ResumeProfile(), "m");
+
+        var argv = await ReadArgvMarker(task);
+        Assert.Equal(["echo-argv"], argv);
+        Assert.DoesNotContain("--resume", argv);
+
+        supervisor.Kill(task);
+    }
+
+    private async Task<string[]> ReadArgvMarker(TaskId task)
+    {
+        var path = Path.Combine(_workRoot, task.ToString(), "argv");
+        Assert.True(await TestKit.WaitUntilAsync(() => File.Exists(path), TimeSpan.FromSeconds(15)),
+            "harness never recorded its argv");
+        return await File.ReadAllLinesAsync(path);
+    }
+
     private async Task<int> ReadChildPid(TaskId task)
     {
         var path = Path.Combine(_workRoot, task.ToString(), "child.pid");

@@ -87,6 +87,33 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task Expired_wait_ttl_park_record_carries_the_harness_session_ref()
+    {
+        // §11 resume: unlike the null case above, a task whose work session reported
+        // its ref (stamped on the row by the SessionStartedEvent sink) parks with
+        // that ref in the park record — so redispatch resumes the transcript.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+        var team = TeamId.New();
+        var (id, _) = await SeedBlockedTaskAsync(clock, team, "m1");
+        await using (var db = pg.NewContext())
+            await new TaskStore(db, clock).StampHarnessSessionRefAsync(id, "sess-park");
+        var registry = LiveMachine(clock, "m1", id);
+
+        var sweeper = NewSweeper(clock, registry,
+            waitTtl: TimeSpan.FromMinutes(30), machineWindow: TimeSpan.FromHours(2));
+        clock.Advance(TimeSpan.FromMinutes(31));
+        await sweeper.SweepAsync(CancellationToken.None);
+
+        await using var v = pg.NewContext();
+        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(TaskState.Parked, row.State);
+        Assert.Equal("m1", row.ParkMachine);
+        // The park record's session ref is the ref stamped from the work session.
+        Assert.Equal("sess-park", row.ParkSessionRef);
+    }
+
+    [SkippableFact]
     public async Task Machine_going_silent_while_waiting_requeues_the_task_to_submitted()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
