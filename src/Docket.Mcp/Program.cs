@@ -5,6 +5,7 @@ using Docket.ControlPlane.Auth;
 using Docket.Mcp;
 using Docket.Mcp.Auth;
 using Docket.Mcp.Dashboard;
+using Docket.Mcp.Skills;
 using Docket.Mcp.Tools;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.EntityFrameworkCore;
@@ -64,7 +65,10 @@ builder.Services.AddAuthorization();
 builder.Services.AddMcpServer()
     .WithHttpTransport()
     .WithTools<WorkerTools>()
-    .WithTools<LeadTools>();
+    .WithTools<LeadTools>()
+    // §10/§14: the skill bundle ships as MCP resources so it reaches every agent
+    // on connect. Stable docket:// URIs; scoping is advisory (see SkillResources).
+    .WithResources<SkillResources>();
 
 // The runner spine (spec §10): the connection registry and event sink are
 // singletons; the dispatch loop is a hosted service, exposed as a singleton too

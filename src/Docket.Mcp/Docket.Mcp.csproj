@@ -10,6 +10,18 @@
     <PackageReference Include="ModelContextProtocol.AspNetCore" Version="2.0.0-rc.1" />
   </ItemGroup>
 
+  <!-- The skill bundle (spec §14) is embedded into the assembly at build time and
+       served verbatim as MCP resources (§10). Embedding (rather than a Content copy)
+       avoids any runtime path dependency: the bytes travel inside the DLL. The
+       content is authored under ideas/skills and shipped as-is — LogicalName pins a
+       stable manifest name SkillBundle loads by. -->
+  <ItemGroup>
+    <EmbeddedResource Include="../../ideas/skills/worker-skill.md" LogicalName="Docket.Mcp.Skills.worker-skill.md" />
+    <EmbeddedResource Include="../../ideas/skills/lead-skill.md" LogicalName="Docket.Mcp.Skills.lead-skill.md" />
+    <EmbeddedResource Include="../../ideas/skills/enroll-skill.md" LogicalName="Docket.Mcp.Skills.enroll-skill.md" />
+    <EmbeddedResource Include="../../ideas/skills/references/runner-config.md" LogicalName="Docket.Mcp.Skills.references.runner-config.md" />
+  </ItemGroup>
+
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <Nullable>enable</Nullable>
