@@ -169,6 +169,8 @@ This makes the authority table in §6 structural rather than checked. A worker c
 
 A human-issued enrollment token, single-use and short-lived, exchanged by `docketd` for machine credentials during `/docket-enroll`.
 
+`docketd --enroll --control-url <plane>` performs the exchange at `POST /enroll`, reading the enrollment token from `--enroll-token-file` or stdin — never argv (§13). The short-lived access token is re-minted at `POST /machine/refresh` (proactively at ~50% of its lifetime and reactively on a 401 reconnect), and credentials persist 0600 under the state dir (`--state-dir`, else `$XDG_STATE_HOME/docket`, else `~/.docket`).
+
 ### The invariant
 
 **No path from a worker credential to a verifier credential, or to a lead claim.** Token exchange must be strictly narrowing.

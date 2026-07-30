@@ -200,6 +200,12 @@ app.MapDashboard();
 // Not in the Principal system — the relay is not a §5 credential class.
 app.MapRelayValidationEndpoint();
 
+// The machine bootstrap surface (§5 Bootstrap, §13): /enroll exchanges a
+// human-issued enrollment token for machine credentials; /machine/refresh
+// re-mints docketd's short-lived access token. Both anonymous — the presented
+// token is the credential, validated by TokenService, not a Principal.
+app.MapEnrollmentEndpoints();
+
 // OAuth 2.1 authorization server (§5): the two anonymous well-known discovery
 // documents (RFC 9728 / RFC 8414) and the authorize + token endpoints. Together
 // with the RFC 9728 challenge on the MCP 401, these make the plane a real
