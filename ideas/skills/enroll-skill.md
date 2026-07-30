@@ -59,7 +59,7 @@ Version matters more than you'd expect. Hook names and event payloads change bet
 
 There is no slot count. A declared limit is a guess that is wrong in both directions, and agents vary far too much in weight for a number to mean anything.
 
-`docketd` watches its own load, memory, and disk and stops claiming when the machine is under pressure. The thresholds in `machine.backpressure` have sensible defaults; adjust them only if you know something specific about this box — a laptop someone actively works on may want to yield sooner than a dedicated server.
+`docketd` watches its own load, memory, and disk and stops claiming when the machine is under pressure. The thresholds in `machine.back_pressure` have sensible defaults; adjust them only if you know something specific about this box — a laptop someone actively works on may want to yield sooner than a dedicated server.
 
 If a profile needs a hard cap for reasons unrelated to load — a licence limit, a rate-limited provider, a restricted posture you want singular — that is `max_concurrent` on the profile, not a machine setting.
 

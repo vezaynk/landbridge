@@ -143,7 +143,9 @@ public sealed class RegisteredServiceRow
 /// <summary>
 /// Append-only transition journal. Monotonic <see cref="Seq"/> gives the
 /// per-recipient ordering the messaging layer will build on; for now it is
-/// the store's own audit trail and the NOTIFY trigger's payload source.
+/// the store's own audit trail, appended in the same transaction as the
+/// application-issued <c>pg_notify</c> that wakes listeners (§3.1 LISTEN/NOTIFY,
+/// not a DB trigger).
 /// </summary>
 public sealed class TaskEventRow
 {

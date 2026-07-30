@@ -6,11 +6,14 @@ namespace Docket.Runner;
 /// <summary>
 /// The <c>docketd</c> entrypoint (spec §10). Loads and validates a config,
 /// wires the supervisor / back-pressure / heartbeat / ring, and runs until a
-/// termination signal. The control-plane <b>wire transport is deferred</b>
-/// (§10 — the frozen interface's real bytes), so this skeleton ships events to
-/// an <see cref="InMemoryControlPlaneChannel"/> mirrored to the console. The
-/// daemon logic — stray reaping, reboot announcement, back-pressure gating,
-/// heartbeat cadence — is real and runnable.
+/// termination signal. The control-plane wire transport is a real outbound
+/// WebSocket (<see cref="WebSocketControlPlaneChannel"/>, §10 — the frozen
+/// interface's real bytes): it dials the plane with a fixed env token or the
+/// enrolled machine credentials, and falls back to a
+/// <see cref="ConsoleControlPlaneChannel"/> that mirrors events to the console
+/// only when neither a URL nor credentials are configured. The daemon logic —
+/// stray reaping, reboot announcement, back-pressure gating, heartbeat cadence —
+/// is real and runnable.
 /// </summary>
 public static class Program
 {
@@ -64,6 +67,12 @@ public static class Program
         var supervisor = new ProcessSupervisor(config.Machine, ring, clock, reaper);
         var backPressure = new BackPressureMonitor(
             new PortableSystemLoadReader(config.Machine.WorkRoot), config.Machine.BackPressure);
+
+        // §10 back-pressure: CPU has no portable read yet, so surface that
+        // max_cpu_load is inert on this platform rather than letting it look
+        // enforced. Memory and disk still gate.
+        if (!backPressure.ObservesCpu)
+            Console.WriteLine("docketd: cpu back-pressure unavailable on this platform; max_cpu_load is inert (memory and disk still gate).");
 
         // §10 + §5: dial the control plane outbound. Credential source, in
         // priority order:

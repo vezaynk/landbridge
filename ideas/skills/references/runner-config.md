@@ -10,15 +10,16 @@ argv a worker is launched with.
 | Section | Field | Notes |
 |---|---|---|
 | `machine` | `work_root` | Per-task scratch dirs; `docketd` spawns each task in `{work_root}/{task_id}` (§10). Not the workspace. |
-| `machine` | `heartbeat_interval` | Machine-liveness cadence (§10). |
-| `machine` | `backpressure` | `max_cpu_load` / `max_memory_load` / `max_disk_usage` in [0,1]; sensible defaults, tune per box (§10). |
-| `profiles.<name>` | `spawn` | argv passed to `execve` — **never a shell** (§10). Substitutions below. One profile MUST be `default`. |
-| `profiles.<name>` | `stop` | `mode` (`message` \| `signal`), `signal`, `message_template`, `wind_down`. Message delivery lets the agent honour the disposition (§10, §11). |
-| `profiles.<name>` | `resume` | argv to resume a parked task's transcript, directory-scoped (§11). |
-| `profiles.<name>` | `events` | `source` (`hooks` \| `otel` \| `terminal` \| `none`) + name `mapping` → `started`/`tool-call`/`subagent-spawned`/`exited`. `none` is honest (§10). |
-| `profiles.<name>` | `telemetry` | `otel` bool + `endpoint` for budget attribution (§10). |
-| `profiles.<name>` | `logs` | transcript `path` + `format` for tail-and-stream (§10). |
-| `profiles.<name>` | `max_concurrent` | Optional hard cap for a licence/rate/posture reason, unrelated to load (§10). |
+| `machine` | `heartbeat_seconds` | Machine-liveness cadence, in seconds (§10); default `15`. |
+| `machine` | `back_pressure` | `max_cpu_load` / `max_memory_load` / `max_disk_usage` in [0,1]; defaults `0.90` / `0.90` / `0.95`, tune per box (§10). CPU is not yet observed cross-platform, so `max_cpu_load` is currently inert — memory and disk carry the signal (§10). |
+| `profiles[]` | `name` | Profile identifier. `profiles` is a JSON **array**; exactly one entry MUST be named `default` (§10). |
+| `profiles[]` | `spawn` | argv passed to `execve` — **never a shell** (§10). Substitutions below. |
+| `profiles[]` | `stop` | `mode` (`message` \| `signal`), `signal`, `message`, `wind_down_seconds`. Message delivery lets the agent honour the disposition (§10, §11). |
+| `profiles[]` | `resume` | `args`: argv to resume a parked task's transcript, directory-scoped (§11). |
+| `profiles[]` | `events` | `source` (`hooks` \| `otel` \| `terminal` \| `none`) + name `mapping` → `started`/`tool-call`/`subagent-spawned`/`exited`. `none` is honest (§10). |
+| `profiles[]` | `telemetry` | `otel` bool + `endpoint` for budget attribution (§10). |
+| `profiles[]` | `logs` | transcript `path` + `format` for tail-and-stream (§10). |
+| `profiles[]` | `max_concurrent` | Optional hard cap for a licence/rate/posture reason, unrelated to load (§10). |
 
 ## Spawn substitutions
 
@@ -32,6 +33,7 @@ first three as environment on every spawn, not configurably — §10):
 | `{work_dir}` | `{work_root}/{task_id}`, the spawn cwd. |
 | `{budget}` | The task's harness-local hard cap in USD, if any (§9 check 9). |
 | `{mcp_config}` | Path to the generated MCP config `docketd` writes to `{work_dir}/mcp.json` (mode 0600). |
+| `{session_id}` | The opaque harness session ref to resume. Substituted in `resume.args` only, never `spawn` (§11). |
 | `DOCKET_WORKER_TOKEN` | The minted worker-instance token (also embedded in `{mcp_config}`). |
 
 ## The generated MCP config (`{mcp_config}`)
@@ -63,11 +65,12 @@ dispatched instance, and its token dies with the instance (§9 check 14).
 {
   "machine": {
     "work_root": "/var/lib/docketd/work",
-    "heartbeat_interval": "00:00:15",
-    "backpressure": { "max_cpu_load": 0.90, "max_memory_load": 0.90, "max_disk_usage": 0.95 }
+    "heartbeat_seconds": 15,
+    "back_pressure": { "max_cpu_load": 0.90, "max_memory_load": 0.90, "max_disk_usage": 0.95 }
   },
-  "profiles": {
-    "default": {
+  "profiles": [
+    {
+      "name": "default",
       // argv only — no shell. {mcp_config} is the injected mcp.json path.
       "spawn": [
         "claude",
@@ -82,10 +85,10 @@ dispatched instance, and its token dies with the instance (§9 check 14).
       "stop": {
         // Injected turn so the agent reads the disposition and winds down (§10/§11).
         "mode": "message",
-        "message_template": "{\"type\":\"stop\",\"disposition\":\"{disposition}\",\"ttl_seconds\":{ttl_seconds},\"reason\":\"{reason}\"}",
-        "wind_down": "00:00:30"
+        "message": "{\"type\":\"stop\",\"disposition\":\"{disposition}\",\"ttl_seconds\":{ttl_seconds},\"reason\":\"{reason}\"}",
+        "wind_down_seconds": 30
       },
-      "resume": { "args": ["claude", "-p", "--resume", "--mcp-config", "{mcp_config}"] },
+      "resume": { "args": ["claude", "-p", "Resume your task.", "--resume", "{session_id}", "--mcp-config", "{mcp_config}"] },
       "events": {
         "source": "hooks",
         "mapping": { "PostToolUse": "tool-call", "SessionStart": "started", "SessionEnd": "exited", "SubagentStart": "subagent-spawned" }
@@ -94,7 +97,7 @@ dispatched instance, and its token dies with the instance (§9 check 14).
       "logs": { "path": "{work_dir}/transcript.jsonl", "format": "stream-json" },
       "max_concurrent": null
     }
-  }
+  ]
 }
 ```
 
