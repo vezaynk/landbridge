@@ -20,6 +20,10 @@
     <ProjectReference Include="..\Docket.Runner\Docket.Runner.csproj" IsAspireProjectResource="true" />
     <!-- docket-relay, brought into the dev loop as its own host (§8.3). -->
     <ProjectReference Include="..\Docket.Relay\Docket.Relay.csproj" IsAspireProjectResource="true" />
+    <!-- docket-verifier, the reference automated verifier (§5, §6, §10), brought
+         into the dev loop as a plain console resource so `dotnet run` closes the
+         zero-human task lifecycle end to end. -->
+    <ProjectReference Include="..\Docket.Verifier\Docket.Verifier.csproj" IsAspireProjectResource="true" />
 
     <!-- Build-only edge to the no-LLM worker harness: the app host resolves the
          built harness's path at startup (for docketd's spawn), but never links

@@ -142,6 +142,32 @@ builder.AddProject<Projects.Docket_Runner>("docketd")
         ctx.EnvironmentVariables["DOCKET_MACHINE_ID"] = seed.MachineId;
     });
 
+// docket-verifier, the reference automated verifier (§5 verifier credential, §6
+// verdicts, §10 "the verifier posts to Docket, not the reverse"). This is what
+// makes the dev loop zero-human: it polls the plane's /verify webhook and posts
+// accept/fail verdicts, so an automated task that a Lead creates advances all
+// the way from `verifying` to `completed` with nobody in the loop. A plain
+// console resource — no endpoints, no health check — that dials the plane
+// outbound like docketd, so it only needs WaitFor(mcp) and its bearer token.
+//
+// --accept-pattern .* accepts ANY non-empty result reference. That is a
+// DEV-LOOP-ONLY choice: here the point is to watch the lifecycle close, not to
+// enforce a real completion bar. A real deployment narrows this to the shapes
+// its workers actually produce (a commit SHA, a CI artifact URL, …) — an
+// over-broad pattern in production would rubber-stamp every task.
+//
+// The env callback mirrors docketd's above: WaitFor(mcp) gates it behind the
+// seed file being written, but it polls briefly (bounded retry) rather than
+// throw if the health gate and the write ever interleave.
+builder.AddProject<Projects.Docket_Verifier>("docket-verifier")
+    .WithArgs("--plane", mcpUrl, "--interval", "5", "--accept-pattern", ".*")
+    .WaitFor(mcp)
+    .WithEnvironment(async ctx =>
+    {
+        ctx.EnvironmentVariables["DOCKET_VERIFIER_TOKEN"] =
+            await ReadVerifierTokenWithRetryAsync(seedTokenFile, TimeSpan.FromSeconds(30));
+    });
+
 builder.Build().Run();
 
 // Reads src/Docket.AppHost/docketd.dev.json (copied beside the AppHost assembly),
@@ -202,6 +228,31 @@ static async Task<(string MachineId, string MachineToken)> ReadSeedWithRetryAsyn
         }
         if (DateTime.UtcNow >= deadline)
             throw new InvalidOperationException($"dev seed token file never appeared/parsed: {path}");
+        await Task.Delay(200);
+    }
+}
+
+// The verifier's bearer token from the same seed file docketd reads — a separate
+// reader (not the tuple above) because docketd's callback destructures only the
+// machine credentials and must stay untouched; the seed file simply carries one
+// more key. Same bounded-retry shape as ReadSeedWithRetryAsync.
+static async Task<string> ReadVerifierTokenWithRetryAsync(string path, TimeSpan timeout)
+{
+    var deadline = DateTime.UtcNow + timeout;
+    while (true)
+    {
+        if (File.Exists(path))
+        {
+            try
+            {
+                var token = (string?)JsonNode.Parse(await File.ReadAllTextAsync(path))?["verifierToken"];
+                if (!string.IsNullOrEmpty(token))
+                    return token;
+            }
+            catch (JsonException) { /* mid-write; retry */ }
+        }
+        if (DateTime.UtcNow >= deadline)
+            throw new InvalidOperationException($"dev seed verifier token never appeared/parsed: {path}");
         await Task.Delay(200);
     }
 }
