@@ -325,6 +325,73 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
             .Where(t => t.Id == id.Value)
             .ExecuteUpdateAsync(s => s.SetProperty(t => t.HarnessSessionRef, sessionRef), ct);
 
+    /// <summary>
+    /// Records a runner <c>auth-failed</c> event (§11) as a first-class task event
+    /// row — the structured operation/target/error-code/missing-scope facts the
+    /// runner reported — so the §12 dashboard can surface it (remediation menu
+    /// rendering itself stays deferred, #50 persists; #54-adjacent renders it).
+    /// Not a state transition: an auth failure does not move the task through §6,
+    /// so this appends an event row with no from/to state, runs no engine
+    /// transition, and takes no xmin token — but fires the same NOTIFY a transition
+    /// does, so a listening dashboard wakes on it. The event carries only a task id
+    /// (§10), so the owning Team is resolved from the row; a no-op when the task no
+    /// longer exists, which is fine — the row is only ever read by the dashboard.
+    /// </summary>
+    public async Task RecordAuthFailureAsync(
+        TaskId task, string operation, string target, string errorCode, string? missingScope,
+        CancellationToken ct = default)
+    {
+        var teamId = await db.Tasks.AsNoTracking()
+            .Where(t => t.Id == task.Value)
+            .Select(t => (Guid?)t.TeamId)
+            .FirstOrDefaultAsync(ct);
+        if (teamId is null)
+            return;
+
+        db.TaskEvents.Add(new TaskEventRow
+        {
+            TaskId = task.Value,
+            TeamId = teamId.Value,
+            Kind = TaskEventRow.AuthFailedKind,
+            AuthOperation = operation,
+            AuthTarget = target,
+            AuthErrorCode = errorCode,
+            AuthMissingScope = missingScope,
+            OccurredAt = clock.GetUtcNow(),
+        });
+        await CommitAsync(task.Value, ct);
+    }
+
+    /// <summary>
+    /// Records a runner <c>subagent-spawned</c> event (§10/§12) as a first-class
+    /// task event row so the dashboard shows it as a progress signal (subagent
+    /// lineage). Same out-of-band shape as <see cref="RecordAuthFailureAsync"/>:
+    /// no transition, no xmin token, one NOTIFY. The agent ids are progressive
+    /// enhancement — both null when the harness reports no lineage (§10) — so they
+    /// are stored verbatim, nulls and all. A no-op when the task is gone.
+    /// </summary>
+    public async Task RecordSubagentSpawnAsync(
+        TaskId task, string? agentId, string? parentAgentId, CancellationToken ct = default)
+    {
+        var teamId = await db.Tasks.AsNoTracking()
+            .Where(t => t.Id == task.Value)
+            .Select(t => (Guid?)t.TeamId)
+            .FirstOrDefaultAsync(ct);
+        if (teamId is null)
+            return;
+
+        db.TaskEvents.Add(new TaskEventRow
+        {
+            TaskId = task.Value,
+            TeamId = teamId.Value,
+            Kind = TaskEventRow.SubagentSpawnedKind,
+            SubagentId = agentId,
+            SubagentParentId = parentAgentId,
+            OccurredAt = clock.GetUtcNow(),
+        });
+        await CommitAsync(task.Value, ct);
+    }
+
     private async Task<StoreResult> RunTransition(
         TaskRow row, TaskCommand command, CancellationToken ct,
         Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction? outerTx = null)
@@ -348,13 +415,21 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
         // can age its wait deadline, and clear it on the way out. Opaque plane
         // plumbing captured here (like ResultReference above), never an engine field —
         // the pure state machine holds no clock (§6: timers live in the control plane).
-        if (command is RequestInput && row.State == TaskState.BlockedOnInput)
+        // The same working → blocked_on_input transition also carries the typed
+        // request kind onto its event row (§10/§12, #50) so the dashboard can render
+        // what kind of attention the task needs — the kind is command content the
+        // engine already requires, threaded through here, not onto the pure state.
+        InputRequestKind? inputKind = null;
+        if (command is RequestInput ri && row.State == TaskState.BlockedOnInput)
+        {
             row.BlockedAt = clock.GetUtcNow();
+            inputKind = ri.Kind;
+        }
         else if (before == TaskState.BlockedOnInput && row.State != TaskState.BlockedOnInput)
             row.BlockedAt = null;
         ApplyEffects(row, ok.Effects);
         AppendEvent(row.Id, row.TeamId, command.GetType().Name, before, row.State,
-            detail: DescribeEffects(ok.Effects));
+            detail: DescribeEffects(ok.Effects), inputKind: inputKind);
 
         try
         {
@@ -416,7 +491,9 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
         }
     }
 
-    private void AppendEvent(Guid taskId, Guid teamId, string kind, TaskState? from, TaskState to, string? detail)
+    private void AppendEvent(
+        Guid taskId, Guid teamId, string kind, TaskState? from, TaskState to, string? detail,
+        InputRequestKind? inputKind = null)
         => db.TaskEvents.Add(new TaskEventRow
         {
             TaskId = taskId,
@@ -425,6 +502,7 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
             FromState = from,
             ToState = to,
             Detail = detail,
+            InputKind = inputKind,
             OccurredAt = clock.GetUtcNow(),
         });
 

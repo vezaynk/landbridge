@@ -51,8 +51,13 @@ public sealed class RunnerEventSink(
                 break;
 
             case SubagentSpawnedEvent sub:
-                // Progressive-enhancement progress signal (§10); treat as activity.
+                // Progressive-enhancement progress signal (§10): refresh per-task
+                // liveness like any inbound signal, and — §12, #50 — persist it as a
+                // task event row so it shows on the dashboard as progress (subagent
+                // lineage), rather than being visible only as a liveness ping.
                 registry.RecordActivity(sub.Task);
+                await WithStoreAsync(store =>
+                    store.RecordSubagentSpawnAsync(sub.Task, sub.AgentId, sub.ParentAgentId, ct));
                 break;
 
             case ExitedEvent e:
@@ -64,10 +69,15 @@ public sealed class RunnerEventSink(
                 break;
 
             case AuthFailedEvent af:
-                // §11: recorded for now; remediation rendering is deferred.
+                // §11/§12, #50: persist the structured facts as a task event row so
+                // the dashboard can surface them (the remediation menu itself is a
+                // later step). Still logged — an auth failure is an operator signal —
+                // but no longer log-only.
                 logger.LogWarning(
                     "runner auth-failed: task={Task} op={Operation} target={Target} code={Code} scope={Scope}",
                     af.Task, af.Operation, af.Target, af.ErrorCode, af.MissingScope);
+                await WithStoreAsync(store =>
+                    store.RecordAuthFailureAsync(af.Task, af.Operation, af.Target, af.ErrorCode, af.MissingScope, ct));
                 break;
 
             case ForwardOpenedEvent fo:

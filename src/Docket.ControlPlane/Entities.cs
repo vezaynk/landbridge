@@ -183,14 +183,32 @@ public sealed class PreviewMappingRow
 }
 
 /// <summary>
-/// Append-only transition journal. Monotonic <see cref="Seq"/> gives the
-/// per-recipient ordering the messaging layer will build on; for now it is
-/// the store's own audit trail, appended in the same transaction as the
+/// Append-only transition journal, and — since #50 — the sink for the derived
+/// telemetry events that carry no state transition (§10/§12). Monotonic
+/// <see cref="Seq"/> gives the per-recipient ordering the messaging layer will
+/// build on; for now it is the store's own audit trail plus the §12 dashboard's
+/// read model. Every row is appended in the same transaction as the
 /// application-issued <c>pg_notify</c> that wakes listeners (§3.1 LISTEN/NOTIFY,
 /// not a DB trigger).
+///
+/// <para>Most rows are a state transition (<see cref="FromState"/>/<see cref="ToState"/>
+/// set, <see cref="Kind"/> the command name). The telemetry kinds — <c>auth-failed</c>
+/// and <c>subagent-spawned</c> — carry no transition and populate their own typed
+/// columns instead; the input-request kind rides the <c>RequestInput</c> transition
+/// row's <see cref="InputKind"/>. The columns are nullable and unset off their own
+/// kind, so the JSON twin stays a clean structured shape rather than a mashed
+/// string (§12: every view is consumable as structured data).</para>
 /// </summary>
 public sealed class TaskEventRow
 {
+    /// <summary>The <see cref="Kind"/> of an <c>auth-failed</c> telemetry row (§11) —
+    /// a wire-vocabulary name, not a command type, shared by the writer and the
+    /// dashboard reader so the two never drift.</summary>
+    public const string AuthFailedKind = "auth-failed";
+
+    /// <summary>The <see cref="Kind"/> of a <c>subagent-spawned</c> telemetry row (§10/§12).</summary>
+    public const string SubagentSpawnedKind = "subagent-spawned";
+
     public long Seq { get; set; }
     public Guid TaskId { get; set; }
     public Guid TeamId { get; set; }
@@ -199,4 +217,34 @@ public sealed class TaskEventRow
     public TaskState? ToState { get; set; }
     public string? Detail { get; set; }
     public DateTimeOffset OccurredAt { get; set; }
+
+    /// <summary>
+    /// The typed request kind of a <c>RequestInput</c> transition (§6/§11 — the
+    /// <c>request_input</c> tool carries it), threaded onto the working →
+    /// blocked_on_input row so the dashboard can show <em>what kind</em> of
+    /// attention a task needs. Null on every non-blocking event.
+    /// </summary>
+    public InputRequestKind? InputKind { get; set; }
+
+    /// <summary>
+    /// The structured facts of an <c>auth-failed</c> telemetry event (§11): the
+    /// operation, target, error code, and missing scope the runner reported.
+    /// Persisted so the dashboard can surface them (the remediation menu itself
+    /// is a later step, #54-adjacent). All null unless <see cref="Kind"/> is
+    /// <c>auth-failed</c>; <see cref="AuthMissingScope"/> is null even then when
+    /// the failure named no scope.
+    /// </summary>
+    public string? AuthOperation { get; set; }
+    public string? AuthTarget { get; set; }
+    public string? AuthErrorCode { get; set; }
+    public string? AuthMissingScope { get; set; }
+
+    /// <summary>
+    /// The (optional) subagent lineage of a <c>subagent-spawned</c> telemetry
+    /// event (§10/§12): agent id and parent agent id. Progressive enhancement —
+    /// a harness that does not emit lineage leaves both null even on this kind
+    /// (§10). Null entirely off the <c>subagent-spawned</c> kind.
+    /// </summary>
+    public string? SubagentId { get; set; }
+    public string? SubagentParentId { get; set; }
 }

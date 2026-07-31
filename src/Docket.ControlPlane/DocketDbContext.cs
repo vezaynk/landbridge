@@ -70,6 +70,9 @@ public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) :
             e.HasIndex(ev => ev.TaskId);
             e.Property(ev => ev.FromState).HasConversion<string>();
             e.Property(ev => ev.ToState).HasConversion<string>();
+            // The typed input-request kind stores as its enum name, exactly like
+            // the from/to states above (§10/§12 derived telemetry, #50).
+            e.Property(ev => ev.InputKind).HasConversion<string>();
         });
 
         b.Entity<CredentialRow>(e =>

@@ -262,7 +262,7 @@ internal static class DashboardRenderer
         }
 
         sb.Append("<section><table><thead><tr>");
-        sb.Append("<th>When</th><th>Source</th><th>Kind</th><th>Transition</th><th>Team</th><th>Task / who</th>");
+        sb.Append("<th>When</th><th>Source</th><th>Kind</th><th>Transition</th><th>Team</th><th>Task / who</th><th>Detail</th>");
         sb.Append("</tr></thead><tbody>");
         foreach (var e in events)
         {
@@ -273,6 +273,7 @@ internal static class DashboardRenderer
             sb.Append($"<td>{Transition(e)}</td>");
             sb.Append($"<td>{TeamLink(e.TeamId)}</td>");
             sb.Append($"<td>{EventSubject(e)}</td>");
+            sb.Append($"<td>{EventDetail(e)}</td>");
             sb.Append("</tr>");
         }
         sb.Append("</tbody></table></section>");
@@ -358,5 +359,34 @@ internal static class DashboardRenderer
             return $"<span class=\"mono\">{E(who)}</span><span class=\"nt\">{E(prior)}</span>";
         }
         return e.Namespace is { } ns ? $"<code>{E(ns)}</code>" : "<span class=\"nt\">—</span>";
+    }
+
+    /// <summary>
+    /// The event's structured detail (§10/§12, #50). The derived-telemetry kinds
+    /// render their own facts — the typed input-request kind, the auth-failure
+    /// operation/target/code/scope, the subagent lineage — and a plain transition
+    /// falls back to its effect-name detail. All values pass through <see cref="E"/>.
+    /// </summary>
+    private static string EventDetail(DashboardEvent e)
+    {
+        if (e.InputKind is { } kind)
+            return Badge(kind.ToString(), "state-blockedoninput");
+
+        if (e.Kind == TaskEventRow.AuthFailedKind)
+        {
+            var scope = e.AuthMissingScope is { } s ? $", missing scope <code>{E(s)}</code>" : "";
+            return $"<span class=\"nt\">{E(e.AuthOperation ?? "—")} on <code>{E(e.AuthTarget ?? "—")}</code> " +
+                   $"failed <code>{E(e.AuthErrorCode ?? "—")}</code>{scope}</span>";
+        }
+
+        if (e.Kind == TaskEventRow.SubagentSpawnedKind)
+        {
+            // Lineage is progressive enhancement (§10): a harness may report neither id.
+            var agent = e.SubagentId is { } a ? $"<code>{E(a)}</code>" : "<span class=\"nt\">unnamed</span>";
+            var parent = e.SubagentParentId is { } p ? $" under <code>{E(p)}</code>" : "";
+            return $"<span class=\"nt\">subagent </span>{agent}{parent}";
+        }
+
+        return string.IsNullOrEmpty(e.Detail) ? "<span class=\"nt\">—</span>" : $"<span class=\"nt\">{E(e.Detail)}</span>";
     }
 }

@@ -440,6 +440,62 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         await app.StopAsync(ct);
     }
 
+    // ── (e2) Event log: derived-telemetry kinds render in HTML and JSON (#50) ──
+
+    [SkippableFact]
+    public async Task Event_log_renders_auth_failure_subagent_and_input_kind_in_html_and_json()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var ct = cts.Token;
+
+        await using var app = BuildPlane();
+        await app.StartAsync(ct);
+
+        var team = TeamId.New();
+
+        // A task that hits an auth failure and spawns a subagent (both out-of-band,
+        // no transition), and a task that blocks with a typed input-request kind.
+        var (authTaskId, _, _) = await SeedWorkingTaskWithCallerAsync(team, CompletionMode.Automated, ct);
+        await WithStoreAsync(async store =>
+        {
+            await store.RecordAuthFailureAsync(
+                authTaskId, "clone", "github.com/acme/repo", "insufficient_scope", "repo", ct);
+            await store.RecordSubagentSpawnAsync(authTaskId, "sub-1", "root", ct);
+        });
+
+        var (blockedId, _, blockedCaller) = await SeedWorkingTaskWithCallerAsync(team, CompletionMode.Automated, ct);
+        await WithStoreAsync(async store =>
+            await store.ApplyAsync(blockedId, new RequestInput(blockedCaller, InputRequestKind.AuthHelp), ct));
+
+        // ── HTML: each kind's detail renders on the events page ──────────────
+        var html = await GetAuthedAsync(app, "/dashboard/events", ct);
+        Assert.Contains("auth-failed", html, StringComparison.Ordinal);
+        Assert.Contains("insufficient_scope", html, StringComparison.Ordinal);   // the auth error code
+        Assert.Contains("subagent-spawned", html, StringComparison.Ordinal);
+        Assert.Contains("sub-1", html, StringComparison.Ordinal);                // the subagent id
+        Assert.Contains("AuthHelp", html, StringComparison.Ordinal);             // the typed input-request kind
+
+        // ── JSON twin: the same facts as structured fields ──────────────────
+        var json = await GetAuthedAsync(app, "/dashboard/events?format=json", ct);
+        using var doc = JsonDocument.Parse(json);
+        var events = doc.RootElement.EnumerateArray().ToList();
+
+        Assert.Contains(events, e =>
+            e.GetProperty("kind").GetString() == "auth-failed"
+            && e.GetProperty("authOperation").GetString() == "clone"
+            && e.GetProperty("authErrorCode").GetString() == "insufficient_scope"
+            && e.GetProperty("authMissingScope").GetString() == "repo");
+        Assert.Contains(events, e =>
+            e.GetProperty("kind").GetString() == "subagent-spawned"
+            && e.GetProperty("subagentId").GetString() == "sub-1"
+            && e.GetProperty("subagentParentId").GetString() == "root");
+        Assert.Contains(events, e =>
+            e.TryGetProperty("inputKind", out var k) && k.GetString() == "AuthHelp");
+
+        await app.StopAsync(ct);
+    }
+
     // ── Host + seeding helpers ────────────────────────────────────────────────
 
     /// <summary>The operator passphrase a configured verifier accepts, and its SHA-256 hex.</summary>
