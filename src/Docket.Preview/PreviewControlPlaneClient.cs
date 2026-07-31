@@ -24,6 +24,7 @@ public sealed class PreviewControlPlaneClient
     private readonly PreviewOptions _options;
     private readonly ILogger<PreviewControlPlaneClient> _logger;
     private readonly string _connectUrl;
+    private readonly string _exchangeUrl;
 
     public PreviewControlPlaneClient(
         IHttpClientFactory httpFactory,
@@ -33,19 +34,28 @@ public sealed class PreviewControlPlaneClient
         _httpFactory = httpFactory;
         _options = options.Value;
         _logger = logger;
-        _connectUrl = (_options.ControlPlaneUrl ?? "").TrimEnd('/') + "/preview/connect";
+        var baseUrl = (_options.ControlPlaneUrl ?? "").TrimEnd('/');
+        _connectUrl = baseUrl + "/preview/connect";
+        _exchangeUrl = baseUrl + "/preview/exchange";
     }
 
-    private sealed record ConnectRequestBody(string Label, string? OperatorSession);
+    private sealed record ConnectRequestBody(string Label, string? OperatorSession, string? PreviewSession);
 
     private sealed record ConnectResponseBody(string? Grant, string? ForwardId, string? RelayUrl);
 
+    private sealed record ExchangeRequestBody(string Label, string Code);
+
+    private sealed record ExchangeResponseBody(string? PreviewSession, int MaxAgeSeconds);
+
     /// <summary>
-    /// Ask the plane to authorize + arm <paramref name="label"/>. Any transport
-    /// failure or unexpected status becomes <see cref="PreviewConnect.Error"/>,
-    /// which the handler renders as 502 — the frontend never hangs on the plane.
+    /// Ask the plane to authorize + arm <paramref name="label"/>. For a gated
+    /// preview, admission comes from either <paramref name="previewSession"/> (the
+    /// browser's <c>docket_preview</c> cookie) or <paramref name="operatorSession"/>
+    /// (a bearer, tooling). Any transport failure or unexpected status becomes
+    /// <see cref="PreviewConnect.Error"/> → 502; the frontend never hangs on the plane.
     /// </summary>
-    public async Task<PreviewConnect> ConnectAsync(string label, string? operatorSession, CancellationToken ct)
+    public async Task<PreviewConnect> ConnectAsync(
+        string label, string? operatorSession, string? previewSession, CancellationToken ct)
     {
         try
         {
@@ -55,7 +65,7 @@ public sealed class PreviewControlPlaneClient
             var client = _httpFactory.CreateClient(HttpClientName);
             using var request = new HttpRequestMessage(HttpMethod.Post, _connectUrl)
             {
-                Content = JsonContent.Create(new ConnectRequestBody(label, operatorSession)),
+                Content = JsonContent.Create(new ConnectRequestBody(label, operatorSession, previewSession)),
             };
             if (!string.IsNullOrEmpty(_options.ControlPlaneBearer))
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _options.ControlPlaneBearer);
@@ -93,6 +103,59 @@ public sealed class PreviewControlPlaneClient
             _logger.LogWarning(e, "preview connect: control plane call failed; treating as error (502)");
             return PreviewConnect.Error.Instance;
         }
+    }
+
+    /// <summary>
+    /// Redeem the one-time <paramref name="code"/> the dashboard minted for
+    /// <paramref name="label"/> (§8.4). On success returns the per-label preview
+    /// session the frontend sets as its own cookie, and its lifetime; on any failure
+    /// (bad/expired/replayed code, or a transport error) returns
+    /// <see cref="PreviewExchange.Failed"/> and the frontend re-auths.
+    /// </summary>
+    public async Task<PreviewExchange> ExchangeAsync(string label, string code, CancellationToken ct)
+    {
+        try
+        {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeoutCts.CancelAfter(RequestTimeout);
+
+            var client = _httpFactory.CreateClient(HttpClientName);
+            using var request = new HttpRequestMessage(HttpMethod.Post, _exchangeUrl)
+            {
+                Content = JsonContent.Create(new ExchangeRequestBody(label, code)),
+            };
+            if (!string.IsNullOrEmpty(_options.ControlPlaneBearer))
+                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _options.ControlPlaneBearer);
+
+            using var response = await client.SendAsync(request, timeoutCts.Token);
+            if (response.StatusCode != HttpStatusCode.OK)
+                return PreviewExchange.Failed.Instance;
+
+            var body = await response.Content.ReadFromJsonAsync<ExchangeResponseBody>(timeoutCts.Token);
+            return body is { PreviewSession: { Length: > 0 } session }
+                ? new PreviewExchange.Ok(session, body.MaxAgeSeconds)
+                : PreviewExchange.Failed.Instance;
+        }
+        catch (Exception e)
+        {
+            _logger.LogWarning(e, "preview exchange: control plane call failed");
+            return PreviewExchange.Failed.Instance;
+        }
+    }
+}
+
+/// <summary>Outcome of a <c>/preview/exchange</c> call (§8.4 gated flow).</summary>
+public abstract record PreviewExchange
+{
+    private PreviewExchange() { }
+
+    /// <summary>The code was valid; set <see cref="Session"/> as the per-label cookie for <see cref="MaxAgeSeconds"/>.</summary>
+    public sealed record Ok(string Session, int MaxAgeSeconds) : PreviewExchange;
+
+    /// <summary>The code was bad/expired/replayed, or the plane was unreachable — the browser re-auths.</summary>
+    public sealed record Failed : PreviewExchange
+    {
+        public static readonly Failed Instance = new();
     }
 }
 

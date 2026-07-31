@@ -36,17 +36,28 @@ public static class PreviewConnectEndpoints
     /// <summary>The relay URL used when neither config nor env supplies one (mirrors <c>WorkerTools.DefaultRelayUrl</c>).</summary>
     public const string DefaultRelayUrl = "http://127.0.0.1:5100";
 
-    /// <summary>POST /preview/connect body: which label is being connected, plus the browser's operator session (§8.4).</summary>
-    public sealed record ConnectRequest(string? Label, string? OperatorSession);
+    /// <summary>
+    /// POST /preview/connect body: which label is being connected, the browser's §12
+    /// operator session (bearer/tooling path), and its per-label preview session
+    /// (the <c>docket_preview</c> cookie from the §8.4 redirect flow) (§8.4).
+    /// </summary>
+    public sealed record ConnectRequest(string? Label, string? OperatorSession, string? PreviewSession);
 
     /// <summary>200 body on success: the frontend dials the relay as consumer with these (§8.4).</summary>
     public sealed record ConnectResponse(string Grant, string ForwardId, string RelayUrl);
 
+    /// <summary>POST /preview/exchange body: redeem a one-time preview-auth code for a per-label session (§8.4).</summary>
+    public sealed record ExchangeRequest(string? Label, string? Code);
+
+    /// <summary>200 body on a valid exchange: the per-label session token + its lifetime, which the frontend sets as a cookie (§8.4).</summary>
+    public sealed record ExchangeResponse(string PreviewSession, int MaxAgeSeconds);
+
     public static IEndpointRouteBuilder MapPreviewConnectEndpoint(this IEndpointRouteBuilder app)
     {
         // No .RequireAuthorization(): the frontend authenticates with a shared
-        // bearer, not a Principal (§8.4). The handler checks it in constant time.
+        // bearer, not a Principal (§8.4). The handlers check it in constant time.
         app.MapPost("/preview/connect", HandleAsync);
+        app.MapPost("/preview/exchange", HandleExchangeAsync);
         return app;
     }
 
@@ -72,18 +83,8 @@ public static class PreviewConnectEndpoints
     {
         var logger = loggerFactory.CreateLogger("Docket.Mcp.PreviewConnect");
 
-        var configured = config[BearerConfigKey];
-        if (string.IsNullOrEmpty(configured))
-        {
-            logger.LogError(
-                "preview connect was called but no shared bearer is configured ({Key}); refusing every " +
-                "call. Configure the bearer to enable the HTTP preview frontend.", BearerConfigKey);
-            return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
-        }
-
-        if (!TryReadBearer(http.Request.Headers.Authorization.ToString(), out var presented)
-            || !FixedTimeEquals(presented, configured))
-            return Results.StatusCode(StatusCodes.Status401Unauthorized);
+        if (AuthenticateFrontend(http, config, logger) is { } failure)
+            return failure;
 
         if (body is null || string.IsNullOrWhiteSpace(body.Label))
             return Results.BadRequest(new { reason = "label is required" });
@@ -92,7 +93,7 @@ public static class PreviewConnectEndpoints
             ?? Environment.GetEnvironmentVariable(RelayUrlEnvVar)
             ?? DefaultRelayUrl;
 
-        return await connect.ConnectAsync(body.Label, body.OperatorSession, relayUrl, ct) switch
+        return await connect.ConnectAsync(body.Label, body.OperatorSession, body.PreviewSession, relayUrl, ct) switch
         {
             PreviewConnectResult.Established e =>
                 Results.Ok(new ConnectResponse(e.Grant, e.ForwardId, e.RelayUrl)),
@@ -106,6 +107,64 @@ public static class PreviewConnectEndpoints
                 Results.Json(new { reason = u.Reason }, statusCode: StatusCodes.Status503ServiceUnavailable),
             _ => Results.StatusCode(StatusCodes.Status500InternalServerError),
         };
+    }
+
+    /// <summary>
+    /// POST /preview/exchange {label, code} → 200 {previewSession, maxAgeSeconds} |
+    /// 401. The frontend redeems the one-time code the dashboard minted (single-use,
+    /// short TTL, label-bound) for a per-label preview session it sets as its own
+    /// cookie on the preview origin (§8.4). Same frontend shared-bearer auth as
+    /// connect; a bad/expired/replayed/wrong-label code is a flat 401.
+    /// </summary>
+    private static IResult HandleExchange(
+        ExchangeRequest? body,
+        HttpContext http,
+        PreviewAuthStore previewAuth,
+        IConfiguration config,
+        ILoggerFactory loggerFactory)
+    {
+        var logger = loggerFactory.CreateLogger("Docket.Mcp.PreviewExchange");
+
+        if (AuthenticateFrontend(http, config, logger) is { } failure)
+            return failure;
+
+        if (body is null || string.IsNullOrWhiteSpace(body.Label) || string.IsNullOrWhiteSpace(body.Code))
+            return Results.BadRequest(new { reason = "label and code are required" });
+
+        var session = previewAuth.Redeem(body.Code, body.Label);
+        if (session is null)
+            return Results.StatusCode(StatusCodes.Status401Unauthorized);
+
+        return Results.Ok(new ExchangeResponse(session, (int)previewAuth.SessionLifetime.TotalSeconds));
+    }
+
+    private static Task<IResult> HandleExchangeAsync(
+        ExchangeRequest? body, HttpContext http, PreviewAuthStore previewAuth,
+        IConfiguration config, ILoggerFactory loggerFactory) =>
+        Task.FromResult(HandleExchange(body, http, previewAuth, config, loggerFactory));
+
+    /// <summary>
+    /// Shared frontend authentication for both preview endpoints (§8.4): fail-closed
+    /// 503 when no bearer is configured, 401 when the presented one is missing/wrong
+    /// (constant-time). Returns the failing <see cref="IResult"/>, or null when the
+    /// frontend is authenticated.
+    /// </summary>
+    private static IResult? AuthenticateFrontend(HttpContext http, IConfiguration config, ILogger logger)
+    {
+        var configured = config[BearerConfigKey];
+        if (string.IsNullOrEmpty(configured))
+        {
+            logger.LogError(
+                "a preview endpoint was called but no shared bearer is configured ({Key}); refusing every " +
+                "call. Configure the bearer to enable the HTTP preview frontend.", BearerConfigKey);
+            return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+        }
+
+        if (!TryReadBearer(http.Request.Headers.Authorization.ToString(), out var presented)
+            || !FixedTimeEquals(presented, configured))
+            return Results.StatusCode(StatusCodes.Status401Unauthorized);
+
+        return null;
     }
 
     private static bool TryReadBearer(string authorization, out string token)
