@@ -42,6 +42,18 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
             // Read straight off the ambient Activity here, never through a command
             // field — the engine stays content-free (§7). Null when nothing samples.
             TraceContext = Activity.Current?.Id,
+            // §6/§11 continuation targeting: seed the park-record-style affinity from
+            // the resolved facts the command carries (all opaque; the engine validated
+            // team + profile above but never landed them on the record). The inherited
+            // session ref goes straight onto the same HarnessSessionRef column the §11
+            // resume path already reads at dispatch, so the FIRST dispatch to the
+            // preferred machine hands the runner --resume with no new machinery. Null
+            // Continues leaves every field default, i.e. an ordinary profile-targeted
+            // task.
+            ContinuesTaskId = command.Continues?.ContinuedTask.Value,
+            PreferredMachine = command.Continues?.PreferredMachine,
+            OnMachineGone = command.Continues?.OnMachineGone,
+            HarnessSessionRef = command.Continues?.InheritedSessionRef,
         });
         AppendEvent(id.Value, task.Team.Value, "created", from: null, to: task.State, detail: null);
         await CommitAsync(id.Value, ct);
@@ -124,9 +136,24 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
     /// concurrent dispatchers never pick the same row (§9 check 5), then runs
     /// the Dispatch transition — which re-checks readiness, back-pressure, and
     /// profile as defense in depth.
+    ///
+    /// <para>Continuation targeting (§6/§11) adds a preferred-machine clause to the
+    /// SQL half of check 5. A row with no <c>preferred_machine</c> (an ordinary
+    /// profile-targeted task, or a parked task whose affinity lives in the park
+    /// record) is claimable by any profile-matching machine, unchanged. A
+    /// continuation row is claimable only by its preferred machine — so the first
+    /// dispatch prefers it and resumes the transcript there — <em>unless</em> that
+    /// machine is gone (absent from <paramref name="connectedMachines"/>) and its
+    /// policy is <see cref="MachineGonePolicy.Degrade"/>, in which case any
+    /// profile-matching machine may claim it and cold-start. <see cref="MachineGonePolicy.Pin"/>
+    /// with a gone machine matches no machine — the task waits in submitted until the
+    /// machine returns. <paramref name="connectedMachines"/> defaults to just the
+    /// asking machine when a caller supplies none (the pure store tests), which is
+    /// the honest "any other preferred machine is unknown to me" reading.</para>
     /// </summary>
     public async Task<StoreResult> DispatchNextAsync(
-        MachineSnapshot machine, WorkerInstanceId newInstance, CancellationToken ct = default)
+        MachineSnapshot machine, WorkerInstanceId newInstance, CancellationToken ct = default,
+        IReadOnlyCollection<string>? connectedMachines = null)
     {
         if (!machine.Ready || machine.UnderBackPressure)
             return new StoreResult.NotFound($"machine {machine.MachineId} is not accepting dispatch");
@@ -139,14 +166,22 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
         // the row lock is held to end of transaction, so concurrent dispatchers
         // skip it. Profile match is the SQL half of check 5: a task with no
         // profile runs anywhere; a task with one runs only where the machine
-        // declares it.
+        // declares it. The preferred-machine clause is the §6/§11 continuation half
+        // (see the method summary): NOT (preferred_machine = ANY(connected)) reads as
+        // "preferred machine gone" and is true for an empty connected set too.
         var profiles = machine.DeclaredProfiles.ToArray();
+        var connected = (connectedMachines is { Count: > 0 } c ? c : [machine.MachineId]).ToArray();
         var claimedId = await db.Database
             .SqlQuery<Guid>(
                 $"""
                  SELECT id AS "Value" FROM tasks
                  WHERE state = 'Submitted'
                    AND (profile IS NULL OR profile = ANY({profiles}))
+                   AND (
+                         preferred_machine IS NULL
+                      OR preferred_machine = {machine.MachineId}
+                      OR (on_machine_gone = 'Degrade' AND NOT (preferred_machine = ANY({connected})))
+                   )
                  ORDER BY id
                  FOR UPDATE SKIP LOCKED
                  LIMIT 1
@@ -158,24 +193,77 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
 
         var claimed = await db.Tasks.FirstAsync(t => t.Id == claimedId, ct);
 
+        // §6/§11 degrade cold-start: the SQL invariant means a claimed continuation
+        // row whose preferred machine is not the asking machine can only be a Degrade
+        // task whose machine went away — so this claim abandons the (now unreachable,
+        // machine-local) transcript. Detected before the transition; enacted after it
+        // commits-in-transaction below.
+        var degradeColdStart =
+            claimed.PreferredMachine is { } preferred && preferred != machine.MachineId;
+        var gonePreferred = claimed.PreferredMachine;
+
         var result = await RunTransition(claimed, new Dispatch(machine, newInstance), ct, tx);
         if (result is StoreResult.Applied applied)
         {
+            if (degradeColdStart)
+            {
+                // Abandon the transcript: suppress the resume ref for this dispatch,
+                // and clear the continuation affinity so a later requeue treats this
+                // as an ordinary task on the machine it actually cold-started on (the
+                // new session re-stamps HarnessSessionRef on its own SessionStartedEvent).
+                // Record the memory-lost event in the same transaction so the Lead can
+                // see the conversational memory was dropped (§11). No extra NOTIFY: the
+                // dispatch transition's own pg_notify already fired in this tx.
+                claimed.HarnessSessionRef = null;
+                claimed.PreferredMachine = null;
+                claimed.OnMachineGone = null;
+                db.TaskEvents.Add(new TaskEventRow
+                {
+                    TaskId = claimed.Id,
+                    TeamId = claimed.TeamId,
+                    Kind = TaskEventRow.ContinuationMemoryLostKind,
+                    Detail = $"preferred machine '{gonePreferred}' gone; cold-started on " +
+                             $"'{machine.MachineId}' — conversational memory lost",
+                    OccurredAt = clock.GetUtcNow(),
+                });
+                await db.SaveChangesAsync(ct);
+            }
+
             await tx.CommitAsync(ct);
             // Surface the row's opaque transport metadata so DispatchService can act
             // on it (neither reaches the engine): the trace context parents the
             // dispatch span on the Lead's create_task trace, and the harness session
-            // ref — present when the task was worked before and parked/requeued —
-            // rides the DispatchCommand back so the runner can resume the transcript
-            // (§11). Null on a task dispatched for the first time.
+            // ref — present when the task was worked before and parked/requeued, or
+            // seeded from a continuation's inherited session — rides the
+            // DispatchCommand back so the runner can resume the transcript (§11). Null
+            // on a first-ever dispatch, and deliberately suppressed on a degrade
+            // cold-start so the runner starts fresh rather than --resume a session
+            // that lives on the gone machine.
             return applied with
             {
                 TraceContext = claimed.TraceContext,
-                HarnessSessionRef = claimed.HarnessSessionRef,
+                HarnessSessionRef = degradeColdStart ? null : claimed.HarnessSessionRef,
             };
         }
         return result;
     }
+
+    /// <summary>
+    /// The seed facts a <c>create_task(continues:)</c> reads off the continued task's
+    /// row (§6/§11): its owning Team (the same-Team gate), its profile (the default
+    /// when the caller omits one), the opaque harness session ref to resume, and the
+    /// park machine (a fallback preferred machine when the task is parked and no
+    /// longer tracked in the live registry). A pure read; null when the continued
+    /// task does not exist. Team-scoping is deliberately not applied here so the tool
+    /// can surface a precise cross-Team rejection rather than an indistinguishable
+    /// not-found (the engine enforces the same-Team gate on the resulting command).
+    /// </summary>
+    public async Task<ContinuationSource?> ReadContinuationSourceAsync(TaskId continued, CancellationToken ct = default) =>
+        await db.Tasks.AsNoTracking()
+            .Where(t => t.Id == continued.Value)
+            .Select(t => new ContinuationSource(
+                new TeamId(t.TeamId), t.Profile, t.HarnessSessionRef, t.ParkMachine))
+            .FirstOrDefaultAsync(ct);
 
     /// <summary>
     /// Records a live endpoint for a working task (§8.2). Only the incumbent
@@ -248,6 +336,7 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
                 t.CompletionMode,
                 t.Attempt,
                 Parked = t.ParkMachine != null,
+                t.ContinuesTaskId,
             })
             .ToListAsync(ct);
 
@@ -256,7 +345,8 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
             .ToDictionary(g => g.Key, g => g.Count());
 
         var summaries = rows
-            .Select(t => new TeamTaskSummary(t.Id, t.Namespace, t.State, t.CompletionMode, t.Attempt, t.Parked))
+            .Select(t => new TeamTaskSummary(
+                t.Id, t.Namespace, t.State, t.CompletionMode, t.Attempt, t.Parked, t.ContinuesTaskId))
             .ToList();
 
         return new TeamStateView(team.Value, rows.Count, counts, summaries);

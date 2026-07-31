@@ -45,7 +45,8 @@ public sealed class LeadTools(TaskStore store, RunnerConnectionRegistry registry
     [McpServerTool(Name = "create_task"),
      Description("Create a task for this Team. Only a Lead may create tasks. The description (prose " +
                  "instructions) and completion criteria must both be non-empty; the control plane never " +
-                 "parses either. Assign a workspace so concurrent tasks don't collide. Returns the new task id.")]
+                 "parses either. Assign a workspace so concurrent tasks don't collide. Pass 'continues' to " +
+                 "resume a prior task's agent session (its conversation) under a new task id. Returns the new task id.")]
     public async Task<string> CreateTask(
         [Description("Opaque, non-empty prose instructions for the worker: what to accomplish and the " +
                      "context to meet the criteria. Read by the worker, never parsed by the control plane.")]
@@ -55,12 +56,21 @@ public sealed class LeadTools(TaskStore store, RunnerConnectionRegistry registry
         string completionCriteria,
         [Description("Completion mode: 'automated' (verifier credential) or 'review' (human-confirmed).")]
         string mode,
-        [Description("Optional runner profile name for exact-match routing. Omit for the default profile.")]
+        [Description("Optional runner profile name for exact-match routing. Omit for the default profile. " +
+                     "With 'continues', defaults to the continued task's profile.")]
         string? profile,
         [Description("Optional opaque workspace blob: where the work happens, how it is isolated, which " +
                      "ports it may use. Assigned by the Lead so concurrent tasks never collide (§7).")]
         string? workspace,
-        CancellationToken ct)
+        CancellationToken ct,
+        [Description("Optional: continue a prior task in THIS Team — the new task resumes that task's agent " +
+                     "session (its conversation transcript) under a new task id and worker token, on the " +
+                     "machine that holds it. Same-Team only. 'talk to the agent that has the context.'")]
+        string? continues = null,
+        [Description("For a continuation, what to do if the machine holding the session is gone at dispatch: " +
+                     "'degrade' (default — cold-start a fresh session on any matching machine, losing the " +
+                     "conversation) or 'pin' (wait for that machine to return). Ignored without 'continues'.")]
+        string? onMachineGone = null)
     {
         if (string.IsNullOrWhiteSpace(description))
             throw new McpException("description must be non-empty; it is the worker's instructions.");
@@ -70,13 +80,62 @@ public sealed class LeadTools(TaskStore store, RunnerConnectionRegistry registry
                 $"unknown completion mode '{mode}'; expected one of: {string.Join(", ", Enum.GetNames<CompletionMode>())}");
 
         var lead = Lead;
+
+        // §6/§11 continuation targeting. The tool resolves the runtime facts the
+        // engine can't reach — the continued task's Team/profile/session ref (a store
+        // read) and the machine that last held it (the live connection registry) — and
+        // rides them on the command as opaque content. The engine re-checks the
+        // same-Team and profile gates (defense in depth); everything else is seeded
+        // verbatim and never interpreted (§7).
+        Continuation? continuation = null;
+        var effectiveProfile = profile;
+        if (!string.IsNullOrWhiteSpace(continues))
+        {
+            var continuedId = ParseTaskId(continues);
+            var source = await store.ReadContinuationSourceAsync(continuedId, ct)
+                ?? throw new McpException($"cannot continue task {continues}: no such task.");
+            if (source.Team != lead.Team)
+                throw new McpException($"cannot continue task {continues}: it belongs to another Team.");
+
+            // The machine that last held/ran the continued task: the live registry
+            // for a currently-tracked task, else the park record for a parked one.
+            // Without it the machine-local transcript can't be located, so there is
+            // nothing to resume — say so rather than silently cold-starting.
+            var preferredMachine = registry.MachineFor(continuedId) ?? source.ParkMachine;
+            if (preferredMachine is null)
+                throw new McpException(
+                    $"cannot continue task {continues}: the machine that last ran it is no longer " +
+                    "connected, so its session can't be located. Create a new task instead.");
+
+            var policy = MachineGonePolicy.Degrade;
+            if (!string.IsNullOrWhiteSpace(onMachineGone))
+            {
+                if (!Enum.TryParse<MachineGonePolicy>(onMachineGone, ignoreCase: true, out var parsedPolicy))
+                    throw new McpException(
+                        $"unknown on_machine_gone '{onMachineGone}'; expected one of: " +
+                        string.Join(", ", Enum.GetNames<MachineGonePolicy>()));
+                policy = parsedPolicy;
+            }
+
+            effectiveProfile = string.IsNullOrWhiteSpace(profile) ? source.Profile : profile;
+            // The preferred machine's declared profiles when it is connected, so the
+            // engine can refuse a profile it could never honour; null when it is gone.
+            var declaredProfiles = registry.SnapshotFor(preferredMachine)?.DeclaredProfiles;
+            continuation = new Continuation(
+                continuedId, source.Team, preferredMachine, source.HarnessSessionRef, policy, declaredProfiles);
+        }
+        else if (!string.IsNullOrWhiteSpace(onMachineGone))
+        {
+            throw new McpException("on_machine_gone only applies together with continues.");
+        }
+
         // TeamBudgetRemains is the store's to compute from budget accounting (§9
         // check 9); the seam is here — a budget-aware store would supply it.
         // Description/workspace ride the command as opaque content the store
         // persists and the engine never reads (§7).
         var result = await store.CreateAsync(
-            new CreateTask(lead, lead.Team, completionCriteria, parsedMode, profile, TeamBudgetRemains: true,
-                Description: description, Workspace: workspace), ct);
+            new CreateTask(lead, lead.Team, completionCriteria, parsedMode, effectiveProfile, TeamBudgetRemains: true,
+                Description: description, Workspace: workspace, Continues: continuation), ct);
 
         return result switch
         {

@@ -38,6 +38,10 @@ public enum Rule
     MachineIneligibleForDispatch = 103,
     ResultReferenceRequired = 104,
     TypedRequestKindRequired = 105,
+
+    // §6/§11 continuation-targeting creation gates
+    ContinuationSameTeamOnly = 106,
+    ContinuationProfileDeclaredByPreferredMachine = 107,
 }
 
 public abstract record TransitionResult

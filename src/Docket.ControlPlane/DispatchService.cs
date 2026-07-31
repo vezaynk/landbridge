@@ -187,7 +187,11 @@ public sealed class DispatchService : IHostedService
         var tokens = scope.ServiceProvider.GetRequiredService<TokenService>();
 
         var instance = WorkerInstanceId.New();
-        var result = await store.DispatchNextAsync(snapshot, instance, ct);
+        // §6/§11 continuation targeting: hand the store the full set of connected
+        // machines so its preferred-machine claim can tell "gone" (absent here) from
+        // "busy elsewhere". A continuation prefers its own machine; only a Degrade
+        // task whose machine is absent here is claimable by this one (cold-start).
+        var result = await store.DispatchNextAsync(snapshot, instance, ct, _registry.MachineIds());
         if (result is not StoreResult.Applied applied)
             return DispatchOutcome.NothingEligible; // no eligible submitted task for this machine
 

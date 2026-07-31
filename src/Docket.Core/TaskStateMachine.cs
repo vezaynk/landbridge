@@ -30,6 +30,29 @@ public static class TaskStateMachine
             return TransitionResult.Reject(Rule.TeamBudgetCeiling,
                 "Team budget ceiling reached; no new tasks");
 
+        // §6/§11 continuation targeting: the resolved facts ride the command as
+        // opaque plane metadata (the store seeds them onto the row, never onto the
+        // pure record below). Only two of them are the engine's to gate — the rest
+        // it never dereferences (§2 principle 1).
+        if (command.Continues is { } cont)
+        {
+            // Same-Team only: a continuation resumes a transcript that belongs to
+            // one Team; addressing another Team's task is refused at creation.
+            if (cont.ContinuedTeam != command.Team)
+                return TransitionResult.Reject(Rule.ContinuationSameTeamOnly,
+                    "continues must reference a task in the caller's Team");
+
+            // If the preferred machine's declared profiles are known (it is
+            // connected), the effective profile must be one it declares — otherwise
+            // the continuation could never dispatch to the machine that holds its
+            // transcript. When the machine is gone the set is null and the check is
+            // skipped (dispatch's own profile routing still applies).
+            var requiredProfile = command.Profile ?? MachineSnapshot.DefaultProfile;
+            if (cont.PreferredMachineProfiles is { } declared && !declared.Contains(requiredProfile))
+                return TransitionResult.Reject(Rule.ContinuationProfileDeclaredByPreferredMachine,
+                    $"preferred machine does not declare profile '{requiredProfile}' the continuation requires");
+        }
+
         return TransitionResult.Ok(new TaskRecord
         {
             Id = id,

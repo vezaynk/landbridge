@@ -57,3 +57,17 @@ public enum LivenessLossReason
     LivenessTimeout,
     MachineReboot,
 }
+
+/// <summary>
+/// What a continuation task (§6/§11) does when the machine that held its
+/// predecessor's transcript is gone at dispatch. <see cref="Degrade"/> cold-starts
+/// a fresh session on any profile-matching machine (conversational memory is lost;
+/// the plane logs an event so the Lead knows); <see cref="Pin"/> waits in
+/// <see cref="TaskState.Submitted"/> for that machine to return, like a pinned
+/// profile. Null on the row for a non-continuation task.
+/// </summary>
+public enum MachineGonePolicy
+{
+    Degrade,
+    Pin,
+}

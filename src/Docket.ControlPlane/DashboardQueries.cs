@@ -173,6 +173,7 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
                 t.BlockedAt,
                 Parked = t.ParkMachine != null,
                 t.ParkMachine,
+                t.ContinuesTaskId,
             })
             .ToListAsync(ct);
 
@@ -206,7 +207,8 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
                 t.Id, t.Namespace, t.State, t.CompletionMode, t.Attempt,
                 parksByTask.GetValueOrDefault(t.Id),
                 t.Parked ? t.ParkMachine : null,
-                t.State == TaskState.BlockedOnInput ? t.BlockedAt : null))
+                t.State == TaskState.BlockedOnInput ? t.BlockedAt : null,
+                t.ContinuesTaskId))
             .ToList();
 
         var counts = tasks
@@ -384,7 +386,8 @@ public sealed record TeamDetail(
     DateTimeOffset? LeadSince,
     DateTimeOffset? LastActivity);
 
-/// <summary>One task in a Team, with its park count (§12 "parks per task").</summary>
+/// <summary>One task in a Team, with its park count (§12 "parks per task") and, for
+/// a continuation task, the prior task it resumed (§6/§11 Y-continues-X lineage).</summary>
 public sealed record TeamTaskView(
     Guid TaskId,
     string Namespace,
@@ -393,7 +396,8 @@ public sealed record TeamTaskView(
     int Attempt,
     int Parks,
     string? ParkMachine,
-    DateTimeOffset? BlockedAt);
+    DateTimeOffset? BlockedAt,
+    Guid? ContinuesTaskId);
 
 /// <summary>A live registered service on a Team (§8.2, §12).</summary>
 public sealed record ServiceView(string Name, int Port, Guid TaskId, DateTimeOffset CreatedAt);
