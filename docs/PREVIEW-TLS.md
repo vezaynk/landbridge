@@ -106,7 +106,7 @@ Type=oneshot
 EnvironmentFile=/etc/lego/dns.env
 ExecStart=/usr/local/bin/lego --accept-tos --email ops@example.com \
   --dns cloudflare --domains "*.preview.example.com" --path /var/lib/lego \
-  renew --days 30 --renew-hook "systemctl restart docket-preview"
+  renew --days 30
 ```
 
 ```ini
@@ -127,12 +127,17 @@ WantedBy=timers.target
 systemctl enable --now lego-preview-renew.timer
 ```
 
-**The restart in `--renew-hook` matters:** `Docket.Preview` currently loads the
-PEM once at startup, so a renewed cert is picked up on restart. Renewal fires
-roughly every 60 days at the timer's off-peak hour; established preview
-tunnels on the old process are dropped by the restart. PEM hot-reload (watch
-the files, serve new handshakes off the new cert, no restart) is a tracked
-follow-up — once it lands, drop the `--renew-hook` and the restart goes away.
+**No restart needed.** `Docket.Preview` watches `CertPemPath`/`CertKeyPemPath`
+and hot-reloads: when a renewal rewrites the pair, new TLS handshakes are served
+off the new cert automatically, established preview tunnels are left untouched,
+and there is no restart. `lego renew` only rewrites the files inside the expiry
+window (~every 60 days), so most timer runs are a no-op. The frontend reloads
+only when *both* files load and the key matches the cert, so it tolerates the
+two files being rewritten non-atomically — a partially-written or mismatched
+snapshot is ignored and the current cert keeps serving until the pair settles;
+a failed reload never drops TLS. (A `--renew-hook "systemctl restart
+docket-preview"` still works if you prefer an explicit restart, but it is no
+longer required and does cost the in-flight tunnels.)
 
 ## Alternatives
 
