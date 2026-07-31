@@ -302,6 +302,25 @@ internal sealed class UpstreamService : IAsyncDisposable
             catch { /* client went away */ }
         });
 
+        // Server-INITIATED close: send one frame, then a Close frame, then return.
+        // Exercises the frontend delivering an upstream-originated close handshake to
+        // a browser that never sent Close (§8.4 graceful close).
+        app.Map("/wsclose", async (HttpContext http) =>
+        {
+            if (!http.WebSockets.IsWebSocketRequest)
+            {
+                http.Response.StatusCode = StatusCodes.Status400BadRequest;
+                return;
+            }
+            using var ws = await http.WebSockets.AcceptWebSocketAsync();
+            try
+            {
+                await ws.SendAsync("last"u8.ToArray(), WebSocketMessageType.Text, true, http.RequestAborted);
+                await ws.CloseAsync(WebSocketCloseStatus.NormalClosure, "server-close", http.RequestAborted);
+            }
+            catch { /* client went away */ }
+        });
+
         // Everything else: echo request facts + set headers a rewrite would mangle.
         // A fallback endpoint (not app.Run) so the /ws endpoint still wins its path.
         app.MapFallback(async (HttpContext http) =>
