@@ -349,6 +349,102 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Empty(registry.TasksOn("m1"));
     }
 
+    // ── Event sink: derived-telemetry persistence (§10/§12, #50) ─────────────────
+
+    [SkippableFact]
+    public async Task Auth_failed_event_is_persisted_as_a_structured_task_event_row()
+    {
+        // §11/§12: an auth failure is no longer log-only — the sink writes the
+        // structured operation/target/code/scope as a task event row (no transition),
+        // and the dashboard's event query (the JSON twin's model) surfaces it.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var taskId = await SeedWorkingTaskAsync(clock, team, "m1");
+        var registry = LiveMachine(clock, "m1", taskId);
+
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), NullLogger<RunnerEventSink>.Instance);
+        await sink.HandleAsync(new AuthFailedEvent(
+            taskId, Operation: "clone", Target: "github.com/acme/repo",
+            ErrorCode: "insufficient_scope", MissingScope: "repo"));
+
+        await using var db = pg.NewContext();
+        var row = await db.TaskEvents.AsNoTracking()
+            .SingleAsync(e => e.TaskId == taskId.Value && e.Kind == TaskEventRow.AuthFailedKind);
+        Assert.Equal("clone", row.AuthOperation);
+        Assert.Equal("github.com/acme/repo", row.AuthTarget);
+        Assert.Equal("insufficient_scope", row.AuthErrorCode);
+        Assert.Equal("repo", row.AuthMissingScope);
+        Assert.Null(row.FromState);   // not a transition
+        Assert.Null(row.ToState);
+
+        var events = await new DashboardQueries(db, registry).GetEventsAsync();
+        var evt = events.Single(e => e.Kind == TaskEventRow.AuthFailedKind);
+        Assert.Equal("clone", evt.AuthOperation);
+        Assert.Equal("insufficient_scope", evt.AuthErrorCode);
+        Assert.Equal("repo", evt.AuthMissingScope);
+    }
+
+    [SkippableFact]
+    public async Task Subagent_spawned_event_is_persisted_and_still_refreshes_activity()
+    {
+        // §10/§12: a subagent spawn is now a persisted progress row AND still a
+        // liveness signal — it must not lose the activity refresh it had before.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var taskId = await SeedWorkingTaskAsync(clock, team, "m1");
+
+        var registry = new RunnerConnectionRegistry(clock);
+        registry.Register("m1", Set("default"), (_, _) => Task.CompletedTask);
+        registry.TrackDispatch("m1", taskId); // stamped at t0
+        clock.Advance(TimeSpan.FromSeconds(30));
+
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), NullLogger<RunnerEventSink>.Instance);
+        await sink.HandleAsync(new SubagentSpawnedEvent(taskId, AgentId: "sub-1", ParentAgentId: "root", clock.GetUtcNow()));
+
+        await using var db = pg.NewContext();
+        var row = await db.TaskEvents.AsNoTracking()
+            .SingleAsync(e => e.TaskId == taskId.Value && e.Kind == TaskEventRow.SubagentSpawnedKind);
+        Assert.Equal("sub-1", row.SubagentId);
+        Assert.Equal("root", row.SubagentParentId);
+
+        // Activity advanced to t0+30 (the liveness half is intact).
+        var tracked = Assert.Single(registry.AllTracked());
+        Assert.Equal(clock.GetUtcNow(), tracked.LastActivity);
+
+        var evt = (await new DashboardQueries(db, registry).GetEventsAsync())
+            .Single(e => e.Kind == TaskEventRow.SubagentSpawnedKind);
+        Assert.Equal("sub-1", evt.SubagentId);
+        Assert.Equal("root", evt.SubagentParentId);
+    }
+
+    [SkippableFact]
+    public async Task Request_input_stamps_the_typed_kind_on_the_blocked_event_row()
+    {
+        // §6/§11: the working → blocked_on_input transition carries the typed
+        // request kind onto its event row so the dashboard can render what kind of
+        // attention the task needs. SeedBlockedTaskAsync blocks with Question.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+        var team = TeamId.New();
+        var (id, _) = await SeedBlockedTaskAsync(clock, team, "m1");
+
+        await using var db = pg.NewContext();
+        var row = await db.TaskEvents.AsNoTracking()
+            .Where(e => e.TaskId == id.Value && e.ToState == TaskState.BlockedOnInput)
+            .OrderByDescending(e => e.Seq)
+            .FirstAsync();
+        Assert.Equal(nameof(RequestInput), row.Kind);
+        Assert.Equal(InputRequestKind.Question, row.InputKind);
+
+        var evt = (await new DashboardQueries(db, new RunnerConnectionRegistry(clock)).GetEventsAsync())
+            .Single(e => e.ToState == TaskState.BlockedOnInput && e.Kind == nameof(RequestInput));
+        Assert.Equal(InputRequestKind.Question, evt.InputKind);
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────────────
 
     private IServiceScopeFactory ScopeFactory(TimeProvider clock)

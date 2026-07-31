@@ -13,10 +13,14 @@ namespace Docket.ControlPlane;
 /// out of <see cref="TaskStore"/>: the store is the write path (§15), this is a
 /// bystander that only observes.
 ///
-/// Several §12 data points have no source in the schema yet; rather than invent a
+/// Several §12 data points still have no source in the schema; rather than invent a
 /// column, the query surfaces an honest absence and the renderer shows an empty
-/// state (see the field comments): budget/byte burn, the typed input-request kind,
-/// auth-failure events, permission requests, and the subagent tree.
+/// state (see the field comments): budget/byte burn, permission requests, and the
+/// subagent tree nested under a machine. The derived-telemetry events — auth
+/// failures, subagent spawns, and the typed input-request kind — are persisted as
+/// task event rows (#50) and surface structured in the event log; a view that still
+/// renders one as an empty slot is a rendering gap that view owns, not a missing
+/// source.
 /// </summary>
 public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistry registry)
 {
@@ -278,6 +282,11 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
             .Select(e => new
             {
                 e.OccurredAt, e.Kind, e.FromState, e.ToState, e.Detail, e.TeamId, e.TaskId,
+                // Derived-telemetry columns (#50) — carried to the JSON twin as
+                // structured fields, unset off their own kind.
+                e.InputKind,
+                e.AuthOperation, e.AuthTarget, e.AuthErrorCode, e.AuthMissingScope,
+                e.SubagentId, e.SubagentParentId,
             })
             .ToListAsync(ct);
 
@@ -302,7 +311,14 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
             e.TaskId,
             namespaceById.GetValueOrDefault(e.TaskId),
             null,
-            null));
+            null,
+            e.InputKind,
+            e.AuthOperation,
+            e.AuthTarget,
+            e.AuthErrorCode,
+            e.AuthMissingScope,
+            e.SubagentId,
+            e.SubagentParentId));
 
         var leadEvents = await db.LeadEvents.AsNoTracking()
             .OrderByDescending(e => e.Seq)
@@ -399,7 +415,12 @@ public sealed record InboxView(
     IReadOnlyList<ParkedItemView> Parked);
 
 /// <summary>One interleaved event for the event log (§12). <see cref="Source"/> is
-/// "task" or "lead"; the state and human fields are populated per source.</summary>
+/// "task" or "lead"; the state and human fields are populated per source. The
+/// derived-telemetry fields (#50) are populated only on their own task-event kind
+/// and default to null everywhere else, so the JSON twin stays a clean structured
+/// shape: <see cref="InputKind"/> on a <c>RequestInput</c> transition, the four
+/// <c>Auth*</c> facts on an <c>auth-failed</c> row, the two <c>Subagent*</c> ids on
+/// a <c>subagent-spawned</c> row.</summary>
 public sealed record DashboardEvent(
     DateTimeOffset OccurredAt,
     string Source,
@@ -411,4 +432,11 @@ public sealed record DashboardEvent(
     Guid? TaskId,
     string? Namespace,
     Guid? HumanId,
-    Guid? PriorHumanId);
+    Guid? PriorHumanId,
+    InputRequestKind? InputKind = null,
+    string? AuthOperation = null,
+    string? AuthTarget = null,
+    string? AuthErrorCode = null,
+    string? AuthMissingScope = null,
+    string? SubagentId = null,
+    string? SubagentParentId = null);
