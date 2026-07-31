@@ -55,6 +55,7 @@ internal static class MultiMachineKit
         builder.Services.AddScoped<TaskStore>();
         builder.Services.AddScoped<TokenService>();
         builder.Services.AddScoped<RelayGrantService>();
+        builder.Services.AddScoped<PreviewMappingService>(); // §8.4: WorkerTools.open_preview
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<RunnerConnectionRegistry>();
         // §8.3: the forward orchestrator + waiter, and the event sink that completes

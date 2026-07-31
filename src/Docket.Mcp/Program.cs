@@ -44,6 +44,10 @@ builder.Services.AddScoped<RelayGrantService>();
 // connect orchestrator, both scoped (per-request DbContext) like the grant service.
 builder.Services.AddScoped<PreviewMappingService>();
 builder.Services.AddScoped<PreviewConnectService>();
+// §8.4 gated browser flow: the in-memory one-time-code + per-label preview-session
+// store (short TTL, single-instance per §3 — no schema). Singleton so codes minted
+// by the dashboard survive to be redeemed at /preview/exchange.
+builder.Services.AddSingleton<PreviewAuthStore>();
 builder.Services.AddScoped<OAuthAuthorizationCodeService>();
 // §12 dashboard read side: scoped (per-request DbContext) + the in-memory
 // connection registry singleton it injects for live machine state.
