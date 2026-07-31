@@ -45,11 +45,19 @@ public sealed class PreviewOptions
     /// </summary>
     public TimeSpan CertReloadDebounce { get; set; } = TimeSpan.FromSeconds(1);
 
-    /// <summary>Base URL of the control plane the frontend calls <c>/preview/connect</c> on (§8.4).</summary>
+    /// <summary>Base URL of the control plane the frontend calls <c>/preview/connect</c> + <c>/preview/exchange</c> on (§8.4).</summary>
     public string ControlPlaneUrl { get; set; } = "";
 
-    /// <summary>The shared bearer the plane's <c>/preview/connect</c> endpoint requires (§8.4).</summary>
+    /// <summary>The shared bearer the plane's preview endpoints require (§8.4).</summary>
     public string? ControlPlaneBearer { get; set; }
+
+    /// <summary>
+    /// Base URL of the §12 dashboard origin a gated preview redirects a browser to,
+    /// for the operator session to confirm and mint a one-time code (§8.4 gated
+    /// flow). Distinct from <see cref="ControlPlaneUrl"/> only in that it is the
+    /// public/browser-facing origin; in the single-host dev loop they are the same.
+    /// </summary>
+    public string DashboardUrl { get; set; } = "";
 
     /// <summary>
     /// How long to wait for the browser to send its request head before giving up

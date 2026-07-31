@@ -168,6 +168,7 @@ internal static class DashboardRenderer
                 sb.Append($"<tr><td>{E(s.Name)}</td><td class=\"num\">{s.Port}</td>" +
                           $"<td class=\"mono\">{E(ShortId(s.TaskId))}</td><td>{E(Age(s.CreatedAt, now))}</td></tr>");
             sb.Append("</tbody></table>");
+            sb.Append(PreviewMintForm(team));
         }
         sb.Append("</section>");
 
@@ -282,7 +283,7 @@ internal static class DashboardRenderer
 
     // ── Login (the first-party operator door) ─────────────────────────────────
 
-    public static string Login(string? error)
+    public static string Login(string? error, string? next = null)
     {
         var sb = new StringBuilder();
         sb.Append("<div class=\"login-wrap card\">");
@@ -291,6 +292,10 @@ internal static class DashboardRenderer
         if (!string.IsNullOrEmpty(error))
             sb.Append($"<p class=\"err\">{E(error)}</p>");
         sb.Append("<form method=\"post\" action=\"/dashboard/login\">");
+        // Carry the post-login destination (e.g. the gated-preview confirm) through
+        // sign-in; the POST handler restricts it to a local /dashboard path (§8.4).
+        if (!string.IsNullOrEmpty(next))
+            sb.Append($"<input type=\"hidden\" name=\"next\" value=\"{E(next)}\">");
         sb.Append("<input type=\"password\" name=\"passphrase\" placeholder=\"Operator passphrase\" " +
                   "autofocus autocomplete=\"current-password\">");
         // Secondary door: paste a token directly (a Lead token, or a
@@ -306,6 +311,59 @@ internal static class DashboardRenderer
                   "flow. This form is the first-party operator door on the authorization server.</p>");
         sb.Append("</div>");
         return Page("Sign in", "", sb.ToString(), autoRefresh: false);
+    }
+
+    /// <summary>
+    /// The 'Create preview' control on the Team view's registered-services section
+    /// (§12 mint, §8.4). Posts to <c>/dashboard/preview</c>; the service option value
+    /// is <c>{taskId}:{name}</c> so the mapping binds the exact owning task.
+    /// </summary>
+    private static string PreviewMintForm(TeamDetail team)
+    {
+        var sb = new StringBuilder();
+        sb.Append("<form class=\"preview-mint\" method=\"post\" action=\"/dashboard/preview\">");
+        sb.Append($"<input type=\"hidden\" name=\"teamId\" value=\"{E(team.TeamId.ToString())}\">");
+        sb.Append("<strong>Create preview</strong> ");
+        sb.Append("<select name=\"service\" aria-label=\"service\">");
+        foreach (var s in team.Services)
+            sb.Append($"<option value=\"{E(s.TaskId + ":" + s.Name)}\">{E(s.Name)}</option>");
+        sb.Append("</select> ");
+        sb.Append("<select name=\"auth\" aria-label=\"visibility\">");
+        sb.Append("<option value=\"gated\">gated (operator only)</option>");
+        sb.Append("<option value=\"public\">public (anyone with the link)</option>");
+        sb.Append("</select> ");
+        sb.Append("<input type=\"number\" name=\"ttl\" min=\"1\" placeholder=\"TTL min\" aria-label=\"ttl minutes\"> ");
+        sb.Append("<button type=\"submit\">Create</button>");
+        sb.Append("</form>");
+        return sb.ToString();
+    }
+
+    /// <summary>The result page after a dashboard mint (§12): the shareable URL to copy.</summary>
+    public static string PreviewCreated(string url, Docket.Core.PreviewAuthPolicy policy, DateTimeOffset expiresAt, Guid teamId)
+    {
+        var sb = new StringBuilder();
+        sb.Append("<section class=\"card\"><h1>Preview created</h1>");
+        sb.Append($"<p class=\"sub\">{E(policy.ToString().ToLowerInvariant())} preview — expires {E(expiresAt.ToString("u"))}.</p>");
+        sb.Append($"<p><a class=\"preview-url mono\" href=\"{E(url)}\">{E(url)}</a></p>");
+        if (policy == Docket.Core.PreviewAuthPolicy.Public)
+            sb.Append("<p class=\"nt\">Anyone with this link can open it until it expires. Public previews are short-lived by design.</p>");
+        else
+            sb.Append("<p class=\"nt\">Opening this link requires a Docket operator session in the browser.</p>");
+        sb.Append($"<p><a href=\"/dashboard/teams/{teamId}\">← back to the Team</a></p>");
+        sb.Append("</section>");
+        return Page("Preview created", "teams", sb.ToString(), autoRefresh: false);
+    }
+
+    /// <summary>The gated-browser-flow confirm error page (§8.4): a bad label, expired preview, or wrong Team.</summary>
+    public static string PreviewAuthError(string message)
+    {
+        var sb = new StringBuilder();
+        sb.Append("<div class=\"login-wrap card\">");
+        sb.Append("<h1>Preview unavailable</h1>");
+        sb.Append($"<p class=\"err\">{E(message)}</p>");
+        sb.Append("<p><a href=\"/dashboard/machines\">← dashboard</a></p>");
+        sb.Append("</div>");
+        return Page("Preview unavailable", "", sb.ToString(), autoRefresh: false);
     }
 
     // ── Fragments ─────────────────────────────────────────────────────────────

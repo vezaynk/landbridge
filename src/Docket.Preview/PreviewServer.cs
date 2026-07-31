@@ -105,7 +105,7 @@ public sealed class PreviewServer : IAsyncDisposable
                 }, connCts.Token);
             }
 
-            await ServeAsync(browser, connCts.Token);
+            await ServeAsync(browser, _certificates is not null, connCts.Token);
         }
         catch (Exception e) when (e is IOException or OperationCanceledException
                                      or AuthenticationException or WebSocketException or SocketException)
@@ -120,7 +120,7 @@ public sealed class PreviewServer : IAsyncDisposable
         }
     }
 
-    private async Task ServeAsync(Stream browser, CancellationToken ct)
+    private async Task ServeAsync(Stream browser, bool isTls, CancellationToken ct)
     {
         // ── Read the request head (routing only; the rest is spliced) ───────────
         HttpRequestHead? head;
@@ -139,8 +139,26 @@ public sealed class PreviewServer : IAsyncDisposable
             return;
         }
 
+        // ── Gated flow: the browser came back from the dashboard with a one-time
+        // code. Redeem it, set our own per-label cookie on the preview origin, and
+        // redirect to the clean URL (§8.4). No connect/splice this hop.
+        if (head.PreviewCode is { } code)
+        {
+            await HandleCodeAsync(browser, isTls, label, code, head, ct);
+            return;
+        }
+
         // ── Authorize + arm a fresh forward with the control plane (§8.4) ───────
-        var armed = await _controlPlane.ConnectAsync(label, head.OperatorSession, ct);
+        var armed = await _controlPlane.ConnectAsync(label, head.OperatorSession, head.PreviewCookie, ct);
+        if (armed is PreviewConnect.Unauthorized && head.Bearer is null)
+        {
+            // A browser (no bearer) on a gated preview without a valid session:
+            // bounce it to the dashboard confirm, which mints a code and returns.
+            // Tooling (a bearer) instead gets a flat 401 below.
+            await PreviewHttpResponses.RedirectAsync(
+                browser, DashboardAuthUrl(isTls, head.Host, head.Target, label), setCookie: null, ct);
+            return;
+        }
         if (armed is not PreviewConnect.Armed ok)
         {
             await WriteRefusalAsync(browser, armed, ct);
@@ -162,8 +180,11 @@ public sealed class PreviewServer : IAsyncDisposable
 
         try
         {
-            // Replay the head (+ any bytes already read past it), then splice.
-            var initial = Concat(head.RawHead, head.Extra);
+            // HEAD-STRIP before the splice (§8.4): drop the operator's Authorization
+            // and the docket_session/docket_preview cookies so they never reach the
+            // team's workload code, which receives these bytes verbatim. The one
+            // deliberate exception to never-rewrite — auth material, not app content.
+            var initial = Concat(head.StripAuthMaterial(), head.Extra);
             var outcome = await PreviewTunnel.ProxyAsync(browser, ws, initial, _options.FirstByteTimeout, ct);
             switch (outcome)
             {
@@ -179,6 +200,45 @@ public sealed class PreviewServer : IAsyncDisposable
         {
             ws.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Redeem the one-time code for a per-label preview session, set it as our own
+    /// HttpOnly cookie on the preview origin, and 302 to the clean URL (§8.4). On a
+    /// bad/expired code, bounce back to the dashboard confirm for a fresh one.
+    /// </summary>
+    private async Task HandleCodeAsync(
+        Stream browser, bool isTls, string label, string code, HttpRequestHead head, CancellationToken ct)
+    {
+        var cleanTarget = head.TargetWithoutCode();
+        switch (await _controlPlane.ExchangeAsync(label, code, ct))
+        {
+            case PreviewExchange.Ok ok:
+                var secure = isTls ? "; Secure" : "";
+                var cookie = $"{HttpRequestHead.PreviewCookieName}={ok.Session}; HttpOnly; Path=/; " +
+                             $"Max-Age={ok.MaxAgeSeconds}; SameSite=Lax{secure}";
+                await PreviewHttpResponses.RedirectAsync(browser, cleanTarget, cookie, ct);
+                break;
+            default:
+                // Expired/replayed code — send them back through the dashboard confirm.
+                await PreviewHttpResponses.RedirectAsync(
+                    browser, DashboardAuthUrl(isTls, head.Host, cleanTarget, label), null, ct);
+                break;
+        }
+    }
+
+    /// <summary>
+    /// The dashboard confirm URL a gated browser is bounced to (§8.4):
+    /// <c>{DashboardUrl}/dashboard/preview-auth?label=&amp;return=</c>, where return is
+    /// this exact browser URL on the preview origin so the confirm can redirect back.
+    /// </summary>
+    private string DashboardAuthUrl(bool isTls, string? host, string target, string label)
+    {
+        var scheme = isTls ? "https" : "http";
+        var self = $"{scheme}://{host}{target}";
+        var dashboard = (_options.DashboardUrl ?? "").TrimEnd('/');
+        return $"{dashboard}/dashboard/preview-auth" +
+               $"?label={Uri.EscapeDataString(label)}&return={Uri.EscapeDataString(self)}";
     }
 
     private static async Task WriteRefusalAsync(Stream browser, PreviewConnect result, CancellationToken ct)

@@ -104,10 +104,12 @@ public sealed class PreviewFrontendTests
         Assert.Empty(cp.Calls); // routing refused before any orchestration
     }
 
+    // 401 is deliberately absent: a browser's gated-401 becomes a redirect to the
+    // dashboard confirm, and a bearer's stays a 401 — both covered in
+    // PreviewGatedFlowTests. This theory covers the statuses relayed verbatim.
     [Theory]
     [InlineData(StatusCodes.Status404NotFound, HttpStatusCode.NotFound)]
     [InlineData(StatusCodes.Status410Gone, HttpStatusCode.Gone)]
-    [InlineData(StatusCodes.Status401Unauthorized, HttpStatusCode.Unauthorized)]
     [InlineData(StatusCodes.Status503ServiceUnavailable, HttpStatusCode.ServiceUnavailable)]
     public async Task Control_plane_refusals_are_relayed_as_clean_statuses(int planeStatus, HttpStatusCode expected)
     {

@@ -32,6 +32,12 @@ public sealed class HttpRequestHead
     /// </summary>
     public const string SessionCookieName = "docket_session";
 
+    /// <summary>The per-label preview session cookie the frontend sets on the preview origin (§8.4 gated flow).</summary>
+    public const string PreviewCookieName = "docket_preview";
+
+    /// <summary>The query parameter the dashboard confirm redirects back with (§8.4 gated flow).</summary>
+    public const string PreviewCodeQueryKey = "docket_preview_code";
+
     private const int MaxHeadBytes = 64 * 1024;
     private static readonly byte[] HeadTerminator = "\r\n\r\n"u8.ToArray();
 
@@ -44,8 +50,20 @@ public sealed class HttpRequestHead
     /// <summary>The <c>Host</c> header value (host[:port]), or null if absent.</summary>
     public string? Host { get; init; }
 
-    /// <summary>The operator session token from <c>Authorization: Bearer</c> or the session cookie, or null.</summary>
+    /// <summary>The request-line target (path + query), e.g. <c>/deep/path?x=1</c>, or "/" if unparseable.</summary>
+    public string Target { get; init; } = "/";
+
+    /// <summary>The operator session for gating: an <c>Authorization: Bearer</c> or the <c>docket_session</c> cookie, or null.</summary>
     public string? OperatorSession { get; init; }
+
+    /// <summary>The bearer value if the request carried <c>Authorization: Bearer</c> — the tooling path (a browser has none).</summary>
+    public string? Bearer { get; init; }
+
+    /// <summary>The per-label preview session from the <c>docket_preview</c> cookie (§8.4 gated flow), or null.</summary>
+    public string? PreviewCookie { get; init; }
+
+    /// <summary>The one-time preview-auth code the dashboard redirected back with (§8.4), or null.</summary>
+    public string? PreviewCode { get; init; }
 
     /// <summary>Whether the request is a WebSocket upgrade — informational (the splice handles it transparently).</summary>
     public bool IsWebSocketUpgrade { get; init; }
@@ -96,12 +114,16 @@ public sealed class HttpRequestHead
         var text = Encoding.Latin1.GetString(rawHead);
         var lines = text.Split("\r\n");
 
+        // lines[0] is the request line: METHOD SP request-target SP HTTP/1.1.
+        var requestLineParts = lines[0].Split(' ');
+        var target = requestLineParts.Length >= 2 ? requestLineParts[1] : "/";
+
         string? host = null;
         string? bearer = null;
         string? cookieSession = null;
+        string? previewCookie = null;
         var isUpgrade = false;
 
-        // lines[0] is the request line; headers follow until the blank line.
         for (var i = 1; i < lines.Length; i++)
         {
             var line = lines[i];
@@ -119,7 +141,10 @@ public sealed class HttpRequestHead
                      && value.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase))
                 bearer = value["Bearer ".Length..].Trim();
             else if (name.Equals("Cookie", StringComparison.OrdinalIgnoreCase))
+            {
                 cookieSession = ReadCookie(value, SessionCookieName);
+                previewCookie = ReadCookie(value, PreviewCookieName);
+            }
             else if (name.Equals("Upgrade", StringComparison.OrdinalIgnoreCase)
                      && value.Contains("websocket", StringComparison.OrdinalIgnoreCase))
                 isUpgrade = true;
@@ -130,11 +155,102 @@ public sealed class HttpRequestHead
             RawHead = rawHead,
             Extra = extra,
             Host = host,
+            Target = target,
+            Bearer = bearer,
             // A bearer (a Lead consuming programmatically) takes precedence over the
             // browser cookie, mirroring DashboardAuth's resolution order (§12).
             OperatorSession = bearer ?? cookieSession,
+            PreviewCookie = previewCookie,
+            PreviewCode = ReadQueryParam(target, PreviewCodeQueryKey),
             IsWebSocketUpgrade = isUpgrade,
         };
+    }
+
+    /// <summary>
+    /// The request head with all operator auth material removed — <c>Authorization</c>
+    /// dropped entirely, and the <c>docket_session</c> + <c>docket_preview</c> cookies
+    /// removed from the <c>Cookie</c> header (§8.4). This is the ONE deliberate
+    /// exception to the never-rewrite rule (§8.4): the frontend splices request bytes
+    /// verbatim into team workload code, so an operator's session token or the
+    /// per-label preview cookie must never reach that code — it would be exfiltratable
+    /// by whatever the previewed service does with its request headers. A one-time
+    /// head edit, before the splice; the body and every non-auth header are untouched.
+    /// </summary>
+    public byte[] StripAuthMaterial()
+    {
+        var text = Encoding.Latin1.GetString(RawHead);
+        var end = text.IndexOf("\r\n\r\n", StringComparison.Ordinal);
+        var headBlock = end >= 0 ? text[..end] : text;
+        var lines = headBlock.Split("\r\n");
+
+        var sb = new StringBuilder();
+        sb.Append(lines[0]).Append("\r\n"); // request line, verbatim
+        for (var i = 1; i < lines.Length; i++)
+        {
+            var line = lines[i];
+            var colon = line.IndexOf(':');
+            var name = colon > 0 ? line[..colon].Trim() : "";
+
+            if (name.Equals("Authorization", StringComparison.OrdinalIgnoreCase))
+                continue; // strip entirely
+
+            if (name.Equals("Cookie", StringComparison.OrdinalIgnoreCase))
+            {
+                var kept = StripCookies(line[(colon + 1)..], SessionCookieName, PreviewCookieName);
+                if (kept is not null)
+                    sb.Append("Cookie: ").Append(kept).Append("\r\n");
+                continue; // drop the header entirely when nothing remains
+            }
+
+            sb.Append(line).Append("\r\n");
+        }
+        sb.Append("\r\n"); // terminating blank line
+        return Encoding.Latin1.GetBytes(sb.ToString());
+    }
+
+    /// <summary>The request target with the one-time <c>docket_preview_code</c> query parameter removed (§8.4 clean redirect).</summary>
+    public string TargetWithoutCode()
+    {
+        var q = Target.IndexOf('?');
+        if (q < 0)
+            return Target;
+        var path = Target[..q];
+        var kept = Target[(q + 1)..]
+            .Split('&', StringSplitOptions.RemoveEmptyEntries)
+            .Where(p => !p.StartsWith(PreviewCodeQueryKey + "=", StringComparison.Ordinal))
+            .ToArray();
+        return kept.Length == 0 ? path : $"{path}?{string.Join('&', kept)}";
+    }
+
+    private static string? ReadQueryParam(string target, string key)
+    {
+        var q = target.IndexOf('?');
+        if (q < 0)
+            return null;
+        foreach (var pair in target[(q + 1)..].Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var eq = pair.IndexOf('=');
+            if (eq <= 0)
+                continue;
+            if (pair[..eq].Equals(key, StringComparison.Ordinal))
+                return Uri.UnescapeDataString(pair[(eq + 1)..]);
+        }
+        return null;
+    }
+
+    /// <summary>Rebuild a <c>Cookie</c> header value dropping the named cookies; null when none remain.</summary>
+    private static string? StripCookies(string header, params string[] drop)
+    {
+        var kept = header.Split(';', StringSplitOptions.RemoveEmptyEntries)
+            .Select(p => p.Trim())
+            .Where(kv =>
+            {
+                var eq = kv.IndexOf('=');
+                var name = eq > 0 ? kv[..eq].Trim() : kv;
+                return !drop.Contains(name, StringComparer.Ordinal);
+            })
+            .ToArray();
+        return kept.Length == 0 ? null : string.Join("; ", kept);
     }
 
     /// <summary>Pull one cookie's value out of a <c>Cookie:</c> header (<c>a=1; b=2</c>).</summary>

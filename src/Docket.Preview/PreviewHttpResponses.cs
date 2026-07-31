@@ -38,6 +38,32 @@ internal static class PreviewHttpResponses
         WriteAsync(s, 504, "Gateway Timeout",
             "The previewed service did not respond in time.", ct);
 
+    /// <summary>
+    /// A 302 to <paramref name="location"/>, optionally setting <paramref name="setCookie"/>
+    /// (the per-label preview session, §8.4 gated flow). <c>Connection: close</c> like
+    /// every frontend-authored response — one routing decision per connection.
+    /// </summary>
+    public static async Task RedirectAsync(Stream s, string location, string? setCookie, CancellationToken ct)
+    {
+        var head = new StringBuilder()
+            .Append("HTTP/1.1 302 Found\r\n")
+            .Append("Location: ").Append(location).Append("\r\n")
+            .Append("Content-Length: 0\r\n")
+            .Append("Connection: close\r\n");
+        if (setCookie is not null)
+            head.Append("Set-Cookie: ").Append(setCookie).Append("\r\n");
+        head.Append("\r\n");
+        try
+        {
+            await s.WriteAsync(Encoding.Latin1.GetBytes(head.ToString()), ct);
+            await s.FlushAsync(ct);
+        }
+        catch (Exception e) when (e is IOException or OperationCanceledException or ObjectDisposedException)
+        {
+            // The browser may have already gone; best-effort.
+        }
+    }
+
     private static async Task WriteAsync(Stream s, int code, string reason, string body, CancellationToken ct)
     {
         var payload = Encoding.UTF8.GetBytes(body + "\n");

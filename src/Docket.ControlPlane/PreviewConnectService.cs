@@ -24,20 +24,23 @@ public sealed class PreviewConnectService(
     PreviewMappingService mappings,
     RelayGrantService grants,
     TokenService tokens,
+    PreviewAuthStore previewAuth,
     ForwardOrchestrator forwards,
     ILogger<PreviewConnectService> logger)
 {
     /// <summary>
     /// Authorize and orchestrate one browser connection for <paramref name="label"/>.
-    /// <paramref name="operatorSession"/> is the browser's §12 operator session
-    /// token (from its cookie/bearer, forwarded by the frontend), consulted only
-    /// when the mapping is <see cref="PreviewAuthPolicy.Gated"/>.
-    /// <paramref name="relayUrl"/> is the relay base URL the frontend will dial and
-    /// the producer is told to dial — the plane owns it (config), so both ends
-    /// agree without the frontend guessing.
+    /// For a gated mapping, admission comes from EITHER a per-label preview session
+    /// (<paramref name="previewSession"/> — the browser's <c>docket_preview</c>
+    /// cookie, minted through the §8.4 redirect flow) OR a §12 operator session
+    /// (<paramref name="operatorSession"/> — a bearer, the tooling path). Public
+    /// admits on the label alone. <paramref name="relayUrl"/> is the relay base URL
+    /// the frontend will dial and the producer is told to dial — the plane owns it
+    /// (config), so both ends agree without the frontend guessing.
     /// </summary>
     public async Task<PreviewConnectResult> ConnectAsync(
-        string label, string? operatorSession, string relayUrl, CancellationToken ct = default)
+        string label, string? operatorSession, string? previewSession, string relayUrl,
+        CancellationToken ct = default)
     {
         // 1. Resolve the label → mapping (§8.4). Unknown/expired are clean refusals
         // the endpoint renders as distinct statuses (404/410).
@@ -53,11 +56,13 @@ public sealed class PreviewConnectService(
                 return PreviewConnectResult.NotFound.Instance;
         }
 
-        // 2. Enforce the mapping's auth-policy (§8.4). Gated (default) requires a
-        // valid operator session — a Human, or a Lead on this mapping's Team.
-        // Public admits on the unguessable label alone (already time-boxed by the
-        // mapping TTL checked at resolve).
+        // 2. Enforce the mapping's auth-policy (§8.4). Gated (default) requires
+        // either a per-label preview session (the browser's docket_preview cookie
+        // from the redirect flow) or a §12 operator session (a Human, or a Lead on
+        // this mapping's Team — the bearer/tooling path). Public admits on the
+        // unguessable label alone (already time-boxed by the mapping TTL at resolve).
         if (mapping.AuthPolicy == PreviewAuthPolicy.Gated
+            && !previewAuth.ValidateSession(previewSession, label)
             && !await IsOperatorAuthorizedAsync(operatorSession, new TeamId(mapping.TeamId), ct))
             return PreviewConnectResult.Unauthorized.Instance;
 

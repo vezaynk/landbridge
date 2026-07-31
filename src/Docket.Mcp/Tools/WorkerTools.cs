@@ -25,11 +25,15 @@ public sealed class WorkerTools(
     TaskStore store,
     RelayGrantService grants,
     ForwardOrchestrator forwards,
+    PreviewMappingService previews,
     IHttpContextAccessor http,
     IConfiguration config)
 {
     /// <summary>The relay a worker dials when config supplies none (§8.3), mirroring <see cref="DispatchService.DefaultPublicMcpUrl"/>.</summary>
     public const string DefaultRelayUrl = "http://127.0.0.1:5100";
+
+    /// <summary>The wildcard preview base a worker's URL is built from when config supplies none (§8.4).</summary>
+    public const string DefaultPreviewUrlBase = "http://preview.localhost";
 
     private WorkerCaller Caller =>
         DocketClaims.AsWorker(http.HttpContext?.User ?? throw Unauthorized())
@@ -39,6 +43,11 @@ public sealed class WorkerTools(
         config["Docket:RelayUrl"]
         ?? Environment.GetEnvironmentVariable("DOCKET_RELAY_URL")
         ?? DefaultRelayUrl;
+
+    private string PreviewUrlBase =>
+        config[PreviewMint.UrlBaseConfigKey]
+        ?? Environment.GetEnvironmentVariable("DOCKET_PREVIEW_URL_BASE")
+        ?? DefaultPreviewUrlBase;
 
     [McpServerTool(Name = "get_task"),
      Description("Fetch your assignment: the namespace, prose description, completion criteria, " +
@@ -136,6 +145,40 @@ public sealed class WorkerTools(
     /// <summary>The loopback host the consumer's docketd binds — never 0.0.0.0 (§8.3).</summary>
     public const string ForwardLoopbackHost = "127.0.0.1";
 
+    [McpServerTool(Name = "open_preview"),
+     Description("Mint a shareable browser preview URL for a service YOU registered on this task (spec §8.4). " +
+                 "Returns an https URL a human can open in a browser with no docketd install. Gated (default) " +
+                 "requires the viewer to have a Docket operator session; public admits on the unguessable link " +
+                 "alone and is always short-lived. Only a service you registered on this task with register_service " +
+                 "is previewable. Hand the URL back in your report.")]
+    public async Task<OpenPreviewResult> OpenPreview(
+        [Description("The name of a service you registered on this task with register_service.")]
+        string serviceName,
+        [Description("Public preview: anyone with the link can open it (a capability URL, short mandatory TTL). " +
+                     "Default false = gated, which requires a Docket operator session in the viewer's browser.")]
+        bool isPublic = false,
+        [Description("How long the preview stays live, in minutes. Public is capped short; gated defaults to a day. " +
+                     "Omit for the default.")]
+        int? ttlMinutes = null,
+        CancellationToken ct = default)
+    {
+        var caller = Caller;
+        var policy = isPublic ? PreviewAuthPolicy.Public : PreviewAuthPolicy.Gated;
+        var ttl = PreviewMint.ResolveTtl(policy, ttlMinutes);
+
+        // Task-scoped like open_forward is worker-scoped: only a service this task
+        // registered is previewable (§8.4). A null result means it isn't yours.
+        var mint = await previews.CreateForWorkerAsync(caller, serviceName, policy, ttl, ct)
+            ?? throw new McpException(
+                $"you have not registered a service named '{serviceName}' on this task; register it with " +
+                "register_service first (a preview only ever exposes your own task's service).");
+
+        return new OpenPreviewResult(
+            PreviewMint.Url(PreviewUrlBase, mint.Label),
+            policy.ToString().ToLowerInvariant(),
+            mint.Mapping.ExpiresAt);
+    }
+
     private static McpException Unauthorized() =>
         new("this tool requires a worker credential");
 }
@@ -155,4 +198,16 @@ public sealed record OpenForwardResult(
     [property: JsonPropertyName("host")] string Host,
     [property: JsonPropertyName("port")] int Port,
     [property: JsonPropertyName("forward_id")] string ForwardId,
+    [property: JsonPropertyName("expires_at")] DateTimeOffset ExpiresAt);
+
+/// <summary>
+/// What <c>open_preview</c> hands back (spec §8.4): the shareable <see cref="Url"/>
+/// to put in a report, the <see cref="Auth"/> policy (<c>gated</c>|<c>public</c>)
+/// so the worker knows whether a viewer needs an operator session, and
+/// <see cref="ExpiresAt"/> when the preview stops admitting new connections.
+/// snake_case-pinned like <see cref="OpenForwardResult"/>.
+/// </summary>
+public sealed record OpenPreviewResult(
+    [property: JsonPropertyName("url")] string Url,
+    [property: JsonPropertyName("auth")] string Auth,
     [property: JsonPropertyName("expires_at")] DateTimeOffset ExpiresAt);

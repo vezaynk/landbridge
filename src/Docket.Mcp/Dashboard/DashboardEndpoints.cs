@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Docket.ControlPlane;
 using Docket.ControlPlane.Auth;
+using Microsoft.Extensions.Configuration;
 
 namespace Docket.Mcp.Dashboard;
 
@@ -38,10 +39,15 @@ public static class DashboardEndpoints
         app.MapGet("/dashboard/dashboard.css", () =>
             Results.Text(DashboardCss.Content, DashboardCss.ContentType));
 
-        app.MapGet("/dashboard/login", (string? error) =>
-            Html(DashboardRenderer.Login(error)));
+        app.MapGet("/dashboard/login", (string? error, string? next) =>
+            Html(DashboardRenderer.Login(error, next)));
 
         app.MapPost("/dashboard/login", HandleLoginAsync);
+
+        // §8.4 gated-browser-flow confirm: an operator with a docket_session confirms
+        // access to a preview's Team and the plane mints a one-time code, sent back
+        // to the preview origin. Open like login (it establishes, not consumes, auth).
+        app.MapGet("/dashboard/preview-auth", HandlePreviewAuthAsync);
         app.MapPost("/dashboard/logout", (HttpContext http) =>
         {
             DashboardAuth.ClearSessionCookie(http);
@@ -98,6 +104,9 @@ public static class DashboardEndpoints
                 return Negotiated(http, events, () => DashboardRenderer.Events(events, clock.GetUtcNow()));
             }));
 
+        // §12 preview mint: 'Create preview' from the Team's registered-services view.
+        app.MapPost("/dashboard/preview", HandleCreatePreviewAsync);
+
         return app;
     }
 
@@ -130,24 +139,28 @@ public static class DashboardEndpoints
         var form = await http.Request.ReadFormAsync(ct);
         var passphrase = form["passphrase"].ToString();
         var token = form["token"].ToString().Trim();
+        // Where to land after sign-in — only a local /dashboard path is honoured, so
+        // the gated-preview flow can bounce the operator back to /dashboard/preview-auth
+        // without opening a redirect to an arbitrary origin.
+        var next = SafeNext(form["next"].ToString());
 
         // Secondary door: a pasted token. Taken only when the passphrase field is
         // blank, so the operator's normal path is never ambiguous.
         if (string.IsNullOrEmpty(passphrase))
         {
             if (string.IsNullOrEmpty(token))
-                return Html(DashboardRenderer.Login("Enter the operator passphrase."), 400);
+                return Html(DashboardRenderer.Login("Enter the operator passphrase.", next), 400);
 
             var principal = await tokens.ValidateAsync(token, ct);
             if (principal is not (Principal.Human or Principal.Lead))
-                return Html(DashboardRenderer.Login("That token is not a valid human or Lead session."), 401);
+                return Html(DashboardRenderer.Login("That token is not a valid human or Lead session.", next), 401);
 
             // A session cookie (no Expires): the pasted token's real lifetime lives
             // server-side and ValidateAsync re-checks it on every request, so the
             // browser hint need not — and for a no-expiry Lead token must not —
             // fabricate one.
             DashboardAuth.SetSessionCookie(http, token, expiresAt: null);
-            return Results.Redirect("/dashboard/machines");
+            return Results.Redirect(next);
         }
 
         // Primary door: the operator passphrase. Fail-closed when unconfigured — the
@@ -158,14 +171,132 @@ public static class DashboardEndpoints
         if (!verifier.Verify(passphrase))
         {
             await Task.Delay(WrongPassphraseDelay, ct); // brute-force friction (§5)
-            return Html(DashboardRenderer.Login("Incorrect operator passphrase."), 401);
+            return Html(DashboardRenderer.Login("Incorrect operator passphrase.", next), 401);
         }
 
         // Verified operator → mint a fresh human session (§5, the root credential)
         // and drop the cookie for its own 12h lifetime.
         var issued = await tokens.IssueHumanSessionAsync(ct);
         DashboardAuth.SetSessionCookie(http, issued.Token, issued.ExpiresAt);
-        return Results.Redirect("/dashboard/machines");
+        return Results.Redirect(next);
+    }
+
+    /// <summary>
+    /// A post-login redirect target restricted to a local <c>/dashboard/…</c> path
+    /// (no <c>//</c> host-relative escape), so a <c>?next=</c> can carry the operator
+    /// back into the gated-preview confirm without becoming an open redirect. Falls
+    /// back to the Machine Group view.
+    /// </summary>
+    private static string SafeNext(string? next) =>
+        !string.IsNullOrEmpty(next) && next.StartsWith("/dashboard/", StringComparison.Ordinal)
+        && !next.StartsWith("/dashboard//", StringComparison.Ordinal)
+            ? next
+            : "/dashboard/machines";
+
+    /// <summary>The wildcard preview base URL both mint surfaces build labels onto (§8.4).</summary>
+    private static string PreviewUrlBase(IConfiguration config) =>
+        config[PreviewMint.UrlBaseConfigKey]
+        ?? Environment.GetEnvironmentVariable("DOCKET_PREVIEW_URL_BASE")
+        ?? "http://preview.localhost";
+
+    private static bool OperatorMayAccess(Principal principal, Docket.Core.TeamId team) => principal switch
+    {
+        Principal.Human => true,
+        Principal.Lead l => l.Team == team,
+        _ => false,
+    };
+
+    /// <summary>
+    /// POST /dashboard/preview — mint a shareable preview for a registered service
+    /// (§12 button, §8.4). Operator-gated; a Lead may mint only for its own Team. The
+    /// service field is <c>{taskId}:{name}</c> from the Team view so the mapping binds
+    /// the exact owning task. Returns the URL (HTML result page, or JSON twin).
+    /// </summary>
+    private static async Task<IResult> HandleCreatePreviewAsync(
+        HttpContext http, TokenService tokens,
+        [Microsoft.AspNetCore.Mvc.FromServices] PreviewMappingService previews,
+        IConfiguration config, CancellationToken ct)
+    {
+        var principal = await DashboardAuth.ResolveAsync(http, tokens, ct);
+        if (principal is null)
+            return WantsJson(http)
+                ? Results.Json(new { error = "unauthorized" }, Json, statusCode: 401)
+                : Results.Redirect("/dashboard/login");
+
+        var form = await http.Request.ReadFormAsync(ct);
+        if (!Guid.TryParse(form["teamId"].ToString(), out var teamId))
+            return Results.BadRequest(new { error = "invalid team id" });
+        if (!OperatorMayAccess(principal, new Docket.Core.TeamId(teamId)))
+            return Results.StatusCode(StatusCodes.Status403Forbidden);
+
+        // "{taskId}:{name}" — the option value the Team view emits per service.
+        var service = form["service"].ToString();
+        var sep = service.IndexOf(':');
+        if (sep <= 0 || !Guid.TryParse(service[..sep], out var taskId))
+            return Results.BadRequest(new { error = "invalid service selection" });
+        var serviceName = service[(sep + 1)..];
+
+        var isPublic = string.Equals(form["auth"].ToString(), "public", StringComparison.OrdinalIgnoreCase);
+        var policy = isPublic ? Docket.Core.PreviewAuthPolicy.Public : Docket.Core.PreviewAuthPolicy.Gated;
+        var ttl = PreviewMint.ResolveTtl(policy, int.TryParse(form["ttl"].ToString(), out var m) ? m : null);
+
+        var mint = await previews.CreateAsync(
+            new Docket.Core.TeamId(teamId), new Docket.Core.TaskId(taskId), serviceName, policy, ttl, ct);
+        var url = PreviewMint.Url(PreviewUrlBase(config), mint.Label);
+
+        return WantsJson(http)
+            ? Results.Json(new { url, auth = policy.ToString().ToLowerInvariant(), expiresAt = mint.Mapping.ExpiresAt }, Json)
+            : Html(DashboardRenderer.PreviewCreated(url, policy, mint.Mapping.ExpiresAt, teamId));
+    }
+
+    /// <summary>
+    /// GET /dashboard/preview-auth?label=&amp;return= — the gated-browser-flow confirm
+    /// (§8.4). An operator with a live <c>docket_session</c> (host-scoped to the
+    /// dashboard origin) confirms access to the preview's Team; the plane mints a
+    /// one-time code and 302s it back to the preview origin. No session → bounce
+    /// through login and back (<c>?next=</c>). The <c>return</c> is validated to be
+    /// exactly the label's preview origin, so this can never become an open redirect.
+    /// </summary>
+    private static async Task<IResult> HandlePreviewAuthAsync(
+        HttpContext http, TokenService tokens,
+        [Microsoft.AspNetCore.Mvc.FromServices] PreviewMappingService previews,
+        [Microsoft.AspNetCore.Mvc.FromServices] PreviewAuthStore previewAuth,
+        IConfiguration config, CancellationToken ct)
+    {
+        var principal = await DashboardAuth.ResolveAsync(http, tokens, ct);
+        if (principal is null)
+        {
+            var self = http.Request.Path + http.Request.QueryString;
+            return Results.Redirect($"/dashboard/login?next={Uri.EscapeDataString(self)}");
+        }
+
+        var label = http.Request.Query["label"].ToString();
+        var ret = http.Request.Query["return"].ToString();
+        if (string.IsNullOrWhiteSpace(label) || string.IsNullOrWhiteSpace(ret))
+            return Html(DashboardRenderer.PreviewAuthError("This preview link is malformed."), 400);
+
+        if (await previews.ResolveAsync(label, ct) is not PreviewResolveResult.Found found)
+            return Html(DashboardRenderer.PreviewAuthError("This preview no longer exists."), 404);
+        if (!OperatorMayAccess(principal, new Docket.Core.TeamId(found.Mapping.TeamId)))
+            return Html(DashboardRenderer.PreviewAuthError("Your session cannot access this preview's Team."), 403);
+
+        // Open-redirect guard: the return must be exactly the label's preview origin.
+        if (!ReturnIsPreviewOrigin(ret, PreviewUrlBase(config), label))
+            return Html(DashboardRenderer.PreviewAuthError("This preview link points somewhere unexpected."), 400);
+
+        var code = previewAuth.MintCode(label);
+        var joiner = ret.Contains('?') ? '&' : '?';
+        return Results.Redirect($"{ret}{joiner}docket_preview_code={Uri.EscapeDataString(code)}");
+    }
+
+    /// <summary>True iff <paramref name="ret"/> is an absolute URL whose origin is exactly the label's preview origin.</summary>
+    private static bool ReturnIsPreviewOrigin(string ret, string previewBase, string label)
+    {
+        if (!Uri.TryCreate(ret, UriKind.Absolute, out var r))
+            return false;
+        var expected = new Uri(PreviewMint.Url(previewBase, label));
+        return r.Scheme == expected.Scheme && string.Equals(r.Host, expected.Host, StringComparison.OrdinalIgnoreCase)
+            && r.Port == expected.Port;
     }
 
     /// <summary>

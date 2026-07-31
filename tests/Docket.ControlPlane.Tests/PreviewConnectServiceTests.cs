@@ -8,9 +8,10 @@ namespace Docket.ControlPlane.Tests;
 
 /// <summary>
 /// The control-plane half of one HTTP-preview browser connection (spec §8.4):
-/// resolve the label, enforce auth-policy + check 11, mint a fresh consumer grant
-/// + forward id, and relay the producer its dial target. Exercises the real store,
-/// grant service, token service, and forward orchestrator against Postgres — every
+/// resolve the label, enforce auth-policy (operator session or per-label preview
+/// session) + check 11, mint a fresh consumer grant + forward id, and relay the
+/// producer its dial target. Exercises the real store, grant service, token
+/// service, preview-auth store, and forward orchestrator against Postgres — every
 /// piece except the relay/producer sockets, which L3 (Docket.Mcp.Tests) covers.
 /// </summary>
 [Collection(PostgresCollection.Name)]
@@ -33,12 +34,12 @@ public sealed class PreviewConnectServiceTests(PostgresFixture pg) : IAsyncLifet
         var clock = new FakeTimeProvider();
         var team = TeamId.New();
         var (producerTask, port) = await WorkingServiceAsync(db, clock, team, "web", 3000);
-        var (connect, sent) = BuildConnect(db, clock, producerTask);
+        var (connect, sent, _) = BuildConnect(db, clock, producerTask);
         var mint = await new PreviewMappingService(db, clock)
             .CreateAsync(team, producerTask, "web", PreviewAuthPolicy.Public, TimeSpan.FromMinutes(30));
 
         var est = Assert.IsType<PreviewConnectResult.Established>(
-            await connect.ConnectAsync(mint.Label, operatorSession: null, RelayUrl));
+            await connect.ConnectAsync(mint.Label, operatorSession: null, previewSession: null, RelayUrl));
 
         // The producer was armed with THIS connection's fresh grant + forward id,
         // its dial target, and the producer role (§8.4).
@@ -61,12 +62,14 @@ public sealed class PreviewConnectServiceTests(PostgresFixture pg) : IAsyncLifet
         var clock = new FakeTimeProvider();
         var team = TeamId.New();
         var (producerTask, _) = await WorkingServiceAsync(db, clock, team, "web", 3000);
-        var (connect, sent) = BuildConnect(db, clock, producerTask);
+        var (connect, sent, _) = BuildConnect(db, clock, producerTask);
         var mint = await new PreviewMappingService(db, clock)
             .CreateAsync(team, producerTask, "web", PreviewAuthPolicy.Public, TimeSpan.FromMinutes(30));
 
-        var a = Assert.IsType<PreviewConnectResult.Established>(await connect.ConnectAsync(mint.Label, null, RelayUrl));
-        var b = Assert.IsType<PreviewConnectResult.Established>(await connect.ConnectAsync(mint.Label, null, RelayUrl));
+        var a = Assert.IsType<PreviewConnectResult.Established>(
+            await connect.ConnectAsync(mint.Label, null, null, RelayUrl));
+        var b = Assert.IsType<PreviewConnectResult.Established>(
+            await connect.ConnectAsync(mint.Label, null, null, RelayUrl));
 
         // N browser connections are N forward ids through the unchanged relay (§8.4).
         Assert.NotEqual(a.ForwardId, b.ForwardId);
@@ -83,17 +86,42 @@ public sealed class PreviewConnectServiceTests(PostgresFixture pg) : IAsyncLifet
         var tokens = new TokenService(db, clock);
         var team = TeamId.New();
         var (producerTask, _) = await WorkingServiceAsync(db, clock, team, "web", 3000);
-        var (connect, _) = BuildConnect(db, clock, producerTask);
+        var (connect, _, _) = BuildConnect(db, clock, producerTask);
         var mint = await new PreviewMappingService(db, clock)
             .CreateAsync(team, producerTask, "web", PreviewAuthPolicy.Gated, TimeSpan.FromMinutes(30));
 
         var human = await tokens.IssueHumanSessionAsync();
         Assert.IsType<PreviewConnectResult.Established>(
-            await connect.ConnectAsync(mint.Label, human.Token, RelayUrl));
+            await connect.ConnectAsync(mint.Label, human.Token, null, RelayUrl));
 
         var lead = (LeadClaimResult.Claimed)await tokens.ClaimLeadAsync(human.Token, team);
         Assert.IsType<PreviewConnectResult.Established>(
-            await connect.ConnectAsync(mint.Label, lead.Token.Token, RelayUrl));
+            await connect.ConnectAsync(mint.Label, lead.Token.Token, null, RelayUrl));
+    }
+
+    [SkippableFact]
+    public async Task Gated_admits_a_valid_per_label_preview_session()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var clock = new FakeTimeProvider();
+        var team = TeamId.New();
+        var (producerTask, _) = await WorkingServiceAsync(db, clock, team, "web", 3000);
+        var (connect, _, previewAuth) = BuildConnect(db, clock, producerTask);
+        var mint = await new PreviewMappingService(db, clock)
+            .CreateAsync(team, producerTask, "web", PreviewAuthPolicy.Gated, TimeSpan.FromMinutes(30));
+
+        // The redirect flow's product: a code minted for this label, redeemed into a
+        // per-label preview session, admits the gated connection with no operator token.
+        var session = previewAuth.Redeem(previewAuth.MintCode(mint.Label), mint.Label);
+        Assert.NotNull(session);
+        Assert.IsType<PreviewConnectResult.Established>(
+            await connect.ConnectAsync(mint.Label, operatorSession: null, previewSession: session, RelayUrl));
+
+        // A preview session for a DIFFERENT label does not admit this one.
+        var otherSession = previewAuth.Redeem(previewAuth.MintCode("someotherlabel"), "someotherlabel");
+        Assert.IsType<PreviewConnectResult.Unauthorized>(
+            await connect.ConnectAsync(mint.Label, null, otherSession, RelayUrl));
     }
 
     [SkippableFact]
@@ -105,19 +133,20 @@ public sealed class PreviewConnectServiceTests(PostgresFixture pg) : IAsyncLifet
         var tokens = new TokenService(db, clock);
         var team = TeamId.New();
         var (producerTask, _) = await WorkingServiceAsync(db, clock, team, "web", 3000);
-        var (connect, sent) = BuildConnect(db, clock, producerTask);
+        var (connect, sent, _) = BuildConnect(db, clock, producerTask);
         var mint = await new PreviewMappingService(db, clock)
             .CreateAsync(team, producerTask, "web", PreviewAuthPolicy.Gated, TimeSpan.FromMinutes(30));
 
-        Assert.IsType<PreviewConnectResult.Unauthorized>(await connect.ConnectAsync(mint.Label, null, RelayUrl));
         Assert.IsType<PreviewConnectResult.Unauthorized>(
-            await connect.ConnectAsync(mint.Label, "dkt_not_a_real_token", RelayUrl));
+            await connect.ConnectAsync(mint.Label, null, null, RelayUrl));
+        Assert.IsType<PreviewConnectResult.Unauthorized>(
+            await connect.ConnectAsync(mint.Label, "dkt_not_a_real_token", null, RelayUrl));
 
         // A Lead scoped to a different Team is not an operator for THIS preview.
         var human = await tokens.IssueHumanSessionAsync();
         var otherLead = (LeadClaimResult.Claimed)await tokens.ClaimLeadAsync(human.Token, TeamId.New());
         Assert.IsType<PreviewConnectResult.Unauthorized>(
-            await connect.ConnectAsync(mint.Label, otherLead.Token.Token, RelayUrl));
+            await connect.ConnectAsync(mint.Label, otherLead.Token.Token, null, RelayUrl));
 
         // No gated refusal ever armed a producer.
         Assert.Empty(sent);
@@ -131,15 +160,16 @@ public sealed class PreviewConnectServiceTests(PostgresFixture pg) : IAsyncLifet
         var clock = new FakeTimeProvider();
         var team = TeamId.New();
         var (producerTask, _) = await WorkingServiceAsync(db, clock, team, "web", 3000);
-        var (connect, _) = BuildConnect(db, clock, producerTask);
+        var (connect, _, _) = BuildConnect(db, clock, producerTask);
         var mint = await new PreviewMappingService(db, clock)
             .CreateAsync(team, producerTask, "web", PreviewAuthPolicy.Public, TimeSpan.FromMinutes(5));
 
         Assert.IsType<PreviewConnectResult.NotFound>(
-            await connect.ConnectAsync("deadbeefdeadbeefdeadbeefdeadbeef", null, RelayUrl));
+            await connect.ConnectAsync("deadbeefdeadbeefdeadbeefdeadbeef", null, null, RelayUrl));
 
         clock.Advance(TimeSpan.FromMinutes(6));
-        Assert.IsType<PreviewConnectResult.Expired>(await connect.ConnectAsync(mint.Label, null, RelayUrl));
+        Assert.IsType<PreviewConnectResult.Expired>(
+            await connect.ConnectAsync(mint.Label, null, null, RelayUrl));
     }
 
     [SkippableFact]
@@ -150,12 +180,13 @@ public sealed class PreviewConnectServiceTests(PostgresFixture pg) : IAsyncLifet
         var clock = new FakeTimeProvider();
         var team = TeamId.New();
         var (producerTask, _) = await WorkingServiceAsync(db, clock, team, "web", 3000);
-        var (connect, sent) = BuildConnect(db, clock, producerTask);
+        var (connect, sent, _) = BuildConnect(db, clock, producerTask);
         // A mapping whose service was never registered by a working task → check 11.
         var mint = await new PreviewMappingService(db, clock)
             .CreateAsync(team, producerTask, "ghost", PreviewAuthPolicy.Public, TimeSpan.FromMinutes(30));
 
-        Assert.IsType<PreviewConnectResult.Unavailable>(await connect.ConnectAsync(mint.Label, null, RelayUrl));
+        Assert.IsType<PreviewConnectResult.Unavailable>(
+            await connect.ConnectAsync(mint.Label, null, null, RelayUrl));
         Assert.Empty(sent);
     }
 
@@ -173,11 +204,13 @@ public sealed class PreviewConnectServiceTests(PostgresFixture pg) : IAsyncLifet
         var orch = new ForwardOrchestrator(registry, new ForwardWaiters(), NullLogger<ForwardOrchestrator>.Instance);
         var connect = new PreviewConnectService(
             new PreviewMappingService(db, clock), new RelayGrantService(db, clock),
-            new TokenService(db, clock), orch, NullLogger<PreviewConnectService>.Instance);
+            new TokenService(db, clock), new PreviewAuthStore(clock), orch,
+            NullLogger<PreviewConnectService>.Instance);
         var mint = await new PreviewMappingService(db, clock)
             .CreateAsync(team, producerTask, "web", PreviewAuthPolicy.Public, TimeSpan.FromMinutes(30));
 
-        Assert.IsType<PreviewConnectResult.Unavailable>(await connect.ConnectAsync(mint.Label, null, RelayUrl));
+        Assert.IsType<PreviewConnectResult.Unavailable>(
+            await connect.ConnectAsync(mint.Label, null, null, RelayUrl));
     }
 
     // ── Helpers ───────────────────────────────────────────────────────────────
@@ -198,9 +231,10 @@ public sealed class PreviewConnectServiceTests(PostgresFixture pg) : IAsyncLifet
 
     /// <summary>
     /// A connect service wired to a registry that has the producer's machine live,
-    /// plus the list every armed producer command lands in (empty when nothing was armed).
+    /// the list every armed producer command lands in, and the shared preview-auth
+    /// store (so tests can mint a per-label session).
     /// </summary>
-    private static (PreviewConnectService Connect, List<OpenForwardCommand> Sent) BuildConnect(
+    private static (PreviewConnectService Connect, List<OpenForwardCommand> Sent, PreviewAuthStore PreviewAuth) BuildConnect(
         DocketDbContext db, TimeProvider clock, TaskId producerTask)
     {
         var sent = new List<OpenForwardCommand>();
@@ -213,9 +247,10 @@ public sealed class PreviewConnectServiceTests(PostgresFixture pg) : IAsyncLifet
         });
         registry.TrackDispatch("mp", producerTask);
         var orch = new ForwardOrchestrator(registry, new ForwardWaiters(), NullLogger<ForwardOrchestrator>.Instance);
+        var previewAuth = new PreviewAuthStore(clock);
         var connect = new PreviewConnectService(
             new PreviewMappingService(db, clock), new RelayGrantService(db, clock),
-            new TokenService(db, clock), orch, NullLogger<PreviewConnectService>.Instance);
-        return (connect, sent);
+            new TokenService(db, clock), previewAuth, orch, NullLogger<PreviewConnectService>.Instance);
+        return (connect, sent, previewAuth);
     }
 }
