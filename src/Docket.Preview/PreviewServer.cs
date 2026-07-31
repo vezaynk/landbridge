@@ -4,7 +4,6 @@ using System.Net.Security;
 using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Security.Authentication;
-using System.Security.Cryptography.X509Certificates;
 using Microsoft.Extensions.Logging;
 
 namespace Docket.Preview;
@@ -27,7 +26,7 @@ namespace Docket.Preview;
 public sealed class PreviewServer : IAsyncDisposable
 {
     private readonly IPEndPoint _endpoint;
-    private readonly X509Certificate2? _certificate;
+    private readonly PreviewCertificateProvider? _certificates;
     private readonly PreviewOptions _options;
     private readonly PreviewControlPlaneClient _controlPlane;
     private readonly ILogger _logger;
@@ -39,13 +38,13 @@ public sealed class PreviewServer : IAsyncDisposable
 
     public PreviewServer(
         IPEndPoint endpoint,
-        X509Certificate2? certificate,
+        PreviewCertificateProvider? certificates,
         PreviewOptions options,
         PreviewControlPlaneClient controlPlane,
         ILogger logger)
     {
         _endpoint = endpoint;
-        _certificate = certificate;
+        _certificates = certificates;
         _options = options;
         _controlPlane = controlPlane;
         _logger = logger;
@@ -61,7 +60,7 @@ public sealed class PreviewServer : IAsyncDisposable
         BoundPort = ((IPEndPoint)_listener.LocalEndpoint).Port;
         _logger.LogInformation(
             "preview frontend listening on {Endpoint} ({Mode}) for *.{Domain}",
-            _listener.LocalEndpoint, _certificate is null ? "plaintext" : "TLS", _options.Domain);
+            _listener.LocalEndpoint, _certificates is null ? "plaintext" : "TLS", _options.Domain);
         _acceptLoop = Task.Run(() => AcceptLoopAsync(_cts.Token));
     }
 
@@ -87,13 +86,16 @@ public sealed class PreviewServer : IAsyncDisposable
         Stream browser = new NetworkStream(socket, ownsSocket: true);
         try
         {
-            if (_certificate is not null)
+            if (_certificates is not null)
             {
                 var tls = new SslStream(browser, leaveInnerStreamOpen: false);
                 browser = tls;
                 await tls.AuthenticateAsServerAsync(new SslServerAuthenticationOptions
                 {
-                    ServerCertificate = _certificate,
+                    // Read the current cert per handshake so a hot-reloaded renewal is
+                    // served to new handshakes with no restart; in-flight handshakes and
+                    // established connections keep whatever cert they started with (§8.4).
+                    ServerCertificateSelectionCallback = (_, _) => _certificates.Current,
                     ClientCertificateRequired = false,
                     // HTTP/1.1 only: no h2, so a browser can never coalesce two
                     // different Hosts onto one connection — which is what makes

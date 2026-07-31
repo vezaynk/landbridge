@@ -1,5 +1,4 @@
 using System.Net;
-using System.Security.Cryptography.X509Certificates;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -10,14 +9,16 @@ namespace Docket.Preview;
 /// Hosts the <see cref="PreviewServer"/> in the ASP.NET generic host (spec §8.4).
 /// Binds the configured port on all interfaces — the preview frontend is a public
 /// TLS frontend, unlike <c>docketd</c> which only ever binds loopback (§10) — loads
-/// the wildcard cert once, and starts the accept loop. Tests construct a
-/// <see cref="PreviewServer"/> directly on a loopback port instead.
+/// the wildcard cert and keeps it hot-reloaded via <see cref="PreviewCertificateProvider"/>
+/// (renewals are picked up with no restart), then starts the accept loop. Tests
+/// construct a <see cref="PreviewServer"/> directly on a loopback port instead.
 /// </summary>
 public sealed class PreviewListener : BackgroundService
 {
     private readonly PreviewOptions _options;
     private readonly PreviewControlPlaneClient _controlPlane;
     private readonly ILoggerFactory _loggerFactory;
+    private PreviewCertificateProvider? _certificates;
     private PreviewServer? _server;
 
     public PreviewListener(
@@ -32,10 +33,11 @@ public sealed class PreviewListener : BackgroundService
 
     protected override Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        X509Certificate2? cert = PreviewCertificate.Load(_options);
+        _certificates = PreviewCertificateProvider.Create(
+            _options, _loggerFactory.CreateLogger<PreviewCertificateProvider>());
         _server = new PreviewServer(
             new IPEndPoint(IPAddress.Any, _options.ListenPort),
-            cert,
+            _certificates,
             _options,
             _controlPlane,
             _loggerFactory.CreateLogger<PreviewServer>());
@@ -47,6 +49,7 @@ public sealed class PreviewListener : BackgroundService
     {
         if (_server is not null)
             await _server.DisposeAsync();
+        _certificates?.Dispose();
         await base.StopAsync(cancellationToken);
     }
 }

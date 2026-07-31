@@ -77,7 +77,10 @@ internal sealed class PreviewHarness : IAsyncDisposable
         _sp = sp;
     }
 
-    public static PreviewHarness Start(string controlPlaneUrl, TimeSpan? firstByteTimeout = null)
+    public static PreviewHarness Start(
+        string controlPlaneUrl,
+        TimeSpan? firstByteTimeout = null,
+        PreviewCertificateProvider? certificates = null)
     {
         var options = new PreviewOptions
         {
@@ -93,7 +96,7 @@ internal sealed class PreviewHarness : IAsyncDisposable
             Options.Create(options),
             NullLogger<PreviewControlPlaneClient>.Instance);
         var server = new PreviewServer(
-            new IPEndPoint(IPAddress.Loopback, 0), certificate: null, options, client,
+            new IPEndPoint(IPAddress.Loopback, 0), certificates, options, client,
             NullLogger<PreviewServer>.Instance);
         server.Start();
         return new PreviewHarness(server, sp);
