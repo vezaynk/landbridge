@@ -34,6 +34,17 @@ public sealed class PreviewOptions
     /// <summary>Path to the wildcard cert's private-key PEM. Required when <see cref="CertPemPath"/> is set.</summary>
     public string? CertKeyPemPath { get; set; }
 
+    /// <summary>
+    /// How long to let cert-file writes settle before reloading (§8.4 PEM
+    /// hot-reload). Renewal tools write the cert and key as two separate, non-atomic
+    /// files and a single change emits a flurry of file-system events; debouncing
+    /// coalesces that into one reload attempt. This is only a churn/latency knob —
+    /// correctness does not depend on it, since a reload that catches a half-written
+    /// or mismatched pair simply fails the load-both-and-match check and is retried
+    /// on the next write.
+    /// </summary>
+    public TimeSpan CertReloadDebounce { get; set; } = TimeSpan.FromSeconds(1);
+
     /// <summary>Base URL of the control plane the frontend calls <c>/preview/connect</c> on (§8.4).</summary>
     public string ControlPlaneUrl { get; set; } = "";
 

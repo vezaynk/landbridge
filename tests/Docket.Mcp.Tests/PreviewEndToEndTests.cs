@@ -193,7 +193,7 @@ internal sealed class PreviewFrontendHarness : IAsyncDisposable
             sp.GetRequiredService<IHttpClientFactory>(), Options.Create(options),
             NullLogger<PreviewControlPlaneClient>.Instance);
         var server = new PreviewServer(
-            new IPEndPoint(IPAddress.Loopback, 0), certificate: null, options, client,
+            new IPEndPoint(IPAddress.Loopback, 0), certificates: null, options, client,
             NullLogger<PreviewServer>.Instance);
         server.Start();
         return new PreviewFrontendHarness(server, sp);
