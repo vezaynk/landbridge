@@ -2,7 +2,8 @@
 
 The operator / developer guide: bring the system up locally, authenticate,
 enroll a real machine, point a worker at a real harness, and the full config-key
-reference. For the *why*, see [ARCHITECTURE.md](ARCHITECTURE.md) and the
+reference. For putting real TLS on the preview frontend, see
+[PREVIEW-TLS.md](PREVIEW-TLS.md). For the *why*, see [ARCHITECTURE.md](ARCHITECTURE.md) and the
 authoritative [`ideas/spec.md`](../ideas/spec.md).
 
 ## Prerequisites

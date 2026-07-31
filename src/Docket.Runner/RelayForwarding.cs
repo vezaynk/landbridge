@@ -33,6 +33,14 @@ public sealed class RelayForwarder : IAsyncDisposable
     private const int BufferSize = 64 * 1024;
 
     /// <summary>
+    /// How long teardown lets the close handshake complete (the relay replies with
+    /// a Close frame so this end's final in-flight frame drains) before aborting
+    /// the tunnel (spec §8.3). Normally milliseconds — a safety cap against a peer
+    /// that never replies, mirroring <c>Docket.Relay.ForwardEntry</c>.
+    /// </summary>
+    private static readonly TimeSpan CloseHandshakeTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>
     /// How long the consumer listener waits for its one connection before giving
     /// up and closing (§8.3). Bounded by the grant's remaining TTL — v1 uses a
     /// fixed ceiling matching <c>RelayGrantService.GrantTtl</c> (2 min); tests
@@ -222,14 +230,22 @@ public sealed class RelayForwarder : IAsyncDisposable
         // Whichever direction ends first triggers teardown of both.
         await Task.WhenAny(tcpToWs, wsToTcp);
 
-        // Close the WS output so the relay observes a close frame, drop the read
-        // side of the TCP so a blocked read returns, then cancel and drain.
+        // Close the WS output so the relay observes a close frame — flushing this
+        // direction's final in-flight frame first — then let both pumps complete
+        // the close handshake BEFORE aborting anything. Cancelling an in-flight
+        // WebSocket op aborts the socket and RSTs the tunnel, discarding a final
+        // frame still in flight to the relay (e.g. the tail of a producer service's
+        // response, or a proxied websocket's close frame) — the same §8.3 teardown
+        // hazard fixed in Docket.Relay.ForwardEntry. Bounded so a stuck peer cannot
+        // hang teardown; do NOT collapse this back to an immediate cancel.
         await CloseWebSocketQuietlyAsync(ws);
+        var drained = Task.WhenAll(tcpToWs, wsToTcp);
+        await Task.WhenAny(drained, Task.Delay(CloseHandshakeTimeout, CancellationToken.None));
         try { socket.Shutdown(SocketShutdown.Both); } catch { /* already torn down */ }
         await linked.CancelAsync();
 
-        try { await Task.WhenAll(tcpToWs, wsToTcp); }
-        catch (Exception) { /* expected on teardown: cancellation or a torn socket */ }
+        try { await drained; }
+        catch (Exception) { /* expected only if a stuck peer forced the abort above */ }
     }
 
     private static async Task PumpTcpToWsAsync(NetworkStream from, WebSocket to, CancellationToken ct)
