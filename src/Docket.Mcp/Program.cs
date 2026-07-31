@@ -40,6 +40,10 @@ builder.Services.AddDbContext<DocketDbContext>(o =>
 builder.Services.AddScoped<TaskStore>();
 builder.Services.AddScoped<TokenService>();
 builder.Services.AddScoped<RelayGrantService>();
+// §8.4 HTTP preview: the mapping store (resolve/create) and the per-connection
+// connect orchestrator, both scoped (per-request DbContext) like the grant service.
+builder.Services.AddScoped<PreviewMappingService>();
+builder.Services.AddScoped<PreviewConnectService>();
 builder.Services.AddScoped<OAuthAuthorizationCodeService>();
 // §12 dashboard read side: scoped (per-request DbContext) + the in-memory
 // connection registry singleton it injects for live machine state.
@@ -211,6 +215,13 @@ app.MapDashboard();
 // this is the real control-plane validator behind Docket.Relay's IGrantValidator.
 // Not in the Principal system — the relay is not a §5 credential class.
 app.MapRelayValidationEndpoint();
+
+// The preview-frontend connect endpoint (§8.4): plain HTTP, shared-bearer auth,
+// fail-closed. The HTTP preview frontend calls it per browser connection to
+// resolve a label, authorize it, mint a grant + forward id, and arm the producer
+// to dial on demand. Not in the Principal system — the frontend, like the relay,
+// is not a §5 credential class.
+app.MapPreviewConnectEndpoint();
 
 // The machine bootstrap surface (§5 Bootstrap, §13): /enroll exchanges a
 // human-issued enrollment token for machine credentials; /machine/refresh

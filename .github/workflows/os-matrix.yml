@@ -60,3 +60,6 @@ jobs:
 
       - name: Test - Docket.Relay (splice core)
         run: dotnet test tests/Docket.Relay.Tests --no-build -c Release
+
+      - name: Test - Docket.Preview (HTTP preview frontend, §8.4)
+        run: dotnet test tests/Docket.Preview.Tests --no-build -c Release

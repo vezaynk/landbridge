@@ -141,6 +141,48 @@ public sealed class RegisteredServiceRow
 }
 
 /// <summary>
+/// One HTTP-preview mapping (§8.4): the durable <c>{label → (team, task, service,
+/// expiry, auth-policy)}</c> record the preview frontend resolves a subdomain
+/// label against. Persisted (not in-memory like <see cref="ForwardWaiters"/>)
+/// because a shareable preview URL handed to a human must survive a control-plane
+/// redeploy within its TTL.
+///
+/// <para>The label is an opaque, unguessable random token that lives only in the
+/// URL/DNS; only its SHA-256 <see cref="LabelHash"/> is stored, looked up by hash
+/// exactly like every other opaque credential (§5). Structure is never encoded in
+/// the label (§8.4).</para>
+///
+/// <para><see cref="ExpiresAt"/> gates whether a <em>new</em> browser connection
+/// is admitted — mandatory and short for <see cref="PreviewAuthPolicy.Public"/>.
+/// It is distinct from a forward grant's own short open-handshake TTL (§8.3): the
+/// mapping expiry bounds the preview's life, the grant expiry bounds one
+/// connection's tunnel-open.</para>
+/// </summary>
+public sealed class PreviewMappingRow
+{
+    public Guid Id { get; set; }
+
+    /// <summary>SHA-256 of the opaque subdomain label; the label itself is never stored (§5, §8.4).</summary>
+    public string LabelHash { get; set; } = "";
+
+    public Guid TeamId { get; set; }
+
+    /// <summary>The task that owns the previewed service — check 11 re-verifies it is still working at connect.</summary>
+    public Guid TaskId { get; set; }
+
+    /// <summary>The registered service name the preview resolves to (§8.2).</summary>
+    public string ServiceName { get; set; } = "";
+
+    /// <summary>Gated (default) requires a §12 operator session; public is the label-only capability (§8.4).</summary>
+    public PreviewAuthPolicy AuthPolicy { get; set; }
+
+    public DateTimeOffset CreatedAt { get; set; }
+
+    /// <summary>When the mapping stops admitting new connections (§8.4). Mandatory + short for public.</summary>
+    public DateTimeOffset ExpiresAt { get; set; }
+}
+
+/// <summary>
 /// Append-only transition journal. Monotonic <see cref="Seq"/> gives the
 /// per-recipient ordering the messaging layer will build on; for now it is
 /// the store's own audit trail, appended in the same transaction as the
