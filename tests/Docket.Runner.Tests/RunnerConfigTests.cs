@@ -17,7 +17,7 @@ public class RunnerConfigTests
           "stop": { "mode": "message", "message": "{disposition}", "wind_down_seconds": 20 },
           "events": { "source": "hooks", "mapping": { "PostToolUse": "tool-call" } },
           "telemetry": { "otel": true, "endpoint": "http://127.0.0.1:4318" },
-          "logs": { "path": "~/.claude/logs", "format": "jsonl" },
+          "logs": { "format": "stream-json", "capture": true, "max_bytes": 1048576, "prune_after_days": 3 },
           "max_concurrent": 3
         },
         {
@@ -50,6 +50,42 @@ public class RunnerConfigTests
         Assert.Equal("restricted", config.Resolve("restricted")!.Name);   // exact-match (§7)
         Assert.Null(config.Resolve("frontend"));                          // requested-but-absent
         Assert.Equal(new HashSet<string> { "default", "restricted" }, config.DeclaredProfiles);
+
+        // §12 capture keys parse; a profile with no logs section takes the OFF default.
+        Assert.True(config.Default.Logs.Capture);
+        Assert.Equal(1048576, config.Default.Logs.MaxBytes);
+        Assert.Equal(3, config.Default.Logs.PruneAfterDays);
+        Assert.False(config.Resolve("restricted")!.Logs.Capture);
+        Assert.Equal(TranscriptDefaults.MaxBytes, config.Resolve("restricted")!.Logs.MaxBytes);
+        Assert.Equal(TranscriptDefaults.PruneAfterDays, config.Resolve("restricted")!.Logs.PruneAfterDays);
+    }
+
+    [Fact]
+    public void Capture_defaults_to_off_when_logs_is_omitted()
+    {
+        var json = """
+        { "machine": { "work_root": "/w" },
+          "profiles": [ { "name": "default", "spawn": ["claude", "-p"] } ] }
+        """;
+
+        var logs = RunnerConfig.Load(json).Default.Logs;
+        Assert.False(logs.Capture);
+        Assert.Equal(TranscriptDefaults.MaxBytes, logs.MaxBytes);
+        Assert.Equal(TranscriptDefaults.PruneAfterDays, logs.PruneAfterDays);
+    }
+
+    [Fact]
+    public void Rejects_a_non_positive_max_bytes_and_a_negative_prune_window()
+    {
+        var json = """
+        { "machine": { "work_root": "/w" },
+          "profiles": [ { "name": "default", "spawn": ["claude"],
+            "logs": { "capture": true, "max_bytes": 0, "prune_after_days": -1 } } ] }
+        """;
+
+        var ex = Assert.Throws<RunnerConfigException>(() => RunnerConfig.Load(json));
+        Assert.Contains(ex.Errors, e => e.Contains("max_bytes"));
+        Assert.Contains(ex.Errors, e => e.Contains("prune_after_days"));
     }
 
     [Fact]

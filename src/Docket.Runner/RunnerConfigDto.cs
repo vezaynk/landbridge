@@ -68,4 +68,11 @@ internal sealed class LogsDto
 {
     public string? Path { get; set; }
     public string? Format { get; set; }
+
+    // §12 machine-local transcript capture. `capture` toggles it (default off);
+    // `max_bytes` caps each captured stream per instance; `prune_after_days` is the
+    // local hygiene window (0 disables). See LogsConfig / TranscriptStore.
+    public bool? Capture { get; set; }
+    public long? MaxBytes { get; set; }
+    public int? PruneAfterDays { get; set; }
 }

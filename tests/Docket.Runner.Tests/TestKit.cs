@@ -46,6 +46,25 @@ internal static class TestKit
         return condition();
     }
 
+    /// <summary>
+    /// Reads all lines from a file that may be open for writing right now — a LIVE
+    /// transcript. Opens with <see cref="FileShare.ReadWrite"/> so it tolerates the
+    /// writer's exclusive <see cref="FileAccess.Write"/> handle; a plain
+    /// <see cref="File.ReadAllLines(string)"/> uses <see cref="FileShare.Read"/>, which
+    /// Windows refuses against an open writer (Unix does not enforce it). This is what
+    /// pins live-tailing of a running worker's transcript as a product behavior.
+    /// </summary>
+    public static string[] ReadLinesShared(string path)
+    {
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var reader = new StreamReader(fs);
+        var lines = new List<string>();
+        string? line;
+        while ((line = reader.ReadLine()) is not null)
+            lines.Add(line);
+        return lines.ToArray();
+    }
+
     public static bool PidAlive(int pid)
     {
         try
@@ -71,14 +90,20 @@ internal static class TestKit
 
     /// <summary>A profile that runs the test harness in the given mode. Defaults to
     /// the honest <see cref="EventsSource.None"/>; pass <see cref="EventsSource.Terminal"/>
-    /// (optionally with a mapping) to exercise the stdout event drain.</summary>
+    /// (optionally with a mapping) to exercise the stdout event drain. Pass
+    /// <paramref name="capture"/> to turn on §12 transcript capture (with an optional
+    /// <paramref name="maxBytes"/> cap) — the supervisor still needs a
+    /// <see cref="TranscriptStore"/> for anything to be written.</summary>
     public static ProfileConfig Profile(
         string harnessMode,
         StopMode stopMode = StopMode.Signal,
         string name = "default",
         EventsSource events = EventsSource.None,
         IReadOnlyDictionary<string, string>? mapping = null,
-        TimeSpan? windDown = null) =>
+        TimeSpan? windDown = null,
+        bool capture = false,
+        long? maxBytes = null,
+        int pruneAfterDays = TranscriptDefaults.PruneAfterDays) =>
         new(
             name,
             [HarnessPath(), harnessMode],
@@ -86,7 +111,8 @@ internal static class TestKit
             Resume: null,
             new EventsConfig(events, mapping ?? new Dictionary<string, string>()),
             new TelemetryConfig(Otel: false, Endpoint: null),
-            new LogsConfig(Path: null, Format: null),
+            new LogsConfig(Path: null, Format: null, Capture: capture,
+                MaxBytes: maxBytes ?? TranscriptDefaults.MaxBytes, PruneAfterDays: pruneAfterDays),
             MaxConcurrent: null);
 
     /// <summary>

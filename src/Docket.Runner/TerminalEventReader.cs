@@ -49,6 +49,7 @@ public sealed class TerminalEventReader
     private readonly OutboundEventRing _ring;
     private readonly Action<TaskId> _recordActivity;
     private readonly Action<string>? _onSessionId;
+    private readonly Action<string>? _rawLineSink;
     private readonly TimeProvider _clock;
     private readonly TerminalStreamMapping _map;
 
@@ -67,18 +68,27 @@ public sealed class TerminalEventReader
     /// resume. This reader itself does events and liveness only — the ref is
     /// opaque to it.
     /// </param>
+    /// <param name="rawLineSink">
+    /// §12 transcript capture tee: invoked with every raw stdout line — verbatim,
+    /// before parsing, including blank and non-JSON lines — so the one drain that maps
+    /// events also captures the transcript. Null when capture is off; then this is
+    /// exactly the pre-capture event-only reader. Teeing, not diverting: the sink never
+    /// sees event mapping and mapping never sees the sink.
+    /// </param>
     public TerminalEventReader(
         TaskId task,
         OutboundEventRing ring,
         Action<TaskId> recordActivity,
         IReadOnlyDictionary<string, string> mapping,
         TimeProvider clock,
-        Action<string>? onSessionId = null)
+        Action<string>? onSessionId = null,
+        Action<string>? rawLineSink = null)
     {
         _task = task;
         _ring = ring;
         _recordActivity = recordActivity;
         _onSessionId = onSessionId;
+        _rawLineSink = rawLineSink;
         _clock = clock;
         _map = TerminalStreamMapping.From(mapping);
     }
@@ -95,7 +105,17 @@ public sealed class TerminalEventReader
         {
             string? line;
             while ((line = await reader.ReadLineAsync(ct).ConfigureAwait(false)) is not null)
+            {
+                // §12 capture tee: hand the verbatim line to the transcript sink first,
+                // then map it to events. A sink throw must not kill the drain (that
+                // would defeat the anti-deadlock guarantee), so it is best-effort.
+                if (_rawLineSink is not null)
+                {
+                    try { _rawLineSink(line); }
+                    catch { /* capture is never allowed to affect the worker */ }
+                }
                 ProcessLine(line);
+            }
         }
         catch (Exception e) when (e is OperationCanceledException or IOException or ObjectDisposedException)
         {
