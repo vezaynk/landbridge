@@ -165,6 +165,49 @@ public sealed class RelayForwardingTests
         await daemon.ShutdownAsync();
     }
 
+    /// <summary>
+    /// Regression for the §8.3 splice-teardown final-frame drop, producer side. A
+    /// local service sends a final frame then closes; the producer must deliver
+    /// every byte to the relay and then a CLEAN close, not abort the tunnel and
+    /// truncate the tail. The old teardown (CloseOutput + socket.Shutdown +
+    /// immediate CancelAsync) aborts the WebSocket, RSTing the tunnel and discarding
+    /// a final frame still in flight to the relay — surfacing at the far end as
+    /// "closed without completing the close handshake". Driven across many rapid
+    /// forwards, reading the frame only after the producer has torn down, to force
+    /// the window; fails on the old teardown, clean on the fix. Mirrors the relay's
+    /// own <c>RelayFinalFrameTests</c>, one deterministic guard per splice site.
+    /// </summary>
+    [Fact]
+    public async Task Producer_delivers_the_services_final_frame_before_the_tunnel_closes()
+    {
+        var ct = Timeout(out var cts);
+        using var _ = cts;
+
+        var ring = new OutboundEventRing(256);
+        var channel = new InMemoryControlPlaneChannel();
+        var daemon = BuildDaemon(ring, channel, acceptTimeout: TimeSpan.FromSeconds(30));
+        await daemon.StartAsync();
+        await using var relay = await MultiAcceptRelay.StartAsync();
+
+        var payload = RandomBytes(4096);
+        for (var i = 0; i < 120; i++)
+        {
+            await using var service = await TcpSender.StartAsync(payload); // sends payload, then closes
+            var forwardId = $"fwd-final-{i}";
+            await daemon.HandleAsync(new OpenForwardCommand(
+                TaskId.New(), forwardId, "db", RelayTunnel.ProducerRole, "dkt_g_x", relay.HttpUrl, service.Port));
+
+            var relaySocket = await relay.NextAsync(ct);
+            var received = await ReceiveExactlyAsync(relaySocket, payload.Length, ct);
+            Assert.True(payload.AsSpan().SequenceEqual(received), $"iteration {i}: producer final frame was truncated");
+
+            var tail = await relaySocket.ReceiveAsync(new byte[16], ct);
+            Assert.Equal(WebSocketMessageType.Close, tail.MessageType);
+        }
+
+        await daemon.ShutdownAsync();
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
 
     private static RunnerDaemon BuildDaemon(
@@ -376,6 +419,103 @@ internal sealed class TcpEchoServer : IAsyncDisposable
             }
             catch (Exception) { /* peer closed / stopped */ }
         }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await _cts.CancelAsync();
+        _listener.Stop();
+        try { await _loop; } catch (Exception) { /* stopped */ }
+        _cts.Dispose();
+    }
+}
+
+/// <summary>Like <see cref="FakeRelay"/> but accepts many tunnels, handing each accepted
+/// socket to the test through a channel — for the final-frame loop, one forward per accept.</summary>
+internal sealed class MultiAcceptRelay : IAsyncDisposable
+{
+    private readonly WebApplication _app;
+    private readonly CancellationTokenSource _hold = new();
+    private readonly System.Threading.Channels.Channel<WebSocket> _accepted =
+        System.Threading.Channels.Channel.CreateUnbounded<WebSocket>();
+
+    private MultiAcceptRelay(WebApplication app) => _app = app;
+
+    public string HttpUrl => _app.Urls.First(u => u.StartsWith("http://", StringComparison.Ordinal));
+
+    public ValueTask<WebSocket> NextAsync(CancellationToken ct) => _accepted.Reader.ReadAsync(ct);
+
+    public static async Task<MultiAcceptRelay> StartAsync()
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.Logging.ClearProviders();
+        builder.WebHost.UseUrls("http://127.0.0.1:0");
+        var app = builder.Build();
+        var relay = new MultiAcceptRelay(app);
+        app.UseWebSockets();
+        app.Map("/tunnel", async (HttpContext http) =>
+        {
+            if (!http.WebSockets.IsWebSocketRequest)
+            {
+                http.Response.StatusCode = StatusCodes.Status400BadRequest;
+                return;
+            }
+            var socket = await http.WebSockets.AcceptWebSocketAsync();
+            await relay._accepted.Writer.WriteAsync(socket);
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(relay._hold.Token, http.RequestAborted);
+            try { await Task.Delay(System.Threading.Timeout.Infinite, linked.Token); }
+            catch (OperationCanceledException) { }
+        });
+        await app.StartAsync();
+        return relay;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        await _hold.CancelAsync();
+        await _app.StopAsync();
+        await _app.DisposeAsync();
+        _hold.Dispose();
+    }
+}
+
+/// <summary>A loopback TCP service that, on connect, writes a fixed payload and then closes —
+/// the "final frame then close" shape that lost its tail on the old producer teardown (§8.3).</summary>
+internal sealed class TcpSender : IAsyncDisposable
+{
+    private readonly TcpListener _listener;
+    private readonly CancellationTokenSource _cts = new();
+    private readonly Task _loop;
+
+    private TcpSender(TcpListener listener, byte[] payload)
+    {
+        _listener = listener;
+        _loop = Task.Run(() => ServeAsync(payload));
+    }
+
+    public int Port => ((IPEndPoint)_listener.LocalEndpoint).Port;
+
+    public static Task<TcpSender> StartAsync(byte[] payload)
+    {
+        var listener = new TcpListener(IPAddress.Loopback, 0);
+        listener.Start();
+        return Task.FromResult(new TcpSender(listener, payload));
+    }
+
+    private async Task ServeAsync(byte[] payload)
+    {
+        try
+        {
+            var socket = await _listener.AcceptSocketAsync(_cts.Token);
+            using (socket)
+            await using (var stream = new NetworkStream(socket, ownsSocket: false))
+            {
+                await stream.WriteAsync(payload, _cts.Token);
+                await stream.FlushAsync(_cts.Token);
+                // Leaving the scope disposes the socket → FIN: "final frame then close".
+            }
+        }
+        catch (Exception) { /* test tore us down */ }
     }
 
     public async ValueTask DisposeAsync()
