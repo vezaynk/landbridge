@@ -46,6 +46,25 @@ internal static class TestKit
         return condition();
     }
 
+    /// <summary>
+    /// Reads all lines from a file that may be open for writing right now — a LIVE
+    /// transcript. Opens with <see cref="FileShare.ReadWrite"/> so it tolerates the
+    /// writer's exclusive <see cref="FileAccess.Write"/> handle; a plain
+    /// <see cref="File.ReadAllLines(string)"/> uses <see cref="FileShare.Read"/>, which
+    /// Windows refuses against an open writer (Unix does not enforce it). This is what
+    /// pins live-tailing of a running worker's transcript as a product behavior.
+    /// </summary>
+    public static string[] ReadLinesShared(string path)
+    {
+        using var fs = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+        using var reader = new StreamReader(fs);
+        var lines = new List<string>();
+        string? line;
+        while ((line = reader.ReadLine()) is not null)
+            lines.Add(line);
+        return lines.ToArray();
+    }
+
     public static bool PidAlive(int pid)
     {
         try

@@ -252,8 +252,18 @@ public sealed class TranscriptWriter : IDisposable
             if (_writer is not null)
                 return;
 
-            // Append, never truncate: a fresh ordinal means a fresh file, but append is
-            // the no-clobber guarantee if a path is ever reused across a restart.
+            // Share mode is load-bearing, do not "simplify" it away:
+            //   FileMode.Append   — never truncate; a fresh ordinal is a fresh file, but
+            //                       append is the no-clobber guarantee if a path is ever
+            //                       reused across a restart.
+            //   FileShare.Read    — a reader (an operator tailing, the future plane-side
+            //                       serving) MUST be able to open this file WHILE we hold
+            //                       it open for writing. Windows enforces share modes
+            //                       (Unix does not), so without this a live read throws
+            //                       "being used by another process". It still refuses a
+            //                       second WRITER, keeping our write exclusive. Readers
+            //                       must in turn open with FileShare.ReadWrite to tolerate
+            //                       this live Write handle.
             var stream = new FileStream(Path, FileMode.Append, FileAccess.Write, FileShare.Read);
             _bytes = stream.Length; // correct accounting if appending to existing bytes
             _writer = new StreamWriter(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false))
