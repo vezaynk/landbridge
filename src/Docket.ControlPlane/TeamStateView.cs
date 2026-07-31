@@ -20,7 +20,9 @@ public sealed record TeamStateView(
 /// One task's structural summary. <see cref="Namespace"/> is the server-assigned
 /// <c>team-{id}/task-{id}</c> identifier (§7), not content. <see cref="Parked"/>
 /// surfaces §12's "parks per task" signal — whether decomposition is starving on
-/// human attention.
+/// human attention. <see cref="ContinuesTaskId"/> is the Y-continues-X lineage
+/// (§6/§11): the prior task whose harness session this one resumed, or null for an
+/// ordinary task — an identifier, never prose.
 /// </summary>
 public sealed record TeamTaskSummary(
     Guid TaskId,
@@ -28,7 +30,21 @@ public sealed record TeamTaskSummary(
     TaskState State,
     CompletionMode Mode,
     int Attempt,
-    bool Parked);
+    bool Parked,
+    Guid? ContinuesTaskId);
+
+/// <summary>
+/// The seed facts a <c>create_task(continues:)</c> reads off the continued task's
+/// row (§6/§11), returned by <see cref="TaskStore.ReadContinuationSourceAsync"/>:
+/// the owning Team, the profile to default to, the opaque harness session ref to
+/// resume, and the park machine as a fallback preferred machine. Identifiers and
+/// opaque refs only — no prose.
+/// </summary>
+public sealed record ContinuationSource(
+    TeamId Team,
+    string? Profile,
+    string? HarnessSessionRef,
+    string? ParkMachine);
 
 /// <summary>
 /// The verifier's narrow read scope (§5, §10 verifier webhook): one automated

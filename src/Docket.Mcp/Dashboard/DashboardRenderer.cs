@@ -338,11 +338,17 @@ internal static class DashboardRenderer
 
     private static string TaskDetailCell(TeamTaskView t, DateTimeOffset now)
     {
+        var parts = new List<string>();
+        // §6/§11 Y-continues-X lineage: a continuation task resumed a prior task's
+        // session. Shown for any state (a continuation may be submitted/working, not
+        // just blocked/parked), alongside the state-specific detail below.
+        if (t.ContinuesTaskId is { } prior)
+            parts.Add($"<span class=\"nt\">continues <span class=\"mono\">{E(ShortId(prior))}</span></span>");
         if (t.State == TaskState.BlockedOnInput)
-            return $"<span class=\"nt\">blocked {E(Age(t.BlockedAt, now))}</span>";
-        if (t.State == TaskState.Parked && t.ParkMachine is not null)
-            return $"<span class=\"nt\">parked on <span class=\"mono\">{E(t.ParkMachine)}</span></span>";
-        return "";
+            parts.Add($"<span class=\"nt\">blocked {E(Age(t.BlockedAt, now))}</span>");
+        else if (t.State == TaskState.Parked && t.ParkMachine is not null)
+            parts.Add($"<span class=\"nt\">parked on <span class=\"mono\">{E(t.ParkMachine)}</span></span>");
+        return string.Join(" ", parts);
     }
 
     private static string Transition(DashboardEvent e) =>

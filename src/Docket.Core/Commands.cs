@@ -18,6 +18,13 @@ public abstract record TaskCommand(Actor Actor);
 /// which <see cref="TaskStateMachine.Create"/> only checks for non-emptiness and
 /// never lands on the pure-state <see cref="TaskRecord"/>. The store persists all
 /// three verbatim; the state machine stays free of task content (§2 principle 1).
+///
+/// <para><see cref="Continues"/> switches the task to <b>continuation targeting</b>
+/// (§6/§11): rather than being dispatched to any profile-matching machine, the new
+/// task resumes a prior task's harness session on the machine that holds it. The
+/// resolved facts ride the command; the engine only validates them (same-Team,
+/// profile declarable) and never dereferences a task id or session ref (§2
+/// principle 1). Null for ordinary profile targeting.</para>
 /// </summary>
 public sealed record CreateTask(
     Actor Actor,
@@ -27,7 +34,36 @@ public sealed record CreateTask(
     string? Profile,
     bool TeamBudgetRemains,
     string Description = "",
-    string? Workspace = null) : TaskCommand(Actor);
+    string? Workspace = null,
+    Continuation? Continues = null) : TaskCommand(Actor);
+
+/// <summary>
+/// Continuation targeting facts (§6/§11), resolved by the control plane from the
+/// continued task's row and the live connection registry <em>before</em> the
+/// <see cref="CreateTask"/> command reaches the engine. Everything here is opaque
+/// to the engine — it dereferences none of it — but two fields gate creation:
+/// <see cref="ContinuedTeam"/> must equal the creating Team (continuation is
+/// same-Team only), and, when <see cref="PreferredMachineProfiles"/> is known
+/// (the preferred machine is currently connected), the effective profile must be
+/// one the preferred machine declares, or the continuation could never dispatch to
+/// the machine that holds its transcript.
+///
+/// <para><see cref="PreferredMachine"/> is the machine that last held/ran the
+/// continued task; the plane seeds it and <see cref="InheritedSessionRef"/> onto the
+/// new task as park-record-style affinity, so the first dispatch prefers that
+/// machine and hands the runner the session ref to <c>--resume</c> (§11 resume
+/// seam). <see cref="OnMachineGone"/> decides what happens if that machine is gone
+/// at dispatch. <see cref="PreferredMachineProfiles"/> is null when the machine's
+/// declared profiles are not known at creation (it is gone), which skips the
+/// profile-declarable check — dispatch's own profile routing still applies.</para>
+/// </summary>
+public sealed record Continuation(
+    TaskId ContinuedTask,
+    TeamId ContinuedTeam,
+    string? PreferredMachine,
+    string? InheritedSessionRef,
+    MachineGonePolicy OnMachineGone,
+    IReadOnlySet<string>? PreferredMachineProfiles);
 
 /// <summary>
 /// submitted → working. The dispatch transaction is the claim (§6); the

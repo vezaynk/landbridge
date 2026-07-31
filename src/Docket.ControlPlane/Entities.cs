@@ -76,6 +76,37 @@ public sealed class TaskRow
     /// </summary>
     public string? HarnessSessionRef { get; set; }
 
+    /// <summary>
+    /// Continuation lineage (§6/§11): the prior task whose harness session this task
+    /// resumes, or null for an ordinary profile-targeted task. Seeded at creation
+    /// from <c>create_task(continues:)</c> and rendered as the Y-continues-X link in
+    /// <c>get_team_state</c> and the dashboard task view. Opaque — the plane stores
+    /// the id and never dereferences the state machine through it.
+    /// </summary>
+    public Guid? ContinuesTaskId { get; set; }
+
+    /// <summary>
+    /// Continuation dispatch affinity (§6/§11): the machine that last held/ran the
+    /// continued task. Distinct from <see cref="ParkMachine"/> — a submitted
+    /// continuation is not parked — so it does not perturb park semantics or the
+    /// dashboard "parked on" signal. <see cref="TaskStore.DispatchNextAsync"/> makes
+    /// this the preferred machine (park-record-style affinity): the task is claimable
+    /// on this machine (and resumes there), and on another machine only under
+    /// <see cref="OnMachineGone"/> = <see cref="MachineGonePolicy.Degrade"/> once this
+    /// machine is gone. Cleared when a degrade cold-start abandons the session. Null
+    /// for a non-continuation task.
+    /// </summary>
+    public string? PreferredMachine { get; set; }
+
+    /// <summary>
+    /// What to do when <see cref="PreferredMachine"/> is gone at dispatch (§6/§11):
+    /// <see cref="MachineGonePolicy.Degrade"/> cold-starts elsewhere (memory lost,
+    /// logged), <see cref="MachineGonePolicy.Pin"/> waits in submitted. Null (and
+    /// unused) for a non-continuation task; stored as its enum name like the other
+    /// enum columns.
+    /// </summary>
+    public MachineGonePolicy? OnMachineGone { get; set; }
+
     /// <summary>Postgres system column, used as the optimistic-concurrency token.</summary>
     public uint Version { get; set; }
 
@@ -208,6 +239,17 @@ public sealed class TaskEventRow
 
     /// <summary>The <see cref="Kind"/> of a <c>subagent-spawned</c> telemetry row (§10/§12).</summary>
     public const string SubagentSpawnedKind = "subagent-spawned";
+
+    /// <summary>
+    /// The <see cref="Kind"/> of a <c>continuation-memory-lost</c> telemetry row
+    /// (§6/§11): a continuation task's preferred machine was gone at dispatch and
+    /// <see cref="MachineGonePolicy.Degrade"/> cold-started it elsewhere, so the
+    /// resumed transcript — its conversational memory — was lost. Carries no state
+    /// transition; the machine facts ride <see cref="Detail"/> so the Lead can see
+    /// what happened. Written in the dispatch transaction so it commits atomically
+    /// with the cold-start.
+    /// </summary>
+    public const string ContinuationMemoryLostKind = "continuation-memory-lost";
 
     public long Seq { get; set; }
     public Guid TaskId { get; set; }

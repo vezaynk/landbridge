@@ -43,6 +43,10 @@ public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) :
             e.HasIndex(t => new { t.State, t.Profile }).HasFilter("state = 'Submitted'");
             e.Property(t => t.State).HasConversion<string>();
             e.Property(t => t.CompletionMode).HasConversion<string>();
+            // §6/§11 continuation targeting: the machine-gone policy stores as its
+            // enum name, exactly like State/CompletionMode above, so the dispatch
+            // SQL can match the literal 'Degrade'.
+            e.Property(t => t.OnMachineGone).HasConversion<string>();
             e.Property(t => t.Version).IsRowVersion(); // maps to Postgres xmin
         });
 
