@@ -11,6 +11,21 @@
   // harness: swap the profile's "spawn" to e.g. ["claude", "-p", ...] — docketd
   // needs no code change, only this data (§10). The worker still learns its
   // assignment from the injected {mcp_config}.
+  //
+  // A real claude profile should also add a "stop" block so a graceful cancel is
+  // delivered as an injected turn rather than a signal (§10/§11). Recommended
+  // default (claude reads it on stdin via --input-format stream-json):
+  //   "stop": {
+  //     "mode": "message",
+  //     "message": "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Docket is winding this task down (disposition={disposition}, ~{ttl_seconds}s left). Immediately call report_result with a reference to your current progress, then stop — do not begin new work.\"}}",
+  //     "wind_down_seconds": 30
+  //   }
+  // docketd injects that turn and waits min(ttl, wind_down_seconds) for a voluntary
+  // exit before a hard tree-kill. The scripted worker below reads stdin only as a
+  // dead-man pipe and ignores turns, so it stays signal-mode (no "stop" block): a
+  // cancel injects nothing but still grants it the full ttl to exit on its own
+  // before the kill (only ttl=0 is immediate) — the honest behaviour for a harness
+  // with no turn seam.
   "machine": {
     "work_root": "{work_root}",
     // Short cadence so a freshly-connected machine reports ready in ~2s and the

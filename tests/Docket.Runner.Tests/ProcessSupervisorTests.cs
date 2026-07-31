@@ -62,11 +62,14 @@ public sealed class ProcessSupervisorTests : IDisposable
     }
 
     [Fact]
-    public async Task Stop_message_mode_reaches_the_agent_as_a_turn_and_it_winds_down()
+    public async Task Stop_message_mode_reaches_the_agent_as_a_turn_and_it_winds_down_without_being_killed()
     {
         var task = TaskId.New();
         var supervisor = Supervisor();
         supervisor.Spawn(TestKit.Dispatch(task), TestKit.Profile("stdin-stop", StopMode.Message), "m");
+        // Hold the supervised handle so its exit code is still readable after OnExited
+        // removes it from the running set (below).
+        supervisor.TryGet(task, out var supervised);
 
         // Wait for the harness to be reading stdin.
         var marker = Path.Combine(_workRoot, task.ToString(), "started");
@@ -81,38 +84,87 @@ public sealed class ProcessSupervisorTests : IDisposable
         var stopped = Path.Combine(_workRoot, task.ToString(), "stopped");
         Assert.True(await TestKit.WaitUntilAsync(() => File.Exists(stopped), TimeSpan.FromSeconds(15)),
             "harness did not wind down from the injected stop turn");
-        Assert.True(await TestKit.WaitUntilAsync(() => supervisor.RunningTotal == 0, TimeSpan.FromSeconds(15)));
+        Assert.True(await TestKit.WaitUntilAsync(() => !supervised.ProcessAlive, TimeSpan.FromSeconds(15)));
+
+        // §11: it exited on its own from the injected turn (exit 0), never hard-killed
+        // — the FakeTimeProvider wind-down timer was never advanced, so a voluntary
+        // graceful exit is the only way it is gone. A tree-kill would surface a
+        // non-zero (signalled) exit code.
+        Assert.Equal(0, supervised.Process.ExitCode);
+        Assert.Equal(0, supervisor.RunningTotal);
     }
 
     [Fact]
-    public async Task Stop_with_ttl_zero_kills_immediately()
+    public async Task Stop_message_mode_hard_kills_at_the_wind_down_deadline_when_the_agent_ignores_it()
     {
         var task = TaskId.New();
         var supervisor = Supervisor();
-        supervisor.Spawn(TestKit.Dispatch(task), TestKit.Profile("run"), "m");
+        // "run" reads stdin but ignores injected lines, so the wind-down turn is not
+        // honoured and the min(ttl, wind_down) backstop must fire. wind_down (30s) is
+        // deliberately shorter than the TTL (120s): the kill keying off wind_down —
+        // not the TTL — is exactly what this asserts (§10, §11).
+        supervisor.Spawn(
+            TestKit.Dispatch(task),
+            TestKit.Profile("run", StopMode.Message, windDown: TimeSpan.FromSeconds(30)), "m");
         supervisor.TryGet(task, out var supervised);
+        Assert.True(await TestKit.WaitUntilAsync(() => supervised.ProcessAlive, TimeSpan.FromSeconds(5)));
+
+        var ack = await supervisor.StopAsync(task, TimeSpan.FromSeconds(120), StopDisposition.Preserve, null, CancellationToken.None);
+        Assert.Equal(StopDelivery.Message, ack.Delivery);
+        Assert.True(supervised.ProcessAlive); // inside the wind-down window, not yet killed
+
+        _clock.Advance(TimeSpan.FromSeconds(30)); // wind-down deadline (< TTL) → hard kill
+        Assert.True(await TestKit.WaitUntilAsync(() => !supervised.ProcessAlive, TimeSpan.FromSeconds(10)));
+    }
+
+    [Fact]
+    public async Task Stop_with_ttl_zero_kills_immediately_without_injecting_even_in_message_mode()
+    {
+        var task = TaskId.New();
+        var supervisor = Supervisor();
+        // A message-mode profile whose harness WOULD wind down on a "stop" line — but
+        // TTL=0 must kill outright without injecting anything, so it never gets one.
+        supervisor.Spawn(TestKit.Dispatch(task), TestKit.Profile("stdin-stop", StopMode.Message), "m");
+        supervisor.TryGet(task, out var supervised);
+        var marker = Path.Combine(_workRoot, task.ToString(), "started");
+        Assert.True(await TestKit.WaitUntilAsync(() => File.Exists(marker), TimeSpan.FromSeconds(15)));
 
         var ack = await supervisor.StopAsync(task, TimeSpan.Zero, StopDisposition.Discard, null, CancellationToken.None);
 
         Assert.Equal(StopDelivery.ImmediateKill, ack.Delivery);
         Assert.True(await TestKit.WaitUntilAsync(() => !supervised.ProcessAlive, TimeSpan.FromSeconds(10)));
+
+        // No stop turn was injected, so the harness never wrote its graceful-stop
+        // marker. Safe to assert absence: the process is dead, so no writer remains.
+        var stopped = Path.Combine(_workRoot, task.ToString(), "stopped");
+        Assert.False(File.Exists(stopped), "TTL=0 must not inject a wind-down turn");
     }
 
     [Fact]
-    public async Task Stop_hard_kills_on_ttl_expiry_when_the_agent_does_not_wind_down()
+    public async Task Stop_signal_mode_hard_kills_at_the_ttl_deadline_with_no_injection()
     {
         var task = TaskId.New();
         var supervisor = Supervisor();
-        // "run" ignores stdin, so the injected stop is not honoured and the TTL
-        // backstop must fire (§10, §11).
-        supervisor.Spawn(TestKit.Dispatch(task), TestKit.Profile("run", StopMode.Message), "m");
+        // No message seam (signal mode): nothing is injected, but the plane granted a
+        // TTL>0 grace the Lead chose on the wire, so the worker gets the FULL ttl to
+        // finish and exit on its own before the hard kill — the runner does not
+        // second-guess the plane's grace (§9 check 12: only ttl=0 is immediate).
+        // wind_down (10s) is deliberately shorter than the ttl (30s): the kill must
+        // key off the ttl, NOT wind_down, which is the message-path budget alone.
+        supervisor.Spawn(
+            TestKit.Dispatch(task),
+            TestKit.Profile("run", StopMode.Signal, windDown: TimeSpan.FromSeconds(10)), "m");
         supervisor.TryGet(task, out var supervised);
         Assert.True(await TestKit.WaitUntilAsync(() => supervised.ProcessAlive, TimeSpan.FromSeconds(5)));
 
-        await supervisor.StopAsync(task, TimeSpan.FromSeconds(30), StopDisposition.Preserve, null, CancellationToken.None);
-        Assert.True(supervised.ProcessAlive); // grace not yet elapsed
+        var ack = await supervisor.StopAsync(task, TimeSpan.FromSeconds(30), StopDisposition.Preserve, null, CancellationToken.None);
+        Assert.Equal(StopDelivery.Signal, ack.Delivery);
+        Assert.True(supervised.ProcessAlive); // not killed immediately — the ttl grace holds
 
-        _clock.Advance(TimeSpan.FromSeconds(30)); // TTL expires → hard kill
+        _clock.Advance(TimeSpan.FromSeconds(10)); // wind_down would fire here, but must NOT apply
+        Assert.True(supervised.ProcessAlive, "a signal-mode stop must wait the full ttl, not wind_down");
+
+        _clock.Advance(TimeSpan.FromSeconds(20)); // reaches the ttl deadline → hard kill
         Assert.True(await TestKit.WaitUntilAsync(() => !supervised.ProcessAlive, TimeSpan.FromSeconds(10)));
     }
 

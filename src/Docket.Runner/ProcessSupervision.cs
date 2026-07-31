@@ -10,10 +10,17 @@ namespace Docket.Runner;
 /// conformance run can confirm message-delivery actually reached the agent.</summary>
 public enum StopDelivery
 {
-    /// <summary>Injected as a turn the agent reads and honours (§10).</summary>
+    /// <summary>Injected as a turn the agent reads and honours (§10). A bounded
+    /// wind-down window then backs it with a hard kill on expiry (§11).</summary>
     Message,
 
-    /// <summary>A signal — cannot carry a disposition; TTL kill still backs it (§10).</summary>
+    /// <summary>
+    /// No wind-down turn could be delivered — the profile has no message seam
+    /// (<see cref="StopMode.Signal"/>) or the stdin pipe was already gone — so nothing
+    /// was injected. A signal cannot carry the disposition, but the plane's TTL grace
+    /// still governs: the worker gets the full TTL to exit on its own before the hard
+    /// kill backs it (§10).
+    /// </summary>
     Signal,
 
     /// <summary><c>ttl == 0</c>: killed immediately without waiting for ack (§9 check 12).</summary>
@@ -33,8 +40,14 @@ public interface IProcessSupervisor
     TaskId Spawn(DispatchCommand dispatch, ProfileConfig profile, string machineId);
 
     /// <summary>
-    /// Graceful stop: deliver the disposition, arm a TTL timer, hard-kill on
-    /// expiry (§10, §11). <c>ttl == 0</c> kills immediately.
+    /// Graceful stop (§10, §11). A profile whose harness reads stream-json turns on
+    /// the held-open stdin (<see cref="StopMode.Message"/>) is sent a wind-down turn
+    /// carrying the disposition, then given <c>min(ttl, wind_down)</c> to persist and
+    /// exit on its own before a hard tree-kill backstops it. A profile with no such
+    /// seam injects nothing, but the plane's TTL grace still stands: the worker gets
+    /// the full <c>ttl</c> to exit on its own before the kill (<c>wind_down</c> is the
+    /// message-path budget and does not apply). <c>ttl == 0</c> kills immediately
+    /// without injecting anything (§9 check 12).
     /// </summary>
     Task<StopAck> StopAsync(TaskId task, TimeSpan ttl, StopDisposition disposition, string? reason, CancellationToken ct);
 
@@ -377,14 +390,21 @@ public sealed class ProcessSupervisor : IProcessSupervisor
 
         supervised.StopRequested = true;
 
-        // §9 check 12 / §11: TTL=0 kills immediately without waiting for ack.
+        // §9 check 12 / §11: TTL=0 kills immediately without waiting for ack — no
+        // wind-down turn is injected, even for a message-mode profile.
         if (ttl <= TimeSpan.Zero)
         {
             KillTree(supervised);
             return new StopAck(true, StopDelivery.ImmediateKill);
         }
 
-        var delivery = StopDelivery.Signal;
+        // §10, §11 graceful wind-down: only a profile whose harness reads stream-json
+        // turns on the held-open stdin (StopMode.Message + the redirected-stdin seam,
+        // config-driven, never harness-specific in code) can be told to wind down. On
+        // a successful inject, give the agent a bounded window — min(ttl, wind_down) —
+        // to persist and exit on its own before the hard kill backstops it. A
+        // voluntary exit before then disposes the timer in OnExited, so the kill never
+        // fires.
         if (supervised.Stop.Mode == StopMode.Message && supervised.Process.StartInfo.RedirectStandardInput)
         {
             var message = BuildStopMessage(supervised.Stop, disposition, ttl, reason);
@@ -392,18 +412,29 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             {
                 await supervised.Process.StandardInput.WriteLineAsync(message.AsMemory(), ct);
                 await supervised.Process.StandardInput.FlushAsync(ct);
-                delivery = StopDelivery.Message;
+
+                var windDown = ttl < supervised.Stop.WindDown ? ttl : supervised.Stop.WindDown;
+                // FakeTimeProvider drives this deterministically in tests.
+                supervised.TtlTimer = _clock.CreateTimer(
+                    _ => KillTree(supervised), null, windDown, Timeout.InfiniteTimeSpan);
+                return new StopAck(true, StopDelivery.Message);
             }
             catch (Exception e) when (e is IOException or ObjectDisposedException)
             {
-                // Pipe already closed — fall through to the TTL hard-kill backstop.
+                // The stdin pipe is already gone (the worker exited or closed it), so
+                // the wind-down turn cannot be delivered. Fall through to the TTL kill.
             }
         }
 
-        // §10, §11: signals are reserved for TTL expiry and kill. Arm the timer;
-        // FakeTimeProvider drives it deterministically in tests.
+        // §10, §11: no message seam to honour (a signal-mode profile, or the inject
+        // just failed). Nothing is injected, but the plane granted a TTL>0 grace on
+        // the wire — an explicit window the Lead chose (only ttl=0 is immediate, §9
+        // check 12) — so a nearly-done worker still gets the full TTL to finish and
+        // exit on its own before the hard kill. wind_down is the message-path budget
+        // and does not apply here; the plane's ttl alone governs this grace. Signals
+        // are reserved for exactly this: TTL expiry and kill.
         supervised.TtlTimer = _clock.CreateTimer(_ => KillTree(supervised), null, ttl, Timeout.InfiniteTimeSpan);
-        return new StopAck(true, delivery);
+        return new StopAck(true, StopDelivery.Signal);
     }
 
     public bool Kill(TaskId task)
