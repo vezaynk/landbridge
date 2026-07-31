@@ -14,6 +14,15 @@ public sealed class ForwardEntry
 {
     private const int BufferSize = 64 * 1024;
 
+    /// <summary>
+    /// How long teardown lets the close handshake complete — both ends replying
+    /// with a Close frame so each side's final in-flight frame drains — before
+    /// aborting the sockets (spec §8.3). Normally satisfied in milliseconds; it is
+    /// a safety cap against a peer that never replies, not a delay the happy path
+    /// pays.
+    /// </summary>
+    private static readonly TimeSpan CloseHandshakeTimeout = TimeSpan.FromSeconds(10);
+
     /// <summary>Serializes claim/socket/removal mutation. Held by the registry too.</summary>
     internal readonly object Gate = new();
 
@@ -119,20 +128,39 @@ public sealed class ForwardEntry
         // increment). Whichever finishes first triggers teardown of both.
         await Task.WhenAny(toProducer, toConsumer);
 
-        // Close both peers cleanly so each observes a close frame, then cancel to
-        // unblock whatever pump is still parked in ReceiveAsync, and drain.
+        // Signal close to BOTH peers. CloseOutputAsync flushes each direction's
+        // final buffered frame to the transport and then writes a Close frame —
+        // the start of the WebSocket close handshake toward each end.
         await RelaySocket.CloseOutputQuietlyAsync(consumer, "relay: peer closed");
         await RelaySocket.CloseOutputQuietlyAsync(producer, "relay: peer closed");
-        await linked.CancelAsync();
 
+        // Let BOTH pumps finish by observing their peer's reply Close — i.e.
+        // complete the close handshake — BEFORE aborting anything. This is
+        // load-bearing, not cosmetic: cancelling a pump's in-flight WebSocket
+        // ReceiveAsync *aborts* that WebSocket (documented .NET behaviour), which
+        // RSTs the TCP connection and discards bytes we just flushed above but the
+        // OS has not yet transmitted — the forward's final frame. Under load that
+        // lost final frame surfaces at the far end as "closed without completing
+        // the close handshake" (e.g. a proxied websocket close, or the tail of a
+        // Postgres result). Waiting for the reply Close lets the flushed frame
+        // drain first. PumpAsync never throws (it swallows cancellation and
+        // WebSocket errors), so this WhenAll completes normally once both ends
+        // close. Bounded so a peer that never replies cannot hang teardown — do
+        // NOT "simplify" this back to an immediate cancel.
+        var drained = Task.WhenAll(toProducer, toConsumer);
+        await Task.WhenAny(drained, Task.Delay(CloseHandshakeTimeout, CancellationToken.None));
+
+        // Last resort only: a peer that never sent its reply Close within the
+        // window. Abort to reclaim the sockets — the final frame was already
+        // flushed above, so this fires for a genuinely stuck peer, not the happy path.
+        await linked.CancelAsync();
         try
         {
-            await Task.WhenAll(toProducer, toConsumer);
+            await drained;
         }
         catch (Exception)
         {
-            // Expected on teardown: the surviving pump ends via cancellation or a
-            // WebSocketException as its socket is torn down.
+            // Expected only if a stuck peer forced the abort above.
         }
     }
 
