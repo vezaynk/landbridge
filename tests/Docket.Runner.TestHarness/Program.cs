@@ -39,6 +39,10 @@ namespace Docket.Runner.TestHarness;
 ///                     supervisor's EventsSource.Terminal stdout drain: the reader
 ///                     maps the transcript to ToolCallEvents and per-task liveness.
 ///                     Waiting on stdin keeps the dead-man pipe governing lifetime.
+///   emit-both       — like emit-stream, but also write known lines to stderr after the
+///                     stdout fixture. Exercises §12 transcript capture: the supervisor
+///                     tees stdout to the .ndjson transcript and captures stderr to the
+///                     .stderr file while stdout still maps to events (tee, not divert).
 ///   echo-argv       — write the argv this process received (one token per line,
 ///                     including this mode word at [0]) to an atomic `argv` marker,
 ///                     then watch stdin like `run`. Lets the §11 resume tests assert
@@ -56,6 +60,15 @@ public static class Program
     /// <summary>Tool names the <c>emit-stream</c> fixture's <c>tool_use</c> blocks carry,
     /// in order — the supervisor test asserts ToolCallEvents drain in this sequence.</summary>
     public static readonly string[] EmitStreamToolNames = ["Bash", "Read"];
+
+    /// <summary>Verbatim stderr lines the <c>emit-both</c> mode writes after the stdout
+    /// fixture — the §12 capture test asserts they land in the task's <c>.stderr</c>
+    /// transcript exactly, while the stdout stream-json still tees and maps to events.</summary>
+    public static readonly string[] EmitBothStderrLines =
+    [
+        "docket-harness: warming up (stderr)",
+        "docket-harness: a noisy diagnostic line",
+    ];
 
     /// <summary>
     /// Exit code the dead-man's switch takes on stdin EOF. 66 == sysexits'
@@ -146,6 +159,18 @@ public static class Program
                 // drains it under EventsSource.Terminal), flush, then behave like
                 // `run`: watch stdin so the dead-man pipe still governs our lifetime.
                 await EmitStreamFixtureAsync();
+                return await WatchStdinAsync(cwd, grandchildren: [], onLine: null);
+
+            case "emit-both":
+                await WriteStartedAsync(cwd);
+                // §12 capture: emit the same stream-json fixture to stdout (so events
+                // still map under EventsSource.Terminal) AND known lines to stderr, then
+                // watch stdin like `run`. Lets a test prove the supervisor tees stdout to
+                // the .ndjson transcript and captures stderr to the .stderr file, verbatim.
+                await EmitStreamFixtureAsync();
+                foreach (var line in EmitBothStderrLines)
+                    await Console.Error.WriteLineAsync(line);
+                await Console.Error.FlushAsync();
                 return await WatchStdinAsync(cwd, grandchildren: [], onLine: null);
 
             case "echo-argv":

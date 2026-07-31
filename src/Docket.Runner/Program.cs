@@ -64,7 +64,21 @@ public static class Program
         var clock = TimeProvider.System;
         var ring = new OutboundEventRing(capacity: 1024);
         var reaper = new StrayReaper(ProcessInventory.ForCurrentPlatform(), Environment.ProcessId);
-        var supervisor = new ProcessSupervisor(config.Machine, ring, clock, reaper);
+
+        // §12 machine-local transcript capture lives under the state dir (alongside
+        // credentials.json), not the per-task work_root scratch — it must survive a
+        // task teardown and a docketd restart (the §11 resume substrate). Local
+        // retention is machine hygiene: the most generous prune_after_days any profile
+        // asked for wins, and any profile opting out (0) keeps everything.
+        var stateDir = CredentialStore.ResolveStateDir(ArgValue(args, "--state-dir"));
+        var pruneDays = config.Profiles.Values.Select(p => p.Logs.PruneAfterDays).ToArray();
+        var retention = pruneDays.Any(d => d <= 0)
+            ? TimeSpan.Zero
+            : TimeSpan.FromDays(pruneDays.Max());
+        var transcripts = new TranscriptStore(
+            Path.Combine(stateDir, TranscriptDefaults.DirName), retention, clock);
+
+        var supervisor = new ProcessSupervisor(config.Machine, ring, clock, reaper, transcripts);
         var backPressure = new BackPressureMonitor(
             SystemLoadReader.ForCurrentPlatform(config.Machine.WorkRoot), config.Machine.BackPressure);
 
@@ -86,7 +100,6 @@ public static class Program
         //   3. else the console placeholder.
         var controlUrl = Environment.GetEnvironmentVariable("DOCKET_CONTROL_URL");
         var envMachineToken = Environment.GetEnvironmentVariable("DOCKET_MACHINE_TOKEN");
-        var stateDir = CredentialStore.ResolveStateDir(ArgValue(args, "--state-dir"));
 
         WebSocketControlPlaneChannel? wsChannel = null;
         MachineTokenRefresher? refresher = null;

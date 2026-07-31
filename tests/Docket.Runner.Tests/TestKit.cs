@@ -71,14 +71,20 @@ internal static class TestKit
 
     /// <summary>A profile that runs the test harness in the given mode. Defaults to
     /// the honest <see cref="EventsSource.None"/>; pass <see cref="EventsSource.Terminal"/>
-    /// (optionally with a mapping) to exercise the stdout event drain.</summary>
+    /// (optionally with a mapping) to exercise the stdout event drain. Pass
+    /// <paramref name="capture"/> to turn on §12 transcript capture (with an optional
+    /// <paramref name="maxBytes"/> cap) — the supervisor still needs a
+    /// <see cref="TranscriptStore"/> for anything to be written.</summary>
     public static ProfileConfig Profile(
         string harnessMode,
         StopMode stopMode = StopMode.Signal,
         string name = "default",
         EventsSource events = EventsSource.None,
         IReadOnlyDictionary<string, string>? mapping = null,
-        TimeSpan? windDown = null) =>
+        TimeSpan? windDown = null,
+        bool capture = false,
+        long? maxBytes = null,
+        int pruneAfterDays = TranscriptDefaults.PruneAfterDays) =>
         new(
             name,
             [HarnessPath(), harnessMode],
@@ -86,7 +92,8 @@ internal static class TestKit
             Resume: null,
             new EventsConfig(events, mapping ?? new Dictionary<string, string>()),
             new TelemetryConfig(Otel: false, Endpoint: null),
-            new LogsConfig(Path: null, Format: null),
+            new LogsConfig(Path: null, Format: null, Capture: capture,
+                MaxBytes: maxBytes ?? TranscriptDefaults.MaxBytes, PruneAfterDays: pruneAfterDays),
             MaxConcurrent: null);
 
     /// <summary>
