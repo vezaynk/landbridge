@@ -142,14 +142,18 @@ public sealed class PreviewEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             label = mint.Label;
         }
 
-        await using var frontend = PreviewFrontendHarness.Start(RelayGrantTestKit.BaseUri(plane).ToString());
+        var planeBase = RelayGrantTestKit.BaseUri(plane).ToString();
+        await using var frontend = PreviewFrontendHarness.Start(planeBase, dashboardUrl: planeBase);
 
-        // Gated + no operator session → the plane refuses (401), the frontend relays it.
-        using (var browser = frontend.Browser())
+        // Gated + no session: a browser is 302'd to the dashboard confirm (not 401).
+        using (var browser = frontend.Browser(followRedirects: false))
         using (var response = await browser.GetAsync($"http://{label}.{Domain}/", ct))
-            Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+        {
+            Assert.Equal(HttpStatusCode.Found, response.StatusCode);
+            Assert.StartsWith($"{planeBase.TrimEnd('/')}/dashboard/preview-auth", response.Headers.Location!.ToString());
+        }
 
-        // With a live Lead session on the mapping's Team, the same request succeeds.
+        // The tooling path: a live Lead bearer on the mapping's Team admits directly.
         var leadToken = await RelayGrantTestKit.LeadTokenAsync(pg, team, ct);
         using (var browser = frontend.Browser())
         {
@@ -157,6 +161,73 @@ public sealed class PreviewEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             using var response = await browser.GetAsync($"http://{label}.{Domain}/", ct);
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);
         }
+
+        await producerDaemon.StopAsync();
+        await relay.StopAsync(ct);
+        await plane.StopAsync(ct);
+    }
+
+    [SkippableFact]
+    public async Task Gated_preview_full_browser_flow_redirect_code_cookie_content()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var ct = cts.Token;
+
+        await using var upstream = await PreviewUpstream.StartAsync();
+        var team = TeamId.New();
+        var producerTask = await RelayGrantTestKit.RegisterWorkingServiceAsync(pg, team, "web", ct, port: upstream.Port);
+
+        var relayUrl = RelayGrantTestKit.ReserveLoopbackUrl();
+        await using var plane = RelayGrantTestKit.BuildPlane(pg.ConnectionString, RelayBearer, relayUrl, PreviewBearer);
+        await plane.StartAsync(ct);
+        await using var relay = RelayGrantTestKit.BuildRelay(
+            RelayGrantTestKit.BaseUri(plane).ToString(), RelayBearer, listenUrl: relayUrl);
+        await relay.StartAsync(ct);
+
+        var registry = plane.Services.GetRequiredService<RunnerConnectionRegistry>();
+        await using var producerDaemon = new DaemonHarness("mp", new SinkForwardingChannel(plane.Services.GetRequiredService<RunnerEventSink>()));
+        await producerDaemon.StartAsync();
+        registry.Register("mp", new HashSet<string> { "default" }, producerDaemon.Send);
+        registry.TrackDispatch("mp", producerTask);
+
+        string label;
+        await using (var db = pg.NewContext())
+            label = (await new PreviewMappingService(db, TimeProvider.System)
+                .CreateAsync(team, producerTask, "web", PreviewAuthPolicy.Gated, TimeSpan.FromMinutes(30), ct)).Label;
+
+        var planeBase = RelayGrantTestKit.BaseUri(plane).ToString().TrimEnd('/');
+        await using var frontend = PreviewFrontendHarness.Start(planeBase, dashboardUrl: planeBase);
+        var operatorSession = await RelayGrantTestKit.LeadTokenAsync(pg, team, ct); // a §12 operator session
+
+        // Hop 1 — browser hits the gated preview with nothing → 302 to the dashboard confirm.
+        using var browser = frontend.Browser(followRedirects: false);
+        var authRedirect = (await browser.GetAsync($"http://{label}.{Domain}/app", ct)).Headers.Location!.ToString();
+        Assert.StartsWith($"{planeBase}/dashboard/preview-auth", authRedirect);
+
+        // Hop 2 — the operator confirms at the dashboard origin (docket_session) → 302 back with a code.
+        using var dashboard = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false });
+        using var authReq = new HttpRequestMessage(HttpMethod.Get, authRedirect);
+        authReq.Headers.Add("Cookie", $"docket_session={operatorSession}");
+        var back = (await dashboard.SendAsync(authReq, ct)).Headers.Location!.ToString();
+        Assert.Contains("docket_preview_code=", back);
+        Assert.StartsWith($"http://{label}.{Domain}/app", back);
+
+        // Hop 3 — browser carries the code back to the preview origin → cookie set, clean redirect.
+        HttpResponseMessage exchange = await browser.GetAsync(back, ct);
+        Assert.Equal(HttpStatusCode.Found, exchange.StatusCode);
+        Assert.Equal("/app", exchange.Headers.Location!.ToString());
+        var setCookie = Assert.Single(exchange.Headers.GetValues("Set-Cookie"));
+        var previewCookie = setCookie.Split(';')[0]; // docket_preview=…
+        Assert.StartsWith("docket_preview=", previewCookie);
+        exchange.Dispose();
+
+        // Hop 4 — the clean URL with the per-label cookie → content, end to end through the real relay.
+        using var content = new HttpRequestMessage(HttpMethod.Get, $"http://{label}.{Domain}/app");
+        content.Headers.Add("Cookie", previewCookie);
+        using var final = await browser.SendAsync(content, ct);
+        Assert.Equal(HttpStatusCode.OK, final.StatusCode);
+        Assert.Equal("hello from upstream", await final.Content.ReadAsStringAsync(ct));
 
         await producerDaemon.StopAsync();
         await relay.StopAsync(ct);
@@ -179,12 +250,13 @@ internal sealed class PreviewFrontendHarness : IAsyncDisposable
         _sp = sp;
     }
 
-    public static PreviewFrontendHarness Start(string controlPlaneUrl)
+    public static PreviewFrontendHarness Start(string controlPlaneUrl, string? dashboardUrl = null)
     {
         var options = new PreviewOptions
         {
             Domain = Domain,
             ControlPlaneUrl = controlPlaneUrl,
+            DashboardUrl = dashboardUrl ?? controlPlaneUrl,
             ControlPlaneBearer = PreviewBearer,
             FirstByteTimeout = TimeSpan.FromSeconds(30),
         };
@@ -199,9 +271,12 @@ internal sealed class PreviewFrontendHarness : IAsyncDisposable
         return new PreviewFrontendHarness(server, sp);
     }
 
-    public HttpClient Browser() =>
+    public int Port => _server.BoundPort;
+
+    public HttpClient Browser(bool followRedirects = true) =>
         new(new SocketsHttpHandler
         {
+            AllowAutoRedirect = followRedirects,
             ConnectCallback = async (_, ct) =>
             {
                 var socket = new Socket(SocketType.Stream, ProtocolType.Tcp);

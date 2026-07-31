@@ -7,6 +7,7 @@ using Docket.ControlPlane.Auth;
 using Docket.ControlPlane.Tests;
 using Docket.Core;
 using Docket.Mcp.Auth;
+using Docket.Mcp.Dashboard;
 using Docket.Mcp.Tools;
 using Docket.Relay;
 using Microsoft.AspNetCore.Authentication;
@@ -67,6 +68,11 @@ internal static class RelayGrantTestKit
         // §8.4: the preview mapping store + the per-connection connect orchestrator.
         builder.Services.AddScoped<PreviewMappingService>();
         builder.Services.AddScoped<PreviewConnectService>();
+        builder.Services.AddSingleton<PreviewAuthStore>();
+        // §12 dashboard: the read side + operator verifier, so the preview-auth confirm
+        // and the mint endpoint are exercisable end to end (the gated browser flow, §8.4).
+        builder.Services.AddScoped<DashboardQueries>();
+        builder.Services.AddSingleton<IOperatorVerifier, ConfiguredOperatorVerifier>();
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<RunnerConnectionRegistry>();
         // §8.3: the forward orchestrator + waiter, and the event sink that completes
@@ -91,6 +97,7 @@ internal static class RelayGrantTestKit
         app.MapMcp().RequireAuthorization();
         app.MapRelayValidationEndpoint();
         app.MapPreviewConnectEndpoint();
+        app.MapDashboard();
         return app;
     }
 

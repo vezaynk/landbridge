@@ -53,6 +53,25 @@ public sealed class PreviewMappingService(DocketDbContext db, TimeProvider clock
     }
 
     /// <summary>
+    /// Mint on behalf of a worker (spec §8.4 <c>open_preview</c>): the worker may
+    /// only preview a service <b>it registered on its own task</b> (task-scoped,
+    /// like <c>open_forward</c> is worker-scoped). Returns null when the caller's
+    /// task did not register <paramref name="serviceName"/> — even a same-Team
+    /// service owned by another task is not this worker's to expose. On success the
+    /// mapping records the caller's Team + task.
+    /// </summary>
+    public async Task<PreviewMintResult?> CreateForWorkerAsync(
+        WorkerCaller caller, string serviceName, PreviewAuthPolicy authPolicy, TimeSpan ttl,
+        CancellationToken ct = default)
+    {
+        var owns = await db.RegisteredServices.AsNoTracking().AnyAsync(
+            s => s.TeamId == caller.Team.Value && s.TaskId == caller.Task.Value && s.Name == serviceName, ct);
+        if (!owns)
+            return null;
+        return await CreateAsync(caller.Team, caller.Task, serviceName, authPolicy, ttl, ct);
+    }
+
+    /// <summary>
     /// Resolve a subdomain label to its mapping (spec §8.4). Looks up by hash of
     /// the normalized label; a label that resolves to nothing is
     /// <see cref="PreviewResolveResult.NotFound"/> and one past its

@@ -27,7 +27,7 @@ internal static class PreviewTestKit
     public const string Domain = "preview.localhost";
 
     /// <summary>A browser HttpClient whose Host header is honoured but which always dials the frontend port.</summary>
-    public static HttpClient Browser(int frontendPort)
+    public static HttpClient Browser(int frontendPort, bool followRedirects = true)
     {
         var handler = new SocketsHttpHandler
         {
@@ -40,6 +40,7 @@ internal static class PreviewTestKit
             // Force one connection per handler so N browsers = N frontend connections.
             MaxConnectionsPerServer = 1,
             PooledConnectionLifetime = Timeout.InfiniteTimeSpan,
+            AllowAutoRedirect = followRedirects,
         };
         return new HttpClient(handler);
     }
@@ -80,12 +81,14 @@ internal sealed class PreviewHarness : IAsyncDisposable
     public static PreviewHarness Start(
         string controlPlaneUrl,
         TimeSpan? firstByteTimeout = null,
-        PreviewCertificateProvider? certificates = null)
+        PreviewCertificateProvider? certificates = null,
+        string? dashboardUrl = null)
     {
         var options = new PreviewOptions
         {
             Domain = PreviewTestKit.Domain,
             ControlPlaneUrl = controlPlaneUrl,
+            DashboardUrl = dashboardUrl ?? "http://dashboard.test",
             ControlPlaneBearer = "preview-shared-secret-under-test",
             FirstByteTimeout = firstByteTimeout ?? TimeSpan.FromSeconds(20),
             HeadReadTimeout = TimeSpan.FromSeconds(10),
@@ -114,7 +117,7 @@ internal sealed class FakeControlPlane : IAsyncDisposable
 {
     private readonly WebApplication _app;
 
-    public sealed record Call(string? Label, string? OperatorSession, string? Bearer);
+    public sealed record Call(string? Label, string? OperatorSession, string? PreviewSession, string? Bearer);
 
     /// <summary>Every connect call the frontend made — asserts routing/auth forwarding and N-connection counts.</summary>
     public ConcurrentQueue<Call> Calls { get; } = new();
@@ -125,12 +128,24 @@ internal sealed class FakeControlPlane : IAsyncDisposable
     /// <summary>Where an Armed result points the frontend (set to the fake bridge's URL).</summary>
     public string RelayUrl { get; set; } = "";
 
+    /// <summary>Gated mode: connect returns 401 unless the call carries exactly this preview session.</summary>
+    public string? RequiredPreviewSession { get; set; }
+
+    /// <summary>The one-time code /preview/exchange accepts, redeeming it into <see cref="RequiredPreviewSession"/>.</summary>
+    public string ExchangeCode { get; set; } = "good-code";
+
     private FakeControlPlane(WebApplication app)
     {
         _app = app;
-        Handler = call => call.Bearer is null
-            ? Results.StatusCode(StatusCodes.Status401Unauthorized)
-            : Results.Ok(new { grant = "g-" + Guid.NewGuid().ToString("N"), forwardId = Guid.NewGuid().ToString("N"), relayUrl = RelayUrl });
+        Handler = call =>
+        {
+            if (call.Bearer is null) // the frontend→plane shared bearer must be present
+                return Results.StatusCode(StatusCodes.Status401Unauthorized);
+            // Gated mode: admit only a matching per-label preview session.
+            if (RequiredPreviewSession is { } req && call.PreviewSession != req)
+                return Results.StatusCode(StatusCodes.Status401Unauthorized);
+            return Results.Ok(new { grant = "g-" + Guid.NewGuid().ToString("N"), forwardId = Guid.NewGuid().ToString("N"), relayUrl = RelayUrl });
+        };
     }
 
     public string Url => _app.Urls.First(u => u.StartsWith("http://", StringComparison.Ordinal));
@@ -148,15 +163,24 @@ internal sealed class FakeControlPlane : IAsyncDisposable
             var auth = http.Request.Headers.Authorization.ToString();
             var bearer = auth.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)
                 ? auth["Bearer ".Length..].Trim() : null;
-            var call = new Call(body?.Label, body?.OperatorSession, bearer);
+            var call = new Call(body?.Label, body?.OperatorSession, body?.PreviewSession, bearer);
             cp.Calls.Enqueue(call);
             return cp.Handler(call);
+        });
+        app.MapPost("/preview/exchange", async (HttpContext http) =>
+        {
+            var body = await http.Request.ReadFromJsonAsync<ExchangeBody>();
+            return body?.Code == cp.ExchangeCode
+                ? Results.Ok(new { previewSession = cp.RequiredPreviewSession ?? "sess-ok", maxAgeSeconds = 1800 })
+                : Results.StatusCode(StatusCodes.Status401Unauthorized);
         });
         await app.StartAsync();
         return cp;
     }
 
-    private sealed record ConnectBody(string? Label, string? OperatorSession);
+    private sealed record ConnectBody(string? Label, string? OperatorSession, string? PreviewSession);
+
+    private sealed record ExchangeBody(string? Label, string? Code);
 
     public async ValueTask DisposeAsync() => await _app.DisposeAsync();
 }
@@ -331,6 +355,10 @@ internal sealed class UpstreamService : IAsyncDisposable
             http.Response.StatusCode = StatusCodes.Status200OK;
             http.Response.Headers["X-Echo-Path"] = http.Request.Path + http.Request.QueryString;
             http.Response.Headers["X-Echo-Host"] = http.Request.Host.Value;
+            // Echo any auth material the upstream received back, so a test can assert
+            // the frontend HEAD-STRIP removed it (§8.4): these must come back empty.
+            http.Response.Headers["X-Echo-Auth"] = http.Request.Headers.Authorization.ToString();
+            http.Response.Headers["X-Echo-Cookie"] = http.Request.Headers.Cookie.ToString();
             http.Response.Headers["Set-Cookie"] = "sess=abc123; Path=/; HttpOnly";
             http.Response.Headers["Location"] = "https://example.com/absolute/target";
             await http.Response.WriteAsync("hello from upstream");

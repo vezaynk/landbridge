@@ -169,6 +169,7 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
         builder.Services.AddScoped<TaskStore>();
         builder.Services.AddScoped<RelayGrantService>();
+        builder.Services.AddScoped<PreviewMappingService>(); // §8.4: WorkerTools.open_preview
         builder.Services.AddScoped<TokenService>();
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<RunnerConnectionRegistry>();

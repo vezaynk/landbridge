@@ -47,6 +47,20 @@ var relayUrl = $"http://{relayHost}:{relayPort}";
 // must not be what stands (a tunnel spliced on an unvalidated grant is the §13 risk).
 var relayValidationBearer = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
 
+// The HTTP preview frontend's dev wiring (§8.4). Its raw TcpListener owns a fixed
+// browser-facing port; its Kestrel (health only) sits on a separate fixed port.
+// preview.localhost (and any *.preview.localhost label) resolves to loopback, so a
+// browser reaches http://{label}.preview.localhost:5200 directly. One shared bearer
+// authenticates the frontend to the plane's /preview/connect + /preview/exchange
+// (the plane checks Docket:PreviewConnect:Bearer; the frontend presents it).
+const string previewDomain = "preview.localhost";
+const int previewPort = 5200;
+const int previewHealthPort = 5202;
+var previewUrlBase = $"http://{previewDomain}:{previewPort}";
+var previewHealthUrl = $"http://127.0.0.1:{previewHealthPort}";
+var previewListenPort = previewPort.ToString();
+var previewConnectBearer = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
+
 // A per-run scratch area under the temp dir: the machine-token seed file the MCP
 // host writes and docketd reads, and docketd's work_root for per-task dirs.
 var runDir = Directory.CreateDirectory(
@@ -95,6 +109,11 @@ var mcp = builder.AddProject<Projects.Docket_Mcp>("mcp", options => options.Excl
     // open_forward. Both are read from IConfiguration by Docket.Mcp; set as env.
     .WithEnvironment("Docket__RelayValidation__Bearer", relayValidationBearer)
     .WithEnvironment("Docket__RelayUrl", relayUrl)
+    // §8.4 preview: the shared bearer the plane's /preview/connect + /preview/exchange
+    // require, and the wildcard base the plane builds preview URLs onto (open_preview
+    // + the dashboard mint read Docket:PreviewUrlBase).
+    .WithEnvironment("Docket__PreviewConnect__Bearer", previewConnectBearer)
+    .WithEnvironment("Docket__PreviewUrlBase", previewUrlBase)
     .WithHttpHealthCheck("/health");
 
 // docket-relay as a dev-loop resource (§8.3). Same fixed, un-proxied endpoint
@@ -113,6 +132,25 @@ builder.AddProject<Projects.Docket_Relay>("relay", options => options.ExcludeLau
     .WithEnvironment("ASPNETCORE_ENVIRONMENT", "Development")
     .WithEnvironment("Relay__ControlPlane__Url", mcpUrl)
     .WithEnvironment("Relay__ControlPlane__Bearer", relayValidationBearer)
+    .WithHttpHealthCheck("/health");
+
+// docket-preview as a dev-loop resource (§8.4). Two listeners: a raw TcpListener on
+// the fixed browser port (Preview:ListenPort — a browser hits
+// http://{label}.preview.localhost:5200) and Kestrel on a separate fixed port for
+// health only (ASPNETCORE_URLS + WithHttpHealthCheck). Plaintext (no cert) in dev —
+// production supplies a wildcard PEM. It calls the plane's /preview/connect +
+// /preview/exchange with the shared bearer, and redirects gated browsers to the
+// dashboard origin (mcpUrl) to confirm. WaitFor(mcp): it calls the plane on connect.
+builder.AddProject<Projects.Docket_Preview>("preview", options => options.ExcludeLaunchProfile = true)
+    .WaitFor(mcp)
+    .WithHttpEndpoint(port: previewHealthPort, targetPort: previewHealthPort, isProxied: false)
+    .WithEnvironment("ASPNETCORE_URLS", previewHealthUrl)
+    .WithEnvironment("ASPNETCORE_ENVIRONMENT", "Development")
+    .WithEnvironment("Preview__ListenPort", previewListenPort)
+    .WithEnvironment("Preview__Domain", previewDomain)
+    .WithEnvironment("Preview__ControlPlaneUrl", mcpUrl)
+    .WithEnvironment("Preview__DashboardUrl", mcpUrl)
+    .WithEnvironment("Preview__ControlPlaneBearer", previewConnectBearer)
     .WithHttpHealthCheck("/health");
 
 // docketd's config: read the committed template, resolve the two AppHost-owned
