@@ -8,18 +8,18 @@ runs today.
 
 ## The shape
 
-One control plane per Instance, many machines, an optional relay, a verifier, and
-a dashboard. Everything an agent touches goes through the control plane's MCP
-surface; everything a machine does goes through `docketd`. `docketd` and the
-verifier only ever dial *out*, so they work behind NAT with no inbound firewall
-rule.
+One control plane per Instance, many machines, an optional relay, and a
+dashboard. Everything an agent touches goes through the control plane's MCP
+surface; everything a machine does goes through `docketd`. `docketd` only ever
+dials *out*, so it works behind NAT with no inbound firewall rule. Completion is
+adjudicated by the Lead over MCP (§7, §9 check 4) — there is no verifier process.
 
 ```
-   human (browser / harness)                        verifier (non-agent)
-        │  OAuth 2.1 / operator passphrase                │  bearer, polls
-        ▼                                                 ▼
+   human (browser / harness)
+        │  OAuth 2.1 / operator passphrase
+        ▼
   ┌───────────────────────── Docket.Mcp (the host) ─────────────────────────┐
-  │  MCP tools  ·  /runner WS  ·  OAuth AS  ·  /enroll  ·  /verify           │
+  │  MCP tools  ·  /runner WS  ·  OAuth AS  ·  /enroll                       │
   │  /relay/validate  ·  /dashboard         (spec §5, §10, §12)              │
   │                                                                          │
   │  Docket.ControlPlane:  TaskStore ─► Docket.Core (pure state machine)     │
@@ -45,8 +45,8 @@ rule.
 
 - **`Docket.Mcp`** is the single ASP.NET process (`docket` + `docket-mcp` in spec
   terms). It hosts the MCP tool endpoint, the `/runner` WebSocket, the OAuth
-  authorization-server endpoints, `/enroll` + `/machine/refresh`, the `/verify`
-  webhook, `/relay/validate`, and the web dashboard. It owns one Postgres
+  authorization-server endpoints, `/enroll` + `/machine/refresh`,
+  `/relay/validate`, and the web dashboard. It owns one Postgres
   database and is the *only* path to the state machine — there is no
   client-direct table access (spec §3, §15).
 - **`Docket.ControlPlane`** is the library behind that host: the store, auth,
@@ -56,8 +56,8 @@ rule.
   spawns and supervises harness processes, heartbeats, relays events, holds the
   machine credential, and opens relay tunnels. It never touches the workspace or
   interprets task content (spec §2 principle 6, §10).
-- **`docket-relay`** and **`docket-verifier`** are standalone modules that dial
-  the plane; neither is part of the host process.
+- **`docket-relay`** is a standalone module that dials the plane; it is not part
+  of the host process. (There is no verifier module — completion is Lead-adjudicated.)
 
 ## The engine is pure; opaque metadata rides the row
 
@@ -82,9 +82,10 @@ record as plain columns the plane stores and returns but never dereferences:
 
 | Field | Carries | Interpreted by |
 |---|---|---|
-| `CompletionCriteria` | the completion bar | the verifier or a human (§7) |
+| `CompletionCriteria` | the completion bar | the Lead or a human adjudicating (§7, §9 check 4) |
 | `Workspace` | where/how work is isolated, port assignments | the worker's skill (§7) |
-| `ResultReference` | where the finished work lives (a commit/URL) | the verifier (§8.1) |
+| `ResultReference` | where the finished work lives (a commit/URL) | the Lead reading it before adjudicating (§8.1) |
+| `CompletionProvenance` | who adjudicated a completed task (`lead-session` \| `human`) | the §12 dashboard (§9 check 4) |
 | `ParkRecord{Machine, Directory, HarnessSessionRef, Attempt}` | resume affinity | `docketd` on redispatch (§11) |
 | `TraceContext` | W3C `traceparent` for cross-process tracing | OpenTelemetry, not the domain |
 | `Profile` | optional runner-profile routing key | exact-match at dispatch, never parsed |
@@ -95,17 +96,16 @@ path (task state) is kept separate from the event firehose (spec §3).
 
 ## Credential classes, and how a worker's identity is minted
 
-Every credential descends from a human (spec §2 principle 5, §5). There are five
+Every credential descends from a human (spec §2 principle 5, §5). There are four
 classes, held as **opaque tokens** (not JWTs) so revocation takes effect
 instantly — `TokenService` stores only a SHA-256 hash and validates by lookup:
 
 | Identity | Token prefix | Obtained | Authorizes |
 |---|---|---|---|
-| Human | `dkt_h_` | OAuth code flow / operator passphrase | create Teams, verdicts, dashboard |
-| Lead | `dkt_l_` | claimed against a Team under a human session | create tasks, answer, `submit_review`, read Team state |
+| Human | `dkt_h_` | OAuth code flow / operator passphrase | create Teams, confirm verdicts, dashboard |
+| Lead | `dkt_l_` | claimed against a Team under a human session | create tasks, answer, adjudicate completion (`submit_review`), read Team state |
 | Machine (`docketd`) | `dkt_m_` / `dkt_r_` | enrollment token → client credentials | runner channel |
 | Worker | `dkt_w_` | **minted at dispatch** | MCP worker tools, scoped to `{team, task, worker, instance}` |
-| Verifier | `dkt_v_` | human-provisioned client credential | verdicts out of `verifying`, plus read scope |
 
 The asymmetry is deliberate. A Lead's authority comes down from a human directly.
 A worker's is minted by the control plane from the Lead's dispatch decision — **a
@@ -132,13 +132,12 @@ and worker-triggered transitions are accepted only from the incumbent instance
 (§9 check 14). An orphaned harness — a SIGKILLed daemon, a healed partition —
 holds a token that is already dead. Token exchange is strictly narrowing: the
 only exchange in the system is enrollment → machine credentials; there is no path
-from a worker credential to a verifier credential or a lead claim (§5, §9 check
-13).
+from a worker credential to a lead claim or a human session (§5, §9 check 13).
 
 The host authenticates callers with a single `DocketAuthenticationHandler` that
 maps a bearer token to a typed `Principal`; the MCP tools then narrow (Lead tools
-require a lead principal, worker tools a worker principal), `/runner` requires a
-machine principal, `/verify` a verifier principal.
+require a lead principal, worker tools a worker principal), and `/runner` requires
+a machine principal.
 
 ## The task state machine (§6)
 

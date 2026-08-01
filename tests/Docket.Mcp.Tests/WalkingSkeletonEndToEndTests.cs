@@ -79,7 +79,7 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
             {
                 ["description"] = description,
                 ["completionCriteria"] = criteria,
-                ["mode"] = "automated",
+                ["mode"] = "lead",
                 ["profile"] = null,
                 ["workspace"] = workspace,
             }, cancellationToken: ct);

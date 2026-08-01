@@ -22,7 +22,8 @@ public sealed record TeamStateView(
 /// surfaces §12's "parks per task" signal — whether decomposition is starving on
 /// human attention. <see cref="ContinuesTaskId"/> is the Y-continues-X lineage
 /// (§6/§11): the prior task whose harness session this one resumed, or null for an
-/// ordinary task — an identifier, never prose.
+/// ordinary task — an identifier, never prose. <see cref="CompletionProvenance"/>
+/// records who adjudicated a completed task (§9 check 4), null until then.
 /// </summary>
 public sealed record TeamTaskSummary(
     Guid TaskId,
@@ -31,7 +32,8 @@ public sealed record TeamTaskSummary(
     CompletionMode Mode,
     int Attempt,
     bool Parked,
-    Guid? ContinuesTaskId);
+    Guid? ContinuesTaskId,
+    VerdictProvenance? CompletionProvenance);
 
 /// <summary>
 /// The seed facts a <c>create_task(continues:)</c> reads off the continued task's
@@ -45,22 +47,6 @@ public sealed record ContinuationSource(
     string? Profile,
     string? HarnessSessionRef,
     string? ParkMachine);
-
-/// <summary>
-/// The verifier's narrow read scope (§5, §10 verifier webhook): one automated
-/// task in <see cref="TaskState.Verifying"/> the verifier may run its check
-/// against. It carries exactly what §5 permits — the namespace, the opaque
-/// completion criteria the verifier interprets (§7), and the result reference
-/// the worker reported — and nothing else. Review-mode tasks are excluded: their
-/// verdict arrives through the Lead's <c>submit_review</c> (human-confirmed, §7),
-/// not this webhook. The <see cref="ResultReference"/> is null only if the worker
-/// somehow reached verifying without one, which the state machine forbids (§6).
-/// </summary>
-public sealed record VerifyingTaskView(
-    Guid TaskId,
-    string Namespace,
-    string CompletionCriteria,
-    string? ResultReference);
 
 /// <summary>
 /// One blocked_on_input task as the wait-TTL sweeper reads it (§11):

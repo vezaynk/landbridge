@@ -7,7 +7,7 @@ public class LifecycleTests
     public void Create_by_lead_produces_submitted()
     {
         var result = TaskStateMachine.Create(
-            new CreateTask(Given.Lead, Given.Team, "pnpm test", CompletionMode.Automated,
+            new CreateTask(Given.Lead, Given.Team, "pnpm test", CompletionMode.Lead,
                 Profile: null, TeamBudgetRemains: true),
             Given.Id, "team-x/task-y");
 
@@ -59,15 +59,16 @@ public class LifecycleTests
     }
 
     [Fact]
-    public void Verifier_acceptance_completes_an_automated_task_and_revokes_the_instance()
+    public void Lead_acceptance_completes_a_lead_task_and_revokes_the_instance()
     {
         var task = Given.Task(TaskState.Verifying);
         var incumbent = task.CurrentInstance!.Value;
 
-        var result = TaskStateMachine.Apply(task, new VerdictAccept(Given.Verifier));
+        var result = TaskStateMachine.Apply(task, new VerdictAccept(Given.Lead));
 
         var next = Expect.Transitioned(result, TaskState.Completed);
         Assert.Null(next.CurrentInstance);
+        Assert.Equal(VerdictProvenance.LeadSession, next.CompletionProvenance);
         Assert.Contains(new RevokeWorkerInstanceToken(incumbent), Expect.Effects(result));
     }
 
@@ -76,7 +77,7 @@ public class LifecycleTests
     {
         var result = TaskStateMachine.Apply(
             Given.Task(TaskState.Verifying, verificationFailures: 0, retryLimit: 3),
-            new VerdictFail(Given.Verifier));
+            new VerdictFail(Given.Lead));
 
         var next = Expect.Transitioned(result, TaskState.Submitted);
         Assert.Equal(1, next.VerificationFailures);
@@ -88,7 +89,7 @@ public class LifecycleTests
     {
         var result = TaskStateMachine.Apply(
             Given.Task(TaskState.Verifying, verificationFailures: 2, retryLimit: 3),
-            new VerdictFail(Given.Verifier));
+            new VerdictFail(Given.Lead));
 
         Expect.Transitioned(result, TaskState.Rejected);
     }
@@ -177,7 +178,7 @@ public class LifecycleTests
     public void Full_lifecycle_with_one_failed_verification_lands_completed_with_correct_counters()
     {
         var created = TaskStateMachine.Create(
-            new CreateTask(Given.Lead, Given.Team, "make test", CompletionMode.Automated,
+            new CreateTask(Given.Lead, Given.Team, "make test", CompletionMode.Lead,
                 Profile: null, TeamBudgetRemains: true),
             Given.Id, "team-x/task-y");
         var task = ((TransitionResult.Transitioned)created).Task;
@@ -185,12 +186,12 @@ public class LifecycleTests
         var first = WorkerInstanceId.New();
         task = Expect.Transitioned(TaskStateMachine.Apply(task, new Dispatch(Given.Machine(), first)), TaskState.Working);
         task = Expect.Transitioned(TaskStateMachine.Apply(task, new ReportResult(new WorkerCaller(task.Team, task.Id, first), "ref-1")), TaskState.Verifying);
-        task = Expect.Transitioned(TaskStateMachine.Apply(task, new VerdictFail(Given.Verifier)), TaskState.Submitted);
+        task = Expect.Transitioned(TaskStateMachine.Apply(task, new VerdictFail(Given.Lead)), TaskState.Submitted);
 
         var second = WorkerInstanceId.New();
         task = Expect.Transitioned(TaskStateMachine.Apply(task, new Dispatch(Given.Machine(), second)), TaskState.Working);
         task = Expect.Transitioned(TaskStateMachine.Apply(task, new ReportResult(new WorkerCaller(task.Team, task.Id, second), "ref-2")), TaskState.Verifying);
-        task = Expect.Transitioned(TaskStateMachine.Apply(task, new VerdictAccept(Given.Verifier)), TaskState.Completed);
+        task = Expect.Transitioned(TaskStateMachine.Apply(task, new VerdictAccept(Given.Lead)), TaskState.Completed);
 
         Assert.Equal(2, task.Attempt);
         Assert.Equal(1, task.VerificationFailures);

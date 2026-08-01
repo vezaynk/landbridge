@@ -41,7 +41,7 @@ public sealed class ContinuationDispatchTests(PostgresFixture pg) : IAsyncLifeti
     {
         var continued = TaskId.New();
         var result = await NewStore(db).CreateAsync(new CreateTask(
-            Lead, Team, "criteria", CompletionMode.Automated, profile, TeamBudgetRemains: true,
+            Lead, Team, "criteria", CompletionMode.Lead, profile, TeamBudgetRemains: true,
             Continues: new Continuation(continued, Team, preferredMachine, sessionRef, policy, PreferredMachineProfiles: null)));
         return (((StoreResult.Applied)result).Task.Id, continued);
     }
@@ -159,7 +159,7 @@ public sealed class ContinuationDispatchTests(PostgresFixture pg) : IAsyncLifeti
         // The engine gate fires through the store: a continuation whose continued task
         // belongs to another Team is refused before any row is written.
         var result = await NewStore(db).CreateAsync(new CreateTask(
-            Lead, Team, "criteria", CompletionMode.Automated, null, TeamBudgetRemains: true,
+            Lead, Team, "criteria", CompletionMode.Lead, null, TeamBudgetRemains: true,
             Continues: new Continuation(TaskId.New(), TeamId.New(), "m1", "sess-1", MachineGonePolicy.Degrade, null)));
 
         var rejected = Assert.IsType<StoreResult.Rejected>(result);
@@ -173,7 +173,7 @@ public sealed class ContinuationDispatchTests(PostgresFixture pg) : IAsyncLifeti
         await using var db = pg.NewContext();
 
         var result = await NewStore(db).CreateAsync(new CreateTask(
-            Lead, Team, "criteria", CompletionMode.Automated, "gpu", TeamBudgetRemains: true,
+            Lead, Team, "criteria", CompletionMode.Lead, "gpu", TeamBudgetRemains: true,
             Continues: new Continuation(
                 TaskId.New(), Team, "m1", "sess-1", MachineGonePolicy.Degrade,
                 PreferredMachineProfiles: new HashSet<string> { "default" })));

@@ -9,7 +9,6 @@ internal static class Given
     public static LeadClaim Lead => new(Team);
     public static LeadClaim ForeignLead => new(OtherTeam);
     public static HumanSession Human => new();
-    public static VerifierCredential Verifier => new();
 
     public static MachineSnapshot Machine(
         bool ready = true,
@@ -22,7 +21,7 @@ internal static class Given
 
     public static TaskRecord Task(
         TaskState state = TaskState.Submitted,
-        CompletionMode mode = CompletionMode.Automated,
+        CompletionMode mode = CompletionMode.Lead,
         WorkerInstanceId? instance = null,
         int verificationFailures = 0,
         int retryLimit = 3,

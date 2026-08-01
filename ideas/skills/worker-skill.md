@@ -13,7 +13,7 @@ Your dispatch carries a task with a `description`, `completion.criteria`, and a 
 
 **Use the workspace you were given.** It was assigned so that concurrent tasks — possibly several on this same machine, possibly from your own Team — don't collide. Do not choose your own working directory, do not work in a shared checkout, do not bind a port you weren't assigned. If the workspace seems wrong or missing something, that's a blocker, not a thing to improvise around.
 
-**The completion criteria are the contract.** Everything else in the description is context for meeting them. When you think you're done, the criteria are what gets checked — by an automated verifier or by a human, never by you.
+**The completion criteria are the contract.** Everything else in the description is context for meeting them. When you think you're done, the criteria are what gets checked — by your Lead or a human, never by you.
 
 **Check `attempt` before you touch anything.** If it is greater than 1, a previous worker held this task and may have touched the workspace before dying or being requeued — and its last action has unknown outcome. Inspect what exists (workspace state, any notes the prior attempt persisted) before trusting or overwriting it, and verify rather than repeat anything with external side effects.
 

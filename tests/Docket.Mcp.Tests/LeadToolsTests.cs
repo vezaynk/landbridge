@@ -49,7 +49,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         Skip.IfNot(pg.Available, pg.SkipReason);
         var tools = LeadFor(new Principal.Lead(Team));
 
-        var idText = await tools.CreateTask("build the thing", "ship it", "automated", null, "ws:main", CancellationToken.None);
+        var idText = await tools.CreateTask("build the thing", "ship it", "lead", null, "ws:main", CancellationToken.None);
 
         var id = Guid.Parse(idText);
         await using var v = pg.NewContext();
@@ -70,7 +70,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         // The description is the worker's instructions; the tool refuses an empty
         // one before the command ever reaches the store.
         var ex = await Assert.ThrowsAsync<McpException>(
-            () => tools.CreateTask("   ", "ship it", "automated", null, null, CancellationToken.None));
+            () => tools.CreateTask("   ", "ship it", "lead", null, null, CancellationToken.None));
         Assert.Contains("description", ex.Message);
     }
 
@@ -81,7 +81,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         var tools = LeadFor(new Principal.Lead(Team));
 
         var ex = await Assert.ThrowsAsync<McpException>(
-            () => tools.CreateTask("build the thing", "   ", "automated", null, null, CancellationToken.None));
+            () => tools.CreateTask("build the thing", "   ", "lead", null, null, CancellationToken.None));
         Assert.Contains(nameof(Rule.CompletionCriteriaNonEmpty), ex.Message);
     }
 
@@ -105,7 +105,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         // §7: an unattended lead turn cannot complete a review task.
         var refused = await Assert.ThrowsAsync<McpException>(
             () => tools.SubmitReview(taskId.ToString(), "accept", humanConfirmed: false, CancellationToken.None));
-        Assert.Contains(nameof(Rule.CompletionRequiresNonAgentVerdict), refused.Message);
+        Assert.Contains(nameof(Rule.CompletionByLeadOrHuman), refused.Message);
 
         await using (var v = pg.NewContext())
             Assert.Equal(TaskState.Verifying, (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == taskId.Value)).State);
@@ -118,11 +118,43 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task Create_task_defaults_to_lead_mode_when_mode_is_omitted()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var tools = LeadFor(new Principal.Lead(Team));
+
+        // §7: mode omitted (null) defaults to lead — the Claude Code default.
+        var idText = await tools.CreateTask("build the thing", "ship it", mode: null, null, null, CancellationToken.None);
+
+        var id = Guid.Parse(idText);
+        await using var v = pg.NewContext();
+        Assert.Equal(CompletionMode.Lead, (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id)).CompletionMode);
+    }
+
+    [SkippableFact]
+    public async Task Submit_review_in_lead_mode_completes_without_human_confirmation_and_records_provenance()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var taskId = await SeedTaskInVerifying(CompletionMode.Lead);
+        var tools = LeadFor(new Principal.Lead(Team));
+
+        // §9 check 4: in lead mode the Lead's own verdict completes the task — no
+        // humanConfirmed — and the completion records lead-session provenance.
+        var ok = await tools.SubmitReview(taskId.ToString(), "accept", humanConfirmed: false, CancellationToken.None);
+        Assert.Contains("Completed", ok);
+
+        await using var v = pg.NewContext();
+        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == taskId.Value);
+        Assert.Equal(TaskState.Completed, row.State);
+        Assert.Equal(VerdictProvenance.LeadSession, row.CompletionProvenance);
+    }
+
+    [SkippableFact]
     public async Task Get_team_state_returns_counts_and_states_scoped_to_the_lead_team()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var tools = LeadFor(new Principal.Lead(Team));
-        await tools.CreateTask("first", "a", "automated", null, null, CancellationToken.None);
+        await tools.CreateTask("first", "a", "lead", null, null, CancellationToken.None);
         await tools.CreateTask("second", "b", "review", null, null, CancellationToken.None);
 
         var view = await tools.GetTeamState(CancellationToken.None);
@@ -138,7 +170,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var tools = LeadFor(new Principal.Lead(Team));
-        var idText = await tools.CreateTask("build the thing", "a", "automated", null, null, CancellationToken.None);
+        var idText = await tools.CreateTask("build the thing", "a", "lead", null, null, CancellationToken.None);
 
         var msg = await tools.CancelTask(idText, "preserve", CancellationToken.None);
 
@@ -240,7 +272,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
 
         // §4: not a bare authorization error — the reason names who and when.
         var ex = await Assert.ThrowsAsync<McpException>(
-            () => tools.CreateTask("build the thing", "a", "automated", null, null, CancellationToken.None));
+            () => tools.CreateTask("build the thing", "a", "lead", null, null, CancellationToken.None));
         Assert.Contains("taken over", ex.Message);
         Assert.Contains(evictedBy.ToString("N"), ex.Message);
 
@@ -256,7 +288,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         var tools = LeadFor(worker);
 
         await Assert.ThrowsAsync<McpException>(
-            () => tools.CreateTask("build the thing", "a", "automated", null, null, CancellationToken.None));
+            () => tools.CreateTask("build the thing", "a", "lead", null, null, CancellationToken.None));
     }
 
     /// <summary>Drives a task to blocked_on_input via dispatch + a worker's request.</summary>
@@ -265,7 +297,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         await using var db = pg.NewContext();
         var store = new TaskStore(db, _clock);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(new LeadClaim(Team), Team, "needs input", CompletionMode.Automated, null, TeamBudgetRemains: true));
+            new CreateTask(new LeadClaim(Team), Team, "needs input", CompletionMode.Lead, null, TeamBudgetRemains: true));
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(Machine(), instance);
         await store.ApplyAsync(created.Task.Id,
@@ -307,12 +339,14 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
             new SystemLoad(0, 0, 0), RunningTasks: 0, profiles, DateTimeOffset.UtcNow);
 
     /// <summary>Drives a review-mode task all the way to verifying via the store.</summary>
-    private async Task<TaskId> SeedReviewTaskInVerifying()
+    private Task<TaskId> SeedReviewTaskInVerifying() => SeedTaskInVerifying(CompletionMode.Review);
+
+    private async Task<TaskId> SeedTaskInVerifying(CompletionMode mode)
     {
         await using var db = pg.NewContext();
         var store = new TaskStore(db, _clock);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(new LeadClaim(Team), Team, "review this", CompletionMode.Review, null, TeamBudgetRemains: true));
+            new CreateTask(new LeadClaim(Team), Team, "adjudicate this", mode, null, TeamBudgetRemains: true));
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(Machine(), instance);
         await store.ApplyAsync(created.Task.Id,

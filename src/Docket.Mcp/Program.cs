@@ -162,20 +162,12 @@ if (!string.IsNullOrWhiteSpace(devSeedTokenFile))
             PermissionLevel: "standard"))
         ?? throw new InvalidOperationException("dev seed: enrollment exchange returned null");
 
-    // The reference verifier's bearer credential (§5), provisioned into the same
-    // seed file so the app host can hand it to the docket-verifier resource — the
-    // dev-loop shortcut around a human provisioning a verifier out of band. It
-    // closes the zero-human lifecycle: the verifier posts the accepting verdict
-    // that carries an automated task from `verifying` to `completed`.
-    var verifier = await tokens.ProvisionVerifierAsync();
-
     // Built with the DOM so the token is escaped correctly with no serializer
     // reflection, mirroring DispatchService.BuildWorkerMcpConfig.
     var seedJson = new JsonObject
     {
         ["machineId"] = credentials.MachineId.ToString(),
         ["machineToken"] = credentials.Access.Token,
-        ["verifierToken"] = verifier.Token,
     }.ToJsonString();
 
     await File.WriteAllTextAsync(devSeedTokenFile, seedJson);
@@ -201,12 +193,6 @@ app.MapMcp().RequireAuthorization();
 
 // The control plane ↔ runner WebSocket (machine-only, §10).
 app.MapRunnerEndpoint();
-
-// The verifier webhook (§5, §10): plain HTTP, verifier-credential-only. Not MCP —
-// the verifier posts verdicts to Docket, it is not an agent. RequireAuthorization
-// is applied inside on the /verify group; each handler further narrows to the
-// verifier principal.
-app.MapVerifierEndpoints();
 
 // The §12 web dashboard — the primary human surface (Machine Group, Team view,
 // Human inbox, event log), server-rendered HTML with a JSON twin. Gated by its own

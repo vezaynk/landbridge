@@ -39,7 +39,7 @@ public sealed class TaskEventListenerTests(PostgresFixture pg) : IAsyncLifetime
         await using var db = pg.NewContext();
         var store = new TaskStore(db, new FakeTimeProvider());
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(new LeadClaim(Team), Team, "criteria", CompletionMode.Automated, null, true), cts.Token);
+            new CreateTask(new LeadClaim(Team), Team, "criteria", CompletionMode.Lead, null, true), cts.Token);
 
         var notified = await received.Task.WaitAsync(cts.Token);
         Assert.Equal(created.Task.Id.Value, notified);

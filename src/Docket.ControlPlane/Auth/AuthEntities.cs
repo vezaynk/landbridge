@@ -15,9 +15,6 @@ public enum CredentialKind
     /// <summary>Worker token minted at dispatch, scoped to {team, task, instance} (§5).</summary>
     Worker,
 
-    /// <summary>Human-provisioned verifier client credential (§5).</summary>
-    Verifier,
-
     /// <summary>
     /// A human's own session (§5). Every credential descends from a human
     /// (§2 principle 5); this is the root. Obtained via OAuth 2.1 auth-code /
@@ -132,11 +129,6 @@ public abstract record Principal
     public sealed record Worker(Docket.Core.WorkerCaller Caller) : Principal;
 
     public sealed record Machine(Guid MachineId) : Principal;
-
-    public sealed record Verifier : Principal
-    {
-        public Docket.Core.VerifierCredential Actor { get; } = new();
-    }
 
     /// <summary>A human's own session (§5). Carries its session id for lead-claim attribution.</summary>
     public sealed record Human(Guid HumanId) : Principal

@@ -93,7 +93,7 @@ public sealed class TraceContinuityEndToEndTests(PostgresFixture pg, ITestOutput
             {
                 ["description"] = "trace me end to end",
                 ["completionCriteria"] = "the trace connects",
-                ["mode"] = "automated",
+                ["mode"] = "lead",
                 ["profile"] = null,
                 ["workspace"] = "git:repo@main#trace",
             }, cancellationToken: ct);

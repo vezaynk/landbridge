@@ -229,15 +229,6 @@ public sealed class TokenService(DocketDbContext db, TimeProvider clock)
         return new IssuedToken(token, row.Id, null);
     }
 
-    /// <summary>Human-provisioned verifier client credential (§5): long-lived, revocable.</summary>
-    public async Task<IssuedToken> ProvisionVerifierAsync(CancellationToken ct = default)
-    {
-        var (token, row) = NewCredential(CredentialKind.Verifier, ttl: null);
-        db.Set<CredentialRow>().Add(row);
-        await db.SaveChangesAsync(ct);
-        return new IssuedToken(token, row.Id, null);
-    }
-
     // ── Validation ──────────────────────────────────────────────────────────
 
     /// <summary>
@@ -278,9 +269,6 @@ public sealed class TokenService(DocketDbContext db, TimeProvider clock)
                         new TaskId(row.TaskId!.Value),
                         new WorkerInstanceId(row.WorkerInstanceId!.Value)))
                     : null;
-
-            case CredentialKind.Verifier:
-                return new Principal.Verifier();
 
             case CredentialKind.Human:
                 return new Principal.Human(row.Id);
@@ -375,7 +363,6 @@ public sealed class TokenService(DocketDbContext db, TimeProvider clock)
         CredentialKind.MachineAccess => "m",
         CredentialKind.MachineRefresh => "r",
         CredentialKind.Worker => "w",
-        CredentialKind.Verifier => "v",
         CredentialKind.Human => "h",
         CredentialKind.Lead => "l",
         _ => "x",

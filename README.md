@@ -32,10 +32,9 @@ skill guidance, never in the data model.
 | `Docket.Core` | The pure task **state machine** and enforcement rules (spec §6, §9). No clock, no I/O, no Postgres, no ASP.NET — transitions are a function of a task record plus a command, returning a new record plus effects-as-data. |
 | `Docket.Contracts` | The **frozen** control-plane ↔ runner wire vocabulary (spec §10): the closed set of commands and events, and the `RunnerWire` JSON codec. The one interface that must never break. |
 | `Docket.ControlPlane` | The control-plane library: EF Core/Postgres store and dispatch (`SKIP LOCKED` + `LISTEN/NOTIFY`), opaque-token auth (`TokenService`), OAuth 2.1 authorization-server services, relay grants, the `DispatchService` and `WaitTtlSweeper` background loops, and the dashboard read models (`DashboardQueries`). |
-| `Docket.Mcp` | The ASP.NET **host** (`docket` + `docket-mcp`): the MCP tool surface agents connect to, the `/runner` WebSocket, OAuth/enrollment/verifier/relay-validate HTTP endpoints, and the §12 web dashboard. One process, one Postgres, one Instance. |
+| `Docket.Mcp` | The ASP.NET **host** (`docket` + `docket-mcp`): the MCP tool surface agents connect to, the `/runner` WebSocket, OAuth/enrollment/relay-validate HTTP endpoints, and the §12 web dashboard. One process, one Postgres, one Instance. |
 | `Docket.Runner` | `docketd`, the per-machine **runner daemon**: process supervision, machine-credential enroll/refresh, heartbeat and event relay, stray-process cleanup, and the relay data planes. Config-driven; contains no harness knowledge. Outbound connections only. |
 | `Docket.Relay` | `docket-relay`, a standalone authenticated **byte-splice relay** (spec §8.3). Pairs two tunnels by forward id and moves opaque bytes; validates grants against the control plane. Separately deployable. |
-| `Docket.Verifier` | `docket-verifier`, the reference **automated verifier** console. Polls for tasks in `verifying`, decides accept/fail by a configurable pattern, and posts verdicts back. A non-agent identity (spec §5). |
 | `Docket.AppHost` | .NET Aspire orchestrator for the **local dev loop** — brings the whole system up with one command. Dev-time only; not a production path. |
 | `Docket.ServiceDefaults` | Shared Aspire wiring: OpenTelemetry (traces/metrics/logs), health checks, service discovery, HTTP resilience. |
 
@@ -56,8 +55,9 @@ One command brings up the full Lead → plane → runner → worker loop:
 - a managed **Postgres** container (persistent volume, so data survives restarts),
 - the **control plane / MCP host** (`Docket.Mcp`) at `http://127.0.0.1:5000`, migrated and dev-seeded,
 - a real **`docketd`** runner, enrolled via a dev-seeded machine token and connected back to `/runner`,
-- **`docket-relay`** at `http://127.0.0.1:5100`,
-- **`docket-verifier`**, so an automated task advances from `verifying` to `completed` with nobody in the loop.
+- **`docket-relay`** at `http://127.0.0.1:5100`.
+
+Completion is Lead-adjudicated (spec §7, §9 check 4): a task reaches `verifying`, and a Lead completes it with `submit_review` — there is no verifier process in the loop.
 
 Two dashboards:
 
@@ -93,7 +93,7 @@ CI runs the suites in **two workflows** because they have different needs:
   `Docket.Mcp.Tests` — against a `postgres:16` service container. GitHub-hosted
   service containers are Linux-only, and these suites are not platform-sensitive,
   so they live here. Each Postgres suite gets its own database
-  (`docket_cp`, `docket_mcp`, `docket_verifier`) via `DOCKET_TEST_PG`.
+  (`docket_cp`, `docket_mcp`) via `DOCKET_TEST_PG`.
 - **`.github/workflows/os-matrix.yml`** runs the platform-sensitive suites — Core,
   Contracts, Runner, Relay — on **ubuntu, macOS, and Windows**. The point is the
   process-supervision / stray-cleanup machinery, whose behavior is per-OS
@@ -105,15 +105,18 @@ CI runs the suites in **two workflows** because they have different needs:
 ## Status
 
 Implemented and exercised end-to-end (scripted worker, no LLM): the task state
-machine and the fourteen §9 checks; Postgres store with `SKIP LOCKED` dispatch
-and `LISTEN/NOTIFY` push; opaque-token auth across all five credential classes;
+machine and the fourteen §9 checks (check 4 the doer/judge split: a Lead or human
+adjudicates, never the task's own worker); Postgres store with `SKIP LOCKED`
+dispatch and `LISTEN/NOTIFY` push; opaque-token auth across all four credential
+classes;
 OAuth 2.1 authorization-code + PKCE (S256) + Client ID Metadata Documents;
 machine enrollment and token refresh; `docketd` process supervision, stop/kill,
 heartbeats, terminal-source tool-call events, and per-OS stray cleanup; §11
 park → resume, where a redispatch continues the parked harness transcript via
 the profile's resume argv (the harness session ref round-trips through the
 store); the relay TCP splice with fail-closed control-plane grant validation;
-the reference verifier; and the plain web dashboard.
+Lead-adjudicated completion (`submit_review`, `lead`/`review` modes, §9 check 4);
+and the plain web dashboard.
 
 Deliberately deferred or in progress on this branch — do not assume these work:
 

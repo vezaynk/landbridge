@@ -204,7 +204,7 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
         {
             ["description"] = description,
             ["completionCriteria"] = "the byte path holds",
-            ["mode"] = "automated",
+            ["mode"] = "lead",
             ["profile"] = null,
             ["workspace"] = "relay-fleet-e2e",
         }, cancellationToken: ct);

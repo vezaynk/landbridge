@@ -61,12 +61,10 @@ public sealed class TokenServiceTests(PostgresFixture pg) : IAsyncLifetime
         var creds = await tokens.ExchangeEnrollmentAsync(
             (await tokens.IssueEnrollmentTokenAsync()).Token, Decl);
         var worker = await tokens.MintWorkerTokenAsync(Team, TaskId.New(), WorkerInstanceId.New());
-        var verifier = await tokens.ProvisionVerifierAsync();
 
         Assert.Null(await tokens.ExchangeEnrollmentAsync(creds!.Access.Token, Decl));
         Assert.Null(await tokens.ExchangeEnrollmentAsync(creds.Refresh.Token, Decl));
         Assert.Null(await tokens.ExchangeEnrollmentAsync(worker.Token, Decl));
-        Assert.Null(await tokens.ExchangeEnrollmentAsync(verifier.Token, Decl));
     }
 
     [SkippableFact]
@@ -142,7 +140,7 @@ public sealed class TokenServiceTests(PostgresFixture pg) : IAsyncLifetime
         var tokens = new TokenService(db, clock);
 
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(new LeadClaim(Team), Team, "criteria", CompletionMode.Automated, null, true));
+            new CreateTask(new LeadClaim(Team), Team, "criteria", CompletionMode.Lead, null, true));
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(
             new MachineSnapshot("m1", true, false, new HashSet<string> { "default" }), instance);
@@ -153,20 +151,6 @@ public sealed class TokenServiceTests(PostgresFixture pg) : IAsyncLifetime
         await store.ApplyAsync(created.Task.Id, new LivenessLost(LivenessLossReason.LivenessTimeout));
 
         Assert.Null(await tokens.ValidateAsync(minted.Token));
-    }
-
-    [SkippableFact]
-    public async Task Verifier_credential_validates_and_revokes()
-    {
-        Skip.IfNot(pg.Available, pg.SkipReason);
-        await using var db = pg.NewContext();
-        var tokens = new TokenService(db, new FakeTimeProvider());
-
-        var issued = await tokens.ProvisionVerifierAsync();
-        Assert.IsType<Principal.Verifier>(await tokens.ValidateAsync(issued.Token));
-
-        await tokens.RevokeCredentialAsync(issued.CredentialId);
-        Assert.Null(await tokens.ValidateAsync(issued.Token));
     }
 
     [SkippableFact]

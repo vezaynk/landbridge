@@ -43,6 +43,9 @@ public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) :
             e.HasIndex(t => new { t.State, t.Profile }).HasFilter("state = 'Submitted'");
             e.Property(t => t.State).HasConversion<string>();
             e.Property(t => t.CompletionMode).HasConversion<string>();
+            // §9 check 4 completion provenance stores as its enum name, like the
+            // other enum columns; null until the task reaches completed.
+            e.Property(t => t.CompletionProvenance).HasConversion<string>();
             // §6/§11 continuation targeting: the machine-gone policy stores as its
             // enum name, exactly like State/CompletionMode above, so the dispatch
             // SQL can match the literal 'Degrade'.

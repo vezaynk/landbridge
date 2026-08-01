@@ -338,6 +338,14 @@ internal static class DashboardRenderer
         return sb.ToString();
     }
 
+    /// <summary>§9 check 4 completion provenance, humanized for the task view.</summary>
+    private static string ProvenanceLabel(Docket.Core.VerdictProvenance p) => p switch
+    {
+        Docket.Core.VerdictProvenance.LeadSession => "lead session",
+        Docket.Core.VerdictProvenance.Human => "a human",
+        _ => p.ToString(),
+    };
+
     /// <summary>The result page after a dashboard mint (§12): the shareable URL to copy.</summary>
     public static string PreviewCreated(string url, Docket.Core.PreviewAuthPolicy policy, DateTimeOffset expiresAt, Guid teamId)
     {
@@ -406,6 +414,9 @@ internal static class DashboardRenderer
             parts.Add($"<span class=\"nt\">blocked {E(Age(t.BlockedAt, now))}</span>");
         else if (t.State == TaskState.Parked && t.ParkMachine is not null)
             parts.Add($"<span class=\"nt\">parked on <span class=\"mono\">{E(t.ParkMachine)}</span></span>");
+        // §9 check 4: who adjudicated a completed task — lead-session or human.
+        else if (t.State == TaskState.Completed && t.CompletionProvenance is { } who)
+            parts.Add($"<span class=\"nt\">accepted by {E(ProvenanceLabel(who))}</span>");
         return string.Join(" ", parts);
     }
 
