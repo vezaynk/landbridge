@@ -139,6 +139,14 @@ public sealed record RunnerConfig(MachineConfig Machine, IReadOnlyDictionary<str
             if (dto.MaxConcurrent is { } mc && mc < 1)
                 problems.Add($"profile '{name}' max_concurrent must be >= 1 when set (§10)");
 
+            // §12 capture knobs, when present, must be sane: a non-positive cap would
+            // truncate every transcript to just the marker, and a negative prune window
+            // is meaningless (0 is the documented "disable pruning").
+            if (dto.Logs?.MaxBytes is { } mb && mb < 1)
+                problems.Add($"profile '{name}' logs.max_bytes must be >= 1 when set (§12)");
+            if (dto.Logs?.PruneAfterDays is { } pd && pd < 0)
+                problems.Add($"profile '{name}' logs.prune_after_days must be >= 0 when set; 0 disables pruning (§12)");
+
             built[name] = BuildProfile(dto);
         }
 
@@ -168,7 +176,12 @@ public sealed record RunnerConfig(MachineConfig Machine, IReadOnlyDictionary<str
             dto.Events?.Mapping ?? new Dictionary<string, string>());
 
         var telemetry = new TelemetryConfig(dto.Telemetry?.Otel ?? false, dto.Telemetry?.Endpoint);
-        var logs = new LogsConfig(dto.Logs?.Path, dto.Logs?.Format);
+        var logs = new LogsConfig(
+            dto.Logs?.Path,
+            dto.Logs?.Format,
+            dto.Logs?.Capture ?? false,
+            dto.Logs?.MaxBytes ?? TranscriptDefaults.MaxBytes,
+            dto.Logs?.PruneAfterDays ?? TranscriptDefaults.PruneAfterDays);
 
         return new ProfileConfig(
             dto.Name!,
@@ -268,8 +281,29 @@ public enum EventsSource { Hooks, Otel, Terminal, None }
 /// <summary>§10 telemetry ingest: OTel toggle + endpoint for budget attribution.</summary>
 public sealed record TelemetryConfig(bool Otel, string? Endpoint);
 
-/// <summary>§10 log streaming: transcript path and format for tail-and-stream.</summary>
-public sealed record LogsConfig(string? Path, string? Format);
+/// <summary>
+/// §12 transcript capture, plus the two original §10 log-streaming hints.
+///
+/// <para><b>Capture (this increment).</b> When <see cref="Capture"/> is set docketd tees
+/// the harness's stdout (its stream-json transcript) and captures stderr to per-instance
+/// files under <c>&lt;state&gt;/transcripts/&lt;task&gt;/</c> (see <see cref="TranscriptStore"/>),
+/// bounded by <see cref="MaxBytes"/> per stream and swept after <see cref="PruneAfterDays"/>
+/// days of no writes. Machine-local only — nothing leaves the box in this increment.
+/// Default OFF: an operator opts in per profile.</para>
+///
+/// <para><b><see cref="Path"/> / <see cref="Format"/>.</b> Originally documented for a
+/// plane-side "tail-and-stream" that was never built (a stub). Capture now writes to a
+/// fixed state-dir layout, so <see cref="Path"/> is not consulted; <see cref="Format"/>
+/// stays an advisory label for the stdout stream's shape (e.g. <c>stream-json</c>).
+/// Both are retained so existing configs keep parsing; the plane's serving increment
+/// decides how a transcript is exposed.</para>
+/// </summary>
+public sealed record LogsConfig(
+    string? Path,
+    string? Format,
+    bool Capture = false,
+    long MaxBytes = TranscriptDefaults.MaxBytes,
+    int PruneAfterDays = TranscriptDefaults.PruneAfterDays);
 
 /// <summary>Thrown by <see cref="RunnerConfig.Load"/> with every validation failure.</summary>
 public sealed class RunnerConfigException(IReadOnlyList<string> errors)

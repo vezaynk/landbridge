@@ -18,7 +18,7 @@ argv a worker is launched with.
 | `profiles[]` | `resume` | `args`: argv to resume a parked task's transcript, directory-scoped (§11). |
 | `profiles[]` | `events` | `source` (`hooks` \| `otel` \| `terminal` \| `none`) + name `mapping` → `started`/`tool-call`/`subagent-spawned`/`exited`. `none` is honest (§10). |
 | `profiles[]` | `telemetry` | `otel` bool + `endpoint` for budget attribution (§10). |
-| `profiles[]` | `logs` | transcript `path` + `format` for tail-and-stream (§10). |
+| `profiles[]` | `logs` | §12 machine-local transcript capture: `capture` (bool, default **false**), `max_bytes` (per-stream cap, default 50 MiB), `prune_after_days` (local hygiene, default 7, `0` disables). Legacy `format`/`path` are advisory/reserved — see [Transcript capture](#transcript-capture-12) below. |
 | `profiles[]` | `max_concurrent` | Optional hard cap for a licence/rate/posture reason, unrelated to load (§10). |
 
 ## Spawn substitutions
@@ -98,7 +98,8 @@ dispatched instance, and its token dies with the instance (§9 check 14).
         "mapping": { "PostToolUse": "tool-call", "SessionStart": "started", "SessionEnd": "exited", "SubagentStart": "subagent-spawned" }
       },
       "telemetry": { "otel": true, "endpoint": "http://127.0.0.1:4318" },
-      "logs": { "path": "{work_dir}/transcript.jsonl", "format": "stream-json" },
+      // §12 capture: tee this worker's stdout transcript + stderr to the state dir.
+      "logs": { "capture": true, "format": "stream-json", "max_bytes": 52428800, "prune_after_days": 7 },
       "max_concurrent": null
     }
   ]
@@ -125,6 +126,55 @@ dispatched instance, and its token dies with the instance (§9 check 14).
   docketd substitutes per stop.
 - **`{mcp_config}`** is the injected path; the worker reads the plane URL and its
   bearer token from that file. Nothing else carries the token to the harness.
+
+## Transcript capture (§12)
+
+When a profile sets `logs.capture: true`, `docketd` records that worker's transcript
+locally. A `claude -p --output-format stream-json` worker's stdout **is** the full
+transcript of its work — the single most valuable artifact when a task goes wrong —
+so `docketd` **tees** it: the same stdout read that maps events (`events.source:
+terminal`) also writes each line verbatim to a file, and stderr is captured alongside.
+Capture never disturbs event mapping or the stdin dead-man/stop path — it is a tee,
+not a divert — and it works for any `events.source` (with `none`, stdout is drained
+solely to capture it).
+
+**Where.** Under the **state dir** (the `credentials.json` dir; `--state-dir`,
+`DOCKET_STATE_DIR`, `$XDG_STATE_HOME/docket`, or `~/.docket`), **not** the per-task
+`work_root` scratch — the transcript must outlive a task teardown and a `docketd`
+restart, because per §11 the local transcript is the resume-after-reboot substrate.
+
+```
+<state>/transcripts/<task-id>/0001.ndjson   # stdout (stream-json, one object per line)
+<state>/transcripts/<task-id>/0001.stderr   # stderr (plain lines)
+```
+
+**Per instance.** Each dispatch — a first spawn, a requeue, a §11 resume — is a
+distinct worker instance and gets the next ordinal (`0001`, `0002`, …), derived by
+scanning the dir, so a redispatch never clobbers its predecessor's transcript and the
+ordinal is stable across a restart. Files open lazily on the first line (a silent
+stream leaves no file). The root, task dirs, and files are owner-only (0700/0600) — a
+transcript can capture credentials an agent echoed (§13).
+
+**Size cap.** `max_bytes` (default 50 MiB) bounds each stream (stdout, stderr) per
+instance. On reaching it, `docketd` writes one truncation marker line
+(`{"docket":"transcript_truncated","limit_bytes":N}`) and stops writing that stream.
+It keeps draining the pipe (so the worker never blocks) and never kills the worker —
+logging is not allowed to affect the task.
+
+**Local pruning.** `prune_after_days` (default 7; `0` disables) is machine-local disk
+hygiene: on each capturing spawn, `docketd` removes any task's transcript dir whose
+newest file is older than the window. When profiles disagree, the most generous wins
+(any `0` keeps everything; otherwise the longest window). This is **not** the §12
+retention tiers — those, plus redaction on the streaming path and serving to the
+plane, are a later plane-side increment. This increment is capture only; nothing
+leaves the machine, and the transcript is written **verbatim** (redaction is applied
+plane-side, before anything lands off-box).
+
+**`format` / `path`.** `format` is an advisory label for the stdout stream's shape
+(e.g. `stream-json`); it is not acted on. `path` was documented for a never-built
+"tail-and-stream" and is now ignored — capture writes to the fixed state-dir layout
+above, and how a transcript is exposed is the plane increment's decision. Both keys
+still parse so existing configs are accepted unchanged.
 
 ## Validating for real — operator step, not an automated test
 

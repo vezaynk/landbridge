@@ -99,6 +99,28 @@ public sealed class SupervisedTask
     internal Task? EventReaderTask { get; set; }
 
     /// <summary>
+    /// §12 transcript capture: the per-instance writer teeing this worker's stdout and
+    /// stderr to <c>&lt;state&gt;/transcripts</c>. Null when capture is off for the
+    /// profile or the supervisor has no <see cref="TranscriptStore"/>. Flushed and
+    /// closed by <see cref="CaptureDone"/> once both feeding drains end.
+    /// </summary>
+    internal TranscriptWriter? Transcript { get; set; }
+
+    /// <summary>
+    /// §12 capture: cancels the capture drains (the capture-only stdout pump and the
+    /// stderr pump) on teardown. Null when capture is off. The Terminal stdout tee
+    /// rides the event reader's own CTS, not this one.
+    /// </summary>
+    internal CancellationTokenSource? CaptureCts { get; set; }
+
+    /// <summary>
+    /// §12 capture: completes once every stream feeding <see cref="Transcript"/> has
+    /// drained, then flushes and closes the writer and disposes <see cref="CaptureCts"/>.
+    /// Null when capture is off.
+    /// </summary>
+    internal Task? CaptureDone { get; set; }
+
+    /// <summary>
     /// §10 Windows containment: the kill-on-close Job Object this worker's whole process tree is
     /// sealed into, or null off Windows / when assignment degraded (an incompatible
     /// nested outer job). Owned here and closed on the kill/exit cleanup paths. When
@@ -144,15 +166,28 @@ public sealed class ProcessSupervisor : IProcessSupervisor
     private readonly OutboundEventRing _ring;
     private readonly TimeProvider _clock;
     private readonly StrayReaper? _taskReaper;
+    private readonly TranscriptStore? _transcripts;
     private readonly ConcurrentDictionary<TaskId, SupervisedTask> _tasks = new();
     private readonly SpawnerThread _spawner = new();
 
-    public ProcessSupervisor(MachineConfig machine, OutboundEventRing ring, TimeProvider clock, StrayReaper? taskReaper = null)
+    /// <param name="transcripts">
+    /// §12 machine-local transcript capture. When supplied, a profile with
+    /// <see cref="LogsConfig.Capture"/> set tees its worker's stdout/stderr here. Null
+    /// (the default, and what most unit tests pass) disables capture regardless of the
+    /// profile flag — Program always supplies one derived from the state dir.
+    /// </param>
+    public ProcessSupervisor(
+        MachineConfig machine,
+        OutboundEventRing ring,
+        TimeProvider clock,
+        StrayReaper? taskReaper = null,
+        TranscriptStore? transcripts = null)
     {
         _machine = machine;
         _ring = ring;
         _clock = clock;
         _taskReaper = taskReaper;
+        _transcripts = transcripts;
     }
 
     public int RunningTotal => _tasks.Count;
@@ -228,14 +263,23 @@ public sealed class ProcessSupervisor : IProcessSupervisor
 
         var argv = spawnArgv.Select(a => Substitute(a, substitutions)).ToArray();
 
-        // §10 event relay: only the Terminal events source redirects stdout, and
-        // only because it then MUST drain it continuously (see below) — the
-        // TerminalEventReader IS that drain, so the "drain-or-deadlock" worry the
-        // old comment guarded against is satisfied, not violated. Every other
-        // source (None/Hooks/Otel) leaves stdout unredirected exactly as before:
-        // Hooks/Otel arrive out-of-band in later increments, and None's transcript
-        // is tailed from logs.path, never scraped from stdout.
+        // §10 event relay: the Terminal events source redirects stdout so the reader
+        // can map it to events. §12 capture also needs stdout (to tee the transcript)
+        // and additionally stderr. Either reason redirects the stream; whatever is
+        // redirected MUST be drained continuously (see below) or a full OS pipe buffer
+        // blocks the worker's writes. Hooks/Otel still arrive out-of-band; a
+        // non-Terminal, non-capturing profile leaves both streams inherited exactly as
+        // before.
         var drainStdout = profile.Events.Source == EventsSource.Terminal;
+        var captureEnabled = profile.Logs.Capture && _transcripts is not null;
+        var redirectStdout = drainStdout || captureEnabled;
+        var redirectStderr = captureEnabled;
+
+        // §12 hygiene: a cheap opportunistic sweep on the natural cadence (a spawn is
+        // when new transcript disk is about to be consumed), so a long-lived machine
+        // that never restarts still prunes. Best-effort; never blocks the spawn.
+        if (captureEnabled)
+            try { _transcripts!.Prune(); } catch { /* best effort */ }
 
         var psi = new ProcessStartInfo(argv[0])
         {
@@ -251,11 +295,12 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             // StopAsync), so the two uses are compatible.
             RedirectStandardInput = true,
 
-            // Terminal events source only: redirect stdout so the reader can map the
-            // harness's NDJSON to runner events. If it is redirected it MUST be
-            // drained for the process's whole lifetime or a full OS pipe buffer will
-            // block the worker's writes — which is exactly what the reader does.
-            RedirectStandardOutput = drainStdout,
+            // Redirect stdout when the Terminal reader needs it and/or §12 capture is
+            // teeing the transcript; redirect stderr only for capture. Anything
+            // redirected is drained for the process's whole lifetime (below) so a full
+            // OS pipe buffer never blocks the worker.
+            RedirectStandardOutput = redirectStdout,
+            RedirectStandardError = redirectStderr,
         };
         for (var i = 1; i < argv.Length; i++)
             psi.ArgumentList.Add(argv[i]);
@@ -320,12 +365,22 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             throw;
         }
 
+        // §12 capture: open the per-instance writer now that the worker is up (files
+        // are created lazily on the first line, so a silent worker leaves none). The
+        // stdout tee and the stderr pump feed it; it is flushed and closed once both
+        // end (CaptureDone below).
+        var writer = captureEnabled ? _transcripts!.CreateWriter(dispatch.Task, profile.Logs.MaxBytes) : null;
+        supervised.Transcript = writer;
+        var feeders = new List<Task>();
+
         // §10 Terminal events source: start the stdout drain now that the worker is
         // up. It runs for the process's whole lifetime, mapping NDJSON lines to
         // events and bumping this task's liveness on every well-formed line. Running
         // continuously is the anti-deadlock requirement — a redirected-but-undrained
         // stdout blocks the worker once the pipe buffer fills. EOF (worker exit) or
         // the CTS (teardown) ends it cleanly; OnExited cancels the CTS as a backstop.
+        // When §12 capture is also on, the SAME drain tees each verbatim line to the
+        // transcript via rawLineSink — one read of stdout serves both.
         if (drainStdout)
         {
             var cts = new CancellationTokenSource();
@@ -346,7 +401,8 @@ public sealed class ProcessSupervisor : IProcessSupervisor
                         return;
                     supervised.SessionId = sessionId;
                     _ring.Enqueue(new SessionStartedEvent(dispatch.Task, sessionId, _clock.GetUtcNow()));
-                });
+                },
+                rawLineSink: writer is null ? null : writer.WriteStdoutLine);
             // The CTS is disposed by the reader task's own completion, so OnExited's
             // backstop cancel never races a live-then-freed handle.
             supervised.EventReaderTask = Task
@@ -354,6 +410,43 @@ public sealed class ProcessSupervisor : IProcessSupervisor
                 .ContinueWith(
                     static (_, state) => ((CancellationTokenSource)state!).Dispose(),
                     cts, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            if (writer is not null)
+                feeders.Add(supervised.EventReaderTask);
+        }
+        else if (captureEnabled)
+        {
+            // §12 capture without event mapping (a non-Terminal profile): drain stdout
+            // straight to the transcript. Same anti-deadlock requirement — this pump IS
+            // the drain that keeps the redirected pipe from filling.
+            var cts = supervised.CaptureCts ??= new CancellationTokenSource();
+            feeders.Add(Task.Run(
+                () => TranscriptCapture.PumpLinesAsync(process.StandardOutput, writer!.WriteStdoutLine, cts.Token),
+                CancellationToken.None));
+        }
+
+        // §12 capture: stderr is only ever redirected for capture, and when it is it
+        // MUST be drained too. It is captured, never mapped to events.
+        if (captureEnabled)
+        {
+            var cts = supervised.CaptureCts ??= new CancellationTokenSource();
+            feeders.Add(Task.Run(
+                () => TranscriptCapture.PumpLinesAsync(process.StandardError, writer!.WriteStderrLine, cts.Token),
+                CancellationToken.None));
+        }
+
+        // §12 capture: flush and close the writer once every feeding drain has ended
+        // (EOF or teardown), then dispose the capture CTS. Runs off the drains'
+        // completion, so no writes race the close.
+        if (writer is not null)
+        {
+            var captureCts = supervised.CaptureCts;
+            supervised.CaptureDone = Task.WhenAll(feeders).ContinueWith(
+                _ =>
+                {
+                    writer.Dispose();
+                    captureCts?.Dispose();
+                },
+                CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
         }
 
         // §10: started (harness up) is distinct from dispatch ack. Process-spawned
@@ -469,6 +562,17 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         {
             try { readerCts.CancelAfter(TimeSpan.FromSeconds(5)); }
             catch (ObjectDisposedException) { /* reader already finished and freed it */ }
+        }
+
+        // §12 capture: same short grace for the capture drains (capture-only stdout
+        // and stderr). EOF ends them on the worker's exit; the grace backstops a
+        // detached grandchild holding a pipe open, and lets buffered final lines land
+        // rather than throwing them away. CaptureDone flushes and closes the writer and
+        // disposes this CTS once the drains end, so a double-dispose is impossible.
+        if (supervised.CaptureCts is { } captureCts)
+        {
+            try { captureCts.CancelAfter(TimeSpan.FromSeconds(5)); }
+            catch (ObjectDisposedException) { /* drains already finished and freed it */ }
         }
 
         // §10 Windows containment: close the job handle now the process is gone. Kill-on-close
