@@ -5,10 +5,10 @@ namespace Docket.ControlPlane;
 /// <summary>
 /// The Team view (§12) as structured data, returned by <c>get_team_state</c>.
 /// Counts and states only — <b>never prose</b> (§10): a Lead reads free text
-/// (descriptions, blocker notes, results) deliberately, one item at a time and
-/// delimited as untrusted (§13). The fields here are the reattachment surface
-/// (§4): enough for a fresh Lead to reconstruct what the Team is doing without
-/// ever seeing a task's contents.
+/// (descriptions, blocker notes, results, the worker's report) deliberately, one
+/// item at a time and delimited as untrusted (§13). The fields here are the
+/// reattachment surface (§4): enough for a fresh Lead to reconstruct what the Team
+/// is doing without ever seeing a task's contents.
 /// </summary>
 public sealed record TeamStateView(
     Guid TeamId,
@@ -24,6 +24,9 @@ public sealed record TeamStateView(
 /// (§6/§11): the prior task whose harness session this one resumed, or null for an
 /// ordinary task — an identifier, never prose. <see cref="CompletionProvenance"/>
 /// records who adjudicated a completed task (§9 check 4), null until then.
+/// <see cref="HasReport"/> is a <em>flag</em> — not the text — that the worker left
+/// an in-band report (§10); the Lead fetches the report itself deliberately, one
+/// task at a time, via <c>get_task_report</c> (keeps this bulk view prose-free).
 /// </summary>
 public sealed record TeamTaskSummary(
     Guid TaskId,
@@ -33,7 +36,20 @@ public sealed record TeamTaskSummary(
     int Attempt,
     bool Parked,
     Guid? ContinuesTaskId,
-    VerdictProvenance? CompletionProvenance);
+    VerdictProvenance? CompletionProvenance,
+    bool HasReport);
+
+/// <summary>
+/// One task's worker report (§10), returned by the Lead's deliberate per-task
+/// <c>get_task_report</c> fetch (§13: free text pulled one item at a time, not on
+/// the bulk status read). <see cref="Report"/> is the opaque worker-authored text,
+/// null when the task has left none. Team-scoped at the store, so this is only ever
+/// built for a task in the caller's own Team.
+/// </summary>
+public sealed record TaskReportView(
+    Guid TaskId,
+    string Namespace,
+    string? Report);
 
 /// <summary>
 /// The seed facts a <c>create_task(continues:)</c> reads off the continued task's

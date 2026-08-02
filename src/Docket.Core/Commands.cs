@@ -77,8 +77,27 @@ public sealed record Dispatch(MachineSnapshot Machine, WorkerInstanceId NewInsta
 public sealed record LivenessLost(LivenessLossReason Reason)
     : TaskCommand(ControlPlaneActor.Instance);
 
-/// <summary>working → verifying. Requires a result reference (§6).</summary>
-public sealed record ReportResult(Actor Actor, string? ResultReference) : TaskCommand(Actor);
+/// <summary>
+/// working → verifying. Requires a result reference (§6).
+///
+/// <para><see cref="Report"/> is the worker's optional in-band summary (§10): what
+/// it did, what it verified, evidence pointers, and proposals (e.g. "task X should
+/// run on profile Y"). It flows UP through the plane exactly as the Lead's
+/// description flows DOWN — opaque content the engine never interprets (§2
+/// principle 1), the store persists verbatim. The <see cref="ResultReference"/>
+/// stays the load-bearing artifact pointer; the report is annotation, not
+/// authority, and is size-capped (<see cref="MaxReportBytes"/>) so a worker puts
+/// real detail in the workspace behind the reference rather than in the plane.</para>
+/// </summary>
+public sealed record ReportResult(Actor Actor, string? ResultReference, string? Report = null)
+    : TaskCommand(Actor)
+{
+    /// <summary>The in-band report's hard cap, 16 KiB of UTF-8 (§10). Over-cap is
+    /// refused at report time (<see cref="Rule.ReportWithinSizeCap"/>) so detail
+    /// goes to the workspace behind the result reference, keeping the plane's
+    /// in-band carry bounded.</summary>
+    public const int MaxReportBytes = 16 * 1024;
+}
 
 /// <summary>
 /// verifying → completed. Caller identity is not an agent; in review mode the

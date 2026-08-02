@@ -139,7 +139,7 @@ internal static class DashboardRenderer
         {
             sb.Append("<table><thead><tr>");
             sb.Append("<th>Namespace</th><th>State</th><th>Mode</th>");
-            sb.Append("<th class=\"num\">Attempt</th><th class=\"num\">Parks</th><th>Detail</th>");
+            sb.Append("<th class=\"num\">Attempt</th><th class=\"num\">Parks</th><th>Detail</th><th>Report</th>");
             sb.Append("</tr></thead><tbody>");
             foreach (var t in team.Tasks)
             {
@@ -151,6 +151,7 @@ internal static class DashboardRenderer
                 var parks = t.Parks > 0 ? $"<span class=\"parks-hot\">{t.Parks}</span>" : "0";
                 sb.Append($"<td class=\"num\">{parks}</td>");
                 sb.Append($"<td>{TaskDetailCell(t, now)}</td>");
+                sb.Append($"<td>{ReportCell(t)}</td>");
                 sb.Append("</tr>");
             }
             sb.Append("</tbody></table>");
@@ -337,6 +338,16 @@ internal static class DashboardRenderer
         sb.Append("</form>");
         return sb.ToString();
     }
+
+    /// <summary>
+    /// The worker's in-band report (§10), rendered verbatim-escaped behind a
+    /// disclosure so the task table stays compact. It is agent-authored text (§13):
+    /// escaped through <see cref="E"/> and never interpreted, only shown.
+    /// </summary>
+    private static string ReportCell(TeamTaskView t) =>
+        t.Report is { Length: > 0 } r
+            ? $"<details><summary>report</summary><pre class=\"report\">{E(r)}</pre></details>"
+            : "<span class=\"nt\">—</span>";
 
     /// <summary>§9 check 4 completion provenance, humanized for the task view.</summary>
     private static string ProvenanceLabel(Docket.Core.VerdictProvenance p) => p switch

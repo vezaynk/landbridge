@@ -67,14 +67,21 @@ public sealed class WorkerTools(
     [McpServerTool(Name = "report_result"),
      Description("Report the task's result reference and hand it to verification. " +
                  "The reference points at where the work actually is (the workspace substrate), " +
-                 "not the work itself. Reporting is not a claim that verification passed.")]
+                 "not the work itself. Reporting is not a claim that verification passed. " +
+                 "Optionally include a short 'report': a summary of what you did and verified, " +
+                 "evidence pointers, and any proposals — it flows to your Lead as-is (capped at 16 KB; " +
+                 "over-cap is refused — put detail in the workspace behind the reference, not here).")]
     public async Task<string> ReportResult(
         [Description("A reference to where the completed work lives, e.g. a branch or commit.")]
         string resultReference,
-        CancellationToken ct)
+        [Description("Optional in-band summary for your Lead: what you did/verified, evidence pointers, " +
+                     "proposals (e.g. 'task X should run on profile Y'). NOT a substitute for the artifact — " +
+                     "detail belongs in the workspace behind the reference. Capped at 16 KB.")]
+        string? report = null,
+        CancellationToken ct = default)
     {
         var caller = Caller;
-        return Describe(await store.ApplyAsync(caller.Task, new ReportResult(caller, resultReference), ct));
+        return Describe(await store.ApplyAsync(caller.Task, new ReportResult(caller, resultReference, report), ct));
     }
 
     [McpServerTool(Name = "request_input"),

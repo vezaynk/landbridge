@@ -175,6 +175,7 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
                 t.ParkMachine,
                 t.ContinuesTaskId,
                 t.CompletionProvenance,
+                t.WorkerReport,
             })
             .ToListAsync(ct);
 
@@ -210,7 +211,8 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
                 t.Parked ? t.ParkMachine : null,
                 t.State == TaskState.BlockedOnInput ? t.BlockedAt : null,
                 t.ContinuesTaskId,
-                t.State == TaskState.Completed ? t.CompletionProvenance : null))
+                t.State == TaskState.Completed ? t.CompletionProvenance : null,
+                t.WorkerReport))
             .ToList();
 
         var counts = tasks
@@ -401,7 +403,8 @@ public sealed record TeamTaskView(
     string? ParkMachine,
     DateTimeOffset? BlockedAt,
     Guid? ContinuesTaskId,
-    VerdictProvenance? CompletionProvenance);
+    VerdictProvenance? CompletionProvenance,
+    string? Report);
 
 /// <summary>A live registered service on a Team (§8.2, §12).</summary>
 public sealed record ServiceView(string Name, int Port, Guid TaskId, DateTimeOffset CreatedAt);

@@ -338,6 +338,59 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         new(machineId, Ready: true, UnderBackPressure: false,
             new SystemLoad(0, 0, 0), RunningTasks: 0, profiles, DateTimeOffset.UtcNow);
 
+    [SkippableFact]
+    public async Task Get_task_report_returns_the_report_delimited_as_untrusted()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        const string report = "ran the suite (green); proposes task Z on profile gpu";
+        var taskId = await SeedReportedTask(Team, report);
+        var tools = LeadFor(new Principal.Lead(Team));
+
+        var text = await tools.GetTaskReport(taskId.ToString(), CancellationToken.None);
+
+        Assert.Contains(report, text, StringComparison.Ordinal);       // the report itself
+        Assert.Contains("Untrusted", text, StringComparison.Ordinal);  // §13 delimiting
+    }
+
+    [SkippableFact]
+    public async Task Get_task_report_refuses_a_task_in_another_team()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        // A task in a different Team; this Lead may not read its report (§13 scoping).
+        var foreign = await SeedReportedTask(TeamId.New(), "secret");
+        var tools = LeadFor(new Principal.Lead(Team));
+
+        var ex = await Assert.ThrowsAsync<McpException>(
+            () => tools.GetTaskReport(foreign.ToString(), CancellationToken.None));
+        Assert.Contains("your Team", ex.Message, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task Get_task_report_says_so_when_there_is_no_report()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var taskId = await SeedReportedTask(Team, report: null); // reported a result, no report
+        var tools = LeadFor(new Principal.Lead(Team));
+
+        var text = await tools.GetTaskReport(taskId.ToString(), CancellationToken.None);
+        Assert.Contains("no worker report", text, StringComparison.Ordinal);
+    }
+
+    /// <summary>Drives a task to verifying with an optional in-band report, in the
+    /// given Team (used for both same-Team and cross-Team cases).</summary>
+    private async Task<TaskId> SeedReportedTask(TeamId team, string? report)
+    {
+        await using var db = pg.NewContext();
+        var store = new TaskStore(db, _clock);
+        var created = (StoreResult.Applied)await store.CreateAsync(
+            new CreateTask(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null, TeamBudgetRemains: true));
+        var instance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), instance);
+        await store.ApplyAsync(created.Task.Id,
+            new ReportResult(new WorkerCaller(team, created.Task.Id, instance), "git:ref", report));
+        return created.Task.Id;
+    }
+
     /// <summary>Drives a review-mode task all the way to verifying via the store.</summary>
     private Task<TaskId> SeedReviewTaskInVerifying() => SeedTaskInVerifying(CompletionMode.Review);
 

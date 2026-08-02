@@ -334,11 +334,13 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             await store.ApplyAsync(parkedId, new WaitTtlExpired(new ParkRecord("box-1", null, null, 1)), ct);
         });
 
-        // A completed lead-mode task, adjudicated by the Lead (§9 check 4 provenance).
+        // A completed lead-mode task, adjudicated by the Lead (§9 check 4 provenance),
+        // carrying an in-band worker report (§10).
+        const string workerReport = "ran the suite (green); proposes profile gpu for follow-ups";
         var (completedId, completedNs, completedCaller) = await SeedWorkingTaskWithCallerAsync(team, CompletionMode.Lead, ct);
         await WithStoreAsync(async store =>
         {
-            await store.ApplyAsync(completedId, new ReportResult(completedCaller, "git:done"), ct);
+            await store.ApplyAsync(completedId, new ReportResult(completedCaller, "git:done", workerReport), ct);
             await store.ApplyAsync(completedId, new VerdictAccept(new LeadClaim(team)), ct);
         });
 
@@ -357,6 +359,7 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Contains(workingNs, html, StringComparison.Ordinal);
         Assert.Contains(completedNs, html, StringComparison.Ordinal);
         Assert.Contains("accepted by lead session", html, StringComparison.Ordinal); // §9.4 provenance rendered
+        Assert.Contains(workerReport, html, StringComparison.Ordinal);               // §10 in-band report rendered
 
         // ── JSON twin: same fields, machine-readable ─────────────────────────
         var json = await GetAuthedAsync(app, $"/dashboard/teams/{team.Value}?format=json", ct);
@@ -382,6 +385,10 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Contains(tasks.EnumerateArray(),
             t => t.GetProperty("namespace").GetString() == completedNs
                  && t.GetProperty("completionProvenance").GetString() == "LeadSession");
+        // §10: the in-band report rides the JSON twin verbatim.
+        Assert.Contains(tasks.EnumerateArray(),
+            t => t.GetProperty("namespace").GetString() == completedNs
+                 && t.GetProperty("report").GetString() == workerReport);
 
         await app.StopAsync(ct);
     }

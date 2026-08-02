@@ -80,9 +80,11 @@ Do not ask for permission to do things you're allowed to do. Do not ask which of
 
 ## Reporting a result
 
-`report_result` needs a reference to where the work actually is — in the workspace substrate, not pasted into the summary. The summary is a short prose account of what you did, what you changed, and anything the Lead should know that isn't obvious from the artifact itself.
+`report_result` needs a reference to where the work actually is — in the workspace substrate, not pasted into the report.
 
-Say what you *didn't* do. Scope you deliberately left, tests you couldn't run, assumptions you made. That is the most useful part of a result and the part most often omitted.
+It also takes an optional `report`: a short in-band summary that flows straight to your Lead. Use it for what you did and verified, pointers to the evidence (which tests you ran and their outcome, a CI link, the files you touched), and any proposals — e.g. "this follow-up should run on profile Y", or "task Z is now unblocked". Keep it a summary: it is capped (16 KB) and **not a substitute for the artifact** — real detail belongs in the workspace behind the reference, and if you go over the cap the report is refused so you move detail there. The report is how your Lead decides whether to accept, so make the verification evidence easy to check.
+
+Say what you *didn't* do. Scope you deliberately left, tests you couldn't run, assumptions you made. That is the most useful part of a report and the part most often omitted.
 
 Your task then goes to verification. You do not mark it complete, and reporting is not a claim that it passed.
 
