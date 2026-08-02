@@ -142,8 +142,9 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
     public async Task Report_result_persists_the_in_band_report_and_surfaces_it_to_lead_and_worker()
     {
         // §10: the worker's optional in-band report is captured verbatim on the row
-        // next to the reference, and surfaces on get_team_state (the Lead) and
-        // get_task (a successor worker).
+        // next to the reference. get_team_state stays prose-free (a has_report FLAG,
+        // never the text); the Lead pulls the text per task via get_task_report; a
+        // successor worker sees it on get_task.
         Skip.IfNot(pg.Available, pg.SkipReason);
         await using var db = pg.NewContext();
         var store = NewStore(db);
@@ -160,9 +161,12 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         var vstore = NewStore(v);
         // On the row, verbatim.
         Assert.Equal(report, (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value)).WorkerReport);
-        // On get_team_state (the Lead's read).
+        // get_team_state carries only the FLAG, not the prose (§10 stays prose-free).
         var summary = (await vstore.GetTeamStateAsync(Team)).Tasks.Single(t => t.TaskId == id.Value);
-        Assert.Equal(report, summary.Report);
+        Assert.True(summary.HasReport);
+        // The Lead fetches the text deliberately, per task.
+        var fetched = await vstore.GetTaskReportAsync(Team, id);
+        Assert.Equal(report, fetched!.Report);
         // On get_task (the incumbent/successor worker's read).
         var assignment = await vstore.GetAssignmentAsync(caller);
         Assert.Equal(report, assignment!.Report);
@@ -181,8 +185,30 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         await store.ApplyAsync(id, new ReportResult(new WorkerCaller(Team, id, instance), "git:ref"));
 
         await using var v = pg.NewContext();
+        var vstore = NewStore(v);
         Assert.Null((await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value)).WorkerReport);
-        Assert.Null((await NewStore(v).GetTeamStateAsync(Team)).Tasks.Single(t => t.TaskId == id.Value).Report);
+        // No report: the flag is false, and the per-task fetch finds the task (it is
+        // the Lead's) but returns a null report.
+        Assert.False((await vstore.GetTeamStateAsync(Team)).Tasks.Single(t => t.TaskId == id.Value).HasReport);
+        var fetched = await vstore.GetTaskReportAsync(Team, id);
+        Assert.NotNull(fetched);
+        Assert.Null(fetched!.Report);
+    }
+
+    [SkippableFact]
+    public async Task Get_task_report_is_team_scoped_and_refuses_a_cross_team_task()
+    {
+        // §13: the per-task report fetch is scoped to the caller's Team, so a task in
+        // another Team returns null — indistinguishable from not-found, leaking nothing.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await CreateSubmitted(db);
+        var instance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), instance);
+        await store.ApplyAsync(id, new ReportResult(new WorkerCaller(Team, id, instance), "git:ref", "secret report"));
+
+        Assert.Null(await store.GetTaskReportAsync(TeamId.New(), id)); // another Team → null
     }
 
     [SkippableFact]
