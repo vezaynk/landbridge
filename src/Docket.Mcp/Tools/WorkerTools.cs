@@ -39,10 +39,18 @@ public sealed class WorkerTools(
         DocketClaims.AsWorker(http.HttpContext?.User ?? throw Unauthorized())
         ?? throw Unauthorized();
 
-    private string RelayUrl =>
+    /// <summary>
+    /// The relay base URL the plane hands docketd (§8.3), from config, then
+    /// environment, then the loopback default. Shared with the Lead-facing forward
+    /// (<see cref="LeadTools"/>) so both consumer kinds dial the same relay — one
+    /// resolution, no drift.
+    /// </summary>
+    public static string RelayUrlFrom(IConfiguration config) =>
         config["Docket:RelayUrl"]
         ?? Environment.GetEnvironmentVariable("DOCKET_RELAY_URL")
         ?? DefaultRelayUrl;
+
+    private string RelayUrl => RelayUrlFrom(config);
 
     private string PreviewUrlBase =>
         config[PreviewMint.UrlBaseConfigKey]
@@ -191,8 +199,10 @@ public sealed class WorkerTools(
 }
 
 /// <summary>
-/// What <c>open_forward</c> hands back (spec §8.3): a <c>127.0.0.1:port</c>
-/// loopback address the worker's client connects to directly. The grant and relay
+/// What <c>open_forward</c> and <c>open_lead_forward</c> hand back (spec §8.3): a
+/// <c>127.0.0.1:port</c> loopback address a client connects to directly — on the
+/// worker's own machine for the former, on the Lead's bound machine for the latter.
+/// The grant and relay
 /// mechanics that stood the tunnel up are held by docketd and deliberately kept
 /// out of this shape — the agent only ever sees an address. <see cref="ForwardId"/>
 /// is retained for correlation/diagnostics, and <see cref="ExpiresAt"/> reflects

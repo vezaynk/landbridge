@@ -274,9 +274,10 @@ public sealed class TokenService(DocketDbContext db, TimeProvider clock)
                 return new Principal.Human(row.Id);
 
             // A live lead credential; eviction/release already excluded it via
-            // Revoked in FindLive.
+            // Revoked in FindLive. The claiming human rides along (§8.3 human path:
+            // a lead↔machine binding keys on the person, not the session).
             case CredentialKind.Lead:
-                return new Principal.Lead(new TeamId(row.TeamId!.Value));
+                return new Principal.Lead(new TeamId(row.TeamId!.Value), row.HumanId);
 
             // Enrollment and refresh tokens authenticate nothing by themselves:
             // they exist only to be exchanged/refreshed.

@@ -13,12 +13,21 @@ public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) :
     public DbSet<CredentialRow> Credentials => Set<CredentialRow>();
     public DbSet<MachineRow> Machines => Set<MachineRow>();
     public DbSet<LeadEventRow> LeadEvents => Set<LeadEventRow>();
+    public DbSet<LeadMachineBindingRow> LeadMachineBindings => Set<LeadMachineBindingRow>();
     public DbSet<RelayGrantRow> RelayGrants => Set<RelayGrantRow>();
     public DbSet<PreviewMappingRow> PreviewMappings => Set<PreviewMappingRow>();
     public DbSet<OAuthAuthorizationCodeRow> OAuthAuthorizationCodes => Set<OAuthAuthorizationCodeRow>();
 
     /// <summary>The channel dispatch/transition NOTIFYs land on (§3.1 LISTEN/NOTIFY).</summary>
     public const string EventChannel = "docket_task_events";
+
+    /// <summary>One live lead↔machine binding per human (§8.3 human path) — named so
+    /// <see cref="LeadMachineBindingService"/> can tell the two races apart from the
+    /// constraint name on a unique violation.</summary>
+    public const string OneLiveBindingPerHumanIndex = "ix_lead_machine_bindings_one_live_per_human";
+
+    /// <summary>One live lead↔machine binding per machine (§8.3 human path).</summary>
+    public const string OneLiveBindingPerMachineIndex = "ix_lead_machine_bindings_one_live_per_machine";
 
     /// <summary>
     /// The one place the store's Postgres options are configured — Npgsql plus
@@ -111,6 +120,23 @@ public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) :
             e.Property(ev => ev.Seq).UseIdentityAlwaysColumn();
             e.HasIndex(ev => ev.TeamId);
             e.Property(ev => ev.Kind).HasConversion<string>();
+        });
+
+        b.Entity<LeadMachineBindingRow>(e =>
+        {
+            e.ToTable("lead_machine_bindings");
+            e.HasKey(x => x.Id);
+            // One live binding per human and per machine (§8.3 human path), each a
+            // partial unique index over the unrevoked rows — the same shape as
+            // ix_credentials_one_live_lead_per_team: the invariant is the database's,
+            // so two concurrent binds can never both win, and a revoked row keeps the
+            // history without holding either slot.
+            e.HasIndex(x => x.HumanId).IsUnique()
+                .HasFilter("revoked = false")
+                .HasDatabaseName(OneLiveBindingPerHumanIndex);
+            e.HasIndex(x => x.MachineId).IsUnique()
+                .HasFilter("revoked = false")
+                .HasDatabaseName(OneLiveBindingPerMachineIndex);
         });
 
         b.Entity<RelayGrantRow>(e =>

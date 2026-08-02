@@ -14,7 +14,18 @@ public sealed record TeamStateView(
     Guid TeamId,
     int TotalTasks,
     IReadOnlyDictionary<TaskState, int> CountsByState,
-    IReadOnlyList<TeamTaskSummary> Tasks);
+    IReadOnlyList<TeamTaskSummary> Tasks,
+    LeadMachineView? BoundMachine = null);
+
+/// <summary>
+/// The calling Lead's own bound machine (§8.3 human path), carried on the
+/// reattachment surface because that is where a fresh Lead learns it: null means no
+/// machine is bound and <c>open_lead_forward</c> will refuse until one is. A
+/// machine-scoped fact about the <em>human</em>, not about the Team — a takeover does
+/// not inherit it — so it is composed onto the view by the tool that knows the
+/// caller, not read out of the Team's rows. Identifiers only, no prose (§10).
+/// </summary>
+public sealed record LeadMachineView(Guid MachineId, string MachineName, DateTimeOffset BoundAt);
 
 /// <summary>
 /// One task's structural summary. <see cref="Namespace"/> is the server-assigned
