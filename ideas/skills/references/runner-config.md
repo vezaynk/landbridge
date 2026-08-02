@@ -127,6 +127,57 @@ dispatched instance, and its token dies with the instance (§9 check 14).
 - **`{mcp_config}`** is the injected path; the worker reads the plane URL and its
   bearer token from that file. Nothing else carries the token to the harness.
 
+## Profile archetypes — open vs. strict
+
+Two flags decide how much of the machine a worker can use, and the choice is
+made **per profile, by the machine's operator** — never by the Lead. A Lead
+targets a profile *name*; what that name can do (which MCP servers, which
+commands) is the machine's declaration, invisible to the plane (§1's
+infrastructure/work split, §10's "everything specific is data").
+
+**Open** — the worker uses the machine like its owner would. Omit
+`--allowedTools` entirely (with `--permission-mode bypassPermissions` every
+tool is available) and omit `--strict-mcp-config`: the injected `{mcp_config}`
+then **merges** with the machine's own user- and project-scope MCP servers, so
+the worker sees `docket` *plus* every locally installed MCP — GitHub, database,
+browser servers — using credentials that live on that machine and never touch
+Docket:
+
+```jsonc
+"spawn": [
+  "claude", "-p", "<worker prompt>",
+  "--mcp-config", "{mcp_config}",
+  "--output-format", "stream-json", "--input-format", "stream-json",
+  "--permission-mode", "bypassPermissions"
+]
+```
+
+**Strict** — the worker gets an enumerated toolbox and nothing else. Keep
+`--allowedTools` narrow and add `--strict-mcp-config`, which makes the injected
+config the *only* MCP config loaded — local servers are excluded:
+
+```jsonc
+"spawn": [
+  "claude", "-p", "<worker prompt>",
+  "--mcp-config", "{mcp_config}", "--strict-mcp-config",
+  "--output-format", "stream-json", "--input-format", "stream-json",
+  "--permission-mode", "bypassPermissions",
+  "--allowedTools", "Read,Glob,Grep,mcp__docket__get_task,mcp__docket__report_result,mcp__docket__request_input"
+]
+```
+
+The trade is blast radius: on an open profile, a prompt-injected worker can do
+anything the machine account can, including using every local MCP server's
+credentials. Docket's containment still holds at its own boundaries — the
+worker's plane token stays task-scoped (§5), spend is bounded by the harness
+caps and the Team budget (§9) — but the machine-local exposure is the
+operator's chosen risk. The two archetypes compose: one machine can declare a
+locked-down `ci-runner` profile and an open `dev-box` profile side by side, and
+the Lead picks per task by profile name. Hard limits are per-instance and a
+Lead's answer cannot loosen them mid-flight — granting a capability means
+editing the profile and dispatching a fresh task (§10); `request_input` is for
+judgment questions, not tool grants.
+
 ## Transcript capture (§12)
 
 When a profile sets `logs.capture: true`, `docketd` records that worker's transcript
