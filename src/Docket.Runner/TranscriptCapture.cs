@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using Docket.Contracts;
 using Docket.Core;
 
 namespace Docket.Runner;
@@ -18,16 +19,25 @@ public static class TranscriptDefaults
 
     /// <summary>The state-dir subdirectory transcripts live under.</summary>
     public const string DirName = "transcripts";
+
+    /// <summary>The stdout transcript's extension (harness stream-json, one object per line).</summary>
+    public const string StdoutExtension = ".ndjson";
+
+    /// <summary>The stderr transcript's extension (plain lines).</summary>
+    public const string StderrExtension = ".stderr";
 }
 
 /// <summary>
 /// Owns a machine's captured harness transcripts under <c>&lt;state&gt;/transcripts</c>
-/// (spec §12 capture). This is the honest-capture half only: it writes the harness's
-/// own stream-json stdout and its stderr verbatim to per-task, per-instance files so a
-/// failed task's work is recoverable and debuggable — and, per §11, so the local
-/// transcript survives a reboot as the resume substrate. Retention tiers, redaction,
-/// and serving to the plane are a later plane-side increment; nothing here leaves the
-/// machine.
+/// (spec §12). It writes the harness's own stream-json stdout and its stderr verbatim to
+/// per-task, per-instance files so a failed task's work is recoverable and debuggable —
+/// and, per §11, so the local transcript survives a reboot as the resume substrate. It
+/// also answers the two questions the §12 serving path asks of the layout —
+/// <see cref="Inventory"/> (what instances exist) and <see cref="ResolveFile"/> (which
+/// file backs one) — leaving reading and framing to <see cref="TranscriptReader"/>.
+///
+/// <para>Retention here is machine-local hygiene only (<see cref="Prune"/>); the plane
+/// keeps no transcript bytes and has no retention tier of its own (§12).</para>
 ///
 /// <para><b>Layout.</b> <c>&lt;state&gt;/transcripts/&lt;task-id&gt;/&lt;NNNN&gt;.ndjson</c>
 /// (stdout, one JSON object per line) and <c>&lt;NNNN&gt;.stderr</c> (stderr, plain
@@ -73,12 +83,102 @@ public sealed class TranscriptStore
         SetDirOwnerOnly(dir);
 
         var ordinal = NextOrdinal(dir);
-        var stem = ordinal.ToString("D4", CultureInfo.InvariantCulture);
         return new TranscriptWriter(
-            Path.Combine(dir, stem + ".ndjson"),
-            Path.Combine(dir, stem + ".stderr"),
+            PathFor(dir, ordinal, TranscriptDefaults.StdoutExtension),
+            PathFor(dir, ordinal, TranscriptDefaults.StderrExtension),
             maxBytes);
     }
+
+    /// <summary>
+    /// What this machine holds for <paramref name="task"/> (§12 serving): one entry per
+    /// captured worker instance, with each stream's on-disk size. Null when the task has
+    /// no directory here at all — it never ran on this machine, capture was off for the
+    /// profile that ran it, or the prune sweep has already removed it. Those are
+    /// indistinguishable after the fact and deliberately one answer.
+    ///
+    /// <para>An <em>empty</em> list is a different, honest answer: the task ran here and
+    /// captured nothing (files open lazily, so a silent worker leaves only the dir).</para>
+    /// </summary>
+    public IReadOnlyList<TranscriptInstance>? Inventory(TaskId task)
+    {
+        var dir = Path.Combine(_root, task.ToString());
+        if (!Directory.Exists(dir))
+            return null;
+
+        var byOrdinal = new Dictionary<int, (long Stdout, long Stderr, DateTimeOffset LastWrite)>();
+        foreach (var file in Directory.EnumerateFiles(dir))
+        {
+            if (!TryReadOrdinal(file, out var ordinal))
+                continue;
+
+            var info = new FileInfo(file);
+            long length;
+            try
+            {
+                length = info.Length;
+            }
+            catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+            {
+                continue; // vanished or unreadable mid-scan; it simply isn't listed
+            }
+
+            byOrdinal.TryGetValue(ordinal, out var entry);
+            var lastWrite = new DateTimeOffset(info.LastWriteTimeUtc, TimeSpan.Zero);
+            entry = Path.GetExtension(file) switch
+            {
+                TranscriptDefaults.StdoutExtension => (length, entry.Stderr, Newer(entry.LastWrite, lastWrite)),
+                TranscriptDefaults.StderrExtension => (entry.Stdout, length, Newer(entry.LastWrite, lastWrite)),
+                _ => entry,
+            };
+            byOrdinal[ordinal] = entry;
+        }
+
+        return byOrdinal
+            .OrderBy(kv => kv.Key)
+            .Select(kv => new TranscriptInstance(kv.Key, kv.Value.Stdout, kv.Value.Stderr, kv.Value.LastWrite))
+            .ToArray();
+    }
+
+    /// <summary>
+    /// The file backing one instance's stream, or null when that instance/stream was
+    /// never captured (§12 serving). <paramref name="stream"/> is a
+    /// <see cref="TranscriptStreams"/> name; anything else returns null rather than
+    /// touching the filesystem. Path construction is closed by design — a
+    /// <see cref="TaskId"/> is a Guid, the ordinal is formatted from an <c>int</c>, and
+    /// the extension comes from the validated stream name — so nothing from the wire can
+    /// steer the path outside the transcripts root.
+    /// </summary>
+    public string? ResolveFile(TaskId task, int ordinal, string stream)
+    {
+        if (ordinal < 1)
+            return null;
+        var extension = stream switch
+        {
+            TranscriptStreams.Stdout => TranscriptDefaults.StdoutExtension,
+            TranscriptStreams.Stderr => TranscriptDefaults.StderrExtension,
+            _ => null,
+        };
+        if (extension is null)
+            return null;
+
+        var path = PathFor(Path.Combine(_root, task.ToString()), ordinal, extension);
+        return File.Exists(path) ? path : null;
+    }
+
+    /// <summary>Whether this machine holds any transcript directory for the task.</summary>
+    public bool Holds(TaskId task) => Directory.Exists(Path.Combine(_root, task.ToString()));
+
+    private static DateTimeOffset Newer(DateTimeOffset a, DateTimeOffset b) => a > b ? a : b;
+
+    private static string PathFor(string dir, int ordinal, string extension) =>
+        Path.Combine(dir, ordinal.ToString("D4", CultureInfo.InvariantCulture) + extension);
+
+    /// <summary>The instance ordinal encoded in a transcript file's name, or false when
+    /// the name is not one of ours (both streams' stems are the ordinal).</summary>
+    private static bool TryReadOrdinal(string file, out int ordinal) =>
+        int.TryParse(
+            Path.GetFileNameWithoutExtension(file),
+            NumberStyles.None, CultureInfo.InvariantCulture, out ordinal);
 
     /// <summary>
     /// Machine-local hygiene sweep (§12 capture): remove any task dir whose newest
@@ -133,8 +233,7 @@ public sealed class TranscriptStore
         var max = 0;
         foreach (var file in Directory.EnumerateFiles(dir))
         {
-            var stem = Path.GetFileNameWithoutExtension(file);
-            if (int.TryParse(stem, NumberStyles.None, CultureInfo.InvariantCulture, out var n) && n > max)
+            if (TryReadOrdinal(file, out var n) && n > max)
                 max = n;
         }
         return max + 1;

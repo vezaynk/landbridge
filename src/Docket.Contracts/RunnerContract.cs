@@ -105,6 +105,49 @@ public sealed record OpenForwardCommand(
     int Port = 0) : RunnerCommand;
 
 /// <summary>
+/// <c>read-transcript</c> — read one byte range of one captured transcript stream
+/// this machine holds, or (<see cref="Ordinal"/> <c>0</c>) inventory what it holds
+/// for the task (§12 serving). The <b>only pull in the vocabulary</b>: every other
+/// member is the plane commanding or the runner reporting, while this is the plane
+/// asking a question that exactly one <see cref="TranscriptChunkEvent"/> answers,
+/// correlated by <see cref="RequestId"/>.
+///
+/// <para>Pull-per-range is what keeps transcript bulk off the control channel's
+/// critical path (§10 channel separation): the plane asks for the next range only
+/// once the reader has taken the last, so at most one chunk is ever in flight and a
+/// heartbeat or a <c>kill</c> waits behind one frame rather than a backlog. The
+/// runner sends the file's bytes and interprets nothing (§2.6, §13) — redaction is
+/// deliberately unresolved, so serving is operator-only and verbatim (§16).</para>
+/// </summary>
+/// <param name="RequestId">Opaque correlation id; the reply carries it back verbatim.</param>
+/// <param name="Ordinal">The worker-instance ordinal to read, or <c>0</c> to inventory the task.</param>
+/// <param name="Stream"><c>stdout</c> | <c>stderr</c> — which captured stream (see <c>TranscriptStore</c>).</param>
+/// <param name="Offset">Byte offset into the on-disk file to resume at.</param>
+/// <param name="MaxBytes">Cap on the bytes this reply may carry.</param>
+public sealed record ReadTranscriptCommand(
+    TaskId Task,
+    string RequestId,
+    int Ordinal = 0,
+    string Stream = TranscriptStreams.Stdout,
+    long Offset = 0,
+    int MaxBytes = TranscriptStreams.DefaultMaxBytes) : RunnerCommand;
+
+/// <summary>The two captured stream names and the default range size (§12), shared by
+/// both sides so the wire strings live in one place.</summary>
+public static class TranscriptStreams
+{
+    public const string Stdout = "stdout";
+    public const string Stderr = "stderr";
+
+    /// <summary>Default bytes per range: big enough that a 50 MiB stream is a couple
+    /// hundred round trips, small enough that one frame's socket occupancy stays far
+    /// inside the machine-liveness window (§10).</summary>
+    public const int DefaultMaxBytes = 256 * 1024;
+
+    public static bool IsKnown(string? stream) => stream is Stdout or Stderr;
+}
+
+/// <summary>
 /// Stop dispositions, spec §11. Distinct from <see cref="CancelDisposition"/>:
 /// this is the runner-transport wind-down instruction, not the state-machine
 /// cancel enum. <c>preserve</c>/<c>preserve_and_park</c> are only as good as
@@ -181,3 +224,65 @@ public sealed record ForwardClosedEvent(TaskId Task, string ForwardId) : RunnerE
 /// every task it held requeues against the infrastructure counter (§6).
 /// </summary>
 public sealed record RebootedEvent(string MachineId, DateTimeOffset At) : RunnerEvent;
+
+/// <summary>
+/// <c>transcript-chunk</c> — the one reply to one <see cref="ReadTranscriptCommand"/>
+/// (§12 serving), correlated by <see cref="RequestId"/>. Three shapes, distinguished
+/// by which field is set: an inventory (<see cref="Instances"/>), one range of bytes
+/// (<see cref="Text"/> plus <see cref="NextOffset"/>/<see cref="Eof"/>), or a refusal
+/// (<see cref="Refusal"/>).
+///
+/// <para><b>This event does not ride the outbound ring.</b> The ring is bounded
+/// drop-oldest with a gap marker (§10 buffering), and both of its properties are wrong
+/// here: a dropped chunk is a silently corrupted read, and a few hundred chunks would
+/// evict real liveness events from a shared ring. The reader publishes straight to the
+/// channel instead, so transcript traffic can never starve a heartbeat or a
+/// <c>kill</c>.</para>
+///
+/// <para><see cref="Text"/> is <b>verbatim</b> file content — Docket does not redact
+/// transcripts (§13, §16 open question 8), which is why the plane serves them only to a
+/// human operator and only for a terminal task.</para>
+/// </summary>
+/// <param name="Text">The range's bytes as UTF-8 text; empty for an inventory, EOF, or refusal.</param>
+/// <param name="NextOffset">Where the next read resumes; may be short of
+/// <c>Offset + MaxBytes</c> when the range ended mid-character.</param>
+/// <param name="Eof">True when this range reached the end of the file.</param>
+/// <param name="Refusal">Null on success, else why nothing could be read.</param>
+/// <param name="Instances">The task's captured instances, on an inventory reply.</param>
+public sealed record TranscriptChunkEvent(
+    TaskId Task,
+    string RequestId,
+    string Text = "",
+    long NextOffset = 0,
+    bool Eof = false,
+    string? Refusal = null,
+    IReadOnlyList<TranscriptInstance>? Instances = null) : RunnerEvent;
+
+/// <summary>One captured worker instance in a <see cref="TranscriptChunkEvent"/>
+/// inventory (§12): its ordinal and each stream's size, so the dashboard can list what
+/// is readable without the plane knowing anything about the layout. Sizes are the
+/// on-disk byte counts; a stream never captured is <c>0</c>.</summary>
+public sealed record TranscriptInstance(
+    int Ordinal, long StdoutBytes, long StderrBytes, DateTimeOffset LastWrite);
+
+/// <summary>
+/// Why a <see cref="ReadTranscriptCommand"/> could not be answered (§12). Wire strings,
+/// shared so the runner writes and the dashboard renders the same vocabulary.
+/// </summary>
+public static class TranscriptRefusals
+{
+    /// <summary>This machine holds no transcript directory for the task — it never ran
+    /// here, capture was off for the profile that ran it, or the local prune window has
+    /// already swept it. Indistinguishable at serve time, and deliberately one answer.</summary>
+    public const string NoTranscript = "no-transcript";
+
+    /// <summary>The task dir exists but not that ordinal/stream file.</summary>
+    public const string UnknownInstance = "unknown-instance";
+
+    /// <summary>The request named something outside the vocabulary (an unknown stream
+    /// name, a negative ordinal or offset).</summary>
+    public const string BadRequest = "bad-request";
+
+    /// <summary>The file exists but could not be read (permissions, I/O, a vanished file).</summary>
+    public const string ReadFailed = "read-failed";
+}

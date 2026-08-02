@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Docket.Contracts;
 using Docket.Core;
 
@@ -50,11 +51,19 @@ public sealed class RunnerDaemon
     private readonly IStrayReaper _reaper;
     private readonly TimeProvider _clock;
     private readonly RelayForwarder _forwarder;
+    private readonly TranscriptReader? _transcripts;
 
     private readonly CancellationTokenSource _cts = new();
+    private readonly ConcurrentDictionary<Task, byte> _transcriptReads = new();
     private ITimer? _heartbeatTimer;
     private Task? _pump;
 
+    /// <param name="transcripts">
+    /// §12 transcript serving. When supplied, this daemon answers
+    /// <see cref="ReadTranscriptCommand"/> and advertises
+    /// <see cref="MachineHeartbeat.TranscriptsServable"/>; null (most unit tests) refuses
+    /// nothing — it simply acknowledges and does not reply, and the heartbeat says so.
+    /// </param>
     public RunnerDaemon(
         string machineId,
         RunnerConfig config,
@@ -64,7 +73,8 @@ public sealed class RunnerDaemon
         OutboundEventRing ring,
         IStrayReaper reaper,
         TimeProvider clock,
-        TimeSpan? forwardAcceptTimeout = null)
+        TimeSpan? forwardAcceptTimeout = null,
+        TranscriptReader? transcripts = null)
     {
         _machineId = machineId;
         _config = config;
@@ -74,6 +84,7 @@ public sealed class RunnerDaemon
         _ring = ring;
         _reaper = reaper;
         _clock = clock;
+        _transcripts = transcripts;
         // §8.3 data planes: the forwarder owns all live relay tunnels and emits
         // forward-opened/-closed onto the same ring as every other event. The
         // accept-timeout override keeps the consumer plane's bounded wait short in
@@ -130,6 +141,9 @@ public sealed class RunnerDaemon
             case OpenForwardCommand forward:
                 return HandleOpenForward(forward);
 
+            case ReadTranscriptCommand read:
+                return HandleReadTranscript(read);
+
             default:
                 // Unreachable: the hierarchy is closed (§10). Kept explicit so a
                 // future member can't be silently ignored.
@@ -154,6 +168,57 @@ public sealed class RunnerDaemon
             default:
                 return new CommandOutcome.Acknowledged($"open-forward {forward.ForwardId} (no role; ignored)");
         }
+    }
+
+    /// <summary>
+    /// §12 serving: read one range and reply with exactly one
+    /// <see cref="TranscriptChunkEvent"/>. Two rules hold this together, and neither is
+    /// an optimization to be tidied away:
+    ///
+    /// <para><b>1. The reply bypasses the outbound ring.</b> The ring is bounded
+    /// drop-oldest with a gap marker (§10 buffering) — right for liveness events, wrong
+    /// twice over for transcript bytes: a dropped chunk is a silently corrupted read, and
+    /// a few hundred chunks would evict real <c>alive</c>/<c>exited</c> events from a
+    /// shared buffer. Publishing straight to the channel keeps transcript traffic out of
+    /// the liveness path entirely (§10 channel separation).</para>
+    ///
+    /// <para><b>2. The read runs detached.</b> Both a disk read and the channel write
+    /// happen off the command handler, because the handler runs on the control socket's
+    /// receive loop: awaiting a chunk's send here would delay every inbound command
+    /// behind it — including a <c>kill</c>, which is precisely the broken escalation path
+    /// §10 warns about. So this returns immediately, exactly like
+    /// <see cref="HandleOpenForward"/>.</para>
+    ///
+    /// A best-effort send that finds no live connection is dropped and never retried; the
+    /// plane's own bounded wait surfaces it as a failed read (§10).
+    /// </summary>
+    private CommandOutcome HandleReadTranscript(ReadTranscriptCommand read)
+    {
+        if (_transcripts is null)
+            return new CommandOutcome.Acknowledged($"read-transcript {read.RequestId} (serving unavailable; ignored)");
+
+        var reading = Task.Run(async () =>
+        {
+            try
+            {
+                var reply = _transcripts.Read(read);
+                await _channel.PublishAsync(reply, gapBefore: 0, _cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                // Shutting down mid-read; the plane's wait expires on its own.
+            }
+        });
+
+        // Tracked so shutdown can join in-flight reads. Registered before the
+        // continuation is attached, and the continuation runs even if the task has
+        // already finished, so neither ordering leaks an entry.
+        _transcriptReads[reading] = 0;
+        _ = reading.ContinueWith(
+            t => _transcriptReads.TryRemove(t, out _),
+            CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+
+        return new CommandOutcome.Acknowledged($"read-transcript {read.RequestId}");
     }
 
     private CommandOutcome HandleDispatch(DispatchCommand dispatch)
@@ -186,7 +251,11 @@ public sealed class RunnerDaemon
             // §7, §10: the machine's declared profiles ride the heartbeat — the
             // only channel by which the control plane learns them for routing.
             _config.DeclaredProfiles.ToArray(),
-            _clock.GetUtcNow());
+            _clock.GetUtcNow(),
+            // §12: whether this runner can answer read-transcript at all, so the
+            // dashboard offers a transcript link only where one can be served rather
+            // than one that silently times out against an older runner.
+            TranscriptsServable: _transcripts is not null);
         // Best-effort, fire-and-forget: never queue a command against the runner (§10).
         _ = _channel.HeartbeatAsync(heartbeat, _cts.Token);
     }
@@ -216,6 +285,12 @@ public sealed class RunnerDaemon
         // tunnel it owns. Done before the ring completes so each forward's final
         // forward-closed can still drain.
         await _forwarder.DisposeAsync();
+
+        // §12: join any in-flight transcript read so shutdown does not race a file
+        // handle or a channel write. They are short and bounded by MaxBytes; a read
+        // whose send is already gone completes on its own.
+        try { await Task.WhenAll(_transcriptReads.Keys); }
+        catch (Exception) { /* a read that failed or was cancelled is not a shutdown error */ }
 
         if (_heartbeatTimer is not null)
             await _heartbeatTimer.DisposeAsync();
