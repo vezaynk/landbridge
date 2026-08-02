@@ -78,7 +78,7 @@ If a field would only make sense for software work, it belongs in an opaque blob
 | **Harness** | Claude Code or any MCP-capable agent CLI. `docketd` starts and stops processes it did not build, described entirely by config. |
 | **Model provider** | Customer's keys, customer's machines, customer's bill. Docket never sees them. |
 | **Workspace substrate** | Wherever work products live — a version control host, a document store, a filesystem. Docket stores an opaque reference and never dereferences it. |
-| **Verifier** | Supplies the completion verdict. May be automated or a person. Docket requires only that it is not an agent. |
+| **Adjudication** | Not a module. Completion is a Lead-session or human verdict, never the task's own worker (§7, §9 check 4) — CI and tests are evidence a Lead gathers itself, not a verdict-issuing actor. External automated completion stays possible by holding a Lead-class credential (e.g. a CI webhook), but Docket requires no dedicated verifier role. |
 | **Object storage / file transport** | Optional. Artifacts are URLs (§8.1). |
 
 Every one of these is a place where a less disciplined design would grow an integration, a credential store, and an opinion.
@@ -120,6 +120,8 @@ A Team is a unit of human-authorized work. It owns a budget, a scope declaration
 - Multiple Teams run in parallel within an Instance. Leads have no channel to each other; the human is the channel.
 - There are no sub-Teams.
 
+**A Lead may act unattended, including adjudicating completion (§7, §9 check 4), without a human in the loop for each verdict.** This is not a new authority: the human remains the root, and delegation happens once, at the lead-claim, where the human's session authority descends to the Lead (§5 credential descent). What a Lead may never do is complete a task its own worker produced — the doer/judge split holds structurally regardless of who is watching. Judgment calls a human must own are what `review` mode is for (§7).
+
 ### Claiming, releasing, and takeover
 
 One Lead per Team, enforced as a conditional claim — the second claimant is refused.
@@ -149,11 +151,12 @@ The control plane is both the OAuth 2.1 authorization server and the resource se
 
 | Identity | Obtained | Lifetime | Authorizes |
 |---|---|---|---|
-| **Human** | auth code / device flow | session | create Teams, approve permissions, supply review verdicts, dashboard |
-| **Lead** | human session, claimed against a Team | session or until evicted | create tasks, answer questions, relay review verdicts (human-confirmed, §7), read Team state |
+| **Human** | auth code / device flow | session | create Teams, approve permissions, confirm review verdicts, dashboard |
+| **Lead** | human session, claimed against a Team | session or until evicted | create tasks, answer questions, **adjudicate completion** (lead mode autonomously; review mode human-confirmed, §7), read Team state |
 | **Machine** (`docketd`) | enrollment token → client credentials | long, refreshed | runner channel, log stream, relay tunnels |
 | **Worker** | minted at dispatch | task lifetime | MCP tools, scoped to `{team, task, worker, instance}` |
-| **Verifier** | client credentials, human-provisioned | long | verdict transitions out of `verifying` (§6), plus the read scope needed to find them: list tasks in `verifying`, fetch a result reference — nothing else |
+
+There is no verifier credential class. Completion is a Lead-session or human verdict, never the task's own worker (§7, §9 check 4); an external automated gate, if wanted, holds a Lead-class credential rather than a role of its own.
 
 Two derivation paths, deliberately asymmetric: a Lead's authority comes down from a human directly; a worker's is minted by the control plane from the Lead's dispatch decision.
 
@@ -173,7 +176,7 @@ A human-issued enrollment token, single-use and short-lived, exchanged by `docke
 
 ### The invariant
 
-**No path from a worker credential to a verifier credential, or to a lead claim.** Token exchange must be strictly narrowing.
+**No path from a worker credential to a lead claim or a human session.** Token exchange must be strictly narrowing.
 
 ### Token format
 
@@ -209,9 +212,9 @@ Additional states: `blocked_on_input`, `parked`, `canceled`. `blocked_on_input` 
 | `submitted` → `working` | control plane dispatch | the dispatch transaction *is* the claim: single dispatch per task (`SKIP LOCKED`), target machine `ready`, not under back-pressure, and declaring a profile matching the task's `profile`, if set. Workers do not claim; they are dispatched (§5). |
 | `working` → `submitted` | control plane | ack timeout, per-task liveness loss, or machine reboot; increments the infrastructure counter; revokes the worker-instance token |
 | `working` → `verifying` | working agent | result reference present; caller is the incumbent worker instance |
-| `verifying` → `completed` | verifier | **caller identity is not an agent**; in `review` mode the verdict carries human confirmation (§7) |
-| `verifying` → `submitted` | verifier | verification retries remain |
-| `verifying` → `rejected` | verifier | verification retries exhausted |
+| `verifying` → `completed` | Lead or human | **caller is a Lead or human credential, never the task's own worker** (doer/judge split); in `review` mode the verdict carries human confirmation (§7); verdict provenance (`lead-session` \| `human`) is recorded on the completion event |
+| `verifying` → `submitted` | Lead or human | verdict is `fail` and verification retries remain |
+| `verifying` → `rejected` | Lead or human | verdict is `fail` and verification retries exhausted |
 | `working` → `blocked_on_input` | working agent | typed request kind present; caller is the incumbent worker instance |
 | `blocked_on_input` → `submitted` | Lead or human | answer landed; a park record is written (preferring the held-lease machine and the stamped harness session ref) and redispatch resumes the transcript (§11). The worker process is gone the moment the task blocked, so there is no in-place resume. Does **not** touch the infrastructure counter — a Lead answering is not an infrastructure requeue |
 | `blocked_on_input` → `parked` | control plane | wait TTL expired; lease released; park record written (§11) |
@@ -238,8 +241,9 @@ Leaving `working` clears the task's registered services and releases its relay f
 
 | Field | Notes |
 |---|---|
-| `completion.mode` | `automated` or `review`. Determines which verifier identity is expected, nothing else. |
-| `completion.criteria` | Opaque, non-empty string. In `automated` mode the verifier interprets it; in `review` mode a person reads it. The control plane never parses it. |
+| `completion.mode` | `lead` (default) or `review`. Determines which credential may adjudicate completion, nothing else (§9 check 4). |
+| `completion.criteria` | Opaque, non-empty string. In `lead` mode the Lead judges it against evidence it gathers; in `review` mode a person reads it. The control plane never parses it. |
+| `completion.provenance` | Set on completion: `lead-session` or `human` (§9 check 4). Null until completed. |
 | `namespace` | Server-assigned `team-{id}/task-{id}`. Guaranteed unique. What an agent maps it onto is convention. |
 | `workspace` | Opaque blob assigned by the Lead. Where the work happens, how it is isolated, which ports it may use. Shape defined by the skill. |
 | `team_id`, `parent_task` | Lineage. |
@@ -253,16 +257,18 @@ Leaving `working` clears the task's registered services and releases its relay f
 
 ### Completion modes
 
-Not all work has a mechanical check. What generalizes is not the *check* but the *authority*: the worker does not decide it is done.
+Not all work has a mechanical check. What generalizes is not the *check* but the *authority*: the worker does not decide it is done — and a task's own worker can never complete it (§9 check 4, the doer/judge split, the same shape as a subagent that never accepts its own work).
 
 | Mode | Verdict from | Typical use |
 |---|---|---|
-| `automated` | verifier credential | test suite, linter, schema validation, any pipeline |
-| `review` | human-confirmed verdict via Lead or human session | written deliverables, research, design, judgment calls |
+| `lead` (default) | the Lead session's verdict, autonomously | anything the Lead can check itself — run the suite, read the diff, inspect CI, re-verify the worker's claims |
+| `review` | human-confirmed verdict via Lead or human session | judgment calls a human must own: written deliverables, research, design, recommendations |
 
-Both land in `verifying` and take the same transitions. Tasks awaiting review appear in the human inbox (§12), which is what stops `review` from being a black hole.
+Both land in `verifying` and take the same transitions; which credential may rule is the only difference, and completion records its provenance (`lead-session` \| `human`, §9 check 4). Tasks awaiting review appear in the human inbox (§12), which is what stops `review` from being a black hole.
 
-**`review` verdicts must carry human confirmation.** The Lead is a harness client — a model, and a model can be argued into accepting by exactly the untrusted text §13 warns about. `submit_review` is therefore not honoured from an unattended Lead turn: the verdict is confirmed by the human through an elicitation prompt where the client supports it, or lands in the inbox for confirmation under the human session credential. The lead claim alone cannot complete a task — that is §6's non-agent check applied at the door it would be easiest to forget.
+**`lead` is the default because the orchestrator is the judge.** This is the Claude Code shape: the Lead decomposed the work and holds the plan, so it is the right judge of whether a task met its bar — but it judges *another* worker's output, never its own, and it judges against evidence it gathers itself. Docket hands it no verdict: CI and tests are that evidence, not a verdict-issuing actor, and the deterministic-verifier role is deliberately not something Docket runs (§15). Reject cheaply, accept carefully.
+
+**`review` verdicts must carry human confirmation.** Some acceptance is a human's to give — and a Lead is a model that the untrusted text §13 warns about can argue into accepting. `submit_review` in `review` mode is therefore not honoured from an unattended Lead turn: the verdict is confirmed by the human through an elicitation prompt where the client supports it, or lands in the inbox for confirmation under the human session credential. A lead claim alone completes a `lead`-mode task but never a `review`-mode one — §9 check 4 applied at the door it would be easiest to forget.
 
 ### Workspace and isolation
 
@@ -349,7 +355,7 @@ Preview traffic rides the same per-Team byte counters and rate limits (§9.10).
 1. `completion.criteria` is non-empty at task creation.
 2. `namespace` is server-assigned; collision is structurally impossible.
 3. Only a lead claim may create tasks.
-4. Only a non-agent identity may transition to `completed`; `review` verdicts carry human confirmation.
+4. Completion comes from a Lead or human credential, **never the task's own worker** (doer/judge split); `review` verdicts carry human confirmation; verdict provenance (`lead-session` | `human`) is recorded on the completion event.
 5. Single dispatch per task; the dispatched machine is accepting work and declares a matching profile name.
 6. One Lead per Team; takeover is explicit and logged.
 7. Ack timeout and per-task liveness timeout → requeue.
@@ -371,7 +377,7 @@ Nothing else. Any addition that requires knowing what a task is *about* should b
 
 ### Agent → control plane (MCP)
 
-**Lead:** `create_task` · `answer_input_request` · `submit_review` (human-confirmed, §7) · `cancel_task` · `get_team_state`
+**Lead:** `create_task` · `answer_input_request` · `submit_review` (lead-adjudicated; human-confirmed in `review` mode, §7) · `cancel_task` · `get_team_state`
 **Worker:** `get_task` · `report_result` · `request_input` · `register_service` · `open_forward` · `open_preview` (§8.4)
 
 There is no `claim_task`. Workers are dispatched, never claimants (§5, §6) — the first thing a worker does with its minted token is work, and its calls identify it.
@@ -508,9 +514,9 @@ OTel from harnesses, plus tool-call hooks where the harness has them — Claude 
 
 This is the *attribution* source for budgets — best-effort by construction, since Docket does not sit between the harness and the model provider and the machine is the customer's. Budget is therefore containment (§9 check 9): attribution drives refuse-new-dispatch and `stop`, and the per-dispatch harness-local hard cap (Claude Code: `--max-budget-usd`, passed by `docketd` from the task's `budget`) is the backstop that holds even when telemetry is off or gamed.
 
-### Verifier webhook
+### Completion is adjudicated, not webhooked
 
-An automated verifier posts a verdict against a task in `verifying`, authenticated as a non-agent identity. Docket does not invoke the verifier or know what it ran; the verifier's read scope (§5) lets it poll for tasks in `verifying` and fetch their result references, keeping the direction verifier-to-Docket. A verdict posted against a task already terminal receives an explicit "gone" response, never a silent success. `review`-mode verdicts arrive through `submit_review` instead — same transition, different door, human-confirmed (§7).
+There is no verifier webhook. A task in `verifying` is completed by the Lead (or a human) through `submit_review` over MCP — the Lead reads the result reference and the completion criteria it wrote, gathers its own evidence (a test run, a CI check), and rules (§7, §9 check 4). A verdict against an already-terminal task is refused with the state machine's "gone" rejection, never a silent success. External automated completion, where wanted, is a client holding a Lead-class credential (e.g. a CI webhook posting `submit_review`), not a role Docket runs.
 
 ### A2A (external boundary only)
 
@@ -551,7 +557,7 @@ TTL is set by the Lead per situation. `TTL=0` means kill immediately without wai
 
 Preservation is the agent's job — persist work in progress to the workspace substrate however that domain does it. The runner does not touch the workspace, so **the kill path is lossy by construction.** `preserve` and `preserve_and_park` are only as good as the harness's `stop` delivery (§10) — a signal-only profile cannot honour them, and the enroll conformance run makes that visible before it matters.
 
-`discard` means removing this task's workspace instance, which is only safe *because* isolation is task-scoped. Under a shared checkout it would destroy a sibling's work. `discard` is deferred while the task is `verifying` — deleting a workspace under an automated verifier mid-check turns a cancellation into a spurious verdict.
+`discard` means removing this task's workspace instance, which is only safe *because* isolation is task-scoped. Under a shared checkout it would destroy a sibling's work. `discard` is deferred while the task is `verifying` — deleting a workspace mid-adjudication (the Lead may be running the criteria against it) turns a cancellation into a spurious verdict.
 
 ### Blocked on input
 
@@ -696,7 +702,7 @@ The failure mode for everything in these is bounded and recoverable. That is the
 - **Client-direct database access or RLS as authorization** — the control plane is the only path to the state machine, and a transition guard is not a row filter
 - **Any domain-specific field in the task schema**
 - **Any version control integration** — Docket stores opaque references and never dereferences them
-- **Any verifier integration** — the verifier polls and posts to Docket, not the reverse
+- **Any built-in verifier or completion gate** — completion is a Lead or human verdict (§7, §9 check 4); an external automated gate holds a Lead-class credential and posts `submit_review`, and Docket runs nothing itself
 - Cross-Instance coordination in `docket-meta`
 - Agent-facing anything on `docket-meta`
 
@@ -706,7 +712,7 @@ The failure mode for everything in these is bounded and recoverable. That is the
 
 1. **Closing a Team has no affordance.** The Lead owns it, but nothing exposes it. Needs a command and a decision about what happens to outstanding tasks.
 2. **Does `review` mode need a reviewer assignment?** Currently any Lead or human on the Team may confirm. Named reviewers are more correct for larger Teams and a step toward a workflow engine.
-3. **Verifier-gated or merge-gated completion** for the code case. Skill-level guidance, but it shapes the default bundle.
+3. **Evidence-gated or merge-gated completion** for the code case — the Lead runs the suite or checks the merge before accepting. Skill-level guidance, but it shapes the default bundle.
 4. **Runner compatibility window.** Deferred to alpha, when there is real data on how stale installed runners get.
 5. **Relay capacity and COGS.** Bandwidth is a direct cost line.
 6. **When does self-hosting arrive**, and does it ship the whole Instance or only `docket-relay`?

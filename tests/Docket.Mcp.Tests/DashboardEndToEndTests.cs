@@ -243,7 +243,7 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         await app.StartAsync(ct);
 
         var team = TeamId.New();
-        var (taskId, ns) = await SeedWorkingTaskAsync(team, CompletionMode.Automated, ct);
+        var (taskId, ns) = await SeedWorkingTaskAsync(team, CompletionMode.Lead, ct);
 
         // Register the machine into the live registry and track the dispatched task.
         var registry = app.Services.GetRequiredService<RunnerConnectionRegistry>();
@@ -317,21 +317,29 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         var team = TeamId.New();
 
         // A working task with a registered service.
-        var (_, workingNs, workingCaller) = await SeedWorkingTaskWithCallerAsync(team, CompletionMode.Automated, ct);
+        var (_, workingNs, workingCaller) = await SeedWorkingTaskWithCallerAsync(team, CompletionMode.Lead, ct);
         await WithStoreAsync(async store =>
             await store.RegisterServiceAsync(workingCaller, "api", 8080, ct));
 
         // A blocked task (open input request).
-        var (blockedId, blockedNs, blockedCaller) = await SeedWorkingTaskWithCallerAsync(team, CompletionMode.Automated, ct);
+        var (blockedId, blockedNs, blockedCaller) = await SeedWorkingTaskWithCallerAsync(team, CompletionMode.Lead, ct);
         await WithStoreAsync(async store =>
             await store.ApplyAsync(blockedId, new RequestInput(blockedCaller, InputRequestKind.Question), ct));
 
         // A parked task: block it, then let its wait TTL expire (one park).
-        var (parkedId, parkedNs, parkedCaller) = await SeedWorkingTaskWithCallerAsync(team, CompletionMode.Automated, ct);
+        var (parkedId, parkedNs, parkedCaller) = await SeedWorkingTaskWithCallerAsync(team, CompletionMode.Lead, ct);
         await WithStoreAsync(async store =>
         {
             await store.ApplyAsync(parkedId, new RequestInput(parkedCaller, InputRequestKind.Question), ct);
             await store.ApplyAsync(parkedId, new WaitTtlExpired(new ParkRecord("box-1", null, null, 1)), ct);
+        });
+
+        // A completed lead-mode task, adjudicated by the Lead (§9 check 4 provenance).
+        var (completedId, completedNs, completedCaller) = await SeedWorkingTaskWithCallerAsync(team, CompletionMode.Lead, ct);
+        await WithStoreAsync(async store =>
+        {
+            await store.ApplyAsync(completedId, new ReportResult(completedCaller, "git:done"), ct);
+            await store.ApplyAsync(completedId, new VerdictAccept(new LeadClaim(team)), ct);
         });
 
         // A Lead claims the Team.
@@ -347,6 +355,8 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Contains("parks total", html, StringComparison.Ordinal);    // the §12 parks slot
         Assert.Contains(parkedNs, html, StringComparison.Ordinal);
         Assert.Contains(workingNs, html, StringComparison.Ordinal);
+        Assert.Contains(completedNs, html, StringComparison.Ordinal);
+        Assert.Contains("accepted by lead session", html, StringComparison.Ordinal); // §9.4 provenance rendered
 
         // ── JSON twin: same fields, machine-readable ─────────────────────────
         var json = await GetAuthedAsync(app, $"/dashboard/teams/{team.Value}?format=json", ct);
@@ -368,6 +378,10 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             t => t.GetProperty("namespace").GetString() == parkedNs && t.GetProperty("parks").GetInt32() >= 1);
         Assert.Contains(tasks.EnumerateArray(),
             t => t.GetProperty("state").GetString() == "Parked");
+        // §9 check 4: completion provenance rides the JSON twin as a structured field.
+        Assert.Contains(tasks.EnumerateArray(),
+            t => t.GetProperty("namespace").GetString() == completedNs
+                 && t.GetProperty("completionProvenance").GetString() == "LeadSession");
 
         await app.StopAsync(ct);
     }
@@ -385,7 +399,7 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         await app.StartAsync(ct);
 
         var teamA = TeamId.New();
-        var (blockedId, blockedNs, blockedCaller) = await SeedWorkingTaskWithCallerAsync(teamA, CompletionMode.Automated, ct);
+        var (blockedId, blockedNs, blockedCaller) = await SeedWorkingTaskWithCallerAsync(teamA, CompletionMode.Lead, ct);
         await WithStoreAsync(async store =>
             await store.ApplyAsync(blockedId, new RequestInput(blockedCaller, InputRequestKind.Question), ct));
 
@@ -430,7 +444,7 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
 
         var team = TeamId.New();
         await ClaimLeadAsync(team, ct);                    // → a lead_events "Claimed" row
-        await SeedWorkingTaskAsync(team, CompletionMode.Automated, ct); // created + Dispatch task_events
+        await SeedWorkingTaskAsync(team, CompletionMode.Lead, ct); // created + Dispatch task_events
 
         var body = await GetAuthedAsync(app, "/dashboard/events", ct);
         Assert.Contains("Claimed", body, StringComparison.Ordinal);   // lead event
@@ -456,7 +470,7 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
 
         // A task that hits an auth failure and spawns a subagent (both out-of-band,
         // no transition), and a task that blocks with a typed input-request kind.
-        var (authTaskId, _, _) = await SeedWorkingTaskWithCallerAsync(team, CompletionMode.Automated, ct);
+        var (authTaskId, _, _) = await SeedWorkingTaskWithCallerAsync(team, CompletionMode.Lead, ct);
         await WithStoreAsync(async store =>
         {
             await store.RecordAuthFailureAsync(
@@ -464,7 +478,7 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             await store.RecordSubagentSpawnAsync(authTaskId, "sub-1", "root", ct);
         });
 
-        var (blockedId, _, blockedCaller) = await SeedWorkingTaskWithCallerAsync(team, CompletionMode.Automated, ct);
+        var (blockedId, _, blockedCaller) = await SeedWorkingTaskWithCallerAsync(team, CompletionMode.Lead, ct);
         await WithStoreAsync(async store =>
             await store.ApplyAsync(blockedId, new RequestInput(blockedCaller, InputRequestKind.AuthHelp), ct));
 

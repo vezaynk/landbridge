@@ -173,7 +173,7 @@ public sealed class OAuthHumanFlowEndToEndTests(PostgresFixture pg) : IAsyncLife
             {
                 ["description"] = "prove the front door opens onto the real system",
                 ["completionCriteria"] = "a task exists",
-                ["mode"] = "automated",
+                ["mode"] = "lead",
                 ["profile"] = null,
                 ["workspace"] = null,
             }, cancellationToken: ct);

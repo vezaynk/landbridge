@@ -19,7 +19,7 @@ public enum Rule
     CompletionCriteriaNonEmpty = 1,
     NamespaceServerAssigned = 2,
     OnlyLeadCreatesTasks = 3,
-    CompletionRequiresNonAgentVerdict = 4,
+    CompletionByLeadOrHuman = 4,
     SingleDispatchPerTask = 5,
     OneLeadPerTeam = 6,
     LivenessTimeoutRequeue = 7,

@@ -5,6 +5,7 @@ using System.Text.Json;
 using Docket.ControlPlane;
 using Docket.ControlPlane.Auth;
 using Docket.ControlPlane.Tests;
+using Docket.Core;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;
@@ -94,10 +95,11 @@ public sealed class EnrollmentEndpointsTests(PostgresFixture pg) : IAsyncLifetim
         Assert.Equal(HttpStatusCode.Unauthorized, (await PostEnrollAsync(client, garbage, ct)).StatusCode);
 
         // Wrong class: a real credential of another kind is not an enrollment token.
-        string verifier;
+        string worker;
         await using (var db = pg.NewContext())
-            verifier = (await new TokenService(db, clock).ProvisionVerifierAsync(ct)).Token;
-        Assert.Equal(HttpStatusCode.Unauthorized, (await PostEnrollAsync(client, verifier, ct)).StatusCode);
+            worker = (await new TokenService(db, clock).MintWorkerTokenAsync(
+                TeamId.New(), TaskId.New(), WorkerInstanceId.New(), ct)).Token;
+        Assert.Equal(HttpStatusCode.Unauthorized, (await PostEnrollAsync(client, worker, ct)).StatusCode);
 
         await app.StopAsync(ct);
     }

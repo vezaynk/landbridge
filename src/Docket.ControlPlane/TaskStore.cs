@@ -337,6 +337,7 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
                 t.Attempt,
                 Parked = t.ParkMachine != null,
                 t.ContinuesTaskId,
+                t.CompletionProvenance,
             })
             .ToListAsync(ct);
 
@@ -346,29 +347,12 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
 
         var summaries = rows
             .Select(t => new TeamTaskSummary(
-                t.Id, t.Namespace, t.State, t.CompletionMode, t.Attempt, t.Parked, t.ContinuesTaskId))
+                t.Id, t.Namespace, t.State, t.CompletionMode, t.Attempt, t.Parked,
+                t.ContinuesTaskId, t.CompletionProvenance))
             .ToList();
 
         return new TeamStateView(team.Value, rows.Count, counts, summaries);
     }
-
-    /// <summary>
-    /// The verifier's poll (§5, §10 verifier webhook): every task in
-    /// <see cref="TaskState.Verifying"/> with an <see cref="CompletionMode.Automated"/>
-    /// completion mode, so an automated verifier can find the tasks it may rule on
-    /// and fetch each one's result reference. Review-mode tasks are deliberately
-    /// omitted — their verdict comes through the Lead's <c>submit_review</c>
-    /// (human-confirmed, §7), not this path. A cross-Team read by design: the
-    /// verifier is an Instance-scoped credential (§5), not attached to any Team, so
-    /// it sees every automated task awaiting its check. A pure read — no transition,
-    /// and the only prose it returns is the completion criteria §5 explicitly grants.
-    /// </summary>
-    public async Task<IReadOnlyList<VerifyingTaskView>> ListVerifyingAsync(CancellationToken ct = default) =>
-        await db.Tasks.AsNoTracking()
-            .Where(t => t.State == TaskState.Verifying && t.CompletionMode == CompletionMode.Automated)
-            .OrderBy(t => t.Namespace)
-            .Select(t => new VerifyingTaskView(t.Id, t.Namespace, t.CompletionCriteria, t.ResultReference))
-            .ToListAsync(ct);
 
     /// <summary>
     /// The wait-TTL sweeper's poll (§11): every task in

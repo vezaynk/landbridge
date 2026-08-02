@@ -30,7 +30,6 @@ brings up, in dependency order:
 | `mcp` | The control plane + MCP host (`Docket.Mcp`), migrated on startup and dev-seeded | `http://127.0.0.1:5000` (fixed, un-proxied) |
 | `relay` | `docket-relay` | `http://127.0.0.1:5100` (fixed, un-proxied) |
 | `docketd` | A real runner, enrolled via a dev-seeded machine token, dialing `ws://127.0.0.1:5000/runner` | outbound only |
-| `docket-verifier` | The reference automated verifier, polling the plane (`--accept-pattern .*`, dev-only) | outbound only |
 
 The endpoints for `mcp` and `relay` are pinned to fixed loopback ports and *not*
 proxied by Aspire's DCP, because the sibling `docketd`/worker/relay processes
@@ -57,11 +56,12 @@ dispatch → `get_task` → `report_result` protocol; see
 
 In the dev loop the host bootstraps a machine identity out of band (the real
 enrollment handshake an operator performs — below — is skipped) and writes a
-JSON file with `machineId`, `machineToken`, and `verifierToken` to a temp path.
-The AppHost reads it and hands `docketd` its `DOCKET_MACHINE_TOKEN` /
-`DOCKET_MACHINE_ID` and the verifier its `DOCKET_VERIFIER_TOKEN`. This is gated
-by `Docket:DevSeed:TokenFile` and **production never sets it**. The dev machine
-token is fixed and never refreshed.
+JSON file with `machineId` and `machineToken` to a temp path. The AppHost reads
+it and hands `docketd` its `DOCKET_MACHINE_TOKEN` / `DOCKET_MACHINE_ID`. This is
+gated by `Docket:DevSeed:TokenFile` and **production never sets it**. The dev
+machine token is fixed and never refreshed. Completion is Lead-adjudicated
+(§7, §9 check 4), so the loop seeds no verifier credential — a human-driven Lead
+closes the task lifecycle with `submit_review`.
 
 ## Authenticating a human
 
@@ -248,7 +248,7 @@ this branch.
 | `Docket:RelayValidation:Bearer` | *(unset → 503)* | Shared bearer the relay must present to `POST /relay/validate`. Fail-closed when unset. |
 | `Docket:Oauth:AllowInsecureClientMetadata` | `false` | DEV/TEST ONLY. Disables the CIMD SSRF address fence (accepts http / loopback `client_id` hosts). Never enable in production. |
 | `Docket:MigrateOnStartup` | `false` | Apply the checked-in EF migration on boot. Set by the dev loop; production migrates out of band. |
-| `Docket:DevSeed:TokenFile` | *(unset)* | Dev-loop only: bootstrap a machine + verifier identity and write the seed file here. Never set in production. |
+| `Docket:DevSeed:TokenFile` | *(unset)* | Dev-loop only: bootstrap a machine identity and write the seed file here. Never set in production. |
 | env `OTEL_EXPORTER_OTLP_ENDPOINT` | *(unset)* | When set, the host exports OpenTelemetry via OTLP (the Aspire dashboard sets this in the dev loop). |
 
 ### Relay (`Docket.Relay`)
@@ -281,20 +281,14 @@ Flags: `--config <path>` (required for a normal run), `--machine-id <id>`,
 | `DOCKET_STATE_DIR` / `XDG_STATE_HOME` | State-dir resolution (see enrollment). |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Enables OTLP export from the runner when set. |
 
-### Verifier (`docket-verifier`)
+### Completion (adjudication)
 
-Flags: `--plane <url>` (required), `--interval <seconds>` (default 15),
-`--accept-pattern <regex>` (default `.*`). The bearer verifier token comes from
-the environment variable **`DOCKET_VERIFIER_TOKEN`** — never a flag. The verifier
-polls `GET /verify/pending`, accepts a task iff its result reference is non-empty
-and matches the pattern, and posts the verdict to `POST /verify/{taskId}`. It
-gives up (exit 3) after three consecutive auth failures so you rotate the token.
-
-> The dev loop runs the verifier with `--accept-pattern .*`, which accepts any
-> non-empty result reference — a **dev-only** choice so the lifecycle closes with
-> nobody in the loop. A real deployment narrows the pattern to the shapes its
-> workers actually produce (a commit SHA, a CI artifact URL); an over-broad
-> pattern in production rubber-stamps every task.
+There is no verifier process. A task in `verifying` is completed by a Lead (or a
+human) calling `submit_review` over MCP (§7, §9 check 4): the Lead reads the
+reported result and rules on evidence it gathers itself (a test run, a CI check).
+In `lead` mode (the default) the Lead's verdict completes the task with no human
+confirmation; in `review` mode the verdict must carry it. A task's own worker can
+never complete it.
 
 ## Running the tests
 

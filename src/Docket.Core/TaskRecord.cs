@@ -75,4 +75,12 @@ public sealed record TaskRecord
     public WorkerInstanceId? CurrentInstance { get; init; }
 
     public ParkRecord? Park { get; init; }
+
+    /// <summary>
+    /// Who adjudicated this task's completion (§9 check 4), set on the
+    /// verifying → completed transition and null in every other state. Typed state,
+    /// not opaque content — the engine derives it from the verdict's actor — so it
+    /// lands on the record and the store persists it for the §12 dashboard.
+    /// </summary>
+    public VerdictProvenance? CompletionProvenance { get; init; }
 }

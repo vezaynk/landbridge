@@ -38,7 +38,7 @@ public sealed class RelayGrantServiceTests(PostgresFixture pg) : IAsyncLifetime
     {
         var store = new TaskStore(db, clock);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(LeadFor(team), team, "criteria", CompletionMode.Automated, null, true));
+            new CreateTask(LeadFor(team), team, "criteria", CompletionMode.Lead, null, true));
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(Machine(), instance);
         var caller = new WorkerCaller(team, created.Task.Id, instance);
@@ -100,7 +100,7 @@ public sealed class RelayGrantServiceTests(PostgresFixture pg) : IAsyncLifetime
         // inserted directly: the store refuses to register while not working, so
         // we manufacture the defensive case the working-owner check exists for.
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(LeadFor(Team), Team, "criteria", CompletionMode.Automated, null, true));
+            new CreateTask(LeadFor(Team), Team, "criteria", CompletionMode.Lead, null, true));
         db.RegisteredServices.Add(new RegisteredServiceRow
         {
             TaskId = created.Task.Id.Value, TeamId = Team.Value, Name = "db", Port = 5432, CreatedAt = clock.GetUtcNow(),
@@ -226,7 +226,7 @@ public sealed class RelayGrantServiceTests(PostgresFixture pg) : IAsyncLifetime
 
         // Producer working + service registered; a consumer holds a live grant.
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(LeadFor(Team), Team, "criteria", CompletionMode.Automated, null, true));
+            new CreateTask(LeadFor(Team), Team, "criteria", CompletionMode.Lead, null, true));
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(Machine(), instance);
         var producerCaller = new WorkerCaller(Team, created.Task.Id, instance);

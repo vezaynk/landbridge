@@ -10,7 +10,7 @@ public class EnforcementRuleTests
     public void Creation_requires_non_empty_completion_criteria(string criteria)
     {
         var result = TaskStateMachine.Create(
-            new CreateTask(Given.Lead, Given.Team, criteria, CompletionMode.Automated, null, true),
+            new CreateTask(Given.Lead, Given.Team, criteria, CompletionMode.Lead, null, true),
             Given.Id, "ns");
         Expect.Rejected(result, Rule.CompletionCriteriaNonEmpty);
     }
@@ -20,7 +20,7 @@ public class EnforcementRuleTests
     public void Creation_requires_a_server_assigned_namespace()
     {
         var result = TaskStateMachine.Create(
-            new CreateTask(Given.Lead, Given.Team, "criteria", CompletionMode.Automated, null, true),
+            new CreateTask(Given.Lead, Given.Team, "criteria", CompletionMode.Lead, null, true),
             Given.Id, "");
         Expect.Rejected(result, Rule.NamespaceServerAssigned);
     }
@@ -29,7 +29,6 @@ public class EnforcementRuleTests
     public static TheoryData<Actor> NonLeadActors() => new()
     {
         Given.Human,
-        Given.Verifier,
         new WorkerCaller(Given.Team, Given.Id, WorkerInstanceId.New()),
         Given.ForeignLead,
     };
@@ -39,7 +38,7 @@ public class EnforcementRuleTests
     public void Only_a_lead_claim_for_the_team_creates_tasks(Actor actor)
     {
         var result = TaskStateMachine.Create(
-            new CreateTask(actor, Given.Team, "criteria", CompletionMode.Automated, null, true),
+            new CreateTask(actor, Given.Team, "criteria", CompletionMode.Lead, null, true),
             Given.Id, "ns");
         Expect.Rejected(result, Rule.OnlyLeadCreatesTasks);
     }
@@ -49,7 +48,7 @@ public class EnforcementRuleTests
     public void Creation_is_refused_when_the_team_budget_is_exhausted()
     {
         var result = TaskStateMachine.Create(
-            new CreateTask(Given.Lead, Given.Team, "criteria", CompletionMode.Automated, null,
+            new CreateTask(Given.Lead, Given.Team, "criteria", CompletionMode.Lead, null,
                 TeamBudgetRemains: false),
             Given.Id, "ns");
         Expect.Rejected(result, Rule.TeamBudgetCeiling);
@@ -83,22 +82,34 @@ public class EnforcementRuleTests
             TaskState.Working);
     }
 
-    // §9 check 4 — automated mode expects the verifier credential
-    public static TheoryData<Actor, bool> NonVerifierVerdicts() => new()
+    // §9 check 4 (doer/judge split) — a task's own worker can never complete it,
+    // in either mode. This is the invariant that survives cutting the verifier.
+    public static TheoryData<CompletionMode> BothModes() => new()
     {
-        { Given.Human, false },
-        { Given.Lead, true },   // even human-confirmed: wrong door for automated
-        { new WorkerCaller(Given.Team, Given.Id, WorkerInstanceId.New()), false },
+        CompletionMode.Lead,
+        CompletionMode.Review,
     };
 
     [Theory]
-    [MemberData(nameof(NonVerifierVerdicts))]
-    public void Automated_verdicts_require_the_verifier_credential(Actor actor, bool humanConfirmed)
+    [MemberData(nameof(BothModes))]
+    public void A_task_worker_cannot_complete_its_own_task(CompletionMode mode)
+    {
+        var task = Given.Task(TaskState.Verifying, mode);
+        var incumbent = new WorkerCaller(task.Team, task.Id, task.CurrentInstance!.Value);
+        var result = TaskStateMachine.Apply(task, new VerdictAccept(incumbent));
+        Expect.Rejected(result, Rule.CompletionByLeadOrHuman);
+    }
+
+    // §9 check 4 — lead mode: the Lead session's verdict completes autonomously,
+    // no human confirmation, and the completion records lead-session provenance.
+    [Fact]
+    public void A_lead_completes_a_lead_mode_task_autonomously()
     {
         var result = TaskStateMachine.Apply(
-            Given.Task(TaskState.Verifying, CompletionMode.Automated),
-            new VerdictAccept(actor, humanConfirmed));
-        Expect.Rejected(result, Rule.CompletionRequiresNonAgentVerdict);
+            Given.Task(TaskState.Verifying, CompletionMode.Lead),
+            new VerdictAccept(Given.Lead, HumanConfirmed: false));
+        var task = Expect.Transitioned(result, TaskState.Completed);
+        Assert.Equal(VerdictProvenance.LeadSession, task.CompletionProvenance);
     }
 
     // §9 check 4 + §7 — review mode requires human confirmation
@@ -108,7 +119,7 @@ public class EnforcementRuleTests
         var result = TaskStateMachine.Apply(
             Given.Task(TaskState.Verifying, CompletionMode.Review),
             new VerdictAccept(Given.Lead, HumanConfirmed: false));
-        Expect.Rejected(result, Rule.CompletionRequiresNonAgentVerdict);
+        Expect.Rejected(result, Rule.CompletionByLeadOrHuman);
     }
 
     [Fact]
@@ -117,25 +128,18 @@ public class EnforcementRuleTests
         var result = TaskStateMachine.Apply(
             Given.Task(TaskState.Verifying, CompletionMode.Review),
             new VerdictAccept(Given.Lead, HumanConfirmed: true));
-        Expect.Transitioned(result, TaskState.Completed);
+        var task = Expect.Transitioned(result, TaskState.Completed);
+        Assert.Equal(VerdictProvenance.LeadSession, task.CompletionProvenance);
     }
 
     [Fact]
-    public void A_human_session_completes_a_review_task()
+    public void A_human_session_completes_a_review_task_with_human_provenance()
     {
         var result = TaskStateMachine.Apply(
             Given.Task(TaskState.Verifying, CompletionMode.Review),
             new VerdictAccept(Given.Human));
-        Expect.Transitioned(result, TaskState.Completed);
-    }
-
-    [Fact]
-    public void The_verifier_credential_is_the_wrong_door_for_review_verdicts()
-    {
-        var result = TaskStateMachine.Apply(
-            Given.Task(TaskState.Verifying, CompletionMode.Review),
-            new VerdictAccept(Given.Verifier));
-        Expect.Rejected(result, Rule.CompletionRequiresNonAgentVerdict);
+        var task = Expect.Transitioned(result, TaskState.Completed);
+        Assert.Equal(VerdictProvenance.Human, task.CompletionProvenance);
     }
 
     // §9 check 12
@@ -224,8 +228,8 @@ public class EnforcementRuleTests
         "dispatch" => new Dispatch(Given.Machine(), WorkerInstanceId.New()),
         "liveness" => new LivenessLost(LivenessLossReason.LivenessTimeout),
         "report" => new ReportResult(new WorkerCaller(task.Team, task.Id, WorkerInstanceId.New()), "ref"),
-        "accept" => new VerdictAccept(Given.Verifier),
-        "fail" => new VerdictFail(Given.Verifier),
+        "accept" => new VerdictAccept(Given.Lead),
+        "fail" => new VerdictFail(Given.Lead),
         "request" => new RequestInput(new WorkerCaller(task.Team, task.Id, WorkerInstanceId.New()), InputRequestKind.Question),
         "answer" => new AnswerInput(Given.Lead, Given.Park),
         "ttl" => new WaitTtlExpired(Given.Park),

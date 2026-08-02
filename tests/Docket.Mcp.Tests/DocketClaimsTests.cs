@@ -46,22 +46,13 @@ public class DocketClaimsTests
     }
 
     [Fact]
-    public void Verifier_principal_round_trips()
-    {
-        var restored = DocketClaims.ToPrincipal(
-            DocketClaims.ToClaimsPrincipal(new Principal.Verifier()));
-
-        Assert.IsType<Principal.Verifier>(restored);
-    }
-
-    [Fact]
     public void A_non_worker_principal_is_not_a_worker_caller()
     {
         var machine = DocketClaims.ToClaimsPrincipal(new Principal.Machine(Guid.NewGuid()));
-        var verifier = DocketClaims.ToClaimsPrincipal(new Principal.Verifier());
+        var human = DocketClaims.ToClaimsPrincipal(new Principal.Human(Guid.NewGuid()));
 
         Assert.Null(DocketClaims.AsWorker(machine));
-        Assert.Null(DocketClaims.AsWorker(verifier));
+        Assert.Null(DocketClaims.AsWorker(human));
     }
 
     [Fact]

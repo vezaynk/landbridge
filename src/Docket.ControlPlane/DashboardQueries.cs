@@ -174,6 +174,7 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
                 Parked = t.ParkMachine != null,
                 t.ParkMachine,
                 t.ContinuesTaskId,
+                t.CompletionProvenance,
             })
             .ToListAsync(ct);
 
@@ -208,7 +209,8 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
                 parksByTask.GetValueOrDefault(t.Id),
                 t.Parked ? t.ParkMachine : null,
                 t.State == TaskState.BlockedOnInput ? t.BlockedAt : null,
-                t.ContinuesTaskId))
+                t.ContinuesTaskId,
+                t.State == TaskState.Completed ? t.CompletionProvenance : null))
             .ToList();
 
         var counts = tasks
@@ -386,8 +388,9 @@ public sealed record TeamDetail(
     DateTimeOffset? LeadSince,
     DateTimeOffset? LastActivity);
 
-/// <summary>One task in a Team, with its park count (§12 "parks per task") and, for
-/// a continuation task, the prior task it resumed (§6/§11 Y-continues-X lineage).</summary>
+/// <summary>One task in a Team, with its park count (§12 "parks per task"); for a
+/// continuation task, the prior task it resumed (§6/§11 Y-continues-X lineage); and,
+/// for a completed task, who adjudicated it (§9 check 4 provenance).</summary>
 public sealed record TeamTaskView(
     Guid TaskId,
     string Namespace,
@@ -397,7 +400,8 @@ public sealed record TeamTaskView(
     int Parks,
     string? ParkMachine,
     DateTimeOffset? BlockedAt,
-    Guid? ContinuesTaskId);
+    Guid? ContinuesTaskId,
+    VerdictProvenance? CompletionProvenance);
 
 /// <summary>A live registered service on a Team (§8.2, §12).</summary>
 public sealed record ServiceView(string Name, int Port, Guid TaskId, DateTimeOffset CreatedAt);

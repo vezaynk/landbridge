@@ -68,7 +68,7 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             {
                 ["description"] = "make the suite pass",
                 ["completionCriteria"] = "the suite is green",
-                ["mode"] = "automated",
+                ["mode"] = "lead",
                 ["profile"] = null,
                 ["workspace"] = null,
             }, cancellationToken: ct);
@@ -134,7 +134,7 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         {
             var store = new TaskStore(db, TimeProvider.System);
             var created = (StoreResult.Applied)await store.CreateAsync(
-                new CreateTask(new LeadClaim(team), team, "seed", CompletionMode.Automated, null, TeamBudgetRemains: true), ct);
+                new CreateTask(new LeadClaim(team), team, "seed", CompletionMode.Lead, null, TeamBudgetRemains: true), ct);
             var instance = WorkerInstanceId.New();
             await store.DispatchNextAsync(
                 new MachineSnapshot("m1", true, false, new HashSet<string> { "default" }), instance, ct);
@@ -147,7 +147,7 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         {
             ["description"] = "should not happen",
             ["completionCriteria"] = "should not happen",
-            ["mode"] = "automated",
+            ["mode"] = "lead",
             ["profile"] = null,
             ["workspace"] = null,
         }, cancellationToken: ct);

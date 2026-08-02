@@ -107,6 +107,14 @@ public sealed class TaskRow
     /// </summary>
     public MachineGonePolicy? OnMachineGone { get; set; }
 
+    /// <summary>
+    /// Who adjudicated this task's completion (§9 check 4): a Lead session or a
+    /// human, set on the verifying → completed transition and null otherwise. Typed
+    /// state the engine derives from the verdict actor (mirrors <see cref="CompletionMode"/>),
+    /// carried by <see cref="CopyFrom"/> and rendered on the §12 dashboard task view.
+    /// </summary>
+    public VerdictProvenance? CompletionProvenance { get; set; }
+
     /// <summary>Postgres system column, used as the optimistic-concurrency token.</summary>
     public uint Version { get; set; }
 
@@ -126,6 +134,7 @@ public sealed class TaskRow
         Park = ParkMachine is { } m
             ? new ParkRecord(m, ParkDirectory, ParkSessionRef, ParkAttempt!.Value)
             : null,
+        CompletionProvenance = CompletionProvenance,
     };
 
     internal void CopyFrom(TaskRecord task)
@@ -139,6 +148,7 @@ public sealed class TaskRow
         ParkDirectory = task.Park?.Directory;
         ParkSessionRef = task.Park?.HarnessSessionRef;
         ParkAttempt = task.Park?.Attempt;
+        CompletionProvenance = task.CompletionProvenance;
     }
 }
 

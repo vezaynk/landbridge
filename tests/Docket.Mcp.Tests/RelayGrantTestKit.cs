@@ -156,7 +156,7 @@ internal static class RelayGrantTestKit
         await using var db = pg.NewContext();
         var store = new TaskStore(db, TimeProvider.System);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(new LeadClaim(team), team, "criteria", CompletionMode.Automated, null, true), ct);
+            new CreateTask(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null, true), ct);
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(Machine, instance, ct);
         await store.RegisterServiceAsync(new WorkerCaller(team, created.Task.Id, instance), serviceName, port, ct);
@@ -178,7 +178,7 @@ internal static class RelayGrantTestKit
         var store = new TaskStore(db, TimeProvider.System);
         var tokens = new TokenService(db, TimeProvider.System);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(new LeadClaim(team), team, "criteria", CompletionMode.Automated, null, true), ct);
+            new CreateTask(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null, true), ct);
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(Machine, instance, ct);
         var token = (await tokens.MintWorkerTokenAsync(team, created.Task.Id, instance, ct)).Token;

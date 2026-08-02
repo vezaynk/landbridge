@@ -51,18 +51,21 @@ public sealed class LeadTools(TaskStore store, RunnerConnectionRegistry registry
         [Description("Opaque, non-empty prose instructions for the worker: what to accomplish and the " +
                      "context to meet the criteria. Read by the worker, never parsed by the control plane.")]
         string description,
-        [Description("Opaque, non-empty completion criteria. In automated mode a verifier interprets it; " +
-                     "in review mode a person reads it. Never parsed by the control plane.")]
+        [Description("Opaque, non-empty completion criteria. In lead mode you (the Lead) judge it — gather " +
+                     "your own evidence (run the suite, check CI) before accepting; in review mode a person " +
+                     "reads it. Never parsed by the control plane.")]
         string completionCriteria,
-        [Description("Completion mode: 'automated' (verifier credential) or 'review' (human-confirmed).")]
-        string mode,
+        [Description("Completion mode: 'lead' (default — the Lead session's verdict completes the task, no " +
+                     "human confirmation) or 'review' (a human confirms the verdict). A task's own worker can " +
+                     "never complete it either way.")]
+        string? mode = null,
         [Description("Optional runner profile name for exact-match routing. Omit for the default profile. " +
                      "With 'continues', defaults to the continued task's profile.")]
-        string? profile,
+        string? profile = null,
         [Description("Optional opaque workspace blob: where the work happens, how it is isolated, which " +
                      "ports it may use. Assigned by the Lead so concurrent tasks never collide (§7).")]
-        string? workspace,
-        CancellationToken ct,
+        string? workspace = null,
+        CancellationToken ct = default,
         [Description("Optional: continue a prior task in THIS Team — the new task resumes that task's agent " +
                      "session (its conversation transcript) under a new task id and worker token, on the " +
                      "machine that holds it. Same-Team only. 'talk to the agent that has the context.'")]
@@ -75,7 +78,10 @@ public sealed class LeadTools(TaskStore store, RunnerConnectionRegistry registry
         if (string.IsNullOrWhiteSpace(description))
             throw new McpException("description must be non-empty; it is the worker's instructions.");
 
-        if (!Enum.TryParse<CompletionMode>(mode, ignoreCase: true, out var parsedMode))
+        // §7: completion mode defaults to `lead` (the Lead session adjudicates) when
+        // the caller omits it.
+        var modeText = string.IsNullOrWhiteSpace(mode) ? nameof(CompletionMode.Lead) : mode;
+        if (!Enum.TryParse<CompletionMode>(modeText, ignoreCase: true, out var parsedMode))
             throw new McpException(
                 $"unknown completion mode '{mode}'; expected one of: {string.Join(", ", Enum.GetNames<CompletionMode>())}");
 
@@ -184,16 +190,18 @@ public sealed class LeadTools(TaskStore store, RunnerConnectionRegistry registry
     }
 
     [McpServerTool(Name = "submit_review"),
-     Description("Relay a human's review verdict for a task in verifying (review mode). The verdict MUST " +
-                 "carry human confirmation: a Lead is a model, and §7 forbids an unattended lead turn from " +
-                 "completing a task. Pass humanConfirmed=true only when a human actually confirmed.")]
+     Description("Adjudicate a task in verifying (§7, §9 check 4). In LEAD mode your verdict completes the " +
+                 "task on its own — so gather your own evidence first (run the suite, check CI, re-verify the " +
+                 "worker's claims); accept carefully, reject freely. In REVIEW mode the verdict MUST carry " +
+                 "human confirmation (pass humanConfirmed=true only when a human actually confirmed). Either " +
+                 "way a task's own worker can never complete it.")]
     public async Task<string> SubmitReview(
         [Description("The task id in verifying.")] string taskId,
-        [Description("The verdict: 'accept' or 'fail'.")] string verdict,
-        [Description("Whether a human confirmed this verdict (e.g. via an elicitation prompt). " +
-                     "Without it the control plane refuses to complete the task (§7).")]
-        bool humanConfirmed,
-        CancellationToken ct)
+        [Description("The verdict: 'accept' or 'fail'. Rejection is never gated — reject cheaply.")] string verdict,
+        [Description("Review mode only: whether a human confirmed this accept (e.g. via an elicitation " +
+                     "prompt). Ignored in lead mode; without it a review task cannot complete (§7).")]
+        bool humanConfirmed = false,
+        CancellationToken ct = default)
     {
         var id = ParseTaskId(taskId);
         var lead = Lead;

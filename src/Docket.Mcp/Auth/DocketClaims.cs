@@ -39,9 +39,6 @@ public static class DocketClaims
                 claims.Add(new Claim(Kind, nameof(Principal.Machine)));
                 claims.Add(new Claim(Machine, m.MachineId.ToString()));
                 break;
-            case Principal.Verifier:
-                claims.Add(new Claim(Kind, nameof(Principal.Verifier)));
-                break;
             case Principal.Human h:
                 claims.Add(new Claim(Kind, nameof(Principal.Human)));
                 claims.Add(new Claim(Human, h.HumanId.ToString()));
@@ -69,7 +66,6 @@ public static class DocketClaims
                 new TaskId(Guid.Parse(user.FindFirst(Task)!.Value)),
                 new WorkerInstanceId(Guid.Parse(user.FindFirst(Instance)!.Value)))),
             nameof(Principal.Machine) => new Principal.Machine(Guid.Parse(user.FindFirst(Machine)!.Value)),
-            nameof(Principal.Verifier) => new Principal.Verifier(),
             nameof(Principal.Human) => new Principal.Human(Guid.Parse(user.FindFirst(Human)!.Value)),
             nameof(Principal.Lead) => new Principal.Lead(new TeamId(Guid.Parse(user.FindFirst(Team)!.Value))),
             nameof(Principal.EvictedLead) => new Principal.EvictedLead(

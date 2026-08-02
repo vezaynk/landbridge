@@ -19,9 +19,6 @@ public sealed record LeadClaim(TeamId Team) : Actor;
 /// </summary>
 public sealed record WorkerCaller(TeamId Team, TaskId Task, WorkerInstanceId Instance) : Actor;
 
-/// <summary>The non-agent identity that supplies automated verdicts (§5).</summary>
-public sealed record VerifierCredential : Actor;
-
 /// <summary>The control plane acting on its own timers and dispatch decisions.</summary>
 public sealed record ControlPlaneActor : Actor
 {

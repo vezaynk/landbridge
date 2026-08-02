@@ -30,7 +30,7 @@ public sealed record DiscardWorkspace : Effect;
 
 /// <summary>
 /// Cancellation with discard while verifying: deletion is deferred until the
-/// task leaves verifying, so a verifier is never checking a vanished
+/// task leaves verifying, so an adjudicator is never judging a vanished
 /// workspace (§11).
 /// </summary>
 public sealed record DeferWorkspaceDiscardUntilVerdict : Effect;
