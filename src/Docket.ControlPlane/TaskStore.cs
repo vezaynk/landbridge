@@ -315,7 +315,8 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
             return null;
 
         return new WorkerAssignment(
-            row.Namespace, row.Description, row.CompletionCriteria, row.Workspace, row.Attempt);
+            row.Namespace, row.Description, row.CompletionCriteria, row.Workspace, row.Attempt,
+            row.WorkerReport);
     }
 
     /// <summary>
@@ -338,6 +339,7 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
                 Parked = t.ParkMachine != null,
                 t.ContinuesTaskId,
                 t.CompletionProvenance,
+                t.WorkerReport,
             })
             .ToListAsync(ct);
 
@@ -348,7 +350,7 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
         var summaries = rows
             .Select(t => new TeamTaskSummary(
                 t.Id, t.Namespace, t.State, t.CompletionMode, t.Attempt, t.Parked,
-                t.ContinuesTaskId, t.CompletionProvenance))
+                t.ContinuesTaskId, t.CompletionProvenance, t.WorkerReport))
             .ToList();
 
         return new TeamStateView(team.Value, rows.Count, counts, summaries);
@@ -484,7 +486,12 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
         // ReportResult is the one place the row's ResultReference is written,
         // where the verifier's read scope (§5) later fetches it.
         if (command is ReportResult reported)
+        {
             row.ResultReference = reported.ResultReference;
+            // §10: the worker's in-band report rides the same transition, opaque and
+            // verbatim (the engine already size-capped it). Null leaves the column null.
+            row.WorkerReport = reported.Report;
+        }
         // §11 wait-TTL: stamp when the task entered blocked_on_input so the sweeper
         // can age its wait deadline, and clear it on the way out. Opaque plane
         // plumbing captured here (like ResultReference above), never an engine field —

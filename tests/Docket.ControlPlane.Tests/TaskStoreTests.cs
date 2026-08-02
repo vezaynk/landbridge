@@ -139,6 +139,76 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task Report_result_persists_the_in_band_report_and_surfaces_it_to_lead_and_worker()
+    {
+        // §10: the worker's optional in-band report is captured verbatim on the row
+        // next to the reference, and surfaces on get_team_state (the Lead) and
+        // get_task (a successor worker).
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await CreateSubmitted(db);
+        var instance = WorkerInstanceId.New();
+        var caller = new WorkerCaller(Team, id, instance);
+        await store.DispatchNextAsync(Machine(), instance);
+
+        const string report = "ran pnpm test (green); touched 3 files; proposes task Y on profile gpu";
+        Assert.IsType<StoreResult.Applied>(
+            await store.ApplyAsync(id, new ReportResult(caller, "git:ref", report)));
+
+        await using var v = pg.NewContext();
+        var vstore = NewStore(v);
+        // On the row, verbatim.
+        Assert.Equal(report, (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value)).WorkerReport);
+        // On get_team_state (the Lead's read).
+        var summary = (await vstore.GetTeamStateAsync(Team)).Tasks.Single(t => t.TaskId == id.Value);
+        Assert.Equal(report, summary.Report);
+        // On get_task (the incumbent/successor worker's read).
+        var assignment = await vstore.GetAssignmentAsync(caller);
+        Assert.Equal(report, assignment!.Report);
+    }
+
+    [SkippableFact]
+    public async Task Report_result_without_a_report_leaves_it_null()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await CreateSubmitted(db);
+        var instance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), instance);
+
+        await store.ApplyAsync(id, new ReportResult(new WorkerCaller(Team, id, instance), "git:ref"));
+
+        await using var v = pg.NewContext();
+        Assert.Null((await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value)).WorkerReport);
+        Assert.Null((await NewStore(v).GetTeamStateAsync(Team)).Tasks.Single(t => t.TaskId == id.Value).Report);
+    }
+
+    [SkippableFact]
+    public async Task Report_over_the_cap_is_rejected_and_the_task_stays_working()
+    {
+        // §10: over-cap is refused; the task does not advance to verifying, so the
+        // worker can re-report with a summary (detail in the workspace).
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await CreateSubmitted(db);
+        var instance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), instance);
+
+        var oversized = new string('x', ReportResult.MaxReportBytes + 1);
+        var rejected = Assert.IsType<StoreResult.Rejected>(
+            await store.ApplyAsync(id, new ReportResult(new WorkerCaller(Team, id, instance), "git:ref", oversized)));
+        Assert.Equal(Rule.ReportWithinSizeCap, rejected.Rule);
+
+        await using var v = pg.NewContext();
+        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(TaskState.Working, row.State);
+        Assert.Null(row.WorkerReport);
+    }
+
+    [SkippableFact]
     public async Task Lead_verdict_completes_a_lead_task_and_records_provenance()
     {
         // §9 check 4: in lead mode the Lead session's accept completes the task with

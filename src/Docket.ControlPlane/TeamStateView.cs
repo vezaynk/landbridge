@@ -4,11 +4,12 @@ namespace Docket.ControlPlane;
 
 /// <summary>
 /// The Team view (§12) as structured data, returned by <c>get_team_state</c>.
-/// Counts and states only — <b>never prose</b> (§10): a Lead reads free text
-/// (descriptions, blocker notes, results) deliberately, one item at a time and
-/// delimited as untrusted (§13). The fields here are the reattachment surface
-/// (§4): enough for a fresh Lead to reconstruct what the Team is doing without
-/// ever seeing a task's contents.
+/// Counts, states, and identifiers — plus the one deliberate free-text field a Lead
+/// needs to adjudicate: the worker's in-band <see cref="TeamTaskSummary.Report"/>
+/// (§10), which the Lead reads and treats as untrusted agent claims (§13), never
+/// authority. Everything else (descriptions, blocker notes, criteria) is still
+/// fetched deliberately elsewhere. The fields here are the reattachment surface
+/// (§4): enough for a fresh Lead to reconstruct what the Team is doing.
 /// </summary>
 public sealed record TeamStateView(
     Guid TeamId,
@@ -24,6 +25,8 @@ public sealed record TeamStateView(
 /// (§6/§11): the prior task whose harness session this one resumed, or null for an
 /// ordinary task — an identifier, never prose. <see cref="CompletionProvenance"/>
 /// records who adjudicated a completed task (§9 check 4), null until then.
+/// <see cref="Report"/> is the worker's opaque in-band report (§10) once it has
+/// reported a result — agent-authored claims (§13), null until then.
 /// </summary>
 public sealed record TeamTaskSummary(
     Guid TaskId,
@@ -33,7 +36,8 @@ public sealed record TeamTaskSummary(
     int Attempt,
     bool Parked,
     Guid? ContinuesTaskId,
-    VerdictProvenance? CompletionProvenance);
+    VerdictProvenance? CompletionProvenance,
+    string? Report);
 
 /// <summary>
 /// The seed facts a <c>create_task(continues:)</c> reads off the continued task's

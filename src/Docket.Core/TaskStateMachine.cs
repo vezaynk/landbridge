@@ -151,6 +151,16 @@ public static class TaskStateMachine
             return TransitionResult.Reject(Rule.ResultReferenceRequired,
                 "working → verifying requires a result reference");
 
+        // §10: the in-band report is bounded. Over-cap is refused here (a length
+        // check, not content interpretation — the same shape as the non-empty checks
+        // above) so a worker puts real detail in the workspace behind the result
+        // reference, not in the plane. Measured in UTF-8 bytes to match the wire.
+        if (c.Report is { } report
+            && System.Text.Encoding.UTF8.GetByteCount(report) > ReportResult.MaxReportBytes)
+            return TransitionResult.Reject(Rule.ReportWithinSizeCap,
+                $"report exceeds the {ReportResult.MaxReportBytes / 1024} KB in-band cap; " +
+                "keep it a summary and put the detail in the workspace behind the result reference");
+
         return TransitionResult.Ok(
             task with { State = TaskState.Verifying },
             new ClearServicesAndForwards());

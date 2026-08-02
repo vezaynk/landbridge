@@ -42,6 +42,9 @@ public enum Rule
     // §6/§11 continuation-targeting creation gates
     ContinuationSameTeamOnly = 106,
     ContinuationProfileDeclaredByPreferredMachine = 107,
+
+    // §10 in-band worker report size cap
+    ReportWithinSizeCap = 108,
 }
 
 public abstract record TransitionResult
