@@ -115,7 +115,7 @@ A Team is a unit of human-authorized work. It owns a budget, a scope declaration
 
 **The Lead is a harness client the human drives.** Not a dispatched agent, not a daemon. Someone opens their harness, attaches to a Team, and works. The human is the event loop — which is why the Lead needs no lease, no wake conditions, and no runner.
 
-- A Lead's machine does not need `docketd`. Enrollment and attachment are independent choices.
+- A Lead's machine does not need `docketd`. Enrollment and attachment are independent choices — the one thing it buys is the §8.3 human path: only a Lead that has *bound* an enrolled machine can open a forward onto it for its human. Leading a Team never requires it.
 - Lead authority is the human's session scoped to `{team, lead}`.
 - Multiple Teams run in parallel within an Instance. Leads have no channel to each other; the human is the channel.
 - There are no sub-Teams.
@@ -152,7 +152,7 @@ The control plane is both the OAuth 2.1 authorization server and the resource se
 | Identity | Obtained | Lifetime | Authorizes |
 |---|---|---|---|
 | **Human** | auth code / device flow | session | create Teams, approve permissions, confirm review verdicts, dashboard |
-| **Lead** | human session, claimed against a Team | session or until evicted | create tasks, answer questions, **adjudicate completion** (lead mode autonomously; review mode human-confirmed, §7), read Team state |
+| **Lead** | human session, claimed against a Team | session or until evicted | create tasks, answer questions, **adjudicate completion** (lead mode autonomously; review mode human-confirmed, §7), read Team state, bind its human's machine and open forwards onto it (§8.3) |
 | **Machine** (`docketd`) | enrollment token → client credentials | long, refreshed | runner channel, log stream, relay tunnels |
 | **Worker** | minted at dispatch | task lifetime | MCP tools, scoped to `{team, task, worker, instance}` |
 
@@ -326,6 +326,15 @@ consumer's client
 
 **Generic TCP is the primitive.** An HTTP layer sits on top: subdomain per service, never path prefix, wildcard cert, websocket upgrade from day one. Its justification is human-to-service access. Build TCP first; the HTTP layer is specified in §8.4.
 
+**A human is a consumer too — the non-HTTP human path.** §8.4's preview covers a human reaching an *HTTP* service with no `docketd` on their side. It cannot cover `psql` against a worker's Postgres, and that is the case a person most often needs. The consumer end of a forward was never really a task: it is a **machine**, and a worker's is merely derived from its dispatch. So a **Lead** may be the consumer, with its human's own machine as that end — the same single grant presented once per role, the same two `open-forward` commands, the same splice.
+
+Two gaps close for that to work:
+
+- **A Lead binds a machine, explicitly.** A Lead is a harness client a human drives (§4) and its machine need not run `docketd` at all, so nothing is derivable — the human *says* which enrolled machine is theirs, and can revoke it. The binding keys on the **human**, not the Lead credential or the Team: the box on a person's desk outlives their session and spans the Teams they lead, and a takeover therefore does **not** inherit the evicted human's machine — the new Lead has its own binding or none. One live binding per human and per machine (moving desks is unbind-then-bind; two people never both claim one box, which would land one person's forward on the other's machine). Visible in `get_team_state` and on the §12 Machine Group view, since a bound machine is a Lead-facing forward target.
+- **The grant binds no consumer task.** Exactly like an §8.4 preview mint: the consumer is not a worker instance, so the grant records only the producer and the Team. Check 11 is unchanged and Team-scoped — a Lead reaches nothing a worker in its Team could not already reach, and another Team's service reads as not-registered.
+
+**The human's forward is one connection, briefly available.** v1 is one tunnel per forward id (§8.3 above), so the returned address carries exactly one connection — one `psql` session, not a pool — and the consumer listener closes if nobody connects within the bound accept window. A Lead therefore opens it *when its human is ready to connect* and opens another for another session. Once spliced, the ordinary rule holds: the connection survives grant expiry and lives until the owning task leaves `working`.
+
 **A grant is a connection-establishment credential.** It is checked when a tunnel opens; an established splice persists until the owning task leaves `working`. A database session or websocket is never severed mid-flight by grant expiry, and no renewal path needs to exist.
 
 Per-Team byte counters and rate limits alongside the token budget.
@@ -377,7 +386,7 @@ Nothing else. Any addition that requires knowing what a task is *about* should b
 
 ### Agent → control plane (MCP)
 
-**Lead:** `create_task` · `answer_input_request` · `submit_review` (lead-adjudicated; human-confirmed in `review` mode, §7) · `cancel_task` · `get_team_state` · `get_task_report`
+**Lead:** `create_task` · `answer_input_request` · `submit_review` (lead-adjudicated; human-confirmed in `review` mode, §7) · `cancel_task` · `get_team_state` · `get_task_report` · `bind_machine` · `unbind_machine` · `open_lead_forward` (§8.3 human path)
 **Worker:** `get_task` · `report_result` · `request_input` · `register_service` · `open_forward` · `open_preview` (§8.4)
 
 There is no `claim_task`. Workers are dispatched, never claimants (§5, §6) — the first thing a worker does with its minted token is work, and its calls identify it.
@@ -389,6 +398,7 @@ There is no `claim_task`. Workers are dispatched, never claimants (§5, §6) —
 - **`get_task` added (worker).** A dispatched worker's opening move is to read its own assignment; this is that read, scoped to `{team, task, worker, instance}`.
 - **`open_preview` added (worker, §8.4).** The reversed decision to build the HTTP preview layer adds a worker tool that mints a shareable preview URL for a service the task has registered; the human-facing mint is the §12 dashboard. Scoped like `open_forward` (worker owns the service); the public-vs-gated auth choice is set at mint.
 - **`report_result` gains an optional in-band `report` (worker), read back by `get_task_report` (Lead).** The worker's summary of what it did and verified, evidence pointers, and proposals (e.g. "task X should run on profile Y") rides UP through the plane exactly as the Lead's `description` rides DOWN — opaque content the plane stores verbatim and never parses (§2 principle 1). It is the symmetric half of the brief: the plane already carries Lead→worker prose in-band, so a worker→Lead summary is the same shape in the other direction. The result *reference* stays the load-bearing artifact pointer; the report is **annotation, not authority** — a Lead reads it as untrusted agent claims (§13) and verifies before accepting (§7, §9 check 4). It is size-capped (16 KB); over-cap is refused so real detail goes to the workspace behind the reference, not the plane. Being prose, it never rides the bulk status read: `get_team_state` carries only a `has_report` flag per task, and the Lead pulls each report deliberately, one task at a time, with `get_task_report` (delimited as untrusted, §13). It surfaces to a successor worker on `get_task` (that task's own report to its next worker — not a fan-in surface) and to a human on the §12 dashboard. There is deliberately **no `await`/long-poll tool**: a Lead polls `get_team_state` on its own pacing, and a worker's dispatch *proposal* rides `request_input` (blocking) or this report (non-blocking) — Docket has no worker-creates-tasks machinery.
+- **`bind_machine` / `unbind_machine` / `open_lead_forward` added (Lead, §8.3 human path).** The human path to a non-HTTP service. `open_lead_forward` is deliberately its own tool rather than making `open_forward` lead-callable: tool names are one flat namespace on this server, and the two differ in what "your machine" means (a task's dispatch machine vs. a human's bound machine) and in what a caller must be told (one connection, briefly available). Forking one tool on the caller's credential class would also make it the only tool that inspects *which* class called and changes meaning — authority stays structural either way (each tool refuses the other's credential at the door), so the split costs nothing and keeps both descriptions honest. `bind_machine` is an *action* by the human's session, which is why it is a tool rather than a §12 dashboard view; the dashboard shows the resulting binding.
 
 This keeps §5's rule intact — authority is structural, from the credential, not from which tools exist — and moves human-facing reads to the human-facing surface (§12).
 

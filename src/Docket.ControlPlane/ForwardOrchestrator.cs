@@ -12,7 +12,13 @@ namespace Docket.ControlPlane;
 /// runner channel: it resolves each end's machine, sends the producer its dial
 /// target and the consumer a bind instruction — both carrying the <em>same</em>
 /// single-use-per-role grant — then waits for the consumer's
-/// <c>forward-opened</c> to learn the loopback port to hand the worker.
+/// <c>forward-opened</c> to learn the loopback port to hand back.
+///
+/// <para>Two kinds of consumer share that one orchestration: a <b>worker</b>, whose
+/// end is the machine its task was dispatched to, and a <b>human</b> — a Lead whose
+/// end is the machine it bound as its own (§8.3 human path). The difference is only
+/// how the consumer machine is resolved; the grant, the commands, and the splice are
+/// the same.</para>
 ///
 /// <para>A singleton alongside <see cref="RunnerConnectionRegistry"/> and
 /// <see cref="ForwardWaiters"/>; grant issuance stays in the scoped
@@ -39,15 +45,53 @@ public sealed class ForwardOrchestrator(
     /// carrying a worker-facing reason — never a throw — so the tool surface
     /// renders it the same way as a store refusal.
     /// </summary>
-    public async Task<ForwardEstablishResult> EstablishAsync(
+    public Task<ForwardEstablishResult> EstablishAsync(
         WorkerCaller consumer, RelayGrantResult.Issued issued, string serviceName, string relayUrl,
-        CancellationToken ct = default)
+        CancellationToken ct = default) =>
+        // A worker's consumer end is the machine its own task was dispatched to.
+        EstablishCoreAsync(
+            registry.MachineFor(consumer.Task), consumer.Task, "your machine",
+            issued, serviceName, relayUrl, ct);
+
+    /// <summary>
+    /// Establish the same §8.3 forward for a <b>human</b> consumer: a Lead whose
+    /// bound machine (§8.3 human path) is <paramref name="consumerMachine"/>. Every
+    /// mechanism is identical to <see cref="EstablishAsync"/> — the same single grant
+    /// presented once per role, the same two <c>open-forward</c> commands over the
+    /// runner channel, the same <c>forward-opened</c> wait for the loopback port —
+    /// because the consumer end of a forward was never a task; it was always a
+    /// machine, and a worker's was merely derived from its dispatch.
+    ///
+    /// <para>The consumer command's task field carries the <em>producer's</em> id: a
+    /// Lead has no task, and that field is only correlation for the
+    /// <c>forward-opened</c>/<c>forward-closed</c> events (the plane routes both by
+    /// forward id), so naming the task the forward actually serves keeps the
+    /// runner-side log honest.</para>
+    /// </summary>
+    public Task<ForwardEstablishResult> EstablishForLeadAsync(
+        string consumerMachine, RelayGrantResult.Issued issued, string serviceName, string relayUrl,
+        CancellationToken ct = default) =>
+        EstablishCoreAsync(
+            registry.SnapshotFor(consumerMachine) is null ? null : consumerMachine,
+            issued.Producer, $"your bound machine {consumerMachine}",
+            issued, serviceName, relayUrl, ct);
+
+    /// <summary>
+    /// The one orchestration both consumer kinds run. <paramref name="consumerLabel"/>
+    /// is how a failure names the consumer end to whoever called ("your machine" for
+    /// a worker, "your bound machine {id}" for a Lead);
+    /// <paramref name="consumerCorrelation"/> is the task id the consumer command
+    /// carries for event correlation only.
+    /// </summary>
+    private async Task<ForwardEstablishResult> EstablishCoreAsync(
+        string? consumerMachine, TaskId consumerCorrelation, string consumerLabel,
+        RelayGrantResult.Issued issued, string serviceName, string relayUrl,
+        CancellationToken ct)
     {
         // Both ends must be live right now: the plane sends over their runner
         // channels, and a forward to a machine that is gone can never splice.
-        var consumerMachine = registry.MachineFor(consumer.Task);
         if (consumerMachine is null)
-            return new ForwardEstablishResult.Failed("your machine is not connected to the control plane");
+            return new ForwardEstablishResult.Failed($"{consumerLabel} is not connected to the control plane");
 
         var producerMachine = registry.MachineFor(issued.Producer);
         if (producerMachine is null)
@@ -64,14 +108,14 @@ public sealed class ForwardOrchestrator(
             issued.Producer, forwardId, serviceName,
             RelayTunnel.ProducerRole, issued.Grant, relayUrl, issued.Port);
         var consumerCommand = new OpenForwardCommand(
-            consumer.Task, forwardId, serviceName,
+            consumerCorrelation, forwardId, serviceName,
             RelayTunnel.ConsumerRole, issued.Grant, relayUrl, Port: 0);
 
         if (!await registry.SendAsync(producerMachine, producerCommand, ct))
             return new ForwardEstablishResult.Failed(
                 $"could not reach the machine hosting service '{serviceName}'");
         if (!await registry.SendAsync(consumerMachine, consumerCommand, ct))
-            return new ForwardEstablishResult.Failed("could not reach your machine to open the forward");
+            return new ForwardEstablishResult.Failed($"could not reach {consumerLabel} to open the forward");
 
         try
         {
