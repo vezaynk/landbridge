@@ -27,27 +27,34 @@ public class RunnerDaemonTests
         public required RunnerDaemon Daemon { get; init; }
         public required FakeProcessSupervisor Supervisor { get; init; }
         public required FakeStrayReaper Reaper { get; init; }
-        public required InMemoryControlPlaneChannel Channel { get; init; }
+        public required IControlPlaneChannel Channel { get; init; }
+        public required OutboundEventRing Ring { get; init; }
         public required FakeLoadReader Load { get; init; }
         public required FakeTimeProvider Clock { get; init; }
+
+        /// <summary>The channel as the in-memory recorder (every test but the gated-send one).</summary>
+        public InMemoryControlPlaneChannel Recorded => (InMemoryControlPlaneChannel)Channel;
     }
 
-    private static Harness Build(RunnerConfig? config = null, int straysToReap = 0)
+    private static Harness Build(
+        RunnerConfig? config = null, int straysToReap = 0,
+        TranscriptReader? transcripts = null, IControlPlaneChannel? channel = null)
     {
         var supervisor = new FakeProcessSupervisor();
         var reaper = new FakeStrayReaper(straysToReap);
-        var channel = new InMemoryControlPlaneChannel();
+        channel ??= new InMemoryControlPlaneChannel();
+        var ring = new OutboundEventRing(64);
         var load = new FakeLoadReader();
         var clock = new FakeTimeProvider();
         var cfg = config ?? Config();
         var daemon = new RunnerDaemon(
             "machine-1", cfg, supervisor,
             new BackPressureMonitor(load, cfg.Machine.BackPressure),
-            channel, new OutboundEventRing(64), reaper, clock);
+            channel, ring, reaper, clock, transcripts: transcripts);
         return new Harness
         {
             Daemon = daemon, Supervisor = supervisor, Reaper = reaper,
-            Channel = channel, Load = load, Clock = clock,
+            Channel = channel, Ring = ring, Load = load, Clock = clock,
         };
     }
 
@@ -61,8 +68,8 @@ public class RunnerDaemonTests
         Assert.Equal(3, h.Daemon.StraysReaped);
         Assert.Equal("machine-1", h.Reaper.ReapedMachine);
         Assert.True(await TestKit.WaitUntilAsync(
-            () => h.Channel.Events.Any(e => e.Event is RebootedEvent), TimeSpan.FromSeconds(5)));
-        var rebooted = (RebootedEvent)h.Channel.Events.First(e => e.Event is RebootedEvent).Event;
+            () => h.Recorded.Events.Any(e => e.Event is RebootedEvent), TimeSpan.FromSeconds(5)));
+        var rebooted = (RebootedEvent)h.Recorded.Events.First(e => e.Event is RebootedEvent).Event;
         Assert.Equal("machine-1", rebooted.MachineId);
 
         await h.Daemon.ShutdownAsync();
@@ -134,14 +141,14 @@ public class RunnerDaemonTests
         await h.Daemon.StartAsync();
 
         h.Clock.Advance(TimeSpan.FromSeconds(5));
-        Assert.NotEmpty(h.Channel.Heartbeats);
-        var healthy = h.Channel.Heartbeats[^1];
+        Assert.NotEmpty(h.Recorded.Heartbeats);
+        var healthy = h.Recorded.Heartbeats[^1];
         Assert.True(healthy.Ready);
         Assert.False(healthy.UnderBackPressure);
 
         h.Load.Load = new SystemLoad(0, 0.99, 0);
         h.Clock.Advance(TimeSpan.FromSeconds(5));
-        var saturated = h.Channel.Heartbeats[^1];
+        var saturated = h.Recorded.Heartbeats[^1];
         Assert.False(saturated.Ready);
         Assert.True(saturated.UnderBackPressure);
 
@@ -179,6 +186,142 @@ public class RunnerDaemonTests
 
         Assert.True(h.Supervisor.KilledAll);
     }
+
+    // ── §12 transcript serving ────────────────────────────────────────────────
+
+    [Fact]
+    public async Task A_transcript_reply_bypasses_the_outbound_ring()
+    {
+        // The proof is in what is NOT started: the ring only reaches the channel through
+        // the pump StartAsync launches. With no pump, an event put on the ring can never
+        // be delivered — so a transcript reply that arrives anyway did not ride the ring
+        // (§10 buffering: a dropped chunk is a corrupted read, and chunks must never
+        // evict liveness events).
+        using var root = new TempTranscripts();
+        var task = root.Capture(["a line of transcript"]);
+        var h = Build(transcripts: root.Reader());
+
+        h.Ring.Enqueue(new AliveEvent(task, DateTimeOffset.UtcNow));
+        var outcome = await h.Daemon.HandleAsync(new ReadTranscriptCommand(task, "req-1", Ordinal: 1));
+
+        Assert.IsType<CommandOutcome.Acknowledged>(outcome);
+        Assert.True(await TestKit.WaitUntilAsync(
+            () => h.Recorded.Events.Any(e => e.Event is TranscriptChunkEvent), TimeSpan.FromSeconds(5)));
+        var chunk = (TranscriptChunkEvent)h.Recorded.Events.Single(e => e.Event is TranscriptChunkEvent).Event;
+        Assert.Equal("a line of transcript\n", chunk.Text);
+        Assert.DoesNotContain(h.Recorded.Events, e => e.Event is AliveEvent);
+
+        await h.Daemon.ShutdownAsync();
+    }
+
+    [Fact]
+    public async Task A_transcript_read_never_blocks_the_command_handler()
+    {
+        // The handler runs on the control socket's receive loop, so awaiting a chunk's
+        // send here would delay every inbound command behind it — including a kill, the
+        // broken escalation path §10 warns about. With the send wedged open, the handler
+        // must still return.
+        using var root = new TempTranscripts();
+        var task = root.Capture(["content"]);
+        var gate = new GatedControlPlaneChannel();
+        var h = Build(transcripts: root.Reader(), channel: gate);
+
+        var outcome = await h.Daemon.HandleAsync(new ReadTranscriptCommand(task, "req-1", Ordinal: 1));
+
+        Assert.IsType<CommandOutcome.Acknowledged>(outcome);
+        Assert.True(await TestKit.WaitUntilAsync(() => gate.Blocked, TimeSpan.FromSeconds(5)),
+            "the reply send should be in flight while the handler has already returned");
+
+        // A kill arriving mid-transcript is actioned immediately, not queued behind it.
+        Assert.IsType<CommandOutcome.Acknowledged>(await h.Daemon.HandleAsync(new KillCommand(task)));
+        Assert.Contains(task, h.Supervisor.Killed);
+
+        gate.Release();
+        await h.Daemon.ShutdownAsync();
+    }
+
+    [Fact]
+    public async Task Read_transcript_is_acknowledged_and_unanswered_when_serving_is_not_wired()
+    {
+        // A daemon built without a reader (most unit tests, and any future posture that
+        // withholds serving) must not crash on a command it cannot answer.
+        var h = Build();
+
+        var outcome = await h.Daemon.HandleAsync(new ReadTranscriptCommand(TaskId.New(), "req-1", Ordinal: 1));
+
+        Assert.Contains("serving unavailable", Assert.IsType<CommandOutcome.Acknowledged>(outcome).Detail);
+        Assert.DoesNotContain(h.Recorded.Events, e => e.Event is TranscriptChunkEvent);
+
+        await h.Daemon.ShutdownAsync();
+    }
+
+    [Fact]
+    public async Task The_heartbeat_advertises_transcript_serving_only_when_a_reader_is_wired()
+    {
+        // The flag exists so the dashboard offers a transcript link only where one can be
+        // served: an older runner rejects read-transcript at the wire boundary and simply
+        // never replies, which is indistinguishable from a slow machine (§12).
+        using var root = new TempTranscripts();
+        var serving = Build(transcripts: root.Reader());
+        var notServing = Build();
+
+        await serving.Daemon.StartAsync();
+        await notServing.Daemon.StartAsync();
+        serving.Clock.Advance(TimeSpan.FromSeconds(5));
+        notServing.Clock.Advance(TimeSpan.FromSeconds(5));
+
+        Assert.True(serving.Recorded.Heartbeats[^1].TranscriptsServable);
+        Assert.False(notServing.Recorded.Heartbeats[^1].TranscriptsServable);
+
+        await serving.Daemon.ShutdownAsync();
+        await notServing.Daemon.ShutdownAsync();
+    }
+}
+
+/// <summary>A temp transcripts root with one captured instance, for the §12 serving tests.</summary>
+internal sealed class TempTranscripts : IDisposable
+{
+    private readonly string _root = TestKit.NewWorkRoot();
+
+    public TranscriptStore Store() => new(_root, TimeSpan.FromDays(7), TimeProvider.System);
+
+    public TranscriptReader Reader() => new(Store());
+
+    /// <summary>Captures one instance for a fresh task and returns its id.</summary>
+    public TaskId Capture(string[] stdout)
+    {
+        var task = TaskId.New();
+        var writer = Store().CreateWriter(task, TranscriptDefaults.MaxBytes);
+        foreach (var line in stdout)
+            writer.WriteStdoutLine(line);
+        writer.Dispose();
+        return task;
+    }
+
+    public void Dispose() => TestKit.TryDeleteRoot(_root);
+}
+
+/// <summary>
+/// A channel whose event send blocks until released — so a test can hold a transcript
+/// reply in flight and prove the command handler already returned.
+/// </summary>
+internal sealed class GatedControlPlaneChannel : IControlPlaneChannel
+{
+    private readonly SemaphoreSlim _release = new(0, 1);
+
+    public bool Blocked { get; private set; }
+
+    public async Task<bool> PublishAsync(RunnerEvent evt, long gapBefore, CancellationToken ct)
+    {
+        Blocked = true;
+        await _release.WaitAsync(CancellationToken.None);
+        Blocked = false;
+        return true;
+    }
+
+    public Task<bool> HeartbeatAsync(MachineHeartbeat heartbeat, CancellationToken ct) => Task.FromResult(true);
+
+    public void Release() => _release.Release();
 }
 
 /// <summary>A supervisor that records calls without touching real processes.</summary>

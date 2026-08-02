@@ -148,7 +148,13 @@ public static class Program
             channelMode = "console";
         }
 
-        var daemon = new RunnerDaemon(machineId, config, supervisor, backPressure, channel, ring, reaper, clock);
+        // §12 serving: the same store capture writes to, read side. Always wired — the
+        // gate on who may read a transcript is the plane's (human operator, terminal task
+        // only), not something docketd second-guesses; a machine that captured nothing
+        // simply answers with an empty inventory.
+        var daemon = new RunnerDaemon(
+            machineId, config, supervisor, backPressure, channel, ring, reaper, clock,
+            transcripts: new TranscriptReader(transcripts));
         await daemon.StartAsync();
 
         // Outbound-only: the receive loop runs on the socket docketd dialed, not

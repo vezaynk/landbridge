@@ -49,13 +49,34 @@ public class RunnerWireTests
     }
 
     [Fact]
+    public void Decodes_a_known_read_transcript_command()
+    {
+        // §12 serving: the runner side of the pull. An envelope naming only the required
+        // fields reads as an inventory request for the task.
+        var id = TaskId.New();
+        var json = $$"""
+            { "type": "read-transcript", "task": { "value": "{{id.Value}}" }, "request_id": "req-1" }
+            """;
+
+        var read = Assert.IsType<ReadTranscriptCommand>(RunnerWire.DecodeCommand(json));
+
+        Assert.Equal(id, read.Task);
+        Assert.Equal("req-1", read.RequestId);
+        Assert.Equal(0, read.Ordinal);
+        Assert.Equal(TranscriptStreams.Stdout, read.Stream);
+    }
+
+    /// <summary>The frozen §10 lists, spelled out as literals on purpose — the same
+    /// tripwire as <c>Docket.Contracts.Tests</c>, asserted here too because this is the
+    /// side that must reject anything outside the vocabulary.</summary>
+    [Fact]
     public void Vocabulary_sets_are_the_closed_frozen_lists()
     {
         Assert.Equal(
-            new HashSet<string> { "dispatch", "stop", "kill", "open-forward" },
+            new HashSet<string> { "dispatch", "stop", "kill", "open-forward", "read-transcript" },
             new HashSet<string>(RunnerWire.Commands));
         Assert.Equal(
-            new HashSet<string> { "started", "session-started", "alive", "tool-call", "subagent-spawned", "exited", "auth-failed", "forward-opened", "forward-closed", "rebooted" },
+            new HashSet<string> { "started", "session-started", "alive", "tool-call", "subagent-spawned", "exited", "auth-failed", "forward-opened", "forward-closed", "rebooted", "transcript-chunk" },
             new HashSet<string>(RunnerWire.Events));
     }
 }
