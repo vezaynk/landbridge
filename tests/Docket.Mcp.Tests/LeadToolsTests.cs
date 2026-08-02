@@ -38,7 +38,8 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         new HttpContextAccessor { HttpContext = new DefaultHttpContext { User = DocketClaims.ToClaimsPrincipal(principal) } };
 
     private LeadTools LeadFor(Principal principal, RunnerConnectionRegistry? registry = null) =>
-        new(new TaskStore(pg.NewContext(), _clock), registry ?? new RunnerConnectionRegistry(_clock), AccessorFor(principal));
+        RelayGrantTestKit.LeadToolsFor(
+            pg.NewContext(), _clock, registry ?? new RunnerConnectionRegistry(_clock), AccessorFor(principal));
 
     private static MachineSnapshot Machine() =>
         new("m1", Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });

@@ -21,7 +21,8 @@ internal static class DashboardRenderer
     {
         var sb = new StringBuilder();
         sb.Append("<h1>Machine Group</h1>");
-        sb.Append("<p class=\"sub\">Connected machines, their readiness and heartbeat, and the tasks each is running.</p>");
+        sb.Append("<p class=\"sub\">Connected machines, their readiness and heartbeat, the tasks each is " +
+                  "running, and whether a human has bound it as their own machine (§8.3).</p>");
 
         if (machines.Count == 0)
         {
@@ -37,6 +38,12 @@ internal static class DashboardRenderer
                 : m.Ready ? Badge("ready", "ready") : Badge("not ready", "down");
             sb.Append($"<h2><code>{E(m.MachineId)}</code> {readiness} " +
                       $"<span class=\"nt\">heartbeat {E(Age(m.LastHeartbeat, now))}</span></h2>");
+
+            // §8.3 human path: a bound machine is somebody's own box and a
+            // Lead-facing forward target. Shown for the same reason readiness is.
+            if (m.BoundToHuman is { } boundTo)
+                sb.Append($"<p class=\"nt\">bound {E(Age(m.BoundAt, now))} as the own machine of human " +
+                          $"<span class=\"mono\">{E(ShortId(boundTo))}</span> — a Lead-facing forward target</p>");
 
             sb.Append("<div class=\"pill-row\">");
             if (m.Profiles.Count == 0)

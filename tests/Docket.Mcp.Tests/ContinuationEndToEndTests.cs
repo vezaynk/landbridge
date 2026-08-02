@@ -43,7 +43,7 @@ public sealed class ContinuationEndToEndTests(PostgresFixture pg) : IAsyncLifeti
         };
 
     private LeadTools LeadFor(TeamId team, RunnerConnectionRegistry registry) =>
-        new(new TaskStore(pg.NewContext(), _clock), registry, AccessorFor(team));
+        RelayGrantTestKit.LeadToolsFor(pg.NewContext(), _clock, registry, AccessorFor(team));
 
     /// <summary>Seeds a continued task (Team, profile, harness session ref) and, unless
     /// <paramref name="track"/> is false, makes the registry report it running on
