@@ -19,9 +19,13 @@ public sealed class InstanceCreateException(string message) : Exception(message)
 /// <summary>
 /// Allocates an Instance record and its credentials up front — the "secrets before
 /// any side effect" rule (design note §2/§5): host placement, host-port allocation,
-/// and all secret generation happen here, inside one transaction, before a single
-/// Docker object exists. Provisioning then only realizes what this recorded, so a
-/// crash-and-resume never regenerates a credential and orphans a container.
+/// and all secret generation happen here, before a single Docker object exists.
+/// Provisioning then only realizes what this recorded, so a crash-and-resume never
+/// regenerates a credential and orphans a container.
+///
+/// <para>Port allocation is a read-then-insert, so it runs inside a transaction that
+/// holds a per-host advisory lock — see <see cref="CreateAsync"/> for why the
+/// invariant cannot be an index.</para>
 /// </summary>
 public sealed class InstanceCreator(
     MetaDbContext db,
@@ -29,12 +33,32 @@ public sealed class InstanceCreator(
     SecretGenerator secrets,
     TimeProvider clock)
 {
+    /// <summary>
+    /// Validates, places, allocates, and inserts — atomically with respect to another
+    /// concurrent create on the same host.
+    ///
+    /// <para><b>Why a lock and not a unique index.</b> A published port lives in one of
+    /// TWO columns (<c>mcp_published_port</c>, <c>relay_published_port</c>), so a
+    /// per-column unique index cannot state the actual invariant — "no live instance on
+    /// this host uses this port in EITHER role". It would still admit one instance's mcp
+    /// port colliding with another's relay port. The invariant spans columns and rows, so
+    /// it is enforced where the decision is made: a transaction-scoped advisory lock keyed
+    /// on the host makes <see cref="PlacementService.AllocatePortsAsync"/>'s read-then-insert
+    /// indivisible. (A normalized one-row-per-allocated-port table WOULD carry a real
+    /// unique index, but that is a schema change earning nothing else here.)</para>
+    /// </summary>
     public async Task<CreateInstanceResult> CreateAsync(CreateInstanceRequest req, CancellationToken ct)
     {
         var name = (req.Name ?? "").Trim().ToLowerInvariant();
         if (!InstanceNaming.IsValidName(name))
             throw new InstanceCreateException(
                 "Name must be a DNS label: lowercase letters, digits, and hyphens (1–40 chars).");
+
+        // EF InMemory (the saga tests) supports neither transactions nor advisory locks;
+        // those tests are single-threaded, so the unlocked path is equivalent there.
+        await using var tx = db.Database.IsNpgsql()
+            ? await db.Database.BeginTransactionAsync(ct)
+            : null;
 
         if (await db.Instances.AnyAsync(i => i.Name == name && i.DestroyedAt == null, ct))
             throw new InstanceCreateException($"An instance named '{name}' already exists.");
@@ -44,6 +68,13 @@ public sealed class InstanceCreator(
                 ?? throw new InstanceCreateException("The selected host does not exist.")
             : await placement.LeastLoadedHostAsync(ct)
                 ?? throw new InstanceCreateException("No Docker hosts registered. Add a host first.");
+
+        if (tx is not null)
+        {
+            // Released on commit or rollback, so a failed create never wedges the host.
+            var key = AdvisoryKey(host.Id);
+            await db.Database.ExecuteSqlInterpolatedAsync($"SELECT pg_advisory_xact_lock({key})", ct);
+        }
 
         var (mcpPort, relayPort) = await placement.AllocatePortsAsync(host, ct);
 
@@ -65,8 +96,18 @@ public sealed class InstanceCreator(
         };
         db.Instances.Add(instance);
         await db.SaveChangesAsync(ct);
+        if (tx is not null)
+            await tx.CommitAsync(ct);
 
         // Plaintext returned, never stored.
         return new CreateInstanceResult(instance.Id, instance.Name, passphrase);
     }
+
+    /// <summary>
+    /// A stable 64-bit advisory-lock key for a host. Derived from the host id, so every
+    /// meta process and request agrees on it without a registry; a collision between two
+    /// hosts would only over-serialize their creates, never corrupt an allocation.
+    /// </summary>
+    private static long AdvisoryKey(Guid hostId) =>
+        BitConverter.ToInt64(hostId.ToByteArray(), 0);
 }
