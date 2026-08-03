@@ -258,6 +258,9 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
             o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
         services.AddScoped<TaskStore>();
         services.AddScoped<TokenService>();
+        // §9.9: CheckLivenessAsync also sweeps exhausted budgets, which resolves this
+        // from the scope — the same registration the other sweeper fixtures make.
+        services.AddScoped<TeamBudgetService>();
         services.AddSingleton(clock);
         return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
     }
