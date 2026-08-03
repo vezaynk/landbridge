@@ -65,6 +65,8 @@ internal static class RelayGrantTestKit
         builder.Services.AddDbContext<DocketDbContext>(o =>
             o.UseNpgsql(connectionString).UseSnakeCaseNamingConvention());
         builder.Services.AddScoped<TaskStore>();
+        builder.Services.AddScoped<TeamBudgetService>(); // §9.9: the store commits dispatch budget through it
+        builder.Services.AddScoped<TeamForwardUsageService>(); // §9.10: /relay/usage attributes bytes through it
         builder.Services.AddScoped<TokenService>();
         builder.Services.AddScoped<RelayGrantService>();
         // §8.4: the preview mapping store + the per-connection connect orchestrator.
@@ -154,7 +156,8 @@ internal static class RelayGrantTestKit
     /// </summary>
     public static LeadTools LeadToolsFor(
         DocketDbContext db, TimeProvider clock, RunnerConnectionRegistry registry, IHttpContextAccessor http) =>
-        new(new TaskStore(db, clock),
+        new(new TaskStore(db, clock, new TeamBudgetService(db, clock)),
+            new TeamBudgetService(db, clock),
             registry,
             new LeadMachineBindingService(db, clock),
             new RelayGrantService(db, clock),

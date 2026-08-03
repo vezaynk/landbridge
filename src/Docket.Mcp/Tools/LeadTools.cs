@@ -31,6 +31,7 @@ namespace Docket.Mcp.Tools;
 [McpServerToolType]
 public sealed class LeadTools(
     TaskStore store,
+    TeamBudgetService budgets,
     RunnerConnectionRegistry registry,
     LeadMachineBindingService bindings,
     RelayGrantService grants,
@@ -163,12 +164,15 @@ public sealed class LeadTools(
             throw new McpException("on_machine_gone only applies together with continues.");
         }
 
-        // TeamBudgetRemains is the store's to compute from budget accounting (§9
-        // check 9); the seam is here — a budget-aware store would supply it.
-        // Description/workspace ride the command as opaque content the store
+        // §9 check 9, for real: until now this was hardcoded true, which made the check a
+        // lie. The Team's ceiling is judged against COMMITTED authorization, not measured
+        // spend — nothing ingests spend telemetry (§9.9) — so this asks whether one more
+        // dispatch could be authorized. An unconfigured Team has no ceiling and always
+        // affords work. Description/workspace ride the command as opaque content the store
         // persists and the engine never reads (§7).
+        var budgetRemains = await budgets.HasHeadroomAsync(lead.Team, ct);
         var result = await store.CreateAsync(
-            new CreateTask(lead, lead.Team, completionCriteria, parsedMode, effectiveProfile, TeamBudgetRemains: true,
+            new CreateTask(lead, lead.Team, completionCriteria, parsedMode, effectiveProfile, budgetRemains,
                 Description: description, Workspace: workspace, Continues: continuation), ct);
 
         return result switch
@@ -248,11 +252,17 @@ public sealed class LeadTools(
                  "fetch the report text deliberately with get_task_report, one item at a time. This is " +
                  "the reattachment surface after a session ends or a takeover. Also reports which " +
                  "machine you have bound as your human's own (bound_machine, null if none) — the " +
-                 "consumer end open_lead_forward needs.")]
+                 "consumer end open_lead_forward needs — and your Team's budget (ceiling, committed, " +
+                 "remaining, exhausted), which is READ-ONLY: only your human can change a ceiling, " +
+                 "from the dashboard. If remaining is too small to cover another dispatch, create_task " +
+                 "will refuse and running tasks are stopped; ask your human to raise it.")]
     public async Task<TeamStateView> GetTeamState(CancellationToken ct)
     {
         var lead = LeadPrincipal;
         var state = await store.GetTeamStateAsync(lead.Team, ct);
+        // §9.9: a Lead sees its own ceiling so a refused create_task is legible as "out of
+        // budget" rather than an unexplained rejection. Read-only — there is no MCP write.
+        state = state with { Budget = await budgets.ReadAsync(lead.Team, ct) };
         // The binding keys on the human, not the Team, so it is composed on here
         // rather than read out of the Team's rows (§8.3 human path). A lead
         // credential with no human attribution simply shows no binding.

@@ -167,6 +167,48 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task Get_team_state_shows_the_lead_its_own_budget_read_only()
+    {
+        // §9.9: a Lead must be able to see its ceiling, or a refused create_task is an
+        // unexplained rejection it will retry against. Reading is allowed precisely because
+        // the WRITE is not — there is no MCP tool for that anywhere, only the human dashboard.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using (var db = pg.NewContext())
+            await new TeamBudgetService(db, _clock).SetLimitsAsync(Team, ceilingUsd: 30m, perTaskUsd: 10m);
+        var tools = LeadFor(new Principal.Lead(Team));
+
+        var view = await tools.GetTeamState(CancellationToken.None);
+
+        Assert.NotNull(view.Budget);
+        Assert.Equal(30m, view.Budget!.CeilingUsd);
+        Assert.Equal(10m, view.Budget.PerTaskUsd);
+        Assert.Equal(0m, view.Budget.CommittedUsd);
+        Assert.Equal(30m, view.Budget.Remaining);
+        Assert.False(view.Budget.Exhausted);
+
+        // No tool on the Lead surface can move it — the ceiling is not the Lead's to raise.
+        Assert.DoesNotContain(
+            typeof(LeadTools).GetMethods().Select(m => m.Name),
+            n => n.Contains("Budget", StringComparison.OrdinalIgnoreCase));
+    }
+
+    [SkippableFact]
+    public async Task An_unconfigured_team_reads_as_unbounded_rather_than_broke()
+    {
+        // Unbounded is null remaining, never zero: a Docket with no budgets behaves as it always
+        // did, and a Lead must not read the default as "out of money".
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var tools = LeadFor(new Principal.Lead(Team));
+
+        var view = await tools.GetTeamState(CancellationToken.None);
+
+        Assert.NotNull(view.Budget);
+        Assert.Null(view.Budget!.CeilingUsd);
+        Assert.Null(view.Budget.Remaining);
+        Assert.False(view.Budget.Exhausted);
+    }
+
+    [SkippableFact]
     public async Task Cancel_task_via_the_tool_moves_it_to_canceled()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
@@ -330,6 +372,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         services.AddDbContext<DocketDbContext>(o =>
             o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
         services.AddScoped<TaskStore>();
+        services.AddScoped<TeamBudgetService>(); // §9.9: the store commits dispatch budget through it
         services.AddScoped<TokenService>();
         services.AddSingleton<TimeProvider>(_clock);
         return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();

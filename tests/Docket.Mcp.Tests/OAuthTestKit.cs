@@ -77,6 +77,7 @@ internal static class OAuthTestKit
         builder.Services.AddDbContext<DocketDbContext>(o =>
             o.UseNpgsql(connectionString).UseSnakeCaseNamingConvention());
         builder.Services.AddScoped<TaskStore>();
+        builder.Services.AddScoped<TeamBudgetService>(); // §9.9: the store commits dispatch budget through it
         builder.Services.AddScoped<TokenService>();
         builder.Services.AddScoped<RelayGrantService>();
         builder.Services.AddScoped<PreviewMappingService>(); // §8.4: WorkerTools.open_preview

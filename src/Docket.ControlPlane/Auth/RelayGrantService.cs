@@ -20,8 +20,16 @@ namespace Docket.ControlPlane.Auth;
 /// <see cref="ClearServicesAndForwards"/> effect in <see cref="TaskStore"/>,
 /// which revokes a task's live grants the moment it leaves <c>working</c>, next
 /// to where it already clears that task's registered services (§6).</para>
+///
+/// <para>The mint is also where §9 check 10's <b>forward rate limit</b> is enforced, since a
+/// grant is the one thing no forward can happen without and the plane is the only place the
+/// limit holds without a live relay. Check 10's other half — a Team <em>byte</em> allowance —
+/// is not implemented: the relay moves opaque bytes and reports no counters to the plane, so
+/// there is no measured volume to enforce on (see §9.10 and the deferred seam in
+/// <c>ForwardEntry.PumpAsync</c>).</para>
 /// </summary>
-public sealed class RelayGrantService(DocketDbContext db, TimeProvider clock)
+public sealed class RelayGrantService(
+    DocketDbContext db, TimeProvider clock, int? forwardsPerWindow = null, TimeSpan? forwardWindow = null)
 {
     /// <summary>
     /// A grant establishes a connection; it does not authorize an ongoing
@@ -29,6 +37,20 @@ public sealed class RelayGrantService(DocketDbContext db, TimeProvider clock)
     /// design — long enough to cover the open handshake, no longer.
     /// </summary>
     public static readonly TimeSpan GrantTtl = TimeSpan.FromMinutes(2);
+
+    /// <summary>
+    /// The §9 check 10 forward rate limit: how many grants one Team may be issued per
+    /// <see cref="DefaultForwardWindow"/>. Deliberately generous — an §8.4 preview mints a
+    /// fresh grant per browser connection, so a page load is legitimately several — while
+    /// still bounding a runaway loop, which is the containment this exists for.
+    /// </summary>
+    public const int DefaultForwardsPerWindow = 120;
+
+    /// <summary>The window <see cref="DefaultForwardsPerWindow"/> is counted over.</summary>
+    public static readonly TimeSpan DefaultForwardWindow = TimeSpan.FromMinutes(1);
+
+    private readonly int _forwardsPerWindow = forwardsPerWindow ?? DefaultForwardsPerWindow;
+    private readonly TimeSpan _forwardWindow = forwardWindow ?? DefaultForwardWindow;
 
     /// <summary>
     /// Issues a grant for <paramref name="consumer"/> to reach
@@ -82,6 +104,30 @@ public sealed class RelayGrantService(DocketDbContext db, TimeProvider clock)
         TeamId team, string serviceName, Guid? consumerTaskId, Guid? consumerInstanceId,
         CancellationToken ct)
     {
+        var now = clock.GetUtcNow();
+
+        // §9 check 10, the forward rate limit — enforced HERE, at mint, and not at the relay.
+        //
+        // The plane is the only place it holds unconditionally: a grant is the one thing a
+        // forward cannot happen without, and refusing to mint costs nothing and needs no
+        // cooperation from a relay that may be unreachable, overloaded, or (in a fleet) not
+        // the one this forward will use. Enforcing at the relay instead would put the control
+        // downstream of the thing it is meant to bound.
+        //
+        // Counted per Team over a rolling window, on MINTS rather than open tunnels — the same
+        // choice as the §9.9 ceiling and for the same reason: what Docket authorized is
+        // knowable, what a peer then did with it is not. A grant minted and never used still
+        // spent authorization. The check runs before the service lookup so a Team in a mint
+        // loop is cut off at the cheapest possible point.
+        var since = now - _forwardWindow;
+        var recent = await db.RelayGrants.AsNoTracking()
+            .CountAsync(g => g.TeamId == team.Value && g.CreatedAt > since, ct);
+        if (recent >= _forwardsPerWindow)
+            return new RelayGrantResult.Refused(
+                Rule.TeamByteAllowance,
+                $"your Team has opened {recent} forwards in the last {_forwardWindow.TotalSeconds:0}s, " +
+                $"which is its limit ({_forwardsPerWindow}); wait for the window to roll");
+
         // Registered in this Team at all? Scoped to the Team, so a service that
         // exists only in another Team is indistinguishable from one that does not
         // exist — cross-Team reads as not-registered (§8.2).
@@ -109,7 +155,6 @@ public sealed class RelayGrantService(DocketDbContext db, TimeProvider clock)
             return new RelayGrantResult.Refused(Rule.ForwardsRequireRegistration,
                 $"service '{serviceName}' is registered but its task is no longer working");
 
-        var now = clock.GetUtcNow();
         var (grant, hash) = NewGrant();
         var forwardId = Guid.NewGuid();
         db.RelayGrants.Add(new RelayGrantRow

@@ -53,6 +53,8 @@ internal static class MultiMachineKit
         builder.Services.AddDbContext<DocketDbContext>(o =>
             o.UseNpgsql(connectionString).UseSnakeCaseNamingConvention());
         builder.Services.AddScoped<TaskStore>();
+        builder.Services.AddScoped<TeamBudgetService>(); // §9.9: the store commits dispatch budget through it
+        builder.Services.AddScoped<TeamForwardUsageService>(); // §9.10: /relay/usage attributes bytes through it
         builder.Services.AddScoped<TokenService>();
         builder.Services.AddScoped<RelayGrantService>();
         builder.Services.AddScoped<PreviewMappingService>(); // §8.4: WorkerTools.open_preview

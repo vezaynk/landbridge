@@ -3,6 +3,7 @@ using System;
 using Docket.ControlPlane;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Docket.ControlPlane.Migrations
 {
     [DbContext(typeof(DocketDbContext))]
-    partial class DocketDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260803120000_AddTeamBudgets")]
+    partial class AddTeamBudgets
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -690,26 +693,6 @@ namespace Docket.ControlPlane.Migrations
                         .HasName("pk_team_budgets");
 
                     b.ToTable("team_budgets", (string)null);
-                });
-
-            modelBuilder.Entity("Docket.ControlPlane.TeamForwardUsageRow", b =>
-                {
-                    b.Property<Guid>("TeamId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("team_id");
-
-                    b.Property<long>("ForwardedBytes")
-                        .HasColumnType("bigint")
-                        .HasColumnName("forwarded_bytes");
-
-                    b.Property<DateTimeOffset>("UpdatedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("updated_at");
-
-                    b.HasKey("TeamId")
-                        .HasName("pk_team_forward_usage");
-
-                    b.ToTable("team_forward_usage", (string)null);
                 });
 
             modelBuilder.Entity("Docket.ControlPlane.WorkerInstanceRow", b =>

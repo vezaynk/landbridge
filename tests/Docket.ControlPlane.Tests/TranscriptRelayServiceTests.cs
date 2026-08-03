@@ -267,6 +267,7 @@ public sealed class TranscriptRelayServiceTests(PostgresFixture pg) : IAsyncLife
         services.AddDbContext<DocketDbContext>(o =>
             o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
         services.AddScoped<TaskStore>();
+        services.AddScoped<TeamBudgetService>(); // §9.9: the store commits dispatch budget through it
         services.AddScoped<TokenService>();
         services.AddSingleton(clock);
         return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();

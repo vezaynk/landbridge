@@ -1,5 +1,6 @@
 using System.Security.Cryptography;
 using System.Text;
+using Docket.ControlPlane;
 using Docket.ControlPlane.Auth;
 
 namespace Docket.Mcp;
@@ -31,12 +32,78 @@ public static class RelayValidationEndpoints
     /// <summary>The POST /relay/validate body: what tunnel is being opened (§8.3).</summary>
     public sealed record ValidateRequest(string? Grant, string? ForwardId, string? Role);
 
+    /// <summary>One forward's byte delta in a POST /relay/usage batch (§9.10).</summary>
+    public sealed record UsageEntry(string? ForwardId, long Bytes);
+
+    /// <summary>The POST /relay/usage body: byte deltas since the relay's last report (§9.10).</summary>
+    public sealed record UsageRequest(UsageEntry[]? Reports);
+
     public static IEndpointRouteBuilder MapRelayValidationEndpoint(this IEndpointRouteBuilder app)
     {
         // No .RequireAuthorization(): the relay authenticates with a shared bearer,
         // not a Principal (§8.3). The handler checks it in constant time.
         app.MapPost("/relay/validate", HandleAsync);
+        // §9.10 byte accounting, on the same plane-facing contract and the same bearer —
+        // deliberately NOT the frozen runner wire (§10), which the relay does not speak and
+        // which must not grow a member for a component that is not a runner.
+        app.MapPost("/relay/usage", HandleUsageAsync);
         return app;
+    }
+
+    /// <summary>
+    /// POST /relay/usage {reports:[{forwardId, bytes}]} → 200 {"attributed":n} (§9.10). Byte
+    /// deltas since the relay's last report, attributed to Teams through the forward ids the
+    /// plane itself minted — the relay never learns which Team it moves bytes for.
+    ///
+    /// <para>Same auth and same failure vocabulary as <c>/relay/validate</c>: 503 with no
+    /// bearer configured, 401 on a wrong one, 400 on a malformed body. A batch naming forward
+    /// ids the plane never issued is <b>200 with a lower <c>attributed</c> count</b>, not an
+    /// error — this is a best-effort report from a component racing grant lifetimes, and the
+    /// count is how an operator sees that reports were dropped rather than silently counted.</para>
+    ///
+    /// <para>Unlike validation, nothing is gated on this call: it records a number a human
+    /// reads. Losing it costs visibility, never correctness, which is why the relay treats a
+    /// failure here as fire-and-forget rather than failing closed.</para>
+    /// </summary>
+    private static async Task<IResult> HandleUsageAsync(
+        UsageRequest? body,
+        HttpContext http,
+        // Explicit, not inferred: minimal APIs cannot tell a service from a body parameter for
+        // an unregistered type, and guessing wrong throws at MAP time — taking down every route
+        // in the host, not just this one. Saying [FromServices] turns a host that forgot to
+        // register the service into a clear resolution failure on this call alone.
+        [Microsoft.AspNetCore.Mvc.FromServices] TeamForwardUsageService usage,
+        IConfiguration config,
+        ILoggerFactory loggerFactory,
+        CancellationToken ct)
+    {
+        var logger = loggerFactory.CreateLogger("Docket.Mcp.RelayValidation");
+
+        var configured = config[BearerConfigKey];
+        if (string.IsNullOrEmpty(configured))
+        {
+            logger.LogError(
+                "relay usage reporting was called but no shared bearer is configured ({Key}); refusing.",
+                BearerConfigKey);
+            return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+        }
+
+        if (!TryReadBearer(http.Request.Headers.Authorization.ToString(), out var presented)
+            || !FixedTimeEquals(presented, configured))
+            return Results.StatusCode(StatusCodes.Status401Unauthorized);
+
+        if (body?.Reports is null)
+            return Results.BadRequest(new { reason = "reports (array of {forwardId, bytes}) is required" });
+
+        var reports = new List<ForwardByteReport>(body.Reports.Length);
+        foreach (var entry in body.Reports)
+        {
+            if (Guid.TryParse(entry.ForwardId, out var forwardId))
+                reports.Add(new ForwardByteReport(forwardId, entry.Bytes));
+        }
+
+        var attributed = await usage.RecordAsync(reports, ct);
+        return Results.Ok(new { attributed });
     }
 
     /// <summary>

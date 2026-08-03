@@ -15,8 +15,13 @@ namespace Docket.ControlPlane;
 ///
 /// Several §12 data points still have no source in the schema; rather than invent a
 /// column, the query surfaces an honest absence and the renderer shows an empty
-/// state (see the field comments): budget/byte burn, permission requests, and the
-/// subagent tree nested under a machine. The derived-telemetry events — auth
+/// state (see the field comments): permission requests and the subagent tree nested
+/// under a machine. A Team's budget and its relay byte burn are no longer among them,
+/// but the two numbers mean very different things and the views say so: the budget is
+/// authorization COMMITTED at dispatch, never measured spend, which Docket does not
+/// ingest (§9.9); the byte figure IS measured, but best-effort, reported
+/// asynchronously by a relay that may die holding an unsent tail (§9.10) — which is
+/// why it travels with the timestamp of its last report. The derived-telemetry events — auth
 /// failures, subagent spawns, and the typed input-request kind — are persisted as
 /// task event rows (#50) and surface structured in the event log; a view that still
 /// renders one as an empty slot is a rendering gap that view owns, not a missing
@@ -98,9 +103,10 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
 
     /// <summary>
     /// Every Team as a one-line overview, sorted so idle Teams drift to the bottom
-    /// (§12). A Team exists if it owns any task or holds a live Lead claim. Budget
-    /// and byte burn are labelled "not tracked" here because nothing in the schema
-    /// records them yet (§12 lists them, so the slot is kept, not the number).
+    /// (§12). A Team exists if it owns any task, holds a live Lead claim, or has a
+    /// budget configured — a ceiling set before the Lead is provisioned is the intended
+    /// order. Carries the Team's budget (§9.9, committed authorization) and its reported
+    /// relay bytes (§9.10, measured but best-effort).
     /// </summary>
     public async Task<IReadOnlyList<TeamOverview>> GetTeamsAsync(CancellationToken ct = default)
     {
@@ -131,9 +137,17 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
             .ToListAsync(ct);
         var leadByTeam = leads.ToDictionary(l => l.TeamId, l => (l.HumanId, l.CreatedAt));
 
+        var budgets = await db.TeamBudgets.AsNoTracking().ToDictionaryAsync(t => t.TeamId, ct);
+        var forwardUsage = await db.TeamForwardUsage.AsNoTracking().ToDictionaryAsync(u => u.TeamId, ct);
+
         var teamIds = new HashSet<Guid>(stateCounts.Select(s => s.TeamId));
         foreach (var l in leads)
             teamIds.Add(l.TeamId);
+        // A Team can exist as a budget alone — a human setting a ceiling before the Lead is
+        // provisioned is the intended order, so it must appear in the list rather than only
+        // once it has tasks.
+        foreach (var teamId in budgets.Keys)
+            teamIds.Add(teamId);
 
         var overviews = new List<TeamOverview>();
         foreach (var teamId in teamIds)
@@ -155,7 +169,9 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
                 leadByTeam.ContainsKey(teamId) ? lead.HumanId : null,
                 leadByTeam.ContainsKey(teamId) ? lead.CreatedAt : null,
                 lastActivity.GetValueOrDefault(teamId) is var la && la == default ? null : la,
-                isIdle));
+                isIdle,
+                TeamBudgetView.From(budgets.GetValueOrDefault(teamId)),
+                TeamForwardUsageView.From(forwardUsage.GetValueOrDefault(teamId))));
         }
 
         // Idle Teams to the bottom (§12), otherwise most-recently-active first.
@@ -217,6 +233,18 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
             .Where(e => e.TeamId == teamId)
             .MaxAsync(e => (DateTimeOffset?)e.OccurredAt, ct);
 
+        // §9.9. Read here rather than through TeamBudgetService so this class keeps its one
+        // dependency shape (db + registry) and cannot be handed a null service that silently
+        // renders an unconfigured budget for a Team that has one; the row→view mapping is
+        // shared with the service so the two readings cannot disagree.
+        var budget = TeamBudgetView.From(
+            await db.TeamBudgets.AsNoTracking().FirstOrDefaultAsync(t => t.TeamId == teamId, ct));
+
+        // §9.10. Measured, unlike the budget beside it — and best-effort, which is why the view
+        // carries the report timestamp rather than presenting the total as current.
+        var forwardUsage = TeamForwardUsageView.From(
+            await db.TeamForwardUsage.AsNoTracking().FirstOrDefaultAsync(u => u.TeamId == teamId, ct));
+
         var taskRows = tasks
             .OrderBy(t => t.Namespace, StringComparer.Ordinal)
             .Select(t => new TeamTaskView(
@@ -247,7 +275,9 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
             inputRequests,
             lead is null ? null : lead.HumanId,
             lead?.CreatedAt,
-            lastActivity);
+            lastActivity,
+            budget,
+            forwardUsage);
     }
 
     // ── Human inbox (§12) ─────────────────────────────────────────────────────
@@ -427,7 +457,9 @@ public sealed record TeamOverview(
     Guid? LeadHumanId,
     DateTimeOffset? LeadSince,
     DateTimeOffset? LastActivity,
-    bool IsIdle);
+    bool IsIdle,
+    TeamBudgetView? Budget = null,
+    TeamForwardUsageView? ForwardUsage = null);
 
 /// <summary>One Team in full — the §4 reattachment surface as structured data (§12).</summary>
 public sealed record TeamDetail(
@@ -439,7 +471,9 @@ public sealed record TeamDetail(
     IReadOnlyList<InputRequestView> OpenInputRequests,
     Guid? LeadHumanId,
     DateTimeOffset? LeadSince,
-    DateTimeOffset? LastActivity);
+    DateTimeOffset? LastActivity,
+    TeamBudgetView? Budget = null,
+    TeamForwardUsageView? ForwardUsage = null);
 
 /// <summary>One task in a Team, with its park count (§12 "parks per task"); for a
 /// continuation task, the prior task it resumed (§6/§11 Y-continues-X lineage); and,

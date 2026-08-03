@@ -246,4 +246,78 @@ public sealed class RelayGrantServiceTests(PostgresFixture pg) : IAsyncLifetime
         // The revoked grant no longer opens a tunnel.
         Assert.False(await grants.ValidateAsync(issued.Grant, issued.ForwardId, RelayGrantRole.Consumer));
     }
+
+    // ── The forward rate limit (§9 check 10) ──────────────────────────────────
+
+    [SkippableFact]
+    public async Task A_team_over_its_forward_rate_is_refused_until_the_window_rolls()
+    {
+        // Enforced at the MINT, plane-side: a grant is the one thing no forward can happen
+        // without, so this holds even when the relay is unreachable — and it cannot be
+        // outrun by a peer, because the limit sits upstream of the thing it bounds.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var clock = new FakeTimeProvider();
+        // Its own Team: the rate limit is a per-Team COUNT, so a test that shared a Team with
+        // its neighbours would be measuring their mints too.
+        var team = TeamId.New();
+        await WorkingServiceAsync(db, clock, team, "db");
+        var grants = new RelayGrantService(db, clock, forwardsPerWindow: 3, forwardWindow: TimeSpan.FromMinutes(1));
+        var consumer = new WorkerCaller(team, TaskId.New(), WorkerInstanceId.New());
+
+        for (var i = 0; i < 3; i++)
+            Assert.IsType<RelayGrantResult.Issued>(await grants.IssueAsync(consumer, "db"));
+
+        var refused = Assert.IsType<RelayGrantResult.Refused>(await grants.IssueAsync(consumer, "db"));
+        Assert.Equal(Rule.TeamByteAllowance, refused.Rule);
+        Assert.Contains("its limit", refused.Reason);
+
+        // Rolling, not a fixed bucket: once the window has passed, minting resumes.
+        clock.Advance(TimeSpan.FromMinutes(1) + TimeSpan.FromSeconds(1));
+        Assert.IsType<RelayGrantResult.Issued>(await grants.IssueAsync(consumer, "db"));
+    }
+
+    [SkippableFact]
+    public async Task One_teams_forward_rate_does_not_limit_another_teams()
+    {
+        // Per Team, like every other §9 allowance. A noisy Team must not deny service to a
+        // quiet one — that would make the containment control an availability bug.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var clock = new FakeTimeProvider();
+        var loud = TeamId.New();
+        var other = TeamId.New();
+        await WorkingServiceAsync(db, clock, loud, "db");
+        await WorkingServiceAsync(db, clock, other, "db");
+        var grants = new RelayGrantService(db, clock, forwardsPerWindow: 2, forwardWindow: TimeSpan.FromMinutes(1));
+
+        var noisy = new WorkerCaller(loud, TaskId.New(), WorkerInstanceId.New());
+        for (var i = 0; i < 2; i++)
+            Assert.IsType<RelayGrantResult.Issued>(await grants.IssueAsync(noisy, "db"));
+        Assert.IsType<RelayGrantResult.Refused>(await grants.IssueAsync(noisy, "db"));
+
+        var quiet = new WorkerCaller(other, TaskId.New(), WorkerInstanceId.New());
+        Assert.IsType<RelayGrantResult.Issued>(await grants.IssueAsync(quiet, "db"));
+    }
+
+    [SkippableFact]
+    public async Task The_rate_limit_counts_mints_not_tunnels_that_opened()
+    {
+        // Authorization, not measured use — the same choice as the §9.9 ceiling. A grant minted
+        // and never presented still spent the Team's allowance, because what Docket authorized
+        // is knowable and what a peer then did with it is not.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var clock = new FakeTimeProvider();
+        var team = TeamId.New();
+        await WorkingServiceAsync(db, clock, team, "db");
+        var grants = new RelayGrantService(db, clock, forwardsPerWindow: 2, forwardWindow: TimeSpan.FromMinutes(1));
+        var consumer = new WorkerCaller(team, TaskId.New(), WorkerInstanceId.New());
+
+        // Two mints, neither ever validated into a tunnel.
+        Assert.IsType<RelayGrantResult.Issued>(await grants.IssueAsync(consumer, "db"));
+        Assert.IsType<RelayGrantResult.Issued>(await grants.IssueAsync(consumer, "db"));
+
+        Assert.IsType<RelayGrantResult.Refused>(await grants.IssueAsync(consumer, "db"));
+    }
 }

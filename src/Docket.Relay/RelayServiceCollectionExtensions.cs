@@ -28,10 +28,22 @@ public static class RelayServiceCollectionExtensions
         {
             services.AddHttpClient(ControlPlaneGrantValidator.HttpClientName);
             services.TryAddSingleton<IGrantValidator, ControlPlaneGrantValidator>();
+
+            // §9.10 byte accounting, on the same plane and the same bearer. One instance serves
+            // as both the reporter the splice pumps count into and the hosted service that
+            // flushes it, so the timer belongs to the host's lifetime and shutdown gets a final
+            // report. Registered only alongside a real plane, for the same reason the validator
+            // is: there is nowhere to report otherwise.
+            services.TryAddSingleton<ControlPlaneForwardUsageReporter>();
+            services.TryAddSingleton<IForwardUsageReporter>(
+                sp => sp.GetRequiredService<ControlPlaneForwardUsageReporter>());
+            services.AddHostedService(sp => sp.GetRequiredService<ControlPlaneForwardUsageReporter>());
         }
         else
         {
             services.TryAddSingleton<IGrantValidator, StaticSecretGrantValidator>();
+            // No plane to report to: count nothing rather than accumulate forever.
+            services.TryAddSingleton<IForwardUsageReporter, NoOpForwardUsageReporter>();
         }
 
         return services;
