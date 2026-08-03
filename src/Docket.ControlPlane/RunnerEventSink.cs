@@ -114,7 +114,10 @@ public sealed class RunnerEventSink(
                 // no-op once the forward opened and the waiter was removed. The
                 // grant is single-use and expires on its own, so there is no other
                 // per-forward bookkeeping to unwind here.
-                forwards.Fail(fc.ForwardId, "the producer or consumer end closed");
+                // §8.2/§8.3: prefer the machine's own reason when it has one — "the
+                // service backing this registration is not running" is actionable in a
+                // way "an end closed" is not.
+                forwards.Fail(fc.ForwardId, fc.Refusal ?? "the producer or consumer end closed");
                 logger.LogInformation("runner forward-closed: task={Task} forward={ForwardId}", fc.Task, fc.ForwardId);
                 break;
         }

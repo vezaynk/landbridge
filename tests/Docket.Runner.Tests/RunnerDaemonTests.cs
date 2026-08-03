@@ -38,7 +38,8 @@ public class RunnerDaemonTests
 
     private static Harness Build(
         RunnerConfig? config = null, int straysToReap = 0,
-        TranscriptReader? transcripts = null, IControlPlaneChannel? channel = null)
+        TranscriptReader? transcripts = null, IControlPlaneChannel? channel = null,
+        ServiceSupervisor? services = null)
     {
         var supervisor = new FakeProcessSupervisor();
         var reaper = new FakeStrayReaper(straysToReap);
@@ -50,7 +51,7 @@ public class RunnerDaemonTests
         var daemon = new RunnerDaemon(
             "machine-1", cfg, supervisor,
             new BackPressureMonitor(load, cfg.Machine.BackPressure),
-            channel, ring, reaper, clock, transcripts: transcripts);
+            channel, ring, reaper, clock, transcripts: transcripts, services: services);
         return new Harness
         {
             Daemon = daemon, Supervisor = supervisor, Reaper = reaper,
@@ -195,6 +196,47 @@ public class RunnerDaemonTests
         h.Clock.Advance(TimeSpan.FromSeconds(15));
         Assert.NotEmpty(h.Recorded.Heartbeats);
         Assert.DoesNotContain(h.Recorded.Events, e => e.Event is AliveEvent);
+
+        await h.Daemon.ShutdownAsync();
+    }
+
+    [Fact]
+    public async Task The_heartbeat_carries_declared_service_status()
+    {
+        // §10/§12: the heartbeat is the whole channel by which services reach the plane.
+        // It sits outside the frozen command/event enum, so this is an ordinary additive
+        // field rather than a vocabulary change.
+        var config = RunnerConfig.Load("""
+        {
+          "machine": { "work_root": "/tmp/docketd-fake", "heartbeat_seconds": 5 },
+          "profiles": [ { "name": "default", "spawn": ["noop"] } ],
+          "services": [ { "name": "api", "spawn": ["/bin/echo"], "port": 7101 } ]
+        }
+        """);
+        await using var services = new ServiceSupervisor(
+            config.DeclaredServices, "m1", TimeProvider.System);
+        var h = Build(config, services: services);
+        await h.Daemon.StartAsync();
+
+        h.Clock.Advance(TimeSpan.FromSeconds(5));
+        Assert.NotEmpty(h.Recorded.Heartbeats);
+        var reported = Assert.Single(h.Recorded.Heartbeats[^1].Services!);
+        Assert.Equal("api", reported.Name);
+        Assert.Equal(7101, reported.Port);
+
+        await h.Daemon.ShutdownAsync();
+    }
+
+    [Fact]
+    public async Task A_machine_declaring_no_services_reports_null_not_an_empty_list()
+    {
+        // Null is "says nothing", which is what an older runner also sends — so the
+        // plane has exactly one shape to handle for "nothing to render here".
+        var h = Build();
+        await h.Daemon.StartAsync();
+
+        h.Clock.Advance(TimeSpan.FromSeconds(5));
+        Assert.Null(h.Recorded.Heartbeats[^1].Services);
 
         await h.Daemon.ShutdownAsync();
     }

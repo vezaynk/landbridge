@@ -11,8 +11,14 @@ namespace Docket.Runner;
 /// Parsed from JSON via a source-gen'd context
 /// (<see cref="RunnerJsonContext"/>) to stay AOT-clean.
 /// </summary>
-public sealed record RunnerConfig(MachineConfig Machine, IReadOnlyDictionary<string, ProfileConfig> Profiles)
+public sealed record RunnerConfig(
+    MachineConfig Machine,
+    IReadOnlyDictionary<string, ProfileConfig> Profiles,
+    IReadOnlyList<ServiceConfig>? Services = null)
 {
+    /// <summary>§10 operator-declared services; empty when the section is absent.</summary>
+    public IReadOnlyList<ServiceConfig> DeclaredServices => Services ?? [];
+
     /// <summary>The required <c>default</c> profile (§10 — exactly one).</summary>
     public ProfileConfig Default => Profiles[MachineSnapshotDefaults.DefaultProfile];
 
@@ -115,6 +121,7 @@ public sealed record RunnerConfig(MachineConfig Machine, IReadOnlyDictionary<str
 
         var machine = ValidateMachine(dto.Machine, problems);
         var profiles = ValidateProfiles(dto.Profiles, problems);
+        var services = ValidateServices(dto.Services, problems);
 
         if (problems.Count > 0)
         {
@@ -122,10 +129,136 @@ public sealed record RunnerConfig(MachineConfig Machine, IReadOnlyDictionary<str
             return false;
         }
 
-        config = new RunnerConfig(machine!, profiles!);
+        config = new RunnerConfig(machine!, profiles!, services);
         errors = [];
         return true;
     }
+
+    /// <summary>
+    /// §10 operator-declared services. Absent or empty is the normal case, so a
+    /// missing section is not a problem — but a declared one is validated strictly,
+    /// because a service's name becomes a filesystem path segment (see
+    /// <see cref="IsValidServiceName"/>) and its backend decides whether docketd owns
+    /// the process at all.
+    /// </summary>
+    private static IReadOnlyList<ServiceConfig> ValidateServices(
+        List<ServiceDto>? dtos, List<string> problems)
+    {
+        if (dtos is null || dtos.Count == 0)
+            return [];
+
+        var built = new List<ServiceConfig>(dtos.Count);
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        foreach (var dto in dtos)
+        {
+            var name = dto.Name?.Trim();
+            if (string.IsNullOrEmpty(name))
+            {
+                problems.Add("a service is missing `name` (§10 services)");
+                continue;
+            }
+
+            if (!IsValidServiceName(name))
+            {
+                problems.Add(
+                    $"service name '{name}' is invalid: use 1-64 characters of a-z, A-Z, 0-9, " +
+                    "'-' or '_' (§10 — the name becomes a directory name under the state dir, " +
+                    "so it must not be able to steer a path)");
+                continue;
+            }
+
+            if (!seen.Add(name))
+            {
+                problems.Add($"duplicate service name '{name}' (§10 — service names are identifiers)");
+                continue;
+            }
+
+            if (dto.Spawn is null || dto.Spawn.Count == 0)
+            {
+                problems.Add($"service '{name}' has an empty spawn argv — docketd needs a command to run (§10)");
+                continue;
+            }
+
+            // v1 supervises services as docketd's own children. The key exists so a
+            // config asking for a delegated backend fails loudly instead of being
+            // silently ignored and quietly supervised the other way.
+            var backend = dto.Backend?.Trim();
+            if (!string.IsNullOrEmpty(backend) && !string.Equals(backend, ServiceBackends.Direct, StringComparison.Ordinal))
+            {
+                problems.Add(
+                    $"service '{name}' declares backend '{backend}', which is not implemented — " +
+                    $"'{ServiceBackends.Direct}' (docketd supervises the process itself) is the only " +
+                    "supported value (§10)");
+                continue;
+            }
+
+            if (dto.Port is { } p && p is < 1 or > 65535)
+            {
+                problems.Add($"service '{name}' port must be in 1..65535 when set (§10)");
+                continue;
+            }
+
+            if (dto.Readiness?.TcpPort is { } rp && rp is < 1 or > 65535)
+            {
+                problems.Add($"service '{name}' readiness.tcp_port must be in 1..65535 when set (§10)");
+                continue;
+            }
+
+            if (dto.Logs?.MaxBytes is { } mb && mb < 1)
+            {
+                problems.Add($"service '{name}' logs.max_bytes must be >= 1 when set (§12)");
+                continue;
+            }
+
+            built.Add(BuildService(dto, name));
+        }
+
+        return built;
+    }
+
+    private static ServiceConfig BuildService(ServiceDto dto, string name)
+    {
+        var readiness = dto.Readiness?.TcpPort is { } tcpPort
+            ? new ReadinessConfig(
+                tcpPort,
+                dto.Readiness.TimeoutSeconds is { } t and > 0
+                    ? TimeSpan.FromSeconds(t)
+                    : ServiceDefaults.ReadinessTimeout)
+            : null;
+
+        var maxBackoff = dto.Restart?.MaxBackoffSeconds is { } b and > 0
+            ? TimeSpan.FromSeconds(b)
+            : ServiceDefaults.MaxBackoff;
+
+        return new ServiceConfig(
+            name,
+            dto.Spawn!,
+            dto.WorkingDirectory,
+            dto.Env ?? new Dictionary<string, string>(StringComparer.Ordinal),
+            dto.Port,
+            readiness,
+            maxBackoff,
+            new LogsConfig(
+                dto.Logs?.Path,
+                dto.Logs?.Format,
+                dto.Logs?.Capture ?? false,
+                dto.Logs?.MaxBytes ?? TranscriptDefaults.MaxBytes,
+                dto.Logs?.PruneAfterDays ?? TranscriptDefaults.PruneAfterDays));
+    }
+
+    /// <summary>
+    /// <b>A security control, not hygiene.</b> A service name becomes a directory
+    /// name under the state dir, so it occupies the slot a <c>TaskId</c> Guid used to
+    /// fill — and the Guid is precisely why the transcript path builder could be
+    /// called closed. An arbitrary string there would reopen it: <c>..</c>, a
+    /// separator, an absolute path, a NUL, or a Windows reserved name would all steer
+    /// writes outside the root. This allowlist restores the property the Guid was
+    /// silently providing, at the config boundary where it can be reported.
+    /// </summary>
+    internal static bool IsValidServiceName(string name) =>
+        name.Length is > 0 and <= 64
+        && name.All(c => c is >= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9' or '-' or '_');
 
     private static MachineConfig? ValidateMachine(MachineDto? dto, List<string> problems)
     {
@@ -386,6 +519,56 @@ public sealed record LogsConfig(
     bool Capture = false,
     long MaxBytes = TranscriptDefaults.MaxBytes,
     int PruneAfterDays = TranscriptDefaults.PruneAfterDays);
+
+/// <summary>Accepted <c>services[].backend</c> values (§10).</summary>
+public static class ServiceBackends
+{
+    /// <summary>docketd spawns and supervises the process itself — the only v1 backend.</summary>
+    public const string Direct = "direct";
+}
+
+/// <summary>Defaults for §10 service supervision.</summary>
+public static class ServiceDefaults
+{
+    /// <summary>How long a readiness port may take to answer before the start is a failure.</summary>
+    public static readonly TimeSpan ReadinessTimeout = TimeSpan.FromSeconds(60);
+
+    /// <summary>Ceiling on the exponential restart backoff.</summary>
+    public static readonly TimeSpan MaxBackoff = TimeSpan.FromSeconds(60);
+
+    /// <summary>First restart delay; doubles up to <see cref="MaxBackoff"/>.</summary>
+    public static readonly TimeSpan InitialBackoff = TimeSpan.FromSeconds(1);
+}
+
+/// <summary>
+/// One operator-declared service (§10): a long-lived process <c>docketd</c> supervises
+/// as its <b>own child</b>, outside any task's process tree. That placement is the
+/// whole point — it is why the service survives the task that uses it without anyone
+/// having to <c>setsid</c> or scrub <c>DOCKET_*</c> to escape supervision, and it keeps
+/// the kill guarantee inside Docket on every OS rather than depending on a system
+/// service manager that macOS and containers may not have.
+///
+/// <para>Config-declared only in v1. An agent-initiated service would need a worker
+/// tool and a new wire command, plus an answer to who may declare a process that
+/// outlives the task requesting it (§13) — deliberately out of scope.</para>
+/// </summary>
+public sealed record ServiceConfig(
+    string Name,
+    IReadOnlyList<string> Spawn,
+    string? WorkingDirectory,
+    IReadOnlyDictionary<string, string> Env,
+    int? Port,
+    ReadinessConfig? Readiness,
+    TimeSpan MaxBackoff,
+    LogsConfig Logs);
+
+/// <summary>
+/// §10 readiness: the loopback port that must accept a connection before the service
+/// counts as <see cref="Docket.Contracts.ServiceState.Running"/>. A real check, not a
+/// sleep — it is what lets a holder task register only once the port actually answers
+/// (§8.2), and what lets docketd refuse a forward dial for a service that is down.
+/// </summary>
+public sealed record ReadinessConfig(int TcpPort, TimeSpan Timeout);
 
 /// <summary>Thrown by <see cref="RunnerConfig.Load"/> with every validation failure.</summary>
 public sealed class RunnerConfigException(IReadOnlyList<string> errors)

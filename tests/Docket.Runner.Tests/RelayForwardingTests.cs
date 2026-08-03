@@ -210,8 +210,89 @@ public sealed class RelayForwardingTests
 
     // ── Helpers ───────────────────────────────────────────────────────────────
 
+    // ── §8.2 refuse-at-dial ─────────────────────────────────────────────────────
+
+    /// <summary>
+    /// §8.2's stated hazard is not the failed connection — it is the SUCCESSFUL one: a
+    /// registration outliving its process, so the dial lands on whatever else took the
+    /// port and the consumer gets plausible wrong answers instead of an error. Nobody
+    /// could close that before, because nobody knew which listener was intended. For a
+    /// docketd-supervised service, docketd does.
+    /// </summary>
+    [Fact]
+    public async Task A_dial_for_a_declared_service_that_is_down_is_refused_with_a_reason()
+    {
+        var ct = Timeout(out var cts);
+        using var _ = cts;
+
+        // A real listener is on the port — standing in for "something else grabbed it".
+        // The dial must NOT reach it, because the declared service is not running.
+        await using var impostor = await TcpEchoServer.StartAsync();
+        var ring = new OutboundEventRing(256);
+        var channel = new InMemoryControlPlaneChannel();
+        // A real supervisor with the service declared on that port and never started:
+        // it answers "declared, not running", which is the production seam verbatim.
+        await using var services = new ServiceSupervisor(
+            [DeclaredService("db", impostor.Port)], "machine-fwd", TimeProvider.System);
+        var daemon = BuildDaemon(ring, channel, acceptTimeout: TimeSpan.FromSeconds(30),
+            services: services);
+        await daemon.StartAsync();
+
+        const string forwardId = "fwd-refused";
+        await daemon.HandleAsync(new OpenForwardCommand(
+            TaskId.New(), forwardId, "db", RelayTunnel.ProducerRole, "dkt_g_x",
+            "http://127.0.0.1:1/relay", impostor.Port));
+
+        var closed = await WaitForEventAsync<ForwardClosedEvent>(channel, forwardId, ct);
+        Assert.NotNull(closed.Refusal);
+        Assert.Contains("not running", closed.Refusal);
+        Assert.Contains(impostor.Port.ToString(), closed.Refusal);
+
+        await daemon.ShutdownAsync();
+    }
+
+    [Fact]
+    public async Task A_dial_for_an_undeclared_port_is_not_refused()
+    {
+        var ct = Timeout(out var cts);
+        using var _ = cts;
+
+        // A null answer means "docketd declares no service here", which must dial as
+        // before — the port may be a worker-started listener that is none of its
+        // business. Refusing on null would break §8.2 forwards that work today.
+        await using var service = await TcpEchoServer.StartAsync();
+        var ring = new OutboundEventRing(256);
+        var channel = new InMemoryControlPlaneChannel();
+        // A supervisor that declares a DIFFERENT port: this dial target is unknown to
+        // it, so the answer is null and the dial proceeds.
+        await using var services = new ServiceSupervisor(
+            [DeclaredService("other", service.Port + 1)], "machine-fwd", TimeProvider.System);
+        var daemon = BuildDaemon(ring, channel, acceptTimeout: TimeSpan.FromSeconds(30),
+            services: services);
+        await daemon.StartAsync();
+        await using var relay = await FakeRelay.StartAsync();
+
+        const string forwardId = "fwd-undeclared";
+        await daemon.HandleAsync(new OpenForwardCommand(
+            TaskId.New(), forwardId, "db", RelayTunnel.ProducerRole, "dkt_g_x",
+            relay.HttpUrl, service.Port));
+
+        // It dialed: the relay end sees a tunnel, and no refusal is reported.
+        var relaySocket = await relay.Accepted.WaitAsync(ct);
+        await relaySocket.CloseOutputAsync(WebSocketCloseStatus.NormalClosure, "done", ct);
+        var closed = await WaitForEventAsync<ForwardClosedEvent>(channel, forwardId, ct);
+        Assert.Null(closed.Refusal);
+
+        await daemon.ShutdownAsync();
+    }
+
+    private static ServiceConfig DeclaredService(string name, int port) =>
+        new(name, ["/bin/echo"], null, new Dictionary<string, string>(StringComparer.Ordinal),
+            port, null, ServiceDefaults.MaxBackoff, new LogsConfig(null, null));
+
     private static RunnerDaemon BuildDaemon(
-        OutboundEventRing ring, InMemoryControlPlaneChannel channel, TimeSpan acceptTimeout)
+        OutboundEventRing ring, InMemoryControlPlaneChannel channel, TimeSpan acceptTimeout,
+        ServiceSupervisor? services = null)
     {
         var config = RunnerConfig.Load("""
             { "machine": { "work_root": "/tmp/docketd-forward-test" },
@@ -221,7 +302,8 @@ public sealed class RelayForwardingTests
         return new RunnerDaemon(
             "machine-fwd", config, new FakeProcessSupervisor(),
             new BackPressureMonitor(new FakeLoadReader(), config.Machine.BackPressure),
-            channel, ring, new FakeStrayReaper(0), clock, forwardAcceptTimeout: acceptTimeout);
+            channel, ring, new FakeStrayReaper(0), clock, forwardAcceptTimeout: acceptTimeout,
+            services: services);
     }
 
     private static async Task<T> WaitForEventAsync<T>(

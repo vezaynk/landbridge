@@ -11,6 +11,34 @@ internal sealed class RunnerConfigDto
 {
     public MachineDto? Machine { get; set; }
     public List<ProfileDto>? Profiles { get; set; }
+    public List<ServiceDto>? Services { get; set; }
+}
+
+// §10 operator-declared services: long-lived processes docketd supervises as its own
+// children, outside any task's process tree. Config-declared only in v1 — an
+// agent-initiated service would need a new worker tool and a new wire command.
+internal sealed class ServiceDto
+{
+    public string? Name { get; set; }
+    public List<string>? Spawn { get; set; }
+    public string? WorkingDirectory { get; set; }
+    public Dictionary<string, string>? Env { get; set; }
+    public int? Port { get; set; }
+    public ReadinessDto? Readiness { get; set; }
+    public RestartDto? Restart { get; set; }
+    public LogsDto? Logs { get; set; }
+    public string? Backend { get; set; }
+}
+
+internal sealed class ReadinessDto
+{
+    public int? TcpPort { get; set; }
+    public double? TimeoutSeconds { get; set; }
+}
+
+internal sealed class RestartDto
+{
+    public double? MaxBackoffSeconds { get; set; }
 }
 
 internal sealed class MachineDto

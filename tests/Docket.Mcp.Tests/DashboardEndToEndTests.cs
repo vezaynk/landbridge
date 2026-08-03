@@ -263,6 +263,89 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         await app.StopAsync(ct);
     }
 
+    // ── (b1b) Machine Group view: operator-declared services (§10, §12) ────────
+
+    [SkippableFact]
+    public async Task Machine_view_shows_the_services_a_machine_reports()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var ct = cts.Token;
+
+        await using var app = BuildPlane();
+        await app.StartAsync(ct);
+
+        // §10/§12: services reach the plane on the heartbeat and nowhere else. The plane
+        // stores the reported list against the connection and renders it — no
+        // persistence, no interpretation, no opinion about health.
+        var registry = app.Services.GetRequiredService<RunnerConnectionRegistry>();
+        registry.Register("svc-box", new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
+        var started = DateTimeOffset.UtcNow.AddMinutes(-20);
+        registry.ApplyHeartbeat("svc-box", new MachineHeartbeat(
+            "svc-box", Ready: true, UnderBackPressure: false, new SystemLoad(0, 0, 0),
+            RunningTasks: 0, ["default"], DateTimeOffset.UtcNow,
+            Services:
+            [
+                new ServiceStatus("web-dev", ServiceState.Running, 5173, started),
+                new ServiceStatus("flaky-api", ServiceState.Failed, 9001, null,
+                    Restarts: 4, LastExitCode: 3, LastFailureAt: DateTimeOffset.UtcNow.AddMinutes(-1)),
+            ]));
+
+        var html = await GetAuthedAsync(app, "/dashboard/machines", ct);
+        Assert.Contains("web-dev", html, StringComparison.Ordinal);
+        Assert.Contains("running", html, StringComparison.Ordinal);
+        Assert.Contains("5173", html, StringComparison.Ordinal);
+        // The failure facts an operator asked for: state, restart count, exit code.
+        Assert.Contains("flaky-api", html, StringComparison.Ordinal);
+        Assert.Contains("failed", html, StringComparison.Ordinal);
+        // Honest about what this view deliberately does not serve.
+        Assert.Contains("not served here", html, StringComparison.Ordinal);
+
+        // JSON twin carries the same facts, with the state as a readable string.
+        var json = await GetAuthedAsync(app, "/dashboard/machines?format=json", ct);
+        using var doc = JsonDocument.Parse(json);
+        var machine = doc.RootElement.EnumerateArray()
+            .Single(m => m.GetProperty("machineId").GetString() == "svc-box");
+        var services = machine.GetProperty("services");
+        Assert.Equal(2, services.GetArrayLength());
+        var failed = services.EnumerateArray()
+            .Single(s => s.GetProperty("name").GetString() == "flaky-api");
+        Assert.Equal("Failed", failed.GetProperty("state").GetString());
+        Assert.Equal(4, failed.GetProperty("restarts").GetInt32());
+        Assert.Equal(3, failed.GetProperty("lastExitCode").GetInt32());
+
+        await app.StopAsync(ct);
+    }
+
+    [SkippableFact]
+    public async Task A_heartbeat_without_services_does_not_blank_what_a_machine_reported()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var ct = cts.Token;
+
+        await using var app = BuildPlane();
+        await app.StartAsync(ct);
+
+        // Null means "this heartbeat says nothing about services" — which is what an
+        // older runner sends. Treating it as "no services" would make the view flicker
+        // against a mixed-version fleet, so the last reported list stands.
+        var registry = app.Services.GetRequiredService<RunnerConnectionRegistry>();
+        registry.Register("mixed-box", new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
+        registry.ApplyHeartbeat("mixed-box", new MachineHeartbeat(
+            "mixed-box", Ready: true, UnderBackPressure: false, new SystemLoad(0, 0, 0),
+            RunningTasks: 0, ["default"], DateTimeOffset.UtcNow,
+            Services: [new ServiceStatus("web-dev", ServiceState.Running, 5173)]));
+        registry.ApplyHeartbeat("mixed-box", new MachineHeartbeat(
+            "mixed-box", Ready: true, UnderBackPressure: false, new SystemLoad(0, 0, 0),
+            RunningTasks: 0, ["default"], DateTimeOffset.UtcNow));
+
+        var html = await GetAuthedAsync(app, "/dashboard/machines", ct);
+        Assert.Contains("web-dev", html, StringComparison.Ordinal);
+
+        await app.StopAsync(ct);
+    }
+
     // ── (b2) Machine Group view: a back-pressured, zero-task machine is visible ─
 
     [SkippableFact]

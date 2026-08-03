@@ -54,12 +54,24 @@ public sealed class RelayForwarder : IAsyncDisposable
     private readonly CancellationTokenSource _cts = new();
     private readonly ConcurrentDictionary<string, LiveForward> _live = new(StringComparer.Ordinal);
 
-    public RelayForwarder(OutboundEventRing ring, TimeSpan? acceptTimeout = null, Action<string>? log = null)
+    /// <param name="serviceOnPort">
+    /// §8.2/§8.3 refuse-at-dial: asks whether a loopback port belongs to a
+    /// docketd-supervised service and, if so, whether that service is currently up.
+    /// Returns null when this machine declares no service on the port — which must NOT
+    /// be treated as "down", because the port may legitimately belong to a
+    /// worker-started listener docketd knows nothing about.
+    /// </param>
+    public RelayForwarder(
+        OutboundEventRing ring, TimeSpan? acceptTimeout = null, Action<string>? log = null,
+        Func<int, bool?>? serviceOnPort = null)
     {
         _ring = ring;
         _acceptTimeout = acceptTimeout ?? DefaultAcceptTimeout;
         _log = log;
+        _serviceOnPort = serviceOnPort;
     }
+
+    private readonly Func<int, bool?>? _serviceOnPort;
 
     /// <summary>Live forward count — exposed so tests/diagnostics can assert no leak.</summary>
     public int ActiveForwardCount => _live.Count;
@@ -85,18 +97,20 @@ public sealed class RelayForwarder : IAsyncDisposable
 
         live.Runner = Task.Run(async () =>
         {
+            string? refusal = null;
             try
             {
                 if (command.Role == RelayTunnel.ConsumerRole)
                     await RunConsumerAsync(command, linked.Token);
                 else
-                    await RunProducerAsync(command, linked.Token);
+                    refusal = await RunProducerAsync(command, linked.Token);
             }
             finally
             {
                 // A forward closing is always reported once, whether it spliced,
-                // timed out, or failed to establish (§8.3).
-                _ring.Enqueue(new ForwardClosedEvent(command.Task, forwardId));
+                // timed out, or failed to establish (§8.3). A refusal rides along so the
+                // consumer is told why rather than just that.
+                _ring.Enqueue(new ForwardClosedEvent(command.Task, forwardId, refusal));
                 _live.TryRemove(new KeyValuePair<string, LiveForward>(forwardId, live));
                 linked.Dispose();
             }
@@ -157,8 +171,23 @@ public sealed class RelayForwarder : IAsyncDisposable
 
     // ── Producer end ────────────────────────────────────────────────────────────
 
-    private async Task RunProducerAsync(OpenForwardCommand command, CancellationToken ct)
+    private async Task<string?> RunProducerAsync(OpenForwardCommand command, CancellationToken ct)
     {
+        // §8.2 refuse-at-dial. A registration can outlive the process it advertises —
+        // and §8.2's stated hazard is not the failed connection, it is the SUCCESSFUL
+        // one: dial a port whose service has died and something else may have taken it,
+        // so the consumer forwards into the wrong stack and gets plausible wrong answers
+        // instead of an error. Nobody could close that before, because nobody knew which
+        // listener was the intended one. For a docketd-supervised service, docketd does.
+        // Only a declared-and-down service refuses; an unknown port dials as before,
+        // since it may be a worker-started listener that is none of our business.
+        if (_serviceOnPort?.Invoke(command.Port) is false)
+        {
+            var refusal = $"the service backing this registration is not running on 127.0.0.1:{command.Port}";
+            _log?.Invoke($"forward {command.ForwardId}: refused — {refusal}");
+            return refusal;
+        }
+
         // Dial the registered local service first: a service that died between
         // registration and dial must surface as forward-closed, not a hang (§8.3).
         var socket = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
@@ -170,7 +199,7 @@ public sealed class RelayForwarder : IAsyncDisposable
         {
             socket.Dispose();
             _log?.Invoke($"forward {command.ForwardId}: producer dial of 127.0.0.1:{command.Port} failed: {e.Message}");
-            return; // finally emits forward-closed
+            return null; // finally emits forward-closed
         }
 
         using (socket)
@@ -180,6 +209,8 @@ public sealed class RelayForwarder : IAsyncDisposable
             _log?.Invoke($"forward {command.ForwardId}: producer dialed 127.0.0.1:{command.Port}, tunnel open");
             await SpliceAsync(tcp, socket, ws, ct);
         }
+
+        return null;
     }
 
     // ── Tunnel + splice ──────────────────────────────────────────────────────────
