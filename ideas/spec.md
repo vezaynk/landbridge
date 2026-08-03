@@ -231,7 +231,7 @@ Additional states: `blocked_on_input`, `parked`, `canceled`. `blocked_on_input` 
 | `blocked_on_input` → `submitted` | control plane | machine liveness lost while waiting; infrastructure counter |
 | `working` → `parked` | Lead | `stop` with disposition `preserve_and_park`; park record written after the agent's wind-down |
 | `parked` → `submitted` | control plane | the awaited answer or endpoint landed; redispatch runs the full `submitted → working` checks, preferring the park record's machine and directory for transcript resume (§11) |
-| any → `canceled` | Lead, human, or control plane | disposition enum present; the control plane may cancel only on Team budget exhaustion (`disposition: budget`) |
+| any → `canceled` | Lead, human, or control plane | disposition enum present; the control plane may cancel only on Team budget exhaustion (`disposition: budget`) — **as built the budget sweep sends `stop(preserve)` rather than cancelling**, so the task follows its ordinary wind-down and the exhausted ceiling then refuses its re-dispatch, leaving it visibly stalled instead of terminal; a human raising the ceiling resumes it, which cancelling would have made impossible |
 
 No row requires reading a task description or interpreting its criteria.
 
@@ -257,7 +257,7 @@ Leaving `working` clears the task's registered services and releases its relay f
 | `namespace` | Server-assigned `team-{id}/task-{id}`. Guaranteed unique. What an agent maps it onto is convention. |
 | `workspace` | Opaque blob assigned by the Lead. Where the work happens, how it is isolated, which ports it may use. Shape defined by the skill. |
 | `team_id`, `parent_task` | Lineage. |
-| `budget` | Token ceiling, charged against the Team. Containment, not a meter (§9 check 9); also passed down as the harness-local hard cap at dispatch (§10). |
+| `budget` | The per-dispatch harness-local hard cap (§10). Containment, not a meter (§9 check 9). **As built it is a Team-level setting, not a per-task field:** the Team's configured per-dispatch cap is what each dispatch commits against the ceiling and hands the harness, so every task in a Team gets the same cap. A per-task override would need its own commitment accounting and is not built. |
 | `expected_duration` | Lead's guess. Distinguishes stuck-short from long-running. |
 | `profile` | Optional runner profile name. Exact-match routing; the control plane never interprets it. |
 | `attempt` | Server-maintained counter, incremented on every requeue and redispatch. Visible to the worker, so a dispatched agent knows it may be inheriting a dirty workspace and should inspect before trusting or overwriting (§11). |
@@ -347,7 +347,7 @@ Two gaps close for that to work:
 
 **A grant is a connection-establishment credential.** It is checked when a tunnel opens; an established splice persists until the owning task leaves `working`. A database session or websocket is never severed mid-flight by grant expiry, and no renewal path needs to exist.
 
-Per-Team byte counters and rate limits alongside the token budget.
+Per-Team rate limits alongside the token budget: the forward rate limit is enforced at grant mint (§9 check 10). Per-Team **byte counters are not built** — the choke point where they belong is marked in the splice pump, and §9's as-built note records why counting is not the whole of a byte ceiling.
 
 ### 8.4 HTTP preview layer
 
@@ -365,7 +365,7 @@ The preview lives on `*.preview.<domain>`, a different origin from the dashboard
 
 **Minted two ways (§10, §12).** The owning task's worker mints via `open_preview(name)`, receiving the URL to hand back in a report; a human mints from the §12 dashboard's registered-service list. Both produce the same mapping; the public/gated choice is set at mint. Only a registered service owned by a `working` task in the caller's Team is previewable (check 11).
 
-Preview traffic rides the same per-Team byte counters and rate limits (§9.10).
+Preview traffic rides the same per-Team forward rate limit (§9 check 10) — each browser connection mints a grant, so preview load is counted exactly like any other forward. The byte counters that check 10 also names are not built for previews either.
 
 ---
 
@@ -379,8 +379,8 @@ Preview traffic rides the same per-Team byte counters and rate limits (§9.10).
 6. One Lead per Team; takeover is explicit and logged.
 7. Ack timeout and per-task liveness timeout → requeue.
 8. Verification retries exhausted → `rejected`.
-9. Team token budget ceiling — **containment, not metering**: attribution is best-effort telemetry (§10), so the ceiling drives refuse-new-dispatch and `stop`, and the per-dispatch harness-local hard cap is the backstop that holds when telemetry is absent.
-10. Team byte allowance and forward rate limit.
+9. Team budget ceiling on **committed authorization** — containment, not metering: each dispatch commits the per-dispatch harness cap it is handed, and reaching the ceiling refuses new dispatch *and* `stop`s the Team's working tasks. Measured spend is not an input; nothing ingests it (see the as-built note below).
+10. Forward rate limit per Team per window, enforced at grant mint. A Team *byte* allowance is **not implemented** — no byte volume is measured anywhere (see the as-built note below).
 11. Forwards and previews (§8.4) resolve only to registered services in the same Team owned by a `working` task.
 12. Cancellation carries a disposition enum; `TTL=0` means immediate kill.
 13. Token exchange is strictly narrowing.
@@ -388,7 +388,24 @@ Preview traffic rides the same per-Team byte counters and rate limits (§9.10).
 
 Nothing else. Any addition that requires knowing what a task is *about* should be rejected outright.
 
-**Subagent depth is the harness's problem.** Fan-out cost is contained by check 9 instead — the budget ceiling bounds spend regardless of tree shape. Enforcement is refusing new dispatch plus `kill`, since Docket does not hold the model keys and cannot stop an in-flight call.
+**Subagent depth is the harness's problem.** Fan-out cost is contained by check 9 instead — the budget ceiling bounds authorized spend regardless of tree shape, because a subagent tree runs inside its parent dispatch and therefore inside that dispatch's committed cap. Enforcement is refusing new dispatch plus `stop`/`kill`, since Docket does not hold the model keys and cannot stop an in-flight call.
+
+**As-built reconciliation for checks 9 and 10 (2026-08-03).** Earlier drafts of both checks described enforcement against *measured* quantities. Neither quantity is measured, so this is what ships and why.
+
+**Check 9 enforces committed authorization, not spend.** Docket ingests no spend telemetry at all: it does not sit between a harness and its model provider, the plane *exports* OTel and receives none, there is no OTLP receiver, and `tool-call` events carry no token counts. So a "spend so far" column would be permanently zero, and a ceiling enforced on it would be the same lie check 9 already told when `TeamBudgetRemains` was hardcoded `true`. What *is* knowable is what Docket authorized: every dispatch hands its harness a hard per-dispatch cap (§10), so committing that cap at dispatch bounds the Team's exposure without measuring anything — and cannot be defeated by a signal that never arrives, which is exactly how a metered ceiling fails. Three consequences, each deliberate:
+- **Committed only rises.** It is never released when a task completes, because "unspent" is precisely the quantity that cannot be known, and releasing would turn a lifetime ceiling into a mere concurrency limiter — a $100 Team could run ten thousand sequential $10 tasks, which §4's "a Team owns a budget and terminates" rules out. A task that used a penny of its $10 cap still consumed $10 of ceiling. The escape valve is a human raising the ceiling, which is the control this exists to give them.
+- **The one release** is a task cancelled before it ever dispatched: no process ran, so no spend was possible, and holding that commitment would overstate authorization as badly as releasing a finished task's understates it.
+- **Charged per dispatch, not per task.** Each attempt is a fresh process that can burn the whole cap, so a requeued task commits twice. Conservative and true, and it makes requeue amplification visibly expensive rather than hidden.
+
+A Team with no ceiling configured is **unbounded**, exactly as before any of this existed — the unconfigured default is unlimited, not zero. A ceiling set without a per-dispatch cap admits work but commits nothing and hands the harness no backstop, so it can never be reached; the dashboard says so rather than implying enforcement.
+
+**The ceiling is set only by a human, from the §12 dashboard.** There is deliberately no MCP tool, and the dashboard's write refuses a Lead session even for its own Team — the one place that surface departs from "a Lead may act within its Team". A budget is the control that bounds the Lead itself, so a Lead able to raise it is enforcement living exactly where a model can reason past it (§2 principle 3). A Lead *reads* its own ceiling through `get_team_state`, because otherwise a refused `create_task` is an unexplained rejection it will simply retry against.
+
+**Measured spend attribution remains future work, and nothing depends on it.** §10's telemetry-ingest section describes the intended attribution source; until a receiver exists, it feeds nothing. Adding it later *adds* a signal — it does not change how the ceiling is enforced, which is the point of enforcing on authorization.
+
+**Check 10 ships as a forward rate limit only.** A grant is the one thing no forward can happen without, so the limit is enforced per Team per rolling window at grant mint in the control plane — the cheapest and strongest point: it needs no cooperation from a relay that may be unreachable, and it sits upstream of the thing it bounds, so no peer can outrun it. Like check 9 it counts *authorizations* (grants minted) rather than tunnels that opened, since what a peer did with a grant is not knowable. The default is deliberately generous — an §8.4 preview mints a fresh grant per browser connection, so a page load is legitimately several — because this bounds a runaway loop rather than rationing normal use.
+
+The **byte allowance half is not implemented.** The relay moves opaque bytes and reports no counters to the plane, so no byte volume is measured and there is nothing to enforce on; the single choke point where counting belongs is marked in the relay's splice pump. Two things stand between counting and a byte *ceiling*, and they are design questions rather than plumbing: a relay that dies loses its unreported tail, so the figure is a containment signal and never an invoice; and §8.3 forbids severing an established splice mid-flight, so what a reached byte ceiling should actually *do* is unresolved. Any spec text below promising per-Team byte counters describes intent, not behaviour.
 
 ---
 
@@ -535,7 +552,7 @@ A `kill` queued behind a dev server's asset traffic or a transcript backlog is a
 
 OTel from harnesses, plus tool-call hooks where the harness has them — Claude Code's hooks can POST JSON to a loopback HTTP handler, a cleaner per-task event source for `docketd` than log scraping, and hook processes inherit `DOCKET_TASK_ID` for attribution. Per-subagent lineage (`agent_id` / `parent_agent_id`) currently arrives only on beta trace telemetry — treat the subagent tree as progressive enhancement, not a given. Harnesses without equivalent signals render as "not reported" — degraded telemetry is normal, not broken.
 
-This is the *attribution* source for budgets — best-effort by construction, since Docket does not sit between the harness and the model provider and the machine is the customer's. Budget is therefore containment (§9 check 9): attribution drives refuse-new-dispatch and `stop`, and the per-dispatch harness-local hard cap (Claude Code: `--max-budget-usd`, passed by `docketd` from the task's `budget`) is the backstop that holds even when telemetry is off or gamed.
+This is the intended *attribution* source for budgets — best-effort by construction, since Docket does not sit between the harness and the model provider and the machine is the customer's. **As built it feeds nothing:** no ingest exists (the plane exports OTel and receives none; there is no OTLP receiver; `tool-call` carries no token counts), so no measured spend reaches the plane. Budget is therefore containment on *committed authorization* (§9 check 9 and its as-built note): the ceiling is charged the per-dispatch harness-local hard cap (Claude Code: `--max-budget-usd`, passed by `docketd` from the task's `budget`) at each dispatch, which is simultaneously the backstop that holds even when telemetry is off or gamed. When ingest does arrive it adds a signal for humans to read; it does not become the thing enforced, precisely so enforcement cannot be defeated by turning telemetry off.
 
 ### Completion is adjudicated, not webhooked
 
@@ -618,7 +635,7 @@ On lease-renewal failure the runner halts its agents. Prefer a stall over two ma
 
 **Machine Group view** — machines, running tasks and back-pressure state, heartbeat age, tasks currently running with owning Team, subagent tree expandable beneath each task. Subagents are children in a tree, not peers: no lease, die with their parent, columns are duration and token spend.
 
-**Team view** — tasks by state, budget and byte burn, registered services, open input requests, last activity, whether a Lead is attached and who, and **parks per task** — each park is a kill-and-resume of harness context, so this is the number that says whether decomposition is starving on human attention. Doubles as the reattachment surface (§4), so it must be consumable as structured data by a Lead. Sorted so idle Teams drift to the bottom.
+**Team view** — tasks by state, budget (ceiling, committed authorization, remaining, and whether exhausted — never measured spend, §9 check 9; the human's set-limits form lives here and is refused to a Lead), byte burn (an empty slot: not measured, §9 check 10), registered services, open input requests, last activity, whether a Lead is attached and who, and **parks per task** — each park is a kill-and-resume of harness context, so this is the number that says whether decomposition is starving on human attention. Doubles as the reattachment surface (§4), so it must be consumable as structured data by a Lead. Sorted so idle Teams drift to the bottom.
 
 **Human inbox** — everything waiting on a person across all Teams: permission requests, auth failures, questions, review confirmations (§7), and **tasks awaiting review**. Without it, `review` mode becomes a place work goes to die.
 
