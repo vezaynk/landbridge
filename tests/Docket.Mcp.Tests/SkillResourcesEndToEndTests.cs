@@ -167,8 +167,7 @@ public sealed class SkillResourcesEndToEndTests(PostgresFixture pg) : IAsyncLife
         // Mirrors Program.cs wiring, pointed at the fixture's ephemeral database.
         builder.Services.AddDbContext<DocketDbContext>(o =>
             o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
-        builder.Services.AddScoped<TaskStore>();
-        builder.Services.AddScoped<TeamBudgetService>(); // §9.9: the store commits dispatch budget through it
+        builder.Services.AddDocketStore();
         builder.Services.AddScoped<RelayGrantService>();
         builder.Services.AddScoped<PreviewMappingService>(); // §8.4: WorkerTools.open_preview
         builder.Services.AddScoped<TokenService>();

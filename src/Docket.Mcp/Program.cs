@@ -37,11 +37,9 @@ var connectionString = builder.Configuration.GetConnectionString("Docket")
 // write path (spec §15).
 builder.Services.AddDbContext<DocketDbContext>(o =>
     o.UseNpgsql(connectionString).UseSnakeCaseNamingConvention());
-builder.Services.AddScoped<TaskStore>();
-// §9.9 budget accounting: scoped alongside the store, which commits through it at dispatch.
-builder.Services.AddScoped<TeamBudgetService>();
-// §9.10: per-Team relay byte accounting, fed by the relay's own plane-facing usage report.
-builder.Services.AddScoped<TeamForwardUsageService>();
+// The §15 write path plus the §9.9 budget accounting it commits through at dispatch — one
+// registration, because a store without the accounting silently commits nothing.
+builder.Services.AddDocketStore();
 builder.Services.AddScoped<TokenService>();
 builder.Services.AddScoped<RelayGrantService>();
 // §8.4 HTTP preview: the mapping store (resolve/create) and the per-connection
