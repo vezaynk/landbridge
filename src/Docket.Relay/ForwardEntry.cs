@@ -10,9 +10,16 @@ namespace Docket.Relay;
 /// <see cref="ForwardRegistry"/> and owned by it; all mutation is serialized
 /// through <see cref="Gate"/>.
 /// </summary>
-public sealed class ForwardEntry
+public sealed class ForwardEntry(
+    string forwardId = "", IForwardUsageReporter? usage = null)
 {
     private const int BufferSize = 64 * 1024;
+
+    // §9.10: this forward's byte counter, resolved ONCE here rather than per frame. The pump
+    // does a single Interlocked.Add into it — no lookup, no allocation, in the hottest loop in
+    // the system. Null only for a directly-constructed entry with no reporter (tests).
+    private readonly ForwardByteCounter? _bytes = usage?.CounterFor(forwardId);
+    private readonly IForwardUsageReporter? _usage = usage;
 
     /// <summary>
     /// How long teardown lets the close handshake complete — both ends replying
@@ -162,9 +169,16 @@ public sealed class ForwardEntry
         {
             // Expected only if a stuck peer forced the abort above.
         }
+
+        // §9.10 on-close report: a short-lived forward would otherwise finish entirely between
+        // two flush ticks and never be counted. Best-effort like every other part of this —
+        // FlushAsync swallows its own failures, and teardown must not depend on a reachable
+        // plane.
+        if (_usage is not null)
+            await _usage.FlushAsync(CancellationToken.None);
     }
 
-    private static async Task PumpAsync(WebSocket from, WebSocket to, CancellationToken ct)
+    private async Task PumpAsync(WebSocket from, WebSocket to, CancellationToken ct)
     {
         var buffer = new byte[BufferSize];
         try
@@ -175,24 +189,23 @@ public sealed class ForwardEntry
                 if (result.MessageType == WebSocketMessageType.Close)
                     return;
 
-                // ── byte-counter seam (spec §8.3, enforcement §9 check 10) ──
-                // The RATE-LIMIT half of check 10 now ships, but NOT here: it is
-                // enforced plane-side at grant mint (RelayGrantService.MintAsync),
-                // because a grant is the one thing no forward can happen without,
-                // so the limit holds even when this relay is unreachable and cannot
-                // be outrun by a peer. Deliberately not duplicated here.
-                //
-                // The per-Team BYTE COUNTER is still DEFERRED, and this remains the
-                // single choke point where it belongs: meter result.Count per
-                // direction and report it to the plane over the plane-facing HTTP
-                // contract (the /relay/validate neighbourhood — never the frozen
-                // runner wire), periodic plus on-close, best-effort. Counting is all
-                // it would do; the relay moves opaque bytes without interpreting
-                // them (design principle 1), and a relay that dies loses the tail,
-                // which is why this is a containment signal and not an invoice.
-                // Enforcing a byte CEILING from it would additionally need a
-                // plane-side column and a severing decision that §8.3 currently
-                // forbids mid-splice.
+                // ── the byte-counter choke point (spec §8.3, §9 check 10) ──
+                // Counted, never gated. The relay still moves opaque bytes without
+                // interpreting them (design principle 1) — it only says how many, and
+                // forwards them regardless. Nothing here can refuse a frame:
+                //   - the RATE LIMIT half of check 10 is enforced plane-side at grant
+                //     mint (RelayGrantService.MintAsync), because a grant is the one
+                //     thing no forward can happen without, so it holds even when this
+                //     relay is unreachable and cannot be outrun by a peer;
+                //   - a byte CEILING is deliberately absent: §8.3 forbids severing an
+                //     established splice mid-flight, so what a reached ceiling should
+                //     do is unresolved, and guessing here would break that promise.
+                // Reported to the plane over the plane-facing HTTP contract (the
+                // /relay/validate neighbourhood — never the frozen runner wire, §10),
+                // periodically and on close, best-effort.
+                if (_bytes is not null)
+                    Interlocked.Add(ref _bytes.Bytes, result.Count);
+
                 await to.SendAsync(
                     new ArraySegment<byte>(buffer, 0, result.Count),
                     result.MessageType, result.EndOfMessage, ct);

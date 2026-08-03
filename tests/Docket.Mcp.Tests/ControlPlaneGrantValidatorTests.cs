@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using Docket.ControlPlane;
 using Docket.ControlPlane.Tests;
 using Docket.Core;
 using Docket.Relay;
@@ -162,5 +163,119 @@ public sealed class ControlPlaneGrantValidatorTests(PostgresFixture pg) : IAsync
 
         await relay.StopAsync(ct);
         await plane.StopAsync(ct);
+    }
+
+    // ── §9.10 byte accounting over the same plane-facing contract ─────────────
+
+    [SkippableFact]
+    public async Task Spliced_bytes_reach_the_plane_and_land_on_the_owning_team()
+    {
+        // The whole §9.10 path with nothing faked: a real relay counts a real splice, reports to
+        // the real plane over /relay/usage, and the plane attributes the bytes to the Team that
+        // owns the forward id it minted. The relay is never told whose bytes these are.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var ct = cts.Token;
+
+        var team = TeamId.New();
+        await RelayGrantTestKit.RegisterWorkingServiceAsync(pg, team, "db", ct);
+        var issued = await RelayGrantTestKit.IssueGrantAsync(pg, team, "db", ct);
+
+        await using var plane = RelayGrantTestKit.BuildPlane(pg.ConnectionString, Bearer);
+        await plane.StartAsync(ct);
+        await using var relay = RelayGrantTestKit.BuildRelay(RelayGrantTestKit.BaseUri(plane).ToString(), Bearer);
+        await relay.StartAsync(ct);
+
+        var forwardId = issued.ForwardId.ToString();
+        var tunnel = RelayGrantTestKit.TunnelUri(relay);
+        using var consumer = await RelayGrantTestKit.ConnectTunnelAsync(tunnel, forwardId, issued.Grant, "consumer", ct);
+        using var producer = await RelayGrantTestKit.ConnectTunnelAsync(tunnel, forwardId, issued.Grant, "producer", ct);
+
+        var payload = new byte[20 * 1024];
+        Random.Shared.NextBytes(payload);
+        await RelayGrantTestKit.SendAsync(consumer, payload, ct);
+        var got = await RelayGrantTestKit.ReceiveExactlyAsync(producer, payload.Length, ct);
+        Assert.True(payload.AsSpan().SequenceEqual(got), "consumer→producer bytes differ");
+
+        // Closing runs the on-close flush — the reason a forward shorter than one flush interval
+        // is counted at all.
+        await consumer.CloseOutputAsync(System.Net.WebSockets.WebSocketCloseStatus.NormalClosure, "done", ct);
+
+        await using var db = pg.NewContext();
+        var usage = new TeamForwardUsageService(db, TimeProvider.System);
+        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(30);
+        TeamForwardUsageView view;
+        do
+        {
+            db.ChangeTracker.Clear();
+            view = await usage.ReadAsync(team, ct);
+            if (view.ForwardedBytes >= payload.Length)
+                break;
+            await Task.Delay(50, ct);
+        }
+        while (DateTimeOffset.UtcNow < deadline);
+
+        Assert.True(view.Measured, "the plane never received a byte report");
+        Assert.Equal(payload.Length, view.ForwardedBytes);
+
+        await relay.StopAsync(ct);
+        await plane.StopAsync(ct);
+    }
+
+    [SkippableFact]
+    public async Task Usage_reporting_is_bearer_gated_exactly_like_validation()
+    {
+        // Same contract, same door. The endpoint records a number a human reads, but it is still
+        // an unauthenticated caller's chance to write to the plane, so it fails closed with no
+        // bearer configured and refuses a wrong one.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var ct = cts.Token;
+        var body = new { reports = new[] { new { forwardId = Guid.NewGuid().ToString(), bytes = 10L } } };
+
+        // No bearer configured: refuse everything, loudly (503).
+        await using (var plane = RelayGrantTestKit.BuildPlane(pg.ConnectionString, relayValidationBearer: null))
+        {
+            await plane.StartAsync(ct);
+            using var client = new HttpClient();
+            var res = await client.PostAsJsonAsync(new Uri(RelayGrantTestKit.BaseUri(plane), "relay/usage"), body, ct);
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, res.StatusCode);
+            await plane.StopAsync(ct);
+        }
+
+        await using (var plane = RelayGrantTestKit.BuildPlane(pg.ConnectionString, Bearer))
+        {
+            await plane.StartAsync(ct);
+            using var client = new HttpClient();
+            var url = new Uri(RelayGrantTestKit.BaseUri(plane), "relay/usage");
+
+            using var wrong = new HttpRequestMessage(HttpMethod.Post, url)
+            {
+                Content = JsonContent.Create(body),
+            };
+            wrong.Headers.Authorization = new AuthenticationHeaderValue("Bearer", "the-wrong-secret");
+            Assert.Equal(HttpStatusCode.Unauthorized, (await client.SendAsync(wrong, ct)).StatusCode);
+
+            // Right bearer, unknown forward id: 200 with nothing attributed — a best-effort report
+            // racing a grant's lifetime is dropped, not an error, and the count says so.
+            using var unknown = new HttpRequestMessage(HttpMethod.Post, url)
+            {
+                Content = JsonContent.Create(body),
+            };
+            unknown.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Bearer);
+            var ok = await client.SendAsync(unknown, ct);
+            Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
+            Assert.Contains("\"attributed\":0", await ok.Content.ReadAsStringAsync(ct));
+
+            // A malformed body is a 400 rather than a silent no-op.
+            using var malformed = new HttpRequestMessage(HttpMethod.Post, url)
+            {
+                Content = JsonContent.Create(new { nothing = true }),
+            };
+            malformed.Headers.Authorization = new AuthenticationHeaderValue("Bearer", Bearer);
+            Assert.Equal(HttpStatusCode.BadRequest, (await client.SendAsync(malformed, ct)).StatusCode);
+
+            await plane.StopAsync(ct);
+        }
     }
 }

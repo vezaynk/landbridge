@@ -9,10 +9,15 @@ namespace Docket.Relay;
 /// arrives and removed the moment the splice ends or the wait times out, so a
 /// forward id can never leak. Concurrent forward ids are fully independent.
 /// </summary>
-public sealed class ForwardRegistry
+public sealed class ForwardRegistry(IForwardUsageReporter? usage = null)
 {
     private readonly ConcurrentDictionary<string, ForwardEntry> _entries =
         new(StringComparer.Ordinal);
+
+    // §9.10: handed to each entry so its splice pump can count bytes against this forward id.
+    // Optional so a directly-constructed registry (tests, a relay with no plane) still works;
+    // absent, nothing is counted and nothing is reported.
+    private readonly IForwardUsageReporter? _usage = usage;
 
     /// <summary>Live forward-id count — exposed so tests can assert no leak.</summary>
     public int ActiveForwardCount => _entries.Count;
@@ -28,7 +33,7 @@ public sealed class ForwardRegistry
     {
         while (true)
         {
-            var candidate = _entries.GetOrAdd(forwardId, static _ => new ForwardEntry());
+            var candidate = _entries.GetOrAdd(forwardId, id => new ForwardEntry(id, _usage));
             lock (candidate.Gate)
             {
                 // Raced with a Release that evicted this instance; the dictionary

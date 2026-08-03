@@ -31,7 +31,9 @@ internal sealed class RelayTestHost : IAsyncDisposable
     }
 
     public static async Task<RelayTestHost> StartAsync(
-        IGrantValidator validator, TimeSpan? pairWaitTimeout = null)
+        IGrantValidator validator,
+        TimeSpan? pairWaitTimeout = null,
+        IForwardUsageReporter? usage = null)
     {
         var builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
@@ -39,6 +41,10 @@ internal sealed class RelayTestHost : IAsyncDisposable
 
         // Register the test validator first so AddRelay's TryAddSingleton no-ops.
         builder.Services.AddSingleton(validator);
+        // Same trick for the §9.10 byte reporter: registered first, so AddRelay leaves it alone
+        // and the splice pumps count into the test's own instance.
+        if (usage is not null)
+            builder.Services.AddSingleton(usage);
         builder.Services.AddRelay(builder.Configuration);
 
         // PostConfigure runs after AddRelay's .Bind(), so the override wins over

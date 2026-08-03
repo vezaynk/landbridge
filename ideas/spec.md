@@ -347,7 +347,7 @@ Two gaps close for that to work:
 
 **A grant is a connection-establishment credential.** It is checked when a tunnel opens; an established splice persists until the owning task leaves `working`. A database session or websocket is never severed mid-flight by grant expiry, and no renewal path needs to exist.
 
-Per-Team rate limits alongside the token budget: the forward rate limit is enforced at grant mint (§9 check 10). Per-Team **byte counters are not built** — the choke point where they belong is marked in the splice pump, and §9's as-built note records why counting is not the whole of a byte ceiling.
+Per-Team accounting alongside the token budget (§9 check 10): the forward rate limit is enforced at grant mint, and the relay counts the bytes it splices and reports them to the plane over the plane-facing HTTP contract. The counting gates nothing — an established splice is never severed, so there is no byte allowance to breach; §9's as-built note records why.
 
 ### 8.4 HTTP preview layer
 
@@ -365,7 +365,7 @@ The preview lives on `*.preview.<domain>`, a different origin from the dashboard
 
 **Minted two ways (§10, §12).** The owning task's worker mints via `open_preview(name)`, receiving the URL to hand back in a report; a human mints from the §12 dashboard's registered-service list. Both produce the same mapping; the public/gated choice is set at mint. Only a registered service owned by a `working` task in the caller's Team is previewable (check 11).
 
-Preview traffic rides the same per-Team forward rate limit (§9 check 10) — each browser connection mints a grant, so preview load is counted exactly like any other forward. The byte counters that check 10 also names are not built for previews either.
+Preview traffic rides the same per-Team accounting as any other forward (§9 check 10): each browser connection mints a grant, so preview load counts against the forward rate limit, and its bytes are counted and reported like any other splice.
 
 ---
 
@@ -380,7 +380,7 @@ Preview traffic rides the same per-Team forward rate limit (§9 check 10) — ea
 7. Ack timeout and per-task liveness timeout → requeue.
 8. Verification retries exhausted → `rejected`.
 9. Team budget ceiling on **committed authorization** — containment, not metering: each dispatch commits the per-dispatch harness cap it is handed, and reaching the ceiling refuses new dispatch *and* `stop`s the Team's working tasks. Measured spend is not an input; nothing ingests it (see the as-built note below).
-10. Forward rate limit per Team per window, enforced at grant mint. A Team *byte* allowance is **not implemented** — no byte volume is measured anywhere (see the as-built note below).
+10. Forward rate limit per Team per window, enforced at grant mint — the enforcing half. Per-Team relay bytes are **measured and reported, but nothing is enforced on them**: there is no byte *allowance*, because §8.3 forbids severing an established splice (see the as-built note below).
 11. Forwards and previews (§8.4) resolve only to registered services in the same Team owned by a `working` task.
 12. Cancellation carries a disposition enum; `TTL=0` means immediate kill.
 13. Token exchange is strictly narrowing.
@@ -405,7 +405,13 @@ A Team with no ceiling configured is **unbounded**, exactly as before any of thi
 
 **Check 10 ships as a forward rate limit only.** A grant is the one thing no forward can happen without, so the limit is enforced per Team per rolling window at grant mint in the control plane — the cheapest and strongest point: it needs no cooperation from a relay that may be unreachable, and it sits upstream of the thing it bounds, so no peer can outrun it. Like check 9 it counts *authorizations* (grants minted) rather than tunnels that opened, since what a peer did with a grant is not knowable. The default is deliberately generous — an §8.4 preview mints a fresh grant per browser connection, so a page load is legitimately several — because this bounds a runaway loop rather than rationing normal use.
 
-The **byte allowance half is not implemented.** The relay moves opaque bytes and reports no counters to the plane, so no byte volume is measured and there is nothing to enforce on; the single choke point where counting belongs is marked in the relay's splice pump. Two things stand between counting and a byte *ceiling*, and they are design questions rather than plumbing: a relay that dies loses its unreported tail, so the figure is a containment signal and never an invoice; and §8.3 forbids severing an established splice mid-flight, so what a reached byte ceiling should actually *do* is unresolved. Any spec text below promising per-Team byte counters describes intent, not behaviour.
+**Bytes are measured; no byte allowance is enforced.** The relay counts every byte it splices, at the one choke point in its pump, and reports per-forward totals to the control plane over the plane-facing HTTP contract that already carries grant validation (`/relay/usage`, same shared bearer) — deliberately **not** the frozen runner wire of §10, which the relay does not speak. The plane attributes those bytes to Teams through the forward ids it minted, so the relay never learns whose traffic it is moving; it still moves opaque bytes and interprets nothing, it only says how many.
+
+Two properties keep that number honest, and both are why it is a containment signal rather than an invoice:
+- **Best-effort.** Reporting is periodic plus once on close, so the figure trails live traffic by up to one interval and a relay that dies loses its unsent tail. The Team's view therefore carries the timestamp of the last report, and an unmeasured Team is distinguishable from one measured at zero — an absence of measurement is not a measurement of no traffic.
+- **Counted, never gated.** Nothing in the splice pump can refuse a frame. There is no byte ceiling, because §8.3 forbids severing an established splice mid-flight — a database session or websocket is never cut by policy once spliced — so what a reached byte ceiling should actually *do* remains unresolved, and guessing at the pump would break that promise. Bytes bound nothing today; the *forward rate limit* is what bounds a Team's relay use.
+
+This is the one quantity in §9's budget story that is genuinely measured rather than authorized, which is exactly why it lives in its own table rather than beside check 9's committed ceiling: putting a measured number next to an authorized one invites the confusion this note exists to prevent.
 
 ---
 
@@ -641,7 +647,7 @@ On lease-renewal failure the runner halts its agents. Prefer a stall over two ma
 
 **Machine Group view** — machines, running tasks and back-pressure state, heartbeat age, tasks currently running with owning Team, subagent tree expandable beneath each task. Subagents are children in a tree, not peers: no lease, die with their parent, columns are duration and token spend.
 
-**Team view** — tasks by state, budget (ceiling, committed authorization, remaining, and whether exhausted — never measured spend, §9 check 9; the human's set-limits form lives here and is refused to a Lead), byte burn (an empty slot: not measured, §9 check 10), registered services, open input requests, last activity, whether a Lead is attached and who, and **parks per task** — each park is a kill-and-resume of harness context, so this is the number that says whether decomposition is starving on human attention. Doubles as the reattachment surface (§4), so it must be consumable as structured data by a Lead. Sorted so idle Teams drift to the bottom.
+**Team view** — tasks by state, budget (ceiling, committed authorization, remaining, and whether exhausted — never measured spend, §9 check 9; the human's set-limits form lives here and is refused to a Lead), relay byte burn (measured, but best-effort and enforcing nothing — shown with the age of its last report, and "not reported" rather than zero when no relay has spoken, §9 check 10), registered services, open input requests, last activity, whether a Lead is attached and who, and **parks per task** — each park is a kill-and-resume of harness context, so this is the number that says whether decomposition is starving on human attention. Doubles as the reattachment surface (§4), so it must be consumable as structured data by a Lead. Sorted so idle Teams drift to the bottom.
 
 **Human inbox** — everything waiting on a person across all Teams: permission requests, auth failures, questions, review confirmations (§7), and **tasks awaiting review**. Without it, `review` mode becomes a place work goes to die.
 

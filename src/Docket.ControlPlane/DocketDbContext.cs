@@ -18,6 +18,7 @@ public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) :
     public DbSet<PreviewMappingRow> PreviewMappings => Set<PreviewMappingRow>();
     public DbSet<OAuthAuthorizationCodeRow> OAuthAuthorizationCodes => Set<OAuthAuthorizationCodeRow>();
     public DbSet<TeamBudgetRow> TeamBudgets => Set<TeamBudgetRow>();
+    public DbSet<TeamForwardUsageRow> TeamForwardUsage => Set<TeamForwardUsageRow>();
 
     /// <summary>The channel dispatch/transition NOTIFYs land on (§3.1 LISTEN/NOTIFY).</summary>
     public const string EventChannel = "docket_task_events";
@@ -180,6 +181,14 @@ public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) :
             e.ToTable("team_budgets");
             // The Team id IS the key: one ceiling per Team, so the row cannot be
             // duplicated and a concurrent commit contends on a single row (§9.9).
+            e.HasKey(t => t.TeamId);
+        });
+
+        b.Entity<TeamForwardUsageRow>(e =>
+        {
+            e.ToTable("team_forward_usage");
+            // Same shape and same reason as team_budgets: one row per Team, so concurrent
+            // reports from different relays contend on a single row (§9.10).
             e.HasKey(t => t.TeamId);
         });
     }

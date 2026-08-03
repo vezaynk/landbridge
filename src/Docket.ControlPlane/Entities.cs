@@ -371,6 +371,41 @@ public sealed class TaskEventRow
 /// may <em>read</em> it (<c>get_team_state</c>) — seeing your own ceiling is how you
 /// plan, and how you explain why dispatch stopped.</para>
 /// </summary>
+/// <summary>
+/// Bytes a Team has moved through relay forwards, spec §9 check 10 / §9.10 — <b>accounting,
+/// not enforcement</b>.
+///
+/// <para>Deliberately its own table rather than columns on <see cref="TeamBudgetRow"/>: the
+/// budget row is about authorization Docket <em>granted</em>, and byte volume is the one
+/// quantity here that is actually <em>measured</em>. Mixing them would put a measured number
+/// next to the committed ceiling and invite exactly the confusion §9's as-built note exists to
+/// prevent — and would mean a Team acquired a "budget" merely because bytes flowed.</para>
+///
+/// <para><b>Nothing is enforced on this.</b> No ceiling is checked against it, because §8.3
+/// forbids severing an established splice mid-flight, so what a reached byte ceiling should
+/// actually do is an unresolved design question. What this gives a human is visibility — the
+/// §12 Team view's byte burn — and it is honestly <b>best-effort</b>: the relay reports
+/// asynchronously, so a relay that dies loses its unreported tail. A containment signal, never
+/// an invoice.</para>
+///
+/// <para><see cref="ForwardedBytes"/> only ever increases, like
+/// <see cref="TeamBudgetRow.CommittedUsd"/> and for a simpler reason: bytes already moved
+/// cannot un-move.</para>
+/// </summary>
+public sealed class TeamForwardUsageRow
+{
+    public Guid TeamId { get; set; }
+
+    /// <summary>Total bytes spliced in both directions across all of the Team's forwards.
+    /// Both directions summed, because an allowance would bound traffic moved rather than
+    /// distinguish ingress from egress.</summary>
+    public long ForwardedBytes { get; set; }
+
+    /// <summary>When the last report landed — the honesty marker on a best-effort figure, so a
+    /// reader can see how stale it is rather than trusting it as current.</summary>
+    public DateTimeOffset UpdatedAt { get; set; }
+}
+
 public sealed class TeamBudgetRow
 {
     /// <summary>The Team this ceiling governs; the primary key (one row per Team).</summary>

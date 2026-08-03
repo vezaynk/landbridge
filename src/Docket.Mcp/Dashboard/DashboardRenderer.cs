@@ -106,9 +106,9 @@ internal static class DashboardRenderer
             sb.Append($"<td class=\"num\">{t.TotalParks}</td>");
             sb.Append($"<td class=\"num\">{t.ServiceCount}</td>");
             sb.Append($"<td class=\"num\">{t.OpenInputRequests}</td>");
-            // Budget is committed authorization, not measured spend (§9.9). Byte burn has
-            // no source yet.
-            sb.Append($"<td>{BudgetCell(t.Budget)}</td><td class=\"nt\">n/a</td>");
+            // Two different kinds of number: budget is committed authorization (§9.9),
+            // byte burn is measured but best-effort (§9.10).
+            sb.Append($"<td>{BudgetCell(t.Budget)}</td><td>{ByteBurnCell(t.ForwardUsage)}</td>");
             sb.Append($"<td>{E(Age(t.LastActivity, now))}</td>");
             sb.Append("</tr>");
         }
@@ -136,7 +136,7 @@ internal static class DashboardRenderer
         sb.Append(Metric(team.Services.Count.ToString(), "services"));
         sb.Append(Metric(team.OpenInputRequests.Count.ToString(), "open requests"));
         sb.Append(BudgetMetric(team.Budget));
-        sb.Append($"<div class=\"metric\"><div class=\"n nt\">n/a</div><div class=\"l\">byte burn</div></div>");
+        sb.Append(ByteBurnMetric(team.ForwardUsage));
         sb.Append("</section>");
 
         sb.Append(BudgetSection(team, isHuman));
@@ -358,6 +358,60 @@ internal static class DashboardRenderer
             : E(amounts);
     }
 
+    /// <summary>
+    /// A byte count in the largest unit that keeps it readable. Binary units, because these are
+    /// bytes moved through a socket, and 1024-based is what every other tool an operator will
+    /// compare this against reports.
+    /// </summary>
+    private static string Bytes(long bytes)
+    {
+        string[] units = ["B", "KiB", "MiB", "GiB", "TiB"];
+        double value = bytes;
+        var unit = 0;
+        while (value >= 1024 && unit < units.Length - 1)
+        {
+            value /= 1024;
+            unit++;
+        }
+        return unit == 0
+            ? $"{bytes} B"
+            : $"{value.ToString(value < 10 ? "0.0" : "0", CultureInfo.InvariantCulture)} {units[unit]}";
+    }
+
+    /// <summary>
+    /// Relay bytes a Team has moved (§9.10). An unmeasured Team reads "not reported" rather than
+    /// "0 B": no relay has spoken, which is an absence of data and not a measurement of no
+    /// traffic — the distinction an operator needs before concluding a Team is quiet.
+    /// </summary>
+    private static string ByteBurnCell(TeamForwardUsageView? usage) =>
+        usage is { Measured: true }
+            ? E(Bytes(usage.ForwardedBytes))
+            : "<span class=\"nt\" title=\"no relay has reported\">not reported</span>";
+
+    /// <summary>
+    /// The relay-bytes line in the Team's budget section (§9.10). Says three things an operator
+    /// must not confuse with the ceiling above it: this one is <em>measured</em>, it is
+    /// best-effort so it trails live traffic and loses a dead relay's tail, and <em>nothing is
+    /// enforced on it</em> — §8.3 forbids cutting an established splice, so there is no byte
+    /// ceiling to reach. The report age is shown rather than implied.
+    /// </summary>
+    private static string RelayBytesNote(TeamForwardUsageView? usage) =>
+        usage is { Measured: true }
+            ? $"<p class=\"nt\">Relay bytes forwarded: <strong>{E(Bytes(usage.ForwardedBytes))}</strong>, " +
+              $"last reported {E(usage.ReportedAt?.ToString("u", CultureInfo.InvariantCulture) ?? "—")}. " +
+              "Measured — unlike the ceiling above — but best-effort: the relay reports periodically, so this " +
+              "trails live traffic and a relay that dies loses its unsent tail. Nothing is enforced on it; " +
+              "an established splice is never cut mid-flight (§8.3, §9 check 10).</p>"
+            : "<p class=\"nt\">Relay bytes forwarded: not reported — no relay has sent a count for this Team. " +
+              "An absence of measurement, not a measurement of zero (§9 check 10).</p>";
+
+    /// <summary>The byte-burn slot in the Team detail metrics strip (§9.10).</summary>
+    private static string ByteBurnMetric(TeamForwardUsageView? usage) =>
+        usage is { Measured: true }
+            ? $"<div class=\"metric\"><div class=\"n\">{E(Bytes(usage.ForwardedBytes))}</div>" +
+              "<div class=\"l\">byte burn</div></div>"
+            : "<div class=\"metric\"><div class=\"n nt\">n/a</div><div class=\"l\">byte burn</div></div>";
+
     /// <summary>The budget slot in the Team detail metrics strip: what is left to authorize.</summary>
     private static string BudgetMetric(TeamBudgetView? budget) =>
         budget?.Remaining is { } remaining
@@ -413,6 +467,7 @@ internal static class DashboardRenderer
             ? BudgetLimitsForm(team)
             : "<p class=\"nt\">Read-only for this session. Only a human operator can change a ceiling — a Lead " +
               "that could raise its own limit is enforcement where a model can reason past it (§2 principle 3).</p>");
+        sb.Append(RelayBytesNote(team.ForwardUsage));
         sb.Append("</section>");
         return sb.ToString();
     }
