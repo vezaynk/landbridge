@@ -35,11 +35,10 @@ skill guidance, never in the data model.
 | `Docket.Mcp` | The ASP.NET **host** (`docket` + `docket-mcp`): the MCP tool surface agents connect to, the `/runner` WebSocket, OAuth/enrollment/relay-validate HTTP endpoints, and the §12 web dashboard. One process, one Postgres, one Instance. |
 | `Docket.Runner` | `docketd`, the per-machine **runner daemon**: process supervision, machine-credential enroll/refresh, heartbeat and event relay, stray-process cleanup, and the relay data planes. Config-driven; contains no harness knowledge. Outbound connections only. |
 | `Docket.Relay` | `docket-relay`, a standalone authenticated **byte-splice relay** (spec §8.3). Pairs two tunnels by forward id and moves opaque bytes; validates grants against the control plane. Separately deployable. |
+| `Docket.Preview` | The §8.4 **HTTP preview frontend**: wildcard TLS, Host-header routing to an opaque label, and a byte-splice through the *unchanged* relay so cookies and absolute paths are never rewritten. A separate module on top of the TCP primitive, not a change to it. |
+| `Docket.Meta` | `docket-meta`, the human-only **provisioning control panel** (spec §3): a resumable saga that stands up an Instance — network, Postgres, `docket-mcp`, `docket-relay` — across a pool of Docker hosts, over its own Postgres. Structurally not an MCP server; no agent access. |
 | `Docket.AppHost` | .NET Aspire orchestrator for the **local dev loop** — brings the whole system up with one command. Dev-time only; not a production path. |
 | `Docket.ServiceDefaults` | Shared Aspire wiring: OpenTelemetry (traces/metrics/logs), health checks, service discovery, HTTP resilience. |
-
-`docket-meta` (the provisioning service, spec §3) is **not built** — it is a
-future component with no code on this branch.
 
 ## Quickstart
 
@@ -55,7 +54,11 @@ One command brings up the full Lead → plane → runner → worker loop:
 - a managed **Postgres** container (persistent volume, so data survives restarts),
 - the **control plane / MCP host** (`Docket.Mcp`) at `http://127.0.0.1:5000`, migrated and dev-seeded,
 - a real **`docketd`** runner, enrolled via a dev-seeded machine token and connected back to `/runner`,
-- **`docket-relay`** at `http://127.0.0.1:5100`.
+- **`docket-relay`** at `http://127.0.0.1:5100`,
+- the **preview frontend** (`Docket.Preview`), plaintext in the loop — minting a URL needs `open_preview` or the dashboard, so it idles until you use it.
+
+`docket-meta` is **not** in the dev loop: it provisions whole Instances and runs
+standalone with its own Postgres. See **[docs/META.md](docs/META.md)**.
 
 Completion is Lead-adjudicated (spec §7, §9 check 4): a task reaches `verifying`, and a Lead completes it with `submit_review` — there is no verifier process in the loop.
 
@@ -74,8 +77,15 @@ worker is a scripted, no-LLM harness (`Docket.WorkerHarness`) that exercises the
 full protocol; swapping in a real `claude -p` is a config-only change documented
 in `docs/RUNNING.md`.
 
-See **[docs/RUNNING.md](docs/RUNNING.md)** for the operator/developer guide and
-**[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** for how the pieces fit.
+Guides: **[docs/RUNNING.md](docs/RUNNING.md)** (operator/developer, config
+reference, running `docketd` as a service),
+**[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** (how the pieces fit),
+**[docs/META.md](docs/META.md)** (provisioning Instances, images, secret-key
+rotation), **[docs/PREVIEW-TLS.md](docs/PREVIEW-TLS.md)** (wildcard certs via
+lego), **[docs/TELEMETRY.md](docs/TELEMETRY.md)** (seeing harness token/cost
+usage). Runner config lives in
+[`ideas/skills/references/runner-config.md`](ideas/skills/references/runner-config.md)
+— read its **Event relay** section before writing a profile.
 
 ## Tests
 
@@ -86,50 +96,86 @@ dotnet test tests/Docket.Runner.Tests --no-build -c Release        # process sup
 # ...and so on per project
 ```
 
-CI runs the suites in **two workflows** because they have different needs:
+CI runs in **three workflows** because they have different needs:
 
-- **`.github/workflows/ci.yml`** (ubuntu only) builds the solution and runs every
-  suite, including the two that need Postgres — `Docket.ControlPlane.Tests` and
-  `Docket.Mcp.Tests` — against a `postgres:16` service container. GitHub-hosted
-  service containers are Linux-only, and these suites are not platform-sensitive,
-  so they live here. Each Postgres suite gets its own database
-  (`docket_cp`, `docket_mcp`) via `DOCKET_TEST_PG`.
+- **`.github/workflows/ci.yml`** (ubuntu only) builds the solution and runs the
+  suites needing Postgres — `ControlPlane`, `Mcp`, `Meta`, `MultiMachine` — against
+  a `postgres:16` service container, each with its own database via `DOCKET_TEST_PG`
+  (`docket_cp`, `docket_mcp`, `docket_meta`, `docket_multimachine`). GitHub-hosted
+  service containers are Linux-only. `Meta`'s Docker-gated E2E genuinely runs here:
+  it publishes both images, provisions a real Instance, hits its health endpoint,
+  and destroys it. This workflow also carries the **opt-in `real-claude-e2e` job**,
+  gated to `workflow_dispatch` so a real `claude -p` fleet run (own database,
+  `ANTHROPIC_KEY` → `ANTHROPIC_API_KEY`) never spends tokens on an ordinary push.
 - **`.github/workflows/os-matrix.yml`** runs the platform-sensitive suites — Core,
-  Contracts, Runner, Relay — on **ubuntu, macOS, and Windows**. The point is the
-  process-supervision / stray-cleanup machinery, whose behavior is per-OS
-  (ProcFs on Linux, `KERN_PROCARGS2` on macOS, kill-on-close Job Objects on
-  Windows). Tests gate themselves with `SkippableFact`, so each leg runs what its
-  OS supports and skips the rest — a skip is a documented deferral, a failure is
-  a real regression.
+  Contracts, Runner, Relay, Preview — on **ubuntu, macOS, and Windows**. The point
+  is machinery whose behavior is genuinely per-OS: process supervision and stray
+  cleanup (ProcFs on Linux, `KERN_PROCARGS2` on macOS, kill-on-close Job Objects on
+  Windows), the CPU-load readers, and Preview's raw `SslStream` sockets. Tests gate
+  themselves with `SkippableFact`, so each leg runs what its OS supports — a skip is
+  a documented deferral, a failure is a real regression.
+- **`.github/workflows/publish-images.yml`** builds and pushes the `docket-mcp` and
+  `docket-relay` runtime images to GHCR (linux/amd64 + linux/arm64), on a pushed
+  `v*` tag or manual dispatch — never on a push to master, because `docket-meta`
+  pins an immutable tag per Instance. See [docs/META.md](docs/META.md).
+
+Two things worth knowing when a matrix goes red. Suites that are individually green
+can still break `master` **together** — a DI registration or shared fixture added by
+one PR can be required by another — so after merging a batch that touches shared
+composition, build and test `master` itself; GitHub's mergeability check is textual
+only. And a matrix leg can wedge (a runner that hangs for its full timeout) — check
+whether a *fresh* run on a *new* runner reproduces before treating it as a defect.
 
 ## Status
 
-Implemented and exercised end-to-end (scripted worker, no LLM): the task state
-machine and the fourteen §9 checks (check 4 the doer/judge split: a Lead or human
-adjudicates, never the task's own worker); Postgres store with `SKIP LOCKED`
-dispatch and `LISTEN/NOTIFY` push; opaque-token auth across all four credential
-classes;
-OAuth 2.1 authorization-code + PKCE (S256) + Client ID Metadata Documents;
-machine enrollment and token refresh; `docketd` process supervision, stop/kill,
-heartbeats, terminal-source tool-call events, and per-OS stray cleanup; §11
-park → resume, where a redispatch continues the parked harness transcript via
-the profile's resume argv (the harness session ref round-trips through the
-store); the relay TCP splice with fail-closed control-plane grant validation;
-Lead-adjudicated completion (`submit_review`, `lead`/`review` modes, §9 check 4);
-and the plain web dashboard.
+**The core loop is proven with real agents, not only scripted ones.** A CI job
+dispatches two actual `claude -p` workers to two machines and has them complete a
+task and hand a result between them, through real dispatch, MCP, and the relay.
 
-Deliberately deferred or in progress on this branch — do not assume these work:
+Implemented: the task state machine and the §9 checks (check 4 is the doer/judge
+split — a Lead or human adjudicates, never the task's own worker); Postgres store
+with `SKIP LOCKED` dispatch and `LISTEN/NOTIFY` push; opaque-token auth across the
+four credential classes; OAuth 2.1 authorization-code + PKCE (S256) + Client ID
+Metadata Documents; machine enrollment and refresh; `docketd` supervision,
+stop/kill with graceful wind-down, heartbeats, terminal-source tool-call events,
+real per-OS CPU-load back-pressure, and stray cleanup; **two-clock per-task
+liveness** (aliveness vs no-progress, so a ten-minute build is no longer mistaken
+for a hang); §11 park → resume; **continuation tasks** (`continues:`) that resume a
+prior task's transcript under a fresh token; **in-band worker reports** and the
+**question/answer exchange** that makes blocking on a human actually carry words;
+Lead-adjudicated completion (`lead`/`review` modes); **budget accounting** as a
+ceiling on committed authorization plus an enforced forward rate limit; the relay
+TCP splice with fail-closed grant validation; **`open_forward`, the Lead-facing
+forward** for reaching a service from your own machine, and the **§8.4 preview
+layer** (wildcard TLS, opaque labels, gated or public); **transcript capture and
+on-demand serving**; **harness telemetry attribution**; **`docket-meta`** with
+encrypted at-rest secrets; and the §12 web dashboard.
 
-- **Budget accounting / byte metering** (spec §9.9, §12): the task's budget is
-  handed to the harness at dispatch as the `{budget}` substitution (the intended
-  hard-cap backstop), but token attribution and the per-Team byte counter/rate
-  limit are not tracked — the dashboard shows them as empty states.
-- **Event sources beyond `terminal`/`none`**: the `hooks` and `otel` event
-  sources are defined in config but not wired; the subagent tree, `alive`, and
-  `auth-failed` events are not yet produced.
-- **`docket-meta`**, the relay **HTTP layer** (subdomain-per-service; TCP is the
-  primitive), the enrollment **conformance run** and slash-command prompts, and
-  cross-restart persistence of runner connections are **future work**.
+Deliberately deferred — do not assume these work:
+
+- **Transcript redaction** (spec §16 open question 8). Transcripts are served
+  **verbatim**, which is why serving is narrowed instead: human operator sessions
+  only, and only for terminal tasks. This gates live tailing, reading a `verifying`
+  task's transcript, and any agent-facing read.
+- **Measured spend.** Nothing ingests token/cost telemetry, so the budget ceiling
+  enforces *authorized* spend (the per-dispatch cap, committed at dispatch), never
+  measured spend. Relay bytes are counted and reported but enforce nothing, because
+  §8.3 forbids severing an established splice.
+- **Event sources beyond `terminal`.** `hooks` and `otel` parse but are wired to
+  nothing, so they behave as `none`; `docketd` warns loudly at startup for any
+  profile declaring one. The subagent tree and `auth-failed` have no producer.
+- **No cap on infrastructure requeues**, and `LivenessLossReason` isn't persisted,
+  so a wedged task retries indefinitely and every requeue looks alike in the record.
+- **SIGTERM does not wind workers down.** A signal hard-kills them; only a `stop`
+  *from the plane* is graceful — so **drain a machine before restarting its service**.
+- The enrollment **conformance run** and `/docket-enroll` wizard do not exist; the
+  enroll skill carries a manual smoke test instead. Per-task OS isolation is
+  deferred (§13): co-tenant tasks on a machine can reach each other's loopback.
+
+Open decisions live in `ideas/spec.md` §16 and in the issue tracker.
+`ideas/spec.md` remains authoritative for design; where it and the code disagree,
+the code is what runs today — and the spec's "as-built reconciliation" notes record
+where a claim was corrected rather than quietly left standing.
 
 `ideas/spec.md` remains the authoritative design. Where this README or the code
 and the spec disagree, the code is what runs today and the spec is where it is
