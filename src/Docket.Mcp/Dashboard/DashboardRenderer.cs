@@ -99,6 +99,7 @@ internal static class DashboardRenderer
                     ServiceState.Running => Badge("running", "ready"),
                     ServiceState.Starting => Badge("starting", "state-submitted"),
                     ServiceState.Failed => Badge("failed", "down"),
+                    ServiceState.Disabled => Badge("disabled", "nt"),
                     _ => Badge("stopped", "backpressure"),
                 };
                 sb.Append("<tr>");

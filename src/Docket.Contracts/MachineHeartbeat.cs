@@ -78,4 +78,12 @@ public enum ServiceState
 
     /// <summary>Not running and not being retried — the supervisor gave up or was told to stop.</summary>
     Stopped,
+
+    /// <summary>
+    /// Declared with <c>enabled: false</c> and deliberately not started. Distinct from
+    /// <see cref="Stopped"/> on purpose: "the operator turned this off" and "this is not
+    /// running and nobody meant that" are different facts, and an operator reading the
+    /// Machine Group view needs to tell them apart.
+    /// </summary>
+    Disabled,
 }

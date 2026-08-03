@@ -40,7 +40,8 @@ here and `docketd` supervises it as **its own child**, outside every task's tree
     "readiness": { "tcp_port": 5173, "timeout_seconds": 60 },
     "restart": { "max_backoff_seconds": 60 },
     "logs": { "capture": true },          // → <state>/services/web-dev/NNNN.ndjson
-    "backend": "direct"                   // the only supported value
+    "backend": "direct",                  // the only supported value
+    "enabled": true                       // false = declared but deliberately not started
   }
 ]
 ```
@@ -68,6 +69,14 @@ service manager: the service gets `docketd`'s environment, not your shell's.
 quietly supervised the other way. Delegation to `systemd-run`/`pm2`/`docker` is a later
 option, and it costs the property refuse-at-dial relies on: `docketd` would no longer own
 the process, so "is my service up" becomes a query rather than a fact.
+
+**To stop a service, set `enabled: false`** — not a dashboard button, and deliberately so.
+A service's desired state lives in this file, so a command that stopped it would leave the
+config and reality disagreeing until the next restart silently undid it; keeping the switch
+here means the declaration is always the truth. A disabled service is still declared: it
+reports as `disabled` (distinct from `stopped`, so you can tell "I turned this off" from
+"this died and nobody meant it"), and a forward dial for its port is still refused rather
+than connecting to whatever else has taken it.
 
 **Status, not logs, on the dashboard.** Each service's state, port, uptime, restart count
 and last exit code ride the machine heartbeat to the §12 Machine Group view. The log

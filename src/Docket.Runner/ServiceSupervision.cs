@@ -68,7 +68,12 @@ public sealed class ServiceSupervisor : IAsyncDisposable
         _probe = probe ?? TryConnectAsync;
 
         foreach (var service in services)
-            _state[service.Name] = new SupervisedService(service);
+        {
+            _state[service.Name] = new SupervisedService(service)
+            {
+                State = service.Enabled ? ServiceState.Stopped : ServiceState.Disabled,
+            };
+        }
     }
 
     private readonly Func<int, CancellationToken, Task<bool>> _probe;
@@ -77,7 +82,14 @@ public sealed class ServiceSupervisor : IAsyncDisposable
     public void Start()
     {
         foreach (var service in _services)
+        {
+            // `enabled: false` is the operator's declared "off". Nothing supervises it, so
+            // there is no desired-state divergence to reconcile — which is exactly why the
+            // stop lives in config rather than in a dashboard command a restart would undo.
+            if (!service.Enabled)
+                continue;
             _loops.Add(Task.Run(() => SuperviseAsync(service, _cts.Token)));
+        }
     }
 
     /// <summary>
@@ -356,7 +368,9 @@ public sealed class ServiceSupervisor : IAsyncDisposable
         {
             process = s.Process;
             s.Process = null;
-            s.State = ServiceState.Stopped;
+            // Keep a disabled service reading Disabled through teardown; flattening it to
+            // Stopped would lose the distinction the operator set it for.
+            s.State = s.Config.Enabled ? ServiceState.Stopped : ServiceState.Disabled;
             s.StartedAt = null;
         }
 

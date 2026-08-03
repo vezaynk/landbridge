@@ -244,7 +244,8 @@ public sealed record RunnerConfig(
                 dto.Logs?.Format,
                 dto.Logs?.Capture ?? false,
                 dto.Logs?.MaxBytes ?? TranscriptDefaults.MaxBytes,
-                dto.Logs?.PruneAfterDays ?? TranscriptDefaults.PruneAfterDays));
+                dto.Logs?.PruneAfterDays ?? TranscriptDefaults.PruneAfterDays),
+            dto.Enabled ?? true);
     }
 
     /// <summary>
@@ -560,7 +561,8 @@ public sealed record ServiceConfig(
     int? Port,
     ReadinessConfig? Readiness,
     TimeSpan MaxBackoff,
-    LogsConfig Logs);
+    LogsConfig Logs,
+    bool Enabled = true);
 
 /// <summary>
 /// §10 readiness: the loopback port that must accept a connection before the service

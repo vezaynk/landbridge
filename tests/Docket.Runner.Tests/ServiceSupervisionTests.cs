@@ -319,6 +319,52 @@ public class ServiceSupervisionTests
     }
 
     [Fact]
+    public void Enabled_defaults_to_true_and_can_be_declared_off()
+    {
+        var config = RunnerConfig.Load(Config(
+            """[ { "name": "on", "spawn": ["x"] }, { "name": "off", "spawn": ["y"], "enabled": false } ]"""));
+
+        Assert.True(config.DeclaredServices.Single(x => x.Name == "on").Enabled);
+        Assert.False(config.DeclaredServices.Single(x => x.Name == "off").Enabled);
+    }
+
+    [Fact]
+    public async Task A_disabled_service_is_never_started_and_reads_as_disabled()
+    {
+        // `enabled: false` is the honest stop: desired state stays in config, so there is
+        // nothing for a restart to silently undo — unlike a dashboard stop button, which
+        // would need docketd to persist state it deliberately does not keep.
+        var cwd = TestKit.NewWorkRoot();
+        try
+        {
+            var service = Service("off", [TestKit.HarnessPath(), "sleeper"], workDir: cwd) with { Enabled = false };
+            await using var sup = new ServiceSupervisor([service], "m1", TimeProvider.System);
+            sup.Start();
+
+            // Give a would-be spawn ample time to leave the marker `sleeper` writes.
+            await Task.Delay(TimeSpan.FromSeconds(2));
+            Assert.False(File.Exists(Path.Combine(cwd, "ready")), "a disabled service was started");
+            Assert.Equal(ServiceState.Disabled, sup.Report().Single().State);
+        }
+        finally
+        {
+            TestKit.TryDeleteRoot(cwd);
+        }
+    }
+
+    [Fact]
+    public async Task A_disabled_service_is_still_declared_for_refuse_at_dial()
+    {
+        // Deliberately off is still "declared and not running", so a dial for its port is
+        // refused rather than landing on whatever else has taken it.
+        await using var sup = new ServiceSupervisor(
+            [Service("off", ["/bin/echo"], port: 6100) with { Enabled = false }],
+            "m1", TimeProvider.System);
+
+        Assert.False(sup.IsServiceOnPort(6100));
+    }
+
+    [Fact]
     public void An_empty_report_and_a_null_report_are_different_answers()
     {
         // Null on the heartbeat means "this machine says nothing about services" (an

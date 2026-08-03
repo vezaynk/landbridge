@@ -28,6 +28,10 @@ internal sealed class ServiceDto
     public RestartDto? Restart { get; set; }
     public LogsDto? Logs { get; set; }
     public string? Backend { get; set; }
+
+    // The honest "stop": desired state lives in config, so turning a service off is an
+    // operator edit rather than a dashboard command whose effect a restart would undo.
+    public bool? Enabled { get; set; }
 }
 
 internal sealed class ReadinessDto
