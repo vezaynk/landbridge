@@ -6,8 +6,10 @@ using Docket.Core;
 
 namespace Docket.Runner;
 
-/// <summary>How a <c>stop</c> was delivered (§10). Reported back so the
-/// conformance run can confirm message-delivery actually reached the agent.</summary>
+/// <summary>How a <c>stop</c> was delivered (§10). Reported back so an operator
+/// can confirm message-delivery actually reached the agent — the enroll skill's
+/// smoke test checks exactly this, and the §11 conformance run would automate it
+/// if it were built.</summary>
 public enum StopDelivery
 {
     /// <summary>Injected as a turn the agent reads and honours (§10). A bounded
