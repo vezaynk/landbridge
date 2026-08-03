@@ -34,6 +34,11 @@ public sealed class PlacementService(MetaDbContext db)
     /// Allocates two distinct free host ports on <paramref name="host"/> from its
     /// configured range, avoiding ports already assigned to live instances on that
     /// host. Throws when the range is exhausted.
+    ///
+    /// <para><b>Precondition:</b> this reads the taken ports and the caller then inserts
+    /// the row, so it is only safe under the per-host advisory lock
+    /// <see cref="InstanceCreator.CreateAsync"/> holds. Called outside that lock, two
+    /// concurrent creates can be handed the same port.</para>
     /// </summary>
     public async Task<(int McpPort, int RelayPort)> AllocatePortsAsync(HostRow host, CancellationToken ct)
     {
