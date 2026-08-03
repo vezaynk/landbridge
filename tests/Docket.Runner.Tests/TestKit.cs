@@ -93,7 +93,9 @@ internal static class TestKit
     /// (optionally with a mapping) to exercise the stdout event drain. Pass
     /// <paramref name="capture"/> to turn on §12 transcript capture (with an optional
     /// <paramref name="maxBytes"/> cap) — the supervisor still needs a
-    /// <see cref="TranscriptStore"/> for anything to be written.</summary>
+    /// <see cref="TranscriptStore"/> for anything to be written. Pass
+    /// <paramref name="telemetry"/> to opt the profile into §10 harness telemetry;
+    /// the default is the off-by-default block every other fixture wants.</summary>
     public static ProfileConfig Profile(
         string harnessMode,
         StopMode stopMode = StopMode.Signal,
@@ -103,14 +105,15 @@ internal static class TestKit
         TimeSpan? windDown = null,
         bool capture = false,
         long? maxBytes = null,
-        int pruneAfterDays = TranscriptDefaults.PruneAfterDays) =>
+        int pruneAfterDays = TranscriptDefaults.PruneAfterDays,
+        TelemetryConfig? telemetry = null) =>
         new(
             name,
             [HarnessPath(), harnessMode],
             new StopConfig(stopMode, Signal: null, MessageTemplate: null, WindDown: windDown ?? TimeSpan.FromSeconds(30)),
             Resume: null,
             new EventsConfig(events, mapping ?? new Dictionary<string, string>()),
-            new TelemetryConfig(Otel: false, Endpoint: null),
+            telemetry ?? new TelemetryConfig(Otel: false, Endpoint: null),
             new LogsConfig(Path: null, Format: null, Capture: capture,
                 MaxBytes: maxBytes ?? TranscriptDefaults.MaxBytes, PruneAfterDays: pruneAfterDays),
             MaxConcurrent: null);
