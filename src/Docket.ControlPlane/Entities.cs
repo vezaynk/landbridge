@@ -176,6 +176,21 @@ public sealed class WorkerInstanceRow
     public bool Revoked { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset? RevokedAt { get; set; }
+
+    /// <summary>
+    /// The machine this dispatch ran on — the durable answer to "where do this task's
+    /// transcripts live" (§12). One row per dispatch is exactly the right grain: a task
+    /// requeued across two machines has an instance row for each, and transcript ordinals
+    /// are per-machine, so the pair (machine, ordinal) is what identifies a captured
+    /// instance. Nothing else remembers this once the task is terminal: the in-memory
+    /// registry untracks a task when it exits, <see cref="TaskRow.ParkMachine"/> only
+    /// covers parked tasks, and <see cref="TaskRow.PreferredMachine"/> only continuations.
+    ///
+    /// <para>Nullable for rows written before this column existed; a null simply means the
+    /// plane cannot say where that attempt ran, and the dashboard says so rather than
+    /// guessing.</para>
+    /// </summary>
+    public string? MachineId { get; set; }
 }
 
 /// <summary>

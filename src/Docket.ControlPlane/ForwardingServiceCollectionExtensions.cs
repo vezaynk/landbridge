@@ -26,6 +26,11 @@ public static class ForwardingServiceCollectionExtensions
         services.TryAddSingleton<ForwardWaiters>();
         services.TryAddSingleton<ForwardOrchestrator>();
         services.TryAddScoped<LeadMachineBindingService>();
+        // §12 transcript serving rides the same runner channel and the same registry, so
+        // its rendezvous and relay register here too — the sink and the relay must share
+        // exactly one TranscriptWaiters, for the same reason forwards do.
+        services.TryAddSingleton<TranscriptWaiters>();
+        services.TryAddSingleton<TranscriptRelayService>();
         return services;
     }
 }

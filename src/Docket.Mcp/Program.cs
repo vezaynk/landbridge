@@ -199,6 +199,8 @@ app.MapRunnerEndpoint();
 // bearer-or-cookie resolution (DashboardAuth), not RequireAuthorization, so the
 // browser path never trips the MCP challenge.
 app.MapDashboard();
+// §12 transcript serving: its own file and its own auth rule (human operator only).
+app.MapDashboardTranscripts();
 
 // The relay grant-validation endpoint (§8.3): plain HTTP, shared-bearer auth,
 // fail-closed. The relay asks whether a presented grant is valid for a tunnel;

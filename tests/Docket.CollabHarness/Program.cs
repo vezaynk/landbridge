@@ -119,6 +119,8 @@ public static class Program
                 "db-query" => await RunDbQueryAsync(client, cwd, ct),
                 _ when description.StartsWith("map:", StringComparison.Ordinal) =>
                     await RunMapAsync(client, description["map:".Length..], ct),
+                _ when description.StartsWith("echo:", StringComparison.Ordinal) =>
+                    await RunEchoAsync(client, description["echo:".Length..], ct),
                 _ => throw new InvalidOperationException($"unrecognized collaborator description: '{description}'"),
             };
         }
@@ -307,6 +309,23 @@ public static class Program
     /// <summary><c>map:&lt;seed&gt;</c>: report the deterministic transform of the seed and
     /// exit, driving working → verifying. The fan-out property is that a Lead can spread
     /// many of these across machines and collect the correct set back.</summary>
+    /// <summary>
+    /// <c>echo:&lt;text&gt;</c> — print <paramref name="text"/> to stdout, then report. The only
+    /// role that writes to stdout at all, which is exactly its point: stdout is what §12
+    /// transcript capture tees, so this is how the fleet produces a transcript with known
+    /// content (including a planted credential-shaped string) for the serving path to read
+    /// back verbatim.
+    /// </summary>
+    private static async Task<int> RunEchoAsync(McpClient client, string text, CancellationToken ct)
+    {
+        using var opCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        opCts.CancelAfter(TimeSpan.FromSeconds(30));
+        Console.WriteLine(text);
+        await Console.Out.FlushAsync(opCts.Token);
+        await ReportAsync(client, $"echo:{text}", opCts.Token);
+        return 0;
+    }
+
     private static async Task<int> RunMapAsync(McpClient client, string seed, CancellationToken ct)
     {
         using var opCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
