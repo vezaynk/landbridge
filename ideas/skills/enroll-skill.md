@@ -48,7 +48,7 @@ Do not assume the harness or its version. Find out:
 
 1. Which harness is installed, and its version.
 2. The exact headless invocation, and how it takes a prompt — positional argument, flag value, or stdin.
-3. What structured output it writes to **stdout**, and whether that is one line per event or a single object at exit. This is the only event source `docketd` actually reads, so the answer decides whether this machine has a progress signal at all — see Degraded telemetry below before you promise one.
+3. What structured output it writes to **stdout**, and whether that is one line per event or a single object at exit. This is the only event source `docketd` actually reads, so the answer decides whether this machine can hold a task longer than a minute — read "The event source is not a telemetry preference" below before you settle it.
 4. The property names inside that stream: the top-level discriminator, the value marking an assistant turn, how a tool call appears within a turn, and where the session id is. Those are what `events.mapping` overrides; its defaults are Claude Code's `stream-json` shape.
 5. Whether the session id appears early in the stream rather than at exit, since that is the ref a parked task resumes from.
 6. Whether it can resume a prior session, and how — including whether resume is scoped to the directory that created the session, since parked-task resume depends on returning to it.
@@ -68,18 +68,23 @@ One caveat to pass on: where `docketd` cannot observe CPU on the platform, `max_
 
 If a profile needs a hard cap for reasons unrelated to load — a licence limit, a rate-limited provider, a restricted posture you want singular — that is `max_concurrent` on the profile, not a machine setting.
 
-## Degraded telemetry is acceptable
+## The event source is not a telemetry preference
 
-If the harness has no readable event stream, say so in the config rather than inventing a mapping. The control plane renders missing signals as "not reported," which is honest and useful. A fabricated mapping produces a machine that appears healthy and isn't.
+**Get this one wrong and the machine is unusable.** `events.source` looks like a choice about how much detail you get. On this build it decides whether tasks survive at all, so it is worth more care than anything else in the config except the headless posture.
 
-Be accurate about how much this build can actually see, because three of the four declared `events.source` values are the same answer today:
+Per-task liveness on the control plane is refreshed **only** by an inbound event. A profile that produces no `tool-call` events emits exactly one event ever — `started`, at spawn — and the plane requeues any working task whose last activity is older than the per-task liveness window (60 seconds, not configurable). So such a profile loses every task that runs longer than about a minute, redispatches it, and loses it again. Nothing caps that loop. It presents as tasks that restart forever with `Attempt` climbing and no explanation anywhere.
 
-- **`events.source: terminal`** is the only source `docketd` reads. It drains the harness's stdout line by line, which is what produces `tool-call` events and per-task liveness between them. If the harness can stream NDJSON on stdout, this is the value you want.
-- **`hooks` and `otel` parse but are not wired.** Declaring either gets you the same telemetry as `none`: `started` when the process spawns and `exited` when it ends, nothing between. A hung agent cannot be told from a busy one until the liveness window expires. Do not write `hooks` because the harness happens to offer hooks — it buys nothing on this build, and it reads as a progress signal the machine does not have.
+If the harness has no readable event stream, say so in the config rather than inventing a mapping — but say it to the human too, because it is a limit on what the machine can be asked to do, not a cosmetic gap. A fabricated mapping produces a machine that appears healthy and isn't.
+
+Three of the four declared `events.source` values are the same answer today:
+
+- **`events.source: terminal`** is the only source `docketd` reads. It drains the harness's stdout line by line, which is what produces `tool-call` events and the liveness refresh that rides them. If the harness can stream NDJSON on stdout, this is the value you want, and you almost certainly want it.
+- **`hooks` and `otel` parse but are not wired.** Declaring either gets you exactly what `none` gets: `started` at spawn, `exited` at the end, nothing between — and the requeue loop above. Do not write `hooks` because the harness happens to offer hooks; it buys nothing on this build and reads as a progress signal the machine does not have. `docketd` prints a warning at startup for every profile declaring a non-`terminal` source — if you see it, treat it as a defect to fix, not a notice to acknowledge.
+- **The documented fallback does not exist.** Spec §10 says liveness degrades to process-alive when there is no event source. `docketd` has that check but nothing calls it, and the plane never learns process state — the machine heartbeat does not refresh per-task activity, and neither do the worker's own MCP calls. There is no safety net under a source-less profile.
 - **`subagent-spawned` has no producer.** It exists in the wire vocabulary, and the dashboard has a slot for it that always reads "no subagents reported." Nothing you put in the config will fill it, so do not spend probe time on subagent attribution.
 - **`telemetry.otel` is parsed and currently unused**, and no budget is metered anywhere: the Team ceiling is not enforced, and the `{budget}` token substitutes empty because nothing populates it. Token spend is invisible for every profile, not just this one. Say so plainly to the human at enrollment rather than letting them find it in a bill.
 
-None of this makes the machine unusable — `started`/`exited` plus process-alive is enough to dispatch, requeue, and kill. It makes the difference between a machine you can watch and a machine you can only poll, and the human deserves to know which one they just built.
+If the harness genuinely cannot stream anything readable on stdout, the honest declaration is `none` — and then say plainly that this machine can only be trusted with work that finishes inside the liveness window, until the process-alive signal is wired. That is a real constraint on what the human just built, and it belongs in the conversation rather than in a config file nobody rereads.
 
 ## Registering the daemon — hand this to the human
 
