@@ -3,6 +3,7 @@ using Docket.Meta.Auth;
 using Docket.Meta.Data;
 using Docket.Meta.Edge;
 using Docket.Meta.Provisioning;
+using Docket.Meta.Secrets;
 using Docket.Meta.Substrate;
 using Docket.Meta.Web;
 using Microsoft.EntityFrameworkCore;
@@ -23,7 +24,12 @@ var connectionString = builder.Configuration.GetConnectionString("Meta")
     ?? Environment.GetEnvironmentVariable("DOCKET_META_DB")
     ?? "Host=localhost;Database=docket_meta;Username=docket";
 builder.Services.AddDbContext<MetaDbContext>(o =>
-    o.UseNpgsql(connectionString).UseSnakeCaseNamingConvention());
+    MetaDbContext.Configure(o.UseNpgsql(connectionString)));
+
+// At-rest protection for the secrets meta RETAINS to re-inject on resume/upgrade
+// (task #79). Constructed eagerly below so a missing key is a startup failure rather
+// than a first-create surprise — meta must never fall back to plaintext.
+builder.Services.AddSingleton<MetaSecretProtector>();
 
 builder.Services.AddSingleton(TimeProvider.System);
 
@@ -53,7 +59,15 @@ builder.Services.AddScoped<InstanceProvisioner>();
 // Resume any provision a meta restart interrupted (design note §2).
 builder.Services.AddHostedService<InstanceReconciler>();
 
+// Re-seal retained secrets under the current primary key: migrates any pre-encryption
+// plaintext row forward and completes a key rotation (task #79).
+builder.Services.AddHostedService<SecretRewrapSweeper>();
+
 var app = builder.Build();
+
+// Fail closed, and fail NOW: resolving the protector validates the configured key
+// material, so a meta with no key never reaches the point of writing a secret.
+app.Services.GetRequiredService<MetaSecretProtector>();
 
 // Dev/single-operator convenience: apply meta's OWN migration to its OWN store at
 // startup. Unrelated to the per-instance Docket:MigrateOnStartup meta injects into

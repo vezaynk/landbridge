@@ -1,6 +1,7 @@
 using Docket.Meta;
 using Docket.Meta.Data;
 using Docket.Meta.Provisioning;
+using Docket.Meta.Secrets;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
@@ -25,10 +26,19 @@ public sealed class SagaHarness : IDisposable
     public InstanceCreator Creator { get; }
     public PlacementService Placement { get; }
 
-    public SagaHarness(SecretGenerator? secrets = null)
+    /// <summary>The key sealing this harness's retained secrets (task #79).</summary>
+    public MetaSecretProtector Protector { get; }
+
+    /// <param name="store">
+    /// An external store to drive the saga against. Pass a Postgres-backed context to
+    /// exercise the secret value converters for real: the EF InMemory provider keeps
+    /// CLR values and ignores converters, so encryption is a no-op there (see
+    /// <see cref="SecretsAtRestPostgresTests"/>).
+    /// </param>
+    public SagaHarness(SecretGenerator? secrets = null, MetaSecretProtector? protector = null, MetaDbContext? store = null)
     {
-        Db = new MetaDbContext(new DbContextOptionsBuilder<MetaDbContext>()
-            .UseInMemoryDatabase("meta-" + Guid.NewGuid()).Options);
+        Protector = protector ?? store?.Protector ?? NewProtector();
+        Db = store ?? NewInMemoryDb("meta-" + Guid.NewGuid(), Protector);
         Secrets = secrets ?? new SecretGenerator();
         Placement = new PlacementService(Db);
         Creator = new InstanceCreator(Db, Placement, Secrets, Clock);
@@ -55,6 +65,22 @@ public sealed class SagaHarness : IDisposable
         Db.Hosts.Add(host);
         await Db.SaveChangesAsync();
         return host;
+    }
+
+    /// <summary>A protector over one fresh random key — the default for tests that don't care which.</summary>
+    public static MetaSecretProtector NewProtector() => new([MetaSecretProtector.NewKey()]);
+
+    /// <summary>
+    /// An in-memory store wired like the real one. Goes through
+    /// <see cref="MetaDbContext.Configure"/> so the model cache is keyed on the
+    /// protector's key — without it, two contexts on different keys in one test run
+    /// would share the first one's converters (and therefore its key).
+    /// </summary>
+    public static MetaDbContext NewInMemoryDb(string name, MetaSecretProtector protector)
+    {
+        var b = new DbContextOptionsBuilder<MetaDbContext>().UseInMemoryDatabase(name);
+        MetaDbContext.Configure(b);
+        return new MetaDbContext(b.Options, protector);
     }
 
     public void Dispose() => Db.Dispose();

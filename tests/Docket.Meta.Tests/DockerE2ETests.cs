@@ -129,8 +129,7 @@ public class DockerE2ETests
             RelayImageRepo = "docket-relay",
             PostgresImage = PgImage,
         };
-        using var db = new MetaDbContext(new DbContextOptionsBuilder<MetaDbContext>()
-            .UseInMemoryDatabase("e2e-" + Guid.NewGuid()).Options);
+        using var db = SagaHarness.NewInMemoryDb("e2e-" + Guid.NewGuid(), SagaHarness.NewProtector());
         // Real time, not a fake: the saga's container health poll sleeps on the injected
         // clock, so a frozen FakeTimeProvider never wakes once a real Postgres reports
         // Starting before Healthy. The in-memory suites can fake it because their
