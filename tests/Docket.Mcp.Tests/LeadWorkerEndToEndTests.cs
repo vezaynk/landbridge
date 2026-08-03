@@ -115,6 +115,126 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task A_worker_asks_over_mcp_the_lead_reads_and_answers_and_the_successor_receives_it()
+    {
+        // §10/§11 over the wire: the whole human-in-the-loop loop through real MCP tool
+        // calls — request_input(question) → get_team_state (kind + flag, no prose) →
+        // get_task_question (delimited) → answer_input_request(answer) → the
+        // redispatched worker's get_task carries the answer. This is the round trip the
+        // park/resume machinery existed for and could not previously complete.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var ct = cts.Token;
+
+        await using var app = BuildServer();
+        await app.StartAsync(ct);
+        var baseUri = new Uri(app.Urls.First(u => u.StartsWith("http://")) + "/");
+
+        var team = TeamId.New();
+        const string question = "the schema has two candidate keys; which one should the index use?";
+        const string answer = "use (tenant_id, created_at) — the other one is not unique under backfill.";
+
+        string leadToken;
+        await using (var db = pg.NewContext())
+        {
+            var tokens = new TokenService(db, TimeProvider.System);
+            var human = await tokens.IssueHumanSessionAsync(ct);
+            var claim = Assert.IsType<LeadClaimResult.Claimed>(await tokens.ClaimLeadAsync(human.Token, team, ct: ct));
+            leadToken = claim.Token.Token;
+        }
+
+        TaskId taskId;
+        await using (var lead = await ConnectAsync(baseUri, leadToken, ct))
+        {
+            var created = await lead.CallToolAsync("create_task", new Dictionary<string, object?>
+            {
+                ["description"] = "add the index",
+                ["completionCriteria"] = "the migration applies",
+                ["mode"] = "lead",
+            }, cancellationToken: ct);
+            taskId = new TaskId(Guid.Parse(Assert.Single(created.Content.OfType<TextContentBlock>()).Text));
+        }
+
+        var machine = new MachineSnapshot("m1", Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });
+
+        // ── Worker: ask, in words ───────────────────────────────────────────
+        string firstWorkerToken;
+        await using (var db = pg.NewContext())
+        {
+            var store = new TaskStore(db, TimeProvider.System);
+            var instance = WorkerInstanceId.New();
+            await store.DispatchNextAsync(machine, instance, ct);
+            firstWorkerToken = (await new TokenService(db, TimeProvider.System)
+                .MintWorkerTokenAsync(team, taskId, instance, ct)).Token;
+        }
+        await using (var worker = await ConnectAsync(baseUri, firstWorkerToken, ct))
+        {
+            var asked = await worker.CallToolAsync("request_input", new Dictionary<string, object?>
+            {
+                ["kind"] = "question",
+                ["question"] = question,
+            }, cancellationToken: ct);
+
+            Assert.NotEqual(true, asked.IsError);
+            Assert.Contains("BlockedOnInput", Assert.Single(asked.Content.OfType<TextContentBlock>()).Text);
+        }
+
+        // ── Lead: see it in the poll, read it, answer it ─────────────────────
+        await using (var lead = await ConnectAsync(baseUri, leadToken, ct))
+        {
+            var state = await lead.CallToolAsync("get_team_state", new Dictionary<string, object?>(), cancellationToken: ct);
+            var stateText = Assert.Single(state.Content.OfType<TextContentBlock>()).Text;
+            // §10: the poll shows WHICH task needs attention and WHAT KIND, never the
+            // prose — the whole reason the text has its own deliberate read.
+            Assert.Contains("hasQuestion", stateText, StringComparison.OrdinalIgnoreCase);
+            Assert.DoesNotContain(question, stateText, StringComparison.Ordinal);
+
+            var read = await lead.CallToolAsync("get_task_question", new Dictionary<string, object?>
+            {
+                ["taskId"] = taskId.ToString(),
+            }, cancellationToken: ct);
+            var readText = Assert.Single(read.Content.OfType<TextContentBlock>()).Text;
+            Assert.Contains(question, readText, StringComparison.Ordinal);
+            Assert.Contains("Untrusted", readText, StringComparison.Ordinal); // §13 delimiting
+
+            var answered = await lead.CallToolAsync("answer_input_request", new Dictionary<string, object?>
+            {
+                ["taskId"] = taskId.ToString(),
+                ["answer"] = answer,
+            }, cancellationToken: ct);
+            Assert.NotEqual(true, answered.IsError);
+            Assert.Contains("Submitted", Assert.Single(answered.Content.OfType<TextContentBlock>()).Text);
+        }
+
+        // ── The successor worker: get_task carries the answer ────────────────
+        string successorToken;
+        await using (var db = pg.NewContext())
+        {
+            var store = new TaskStore(db, TimeProvider.System);
+            var successor = WorkerInstanceId.New();
+            var dispatched = Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(machine, successor, ct));
+            Assert.Equal(taskId, dispatched.Task.Id);
+            successorToken = (await new TokenService(db, TimeProvider.System)
+                .MintWorkerTokenAsync(team, taskId, successor, ct)).Token;
+        }
+        await using (var worker = await ConnectAsync(baseUri, successorToken, ct))
+        {
+            var assignment = await worker.CallToolAsync(
+                "get_task", new Dictionary<string, object?>(), cancellationToken: ct);
+            var text = Assert.Single(assignment.Content.OfType<TextContentBlock>()).Text;
+
+            // Parsed, not substring-matched: the wire escapes non-ASCII (the answer's
+            // em dash arrives as —), and the pinned snake_case field names are
+            // themselves part of the contract a worker harness reads.
+            using var doc = System.Text.Json.JsonDocument.Parse(text);
+            Assert.Equal(answer, doc.RootElement.GetProperty("answer").GetString());
+            Assert.Equal(question, doc.RootElement.GetProperty("question").GetString());
+        }
+
+        await app.StopAsync(ct);
+    }
+
+    [SkippableFact]
     public async Task A_worker_token_cannot_reach_the_lead_create_task_tool()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);

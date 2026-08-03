@@ -232,13 +232,18 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         // from the workspace (§6, §11), rather than refusing.
         var tools = LeadFor(new Principal.Lead(Team));
 
-        var msg = await tools.AnswerInputRequest(taskId.ToString(), CancellationToken.None);
+        var msg = await tools.AnswerInputRequest(taskId.ToString(), "use the staging DB", CancellationToken.None);
         Assert.Contains("Submitted", msg);
 
         await using var v = pg.NewContext();
         var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == taskId.Value);
         Assert.Equal(TaskState.Submitted, row.State);
         Assert.Null(row.ParkMachine); // no machine to prefer; cold start
+        // §11: the cold-start path is exactly where the answer matters most — the
+        // transcript that held the question is on a machine that is gone, so the row
+        // is the only thing carrying it into the next attempt.
+        Assert.Equal("use the staging DB", row.InputAnswer);
+        Assert.Equal(SeededQuestion, row.InputQuestion);
     }
 
     [SkippableFact]
@@ -254,13 +259,14 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         // m1 still holds the lease, so the park record prefers it — but the task
         // still requeues for redispatch (→ submitted), never resumes in place: the
         // worker process is gone and resume must go back through dispatch (§11).
-        var msg = await tools.AnswerInputRequest(taskId.ToString(), CancellationToken.None);
+        var msg = await tools.AnswerInputRequest(taskId.ToString(), "staging-pg, not docker", CancellationToken.None);
         Assert.Contains("Submitted", msg);
 
         await using var v = pg.NewContext();
         var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == taskId.Value);
         Assert.Equal(TaskState.Submitted, row.State);
         Assert.Equal("m1", row.ParkMachine); // held-lease machine preferred (§11)
+        Assert.Equal("staging-pg, not docker", row.InputAnswer);
     }
 
     [SkippableFact]
@@ -283,17 +289,18 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
             Assert.Equal(TaskState.Parked, (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == taskId.Value)).State);
 
         // The Lead answers through the SAME tool, unaware the sweeper got there
-        // first — one call, correct outcome either way (§11). It wakes and requeues.
+        // first — one call, correct outcome either way (§11). It wakes and requeues,
+        // and the answer text lands on this branch exactly as on the blocked one:
+        // the Lead does not know which branch it took, so neither may lose words.
         var tools = LeadFor(new Principal.Lead(Team), registry);
-        var msg = await tools.AnswerInputRequest(taskId.ToString(), CancellationToken.None);
+        var msg = await tools.AnswerInputRequest(
+            taskId.ToString(), "use staging-pg; docker has no seed data", CancellationToken.None);
         Assert.Contains("Submitted", msg); // requeued for redispatch, not resumed in place
 
         // Redispatch the woken task and confirm a fresh worker instance reads its
-        // assignment via the same read get_task delegates to. There is no separate
-        // "answer" field to carry (the blocked path persists none either — §11's
-        // resume-with-answer-as-prompt path is runner-side and not yet built); the
-        // channel the woken worker learns through is the redispatch itself, with the
-        // attempt incremented so the successor knows it inherited a workspace.
+        // assignment via the same read get_task delegates to — carrying the answer it
+        // was woken for, plus the question that makes the answer legible after a cold
+        // start, and the incremented attempt that warns it inherited a workspace.
         await using var db = pg.NewContext();
         var store = new TaskStore(db, _clock);
         var successor = WorkerInstanceId.New();
@@ -303,6 +310,8 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         var assignment = await store.GetAssignmentAsync(new WorkerCaller(Team, taskId, successor));
         Assert.NotNull(assignment);
         Assert.Equal(2, assignment!.Attempt);
+        Assert.Equal(SeededQuestion, assignment.Question);
+        Assert.Equal("use staging-pg; docker has no seed data", assignment.Answer);
     }
 
     [SkippableFact]
@@ -334,8 +343,13 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
             () => tools.CreateTask("build the thing", "a", "lead", null, null, CancellationToken.None));
     }
 
+    /// <summary>The question the seeded worker asks (§11), so the answer round-trip
+    /// assertions have both halves of the exchange to check.</summary>
+    private const string SeededQuestion = "which database should I target?";
+
     /// <summary>Drives a task to blocked_on_input via dispatch + a worker's request.</summary>
-    private async Task<TaskId> SeedBlockedOnInputTask()
+    private async Task<TaskId> SeedBlockedOnInputTask(
+        string? question = SeededQuestion, InputRequestKind kind = InputRequestKind.Question)
     {
         await using var db = pg.NewContext();
         var store = new TaskStore(db, _clock);
@@ -344,7 +358,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(Machine(), instance);
         await store.ApplyAsync(created.Task.Id,
-            new RequestInput(new WorkerCaller(Team, created.Task.Id, instance), InputRequestKind.Question));
+            new RequestInput(new WorkerCaller(Team, created.Task.Id, instance), kind, question));
         return created.Task.Id;
     }
 
@@ -418,6 +432,138 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
 
         var text = await tools.GetTaskReport(taskId.ToString(), CancellationToken.None);
         Assert.Contains("no worker report", text, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task Get_task_question_returns_the_question_delimited_and_flags_it_unanswered()
+    {
+        // §11: the Lead's read half. The worker's ask comes back verbatim, delimited as
+        // untrusted (§13), with the typed kind and the fact that nobody has answered.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var taskId = await SeedBlockedOnInputTask();
+        var tools = LeadFor(new Principal.Lead(Team));
+
+        var text = await tools.GetTaskQuestion(taskId.ToString(), CancellationToken.None);
+
+        Assert.Contains(SeededQuestion, text, StringComparison.Ordinal);
+        Assert.Contains("Untrusted", text, StringComparison.Ordinal);
+        Assert.Contains("question", text, StringComparison.Ordinal);       // the typed kind
+        Assert.Contains("Not yet answered", text, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task Get_task_question_shows_the_answer_already_given_so_a_lead_does_not_answer_twice()
+    {
+        // §4: a Lead that reattached (or took over) needs to tell an open question from
+        // a closed one before it answers — so the answer rides the same read.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var taskId = await SeedBlockedOnInputTask();
+        var tools = LeadFor(new Principal.Lead(Team));
+        await tools.AnswerInputRequest(taskId.ToString(), "target staging-pg", CancellationToken.None);
+
+        var text = await tools.GetTaskQuestion(taskId.ToString(), CancellationToken.None);
+
+        Assert.Contains(SeededQuestion, text, StringComparison.Ordinal);
+        Assert.Contains("target staging-pg", text, StringComparison.Ordinal);
+        Assert.Contains("Already answered", text, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task Get_task_question_refuses_a_task_in_another_team()
+    {
+        // §13: Team-scoped like get_task_report — a cross-Team task is refused the same
+        // way an absent one is, so nothing leaks about another Team's tasks.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var foreignTeam = TeamId.New();
+        var foreign = await SeedBlockedOnInputTaskIn(foreignTeam, "the other Team's secret question");
+        var tools = LeadFor(new Principal.Lead(Team));
+
+        var ex = await Assert.ThrowsAsync<McpException>(
+            () => tools.GetTaskQuestion(foreign.ToString(), CancellationToken.None));
+        Assert.Contains("your Team", ex.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("secret", ex.Message, StringComparison.Ordinal);
+
+        // Indistinguishable from a task that never existed: same sentence, only the id
+        // differs, so the refusal never reveals that the other Team's task is real.
+        var absentId = Guid.NewGuid();
+        var absent = await Assert.ThrowsAsync<McpException>(
+            () => tools.GetTaskQuestion(absentId.ToString(), CancellationToken.None));
+        Assert.Equal(
+            ex.Message.Replace(foreign.ToString(), "<id>", StringComparison.Ordinal),
+            absent.Message.Replace(absentId.ToString(), "<id>", StringComparison.Ordinal));
+    }
+
+    [SkippableFact]
+    public async Task Get_task_question_says_the_lead_is_answering_blind_when_the_worker_left_no_question()
+    {
+        // A kind with no question is the doorbell case this feature exists to end. The
+        // read says so rather than returning an empty fence, so the Lead knows it is
+        // guessing and can cancel-and-rebrief instead.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var taskId = await SeedBlockedOnInputTask(question: null, kind: InputRequestKind.AuthHelp);
+        var tools = LeadFor(new Principal.Lead(Team));
+
+        var text = await tools.GetTaskQuestion(taskId.ToString(), CancellationToken.None);
+
+        Assert.Contains("no question", text, StringComparison.Ordinal);
+        Assert.Contains("authhelp", text, StringComparison.Ordinal); // the kind still routes it
+    }
+
+    [SkippableFact]
+    public async Task Get_team_state_carries_the_question_flag_and_kind_but_never_the_question_text()
+    {
+        // §10's never-prose rule, on the question exactly as on the report: the bulk
+        // status read gains triage structure (which task, what kind) and nothing a Lead
+        // could read as instructions.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var taskId = await SeedBlockedOnInputTask();
+        var tools = LeadFor(new Principal.Lead(Team));
+
+        var view = await tools.GetTeamState(CancellationToken.None);
+
+        var summary = view.Tasks.Single(t => t.TaskId == taskId.Value);
+        Assert.True(summary.HasQuestion);
+        Assert.Equal(InputRequestKind.Question, summary.InputKind);
+        // The prose itself appears nowhere in the serialized view.
+        var json = System.Text.Json.JsonSerializer.Serialize(view);
+        Assert.DoesNotContain(SeededQuestion, json, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task An_over_cap_answer_is_refused_and_the_task_stays_blocked()
+    {
+        // §10 cap discipline, the answer half: refusing leaves the task waiting, which
+        // is recoverable — an unblocked task whose answer was dropped is not.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var taskId = await SeedBlockedOnInputTask();
+        var tools = LeadFor(new Principal.Lead(Team));
+
+        var oversized = new string('x', AnswerInput.MaxAnswerBytes + 1);
+        var ex = await Assert.ThrowsAsync<McpException>(
+            () => tools.AnswerInputRequest(taskId.ToString(), oversized, CancellationToken.None));
+        Assert.Contains(nameof(Rule.AnswerWithinSizeCap), ex.Message);
+        // The refusal says where the detail belongs, so the Lead's next move is obvious.
+        Assert.Contains("reference", ex.Message, StringComparison.Ordinal);
+
+        await using var v = pg.NewContext();
+        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == taskId.Value);
+        Assert.Equal(TaskState.BlockedOnInput, row.State);
+        Assert.Null(row.InputAnswer);
+    }
+
+    /// <summary>Drives a task in the given Team to blocked_on_input with a question —
+    /// for the cross-Team scoping case.</summary>
+    private async Task<TaskId> SeedBlockedOnInputTaskIn(TeamId team, string question)
+    {
+        await using var db = pg.NewContext();
+        var store = new TaskStore(db, _clock);
+        var created = (StoreResult.Applied)await store.CreateAsync(
+            new CreateTask(new LeadClaim(team), team, "needs input", CompletionMode.Lead, null, TeamBudgetRemains: true));
+        var instance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), instance);
+        await store.ApplyAsync(created.Task.Id,
+            new RequestInput(new WorkerCaller(team, created.Task.Id, instance), InputRequestKind.Question, question));
+        return created.Task.Id;
     }
 
     /// <summary>Drives a task to verifying with an optional in-band report, in the

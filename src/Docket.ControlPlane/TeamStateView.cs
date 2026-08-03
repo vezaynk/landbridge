@@ -5,10 +5,11 @@ namespace Docket.ControlPlane;
 /// <summary>
 /// The Team view (§12) as structured data, returned by <c>get_team_state</c>.
 /// Counts and states only — <b>never prose</b> (§10): a Lead reads free text
-/// (descriptions, blocker notes, results, the worker's report) deliberately, one
-/// item at a time and delimited as untrusted (§13). The fields here are the
-/// reattachment surface (§4): enough for a fresh Lead to reconstruct what the Team
-/// is doing without ever seeing a task's contents.
+/// (descriptions, results, the worker's report, the question it is blocked on)
+/// deliberately, one item at a time and delimited as untrusted (§13). The fields here
+/// are the reattachment surface (§4): enough for a fresh Lead to reconstruct what the
+/// Team is doing — including which tasks are waiting on it and what kind of attention
+/// each needs — without ever seeing a task's contents.
 ///
 /// <para><see cref="Budget"/> is <b>read-only</b> for a Lead (§9.9): it needs to see the
 /// ceiling to understand why <c>create_task</c> is refusing it, and telling it "no budget"
@@ -45,6 +46,11 @@ public sealed record LeadMachineView(Guid MachineId, string MachineName, DateTim
 /// <see cref="HasReport"/> is a <em>flag</em> — not the text — that the worker left
 /// an in-band report (§10); the Lead fetches the report itself deliberately, one
 /// task at a time, via <c>get_task_report</c> (keeps this bulk view prose-free).
+/// <see cref="InputKind"/> and <see cref="HasQuestion"/> split the worker's input
+/// request the same way (§11): the typed kind rides along because it is structure and
+/// it is the triage fact — <c>auth_help</c> needs a human, a <c>question</c> the Lead
+/// can take — while the question's text does not, and is pulled per task with
+/// <c>get_task_question</c>.
 /// </summary>
 public sealed record TeamTaskSummary(
     Guid TaskId,
@@ -55,7 +61,9 @@ public sealed record TeamTaskSummary(
     bool Parked,
     Guid? ContinuesTaskId,
     VerdictProvenance? CompletionProvenance,
-    bool HasReport);
+    bool HasReport,
+    InputRequestKind? InputKind,
+    bool HasQuestion);
 
 /// <summary>
 /// One task's worker report (§10), returned by the Lead's deliberate per-task
@@ -68,6 +76,26 @@ public sealed record TaskReportView(
     Guid TaskId,
     string Namespace,
     string? Report);
+
+/// <summary>
+/// One task's input exchange (§10/§11), returned by the Lead's deliberate per-task
+/// <c>get_task_question</c> fetch — the question read path, shaped exactly like
+/// <see cref="TaskReportView"/> because it is the same discipline: free text pulled
+/// one item at a time, never on the bulk status read (§13).
+/// <see cref="Question"/> is the opaque worker-authored ask (null when the task asked
+/// nothing), <see cref="Answer"/> the opaque answer already given (null while the
+/// question is still open), and <see cref="Kind"/> the typed routing fact.
+/// <see cref="State"/> rides along because "is this still waiting on me?" is the
+/// question a Lead asks in the same breath — a task that has moved back to
+/// <c>submitted</c> has been answered. Team-scoped at the store.
+/// </summary>
+public sealed record TaskQuestionView(
+    Guid TaskId,
+    string Namespace,
+    TaskState State,
+    InputRequestKind? Kind,
+    string? Question,
+    string? Answer);
 
 /// <summary>
 /// The seed facts a <c>create_task(continues:)</c> reads off the continued task's

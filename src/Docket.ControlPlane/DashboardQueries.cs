@@ -185,9 +185,11 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
     /// One Team in full (§12 + §4 reattachment surface): tasks by state, parks per
     /// task (each park is a kill-and-resume of harness context — the number that
     /// says whether decomposition is starving on human attention), registered
-    /// services, open input requests with their blocked age, the attached Lead,
-    /// and last activity. Never prose (§10): only counts, states, and identifiers.
-    /// Null when the Team owns no task and holds no Lead.
+    /// services, open input requests with their blocked age, kind, and question text,
+    /// the attached Lead, and last activity. A §12 <em>human</em> surface, so unlike
+    /// the agent-facing <c>get_team_state</c> it does carry the task's prose — the
+    /// worker's report and its input exchange — because a person reading this page is
+    /// the one who answers. Null when the Team owns no task and holds no Lead.
     /// </summary>
     public async Task<TeamDetail?> GetTeamAsync(Guid teamId, CancellationToken ct = default)
     {
@@ -206,6 +208,9 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
                 t.ContinuesTaskId,
                 t.CompletionProvenance,
                 t.WorkerReport,
+                t.InputKind,
+                t.InputQuestion,
+                t.InputAnswer,
             })
             .ToListAsync(ct);
 
@@ -254,7 +259,10 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
                 t.State == TaskState.BlockedOnInput ? t.BlockedAt : null,
                 t.ContinuesTaskId,
                 t.State == TaskState.Completed ? t.CompletionProvenance : null,
-                t.WorkerReport))
+                t.WorkerReport,
+                t.InputKind,
+                t.InputQuestion,
+                t.InputAnswer))
             .ToList();
 
         var counts = tasks
@@ -263,7 +271,8 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
 
         var inputRequests = taskRows
             .Where(t => t.State == TaskState.BlockedOnInput)
-            .Select(t => new InputRequestView(t.TaskId, t.Namespace, teamId, t.BlockedAt))
+            .Select(t => new InputRequestView(
+                t.TaskId, t.Namespace, teamId, t.BlockedAt, t.InputKind, t.Question))
             .ToList();
 
         return new TeamDetail(
@@ -315,20 +324,21 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
 
     /// <summary>
     /// Everything waiting on a person across every Team (§12): open questions
-    /// (blocked_on_input), tasks awaiting review (verifying + review mode, §7), and
-    /// parked tasks awaiting an answer (§11). Three §12 rows are structural empty
-    /// states, not omissions: auth failures (the runner reports them but the sink
-    /// only logs them — §11, no event row is written), permission requests (not
-    /// built), and — implicitly — the typed input-request kind, which the state
-    /// machine requires but the store does not persist, so a question shows its age
-    /// but not its kind.
+    /// (blocked_on_input) with the typed kind and the worker's own question text,
+    /// tasks awaiting review (verifying + review mode, §7), and parked tasks awaiting
+    /// an answer (§11) with the same question. This is where a person answers, so it is
+    /// the one place the question's prose has to be legible verbatim — a §12 human
+    /// surface, not a §10 agent read. Two §12 rows remain structural empty states
+    /// rather than omissions: auth failures (the runner reports them but the sink only
+    /// logs them — §11, no event row is written) and permission requests (not built).
     /// </summary>
     public async Task<InboxView> GetInboxAsync(CancellationToken ct = default)
     {
         var questions = await db.Tasks.AsNoTracking()
             .Where(t => t.State == TaskState.BlockedOnInput)
             .OrderBy(t => t.BlockedAt)
-            .Select(t => new InputRequestView(t.Id, t.Namespace, t.TeamId, t.BlockedAt))
+            .Select(t => new InputRequestView(
+                t.Id, t.Namespace, t.TeamId, t.BlockedAt, t.InputKind, t.InputQuestion))
             .ToListAsync(ct);
 
         var awaitingReview = await db.Tasks.AsNoTracking()
@@ -340,7 +350,8 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
         var parked = await db.Tasks.AsNoTracking()
             .Where(t => t.State == TaskState.Parked)
             .OrderBy(t => t.Namespace)
-            .Select(t => new ParkedItemView(t.Id, t.Namespace, t.TeamId, t.ParkMachine))
+            .Select(t => new ParkedItemView(
+                t.Id, t.Namespace, t.TeamId, t.ParkMachine, t.InputKind, t.InputQuestion))
             .ToListAsync(ct);
 
         return new InboxView(questions, awaitingReview, parked);
@@ -477,7 +488,11 @@ public sealed record TeamDetail(
 
 /// <summary>One task in a Team, with its park count (§12 "parks per task"); for a
 /// continuation task, the prior task it resumed (§6/§11 Y-continues-X lineage); and,
-/// for a completed task, who adjudicated it (§9 check 4 provenance).</summary>
+/// for a completed task, who adjudicated it (§9 check 4 provenance). The last three
+/// carry this task's input exchange (§11): the typed <see cref="InputKind"/>, the
+/// worker's <see cref="Question"/>, and the <see cref="Answer"/> given. Unlike the
+/// agent-facing views this is a human surface, so it carries the prose itself (§12) —
+/// a person cannot answer a question they cannot read.</summary>
 public sealed record TeamTaskView(
     Guid TaskId,
     string Namespace,
@@ -489,20 +504,39 @@ public sealed record TeamTaskView(
     DateTimeOffset? BlockedAt,
     Guid? ContinuesTaskId,
     VerdictProvenance? CompletionProvenance,
-    string? Report);
+    string? Report,
+    InputRequestKind? InputKind,
+    string? Question,
+    string? Answer);
 
 /// <summary>A live registered service on a Team (§8.2, §12).</summary>
 public sealed record ServiceView(string Name, int Port, Guid TaskId, DateTimeOffset CreatedAt);
 
-/// <summary>A blocked_on_input task — an open question (§12). The typed request kind
-/// is not persisted by the store, so only the blocked age is available.</summary>
-public sealed record InputRequestView(Guid TaskId, string Namespace, Guid TeamId, DateTimeOffset? BlockedAt);
+/// <summary>A blocked_on_input task — an open question (§12) — with the typed
+/// <see cref="Kind"/> that says who can answer it and the worker's own
+/// <see cref="Question"/>. Both are null for a request that carried neither, and for
+/// rows blocked before the columns existed.</summary>
+public sealed record InputRequestView(
+    Guid TaskId,
+    string Namespace,
+    Guid TeamId,
+    DateTimeOffset? BlockedAt,
+    InputRequestKind? Kind,
+    string? Question);
 
 /// <summary>A verifying task in review mode, awaiting a human verdict (§7, §12).</summary>
 public sealed record ReviewItemView(Guid TaskId, string Namespace, Guid TeamId);
 
-/// <summary>A parked task awaiting an answer (§11, §12).</summary>
-public sealed record ParkedItemView(Guid TaskId, string Namespace, Guid TeamId, string? ParkMachine);
+/// <summary>A parked task awaiting an answer (§11, §12), carrying the question it is
+/// still waiting on — a park is a question that outlived its lease, so the inbox
+/// needs the same text here as in the open-questions list.</summary>
+public sealed record ParkedItemView(
+    Guid TaskId,
+    string Namespace,
+    Guid TeamId,
+    string? ParkMachine,
+    InputRequestKind? Kind,
+    string? Question);
 
 /// <summary>The Human inbox across all Teams (§12).</summary>
 public sealed record InboxView(
