@@ -4,5 +4,8 @@ obj/
 .vs/
 .idea/
 spikes/out/
+# `dotnet publish` output for a hand-built image (docs/META.md §1.4) and the same
+# path the publish-images workflow uses on a runner.
+out/
 
 .DS_Store

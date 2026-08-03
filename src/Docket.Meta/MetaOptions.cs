@@ -27,8 +27,20 @@ public sealed class MetaOptions
     public string McpImageRepo { get; set; } = "docket-mcp";
     public string RelayImageRepo { get; set; } = "docket-relay";
 
-    /// <summary>The image tag a new instance pins by default (overridable per create).</summary>
-    public string DefaultImageTag { get; set; } = "latest";
+    /// <summary>
+    /// The image tag a new instance pins when the create request does not name one
+    /// (overridable per create).
+    ///
+    /// <para><b>No default on purpose.</b> This used to default to <c>latest</c>, a tag
+    /// the publish workflow deliberately never produces — so the default guaranteed an
+    /// unpullable image, and a mutable tag would be wrong here anyway:
+    /// <see cref="Substrate.ISubstrate.EnsureImageAsync"/> short-circuits when the image
+    /// is already on the host, so a moving tag would keep a stale image running forever.
+    /// Empty means "no default": a create that names no tag is rejected with guidance
+    /// rather than silently pinning something that cannot be pulled
+    /// (<see cref="Provisioning.InstanceCreator"/>).</para>
+    /// </summary>
+    public string DefaultImageTag { get; set; } = "";
 
     /// <summary>The Postgres image every instance's private database container runs (matches the plane's CI).</summary>
     public string PostgresImage { get; set; } = "postgres:16";

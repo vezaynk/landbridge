@@ -25,11 +25,23 @@ public sealed class DockerSubstrate(IDockerClient client) : ISubstrate
             return;
 
         var (repo, tag) = SplitImage(image);
-        await client.Images.CreateImageAsync(
-            new ImagesCreateParameters { FromImage = repo, Tag = tag },
-            authConfig: null,
-            progress: new Progress<JSONMessage>(),
-            ct);
+        try
+        {
+            await client.Images.CreateImageAsync(
+                new ImagesCreateParameters { FromImage = repo, Tag = tag },
+                authConfig: null,
+                progress: new Progress<JSONMessage>(),
+                ct);
+        }
+        catch (DockerApiException ex)
+        {
+            // Docker.DotNet's message is unusable on its own: a denied GHCR pull surfaces
+            // as `status code=InternalServerError, response={"message":"error from registry:
+            // denied\ndenied"}` — it does not even name the image. This step's message is
+            // what lands in the step log and on the instance detail page, so translate it
+            // into something an operator can act on.
+            throw new ImagePullException(image, (int?)ex.StatusCode, ex.ResponseBody, ex);
+        }
     }
 
     public async Task EnsureNetworkAsync(string name, IReadOnlyDictionary<string, string> labels, CancellationToken ct)

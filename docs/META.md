@@ -93,7 +93,10 @@ pulls a native image instead of failing at run time with an exec-format error.
 
 Nothing publishes `latest`, deliberately: meta skips the pull when the image is already on
 the host (`EnsureImageAsync`), so a mutable tag would silently keep running a stale image.
-Point `Meta:DefaultImageTag` at a real published tag rather than leaving it at `latest`.
+For the same reason `Meta:DefaultImageTag` has **no default** — set it to a published tag
+(prefer a `sha-` one) if you want creates to be able to omit a tag, or leave it unset and
+name a tag on every create. A create with neither is rejected outright rather than pinning
+something unpullable.
 
 **Pinning.** Set `Meta:McpImageRepo` / `Meta:RelayImageRepo` to the two repositories above
 (no tag). An Instance records **one shared tag** across both images — chosen at create time
@@ -112,6 +115,13 @@ credentials — so it cannot pull a private package by itself. Either:
   host-side `docker login` alone is **not** enough — the daemon does not use the CLI's
   credentials for meta's API-driven pull — and this has to be repeated on every host for
   every new tag.
+
+  Registry credentials configurable in meta (so it could pull a private package itself)
+  are a tracked follow-up, not something you can configure today.
+
+Either way you will not be guessing: a pull meta cannot satisfy fails the `PullImages` step
+with the image reference and the registry's own words, and says which of the two causes
+applies — see the step log on the Instance detail page (§4).
 
 **Building by hand** (a local registry, an air-gapped host, a one-off): the images are
 **runtime-only** — they COPY a `dotnet publish` output — so the build is a two-step:
@@ -139,7 +149,7 @@ touches an Instance's database.
 | `Meta:Operator:PassphraseHash` | SHA-256 **hex** of the operator passphrase. Fail-closed (503 login) when unset. Generate: `printf '%s' 'your-passphrase' \| shasum -a 256`. |
 | `Meta:Domain` | Base domain for the two routes per Instance. |
 | `Meta:McpImageRepo` / `Meta:RelayImageRepo` | Image repositories (no tag). |
-| `Meta:DefaultImageTag` | Default tag a new Instance pins. |
+| `Meta:DefaultImageTag` | Tag a create pins when it names none. **No default** — a create with neither is rejected (§1.4). |
 | `Meta:PostgresImage` | Postgres image for the per-Instance database container. |
 | `Meta:CaddyAdminUrl` / `Meta:CaddyServerName` | The edge Caddy admin API and server key. |
 | `Meta:MigrateOnStartup` | Apply meta's own migration to its own store at startup (dev convenience). |

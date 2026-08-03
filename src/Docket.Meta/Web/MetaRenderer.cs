@@ -78,7 +78,9 @@ internal static class MetaRenderer
                 <label for="account">Account label (optional)</label>
                 <input id="account" name="account" type="text" placeholder="Acme Corp">
                 <label for="tag">Image tag</label>
-                <input id="tag" name="tag" type="text" value="{E(defaultTag)}">
+                <input id="tag" name="tag" type="text" value="{E(defaultTag)}" placeholder="sha-1a2b3c4d5e6f">
+                <p class="hint">A published tag — prefer an immutable <code>sha-&lt;commit&gt;</code> one.
+                  Nothing publishes <code>latest</code>.</p>
                 <label for="host">Host</label>
                 <select id="host" name="host">{hostOptions}</select>
                 <div class="actions"><button class="btn primary" type="submit">Create</button>

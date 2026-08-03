@@ -31,8 +31,20 @@ public sealed class InstanceCreator(
     MetaDbContext db,
     PlacementService placement,
     SecretGenerator secrets,
+    MetaOptions options,
     TimeProvider clock)
 {
+    /// <summary>
+    /// The message an operator meets when neither the create request nor
+    /// <see cref="MetaOptions.DefaultImageTag"/> names a tag. It has to say where tags
+    /// come from, because there is no sane fallback: <c>latest</c> is never published.
+    /// </summary>
+    internal const string NoTagMessage =
+        "No image tag given, and Meta:DefaultImageTag is not set. Pin an explicit tag — " +
+        "the publish-images workflow publishes a version tag (e.g. v0.4.0) and an immutable " +
+        "sha-<commit> tag for each build; prefer the sha- tag. Nothing publishes 'latest'. " +
+        "See docs/META.md §1.4.";
+
     /// <summary>
     /// Validates, places, allocates, and inserts — atomically with respect to another
     /// concurrent create on the same host.
@@ -53,6 +65,14 @@ public sealed class InstanceCreator(
         if (!InstanceNaming.IsValidName(name))
             throw new InstanceCreateException(
                 "Name must be a DNS label: lowercase letters, digits, and hyphens (1–40 chars).");
+
+        // Resolved here, with the other input validation, so a missing tag costs no side
+        // effect — rejecting after port allocation would burn ports on a doomed create.
+        var imageTag = string.IsNullOrWhiteSpace(req.ImageTag)
+            ? (options.DefaultImageTag ?? "").Trim()
+            : req.ImageTag.Trim();
+        if (imageTag.Length == 0)
+            throw new InstanceCreateException(NoTagMessage);
 
         // EF InMemory (the saga tests) supports neither transactions nor advisory locks;
         // those tests are single-threaded, so the unlocked path is equivalent there.
@@ -85,7 +105,7 @@ public sealed class InstanceCreator(
             Name = name,
             AccountLabel = string.IsNullOrWhiteSpace(req.AccountLabel) ? null : req.AccountLabel.Trim(),
             HostId = host.Id,
-            ImageTag = string.IsNullOrWhiteSpace(req.ImageTag) ? "latest" : req.ImageTag.Trim(),
+            ImageTag = imageTag,
             State = InstanceState.Provisioning,
             McpPublishedPort = mcpPort,
             RelayPublishedPort = relayPort,

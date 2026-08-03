@@ -40,6 +40,34 @@ public class DockerE2ETests
         catch { return false; }
     }
 
+    /// <summary>
+    /// A pull that cannot succeed must fail with a message that names the image and the
+    /// likely cause. This is the companion to <see cref="ImagePullDiagnosticsTests"/>:
+    /// those pin the wording against captured response bodies, this proves the real
+    /// daemon still produces a body of that shape and that <see cref="DockerSubstrate"/>
+    /// translates rather than leaking <c>DockerApiException</c>. Uses a repository that
+    /// cannot exist, so it needs no credentials and no fixture.
+    /// </summary>
+    [SkippableFact]
+    public async Task An_unpullable_image_fails_with_an_actionable_message()
+    {
+        Skip.IfNot(DockerReachable(), "Docker Engine not reachable at " + Sock);
+        using var client = new DockerClientConfiguration(new Uri(Sock)).CreateClient();
+        var sub = new DockerSubstrate(client);
+        var image = "ghcr.io/vezaynk/docket-no-such-package-" + Guid.NewGuid().ToString("N")[..8] + ":v0";
+        var ct = new CancellationTokenSource(TimeSpan.FromMinutes(2)).Token;
+
+        var ex = await Assert.ThrowsAsync<ImagePullException>(() => sub.EnsureImageAsync(image, ct));
+
+        // The raw Docker message carries none of this — that is the entire point.
+        Assert.Contains(image, ex.Message);
+        Assert.Contains("docs/META.md", ex.Message);
+        Assert.DoesNotContain('\n', ex.Message);
+        Assert.NotEmpty(ex.RegistryDetail);
+        // Whatever the registry said, the operator gets a cause, not an HTTP 500.
+        Assert.DoesNotContain("InternalServerError", ex.Message);
+    }
+
     [SkippableFact]
     public async Task Substrate_round_trip()
     {
@@ -147,7 +175,7 @@ public class DockerE2ETests
         db.Hosts.Add(host);
         await db.SaveChangesAsync();
 
-        var creator = new InstanceCreator(db, new PlacementService(db), new SecretGenerator(), clock);
+        var creator = new InstanceCreator(db, new PlacementService(db), new SecretGenerator(), options, clock);
         var name = "e2e" + Guid.NewGuid().ToString("N")[..6];
         var created = await creator.CreateAsync(new CreateInstanceRequest(name, null, tag, host.Id), ct);
 
