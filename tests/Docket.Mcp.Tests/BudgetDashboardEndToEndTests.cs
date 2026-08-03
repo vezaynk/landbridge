@@ -259,8 +259,7 @@ public sealed class BudgetDashboardEndToEndTests(PostgresFixture pg) : IAsyncLif
 
         builder.Services.AddDbContext<DocketDbContext>(o =>
             o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
-        builder.Services.AddScoped<TaskStore>();
-        builder.Services.AddScoped<TeamBudgetService>();
+        builder.Services.AddDocketStore();
         builder.Services.AddScoped<TokenService>();
         builder.Services.AddScoped<DashboardQueries>();
         builder.Services.AddSingleton(TimeProvider.System);

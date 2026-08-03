@@ -372,8 +372,7 @@ public sealed class TeamBudgetTests(PostgresFixture pg) : IAsyncLifetime
         var services = new ServiceCollection();
         services.AddDbContext<DocketDbContext>(o =>
             o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
-        services.AddScoped<TaskStore>();
-        services.AddScoped<TeamBudgetService>();
+        services.AddDocketStore();
         services.AddScoped<TokenService>();
         services.AddSingleton(clock);
         return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
