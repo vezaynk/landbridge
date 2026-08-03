@@ -91,9 +91,19 @@ Because the control plane is operated rather than distributed, it can be fixed b
 
 ### `docket-meta`
 
-A service, with a single operator today and self-serve signup later. It owns Account records and billing, Instance lifecycle (create, suspend, destroy), Instance provisioning (container, database, signing key, endpoint, DNS), and image rollout including canarying.
+The human-only provisioning control panel: a server-rendered web panel (no MCP SDK reference, so it is structurally not an MCP server) behind an operator passphrase — hash-configured, fail-closed when unset, mirroring the dashboard's operator door. A single operator today; self-serve signup later. It owns Account labels (a name on an Instance; no billing yet), Instance lifecycle (create, suspend, resume, destroy), Instance provisioning, and image rollout.
 
-It does **not** route work between Instances, aggregate a cross-Instance view, or hold shared agent identity.
+It runs over a **pool of Docker hosts** behind an `ISubstrate` seam: the local unix socket (the pool-of-one), or a remote Docker Engine API over mutual TLS (the host record carries the client cert + CA). Placement picks a host at create — the operator chooses, defaulting to the least-loaded.
+
+An **Instance is a per-host recipe**: a dedicated Docker network, a Postgres container on a named volume, a `docket-mcp` container, and a `docket-relay` container, co-located and independent. Lifecycle is a **resumable saga** — `provisioning → ready → suspended → destroyed`, plus `failed(step)` — where every step is idempotent (Docker objects are adopted by name/label) and checkpointed, so a meta restart mid-provision resumes from the first incomplete step or an operator retries a stall. Destroyed ≠ suspended: destroy removes containers, network, **and volume** (with a typed-name confirm) and tombstones the record; suspend stops the containers and drops the edge routes but keeps the volume, config, and secrets for resume.
+
+Meta generates each Instance's secrets **before any side effect** and injects them into the containers: the operator-passphrase **hash** (the plaintext is shown once at create and never retained), the private Postgres connection string, the public MCP URL, and a relay bearer shared by the plane and relay. It sets `Docket:MigrateOnStartup` so a fresh Instance self-migrates and upgrades re-migrate, and it **never** sets the dev-only gates (dev-seed, insecure client metadata). It retains the secrets it must re-inject on resume/upgrade (DB password, relay bearer); only the passphrase is shown-once-and-discarded.
+
+An edge **Caddy**, driven live over its admin API (pure HTTP, routes keyed by a stable `@id`), publishes **two routes per Instance** — the MCP endpoint at `<name>.docket.<domain>` and the relay endpoint at `relay-<name>.docket.<domain>`, since `docketd` dials the relay directly (§8.3). Wildcard DNS and Caddy's own TLS automation are operator-side prerequisites. A down edge never blocks suspend or destroy — route removal is best-effort and reconciled later.
+
+Image rollout pins a tag per Instance; upgrade recreates the mcp + relay containers on the new tag with Postgres and its volume untouched (migrations run on plane startup). No canarying in v1. Meta keeps its **own Postgres**, separate from every Instance's database.
+
+It does **not** route work between Instances, aggregate a cross-Instance view, or hold shared agent identity. **Deferred:** billing, canarying, self-serve signup, and per-Instance preview/SNI routing.
 
 **No agent access, ever.** It is not an MCP server. Separate network, separate credential class, human-only.
 
@@ -656,6 +666,8 @@ Relay traffic is never persisted. Connection metadata is an event; payload is sp
 | Enrollment token | Transits once, stored nowhere | Single-use, short TTL |
 | Forward grant | Memory only | Per-connection establishment, minutes |
 | Signing key, database credentials | Container secret store | Never in the image |
+
+**On the "signing key" row:** Docket's credentials are opaque random tokens, hashed (SHA-256) at rest and validated by lookup — not signed (§5, *Token format*). There is therefore **no per-Instance signing/HMAC key today**, and `docket-meta` generates and injects none when it provisions an Instance. The row is a reserved slot: if a future credential form needs a signing key, it lives in the container secret store, never in the image, and meta mints it per Instance then — not before there is a consumer. The per-Instance secrets that *do* exist today are the operator-passphrase hash, the database credentials, and the relay shared bearer.
 
 **The machine token is the highest-value secret on a customer's machine**, because dispatch delivers worker tokens down the channel it authorizes. Compromise is not lateral movement — it is a supply of fresh credentials. Access tokens should be short, the refresh token the only long-lived secret, and the refresh bound to the machine id so a copied credential file fails on another host.
 
