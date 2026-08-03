@@ -1,0 +1,128 @@
+# Publish the two docket runtime images to GHCR (docs/META.md §1.4).
+#
+# docket-meta never builds — it pulls pinned tags (DockerSubstrate.EnsureImageAsync)
+# and runs them. This workflow is the only thing that produces those tags.
+#
+# DELIBERATE, not per-push: a version tag (v*) or a manual dispatch. Every run
+# publishes two tags per image — the version and `sha-<commit>` — so an Instance can
+# pin a handle that never moves. Meta short-circuits its pull when the image is
+# already present on the host, so a MUTABLE tag would silently never be re-pulled;
+# that is why nothing here publishes `latest`.
+#
+# The Dockerfiles are runtime-only by design (no SDK in the container): the build
+# context is a `dotnet publish` OUTPUT directory. So the sequence is publish-then-build,
+# the same order meta's own Docker E2E uses (tests/Docket.Meta.Tests/DockerE2ETests.cs).
+name: Publish images
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag to publish (e.g. v0.4.0). A sha-<commit> tag is always published too.'
+        required: true
+        type: string
+
+# GITHUB_TOKEN needs packages:write to push to ghcr.io/<owner>/*; nothing here writes
+# to the repo itself.
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: publish-images-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: 1
+      DOTNET_NOLOGO: 1
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      # A tag push carries the version in GITHUB_REF_NAME; a dispatch carries it in the
+      # input (ref_name is then the branch). Validated against Docker's tag grammar so a
+      # typo fails here rather than half way through a push.
+      - name: Resolve tags
+        id: tags
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          version="${INPUT_TAG:-$GITHUB_REF_NAME}"
+          if [[ ! "$version" =~ ^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$ ]]; then
+            echo "::error::'$version' is not a usable Docker image tag"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "sha=sha-${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+
+      # Framework-dependent publish, so the output is architecture-neutral IL: no
+      # `runtimes/<rid>` assets, and UseAppHost=false drops the one native file (the
+      # launcher, which the images do not use — their ENTRYPOINT is `dotnet <dll>`).
+      # That is what lets ONE context serve both platforms below.
+      - name: Publish Docket.Mcp
+        run: dotnet publish src/Docket.Mcp -c Release -o out/mcp --nologo -p:UseAppHost=false
+
+      - name: Publish Docket.Relay
+        run: dotnet publish src/Docket.Relay -c Release -o out/relay --nologo -p:UseAppHost=false
+
+      # The default docker driver cannot emit a multi-platform manifest; this builder can.
+      # No QEMU: the runtime Dockerfiles have no RUN step, so nothing is ever executed in
+      # the target rootfs — the per-platform builds are a COPY onto a multi-arch base.
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # `provenance: false` keeps each tag a plain two-entry manifest list (amd64 + arm64)
+      # so `docker manifest inspect` reads cleanly and meta's plain pull resolves the
+      # host's platform with nothing else in the index.
+      - name: Build and push docket-mcp
+        uses: docker/build-push-action@v6
+        with:
+          context: out/mcp
+          file: docker/Docket.Mcp.Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/docket-mcp:${{ steps.tags.outputs.version }}
+            ghcr.io/${{ github.repository_owner }}/docket-mcp:${{ steps.tags.outputs.sha }}
+
+      - name: Build and push docket-relay
+        uses: docker/build-push-action@v6
+        with:
+          context: out/relay
+          file: docker/Docket.Relay.Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          provenance: false
+          tags: |
+            ghcr.io/${{ github.repository_owner }}/docket-relay:${{ steps.tags.outputs.version }}
+            ghcr.io/${{ github.repository_owner }}/docket-relay:${{ steps.tags.outputs.sha }}
+
+      # An Instance pins ONE tag shared by both images, so the pair is only usable once
+      # this whole run is green. Print what to paste into meta.
+      - name: Summary
+        run: |
+          {
+            echo "### Published to GHCR"
+            echo
+            echo "| Image | Tags |"
+            echo "|---|---|"
+            echo "| \`ghcr.io/${{ github.repository_owner }}/docket-mcp\` | \`${{ steps.tags.outputs.version }}\`, \`${{ steps.tags.outputs.sha }}\` |"
+            echo "| \`ghcr.io/${{ github.repository_owner }}/docket-relay\` | \`${{ steps.tags.outputs.version }}\`, \`${{ steps.tags.outputs.sha }}\` |"
+            echo
+            echo "Platforms: \`linux/amd64\`, \`linux/arm64\`."
+            echo "Pin \`${{ steps.tags.outputs.sha }}\` on an Instance for an immutable image."
+          } >> "$GITHUB_STEP_SUMMARY"
