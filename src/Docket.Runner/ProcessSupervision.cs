@@ -170,6 +170,9 @@ public sealed class ProcessSupervisor : IProcessSupervisor
     private readonly ConcurrentDictionary<TaskId, SupervisedTask> _tasks = new();
     private readonly SpawnerThread _spawner = new();
 
+    /// <summary>Profiles already warned about §10 telemetry with no destination — once each, not once per spawn.</summary>
+    private readonly ConcurrentDictionary<string, bool> _telemetryWarnedProfileNames = new(StringComparer.Ordinal);
+
     /// <param name="transcripts">
     /// §12 machine-local transcript capture. When supplied, a profile with
     /// <see cref="LogsConfig.Capture"/> set tees its worker's stdout/stderr here. Null
@@ -318,6 +321,13 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         // through unchanged and the worker exports to the same collector.
         if (Activity.Current?.Id is { } traceparent)
             psi.Environment["DOCKET_TRACEPARENT"] = traceparent;
+
+        // §10 telemetry ingest: when this profile opts in, turn the harness's own
+        // exporter on and stamp docket.task_id onto everything it emits, so the
+        // operator's collector can bucket token/cost per task (visibility only —
+        // nothing here meters or caps, and the plane ingests none of it). Inheritance
+        // above is what carries everything not named in the resolved set.
+        ApplyHarnessTelemetry(psi, profile, dispatch.Task.ToString(), machineId);
 
         var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
         var supervised = new SupervisedTask
@@ -630,6 +640,32 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         if (job is null)
             Console.Error.WriteLine($"docketd: Job Object containment degraded for a worker: {failure}");
         return job;
+    }
+
+    /// <summary>
+    /// §10 telemetry ingest: applies the profile's resolved harness-telemetry
+    /// variables to the spawn (see <see cref="HarnessTelemetry"/>). A profile that
+    /// asks for telemetry with no destination — none configured and none inherited —
+    /// gets nothing set and one warning per profile, since a silent no-op is exactly
+    /// the failure an operator would spend an afternoon on.
+    /// </summary>
+    private void ApplyHarnessTelemetry(ProcessStartInfo psi, ProfileConfig profile, string taskId, string machineId)
+    {
+        var telemetry = HarnessTelemetry.SpawnEnvironment(
+            profile.Telemetry,
+            taskId,
+            machineId,
+            Environment.GetEnvironmentVariable,
+            out var requestedWithoutEndpoint);
+
+        foreach (var (key, value) in telemetry)
+            psi.Environment[key] = value;
+
+        if (requestedWithoutEndpoint && _telemetryWarnedProfileNames.TryAdd(profile.Name, true))
+            Console.Error.WriteLine(
+                $"docketd: profile '{profile.Name}' requests harness telemetry (telemetry.otel) but no endpoint " +
+                $"resolved — set telemetry.endpoint or {HarnessTelemetry.EndpointVar} on docketd. No telemetry " +
+                "variables were set on the worker.");
     }
 
     private static string Substitute(string arg, IReadOnlyDictionary<string, string> substitutions)

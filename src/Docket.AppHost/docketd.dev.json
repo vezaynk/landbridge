@@ -20,6 +20,23 @@
   //     "message": "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Docket is winding this task down (disposition={disposition}, ~{ttl_seconds}s left). Immediately call report_result with a reference to your current progress, then stop — do not begin new work.\"}}",
   //     "wind_down_seconds": 30
   //   }
+  // A real claude profile can also opt into §10 harness telemetry, which needs no
+  // extra infrastructure here: the Aspire dashboard IS an OTLP collector, and docketd
+  // (an Aspire resource) already has its endpoint in its environment, which the worker
+  // inherits. So the endpoint can be omitted and only the harness's own knobs matter:
+  //   "telemetry": {
+  //     "otel": true,
+  //     "env": {
+  //       "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+  //       "OTEL_EXPORTER_OTLP_PROTOCOL": "grpc",
+  //       "OTEL_METRIC_EXPORT_INTERVAL": "5000"
+  //     }
+  //   }
+  // Token/cost metrics then land in the dashboard beside the plane's own traces,
+  // carrying docket.task_id. `grpc` because the dashboard's OTLP endpoint is gRPC;
+  // the short interval because the 60s default can outlive a small task. See
+  // docs/TELEMETRY.md — this is visibility, not a budget.
+  //
   // docketd injects that turn and waits min(ttl, wind_down_seconds) for a voluntary
   // exit before a hard tree-kill. The scripted worker below reads stdin only as a
   // dead-man pipe and ignores turns, so it stays signal-mode (no "stop" block): a

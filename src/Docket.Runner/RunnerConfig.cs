@@ -175,7 +175,10 @@ public sealed record RunnerConfig(MachineConfig Machine, IReadOnlyDictionary<str
             ParseEnum(dto.Events?.Source, EventsSource.None),
             dto.Events?.Mapping ?? new Dictionary<string, string>());
 
-        var telemetry = new TelemetryConfig(dto.Telemetry?.Otel ?? false, dto.Telemetry?.Endpoint);
+        var telemetry = new TelemetryConfig(
+            dto.Telemetry?.Otel ?? false,
+            dto.Telemetry?.Endpoint,
+            dto.Telemetry?.Env ?? new Dictionary<string, string>());
         var logs = new LogsConfig(
             dto.Logs?.Path,
             dto.Logs?.Format,
@@ -278,8 +281,36 @@ public sealed record EventsConfig(EventsSource Source, IReadOnlyDictionary<strin
 /// </summary>
 public enum EventsSource { Hooks, Otel, Terminal, None }
 
-/// <summary>§10 telemetry ingest: OTel toggle + endpoint for budget attribution.</summary>
-public sealed record TelemetryConfig(bool Otel, string? Endpoint);
+/// <summary>
+/// §10 telemetry ingest: the per-profile opt-in that sends a harness's own
+/// token/cost telemetry to the operator's collector, attributed to the Docket task
+/// that caused it (<see cref="HarnessTelemetry"/> resolves the spawn environment;
+/// <c>docs/TELEMETRY.md</c> is the operator guide).
+///
+/// <para><see cref="Otel"/> is off by default and gates everything — it is the
+/// operator's data going to the operator's collector. <see cref="Endpoint"/> beats
+/// the endpoint docketd itself inherited; with neither, telemetry stays off rather
+/// than pointing a worker's exporter at nothing.</para>
+///
+/// <para><see cref="Env"/> holds harness-specific opt-in variables as data, so
+/// docketd's own code stays vendor-neutral (§10 — no harness knowledge). Claude
+/// Code needs <c>CLAUDE_CODE_ENABLE_TELEMETRY=1</c> here; the same map is the seam
+/// for anything else an operator wants on the worker's exporter (headers, export
+/// interval, the trace beta).</para>
+///
+/// <para><b>Visibility, not enforcement.</b> No ceiling, no accounting, and the
+/// control plane ingests none of it (§10 — Docket does not sit between harness and
+/// provider, so attribution is best-effort by construction).</para>
+/// </summary>
+public sealed record TelemetryConfig(
+    bool Otel,
+    string? Endpoint,
+    IReadOnlyDictionary<string, string>? Env = null)
+{
+    /// <summary>Never null: an absent <c>env</c> block is an empty map.</summary>
+    public IReadOnlyDictionary<string, string> Env { get; init; } =
+        Env ?? new Dictionary<string, string>(StringComparer.Ordinal);
+}
 
 /// <summary>
 /// §12 transcript capture, plus the two original §10 log-streaming hints.

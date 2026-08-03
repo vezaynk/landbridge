@@ -16,7 +16,11 @@ public class RunnerConfigTests
           "spawn": ["claude", "-p", "--input-format", "stream-json"],
           "stop": { "mode": "message", "message": "{disposition}", "wind_down_seconds": 20 },
           "events": { "source": "hooks", "mapping": { "PostToolUse": "tool-call" } },
-          "telemetry": { "otel": true, "endpoint": "http://127.0.0.1:4318" },
+          "telemetry": {
+            "otel": true,
+            "endpoint": "http://127.0.0.1:4318",
+            "env": { "CLAUDE_CODE_ENABLE_TELEMETRY": "1" }
+          },
           "logs": { "format": "stream-json", "capture": true, "max_bytes": 1048576, "prune_after_days": 3 },
           "max_concurrent": 3
         },
@@ -50,6 +54,16 @@ public class RunnerConfigTests
         Assert.Equal("restricted", config.Resolve("restricted")!.Name);   // exact-match (§7)
         Assert.Null(config.Resolve("frontend"));                          // requested-but-absent
         Assert.Equal(new HashSet<string> { "default", "restricted" }, config.DeclaredProfiles);
+
+        // §10 telemetry: the opt-in, the destination, and the harness's own enable flag
+        // (data, not docketd knowledge). A profile with no telemetry section is off with
+        // an empty env — never null, so the spawn path needs no guard.
+        Assert.True(config.Default.Telemetry.Otel);
+        Assert.Equal("http://127.0.0.1:4318", config.Default.Telemetry.Endpoint);
+        Assert.Equal("1", config.Default.Telemetry.Env["CLAUDE_CODE_ENABLE_TELEMETRY"]);
+        Assert.False(config.Resolve("restricted")!.Telemetry.Otel);
+        Assert.Null(config.Resolve("restricted")!.Telemetry.Endpoint);
+        Assert.Empty(config.Resolve("restricted")!.Telemetry.Env);
 
         // §12 capture keys parse; a profile with no logs section takes the OFF default.
         Assert.True(config.Default.Logs.Capture);

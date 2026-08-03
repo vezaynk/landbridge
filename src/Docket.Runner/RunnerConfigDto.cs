@@ -62,6 +62,12 @@ internal sealed class TelemetryDto
 {
     public bool? Otel { get; set; }
     public string? Endpoint { get; set; }
+
+    // §10 telemetry ingest: harness-specific opt-in variables, as data — docketd
+    // itself sets only vendor-neutral OTEL_* (see HarnessTelemetry). Claude Code
+    // needs { "CLAUDE_CODE_ENABLE_TELEMETRY": "1" } here. Applied only when
+    // `otel` is on and a destination resolves.
+    public Dictionary<string, string>? Env { get; set; }
 }
 
 internal sealed class LogsDto

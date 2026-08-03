@@ -463,6 +463,7 @@ Full schema and a worked Claude Code example: `skills/docket-enroll/references/r
 |---|---|
 | `machine` | `work_root` for per-task scratch directories; back-pressure thresholds |
 | `profiles` | Named configurations, one required to be `default`. Each carries `spawn`, `stop`, `resume`, `events`, `telemetry`, `logs`, and an optional `max_concurrent` cap. |
+| `profiles[].telemetry` | Per-profile opt-in (off by default) that points a harness's own OTel export at the operator's collector: `otel`, `endpoint`, and `env` for the harness's own enable flag. `docketd` sets only vendor-neutral `OTEL_*` — a harness's telemetry variables are data like everything else. Never enabled without a destination. |
 
 **A daemon can drive several harnesses or postures.** Profiles exist for genuinely different setups on one machine: Claude Code alongside Codex, a restricted permission posture for sensitive work, a pinned version being canaried during an upgrade.
 
@@ -534,6 +535,8 @@ A `kill` queued behind a dev server's asset traffic or a transcript backlog is a
 ### Telemetry ingest
 
 OTel from harnesses, plus tool-call hooks where the harness has them — Claude Code's hooks can POST JSON to a loopback HTTP handler, a cleaner per-task event source for `docketd` than log scraping, and hook processes inherit `DOCKET_TASK_ID` for attribution. Per-subagent lineage (`agent_id` / `parent_agent_id`) currently arrives only on beta trace telemetry — treat the subagent tree as progressive enhancement, not a given. Harnesses without equivalent signals render as "not reported" — degraded telemetry is normal, not broken.
+
+**Attribution is wired; ingestion is not.** A profile's `telemetry` block turns the harness's own exporter on and appends `docket.task_id` (plus `docket.machine_id`) to `OTEL_RESOURCE_ATTRIBUTES`, so every metric and event the harness emits reaches the *operator's* collector already bucketed per task — the id §10 requires, carried the only way available to a supervisor that never sees a token. Docket itself receives none of it: there is no OTLP receiver, no token or cost field in the schema, and joining spend to a Team still means joining on task id against the plane's records (`dispatch` carries no Team id). Operator guide: `docs/TELEMETRY.md`.
 
 This is the *attribution* source for budgets — best-effort by construction, since Docket does not sit between the harness and the model provider and the machine is the customer's. Budget is therefore containment (§9 check 9): attribution drives refuse-new-dispatch and `stop`, and the per-dispatch harness-local hard cap (Claude Code: `--max-budget-usd`, passed by `docketd` from the task's `budget`) is the backstop that holds even when telemetry is off or gamed.
 
