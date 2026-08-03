@@ -30,7 +30,7 @@ public sealed class RunnerEventSink(
             case StartedEvent s:
                 // §10: started confirms the harness is up; the task stays tracked
                 // (requeue-on-disconnect still applies), activity refreshes.
-                registry.RecordActivity(s.Task);
+                registry.RecordProgress(s.Task);
                 break;
 
             case SessionStartedEvent ss:
@@ -39,16 +39,21 @@ public sealed class RunnerEventSink(
                 // ResultReference/TraceContext) so a later park carries it and
                 // redispatch resumes the transcript. A session-init is also forward
                 // progress, so refresh activity like the other liveness signals.
-                registry.RecordActivity(ss.Task);
+                registry.RecordProgress(ss.Task);
                 await WithStoreAsync(store => store.StampHarnessSessionRefAsync(ss.Task, ss.SessionRef, ct));
                 break;
 
             case AliveEvent a:
-                registry.RecordActivity(a.Task);
+                // §10: docketd's periodic "this harness process still exists" for a
+                // supervised task. Refreshes ONLY the aliveness clock — it is not
+                // progress, and treating it as progress would make a wedged agent
+                // undetectable. It is what keeps an idle-but-alive worker (a long
+                // build, a service being babysat) from being requeued every minute.
+                registry.RecordAlive(a.Task);
                 break;
 
             case ToolCallEvent t:
-                registry.RecordActivity(t.Task);
+                registry.RecordProgress(t.Task);
                 break;
 
             case SubagentSpawnedEvent sub:
@@ -56,7 +61,7 @@ public sealed class RunnerEventSink(
                 // liveness like any inbound signal, and — §12, #50 — persist it as a
                 // task event row so it shows on the dashboard as progress (subagent
                 // lineage), rather than being visible only as a liveness ping.
-                registry.RecordActivity(sub.Task);
+                registry.RecordProgress(sub.Task);
                 await WithStoreAsync(store =>
                     store.RecordSubagentSpawnAsync(sub.Task, sub.AgentId, sub.ParentAgentId, ct));
                 break;
@@ -92,8 +97,8 @@ public sealed class RunnerEventSink(
                 // §12 serving: hand the range to the dashboard read parked on this request
                 // id. Deliberately NOT a liveness signal — a transcript read is an operator
                 // pulling old bytes off a machine, not the task making progress, and the
-                // task in question is terminal by the time it can be read at all. Calling
-                // RecordActivity here would let a read refresh a dead task's activity clock.
+                // task in question is terminal by the time it can be read at all. Refreshing
+                // either clock here would let a read revive a dead task's liveness.
                 //
                 // This case must stay non-blocking: the sink runs on the runner socket's
                 // receive loop, so awaiting anything downstream of the operator's HTTP

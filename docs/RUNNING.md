@@ -97,10 +97,14 @@ secrets or the environment variable `Docket__Operator__PassphraseHash` (see the
   passphrase; `/oauth/token` mints an opaque human session.
 
 Lead identity is then *derived from the authenticated token*, not claimed through
-a tool call on this branch — a human-session/lead principal is what the MCP Lead
-tools require. (Spec §10's `claim_lead` / `release_lead` / `list_teams` /
-`get_machine_group_status` tools and slash-command prompts are not yet exposed as
-MCP tools; Team and Machine Group enumeration is served by the web dashboard.)
+a tool call — a human-session/lead principal is what the MCP Lead tools require.
+An earlier draft of spec §10 listed `claim_lead` / `release_lead` / `list_teams` /
+`get_machine_group_status` tools; per §10's as-built reconciliation all four are
+**deliberate non-goals, not pending work**. Claiming and releasing a Lead is the
+credential lifecycle rather than a tool call, and Team / Machine Group enumeration
+is a human surface served by the web dashboard (each page has a `?format=json`
+twin a reattaching Lead can read with its own token). The slash-command prompts
+are separately not built — no MCP prompt is registered on this branch.
 
 ## Enrolling a real second machine
 

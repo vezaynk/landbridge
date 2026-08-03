@@ -108,8 +108,17 @@ public sealed class RunnerDaemon
         _pump = Task.Run(() => PumpRingAsync(_cts.Token));
         _ring.Enqueue(new RebootedEvent(_machineId, _clock.GetUtcNow()));
 
+        // The heartbeat timer carries both machine-level and per-task liveness: the
+        // machine heartbeat, and one `alive` per live task (§10). They share a timer
+        // because they answer the same question at two scopes and want the same
+        // cadence — comfortably under the plane's per-task window, so a task is never
+        // requeued for silence while its process is plainly still there.
         _heartbeatTimer = _clock.CreateTimer(
-            _ => EmitHeartbeat(),
+            _ =>
+            {
+                EmitHeartbeat();
+                EmitAliveEvents();
+            },
             state: null,
             dueTime: _config.Machine.HeartbeatInterval,
             period: _config.Machine.HeartbeatInterval);
@@ -258,6 +267,28 @@ public sealed class RunnerDaemon
             TranscriptsServable: _transcripts is not null);
         // Best-effort, fire-and-forget: never queue a command against the runner (§10).
         _ = _channel.HeartbeatAsync(heartbeat, _cts.Token);
+    }
+
+    /// <summary>
+    /// §10 per-task liveness, process-alive half: one <c>alive</c> per supervised task
+    /// whose process still exists. This is the only way the fact reaches the plane —
+    /// the machine heartbeat is machine-scoped and refreshes no task's clock, and a
+    /// worker's own MCP calls do not either. Without it, a profile with no
+    /// <c>tool-call</c> source refreshes per-task liveness exactly once (at
+    /// <c>started</c>) and every task outliving the plane's window is requeued
+    /// forever; with it, an idle-but-alive worker — a long build, a service being
+    /// babysat — survives, while the plane's separate no-progress ceiling still
+    /// catches a wedged one.
+    ///
+    /// <para>Goes through the ring like any other event, so it is ordered with them,
+    /// subject to the same drop-oldest bound, and needs no new wire member:
+    /// <c>alive</c> has been in the frozen vocabulary all along with no producer.</para>
+    /// </summary>
+    private void EmitAliveEvents()
+    {
+        var now = _clock.GetUtcNow();
+        foreach (var task in _supervisor.LiveTasks)
+            _ring.Enqueue(new AliveEvent(task, now));
     }
 
     private async Task PumpRingAsync(CancellationToken ct)

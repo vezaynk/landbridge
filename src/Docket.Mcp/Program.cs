@@ -101,13 +101,20 @@ var publicMcpUrl = builder.Configuration["Docket:PublicMcpUrl"]
 // URLs all derive from the same public URL, so the RFC 9728 challenge, the
 // well-known metadata documents, and authorize/token validation never disagree.
 builder.Services.AddSingleton(OAuthServerConfig.FromPublicMcpUrl(publicMcpUrl));
+// §10 per-task liveness runs on two clocks, both configurable: PerTaskLivenessWindow
+// is how long docketd may go without asserting the harness process is alive (it
+// asserts every heartbeat), and NoProgressCeiling is how long an alive process may
+// make no progress before it is treated as wedged. A task bearing a registered
+// service (§8.2) is exempt from the second, never the first.
 builder.Services.AddSingleton(sp => new DispatchService(
     sp.GetRequiredService<IServiceScopeFactory>(),
     sp.GetRequiredService<RunnerConnectionRegistry>(),
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILogger<DispatchService>>(),
     sp.GetRequiredService<TaskEventListener>(),
-    publicMcpUrl: publicMcpUrl));
+    livenessWindow: builder.Configuration.GetValue<TimeSpan?>("Docket:PerTaskLivenessWindow"),
+    publicMcpUrl: publicMcpUrl,
+    noProgressCeiling: builder.Configuration.GetValue<TimeSpan?>("Docket:NoProgressCeiling")));
 builder.Services.AddHostedService(sp => sp.GetRequiredService<DispatchService>());
 
 // §11 wait-TTL sweeper: parks a task whose Lead never answered (wait TTL) and

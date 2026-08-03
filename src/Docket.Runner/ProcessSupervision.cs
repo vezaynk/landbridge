@@ -6,8 +6,10 @@ using Docket.Core;
 
 namespace Docket.Runner;
 
-/// <summary>How a <c>stop</c> was delivered (§10). Reported back so the
-/// conformance run can confirm message-delivery actually reached the agent.</summary>
+/// <summary>How a <c>stop</c> was delivered (§10). Reported back so an operator
+/// can confirm message-delivery actually reached the agent — the enroll skill's
+/// smoke test checks exactly this, and the §11 conformance run would automate it
+/// if it were built.</summary>
 public enum StopDelivery
 {
     /// <summary>Injected as a turn the agent reads and honours (§10). A bounded
@@ -60,6 +62,10 @@ public interface IProcessSupervisor
     int RunningFor(string profile);
     int RunningTotal { get; }
     IReadOnlyCollection<TaskId> RunningTasks { get; }
+
+    /// <summary>Supervised tasks whose process is still alive — the source of the
+    /// periodic <c>alive</c> event that carries process-alive to the plane (§10).</summary>
+    IReadOnlyCollection<TaskId> LiveTasks { get; }
 }
 
 /// <summary>One supervised harness process and the per-task state around it.</summary>
@@ -196,6 +202,17 @@ public sealed class ProcessSupervisor : IProcessSupervisor
     public int RunningTotal => _tasks.Count;
 
     public IReadOnlyCollection<TaskId> RunningTasks => _tasks.Keys.ToArray();
+
+    /// <summary>
+    /// The supervised tasks whose OS process is still alive (§10 process-alive). The
+    /// source for the periodic <c>alive</c> event: this is the one fact docketd knows
+    /// and the plane cannot observe, so it is the fact that has to travel. Narrower
+    /// than <see cref="RunningTasks"/>, which still lists a task between its process
+    /// exiting and its bookkeeping being torn down — reporting one of those as alive
+    /// would hold off a requeue that should happen.
+    /// </summary>
+    public IReadOnlyCollection<TaskId> LiveTasks =>
+        _tasks.Values.Where(t => t.ProcessAlive).Select(t => t.Task).ToArray();
 
     public int RunningFor(string profile) =>
         _tasks.Values.Count(t => string.Equals(t.Profile, profile, StringComparison.Ordinal));
@@ -473,10 +490,14 @@ public sealed class ProcessSupervisor : IProcessSupervisor
     }
 
     /// <summary>
-    /// Per-task liveness (§10): the task is live only while its process is alive
-    /// <em>and</em> a signal has arrived within <paramref name="timeout"/>. The
-    /// control plane suspends this while a task is blocked_on_input/parked (§11);
-    /// the runner reports the raw derivation.
+    /// The runner-local view of per-task liveness (§10): process alive <em>and</em> a
+    /// local signal within <paramref name="timeout"/>. Diagnostic only — the control
+    /// plane does <b>not</b> consult this, and cannot: it is a runner-side read with
+    /// no wire representation. Per-task liveness on the plane is decided from the
+    /// events it receives — <see cref="LiveTasks"/> feeds the periodic <c>alive</c>
+    /// event that carries the process-alive half upstream. Do not mistake this for
+    /// the mechanism §10 promises; conflating the two is what left process-alive
+    /// unwired while appearing implemented.
     /// </summary>
     public bool IsTaskLive(TaskId task, TimeSpan timeout)
     {

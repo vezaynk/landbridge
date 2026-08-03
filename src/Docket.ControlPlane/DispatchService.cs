@@ -32,7 +32,20 @@ public sealed class DispatchService : IHostedService
     private readonly ILogger<DispatchService> _logger;
     private readonly TaskEventListener? _listener;
     private readonly TimeSpan _livenessWindow;
+    private readonly TimeSpan _noProgressCeiling;
     private readonly string _publicMcpUrl;
+
+    /// <summary>Aliveness clock default: docketd asserts process-alive far more often
+    /// (every heartbeat, 15s by default), so silence this long means it stopped.</summary>
+    public static readonly TimeSpan DefaultLivenessWindow = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// Progress clock default. Generous on purpose: a single long tool call emits
+    /// nothing while it runs, and requeueing slow-but-healthy work makes it slower.
+    /// This bounds how long a genuinely wedged agent can burn, not how long a task
+    /// may take.
+    /// </summary>
+    public static readonly TimeSpan DefaultNoProgressCeiling = TimeSpan.FromMinutes(30);
 
     /// <summary>The default plane MCP URL a worker dials when config supplies none (§10).</summary>
     public const string DefaultPublicMcpUrl = "http://127.0.0.1:5000";
@@ -63,14 +76,16 @@ public sealed class DispatchService : IHostedService
         ILogger<DispatchService> logger,
         TaskEventListener? listener = null,
         TimeSpan? livenessWindow = null,
-        string? publicMcpUrl = null)
+        string? publicMcpUrl = null,
+        TimeSpan? noProgressCeiling = null)
     {
         _scopes = scopes;
         _registry = registry;
         _clock = clock;
         _logger = logger;
         _listener = listener;
-        _livenessWindow = livenessWindow ?? TimeSpan.FromSeconds(60);
+        _livenessWindow = livenessWindow ?? DefaultLivenessWindow;
+        _noProgressCeiling = noProgressCeiling ?? DefaultNoProgressCeiling;
         _publicMcpUrl = string.IsNullOrWhiteSpace(publicMcpUrl) ? DefaultPublicMcpUrl : publicMcpUrl;
     }
 
@@ -289,17 +304,37 @@ public sealed class DispatchService : IHostedService
     }
 
     /// <summary>
-    /// Requeues working tasks with no activity within the liveness window (§10
-    /// per-task liveness). Tasks that are blocked_on_input/parked have liveness
+    /// Requeues working tasks that have lost liveness (§10 per-task liveness), on
+    /// two independent clocks. Tasks that are blocked_on_input/parked have liveness
     /// suspended (§11) and are left tracked; verifying/terminal tasks are simply
     /// untracked.
+    ///
+    /// <para><b>Aliveness</b> (<see cref="_livenessWindow"/>, default 60s): docketd
+    /// has stopped even asserting the harness process exists. That means the process
+    /// died without an <c>exited</c> event, or the daemon itself is wedged — either
+    /// way the task is not being worked and requeues fast.</para>
+    ///
+    /// <para><b>Progress</b> (<see cref="_noProgressCeiling"/>, default 30min): the
+    /// process is alive but the agent has produced no progress signal for a long
+    /// time — the wedged-agent case the short window used to catch by accident.
+    /// It has to be generous: a single long tool call (a full test suite, a large
+    /// build) legitimately emits nothing for minutes, and requeueing that is worse
+    /// than waiting, because the replacement attempt does the same slow thing again.</para>
+    ///
+    /// <para>A task that has registered a service (§8.2) is exempt from the progress
+    /// ceiling: it declared, by a deliberate protocol act, that staying up is part of
+    /// its job, so "no tool calls for half an hour" is its success condition rather
+    /// than a symptom. It stays subject to the aliveness clock, so a service-bearing
+    /// task whose process dies is still requeued promptly.</para>
     /// </summary>
     public async Task CheckLivenessAsync(CancellationToken ct)
     {
         var now = _clock.GetUtcNow();
         foreach (var tracked in _registry.AllTracked())
         {
-            if (now - tracked.LastActivity < _livenessWindow)
+            var notAlive = now - tracked.LastActivity >= _livenessWindow;
+            var noProgress = now - tracked.LastProgress >= _noProgressCeiling;
+            if (!notAlive && !noProgress)
                 continue;
 
             using var scope = _scopes.CreateScope();
@@ -308,6 +343,23 @@ public sealed class DispatchService : IHostedService
             switch (state)
             {
                 case TaskState.Working:
+                    // The progress ceiling alone does not requeue a service-bearing
+                    // task; the aliveness clock still does.
+                    if (!notAlive && await store.HasRegisteredServiceAsync(tracked.Task, ct))
+                    {
+                        _logger.LogDebug(
+                            "task {Task} on {Machine} has no progress for {Idle} but bears a registered service; not requeued",
+                            tracked.Task, tracked.Machine, now - tracked.LastProgress);
+                        break;
+                    }
+
+                    // LivenessLossReason is not persisted (§10 follow-up), so which
+                    // clock fired is only recoverable from this line. Log it.
+                    _logger.LogWarning(
+                        "requeueing task {Task} on {Machine}: {Clock} (last alive {Alive} ago, last progress {Progress} ago)",
+                        tracked.Task, tracked.Machine,
+                        notAlive ? "no aliveness signal" : "no progress",
+                        now - tracked.LastActivity, now - tracked.LastProgress);
                     await store.ApplyAsync(tracked.Task, new LivenessLost(LivenessLossReason.LivenessTimeout), ct);
                     _registry.Untrack(tracked.Task);
                     break;

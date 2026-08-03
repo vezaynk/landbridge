@@ -5,8 +5,10 @@ namespace Docket.Runner;
 /// <summary>
 /// The validated runner configuration, spec §10 runner config. Everything
 /// harness-specific is data: <c>docketd</c> contains no harness knowledge, so
-/// supporting a new harness is a config file plus a passing conformance run,
-/// never a code change (§10). Parsed from JSON via a source-gen'd context
+/// supporting a new harness is a config file, never a code change (§10). (§11
+/// wants that config gated by a conformance run before the machine joins; that
+/// run is not built, so today the gate is the enroll skill's manual smoke test.)
+/// Parsed from JSON via a source-gen'd context
 /// (<see cref="RunnerJsonContext"/>) to stay AOT-clean.
 /// </summary>
 public sealed record RunnerConfig(MachineConfig Machine, IReadOnlyDictionary<string, ProfileConfig> Profiles)
