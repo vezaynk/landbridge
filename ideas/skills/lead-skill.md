@@ -71,7 +71,7 @@ Machines may declare more than one runner profile — a second harness, a restri
 
 Leave it unset unless you have a specific reason. An unset profile runs on `default` anywhere in the Machine Group, which is what you want almost always.
 
-Set it when the task genuinely needs that configuration: work handling sensitive material that should run under a restricted posture, or work you are deliberately routing to a particular harness. Check `get_machine_group_status` for which profiles exist — **a task requesting a profile no machine declares will sit unclaimable indefinitely.** Nothing will tell you except the task not starting.
+Set it when the task genuinely needs that configuration: work handling sensitive material that should run under a restricted posture, or work you are deliberately routing to a particular harness. Check the Machine Group view (`/dashboard/machines`, or `?format=json` with your token) for which profiles exist — **a task requesting a profile no machine declares will sit unclaimable indefinitely.** Nothing will tell you except the task not starting. There is no MCP tool for this; machine enumeration is a dashboard surface by design.
 
 Do not use profiles to express what kind of work a task is. They describe how an agent runs, not what it does.
 

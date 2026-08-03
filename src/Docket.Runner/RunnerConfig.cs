@@ -27,6 +27,55 @@ public sealed record RunnerConfig(MachineConfig Machine, IReadOnlyDictionary<str
     public IReadOnlySet<string> DeclaredProfiles => new HashSet<string>(Profiles.Keys);
 
     /// <summary>
+    /// §10 event relay: warnings for profiles that will not produce a usable
+    /// per-task liveness signal. <see cref="EventsSource.Terminal"/> is the only
+    /// implemented source (the stdout drain in <see cref="ProcessSupervisor"/>);
+    /// <see cref="EventsSource.Hooks"/> and <see cref="EventsSource.Otel"/> parse
+    /// but are consumed nowhere, so they behave exactly as
+    /// <see cref="EventsSource.None"/>.
+    ///
+    /// <para>This is <b>not</b> cosmetic degradation. Plane-side per-task activity
+    /// is refreshed only by an inbound event, and a non-terminal profile emits one
+    /// event ever — <c>started</c>, at spawn. The plane requeues a working task
+    /// whose activity is older than its liveness window, so such a profile loses
+    /// and redispatches every task that outlives that window, without a cap. The
+    /// spec's "degrades to process-alive" fallback is not wired, so nothing catches
+    /// this — hence a loud startup line rather than silence.</para>
+    ///
+    /// <para>Returned rather than logged so it is testable; the daemon prints these
+    /// alongside the <c>max_cpu_load is inert</c> notice.</para>
+    /// </summary>
+    public IReadOnlyList<string> EventRelayWarnings()
+    {
+        var blind = Profiles
+            .Where(p => p.Value.Events.Source != EventsSource.Terminal)
+            .OrderBy(p => p.Key, StringComparer.Ordinal)
+            .ToArray();
+
+        if (blind.Length == 0)
+            return [];
+
+        var warnings = new List<string>(blind.Length + 1);
+        foreach (var (name, profile) in blind)
+        {
+            var declared = profile.Events.Source.ToString().ToLowerInvariant();
+            var unimplemented = profile.Events.Source is EventsSource.Hooks or EventsSource.Otel
+                ? $"events.source '{declared}' is not implemented and behaves as 'none'"
+                : "events.source is 'none'";
+            warnings.Add(
+                $"docketd: profile '{name}': {unimplemented} — no tool-call events, " +
+                "so per-task liveness refreshes only once at spawn.");
+        }
+
+        warnings.Add(
+            "docketd: the control plane requeues a working task with no activity inside its " +
+            "per-task liveness window (60s), so the profiles above will lose and redispatch any " +
+            "task that runs longer than that, repeatedly. Use events.source 'terminal' if the " +
+            "harness can stream structured output on stdout (§10).");
+        return warnings;
+    }
+
+    /// <summary>
     /// Parses and validates a config document. Throws
     /// <see cref="RunnerConfigException"/> listing every problem — a config
     /// with zero or multiple <c>default</c> profiles, an empty spawn argv, a
