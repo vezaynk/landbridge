@@ -385,8 +385,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         var services = new ServiceCollection();
         services.AddDbContext<DocketDbContext>(o =>
             o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
-        services.AddScoped<TaskStore>();
-        services.AddScoped<TeamBudgetService>(); // §9.9: the store commits dispatch budget through it
+        services.AddDocketStore();
         services.AddScoped<TokenService>();
         services.AddSingleton<TimeProvider>(_clock);
         return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();

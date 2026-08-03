@@ -303,8 +303,7 @@ public sealed class TranscriptDashboardEndToEndTests(PostgresFixture pg) : IAsyn
 
         builder.Services.AddDbContext<DocketDbContext>(o =>
             o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
-        builder.Services.AddScoped<TaskStore>();
-        builder.Services.AddScoped<TeamBudgetService>(); // §9.9: the store commits dispatch budget through it
+        builder.Services.AddDocketStore();
         builder.Services.AddScoped<TokenService>();
         builder.Services.AddScoped<DashboardQueries>();
         builder.Services.AddSingleton(TimeProvider.System);

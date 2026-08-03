@@ -664,8 +664,7 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
 
         builder.Services.AddDbContext<DocketDbContext>(o =>
             o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
-        builder.Services.AddScoped<TaskStore>();
-        builder.Services.AddScoped<TeamBudgetService>(); // §9.9: the store commits dispatch budget through it
+        builder.Services.AddDocketStore();
         builder.Services.AddScoped<TokenService>();
         builder.Services.AddScoped<DashboardQueries>();
         builder.Services.AddSingleton(TimeProvider.System);
