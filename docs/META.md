@@ -69,9 +69,52 @@ to the server key (`srv0` above). Secure the admin endpoint — it is a control 
 
 ### 1.4 Published docket images
 
-Meta **does not build images** — it pulls pinned tags and runs them. Build and publish
-`docket-mcp` and `docket-relay` to a registry your hosts can pull from. The images are
-**runtime-only** (they COPY a `dotnet publish` output), so the build is a two-step:
+Meta **does not build images** — it pulls pinned tags and runs them. Both images come from
+the repo's **Publish images** workflow (`.github/workflows/publish-images.yml`), which
+publishes to GHCR:
+
+```
+ghcr.io/vezaynk/docket-mcp
+ghcr.io/vezaynk/docket-relay
+```
+
+**Publishing.** The workflow is deliberate, never per-push. Either push a version tag
+(`git tag v0.4.0 && git push origin v0.4.0`) or dispatch it from the Actions tab with the
+tag to publish. It `dotnet publish`es both hosts and builds the runtime-only Dockerfiles
+against that output for **`linux/amd64` and `linux/arm64`**, so an Apple-silicon Docker host
+pulls a native image instead of failing at run time with an exec-format error.
+
+**Tag scheme.** Every run publishes two tags per image:
+
+| Tag | Meaning |
+|---|---|
+| `v0.4.0` | The version tag pushed, or the dispatch input. Moves if you move the git tag. |
+| `sha-<12-char commit>` | The commit the images were built from. Never moves — **pin this**. |
+
+Nothing publishes `latest`, deliberately: meta skips the pull when the image is already on
+the host (`EnsureImageAsync`), so a mutable tag would silently keep running a stale image.
+Point `Meta:DefaultImageTag` at a real published tag rather than leaving it at `latest`.
+
+**Pinning.** Set `Meta:McpImageRepo` / `Meta:RelayImageRepo` to the two repositories above
+(no tag). An Instance records **one shared tag** across both images — chosen at create time
+and re-pinned by **Upgrade** (§4), which recreates the mcp + relay containers on the new tag
+and leaves Postgres and its volume alone. Because the pair moves together, a tag is only
+usable once its whole workflow run is green.
+
+**A private GHCR package needs help.** Meta pulls **anonymously** — it sends no registry
+credentials — so it cannot pull a private package by itself. Either:
+
+- **Make the package public** (simplest): GitHub → *Packages* → the package → *Package
+  settings* → *Change visibility* → *Public*. Nothing else to configure.
+- **Pre-pull on every Docker host**: `docker login ghcr.io` (with a PAT carrying
+  `read:packages`), then `docker pull ghcr.io/vezaynk/docket-mcp:<tag>` and the same for
+  the relay. Meta's present-locally check then short-circuits before it would pull. Note a
+  host-side `docker login` alone is **not** enough — the daemon does not use the CLI's
+  credentials for meta's API-driven pull — and this has to be repeated on every host for
+  every new tag.
+
+**Building by hand** (a local registry, an air-gapped host, a one-off): the images are
+**runtime-only** — they COPY a `dotnet publish` output — so the build is a two-step:
 
 ```
 # from the repo root, for each of Docket.Mcp and Docket.Relay:
@@ -82,9 +125,6 @@ docker build -f docker/Docket.Relay.Dockerfile -t <registry>/docket-relay:<tag> 
 docker push <registry>/docket-mcp:<tag>
 docker push <registry>/docket-relay:<tag>
 ```
-
-Set `Meta:McpImageRepo` / `Meta:RelayImageRepo` to those repositories; an Instance pins a
-single shared **tag** across both, and an upgrade moves both together.
 
 ---
 
