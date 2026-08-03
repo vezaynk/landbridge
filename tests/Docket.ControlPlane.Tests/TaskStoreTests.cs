@@ -235,6 +235,260 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task Request_input_persists_the_question_and_kind_and_surfaces_them_to_lead_and_worker()
+    {
+        // §10/§11: the worker's ask is captured verbatim on the row beside the kind, so
+        // every surface that answers it can show WHAT is being asked. get_team_state
+        // stays prose-free (kind + a flag); the Lead pulls the text per task; the
+        // worker sees its own question back on get_task.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await CreateSubmitted(db);
+        var instance = WorkerInstanceId.New();
+        var caller = new WorkerCaller(Team, id, instance);
+        await store.DispatchNextAsync(Machine(), instance);
+
+        const string question = "migrate the legacy rows or drop them? dropping loses audit history";
+        Assert.IsType<StoreResult.Applied>(
+            await store.ApplyAsync(id, new RequestInput(caller, InputRequestKind.Question, question)));
+
+        await using var v = pg.NewContext();
+        var vstore = NewStore(v);
+        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(question, row.InputQuestion);
+        Assert.Equal(InputRequestKind.Question, row.InputKind);
+        Assert.Null(row.InputAnswer); // nobody has answered yet
+
+        // get_team_state: the kind and a flag, never the prose (§10).
+        var summary = (await vstore.GetTeamStateAsync(Team)).Tasks.Single(t => t.TaskId == id.Value);
+        Assert.True(summary.HasQuestion);
+        Assert.Equal(InputRequestKind.Question, summary.InputKind);
+
+        // The Lead's deliberate per-task fetch carries the text.
+        var fetched = await vstore.GetTaskQuestionAsync(Team, id);
+        Assert.Equal(question, fetched!.Question);
+        Assert.Equal(TaskState.BlockedOnInput, fetched.State);
+        Assert.Null(fetched.Answer);
+
+        // And the incumbent's own get_task read.
+        var assignment = await vstore.GetAssignmentAsync(caller);
+        Assert.Equal(question, assignment!.Question);
+    }
+
+    [SkippableFact]
+    public async Task Answering_persists_the_answer_for_the_redispatched_worker()
+    {
+        // §11: the answer's whole purpose. The worker that asked is gone, so the answer
+        // waits on the row and reaches the SUCCESSOR instance's get_task.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await CreateSubmitted(db);
+        var asker = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), asker);
+        await store.ApplyAsync(id, new RequestInput(
+            new WorkerCaller(Team, id, asker), InputRequestKind.Question, "which database?"));
+
+        Assert.IsType<StoreResult.Applied>(
+            await store.AnswerOrWakeAsync(Lead, id, leaseMachine: "m1", answer: "staging-pg"));
+
+        await using var v = pg.NewContext();
+        var vstore = NewStore(v);
+        Assert.Equal("staging-pg", (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value)).InputAnswer);
+
+        // Redispatch: the successor instance reads both halves of the exchange.
+        var successor = WorkerInstanceId.New();
+        Assert.IsType<StoreResult.Applied>(await vstore.DispatchNextAsync(Machine(), successor));
+        var assignment = await vstore.GetAssignmentAsync(new WorkerCaller(Team, id, successor));
+        Assert.Equal("which database?", assignment!.Question);
+        Assert.Equal("staging-pg", assignment.Answer);
+
+        // The predecessor instance is revoked, so its read is refused — the answer is
+        // not a way around instance fencing (§5, §9 check 14).
+        Assert.Null(await vstore.GetAssignmentAsync(new WorkerCaller(Team, id, asker)));
+    }
+
+    [SkippableFact]
+    public async Task A_new_question_clears_the_previous_answer()
+    {
+        // Otherwise a worker that asks a SECOND question resumes seeing that question
+        // paired with the answer to the first — the most confusing possible state.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await CreateSubmitted(db);
+        var first = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), first);
+        await store.ApplyAsync(id, new RequestInput(
+            new WorkerCaller(Team, id, first), InputRequestKind.Question, "which database?"));
+        await store.AnswerOrWakeAsync(Lead, id, leaseMachine: "m1", answer: "staging-pg");
+
+        // Redispatch, then ask something else.
+        var second = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), second);
+        await store.ApplyAsync(id, new RequestInput(
+            new WorkerCaller(Team, id, second), InputRequestKind.AuthHelp, "I need a staging-pg credential"));
+
+        await using var v = pg.NewContext();
+        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal("I need a staging-pg credential", row.InputQuestion);
+        Assert.Equal(InputRequestKind.AuthHelp, row.InputKind);
+        Assert.Null(row.InputAnswer); // the stale answer is gone
+    }
+
+    [SkippableFact]
+    public async Task Answering_a_parked_task_persists_the_answer_on_the_wake_branch_too()
+    {
+        // §11 one-call answer path: a Lead cannot know whether the wait-TTL sweeper got
+        // there first, so the WakeParked branch must keep the words too.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await CreateSubmitted(db);
+        var instance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), instance);
+        await store.ApplyAsync(id, new RequestInput(
+            new WorkerCaller(Team, id, instance), InputRequestKind.Question, "which database?"));
+        // The sweeper parks it first.
+        Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(id,
+            new WaitTtlExpired(new ParkRecord("m1", Directory: null, HarnessSessionRef: null, Attempt: 1))));
+
+        Assert.IsType<StoreResult.Applied>(
+            await store.AnswerOrWakeAsync(Lead, id, leaseMachine: "m1", answer: "staging-pg"));
+
+        await using var v = pg.NewContext();
+        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(TaskState.Submitted, row.State);
+        Assert.Equal("staging-pg", row.InputAnswer);
+    }
+
+    [SkippableFact]
+    public async Task A_wordless_wake_leaves_a_live_exchange_untouched()
+    {
+        // An endpoint_wait consumer woken because its service registered answers
+        // nothing in words. That wake must not erase the exchange the row already
+        // holds — clearing is the asking side's job alone.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await CreateSubmitted(db);
+        var instance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), instance);
+        await store.ApplyAsync(id, new RequestInput(
+            new WorkerCaller(Team, id, instance), InputRequestKind.EndpointWait, "waiting on service 'api'"));
+        await store.AnswerOrWakeAsync(Lead, id, leaseMachine: "m1", answer: "'api' is up on 5173");
+
+        // Park it again (a Lead stop), then wake with no words.
+        var second = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), second);
+        await store.ApplyAsync(id, new StopPreserveAndPark(
+            Lead, new ParkRecord("m1", Directory: null, HarnessSessionRef: null, Attempt: 2)));
+        Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(id, new WakeParked()));
+
+        await using var v = pg.NewContext();
+        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal("waiting on service 'api'", row.InputQuestion);
+        Assert.Equal("'api' is up on 5173", row.InputAnswer);
+    }
+
+    [SkippableFact]
+    public async Task Get_task_question_is_team_scoped_and_refuses_a_cross_team_task()
+    {
+        // §13: same scoping as GetTaskReportAsync — another Team's task returns null,
+        // indistinguishable from not-found.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await CreateSubmitted(db);
+        var instance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), instance);
+        await store.ApplyAsync(id, new RequestInput(
+            new WorkerCaller(Team, id, instance), InputRequestKind.Question, "secret question"));
+
+        Assert.Null(await store.GetTaskQuestionAsync(TeamId.New(), id));
+        Assert.Null(await store.GetTaskQuestionAsync(Team, new TaskId(Guid.NewGuid())));
+    }
+
+    [SkippableFact]
+    public async Task A_task_that_never_asked_carries_no_question_anywhere()
+    {
+        // Back-compat: every column stays null, the flag is false, and the per-task
+        // fetch finds the task (it is the Lead's) but reports nothing asked.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await CreateSubmitted(db);
+        var instance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), instance);
+
+        await using var v = pg.NewContext();
+        var vstore = NewStore(v);
+        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Null(row.InputQuestion);
+        Assert.Null(row.InputAnswer);
+        Assert.Null(row.InputKind);
+
+        var summary = (await vstore.GetTeamStateAsync(Team)).Tasks.Single(t => t.TaskId == id.Value);
+        Assert.False(summary.HasQuestion);
+        Assert.Null(summary.InputKind);
+
+        var fetched = await vstore.GetTaskQuestionAsync(Team, id);
+        Assert.NotNull(fetched);
+        Assert.Null(fetched!.Question);
+        Assert.Null(fetched.Answer);
+
+        Assert.Null((await vstore.GetAssignmentAsync(new WorkerCaller(Team, id, instance)))!.Question);
+    }
+
+    [SkippableFact]
+    public async Task An_over_cap_question_is_rejected_and_the_task_stays_working()
+    {
+        // §10 cap at the store boundary: the engine refuses, so nothing is written and
+        // the worker is still working and free to ask again, shorter.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await CreateSubmitted(db);
+        var instance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), instance);
+
+        var oversized = new string('x', RequestInput.MaxQuestionBytes + 1);
+        var rejected = Assert.IsType<StoreResult.Rejected>(await store.ApplyAsync(id,
+            new RequestInput(new WorkerCaller(Team, id, instance), InputRequestKind.Question, oversized)));
+        Assert.Equal(Rule.QuestionWithinSizeCap, rejected.Rule);
+
+        await using var v = pg.NewContext();
+        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(TaskState.Working, row.State);
+        Assert.Null(row.InputQuestion);
+        Assert.Null(row.BlockedAt);
+    }
+
+    [SkippableFact]
+    public async Task An_over_cap_answer_is_rejected_and_the_task_stays_blocked()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await CreateSubmitted(db);
+        var instance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), instance);
+        await store.ApplyAsync(id, new RequestInput(
+            new WorkerCaller(Team, id, instance), InputRequestKind.Question, "which database?"));
+
+        var oversized = new string('x', AnswerInput.MaxAnswerBytes + 1);
+        var rejected = Assert.IsType<StoreResult.Rejected>(
+            await store.AnswerOrWakeAsync(Lead, id, leaseMachine: "m1", answer: oversized));
+        Assert.Equal(Rule.AnswerWithinSizeCap, rejected.Rule);
+
+        await using var v = pg.NewContext();
+        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(TaskState.BlockedOnInput, row.State); // still waiting; re-answerable
+        Assert.Null(row.InputAnswer);
+    }
+
+    [SkippableFact]
     public async Task Lead_verdict_completes_a_lead_task_and_records_provenance()
     {
         // §9 check 4: in lead mode the Lead session's accept completes the task with

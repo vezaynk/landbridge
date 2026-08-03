@@ -40,6 +40,45 @@ public sealed class TaskRow
     /// </summary>
     public DateTimeOffset? BlockedAt { get; set; }
 
+    /// <summary>
+    /// The typed kind of the task's most recent input request (§6/§11), captured on the
+    /// RequestInput path beside <see cref="BlockedAt"/>. The event row already records
+    /// every request's kind as history (<see cref="TaskEventRow.InputKind"/>); this is
+    /// the <em>live</em> one, so the §12 human surfaces and <c>get_team_state</c> can say
+    /// what kind of attention a waiting task needs without walking the event log — the
+    /// same row-vs-event-log split <see cref="BlockedAt"/> already makes. Structure, not
+    /// prose: it is safe on a bulk status read (§10). Null until the task first asks;
+    /// retained afterwards so the last exchange stays legible.
+    /// </summary>
+    public InputRequestKind? InputKind { get; set; }
+
+    /// <summary>
+    /// What the worker actually asked (§10/§11) — the content half of
+    /// <see cref="InputKind"/>, captured verbatim on the RequestInput transition and
+    /// size-capped at the engine (<see cref="Docket.Core.RequestInput.MaxQuestionBytes"/>).
+    /// Opaque: the plane stores it and never parses it (§2 principle 1). Read by the
+    /// Lead per task (<c>get_task_question</c>), by a human on the §12 dashboard and
+    /// inbox — where the answering happens — and by the resumed worker on
+    /// <c>get_task</c>, which matters most on a cold start, where the transcript that
+    /// held the question is gone. Retained past the answer so the pair stays readable;
+    /// a <em>new</em> question overwrites it and clears <see cref="InputAnswer"/>.
+    /// </summary>
+    public string? InputQuestion { get; set; }
+
+    /// <summary>
+    /// The answer to <see cref="InputQuestion"/> (§10/§11), captured verbatim on
+    /// whichever half of the one-call answer path ran — <c>AnswerInput</c> for a still
+    /// blocked task, <c>WakeParked</c> for one the wait-TTL sweeper parked first — and
+    /// capped at the engine (<see cref="Docket.Core.AnswerInput.MaxAnswerBytes"/>).
+    /// This is how the answer reaches the redispatched worker: it surfaces on that
+    /// worker's opening <c>get_task</c>, deliberately <b>not</b> through the resume
+    /// argv, which would leak the text to any local process reading
+    /// <c>/proc/&lt;pid&gt;/cmdline</c> (§13, the same reason tokens never ride argv).
+    /// Null when nobody has answered yet, or when the answer carried no words (an
+    /// <c>endpoint_wait</c> woken by a service registering).
+    /// </summary>
+    public string? InputAnswer { get; set; }
+
     // Opaque to the control plane: stored, returned, never dereferenced (§7).
     public string CompletionCriteria { get; set; } = "";
 

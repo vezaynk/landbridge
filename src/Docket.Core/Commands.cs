@@ -111,8 +111,30 @@ public sealed record VerdictAccept(Actor Actor, bool HumanConfirmed = false) : T
 /// </summary>
 public sealed record VerdictFail(Actor Actor, bool HumanConfirmed = false) : TaskCommand(Actor);
 
-/// <summary>working → blocked_on_input. Requires a typed request kind (§6).</summary>
-public sealed record RequestInput(Actor Actor, InputRequestKind? Kind) : TaskCommand(Actor);
+/// <summary>
+/// working → blocked_on_input. Requires a typed request kind (§6).
+///
+/// <para><see cref="Question"/> is <em>what the worker is actually asking</em> (§10/§11):
+/// the decision it cannot make, the options it sees, what it will do with each answer.
+/// The <see cref="Kind"/> only routes the request — who can answer it — so without the
+/// question the channel is a doorbell, and a Lead or human sees that a task needs
+/// attention but not what for. It rides UP through the plane exactly as the Lead's
+/// description rides DOWN: opaque content the engine never interprets (§2 principle 1),
+/// the store persists verbatim, and it is size-capped
+/// (<see cref="MaxQuestionBytes"/>) so a worker keeps the ask a question rather than
+/// pasting a workspace into the plane. Optional, because
+/// <see cref="InputRequestKind.EndpointWait"/> and friends are self-describing.</para>
+/// </summary>
+public sealed record RequestInput(Actor Actor, InputRequestKind? Kind, string? Question = null)
+    : TaskCommand(Actor)
+{
+    /// <summary>The question's hard cap: the same 16 KiB in-band class as the worker's
+    /// report (<see cref="ReportResult.MaxReportBytes"/>) — one number for every piece
+    /// of prose the plane carries in-band (§10). Over-cap is refused
+    /// (<see cref="Rule.QuestionWithinSizeCap"/>) and the task stays <c>working</c>, so
+    /// the worker can ask again, shorter.</summary>
+    public const int MaxQuestionBytes = ReportResult.MaxReportBytes;
+}
 
 /// <summary>
 /// blocked_on_input → submitted: the Lead or a human answered. §11 guarantees a
@@ -124,8 +146,23 @@ public sealed record RequestInput(Actor Actor, InputRequestKind? Kind) : TaskCom
 /// only when the dispatched machine is gone, and redispatch then cold-starts
 /// elsewhere. This never touches the infrastructure counter — a Lead answering is
 /// not an infrastructure requeue (§6, two counters).
+///
+/// <para><see cref="Answer"/> is the answer's <em>content</em> (§10/§11) — the other
+/// half of <see cref="RequestInput.Question"/>. Without it the transition only
+/// unblocks the task, and the redispatched worker resumes knowing it was answered
+/// but not with what, which is how a worker guesses or asks the same question
+/// again. Opaque content, capped at <see cref="MaxAnswerBytes"/>, persisted by the
+/// store and read back by the resumed worker's opening <c>get_task</c> — never
+/// through argv, which leaks via <c>ps</c> (§13).</para>
 /// </summary>
-public sealed record AnswerInput(Actor Actor, ParkRecord? Park) : TaskCommand(Actor);
+public sealed record AnswerInput(Actor Actor, ParkRecord? Park, string? Answer = null)
+    : TaskCommand(Actor)
+{
+    /// <summary>The answer's hard cap, the same in-band class as the question and the
+    /// report (§10). Over-cap is refused (<see cref="Rule.AnswerWithinSizeCap"/>) and
+    /// the task stays <c>blocked_on_input</c>, so the answer is never half-delivered.</summary>
+    public const int MaxAnswerBytes = ReportResult.MaxReportBytes;
+}
 
 /// <summary>blocked_on_input → parked: wait TTL expired, lease released (§6, §11).</summary>
 public sealed record WaitTtlExpired(ParkRecord Park) : TaskCommand(ControlPlaneActor.Instance);
@@ -134,8 +171,15 @@ public sealed record WaitTtlExpired(ParkRecord Park) : TaskCommand(ControlPlaneA
 /// parked → submitted: the awaited answer or endpoint landed. Redispatch then
 /// runs the full submitted → working checks, preferring the park record's
 /// machine (§6, §11).
+///
+/// <para><see cref="Answer"/> carries the answer's content on the <em>parked</em> half
+/// of the one-call answer path (§11): a Lead answering does not know, and should not
+/// have to know, whether the wait-TTL sweeper parked the task first, so the text must
+/// land either way. Null on the wakes that answer nothing in words — an
+/// <see cref="InputRequestKind.EndpointWait"/> consumer woken because the service
+/// registered. Same cap and opacity as <see cref="AnswerInput.Answer"/>.</para>
 /// </summary>
-public sealed record WakeParked() : TaskCommand(ControlPlaneActor.Instance);
+public sealed record WakeParked(string? Answer = null) : TaskCommand(ControlPlaneActor.Instance);
 
 /// <summary>working → parked: stop with disposition preserve_and_park (§6, §11).</summary>
 public sealed record StopPreserveAndPark(Actor Actor, ParkRecord Park) : TaskCommand(Actor);

@@ -61,6 +61,9 @@ public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) :
             // enum name, exactly like State/CompletionMode above, so the dispatch
             // SQL can match the literal 'Degrade'.
             e.Property(t => t.OnMachineGone).HasConversion<string>();
+            // §11: the live input request's kind, stored as its enum name like the
+            // event row's copy of the same enum. Null unless the task has ever asked.
+            e.Property(t => t.InputKind).HasConversion<string>();
             e.Property(t => t.Version).IsRowVersion(); // maps to Postgres xmin
         });
 

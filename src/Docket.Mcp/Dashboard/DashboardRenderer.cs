@@ -203,7 +203,7 @@ internal static class DashboardRenderer
             sb.Append("<table><thead><tr>");
             sb.Append("<th>Namespace</th><th>State</th><th>Mode</th>");
             sb.Append("<th class=\"num\">Attempt</th><th class=\"num\">Parks</th><th>Detail</th><th>Report</th>");
-            sb.Append("<th>Transcript</th>");
+            sb.Append("<th>Q&amp;A</th><th>Transcript</th>");
             sb.Append("</tr></thead><tbody>");
             foreach (var t in team.Tasks)
             {
@@ -216,6 +216,7 @@ internal static class DashboardRenderer
                 sb.Append($"<td class=\"num\">{parks}</td>");
                 sb.Append($"<td>{TaskDetailCell(t, now)}</td>");
                 sb.Append($"<td>{ReportCell(t)}</td>");
+                sb.Append($"<td>{ExchangeCell(t)}</td>");
                 sb.Append($"<td>{TranscriptCell(t)}</td>");
                 sb.Append("</tr>");
             }
@@ -238,16 +239,20 @@ internal static class DashboardRenderer
         }
         sb.Append("</section>");
 
-        // Open input requests (§12). The typed kind is not persisted by the store.
+        // Open input requests (§12), with the typed kind and the worker's own question —
+        // a person cannot answer what they cannot read. Escaped verbatim: it is
+        // agent-authored text on a human page (§13).
         sb.Append("<section><h2>Open input requests</h2>");
         if (team.OpenInputRequests.Count == 0)
             sb.Append(Empty("Nothing blocked on input."));
         else
         {
-            sb.Append("<table><thead><tr><th>Namespace</th><th>Kind</th><th>Blocked</th></tr></thead><tbody>");
+            sb.Append("<table><thead><tr><th>Namespace</th><th>Kind</th><th>Blocked</th>" +
+                      "<th>Question</th></tr></thead><tbody>");
             foreach (var r in team.OpenInputRequests)
                 sb.Append($"<tr><td><code>{E(r.Namespace)}</code></td>" +
-                          $"<td class=\"nt\">not tracked</td><td>{E(Age(r.BlockedAt, now))}</td></tr>");
+                          $"<td>{KindCell(r.Kind)}</td><td>{E(Age(r.BlockedAt, now))}</td>" +
+                          $"<td>{QuestionCell(r.Question)}</td></tr>");
             sb.Append("</tbody></table>");
         }
         sb.Append("</section>");
@@ -263,15 +268,20 @@ internal static class DashboardRenderer
         sb.Append("<h1>Human inbox</h1>");
         sb.Append("<p class=\"sub\">Everything waiting on a person, across every Team.</p>");
 
+        // The question's own text belongs here above all: this is the page a person is
+        // looking at when they decide what to answer (§12). Escaped verbatim — it is
+        // agent-authored content, never markup (§13).
         sb.Append("<section><h2>Open questions</h2>");
         if (inbox.Questions.Count == 0)
             sb.Append(Empty("No open questions."));
         else
         {
-            sb.Append("<table><thead><tr><th>Namespace</th><th>Team</th><th>Kind</th><th>Blocked</th></tr></thead><tbody>");
+            sb.Append("<table><thead><tr><th>Namespace</th><th>Team</th><th>Kind</th><th>Blocked</th>" +
+                      "<th>Question</th></tr></thead><tbody>");
             foreach (var q in inbox.Questions)
                 sb.Append($"<tr><td><code>{E(q.Namespace)}</code></td><td>{TeamLink(q.TeamId)}</td>" +
-                          $"<td class=\"nt\">not tracked</td><td>{E(Age(q.BlockedAt, now))}</td></tr>");
+                          $"<td>{KindCell(q.Kind)}</td><td>{E(Age(q.BlockedAt, now))}</td>" +
+                          $"<td>{QuestionCell(q.Question)}</td></tr>");
             sb.Append("</tbody></table>");
         }
         sb.Append("</section>");
@@ -293,10 +303,12 @@ internal static class DashboardRenderer
             sb.Append(Empty("No parked tasks."));
         else
         {
-            sb.Append("<table><thead><tr><th>Namespace</th><th>Team</th><th>Parked on</th></tr></thead><tbody>");
+            sb.Append("<table><thead><tr><th>Namespace</th><th>Team</th><th>Parked on</th>" +
+                      "<th>Kind</th><th>Question</th></tr></thead><tbody>");
             foreach (var p in inbox.Parked)
                 sb.Append($"<tr><td><code>{E(p.Namespace)}</code></td><td>{TeamLink(p.TeamId)}</td>" +
-                          $"<td class=\"mono\">{E(p.ParkMachine ?? "—")}</td></tr>");
+                          $"<td class=\"mono\">{E(p.ParkMachine ?? "—")}</td>" +
+                          $"<td>{KindCell(p.Kind)}</td><td>{QuestionCell(p.Question)}</td></tr>");
             sb.Append("</tbody></table>");
         }
         sb.Append("</section>");
@@ -614,6 +626,44 @@ internal static class DashboardRenderer
         t.Report is { Length: > 0 } r
             ? $"<details><summary>report</summary><pre class=\"report\">{E(r)}</pre></details>"
             : "<span class=\"nt\">—</span>";
+
+    /// <summary>
+    /// A task's input exchange (§11) behind a disclosure: what the worker asked and what
+    /// it was answered. Both are agent- and human-authored free text on a human page, so
+    /// both go through <see cref="E"/> verbatim — never rendered as markup (§12/§13).
+    /// An open question shows as unanswered, which is the actionable state.
+    /// </summary>
+    private static string ExchangeCell(TeamTaskView t)
+    {
+        if (t.Question is not { Length: > 0 } question)
+            return "<span class=\"nt\">—</span>";
+
+        var answer = t.Answer is { Length: > 0 } a
+            ? $"<pre class=\"report\">{E(a)}</pre>"
+            : "<p class=\"nt\">Not yet answered.</p>";
+        return $"<details><summary>{E(KindText(t.InputKind))}</summary>" +
+               $"<pre class=\"report\">{E(question)}</pre>{answer}</details>";
+    }
+
+    /// <summary>The typed input-request kind for a table cell, honest when a row predates
+    /// the column (blocked before the kind was persisted on the task).</summary>
+    private static string KindCell(Docket.Core.InputRequestKind? kind) =>
+        kind is null
+            ? "<span class=\"nt\">not recorded</span>"
+            : $"<code>{E(KindText(kind))}</code>";
+
+    private static string KindText(Docket.Core.InputRequestKind? kind) =>
+        kind?.ToString().ToLowerInvariant() ?? "kind not recorded";
+
+    /// <summary>
+    /// The worker's question inline in the inbox and Team lists — the text a person
+    /// reads before answering, escaped verbatim (§12/§13). A request that carried no
+    /// question says so: answering blind is a different situation from answering.
+    /// </summary>
+    private static string QuestionCell(string? question) =>
+        question is { Length: > 0 } q
+            ? $"<pre class=\"report\">{E(q)}</pre>"
+            : "<span class=\"nt\">none given</span>";
 
     /// <summary>§9 check 4 completion provenance, humanized for the task view.</summary>
     private static string ProvenanceLabel(Docket.Core.VerdictProvenance p) => p switch

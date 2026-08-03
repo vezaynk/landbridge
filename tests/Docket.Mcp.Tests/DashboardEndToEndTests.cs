@@ -404,10 +404,12 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         await WithStoreAsync(async store =>
             await store.RegisterServiceAsync(workingCaller, "api", 8080, ct));
 
-        // A blocked task (open input request).
+        // A blocked task (open input request), carrying the question its worker asked —
+        // this page is where a human answers, so the text has to be legible here (§12).
         var (blockedId, blockedNs, blockedCaller) = await SeedWorkingTaskWithCallerAsync(team, CompletionMode.Lead, ct);
         await WithStoreAsync(async store =>
-            await store.ApplyAsync(blockedId, new RequestInput(blockedCaller, InputRequestKind.Question), ct));
+            await store.ApplyAsync(blockedId,
+                new RequestInput(blockedCaller, InputRequestKind.AuthHelp, BlockedQuestion), ct));
 
         // A parked task: block it, then let its wait TTL expire (one park).
         var (parkedId, parkedNs, parkedCaller) = await SeedWorkingTaskWithCallerAsync(team, CompletionMode.Lead, ct);
@@ -443,6 +445,12 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Contains(completedNs, html, StringComparison.Ordinal);
         Assert.Contains("accepted by lead session", html, StringComparison.Ordinal); // §9.4 provenance rendered
         Assert.Contains(workerReport, html, StringComparison.Ordinal);               // §10 in-band report rendered
+        // §11: the question itself, plus the typed kind that says who can answer it.
+        // Both the task row's Q&A disclosure and the open-input-requests table show it.
+        Assert.Contains(BlockedQuestion, html, StringComparison.Ordinal);
+        Assert.Contains("authhelp", html, StringComparison.Ordinal);
+        Assert.Contains("Not yet answered", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("not tracked", html, StringComparison.Ordinal); // the kind IS tracked now
 
         // ── JSON twin: same fields, machine-readable ─────────────────────────
         var json = await GetAuthedAsync(app, $"/dashboard/teams/{team.Value}?format=json", ct);
@@ -457,7 +465,11 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
 
         var openRequests = root.GetProperty("openInputRequests");
         Assert.Contains(openRequests.EnumerateArray(),
-            r => r.GetProperty("namespace").GetString() == blockedNs);
+            r => r.GetProperty("namespace").GetString() == blockedNs
+                 // §11: the JSON twin carries the question and kind verbatim, so a tool
+                 // reading the twin sees exactly what the page shows.
+                 && r.GetProperty("question").GetString() == BlockedQuestion
+                 && r.GetProperty("kind").GetString() == "AuthHelp");
 
         var tasks = root.GetProperty("tasks");
         Assert.Contains(tasks.EnumerateArray(),
@@ -472,9 +484,18 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Contains(tasks.EnumerateArray(),
             t => t.GetProperty("namespace").GetString() == completedNs
                  && t.GetProperty("report").GetString() == workerReport);
+        // §11: so does the input exchange, unanswered here.
+        Assert.Contains(tasks.EnumerateArray(),
+            t => t.GetProperty("namespace").GetString() == blockedNs
+                 && t.GetProperty("question").GetString() == BlockedQuestion
+                 && t.GetProperty("answer").ValueKind == JsonValueKind.Null);
 
         await app.StopAsync(ct);
     }
+
+    /// <summary>The question a seeded blocked task asks (§11) — distinctive so the HTML
+    /// and JSON assertions are unambiguous.</summary>
+    private const string BlockedQuestion = "I need a read-only credential for staging-pg; who provisions that?";
 
     // ── (d) Human inbox: question + review appear; empty states render ─────────
 
@@ -488,34 +509,60 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         await using var app = BuildPlane();
         await app.StartAsync(ct);
 
+        // The question deliberately contains markup: it is worker-authored text on a
+        // human page, so it must land escaped, never as live HTML (§12/§13).
+        const string question = "should I use <script>alert(1)</script> or the sanitizer helper?";
         var teamA = TeamId.New();
         var (blockedId, blockedNs, blockedCaller) = await SeedWorkingTaskWithCallerAsync(teamA, CompletionMode.Lead, ct);
         await WithStoreAsync(async store =>
-            await store.ApplyAsync(blockedId, new RequestInput(blockedCaller, InputRequestKind.Question), ct));
+            await store.ApplyAsync(blockedId, new RequestInput(blockedCaller, InputRequestKind.Question, question), ct));
 
         var teamB = TeamId.New();
         var (reviewId, reviewNs, reviewCaller) = await SeedWorkingTaskWithCallerAsync(teamB, CompletionMode.Review, ct);
         await WithStoreAsync(async store =>
             await store.ApplyAsync(reviewId, new ReportResult(reviewCaller, "ref://result"), ct));
 
+        // A parked task still awaiting an answer keeps its question visible too — a park
+        // is a question that outlived its lease, and it is answered from this same page.
+        var teamC = TeamId.New();
+        const string parkedQuestion = "the migration is destructive; confirm before I run it?";
+        var (parkedId, parkedNs, parkedCaller) = await SeedWorkingTaskWithCallerAsync(teamC, CompletionMode.Lead, ct);
+        await WithStoreAsync(async store =>
+        {
+            await store.ApplyAsync(parkedId,
+                new RequestInput(parkedCaller, InputRequestKind.Question, parkedQuestion), ct);
+            await store.ApplyAsync(parkedId, new WaitTtlExpired(new ParkRecord("box-9", null, null, 1)), ct);
+        });
+
         var body = await GetAuthedAsync(app, "/dashboard/inbox", ct);
         Assert.Contains("Open questions", body, StringComparison.Ordinal);
         Assert.Contains(blockedNs, body, StringComparison.Ordinal);
         Assert.Contains("Awaiting review", body, StringComparison.Ordinal);
         Assert.Contains(reviewNs, body, StringComparison.Ordinal);
+        // §11/§12: the question a person is being asked to answer is on the page they
+        // answer from — escaped, so the markup in it is inert.
+        Assert.Contains("&lt;script&gt;", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("<script>alert(1)</script>", body, StringComparison.Ordinal);
+        Assert.Contains(parkedNs, body, StringComparison.Ordinal);
+        Assert.Contains(parkedQuestion, body, StringComparison.Ordinal);
         // Honest empty states for the §12 rows with no data source yet.
         Assert.Contains("Auth failures", body, StringComparison.Ordinal);
         Assert.Contains("Not recorded", body, StringComparison.Ordinal);
         Assert.Contains("Permission requests", body, StringComparison.Ordinal);
         Assert.Contains("Not built yet", body, StringComparison.Ordinal);
 
-        // JSON twin carries the same two items.
+        // JSON twin carries the same items, question text included.
         var json = await GetAuthedAsync(app, "/dashboard/inbox?format=json", ct);
         using var doc = JsonDocument.Parse(json);
         Assert.Contains(doc.RootElement.GetProperty("questions").EnumerateArray(),
-            q => q.GetProperty("namespace").GetString() == blockedNs);
+            q => q.GetProperty("namespace").GetString() == blockedNs
+                 && q.GetProperty("question").GetString() == question
+                 && q.GetProperty("kind").GetString() == "Question");
         Assert.Contains(doc.RootElement.GetProperty("awaitingReview").EnumerateArray(),
             r => r.GetProperty("namespace").GetString() == reviewNs);
+        Assert.Contains(doc.RootElement.GetProperty("parked").EnumerateArray(),
+            p => p.GetProperty("namespace").GetString() == parkedNs
+                 && p.GetProperty("question").GetString() == parkedQuestion);
 
         await app.StopAsync(ct);
     }
