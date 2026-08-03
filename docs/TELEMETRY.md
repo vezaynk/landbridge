@@ -118,7 +118,13 @@ Swap the dev profile's `spawn` for a real `claude -p` (see the comments in
 ## Production: point it at your own collector
 
 Set `endpoint` to your collector, or set `OTEL_EXPORTER_OTLP_ENDPOINT` once on
-docketd and let every profile inherit it. Docket receives none of it and needs no
+docketd and let every profile inherit it. Under the shipped service templates
+that is `/etc/docketd/docketd.env` (`EnvironmentFile` in `deploy/docketd.service`,
+which already names this variable as typical contents) or the
+`EnvironmentVariables` dict in `deploy/com.docket.docketd.plist` — a machine-wide
+destination that every profile can then opt into with `otel` alone.
+
+Docket receives none of it and needs no
 network path to it: the worker talks to your collector directly, and nothing
 about that traffic passes through the control plane. There is no OTLP receiver in
 Docket, no token or cost field in its schema, and no dashboard that shows spend.
