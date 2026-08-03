@@ -70,7 +70,7 @@ public sealed class SkillResources
         MimeType = SkillBundle.Markdown)]
     [Description("How to enroll a machine into a Docket Machine Group: probing the local harness, " +
                  "writing the docketd runner config, registering the daemon as a service, and " +
-                 "passing the conformance run.")]
+                 "smoke-testing the machine before real work reaches it.")]
     public static string Enroll() => SkillBundle.Enroll;
 
     [McpServerResource(
