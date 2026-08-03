@@ -101,9 +101,17 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock, TeamBudget
     /// <see cref="WaitTtlExpired"/> on a now-submitted task) or a
     /// <see cref="StoreResult.Conflict"/> — never a lost answer or a double
     /// transition.
+    ///
+    /// <para><paramref name="answer"/> is the answer's <em>content</em> (§10/§11), and it
+    /// rides both branches for the same reason the routing exists: the caller does not
+    /// know which one it is taking, so the text must land either way. Both commands cap
+    /// it at the engine, and the row keeps it for the redispatched worker's opening
+    /// <c>get_task</c>. Null answers nothing in words — the transition still unblocks
+    /// the task, which is what an <c>endpoint_wait</c> wake or a bare unblock wants.</para>
     /// </summary>
     public async Task<StoreResult> AnswerOrWakeAsync(
-        LeadClaim lead, TaskId id, string? leaseMachine, CancellationToken ct = default)
+        LeadClaim lead, TaskId id, string? leaseMachine, string? answer = null,
+        CancellationToken ct = default)
     {
         var row = await db.Tasks.FirstOrDefaultAsync(t => t.Id == id.Value, ct);
         if (row is null)
@@ -114,7 +122,7 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock, TeamBudget
             if (row.TeamId != lead.Team.Value)
                 return new StoreResult.Rejected(Rule.ActorLacksAuthority,
                     "input requests are answered by the Lead or a human");
-            return await RunTransition(row, new WakeParked(), ct);
+            return await RunTransition(row, new WakeParked(answer), ct);
         }
 
         // §11: build the redispatch park record from what the plane holds — the
@@ -127,7 +135,7 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock, TeamBudget
         var park = leaseMachine is { } machine
             ? new ParkRecord(machine, Directory: null, HarnessSessionRef: row.HarnessSessionRef, row.Attempt)
             : null;
-        return await RunTransition(row, new AnswerInput(lead, park), ct);
+        return await RunTransition(row, new AnswerInput(lead, park, answer), ct);
     }
 
     /// <summary>
@@ -340,7 +348,7 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock, TeamBudget
 
         return new WorkerAssignment(
             row.Namespace, row.Description, row.CompletionCriteria, row.Workspace, row.Attempt,
-            row.WorkerReport);
+            row.WorkerReport, row.InputQuestion, row.InputAnswer);
     }
 
     /// <summary>
@@ -366,6 +374,11 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock, TeamBudget
                 // §10: the bulk read carries only a flag that a report exists, never
                 // the prose — the Lead fetches the text per task via get_task_report.
                 HasReport = t.WorkerReport != null,
+                // §10/§11 the same way for the worker's question: the KIND is typed
+                // structure and rides along (it tells a Lead who can answer, which is
+                // triage), but the question text does not — get_task_question pulls it.
+                t.InputKind,
+                HasQuestion = t.InputQuestion != null,
             })
             .ToListAsync(ct);
 
@@ -376,7 +389,8 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock, TeamBudget
         var summaries = rows
             .Select(t => new TeamTaskSummary(
                 t.Id, t.Namespace, t.State, t.CompletionMode, t.Attempt, t.Parked,
-                t.ContinuesTaskId, t.CompletionProvenance, t.HasReport))
+                t.ContinuesTaskId, t.CompletionProvenance, t.HasReport,
+                t.InputKind, t.HasQuestion))
             .ToList();
 
         return new TeamStateView(team.Value, rows.Count, counts, summaries);
@@ -395,6 +409,25 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock, TeamBudget
         await db.Tasks.AsNoTracking()
             .Where(t => t.Id == task.Value && t.TeamId == team.Value)
             .Select(t => new TaskReportView(t.Id, t.Namespace, t.WorkerReport))
+            .FirstOrDefaultAsync(ct);
+
+    /// <summary>
+    /// The Lead's deliberate per-task question fetch (§10/§11, §13) — the read half of
+    /// the human-in-the-loop channel, shaped exactly like
+    /// <see cref="GetTaskReportAsync"/>: the worker's opaque question for one task,
+    /// pulled one item at a time rather than riding the bulk
+    /// <see cref="GetTeamStateAsync"/> read (which carries the typed kind and a flag,
+    /// never the prose). It returns the answer already given alongside, so a Lead — or
+    /// a fresh one after a takeover (§4) — can see whether the question is still open
+    /// before answering it twice. Team-scoped in the query, so a task in another Team,
+    /// or no task at all, returns null: indistinguishable, leaking nothing (§13). A
+    /// non-null view with a null question means the task is the Lead's but nothing was
+    /// asked. A pure read; no transition.
+    /// </summary>
+    public async Task<TaskQuestionView?> GetTaskQuestionAsync(TeamId team, TaskId task, CancellationToken ct = default) =>
+        await db.Tasks.AsNoTracking()
+            .Where(t => t.Id == task.Value && t.TeamId == team.Value)
+            .Select(t => new TaskQuestionView(t.Id, t.Namespace, t.State, t.InputKind, t.InputQuestion, t.InputAnswer))
             .FirstOrDefaultAsync(ct);
 
     /// <summary>
@@ -618,9 +651,35 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock, TeamBudget
         {
             row.BlockedAt = clock.GetUtcNow();
             inputKind = ri.Kind;
+            // §10/§11: the ask itself — the live kind and the opaque question text —
+            // lands on the row so the surfaces that answer it (the §12 inbox, the
+            // Lead's per-task fetch) can show WHAT is being asked, not just that
+            // something is. A new question retires the previous exchange's answer, or
+            // the worker would resume seeing this question paired with the last
+            // answer. Engine-capped above; stored verbatim, never parsed.
+            row.InputKind = ri.Kind;
+            row.InputQuestion = ri.Question;
+            row.InputAnswer = null;
         }
         else if (before == TaskState.BlockedOnInput && row.State != TaskState.BlockedOnInput)
             row.BlockedAt = null;
+
+        // §11: the answer's text, on whichever half of the one-call answer path ran —
+        // AnswerInput for a still-blocked task, WakeParked for one the sweeper parked
+        // first. Captured here beside BlockedAt for the same reason ResultReference is:
+        // opaque content the engine validated (length only) but never landed on the
+        // pure record. The redispatched worker reads it back on get_task. Only a
+        // command that actually carries words writes: clearing is the asking side's
+        // job, so a wordless wake (an endpoint_wait's service appearing, a Lead
+        // resuming a task it parked itself) never erases a live exchange.
+        var answerText = command switch
+        {
+            AnswerInput answered => answered.Answer,
+            WakeParked woken => woken.Answer,
+            _ => null,
+        };
+        if (answerText is not null)
+            row.InputAnswer = answerText;
         ApplyEffects(row, ok.Effects);
         AppendEvent(row.Id, row.TeamId, command.GetType().Name, before, row.State,
             detail: DescribeEffects(ok.Effects), inputKind: inputKind);

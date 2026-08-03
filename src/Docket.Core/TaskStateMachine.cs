@@ -79,7 +79,7 @@ public static class TaskStateMachine
             RequestInput c => ApplyRequestInput(task, c),
             AnswerInput c => ApplyAnswerInput(task, c),
             WaitTtlExpired c => ApplyWaitTtlExpired(task, c),
-            WakeParked => ApplyWakeParked(task),
+            WakeParked c => ApplyWakeParked(task, c),
             StopPreserveAndPark c => ApplyStopPreserveAndPark(task, c),
             Cancel c => ApplyCancel(task, c),
             CreateTask => TransitionResult.Reject(Rule.InvalidSourceState,
@@ -154,12 +154,12 @@ public static class TaskStateMachine
         // §10: the in-band report is bounded. Over-cap is refused here (a length
         // check, not content interpretation — the same shape as the non-empty checks
         // above) so a worker puts real detail in the workspace behind the result
-        // reference, not in the plane. Measured in UTF-8 bytes to match the wire.
-        if (c.Report is { } report
-            && System.Text.Encoding.UTF8.GetByteCount(report) > ReportResult.MaxReportBytes)
-            return TransitionResult.Reject(Rule.ReportWithinSizeCap,
-                $"report exceeds the {ReportResult.MaxReportBytes / 1024} KB in-band cap; " +
-                "keep it a summary and put the detail in the workspace behind the result reference");
+        // reference, not in the plane.
+        if (OverCap(c.Report, ReportResult.MaxReportBytes, Rule.ReportWithinSizeCap,
+                "report",
+                "keep it a summary and put the detail in the workspace behind the result reference")
+            is { } tooLong)
+            return tooLong;
 
         return TransitionResult.Ok(
             task with { State = TaskState.Verifying },
@@ -240,6 +240,15 @@ public static class TaskStateMachine
             return TransitionResult.Reject(Rule.TypedRequestKindRequired,
                 "working → blocked_on_input requires a typed request kind");
 
+        // §10/§11: the question is what the worker is asking, bounded exactly as the
+        // report is. Refusing here leaves the task working, so a worker whose question
+        // was too long asks again, shorter — it is never blocked with no ask attached.
+        if (OverCap(c.Question, RequestInput.MaxQuestionBytes, Rule.QuestionWithinSizeCap,
+                "question",
+                "state the decision and the options, and point at the workspace for the detail")
+            is { } tooLong)
+            return tooLong;
+
         return TransitionResult.Ok(
             task with { State = TaskState.BlockedOnInput },
             new ClearServicesAndForwards());
@@ -253,6 +262,15 @@ public static class TaskStateMachine
         if (!IsLeadOrHuman(task, c.Actor))
             return TransitionResult.Reject(Rule.ActorLacksAuthority,
                 "input requests are answered by the Lead or a human");
+
+        // §10/§11: the answer's text is bounded like the question it answers. Refused
+        // over-cap, which leaves the task blocked_on_input — better a still-waiting
+        // task the Lead re-answers than an unblocked one whose answer was dropped.
+        if (OverCap(c.Answer, AnswerInput.MaxAnswerBytes, Rule.AnswerWithinSizeCap,
+                "answer",
+                "answer the decision and point at a reference for the detail")
+            is { } tooLong)
+            return tooLong;
 
         // §11: a headless worker that blocked has already ended its turn and its
         // process is gone — "resume does not restore in place". The answer therefore
@@ -298,10 +316,18 @@ public static class TaskStateMachine
             effects.ToArray());
     }
 
-    private static TransitionResult ApplyWakeParked(TaskRecord task)
+    private static TransitionResult ApplyWakeParked(TaskRecord task, WakeParked c)
     {
         if (task.State != TaskState.Parked)
             return WrongState(task, TaskState.Parked);
+
+        // Same cap as the blocked half: one answer path, one gate, so a Lead's answer
+        // is accepted or refused identically whether or not the sweeper parked first.
+        if (OverCap(c.Answer, AnswerInput.MaxAnswerBytes, Rule.AnswerWithinSizeCap,
+                "answer",
+                "answer the decision and point at a reference for the detail")
+            is { } tooLong)
+            return tooLong;
 
         // The park record survives into submitted: redispatch reads it for
         // machine/directory affinity (§11).
@@ -364,6 +390,21 @@ public static class TaskStateMachine
             task with { State = TaskState.Canceled, CurrentInstance = null },
             effects.ToArray());
     }
+
+    /// <summary>
+    /// The one length gate every in-band prose field passes (§10): the worker's report,
+    /// its question, and the Lead's answer. A byte count, never content interpretation —
+    /// the engine still reads none of it (§2 principle 1) — measured in UTF-8 to match
+    /// the wire. Returns the rejection to propagate, or null when the text fits (or is
+    /// absent). <paramref name="advice"/> tells the caller where the detail belongs
+    /// instead, since a bare "too long" leaves an agent no move but to retry blind.
+    /// </summary>
+    private static TransitionResult? OverCap(
+        string? text, int maxBytes, Rule rule, string field, string advice) =>
+        text is { } t && System.Text.Encoding.UTF8.GetByteCount(t) > maxBytes
+            ? TransitionResult.Reject(rule,
+                $"{field} exceeds the {maxBytes / 1024} KB in-band cap; {advice}")
+            : null;
 
     private static TransitionResult? RequireIncumbent(TaskRecord task, Actor actor)
     {

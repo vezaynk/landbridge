@@ -39,6 +39,12 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
 
     public Task DisposeAsync() => Task.CompletedTask;
 
+    /// <summary>The worker's ask and the Lead's answer (§11), carried through the same
+    /// park→wake→redispatch loop as the session ref. Distinctive strings so the argv
+    /// assertion below is meaningful.</summary>
+    private const string Question = "which database should I target, staging-pg or the local docker one?";
+    private const string Answer = "target staging-pg; the docker one has no seed data.";
+
     [SkippableFact]
     public async Task Session_ref_round_trips_from_row_through_park_to_the_resumed_spawn_argv()
     {
@@ -114,7 +120,7 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
                 var store = new TaskStore(db, clock);
                 var caller = new WorkerCaller(team, taskId, instance1);
                 Assert.IsType<StoreResult.Applied>(
-                    await store.ApplyAsync(taskId, new RequestInput(caller, InputRequestKind.Question), ct));
+                    await store.ApplyAsync(taskId, new RequestInput(caller, InputRequestKind.Question, Question), ct));
             }
 
             var sweeper = new WaitTtlSweeper(
@@ -133,11 +139,14 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
             }
 
             // ── The awaited answer lands → wake to submitted ────────────────────
+            // The Lead answers in words. The task is already parked, so this takes the
+            // WakeParked half of the one-call path — the answer must survive that
+            // branch too, or a Lead loses its answer to a race with the sweeper (§11).
             await using (var db = pg.NewContext())
             {
                 var store = new TaskStore(db, clock);
                 Assert.IsType<StoreResult.Applied>(
-                    await store.AnswerOrWakeAsync(new LeadClaim(team), taskId, leaseMachine: null, ct));
+                    await store.AnswerOrWakeAsync(new LeadClaim(team), taskId, leaseMachine: null, Answer, ct));
             }
 
             // Stop routing events, then retire the first harness. With the drain
@@ -159,6 +168,15 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
                 resumeRef = applied.HarnessSessionRef;
                 // Dispatch surfaces the ref the first session reported.
                 Assert.Equal(HarnessProgram.EmitStreamSessionId, resumeRef);
+
+                // §11: the successor's own get_task read carries the answer it was
+                // resumed FOR, and the question that gives it meaning — the whole point
+                // of the park→answer→redispatch loop. Read through the same store method
+                // the worker's get_task tool delegates to, as the new incumbent instance.
+                var assignment = await store.GetAssignmentAsync(new WorkerCaller(team, taskId, instance2), ct);
+                Assert.NotNull(assignment);
+                Assert.Equal(Question, assignment!.Question);
+                Assert.Equal(Answer, assignment.Answer);
             }
 
             var resumeDispatch = new DispatchCommand(
@@ -178,6 +196,14 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
             var mcpIdx = Array.IndexOf(argv, "--mcp-config");
             Assert.True(mcpIdx >= 0 && argv[mcpIdx + 1].EndsWith("mcp.json", StringComparison.Ordinal),
                 $"resumed argv carried no --mcp-config path: {string.Join(' ', argv)}");
+
+            // §13: the answer reached the worker over the authenticated MCP read, and
+            // NOT through argv — argv is readable by any local process via ps and
+            // /proc/<pid>/cmdline, the same reason enrollment tokens never ride it. The
+            // resume prompt stays generic config; the content stays on the plane.
+            var wholeArgv = string.Join(' ', argv);
+            Assert.DoesNotContain(Answer, wholeArgv, StringComparison.Ordinal);
+            Assert.DoesNotContain(Question, wholeArgv, StringComparison.Ordinal);
         }
         finally
         {

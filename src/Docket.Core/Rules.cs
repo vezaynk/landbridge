@@ -45,6 +45,11 @@ public enum Rule
 
     // §10 in-band worker report size cap
     ReportWithinSizeCap = 108,
+
+    // §10/§11 in-band question/answer size caps — the same length gate as the
+    // report, on the two halves of the human-in-the-loop exchange.
+    QuestionWithinSizeCap = 109,
+    AnswerWithinSizeCap = 110,
 }
 
 public abstract record TransitionResult
