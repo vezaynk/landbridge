@@ -502,6 +502,8 @@ Full schema and a worked Claude Code example: `skills/docket-enroll/references/r
 
 **Services are not tasks.** They have no per-task liveness clocks, they do not count toward a profile's `max_concurrent` (that gates task admission), and the load they consume is already observed directly by back-pressure. Their status rides the machine heartbeat (§12); the control plane stores what a machine reports and interprets none of it.
 
+**Declared ports must be unique on a machine, and names are identifiers.** A forward dial is resolved to a service *by port*, so two services claiming one port would make that lookup answer for whichever was found first — and a dial refused on that basis is unexplainable from outside. Both are rejected at config load, naming both offenders. (The port that must be unique is the one a forward could dial: `port` when declared, else the readiness port. A readiness-only port nothing dials is not part of the rule.)
+
 `readiness` is a real check, not a delay: the declared loopback port must accept a connection before the service counts as running. That is what lets a holder task register only once the port answers (§8.2), and what lets `docketd` answer "is the intended service actually up" when it refuses a dial.
 
 `backend` is `direct` — `docketd` supervises the process itself — and a config naming anything else is refused rather than silently supervised the other way. Delegating to a system service manager (`systemd-run`, `pm2`, `docker`) is a later option, and it gives up the property refuse-at-dial depends on: with a delegated backend, "is my service up" becomes a query rather than a fact `docketd` owns.

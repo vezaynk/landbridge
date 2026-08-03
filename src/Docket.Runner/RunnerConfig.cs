@@ -150,6 +150,12 @@ public sealed record RunnerConfig(
         var built = new List<ServiceConfig>(dtos.Count);
         var seen = new HashSet<string>(StringComparer.Ordinal);
 
+        // §8.2 refuse-at-dial resolves a dial target to a service by port, so two
+        // services claiming one port would make that lookup answer for whichever it
+        // happened to find first — and a dial refused on that basis is unexplainable
+        // from the outside. Rejected here, where both names can be named.
+        var portOwners = new Dictionary<int, string>();
+
         foreach (var dto in dtos)
         {
             var name = dto.Name?.Trim();
@@ -196,6 +202,20 @@ public sealed record RunnerConfig(
             if (dto.Port is { } p && p is < 1 or > 65535)
             {
                 problems.Add($"service '{name}' port must be in 1..65535 when set (§10)");
+                continue;
+            }
+
+            // The effective port is the one a forward can dial and the one
+            // ServiceSupervisor.IsServiceOnPort resolves — `port` when declared, else the
+            // readiness port. A separate readiness-only port is not part of this rule
+            // because nothing dials it.
+            var effectivePort = dto.Port ?? dto.Readiness?.TcpPort;
+            if (effectivePort is { } ep && !portOwners.TryAdd(ep, name))
+            {
+                problems.Add(
+                    $"services '{portOwners[ep]}' and '{name}' both claim port {ep} — declared " +
+                    "ports must be unique on a machine (§10), because a forward dial is " +
+                    "resolved to a service by port");
                 continue;
             }
 

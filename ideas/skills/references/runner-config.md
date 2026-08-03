@@ -55,6 +55,13 @@ inside Docket's kill guarantee, on every OS, with no `setsid` and no environment
 scrubbing. The worker skill forbids the other route to the same effect for exactly that
 reason.
 
+**Names and ports must both be unique on a machine.** Names because they are identifiers
+(and directory names); ports because a forward dial is resolved to a service *by port*, so a
+shared port would make that lookup answer for whichever service came first, and the resulting
+refusal would make no sense from the consumer's side. `docketd` rejects either at config load
+and names both offenders — it prints the problem and exits non-zero before connecting, so this
+is caught at start rather than at the first dial.
+
 **`readiness` is a real check.** The port must accept a connection before the service is
 reported `running`. That is what a holder task waits for before calling
 `register_service` (§8.2), and what lets `docketd` refuse a forward dial for a service

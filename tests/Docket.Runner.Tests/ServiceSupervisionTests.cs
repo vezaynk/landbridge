@@ -122,6 +122,55 @@ public class ServiceSupervisionTests
     }
 
     [Fact]
+    public void Two_services_claiming_one_port_are_refused_with_both_names()
+    {
+        // Refuse-at-dial resolves a dial target to a service BY PORT, so a shared port
+        // would make that lookup answer for whichever it found first — and a dial refused
+        // on that basis is unexplainable from outside. Both names appear in the message so
+        // the operator does not have to diff the config to find the other one.
+        var ex = Assert.Throws<RunnerConfigException>(() => RunnerConfig.Load(Config(
+            """
+            [ { "name": "api", "spawn": ["x"], "port": 5173 },
+              { "name": "web", "spawn": ["y"], "port": 5173 } ]
+            """)));
+
+        var problem = Assert.Single(ex.Errors);
+        Assert.Contains("'api'", problem, StringComparison.Ordinal);
+        Assert.Contains("'web'", problem, StringComparison.Ordinal);
+        Assert.Contains("5173", problem, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_readiness_port_collides_the_same_way_when_it_is_the_effective_port()
+    {
+        // With no explicit `port`, readiness.tcp_port IS what IsServiceOnPort resolves, so
+        // the collision is real even though neither service declares `port`.
+        var ex = Assert.Throws<RunnerConfigException>(() => RunnerConfig.Load(Config(
+            """
+            [ { "name": "api", "spawn": ["x"], "readiness": { "tcp_port": 9001 } },
+              { "name": "web", "spawn": ["y"], "port": 9001 } ]
+            """)));
+
+        Assert.Contains(ex.Errors, e => e.Contains("both claim port 9001", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void One_service_may_name_the_same_port_twice_and_ports_may_be_omitted()
+    {
+        // `port` and `readiness.tcp_port` agreeing within ONE service is the normal case,
+        // not a collision. And several services with no port at all cannot collide —
+        // nothing dials them, so they never reach the port lookup.
+        var config = RunnerConfig.Load(Config(
+            """
+            [ { "name": "api", "spawn": ["x"], "port": 5173, "readiness": { "tcp_port": 5173 } },
+              { "name": "worker-a", "spawn": ["y"] },
+              { "name": "worker-b", "spawn": ["z"] } ]
+            """));
+
+        Assert.Equal(3, config.DeclaredServices.Count);
+    }
+
+    [Fact]
     public void An_out_of_range_port_is_refused()
     {
         var ex = Assert.Throws<RunnerConfigException>(() => RunnerConfig.Load(Config(
