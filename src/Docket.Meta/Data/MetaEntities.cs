@@ -58,8 +58,8 @@ public enum StepStatus
 /// <summary>
 /// A Docker host in the pool (spec §3). One row = one Docker Engine API endpoint.
 /// The mTLS material is stored for remote (<see cref="HostEndpointKind.TcpMtls"/>)
-/// hosts; note (design note deviation #6 / task #79) these are plaintext secrets
-/// at rest in meta's DB until the encryption follow-up lands.
+/// hosts. The client KEY is encrypted at rest (task #79); the CA and client
+/// certificate are public material and stay legible.
 /// </summary>
 public sealed class HostRow
 {
@@ -73,6 +73,11 @@ public sealed class HostRow
     /// <summary>mTLS PEMs for a remote host (null for the local socket).</summary>
     public string? TlsCaPem { get; set; }
     public string? TlsClientCertPem { get; set; }
+
+    /// <summary>
+    /// The client private key — with the cert, root-equivalent control of a Docker
+    /// host, so the highest-value secret in this store. Encrypted at rest.
+    /// </summary>
     public string? TlsClientKeyPem { get; set; }
 
     /// <summary>
@@ -132,6 +137,8 @@ public sealed class InstanceRow
     public string? PublicUrl { get; set; }
 
     // ── Per-instance secrets (design note §5) ──
+    // The two retained secrets below are encrypted at rest (task #79); the hash is not,
+    // being already one-way. Destroy blanks all three.
     /// <summary>SHA-256 hex of the operator passphrase. The plaintext is NEVER stored (shown once at create).</summary>
     public required string PassphraseHash { get; set; }
     /// <summary>Postgres password — retained to rebuild the connection string on recreate.</summary>
