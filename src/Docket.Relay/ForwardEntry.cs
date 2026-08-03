@@ -175,13 +175,24 @@ public sealed class ForwardEntry
                 if (result.MessageType == WebSocketMessageType.Close)
                     return;
 
-                // ── byte-counter / rate-limit seam (spec §8.3, enforcement §9.10) ──
-                // DEFERRED. A per-Team byte counter and forward rate limit would
-                // wrap this copy: meter result.Count and gate on the owning Team's
-                // byte allowance before forwarding. Not implemented in this
-                // increment — the relay moves opaque bytes without interpreting
-                // them (design principle 1). This is the single choke point where
-                // that metering will live.
+                // ── byte-counter seam (spec §8.3, enforcement §9 check 10) ──
+                // The RATE-LIMIT half of check 10 now ships, but NOT here: it is
+                // enforced plane-side at grant mint (RelayGrantService.MintAsync),
+                // because a grant is the one thing no forward can happen without,
+                // so the limit holds even when this relay is unreachable and cannot
+                // be outrun by a peer. Deliberately not duplicated here.
+                //
+                // The per-Team BYTE COUNTER is still DEFERRED, and this remains the
+                // single choke point where it belongs: meter result.Count per
+                // direction and report it to the plane over the plane-facing HTTP
+                // contract (the /relay/validate neighbourhood — never the frozen
+                // runner wire), periodic plus on-close, best-effort. Counting is all
+                // it would do; the relay moves opaque bytes without interpreting
+                // them (design principle 1), and a relay that dies loses the tail,
+                // which is why this is a containment signal and not an invoice.
+                // Enforcing a byte CEILING from it would additionally need a
+                // plane-side column and a severing decision that §8.3 currently
+                // forbids mid-splice.
                 await to.SendAsync(
                     new ArraySegment<byte>(buffer, 0, result.Count),
                     result.MessageType, result.EndOfMessage, ct);
