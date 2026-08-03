@@ -1,13 +1,15 @@
 ---
 name: docket-enroll
-description: How to enroll a machine into a Docket Machine Group — probing the local harness, writing the docketd runner config, guiding the human through registering the daemon as a system service, and passing the conformance run. Use this skill whenever the user runs /docket-enroll, is setting up a new machine for Docket, mentions adding a box to the Machine Group, needs to write or repair a docketd config, or is debugging why a machine shows as unclaimable — even if they don't name Docket explicitly.
+description: How to enroll a machine into a Docket Machine Group — probing the local harness, writing the docketd runner config, guiding the human through registering the daemon as a system service, and smoke-testing the machine before real work reaches it. Use this skill whenever the user is setting up a new machine for Docket, mentions adding a box to the Machine Group, needs to write or repair a docketd config, or is debugging why a machine never receives dispatched work — even if they don't name Docket explicitly.
 ---
 
 # Enrolling a machine
 
-You are setting up this machine to accept dispatched Docket work. When you are done, `docketd` runs as a service, the control plane can reach it, and the machine joins the Machine Group.
+You are setting up this machine to accept dispatched Docket work. When you are done, `docketd` runs as a service, holds an outbound connection to the control plane, and the machine shows up in the Machine Group. The connection is always dialled *out* from here — nothing needs to reach in.
 
 A human is at this terminal. Some steps need them; do not attempt those yourself.
+
+There is no `/docket-enroll` command on this build. No slash command or MCP prompt is registered, even though a few control-plane messages still tell people to run one. This skill *is* the flow: read it, probe, write the config, and walk the human through the parts that are theirs.
 
 ## What you are producing
 
@@ -17,11 +19,11 @@ The config must cover:
 
 | Section | What it answers |
 |---|---|
-| Harness invocation | How to start the harness headlessly with a task, and where it reads its MCP config |
-| Process control | How `stop` is delivered — an injected message turn where the harness supports one, a signal otherwise — what kills it hard, how long wind-down normally takes, how to confirm exit |
-| Event sources | How lifecycle events are observed — hooks, structured output, OTel endpoint |
-| Event mapping | How this harness's event names map to `started` / `tool-call` / `subagent-spawned` / `exited` |
-| Log tail | Path and format of the session transcript |
+| Harness invocation | How to start the harness headlessly with a task (`spawn`), and where it reads its MCP config |
+| Process control | How `stop` is delivered (`mode: message` where the harness accepts an injected turn, `signal` otherwise), which signal, the message template, and how long wind-down gets before the hard tree-kill |
+| Resume | The argv that reattaches to a parked task's transcript (`resume.args`), which is how a parked task comes back with its context |
+| Event relay | Whether the harness streams structured output docketd can read (`events.source`), and the property names it is keyed by (`events.mapping`) |
+| Transcript capture | Whether to record this worker's output locally (`logs.capture`) and the caps on it |
 | Back-pressure | Thresholds for when this machine stops accepting dispatch — defaults are sensible (see Concurrency below) |
 
 The full config schema and a worked Claude Code profile — including the exact
@@ -34,9 +36,9 @@ Two bars, neither negotiable, neither degrading gracefully. Confirm both by runn
 
 **1. Is it an MCP client?** A worker's only channel to Docket is `docket-mcp` — claiming, reporting, blockers, service registration all happen there. A harness without MCP cannot participate at all, no matter how good it is. Most current agents qualify; Aider is the notable exception.
 
-**2. Does it run to completion without asking permission?** A headless agent that waits for approval hangs until the liveness timeout, which is the most expensive way to find a misconfiguration — it looks like a hung task, not a bad config. The bypass flag differs per harness and is the most important line in `command`. Find it, and check what else it disables while you are there; several bypass sandboxing along with approvals.
+**2. Does it run to completion without asking permission?** A headless agent that waits for approval hangs until the liveness timeout, which is the most expensive way to find a misconfiguration — it looks like a hung task, not a bad config. The bypass flag differs per harness and is the most important line in `spawn`. Find it, and check what else it disables while you are there; several bypass sandboxing along with approvals.
 
-Three sharp edges to check at the same time: managed settings on corporate machines can forbid the bypass mode outright — confirm it is actually permitted before writing it into `command`; "don't ask" postures typically *deny* tools that require user interaction rather than prompting, which silently removes capabilities instead of hanging; and where the harness supports a permission-prompt tool, that is the middle path — approvals become `request_input` escalations to the Lead instead of hangs or a blanket bypass.
+Three sharp edges to check at the same time: managed settings on corporate machines can forbid the bypass mode outright — confirm it is actually permitted before writing it into `spawn`; "don't ask" postures typically *deny* tools that require user interaction rather than prompting, which silently removes capabilities instead of hanging; and where the harness supports a permission-prompt tool, that is the middle path — approvals become `request_input` escalations to the Lead instead of hangs or a blanket bypass.
 
 If either bar fails, stop. Report to the human rather than working around it.
 
@@ -46,31 +48,38 @@ Do not assume the harness or its version. Find out:
 
 1. Which harness is installed, and its version.
 2. The exact headless invocation, and how it takes a prompt — positional argument, flag value, or stdin.
-3. What structured output it produces: a stream of events, a single object at exit, or plain text.
-4. What lifecycle hooks it offers, and their names *in this version*.
-5. Whether it emits OTel, and with what attributes. Per-subagent attribution is valuable if available.
-6. Where it writes session transcripts, and whether that path is static or only knowable once running.
-7. Whether it can resume a prior session, and how — including whether resume is scoped to the directory that created the session, since parked-task resume depends on returning to it.
-8. Whether a running session accepts injected input — a stdin message stream or equivalent — because that is how a graceful `stop` reaches the agent as a turn rather than a signal.
+3. What structured output it writes to **stdout**, and whether that is one line per event or a single object at exit. This is the only event source `docketd` actually reads, so the answer decides whether this machine has a progress signal at all — see Degraded telemetry below before you promise one.
+4. The property names inside that stream: the top-level discriminator, the value marking an assistant turn, how a tool call appears within a turn, and where the session id is. Those are what `events.mapping` overrides; its defaults are Claude Code's `stream-json` shape.
+5. Whether the session id appears early in the stream rather than at exit, since that is the ref a parked task resumes from.
+6. Whether it can resume a prior session, and how — including whether resume is scoped to the directory that created the session, since parked-task resume depends on returning to it.
+7. Whether a running session accepts injected input — a stdin message stream or equivalent — because that is how a graceful `stop` reaches the agent as a turn rather than a signal.
 
-Version matters more than you'd expect. Hook names and event payloads change between releases, and a config written against last quarter's names will silently produce a machine that looks alive and reports nothing.
+Version matters more than you'd expect. Output shapes and key names change between releases, and `events.mapping` silently falls back to its default for any key it does not recognise — so a config written against last quarter's names produces a machine that looks alive and reports nothing, with no complaint at load time.
+
+You do not need to find where the harness writes its own log files. Transcript capture tees the stdout stream `docketd` is already reading into a fixed layout under the state dir; it never goes looking for a harness-owned path.
 
 ## Concurrency is not something you set
 
 There is no slot count. A declared limit is a guess that is wrong in both directions, and agents vary far too much in weight for a number to mean anything.
 
-`docketd` watches its own load, memory, and disk and stops claiming when the machine is under pressure. The thresholds in `machine.back_pressure` have sensible defaults; adjust them only if you know something specific about this box — a laptop someone actively works on may want to yield sooner than a dedicated server.
+`docketd` watches its own load, memory, and disk and stops claiming when the machine is under pressure. The thresholds in `machine.back_pressure` default to `0.90` / `0.90` / `0.95`; adjust them only if you know something specific about this box — a laptop someone actively works on may want to yield sooner than a dedicated server.
+
+One caveat to pass on: where `docketd` cannot observe CPU on the platform, `max_cpu_load` is inert and memory and disk carry the whole signal alone. It says so on its startup line, so read that rather than assuming all three are live.
 
 If a profile needs a hard cap for reasons unrelated to load — a licence limit, a rate-limited provider, a restricted posture you want singular — that is `max_concurrent` on the profile, not a machine setting.
 
 ## Degraded telemetry is acceptable
 
-If the harness has no subagent lifecycle events, or no OTel, say so in the config rather than inventing a mapping. The control plane renders missing signals as "not reported," which is honest and useful. A fabricated mapping produces a machine that appears healthy and isn't.
+If the harness has no readable event stream, say so in the config rather than inventing a mapping. The control plane renders missing signals as "not reported," which is honest and useful. A fabricated mapping produces a machine that appears healthy and isn't.
 
-Two specific degradations worth declaring accurately:
+Be accurate about how much this build can actually see, because three of the four declared `events.source` values are the same answer today:
 
-- **`events.source: terminal`** — the harness emits one structured result at exit rather than a stream. `started` and `exited` work; there is no progress signal, so a hung agent cannot be told from a busy one until it times out. Common for harnesses whose JSON output is one object per invocation.
-- **`telemetry.otel: false`** — token spend is invisible for this profile. The Team ceiling cannot meter what it cannot see; only the harness-local hard cap `docketd` passes at dispatch still binds. Surface this to the human at enrollment rather than letting them find it in a bill.
+- **`events.source: terminal`** is the only source `docketd` reads. It drains the harness's stdout line by line, which is what produces `tool-call` events and per-task liveness between them. If the harness can stream NDJSON on stdout, this is the value you want.
+- **`hooks` and `otel` parse but are not wired.** Declaring either gets you the same telemetry as `none`: `started` when the process spawns and `exited` when it ends, nothing between. A hung agent cannot be told from a busy one until the liveness window expires. Do not write `hooks` because the harness happens to offer hooks — it buys nothing on this build, and it reads as a progress signal the machine does not have.
+- **`subagent-spawned` has no producer.** It exists in the wire vocabulary, and the dashboard has a slot for it that always reads "no subagents reported." Nothing you put in the config will fill it, so do not spend probe time on subagent attribution.
+- **`telemetry.otel` is parsed and currently unused**, and no budget is metered anywhere: the Team ceiling is not enforced, and the `{budget}` token substitutes empty because nothing populates it. Token spend is invisible for every profile, not just this one. Say so plainly to the human at enrollment rather than letting them find it in a bill.
+
+None of this makes the machine unusable — `started`/`exited` plus process-alive is enough to dispatch, requeue, and kill. It makes the difference between a machine you can watch and a machine you can only poll, and the human deserves to know which one they just built.
 
 ## Registering the daemon — hand this to the human
 
@@ -78,31 +87,54 @@ Two specific degradations worth declaring accurately:
 
 This is a system-level change, which you report rather than perform. Prepare the unit or plist, explain exactly what it does and where it goes, and have the human run the install and enable commands themselves. Confirm it came up before continuing.
 
-## The conformance run
+## Smoke-test the machine before real work reaches it
 
-The control plane dispatches trivial work and judges the results. You do not decide whether this passed — you report what the control plane says and help fix what failed.
+**There is no automated gate.** Spec §11 describes a conformance run — the control plane dispatching trivial work and judging the results — and it is future work. Nothing in the plane probes a new machine, and there is no unclaimable state for it to hold a failure in: a machine that enrolls is simply a machine that connected. Whatever you do not check here, nobody checks.
 
-It checks:
+So check it once, by hand, with the human. The failure you are hunting is the quiet one — a machine that heartbeats, reads as `ready`, accepts a dispatch, and produces nothing.
 
-- `started` and tool-call events arrive, attributed to the right task id
-- Heartbeat cadence matches what the config claims
-- Two concurrent tasks are independently trackable
-- `stop` with a short TTL is acknowledged — and where the profile declares message delivery, the stop demonstrably reaches the agent as a turn
-- `TTL=0` kills one process and leaves its sibling running
-- A relay forward round-trips and the local listener closes on release
-- A task that would normally prompt for approval completes without hanging
-- A parked task resumes on this machine from its recorded directory with context intact
+**Give the test somewhere it can only land.** A task carries a profile name matched by exact string equality, so add a temporary uniquely-named profile alongside `default` (`smoke-<hostname>`) and target that. Aim a task at `default` and it may be served by some other machine in the Group, proving nothing about this one.
 
-**Failures here are configuration bugs, and they are worth fixing carefully.** A machine that passes dispatch but fails kill looks fine right up until someone needs to stop a runaway agent — the worst possible time to discover it. Same for task attribution: a machine that reports events without task ids will misattribute every event once it runs two agents.
+**Run `docketd` in the foreground for this, or tail its journal.** Its stdout is the only place several of these failures appear at all. On start it prints one line — `docketd up: machine=… profiles=[…] strays_reaped=… control=…`. A config that does not parse never gets that far; `docketd` prints the error and exits non-zero before it connects.
 
-If a check fails, the machine stays registered but unclaimable. Fix the config and re-run — `/docket-enroll` is idempotent.
+Then have the human's Lead create one trivial task against that profile (`create_task`, with `profile` set to the smoke name) — "report this machine's hostname and working directory" is enough — and follow it:
+
+| Watch | Where | Healthy |
+|---|---|---|
+| The machine is present at all | `/dashboard/machines` | a section for this machine id, `heartbeat Ns ago` inside your `heartbeat_seconds` |
+| It declares the profile | same page, profile badges | the smoke profile is listed; `no profiles declared` means no heartbeat has landed yet |
+| It will accept work | same page, badge | `ready` — `not ready` or `back-pressure` means nothing will dispatch |
+| The task moves | `/dashboard/teams/{team}`, or the Lead's `get_team_state` | `Submitted` → `Working` → `Verifying`, with `Attempt` reaching 1 and staying there |
+| The work actually happened | the task's report | the value it was asked for, not a restatement of the ask |
+
+Both views take `?format=json` with a Lead bearer token if you would rather read them structured. There is no MCP tool that lists machines and none that reads events — for those two the dashboard is the only surface.
+
+The failures worth naming, and what each really looks like:
+
+- **Nothing dispatches: the task sits in `Submitted` with `Attempt` at 0.** No reason is surfaced anywhere — this is the quietest failure in the system. It is a profile-name mismatch (exact string equality; check the spelling against the badges the machine actually published), or the machine is not `ready`, or it never connected. A machine that is not connected does not show as offline; it is absent from `/dashboard/machines` entirely.
+- **Wrong `spawn` argv, or the harness binary is not on `docketd`'s `PATH`.** `docketd` prints `command handler threw: …` on its own stdout and nothing else happens — no event, no row, no change on any page. The task stays `Working` until the per-task liveness window (60s) expires and requeues it, and the requeue record says nothing about the spawn. An unwritable `work_root` surfaces identically, since `docketd` writes `{work_dir}/mcp.json` itself. **If a task requeues with no explanation, read `docketd`'s stdout before anything else.**
+- **The harness starts and exits immediately** — a rejected flag, a permission mode managed settings forbid, a missing credential. The exit code rides the `exited` event but is stored and displayed nowhere, so a fast crash is indistinguishable from a hang: same liveness timeout, same requeue. Set `logs.capture: true` on the smoke profile; the transcript is the only place the reason exists.
+- **The worker cannot authenticate to the plane.** Do not wait for an `auth-failed` event. The plane can record one, but `docketd` never emits one, so none will arrive. A rejected worker token appears as a 401 inside the harness's own output and `report_result` simply never lands — the transcript again.
+- **`Attempt` climbing on its own.** The task is being dispatched, failing, and redispatched. Nothing caps that loop, so an unattended misconfiguration retries forever.
+
+**Then test the kill path, and do not skip it because dispatch worked.** Have the human cancel the task mid-flight (`cancel_task`, disposition `preserve`) and confirm the process is actually gone. On a `stop.mode: message` profile the injected turn should produce a final `report_result` before exit; on a `signal` profile it will not, and a profile that claims message delivery it cannot honour makes `preserve` a promise it will break. A machine that dispatches but cannot be stopped looks fine right up until someone needs to stop a runaway agent — the worst possible moment to find out.
+
+Two things you cannot verify by hand, so do not claim them either way: whether the runner refused a dispatch (it computes `BackPressure` / `UnknownProfile` / `MaxConcurrent` refusals and then discards them — never sent upstream, never logged), and whether events were dropped under load (the outbound ring counts the gap, but the wire has no field to carry it).
+
+**Failures here are configuration bugs, and they are worth fixing carefully rather than working around.** Fix the config, restart `docketd`, and run the check again — remembering that a restart kills every agent on this machine. Then delete the temporary smoke profile, so it does not sit in the config as a target a Lead might one day name.
+
+> **Future work (spec §11).** The conformance run automates the above and goes past it: per declared profile, the control plane would judge event attribution by task id, heartbeat cadence against the config, two concurrent tasks tracked independently, `stop` acknowledgement (and message delivery demonstrably reaching the agent as a turn), `TTL=0` killing one process while its sibling survives, a relay forward round-tripping and its listener closing on release, an approval-prone task completing without hanging, and a parked task resuming from its recorded directory with context intact — admitting the machine as `ready` on a pass, or leaving it registered-but-unclaimable with the failing step named. None of that exists yet. The manual pass above is its stand-in, not a preview of it.
 
 ## After enrollment
 
-The config is stamped with the version of this skill. When the skill changes, the control plane can flag stale machines for a re-run. Nothing about this setup is meant to be hand-maintained; re-running the flow is the supported way to change it.
+Nothing about this setup is meant to be hand-maintained. Re-running this flow — reprobing, rewriting the config, restarting the daemon, smoke-testing again — is the supported way to change it, and it is safe to repeat.
 
-Note that `docketd` holds no state. If it restarts, every agent on this machine is killed and their tasks requeue — that is deliberate, not a fault. On start it also kills any stray harness processes it finds, which is what makes the guarantee survive an unclean shutdown.
+Spec §11 also wants the config stamped with the version of this skill, so the control plane can flag stale machines for a re-run. **That does not exist**: nothing writes a version, nothing serves one, and a `skill_version` key added by hand is silently dropped when the config parses. Until it lands, a machine's config is only as current as whoever last re-ran this — so when you notice a config written against older guidance, say so to the human rather than assuming the plane will catch it.
+
+Note that `docketd` keeps no state a restart would try to reconcile: no task ledger, no process re-adoption. If it restarts, every agent on this machine is killed and their tasks requeue — that is deliberate, not a fault. On start it also kills any stray harness processes it finds, which is what makes the guarantee survive an unclean shutdown. The state dir is the exception, and a narrow one: it holds the machine credentials and, where capture is on, the transcripts, which must outlive both a task teardown and a restart.
 
 ## A note on what this machine is
 
-You declared a purpose, OS, specs, and permission level at connect. Those are recorded server-side and are not re-declarable from the config — a machine cannot promote its own privileges by editing a file. If the machine's role changes, that is a human decision made through the control plane.
+A name, a purpose, the OS string, and a permission level were declared once, when `docketd` exchanged the enrollment token for credentials — not from the config, and not on the runner connection, which declares nothing beyond the token. Those four are recorded server-side and are not re-declarable from a config file, so a machine cannot promote its own privileges by editing one. If the machine's role changes, that is a human decision made through the control plane.
+
+Two honest limits on that record. Hardware specs are **not** part of it despite what §11 says — nothing collects CPU or memory as declared capacity, only live load on the heartbeat. And the permission level is stored but not yet read by anything: no dispatch, forwarding, or tool decision consults it today. Treat it as a label the human is recording for later, not a control that is holding.
