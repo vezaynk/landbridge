@@ -2,6 +2,7 @@ using System.Net;
 using Docket.Meta.Data;
 using Docket.Meta.Edge;
 using Docket.Meta.Provisioning;
+using Docket.Meta.Secrets;
 using Docket.Meta.Substrate;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
@@ -148,6 +149,9 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
         {
             builder.UseSetting("Meta:Operator:PassphraseHash", SecretGenerator.Hash(Passphrase));
             builder.UseSetting("Meta:Domain", "example.com");
+            // Secret protection is fail-closed: without a key the host refuses to
+            // start (task #79), so the test host configures one like a real deployment.
+            builder.UseSetting(MetaSecretProtector.KeysConfigKey + ":0", MetaSecretProtector.NewKey());
 
             // ConfigureTestServices runs AFTER the app's own registrations, so these
             // swaps win.
@@ -164,7 +168,8 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
                      d.ServiceType.GetGenericArguments().Contains(typeof(MetaDbContext)))).ToList();
                 foreach (var d in efDescriptors)
                     services.Remove(d);
-                services.AddDbContext<MetaDbContext>(o => o.UseInMemoryDatabase(_dbName));
+                services.AddDbContext<MetaDbContext>(o =>
+                    MetaDbContext.Configure(o.UseInMemoryDatabase(_dbName)));
 
                 services.RemoveAll<ISubstrateFactory>();
                 services.AddSingleton<ISubstrateFactory>(new FakeSubstrateFactory(Substrate));
