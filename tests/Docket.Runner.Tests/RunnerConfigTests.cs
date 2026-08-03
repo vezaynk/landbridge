@@ -179,4 +179,80 @@ public class RunnerConfigTests
         Assert.Equal(StopMode.Message, config.Default.Stop.Mode);
         Assert.Equal(EventsSource.Otel, config.Default.Events.Source);
     }
+
+    // §10 event relay: terminal is the only implemented source. hooks/otel parse but
+    // are consumed nowhere, so they behave as none — one started event at spawn and
+    // nothing after, which the plane's per-task liveness window turns into an endless
+    // requeue. The warning is the only thing standing between an operator and that
+    // trap, so these tests pin both who gets named and that the consequence is stated.
+
+    [Fact]
+    public void Terminal_event_source_warns_nothing()
+    {
+        var json = """
+        { "machine": { "work_root": "/w" },
+          "profiles": [ { "name": "default", "spawn": ["x"], "events": { "source": "terminal" } } ] }
+        """;
+
+        Assert.Empty(RunnerConfig.Load(json).EventRelayWarnings());
+    }
+
+    [Fact]
+    public void Non_terminal_event_sources_are_each_warned_with_the_requeue_consequence()
+    {
+        // ValidJson declares default=hooks and restricted=none: both are blind.
+        var warnings = RunnerConfig.Load(ValidJson).EventRelayWarnings();
+
+        Assert.Equal(3, warnings.Count);
+
+        var perProfile = warnings.Take(2).ToArray();
+        Assert.Contains(perProfile, w => w.Contains("profile 'default'", StringComparison.Ordinal)
+            && w.Contains("'hooks' is not implemented and behaves as 'none'", StringComparison.Ordinal));
+        Assert.Contains(perProfile, w => w.Contains("profile 'restricted'", StringComparison.Ordinal)
+            && w.Contains("events.source is 'none'", StringComparison.Ordinal));
+        Assert.All(perProfile, w =>
+            Assert.Contains("liveness refreshes only once at spawn", w, StringComparison.Ordinal));
+
+        // The consequence line is the whole point of the warning: name the requeue,
+        // the window, and the value that fixes it.
+        var consequence = warnings[^1];
+        Assert.Contains("requeue", consequence, StringComparison.Ordinal);
+        Assert.Contains("60s", consequence, StringComparison.Ordinal);
+        Assert.Contains("terminal", consequence, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Only_the_blind_profiles_are_named_when_sources_are_mixed()
+    {
+        var json = """
+        { "machine": { "work_root": "/w" },
+          "profiles": [
+            { "name": "default", "spawn": ["x"], "events": { "source": "terminal" } },
+            { "name": "legacy", "spawn": ["y"], "events": { "source": "otel" } }
+          ] }
+        """;
+
+        var warnings = RunnerConfig.Load(json).EventRelayWarnings();
+
+        Assert.Equal(2, warnings.Count);
+        Assert.Contains("profile 'legacy'", warnings[0], StringComparison.Ordinal);
+        Assert.Contains("'otel' is not implemented", warnings[0], StringComparison.Ordinal);
+        Assert.DoesNotContain(warnings, w => w.Contains("'default'", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void A_profile_that_omits_events_entirely_is_warned_too()
+    {
+        // The parse default is None (see Defaults_apply above), which is just as blind
+        // as an explicit none — an omitted events block must not buy silence.
+        var json = """
+        { "machine": { "work_root": "/w" },
+          "profiles": [ { "name": "default", "spawn": ["claude", "-p"] } ] }
+        """;
+
+        var warnings = RunnerConfig.Load(json).EventRelayWarnings();
+
+        Assert.Equal(2, warnings.Count);
+        Assert.Contains("events.source is 'none'", warnings[0], StringComparison.Ordinal);
+    }
 }
