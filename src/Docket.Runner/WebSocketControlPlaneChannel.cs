@@ -178,6 +178,11 @@ public sealed class WebSocketControlPlaneChannel : IControlPlaneChannel, IAsyncD
             }
             try
             {
+                // Sleeps on the INJECTED clock, so a test that hands this channel a
+                // FakeTimeProvider must advance it or this backoff never wakes — the
+                // reconnect loop would hang rather than retry. Every test that drives a
+                // real socket through here therefore passes TimeProvider.System; use a
+                // fake only when the test also controls the clock.
                 await Task.Delay(backoff, _clock, ct);
             }
             catch (OperationCanceledException)
