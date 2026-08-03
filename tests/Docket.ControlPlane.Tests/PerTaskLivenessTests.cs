@@ -258,10 +258,8 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
             o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
         services.AddScoped<TaskStore>();
         services.AddScoped<TokenService>();
-        // §9.9: CheckLivenessAsync also runs the exhausted-budget containment sweep, which
-        // resolves this from the same scope. Registered here for the same reason
-        // RunnerSpineTests does — the sweep shares the liveness timer, so any fixture that
-        // drives one drives the other.
+        // §9.9: CheckLivenessAsync also sweeps exhausted budgets, which resolves this
+        // from the scope — the same registration the other sweeper fixtures make.
         services.AddScoped<TeamBudgetService>();
         services.AddSingleton(clock);
         return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
