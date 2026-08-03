@@ -17,7 +17,7 @@ argv a worker is launched with.
 | `profiles[]` | `stop` | `mode` (`message` \| `signal`), `signal`, `message`, `wind_down_seconds` (default `30`). Message delivery lets the agent honour the disposition; docketd injects the turn, then waits `min(ttl, wind_down_seconds)` for a voluntary exit before a hard tree-kill backstops it. A `signal` profile injects nothing, but the worker still gets the full `ttl` the plane granted to exit on its own before the kill (`wind_down_seconds` does not apply). Only `ttl=0` is killed immediately (§10, §11). |
 | `profiles[]` | `resume` | `args`: argv to resume a parked task's transcript, directory-scoped (§11). |
 | `profiles[]` | `events` | `source` (`hooks` \| `otel` \| `terminal` \| `none`) + `mapping`, which overrides the **stdout stream's property names** — not harness event names. **Only `terminal` is implemented**; `hooks` and `otel` parse but are wired to nothing, so all three non-`terminal` values behave as `none`. See [Event relay](#event-relay-10) below before choosing — a non-`terminal` profile requeues any task that runs longer than about a minute. |
-| `profiles[]` | `telemetry` | `otel` bool + `endpoint` for budget attribution (§10). |
+| `profiles[]` | `telemetry` | `otel` bool (opt-in, default **false**), `endpoint` (OTLP destination; falls back to the one docketd inherited), and `env` (a string map of harness-specific variables, applied verbatim). When on, docketd sets the vendor-neutral `OTEL_*` exporter variables and appends `docket.task_id`/`docket.machine_id` to `OTEL_RESOURCE_ATTRIBUTES`, so the harness's own token/cost telemetry is attributable per task (§10). `otel: true` with **no endpoint configured and none inherited sets nothing at all** and warns once — telemetry is never enabled without a destination. Claude Code additionally needs `"env": { "CLAUDE_CODE_ENABLE_TELEMETRY": "1" }` (its own flag is data, since docketd holds no harness knowledge). **Visibility only**: Docket ingests none of it and enforces no ceiling — see [docs/TELEMETRY.md](../../../docs/TELEMETRY.md). |
 | `profiles[]` | `logs` | §12 machine-local transcript capture: `capture` (bool, default **false**), `max_bytes` (per-stream cap, default 50 MiB), `prune_after_days` (local hygiene, default 7, `0` disables). Legacy `format`/`path` are advisory/reserved — see [Transcript capture](#transcript-capture-12) below. |
 | `profiles[]` | `max_concurrent` | Optional hard cap for a licence/rate/posture reason, unrelated to load (§10). |
 
@@ -98,7 +98,21 @@ dispatched instance, and its token dies with the instance (§9 check 14).
       // liveness they carry. No `mapping` is needed: the built-in defaults already
       // describe claude's stream-json shape. See Event relay below.
       "events": { "source": "terminal" },
-      "telemetry": { "otel": true, "endpoint": "http://127.0.0.1:4318" },
+      // Harness telemetry to YOUR collector, attributed per task (§10). `otel` is the
+      // opt-in; `endpoint` may be omitted when docketd already has one in its own
+      // environment. `env` carries what this harness needs: Claude Code exports
+      // nothing without its own flag, and the default 60s export interval can outlive
+      // a short task. docketd adds docket.task_id/docket.machine_id to
+      // OTEL_RESOURCE_ATTRIBUTES so a collector can bucket token/cost per task.
+      // Visibility only — Docket ingests none of it (docs/TELEMETRY.md).
+      "telemetry": {
+        "otel": true,
+        "endpoint": "http://127.0.0.1:4318",
+        "env": {
+          "CLAUDE_CODE_ENABLE_TELEMETRY": "1",
+          "OTEL_METRIC_EXPORT_INTERVAL": "10000"
+        }
+      },
       // §12 capture: tee this worker's stdout transcript + stderr to the state dir.
       "logs": { "capture": true, "format": "stream-json", "max_bytes": 52428800, "prune_after_days": 7 },
       "max_concurrent": null

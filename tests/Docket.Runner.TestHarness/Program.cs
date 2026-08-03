@@ -173,6 +173,14 @@ public static class Program
                 await Console.Error.FlushAsync();
                 return await WatchStdinAsync(cwd, grandchildren: [], onLine: null);
 
+            case "echo-env":
+                // §10 telemetry ingest: record the environment we were actually spawned
+                // with, one KEY=value per line, so a test can prove exactly which
+                // variables docketd set (and, just as load-bearing, which it did not).
+                // Then watch stdin like `run` so the dead-man pipe governs lifetime.
+                await WriteMarkerAtomicAsync(Path.Combine(cwd, "env"), EnvironmentLines());
+                return await WatchStdinAsync(cwd, grandchildren: [], onLine: null);
+
             case "echo-argv":
                 // §11 resume: record the argv we were actually spawned with — one
                 // token per line, this mode word at [0] — so the test can prove the
@@ -185,6 +193,24 @@ public static class Program
                 await WriteStartedAsync(cwd);
                 return await WatchStdinAsync(cwd, grandchildren: [], onLine: null);
         }
+    }
+
+    /// <summary>
+    /// The whole spawn environment as <c>KEY=value</c> lines, sorted so a failure
+    /// diff is readable. A value containing a newline (nothing docketd sets does,
+    /// but the inherited environment is the operator's) would break the one-per-line
+    /// shape, so those collapse to spaces.
+    /// </summary>
+    private static string EnvironmentLines()
+    {
+        var lines = new List<string>();
+        foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables())
+        {
+            var value = entry.Value?.ToString() ?? "";
+            lines.Add($"{entry.Key}={value.ReplaceLineEndings(" ")}");
+        }
+        lines.Sort(StringComparer.Ordinal);
+        return string.Join('\n', lines);
     }
 
     /// <summary>
