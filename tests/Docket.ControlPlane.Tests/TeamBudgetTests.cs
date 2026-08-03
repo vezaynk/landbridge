@@ -1,5 +1,9 @@
+using Docket.Contracts;
+using Docket.ControlPlane.Auth;
 using Docket.Core;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Docket.ControlPlane.Tests;
 
@@ -238,7 +242,158 @@ public sealed class TeamBudgetTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Null((await budgets.ReadAsync(team)).CeilingUsd);
     }
 
+    // ── The containment sweep (§9.9: the ceiling stops work, not only admission) ──
+
+    [SkippableFact]
+    public async Task An_exhausted_teams_working_task_is_stopped_and_the_reason_recorded()
+    {
+        // Refusing new dispatch bounds what a Team can START. Without this, work already
+        // running when the ceiling was reached would run on past it — so this is the half that
+        // makes the ceiling containment rather than an admission check.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = TimeProvider.System;
+        var team = TeamId.New();
+        TaskId task;
+        await using (var db = pg.NewContext())
+        {
+            var budgets = new TeamBudgetService(db, clock);
+            await budgets.SetLimitsAsync(team, ceilingUsd: 5m, perTaskUsd: 5m);
+            task = (await DispatchOneAsync(db, team)).Task.Id;
+            Assert.True((await budgets.ReadAsync(team)).Exhausted);
+        }
+
+        var sent = new List<RunnerCommand>();
+        var registry = LiveMachine(clock, "box-1", task, sent);
+        await NewDispatchService(clock, registry).CheckLivenessAsync(CancellationToken.None);
+
+        // The graceful §10/§11 wind-down, not a bare kill: the work is not wrong, the Team
+        // merely ran out of authorization, so the transcript is worth keeping for whoever
+        // raises the ceiling.
+        var stop = Assert.IsType<StopCommand>(Assert.Single(sent));
+        Assert.Equal(task, stop.Task);
+        Assert.Equal(StopDisposition.Preserve, stop.Disposition);
+        Assert.Contains("ceiling", stop.Reason);
+
+        // And the event row that lets the dashboard say WHY nothing is progressing — the
+        // question a silence cannot answer for itself.
+        await using var check = pg.NewContext();
+        var evt = await check.TaskEvents.SingleAsync(
+            e => e.TaskId == task.Value && e.Kind == TaskEventRow.BudgetExhaustedStopKind);
+        Assert.Equal(team.Value, evt.TeamId);
+        Assert.Contains("5 USD committed of 5 USD authorized", evt.Detail);
+        Assert.Null(evt.FromState);   // telemetry, not a transition
+        Assert.Null(evt.ToState);
+    }
+
+    [SkippableFact]
+    public async Task A_team_within_its_ceiling_is_left_alone_by_the_sweep()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = TimeProvider.System;
+        var team = TeamId.New();
+        TaskId task;
+        await using (var db = pg.NewContext())
+        {
+            var budgets = new TeamBudgetService(db, clock);
+            await budgets.SetLimitsAsync(team, ceilingUsd: 100m, perTaskUsd: 5m);
+            task = (await DispatchOneAsync(db, team)).Task.Id;
+            Assert.False((await budgets.ReadAsync(team)).Exhausted);
+        }
+
+        var sent = new List<RunnerCommand>();
+        var registry = LiveMachine(clock, "box-1", task, sent);
+        await NewDispatchService(clock, registry).CheckLivenessAsync(CancellationToken.None);
+
+        Assert.Empty(sent);
+        await using var check = pg.NewContext();
+        Assert.False(await check.TaskEvents.AnyAsync(e => e.Kind == TaskEventRow.BudgetExhaustedStopKind));
+    }
+
+    [SkippableFact]
+    public async Task The_sweep_does_not_re_stop_a_task_it_has_already_stopped()
+    {
+        // A stopped task stays working for its whole wind-down window — comfortably longer
+        // than one liveness tick — so without an idempotency record every pass would re-stop it
+        // and write another event row. The row IS the record, which also survives a restart.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = TimeProvider.System;
+        var team = TeamId.New();
+        TaskId task;
+        await using (var db = pg.NewContext())
+        {
+            await new TeamBudgetService(db, clock).SetLimitsAsync(team, ceilingUsd: 5m, perTaskUsd: 5m);
+            task = (await DispatchOneAsync(db, team)).Task.Id;
+        }
+
+        var sent = new List<RunnerCommand>();
+        var registry = LiveMachine(clock, "box-1", task, sent);
+        var dispatch = NewDispatchService(clock, registry);
+
+        await dispatch.CheckLivenessAsync(CancellationToken.None);
+        await dispatch.CheckLivenessAsync(CancellationToken.None);
+
+        Assert.Single(sent);
+        await using var check = pg.NewContext();
+        Assert.Equal(1, await check.TaskEvents.CountAsync(
+            e => e.TaskId == task.Value && e.Kind == TaskEventRow.BudgetExhaustedStopKind));
+    }
+
+    [SkippableFact]
+    public async Task A_task_whose_machine_is_gone_is_left_for_the_next_pass()
+    {
+        // Nothing to stop: no live connection holds it, and the exhausted ceiling already
+        // refuses its re-dispatch. Writing the event anyway would claim a stop that was never
+        // sent, so the candidate is left for a pass where delivery can actually happen.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = TimeProvider.System;
+        var team = TeamId.New();
+        TaskId task;
+        await using (var db = pg.NewContext())
+        {
+            await new TeamBudgetService(db, clock).SetLimitsAsync(team, ceilingUsd: 5m, perTaskUsd: 5m);
+            task = (await DispatchOneAsync(db, team)).Task.Id;
+        }
+
+        // A registry that knows no machine for the task at all.
+        var registry = new RunnerConnectionRegistry(clock);
+        await NewDispatchService(clock, registry).CheckLivenessAsync(CancellationToken.None);
+
+        await using var check = pg.NewContext();
+        Assert.False(await check.TaskEvents.AnyAsync(e => e.Kind == TaskEventRow.BudgetExhaustedStopKind));
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
+
+    private DispatchService NewDispatchService(TimeProvider clock, RunnerConnectionRegistry registry) =>
+        new(ScopeFactory(clock), registry, clock, NullLogger<DispatchService>.Instance);
+
+    private IServiceScopeFactory ScopeFactory(TimeProvider clock)
+    {
+        var services = new ServiceCollection();
+        services.AddDbContext<DocketDbContext>(o =>
+            o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
+        services.AddScoped<TaskStore>();
+        services.AddScoped<TeamBudgetService>();
+        services.AddScoped<TokenService>();
+        services.AddSingleton(clock);
+        return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
+    }
+
+    /// <summary>A registry with one ready machine holding <paramref name="task"/>, recording
+    /// every command the plane ships down its connection.</summary>
+    private static RunnerConnectionRegistry LiveMachine(
+        TimeProvider clock, string machineId, TaskId task, List<RunnerCommand> sent)
+    {
+        var registry = new RunnerConnectionRegistry(clock);
+        registry.Register(
+            machineId, new HashSet<string>(["default"], StringComparer.Ordinal),
+            (cmd, _) => { sent.Add(cmd); return Task.CompletedTask; });
+        registry.ApplyHeartbeat(machineId, new MachineHeartbeat(
+            machineId, Ready: true, UnderBackPressure: false, new SystemLoad(0, 0, 0),
+            RunningTasks: 1, ["default"], DateTimeOffset.UtcNow));
+        registry.TrackDispatch(machineId, task);
+        return registry;
+    }
 
     /// <summary>Create one task and dispatch it, asserting both succeeded.</summary>
     private async Task<StoreResult.Applied> DispatchOneAsync(DocketDbContext db, TeamId team) =>

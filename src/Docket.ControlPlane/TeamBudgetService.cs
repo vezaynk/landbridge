@@ -39,9 +39,7 @@ public sealed class TeamBudgetService(DocketDbContext db, TimeProvider clock)
     public async Task<TeamBudgetView> ReadAsync(TeamId team, CancellationToken ct = default)
     {
         var row = await db.TeamBudgets.AsNoTracking().FirstOrDefaultAsync(t => t.TeamId == team.Value, ct);
-        return row is null
-            ? new TeamBudgetView(null, null, 0m, null)
-            : new TeamBudgetView(row.CeilingUsd, row.PerTaskUsd, row.CommittedUsd, row.UpdatedAt);
+        return TeamBudgetView.From(row);
     }
 
     /// <summary>
@@ -164,7 +162,26 @@ public sealed record TeamBudgetView(
     /// <summary>Whether the ceiling is set and reached — the state that refuses new
     /// dispatch and stops working tasks.</summary>
     public bool Exhausted => CeilingUsd is { } ceiling && CommittedUsd >= ceiling;
+
+    /// <summary>
+    /// The one row→view mapping, shared by <see cref="TeamBudgetService.ReadAsync"/> and the
+    /// §12 dashboard's own read (<see cref="DashboardQueries"/>), so the two cannot drift on
+    /// what an absent row means. A null row is the unconfigured Team: no ceiling, nothing
+    /// committed, unbounded — not a zero budget.
+    /// </summary>
+    public static TeamBudgetView From(TeamBudgetRow? row) =>
+        row is null
+            ? new TeamBudgetView(null, null, 0m, null)
+            : new TeamBudgetView(row.CeilingUsd, row.PerTaskUsd, row.CommittedUsd, row.UpdatedAt);
 }
+
+/// <summary>
+/// A working task the §9.9 containment sweep owes a <c>stop</c>: its Team is over its
+/// ceiling and no stop has been recorded for it yet. Read by
+/// <see cref="TaskStore.WorkingTasksAwaitingBudgetStopAsync"/>; the Team rides along
+/// because the sweep needs it to name the ceiling in the event row it writes.
+/// </summary>
+public sealed record BudgetStopCandidate(TaskId Task, TeamId Team);
 
 /// <summary>Outcome of committing one dispatch against a Team's ceiling (§9.9).</summary>
 public abstract record BudgetCommit

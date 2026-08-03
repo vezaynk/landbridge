@@ -288,6 +288,18 @@ public sealed class TaskEventRow
     /// </summary>
     public const string ContinuationMemoryLostKind = "continuation-memory-lost";
 
+    /// <summary>
+    /// The <see cref="Kind"/> of a <c>budget-exhausted-stop</c> telemetry row (§9.9):
+    /// the containment sweep found this task's Team over its ceiling and sent the
+    /// runner a <c>stop</c>. Carries no state transition — the stop's own wind-down
+    /// produces whatever transition follows — so the row exists to answer the question
+    /// the dashboard otherwise cannot: <em>why</em> a Team stopped making progress when
+    /// nothing failed. Written only once delivery to the machine succeeded, so it is
+    /// also the sweep's idempotency record: a task that already has one is not swept
+    /// again.
+    /// </summary>
+    public const string BudgetExhaustedStopKind = "budget-exhausted-stop";
+
     public long Seq { get; set; }
     public Guid TaskId { get; set; }
     public Guid TeamId { get; set; }

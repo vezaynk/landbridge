@@ -509,6 +509,65 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock, TeamBudget
         await CommitAsync(task.Value, ct);
     }
 
+    /// <summary>
+    /// The working tasks the §9.9 containment sweep still owes a <c>stop</c>: those in
+    /// <paramref name="teams"/> (the Teams over their ceiling) that are working right now
+    /// and do not already carry a <see cref="TaskEventRow.BudgetExhaustedStopKind"/> row.
+    ///
+    /// <para>The event row is the idempotency record, which is why the exclusion is part of
+    /// this query rather than sweeper state: the sweep runs on the liveness timer, and a
+    /// stopped task stays <c>working</c> for its whole wind-down window — comfortably longer
+    /// than one tick — so without it every pass would re-stop the same task and write another
+    /// row. Durable across a plane restart for free, unlike an in-memory set.</para>
+    ///
+    /// <para>Empty when <paramref name="teams"/> is, so the sweep costs one cheap query on
+    /// the overwhelmingly common no-Team-exhausted tick.</para>
+    /// </summary>
+    public async Task<IReadOnlyList<BudgetStopCandidate>> WorkingTasksAwaitingBudgetStopAsync(
+        IReadOnlyList<TeamId> teams, CancellationToken ct = default)
+    {
+        if (teams.Count == 0)
+            return [];
+
+        var teamIds = teams.Select(t => t.Value).ToList();
+        var rows = await db.Tasks.AsNoTracking()
+            .Where(t => teamIds.Contains(t.TeamId)
+                        && t.State == TaskState.Working
+                        && !db.TaskEvents.Any(e =>
+                            e.TaskId == t.Id && e.Kind == TaskEventRow.BudgetExhaustedStopKind))
+            .Select(t => new { t.Id, t.TeamId })
+            .ToListAsync(ct);
+
+        return rows
+            .Select(r => new BudgetStopCandidate(new TaskId(r.Id), new TeamId(r.TeamId)))
+            .ToList();
+    }
+
+    /// <summary>
+    /// Records the §9.9 containment sweep's <c>stop</c> against a task — same out-of-band
+    /// shape as <see cref="RecordAuthFailureAsync"/>: no transition, no xmin token, one
+    /// NOTIFY so a listening dashboard wakes on it. <paramref name="detail"/> carries the
+    /// ceiling facts as prose for the operator, because this row's whole job is to explain a
+    /// silence.
+    ///
+    /// <para>Called only after the stop was actually delivered to the machine, so the row
+    /// never claims a stop that was not sent — and an undelivered one is left for the next
+    /// sweep to retry rather than papered over.</para>
+    /// </summary>
+    public async Task RecordBudgetExhaustedStopAsync(
+        TaskId task, TeamId team, string detail, CancellationToken ct = default)
+    {
+        db.TaskEvents.Add(new TaskEventRow
+        {
+            TaskId = task.Value,
+            TeamId = team.Value,
+            Kind = TaskEventRow.BudgetExhaustedStopKind,
+            Detail = detail,
+            OccurredAt = clock.GetUtcNow(),
+        });
+        await CommitAsync(task.Value, ct);
+    }
+
     private async Task<StoreResult> RunTransition(
         TaskRow row, TaskCommand command, CancellationToken ct,
         Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction? outerTx = null)

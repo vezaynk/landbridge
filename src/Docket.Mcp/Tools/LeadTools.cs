@@ -252,11 +252,17 @@ public sealed class LeadTools(
                  "fetch the report text deliberately with get_task_report, one item at a time. This is " +
                  "the reattachment surface after a session ends or a takeover. Also reports which " +
                  "machine you have bound as your human's own (bound_machine, null if none) — the " +
-                 "consumer end open_lead_forward needs.")]
+                 "consumer end open_lead_forward needs — and your Team's budget (ceiling, committed, " +
+                 "remaining, exhausted), which is READ-ONLY: only your human can change a ceiling, " +
+                 "from the dashboard. If remaining is too small to cover another dispatch, create_task " +
+                 "will refuse and running tasks are stopped; ask your human to raise it.")]
     public async Task<TeamStateView> GetTeamState(CancellationToken ct)
     {
         var lead = LeadPrincipal;
         var state = await store.GetTeamStateAsync(lead.Team, ct);
+        // §9.9: a Lead sees its own ceiling so a refused create_task is legible as "out of
+        // budget" rather than an unexplained rejection. Read-only — there is no MCP write.
+        state = state with { Budget = await budgets.ReadAsync(lead.Team, ct) };
         // The binding keys on the human, not the Team, so it is composed on here
         // rather than read out of the Team's rows (§8.3 human path). A lead
         // credential with no human attribution simply shows no binding.

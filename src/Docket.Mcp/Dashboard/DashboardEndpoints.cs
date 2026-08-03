@@ -59,7 +59,7 @@ public static class DashboardEndpoints
 
         app.MapGet("/dashboard/machines", async (
             HttpContext http, TokenService tokens, DashboardQueries queries, TimeProvider clock, CancellationToken ct) =>
-            await Gated(http, tokens, ct, async () =>
+            await Gated(http, tokens, ct, async _ =>
             {
                 var machines = await queries.GetMachinesAsync(ct);
                 return Negotiated(http, machines, () => DashboardRenderer.Machines(machines, clock.GetUtcNow()));
@@ -67,7 +67,7 @@ public static class DashboardEndpoints
 
         app.MapGet("/dashboard/teams", async (
             HttpContext http, TokenService tokens, DashboardQueries queries, TimeProvider clock, CancellationToken ct) =>
-            await Gated(http, tokens, ct, async () =>
+            await Gated(http, tokens, ct, async _ =>
             {
                 var teams = await queries.GetTeamsAsync(ct);
                 return Negotiated(http, teams, () => DashboardRenderer.Teams(teams, clock.GetUtcNow()));
@@ -76,7 +76,7 @@ public static class DashboardEndpoints
         app.MapGet("/dashboard/teams/{teamId}", async (
             string teamId, HttpContext http, TokenService tokens, DashboardQueries queries, TimeProvider clock,
             CancellationToken ct) =>
-            await Gated(http, tokens, ct, async () =>
+            await Gated(http, tokens, ct, async principal =>
             {
                 if (!Guid.TryParse(teamId, out var id))
                     return Results.BadRequest(new { error = "invalid team id" });
@@ -85,12 +85,15 @@ public static class DashboardEndpoints
                     return WantsJson(http)
                         ? Results.Json(new { error = "no such team" }, Json, statusCode: 404)
                         : Html(DashboardRenderer.Login(null), 404); // unknown team: back to a known surface
-                return Negotiated(http, team, () => DashboardRenderer.TeamDetail(team, clock.GetUtcNow()));
+                // The budget form is drawn for a human only (§9.9); the JSON twin carries the
+                // same numbers either way, since reading a ceiling is not the gated act.
+                return Negotiated(http, team, () =>
+                    DashboardRenderer.TeamDetail(team, clock.GetUtcNow(), principal is Principal.Human));
             }));
 
         app.MapGet("/dashboard/inbox", async (
             HttpContext http, TokenService tokens, DashboardQueries queries, TimeProvider clock, CancellationToken ct) =>
-            await Gated(http, tokens, ct, async () =>
+            await Gated(http, tokens, ct, async _ =>
             {
                 var inbox = await queries.GetInboxAsync(ct);
                 return Negotiated(http, inbox, () => DashboardRenderer.Inbox(inbox, clock.GetUtcNow()));
@@ -98,7 +101,7 @@ public static class DashboardEndpoints
 
         app.MapGet("/dashboard/events", async (
             HttpContext http, TokenService tokens, DashboardQueries queries, TimeProvider clock, CancellationToken ct) =>
-            await Gated(http, tokens, ct, async () =>
+            await Gated(http, tokens, ct, async _ =>
             {
                 var events = await queries.GetEventsAsync(200, ct);
                 return Negotiated(http, events, () => DashboardRenderer.Events(events, clock.GetUtcNow()));
@@ -106,6 +109,9 @@ public static class DashboardEndpoints
 
         // §12 preview mint: 'Create preview' from the Team's registered-services view.
         app.MapPost("/dashboard/preview", HandleCreatePreviewAsync);
+
+        // §9.9 budget ceiling: human-only, and the ONLY write path — there is no MCP tool.
+        app.MapPost("/dashboard/budget", HandleSetBudgetAsync);
 
         return app;
     }
@@ -250,6 +256,91 @@ public static class DashboardEndpoints
     }
 
     /// <summary>
+    /// POST /dashboard/budget — set a Team's budget ceiling and per-dispatch cap (§9.9).
+    ///
+    /// <para><b>Human-only, and the only write path that exists.</b> A Lead session is refused
+    /// here even for its own Team — unlike every other Team-scoped surface on this dashboard,
+    /// where <see cref="OperatorMayAccess"/> lets a Lead act within its own Team. The
+    /// difference is the point: a budget is the control that bounds the Lead itself, so a Lead
+    /// able to raise it is enforcement living exactly where a model can reason past it (§2
+    /// principle 3). Same rule and same reason as the transcript endpoints' human gate, and
+    /// there is deliberately no MCP tool anywhere for this.</para>
+    ///
+    /// <para>A blank field clears that limit rather than setting zero: zero is not a coherent
+    /// ceiling (<see cref="TeamBudgetService.SetLimitsAsync"/> rejects it), and clearing means
+    /// unbounded. Committed-to-date is never an input — raising a ceiling is how a human
+    /// unblocks a Team, and must not double as erasing what was already authorized.</para>
+    /// </summary>
+    private static async Task<IResult> HandleSetBudgetAsync(
+        HttpContext http, TokenService tokens,
+        [Microsoft.AspNetCore.Mvc.FromServices] TeamBudgetService budgets,
+        CancellationToken ct)
+    {
+        var principal = await DashboardAuth.ResolveAsync(http, tokens, ct);
+        switch (principal)
+        {
+            case Principal.Human:
+                break;
+            case Principal.Lead:
+                return WantsJson(http)
+                    ? Results.Json(
+                        new { error = "setting a team budget is human-only" }, Json,
+                        statusCode: StatusCodes.Status403Forbidden)
+                    : Results.Content(
+                        DashboardRenderer.BudgetLeadRefused(), "text/html; charset=utf-8",
+                        statusCode: StatusCodes.Status403Forbidden);
+            default:
+                return WantsJson(http)
+                    ? Results.Json(new { error = "unauthorized" }, Json, statusCode: 401)
+                    : Results.Redirect("/dashboard/login");
+        }
+
+        var form = await http.Request.ReadFormAsync(ct);
+        if (!Guid.TryParse(form["teamId"].ToString(), out var teamId))
+            return Results.BadRequest(new { error = "invalid team id" });
+
+        if (!TryParseUsd(form["ceilingUsd"].ToString(), out var ceiling))
+            return Results.BadRequest(new { error = "ceilingUsd must be a number, or blank to clear" });
+        if (!TryParseUsd(form["perTaskUsd"].ToString(), out var perTask))
+            return Results.BadRequest(new { error = "perTaskUsd must be a number, or blank to clear" });
+
+        var team = new Docket.Core.TeamId(teamId);
+        try
+        {
+            await budgets.SetLimitsAsync(team, ceiling, perTask, ct);
+        }
+        catch (ArgumentOutOfRangeException e)
+        {
+            // A non-positive amount: the service is the authority on what a coherent limit is,
+            // so its refusal is surfaced rather than re-litigated here.
+            return Results.BadRequest(new { error = e.Message });
+        }
+
+        var view = await budgets.ReadAsync(team, ct);
+        return WantsJson(http)
+            ? Results.Json(view, Json)
+            : Html(DashboardRenderer.BudgetUpdated(teamId, view));
+    }
+
+    /// <summary>
+    /// A USD form field: blank means "clear this limit" (null), otherwise an invariant decimal.
+    /// Returns false only on input that is present but not a number, so a typo is a 400 rather
+    /// than a silently cleared ceiling.
+    /// </summary>
+    private static bool TryParseUsd(string? raw, out decimal? value)
+    {
+        value = null;
+        if (string.IsNullOrWhiteSpace(raw))
+            return true;
+        if (!decimal.TryParse(
+                raw, System.Globalization.NumberStyles.Number,
+                System.Globalization.CultureInfo.InvariantCulture, out var parsed))
+            return false;
+        value = parsed;
+        return true;
+    }
+
+    /// <summary>
     /// GET /dashboard/preview-auth?label=&amp;return= — the gated-browser-flow confirm
     /// (§8.4). An operator with a live <c>docket_session</c> (host-scoped to the
     /// dashboard origin) confirms access to the preview's Team; the plane mints a
@@ -301,17 +392,19 @@ public static class DashboardEndpoints
 
     /// <summary>
     /// Runs <paramref name="body"/> only for an authenticated human/Lead; otherwise
-    /// a JSON caller gets 401 and a browser is redirected to the login page.
+    /// a JSON caller gets 401 and a browser is redirected to the login page. The
+    /// resolved principal is handed to the body because some views render differently
+    /// for a human than for a Lead (§9.9's budget form); views that do not care ignore it.
     /// </summary>
     private static async Task<IResult> Gated(
-        HttpContext http, TokenService tokens, CancellationToken ct, Func<Task<IResult>> body)
+        HttpContext http, TokenService tokens, CancellationToken ct, Func<Principal, Task<IResult>> body)
     {
         var principal = await DashboardAuth.ResolveAsync(http, tokens, ct);
         if (principal is null)
             return WantsJson(http)
                 ? Results.Json(new { error = "unauthorized" }, Json, statusCode: 401)
                 : Results.Redirect("/dashboard/login");
-        return await body();
+        return await body(principal);
     }
 
     /// <summary>Serve the model as JSON, or the rendered HTML, per content negotiation.</summary>

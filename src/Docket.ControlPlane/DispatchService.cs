@@ -38,6 +38,14 @@ public sealed class DispatchService : IHostedService
     public const string DefaultPublicMcpUrl = "http://127.0.0.1:5000";
 
     /// <summary>
+    /// The wind-down TTL on a budget-exhaustion <c>stop</c> (§9.9). An upper bound only —
+    /// the runner takes the smaller of this and the profile's own configured wind-down — so
+    /// it is generous enough to let a profile's graceful seam finish a turn, while still
+    /// guaranteeing the hard kill lands rather than leaving an over-ceiling worker alive.
+    /// </summary>
+    internal static readonly TimeSpan BudgetStopTtl = TimeSpan.FromSeconds(30);
+
+    /// <summary>
     /// The plane's tracing source (§1). The dispatch span opened here continues
     /// the Lead's create_task trace and its W3C id is what rides the wire to the
     /// runner. Register it with the host's TracerProvider (Docket.Mcp/Program.cs)
@@ -325,6 +333,70 @@ public sealed class DispatchService : IHostedService
                     break;
                     // blocked_on_input / parked / submitted: leave tracked (§11).
             }
+        }
+
+        await SweepExhaustedBudgetsAsync(ct);
+    }
+
+    /// <summary>
+    /// Stops the working tasks of every Team over its budget ceiling (§9.9). Refusing new
+    /// dispatch bounds what a Team can <em>start</em>; without this, work already running
+    /// when the ceiling was reached would run on past it — so this is the half of the
+    /// ceiling that makes it a containment control rather than an admission check.
+    ///
+    /// <para>Rides the liveness timer because it is the same shape of job: a periodic
+    /// reconciliation of running work against a rule, cheap when there is nothing to do (one
+    /// indexed query returning no Teams).</para>
+    ///
+    /// <para>The stop is the graceful §10/§11 wind-down — a message turn where the profile
+    /// has a seam, then a bounded kill — with <see cref="StopDisposition.Preserve"/>: the
+    /// work is not wrong, the Team merely ran out of authorization, so the transcript is
+    /// worth keeping for whoever raises the ceiling. Delivery is best-effort against a live
+    /// connection (§10); a task whose machine is gone is left alone, since there is no
+    /// process to stop and the exhausted ceiling already refuses its re-dispatch.</para>
+    /// </summary>
+    private async Task SweepExhaustedBudgetsAsync(CancellationToken ct)
+    {
+        using var scope = _scopes.CreateScope();
+        var budgets = scope.ServiceProvider.GetRequiredService<TeamBudgetService>();
+        var exhausted = await budgets.ExhaustedTeamsAsync(ct);
+        if (exhausted.Count == 0)
+            return;
+
+        var store = scope.ServiceProvider.GetRequiredService<TaskStore>();
+        var candidates = await store.WorkingTasksAwaitingBudgetStopAsync(exhausted, ct);
+        if (candidates.Count == 0)
+            return;
+
+        // One read per exhausted Team, not per task: the ceiling facts go into every event
+        // row and a Team can hold many working tasks.
+        var views = new Dictionary<TeamId, TeamBudgetView>();
+        foreach (var team in exhausted)
+            views[team] = await budgets.ReadAsync(team, ct);
+
+        foreach (var candidate in candidates)
+        {
+            if (_registry.MachineFor(candidate.Task) is not { } machine)
+                continue;
+
+            var view = views[candidate.Team];
+            var reason = $"team budget ceiling reached: {view.CommittedUsd} USD committed of " +
+                         $"{view.CeilingUsd} USD authorized";
+            var sent = await _registry.SendAsync(
+                machine,
+                new StopCommand(candidate.Task, BudgetStopTtl, StopDisposition.Preserve, reason),
+                ct);
+            if (!sent)
+            {
+                // Left for the next pass: no event row, so the candidate query returns it again.
+                _logger.LogWarning(
+                    "budget stop for task {Task} not delivered to machine {Machine}", candidate.Task, machine);
+                continue;
+            }
+
+            _logger.LogInformation(
+                "stopped task {Task} on {Machine}: {Reason}", candidate.Task, machine, reason);
+            await store.RecordBudgetExhaustedStopAsync(candidate.Task, candidate.Team, reason, ct);
         }
     }
 }
