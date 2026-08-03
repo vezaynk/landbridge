@@ -78,6 +78,16 @@ jobs:
         env:
           DOCKET_TEST_PG: Host=localhost;Port=5432;Username=docket;Password=docket;Database=docket_mcp
 
+      # docket-meta: unit/saga (in-memory, 0-skip) + endpoint (WebApplicationFactory)
+      # + the migration test (its own docket_meta database) + the Docker-gated E2E.
+      # The E2E's SkippableFacts run here because ubuntu runners have a Docker daemon;
+      # they publish + build the docket runtime images in-process and provision a real
+      # instance. On a runner without Docker they skip cleanly.
+      - name: Test - Docket.Meta (Postgres + Docker-gated provisioning E2E)
+        run: dotnet test tests/Docket.Meta.Tests --no-build -c Release
+        env:
+          DOCKET_TEST_PG: Host=localhost;Port=5432;Username=docket;Password=docket;Database=docket_meta
+
       - name: Test - Docket.MultiMachine (Postgres, multi-machine collab)
         run: dotnet test tests/Docket.MultiMachine.Tests --no-build -c Release
         env:
