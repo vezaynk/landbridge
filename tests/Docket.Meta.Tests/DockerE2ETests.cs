@@ -29,6 +29,14 @@ public class DockerE2ETests
     private const string Sock = "unix:///var/run/docker.sock";
     private const string PgImage = "postgres:16";
 
+    /// <summary>
+    /// A throwaway registry for the pull-failure test. From Docker Hub, like
+    /// <see cref="PgImage"/> — this suite already depends on Hub, so it adds no new
+    /// class of dependency, and 127.0.0.1 registries are insecure-allowed by default so
+    /// the daemon needs no configuration.
+    /// </summary>
+    private const string RegistryImage = "registry:2";
+
     private static bool DockerReachable()
     {
         try
@@ -38,6 +46,124 @@ public class DockerE2ETests
             return true;
         }
         catch { return false; }
+    }
+
+    /// <summary>
+    /// A pull that cannot succeed must fail with a message naming the image, not a raw
+    /// <c>DockerApiException</c>. Companion to <see cref="ImagePullDiagnosticsTests"/>:
+    /// those pin the wording against captured response bodies, these two prove the live
+    /// daemon still fails in a shape <see cref="DockerSubstrate"/> translates.
+    ///
+    /// <para>Deliberately aimed at a port with nothing behind it rather than at a real
+    /// registry on the internet. A test whose failure mode is "the registry was slow" is
+    /// a false-red generator in a per-push matrix, and a false red costs far more than
+    /// the bug it imitates. Connection-refused is instant, needs no network beyond
+    /// loopback, and still exercises the whole daemon → substrate path.</para>
+    /// </summary>
+    [SkippableFact]
+    public async Task An_unreachable_registry_is_translated_not_leaked()
+    {
+        Skip.IfNot(DockerReachable(), "Docker Engine not reachable at " + Sock);
+        using var client = new DockerClientConfiguration(new Uri(Sock)).CreateClient();
+        var sub = new DockerSubstrate(client);
+        // Port 1: privileged, never a registry, refused immediately.
+        var image = "127.0.0.1:1/docket-no-such-registry:v0";
+        var ct = new CancellationTokenSource(TimeSpan.FromMinutes(1)).Token;
+
+        var ex = await Assert.ThrowsAsync<ImagePullException>(() => sub.EnsureImageAsync(image, ct));
+
+        // The raw Docker message carries none of this — that is the entire point.
+        Assert.Contains(image, ex.Message);
+        Assert.Contains("docs/META.md", ex.Message);
+        Assert.DoesNotContain('\n', ex.Message);
+        Assert.NotEmpty(ex.RegistryDetail);
+        // The operator gets a cause, not an HTTP status that reads like a server fault.
+        Assert.DoesNotContain("InternalServerError", ex.Message);
+    }
+
+    /// <summary>
+    /// The production-shaped case: a registry that is reachable and *answers*, refusing a
+    /// repository it does not have. That is a different path through Docker.DotNet than the
+    /// dial failure above — an HTTP protocol error rather than a transport error — and it is
+    /// the one a real deployment hits, so it is worth exercising against a real registry
+    /// rather than a mock. Runs a throwaway <c>registry:2</c> on a Docker-assigned port.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_real_registry_refusing_a_repository_is_translated_too()
+    {
+        Skip.IfNot(DockerReachable(), "Docker Engine not reachable at " + Sock);
+        using var client = new DockerClientConfiguration(new Uri(Sock)).CreateClient();
+        var sub = new DockerSubstrate(client);
+        var id = "dktmeta-reg-" + Guid.NewGuid().ToString("N")[..8];
+        var net = id + "-net";
+        var labels = new Dictionary<string, string> { ["docket.managed"] = "meta-test", ["docket.instance"] = id };
+        var ct = new CancellationTokenSource(TimeSpan.FromMinutes(4)).Token;
+
+        try
+        {
+            await sub.EnsureImageAsync(RegistryImage, ct);
+            await sub.EnsureNetworkAsync(net, labels, ct);
+            await sub.EnsureContainerAsync(new ContainerSpec
+            {
+                Name = id,
+                Image = RegistryImage,
+                NetworkName = net,
+                Labels = labels,
+                PublishContainerPort = 5000,
+                PublishHostPort = 0,
+            }, ct);
+
+            var status = await WaitAsync(() => sub.InspectContainerAsync(id, ct),
+                s => s.Running && s.PublishedPort is not null, TimeSpan.FromMinutes(1));
+            var port = status.PublishedPort!.Value;
+
+            // Wait until it actually serves the v2 API. Pulling too early would fail with
+            // connection-refused, silently making this a duplicate of the test above.
+            Assert.True(await RegistryAnswersAsync(port, TimeSpan.FromMinutes(1)),
+                $"registry:2 never answered /v2/ on 127.0.0.1:{port}");
+
+            var image = $"127.0.0.1:{port}/docket-absent-repo:v0";
+            var ex = await Assert.ThrowsAsync<ImagePullException>(() => sub.EnsureImageAsync(image, ct));
+
+            Assert.Contains(image, ex.Message);
+            Assert.Contains("docs/META.md", ex.Message);
+            Assert.DoesNotContain('\n', ex.Message);
+            Assert.DoesNotContain("InternalServerError", ex.Message);
+            // It got a real answer from a real registry, not a dial failure — otherwise the
+            // readiness gate above lied and this test proves nothing the other one doesn't.
+            Assert.DoesNotContain("refused", ex.RegistryDetail.ToLowerInvariant());
+
+            // Observed against registry:2 + Docker 29: the body is `… : not found`, so this
+            // lands on the missing-tag branch and the operator is told to publish or re-pin.
+            // Not asserted — the daemon's phrasing is its own business, and pinning it here
+            // would turn a wording change into a red build for no gain. The branch logic
+            // itself is covered exhaustively in ImagePullDiagnosticsTests.
+        }
+        finally
+        {
+            await sub.RemoveContainerAsync(id, ct);
+            await sub.RemoveNetworkAsync(net, ct);
+        }
+    }
+
+    /// <summary>Polls the registry's own <c>/v2/</c> endpoint until it responds.</summary>
+    private static async Task<bool> RegistryAnswersAsync(int port, TimeSpan timeout)
+    {
+        using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(3) };
+        var deadline = DateTimeOffset.UtcNow + timeout;
+        while (DateTimeOffset.UtcNow < deadline)
+        {
+            try
+            {
+                // 200 or 401 both mean "a registry is listening and speaking v2".
+                using var resp = await http.GetAsync($"http://127.0.0.1:{port}/v2/");
+                return true;
+            }
+            catch (HttpRequestException) { /* not up yet */ }
+            catch (TaskCanceledException) { /* not up yet */ }
+            await Task.Delay(250);
+        }
+        return false;
     }
 
     [SkippableFact]
@@ -147,7 +273,7 @@ public class DockerE2ETests
         db.Hosts.Add(host);
         await db.SaveChangesAsync();
 
-        var creator = new InstanceCreator(db, new PlacementService(db), new SecretGenerator(), clock);
+        var creator = new InstanceCreator(db, new PlacementService(db), new SecretGenerator(), options, clock);
         var name = "e2e" + Guid.NewGuid().ToString("N")[..6];
         var created = await creator.CreateAsync(new CreateInstanceRequest(name, null, tag, host.Id), ct);
 

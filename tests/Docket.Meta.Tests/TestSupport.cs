@@ -41,7 +41,7 @@ public sealed class SagaHarness : IDisposable
         Db = store ?? NewInMemoryDb("meta-" + Guid.NewGuid(), Protector);
         Secrets = secrets ?? new SecretGenerator();
         Placement = new PlacementService(Db);
-        Creator = new InstanceCreator(Db, Placement, Secrets, Clock);
+        Creator = new InstanceCreator(Db, Placement, Secrets, Options, Clock);
 
         var recipe = new InstanceRecipe(Options);
         var probe = new InstanceHealthProbe(new HttpClient(new AlwaysOkHandler()));

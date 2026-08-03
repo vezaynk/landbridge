@@ -96,4 +96,81 @@ public class CreatorTests
         var picked = await h.Placement.LeastLoadedHostAsync(default);
         Assert.Equal(quiet.Id, picked!.Id);
     }
+
+    // ── image tag resolution ─────────────────────────────────────────────────
+    //
+    // The tag is the one create input with no safe fallback. It used to default to
+    // "latest" — hardcoded here, ignoring Meta:DefaultImageTag entirely — and nothing
+    // publishes "latest", so an omitted tag pinned an image that could never be pulled
+    // and surfaced as a confusing registry error one saga step later.
+
+    [Fact]
+    public async Task An_omitted_tag_falls_back_to_the_configured_default()
+    {
+        using var h = new SagaHarness();
+        h.Options.DefaultImageTag = "sha-abc123def456";
+        await h.AddHostAsync();
+
+        var result = await h.Creator.CreateAsync(new CreateInstanceRequest("acme", null, "", null), default);
+
+        var row = await h.Db.Instances.SingleAsync(i => i.Id == result.Id);
+        Assert.Equal("sha-abc123def456", row.ImageTag);
+    }
+
+    [Fact]
+    public async Task An_explicit_tag_beats_the_configured_default()
+    {
+        using var h = new SagaHarness();
+        h.Options.DefaultImageTag = "sha-abc123def456";
+        await h.AddHostAsync();
+
+        var result = await h.Creator.CreateAsync(new CreateInstanceRequest("acme", null, "v0.4.0", null), default);
+
+        var row = await h.Db.Instances.SingleAsync(i => i.Id == result.Id);
+        Assert.Equal("v0.4.0", row.ImageTag);
+    }
+
+    [Fact]
+    public async Task No_tag_and_no_default_is_rejected_with_guidance()
+    {
+        using var h = new SagaHarness();          // Options.DefaultImageTag is "" by default
+        await h.AddHostAsync();
+
+        var ex = await Assert.ThrowsAsync<InstanceCreateException>(() =>
+            h.Creator.CreateAsync(new CreateInstanceRequest("acme", null, "  ", null), default));
+
+        // The operator needs to learn where tags come from, not just that one is missing.
+        Assert.Contains("Meta:DefaultImageTag", ex.Message);
+        Assert.Contains("publish-images", ex.Message);
+        Assert.Contains("sha-", ex.Message);
+        Assert.Contains("latest", ex.Message);
+        Assert.Contains("docs/META.md", ex.Message);
+    }
+
+    [Fact]
+    public async Task A_rejected_create_allocates_nothing()
+    {
+        using var h = new SagaHarness();
+        await h.AddHostAsync();
+
+        await Assert.ThrowsAsync<InstanceCreateException>(() =>
+            h.Creator.CreateAsync(new CreateInstanceRequest("acme", null, null!, null), default));
+
+        // Validated before placement and port allocation, so a doomed create leaves no
+        // row and burns no port from the host's window.
+        Assert.Empty(h.Db.Instances);
+    }
+
+    [Fact]
+    public async Task A_whitespace_padded_default_is_trimmed()
+    {
+        using var h = new SagaHarness();
+        h.Options.DefaultImageTag = "  v0.4.0  ";
+        await h.AddHostAsync();
+
+        var result = await h.Creator.CreateAsync(new CreateInstanceRequest("acme", null, "", null), default);
+
+        var row = await h.Db.Instances.SingleAsync(i => i.Id == result.Id);
+        Assert.Equal("v0.4.0", row.ImageTag);
+    }
 }

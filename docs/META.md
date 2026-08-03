@@ -93,7 +93,10 @@ pulls a native image instead of failing at run time with an exec-format error.
 
 Nothing publishes `latest`, deliberately: meta skips the pull when the image is already on
 the host (`EnsureImageAsync`), so a mutable tag would silently keep running a stale image.
-Point `Meta:DefaultImageTag` at a real published tag rather than leaving it at `latest`.
+For the same reason `Meta:DefaultImageTag` has **no default** — set it to a published tag
+(prefer a `sha-` one) if you want creates to be able to omit a tag, or leave it unset and
+name a tag on every create. A create with neither is rejected outright rather than pinning
+something unpullable.
 
 **Pinning.** Set `Meta:McpImageRepo` / `Meta:RelayImageRepo` to the two repositories above
 (no tag). An Instance records **one shared tag** across both images — chosen at create time
@@ -101,17 +104,26 @@ and re-pinned by **Upgrade** (§4), which recreates the mcp + relay containers o
 and leaves Postgres and its volume alone. Because the pair moves together, a tag is only
 usable once its whole workflow run is green.
 
-**A private GHCR package needs help.** Meta pulls **anonymously** — it sends no registry
-credentials — so it cannot pull a private package by itself. Either:
+**Make the packages public — this is the supported setup.** A GHCR package the workflow
+creates starts out **private**, and meta pulls **anonymously**: it sends no registry
+credentials, so it cannot pull a private package at all. Publishing the first tag is
+therefore two steps — run the workflow, then GitHub → *Packages* → the package → *Package
+settings* → *Change visibility* → *Public*, once per package. After that there is nothing to
+configure and every host can pull.
 
-- **Make the package public** (simplest): GitHub → *Packages* → the package → *Package
-  settings* → *Change visibility* → *Public*. Nothing else to configure.
-- **Pre-pull on every Docker host**: `docker login ghcr.io` (with a PAT carrying
-  `read:packages`), then `docker pull ghcr.io/vezaynk/docket-mcp:<tag>` and the same for
-  the relay. Meta's present-locally check then short-circuits before it would pull. Note a
-  host-side `docker login` alone is **not** enough — the daemon does not use the CLI's
-  credentials for meta's API-driven pull — and this has to be repeated on every host for
-  every new tag.
+**If a package has to stay private** (an air-gapped or otherwise closed deployment) the only
+option today is to pre-pull on every Docker host: `docker login ghcr.io` with a PAT carrying
+`read:packages`, then `docker pull ghcr.io/vezaynk/docket-mcp:<tag>` and the same for the
+relay, so meta's present-locally check short-circuits before it would pull. Two caveats
+worth knowing before you rely on it: a host-side `docker login` alone is **not** enough — the
+daemon does not use the CLI's credentials for meta's API-driven pull — and the pre-pull must
+be repeated on every host for every new tag, so an **Upgrade** (§4) stalls on any host where
+the new tag has not been fetched yet. Registry credentials meta could use itself are a
+deliberately deferred follow-up (**issue #70**) — there is nothing to configure today.
+
+Either way you will not be guessing: a pull meta cannot satisfy fails the `PullImages` step
+with the image reference and the registry's own words, and says which of the two causes
+applies — see the step log on the Instance detail page (§4).
 
 **Building by hand** (a local registry, an air-gapped host, a one-off): the images are
 **runtime-only** — they COPY a `dotnet publish` output — so the build is a two-step:
@@ -139,7 +151,7 @@ touches an Instance's database.
 | `Meta:Operator:PassphraseHash` | SHA-256 **hex** of the operator passphrase. Fail-closed (503 login) when unset. Generate: `printf '%s' 'your-passphrase' \| shasum -a 256`. |
 | `Meta:Domain` | Base domain for the two routes per Instance. |
 | `Meta:McpImageRepo` / `Meta:RelayImageRepo` | Image repositories (no tag). |
-| `Meta:DefaultImageTag` | Default tag a new Instance pins. |
+| `Meta:DefaultImageTag` | Tag a create pins when it names none. **No default** — a create with neither is rejected (§1.4). |
 | `Meta:PostgresImage` | Postgres image for the per-Instance database container. |
 | `Meta:CaddyAdminUrl` / `Meta:CaddyServerName` | The edge Caddy admin API and server key. |
 | `Meta:MigrateOnStartup` | Apply meta's own migration to its own store at startup (dev convenience). |

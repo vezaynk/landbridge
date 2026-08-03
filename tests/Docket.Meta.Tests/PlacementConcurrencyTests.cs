@@ -40,7 +40,7 @@ public class PlacementConcurrencyTests(MetaPostgresFixture pg)
         var results = await Task.WhenAll(Enumerable.Range(0, Racers).Select(async i =>
         {
             await using var db = pg.NewContext();
-            var creator = new InstanceCreator(db, new PlacementService(db), new SecretGenerator(), TimeProvider.System);
+            var creator = new InstanceCreator(db, new PlacementService(db), new SecretGenerator(), new MetaOptions(), TimeProvider.System);
             // Line them all up so the reads genuinely overlap.
             await Task.Run(() => barrier.SignalAndWait());
             return await creator.CreateAsync(
