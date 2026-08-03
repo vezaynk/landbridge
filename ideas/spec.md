@@ -489,7 +489,7 @@ A task may carry an optional `profile` string, matched **by exact string equalit
 
 Three constraints are load-bearing rather than cosmetic:
 
-**`docketd` never invokes a shell.** `command` is argv passed to `execve`, which is what makes it safe to deliver an agent-authored prompt as an argument — and most harnesses require that. There is no shell to inject into. If a harness genuinely needs shell interpretation, it gets wrapped in a script; a shell is never added to `docketd`.
+**`docketd` never invokes a shell.** `spawn` is argv passed to `execve`, which is what makes it safe to deliver an agent-authored prompt as an argument — and most harnesses require that. There is no shell to inject into. If a harness genuinely needs shell interpretation, it gets wrapped in a script; a shell is never added to `docketd`.
 
 **Two hard prerequisites, neither of which degrades gracefully.** A harness must be an MCP client, since that is a worker's only channel to Docket. And it must run to completion without prompting for approval — a headless agent waiting for a click nobody will make surfaces as a liveness timeout rather than an error, which is the most expensive way to find a misconfiguration. Headless posture is a named prerequisite with sharp edges the enroll skill enumerates: managed settings on corporate machines can forbid permission bypass outright; "don't ask" modes silently *deny* tools that require user interaction rather than prompting; and a permission-prompt tool is the middle path that turns approvals into `request_input` escalations instead of hangs.
 
@@ -497,13 +497,17 @@ Three constraints are load-bearing rather than cosmetic:
 
 **`events.source: none` is a supported, honest answer.** Liveness degrades to process-alive and progress renders as "not reported." A fabricated event mapping produces a machine that looks healthy and is not, which is worse than a machine that admits what it cannot see.
 
+**As-built reconciliation (2026-08-03).** `terminal` is the only source implemented: `hooks` and `otel` parse and are consumed nowhere, so they behave exactly as `none`. **The process-alive degradation above is not wired**, which makes `none` considerably more expensive than this section implies. `docketd` has the check (`ProcessSupervisor.IsTaskLive`) but nothing calls it, and the plane never learns process state — the machine heartbeat carries a running-task list without refreshing per-task activity, and a worker's own MCP calls do not refresh it either. Plane-side per-task activity is refreshed *only* by an inbound `started` / `session-started` / `alive` / `tool-call` / `subagent-spawned`, and a non-`terminal` profile emits exactly one of those, once, at spawn. The consequence is that such a profile loses and redispatches every task outliving the per-task liveness window, uncapped. `docketd` warns at startup for each profile declaring a non-`terminal` source. Closing this needs either the process-alive signal this section promises or a periodic `alive` event; until then `none` is honest about what it reports and misleading about what it costs.
+
+Two smaller as-built notes on the same seam: `alive` and `subagent-spawned` are in the wire vocabulary but have no producer, and `events.mapping` overrides the stdout stream's *property names* (`type_key`, `tool_use_block_type`, …) rather than mapping harness event names onto that vocabulary — with unrecognized keys falling back silently, so a fabricated mapping does not fail at load.
+
 `work_root` deserves a note: `docketd` spawns each task in `{work_root}/{task_id}`. This is *not* the task's workspace — the runner never interprets the opaque `workspace` blob. It is a unique machine-local scratch directory to start in; the agent constructs its real workspace from what the Lead assigned.
 
 ### Concurrency and back-pressure
 
 Machines do not declare a concurrency limit. A declared number is a guess that is wrong in both directions, and agents vary too much in weight for it to mean anything.
 
-Instead `docketd` observes its own load, memory, and disk, and **stops accepting dispatch when it is under pressure** — resuming when it clears. Derived, not asked for, consistent with principle 2. A saturated machine keeps running what it holds and appears as `saturated` in the Machine Group view.
+Instead `docketd` observes its own load, memory, and disk, and **stops accepting dispatch when it is under pressure** — resuming when it clears. Derived, not asked for, consistent with principle 2. A saturated machine keeps running what it holds and appears as `back-pressure` in the Machine Group view. (As-built, 2026-08-03: the view renders `ready` / `not ready` / `back-pressure` from two heartbeat booleans; there is no `saturated` label and no machine state enum.)
 
 This exists to break a feedback loop rather than to ration capacity. Without it, a thrashing machine misses heartbeats on every task it holds at once, all of them requeue, and nothing prevents the same machine from immediately being redispatched them. Back-pressure makes overload self-correcting instead of self-reinforcing.
 
@@ -512,7 +516,7 @@ A profile may declare `max_concurrent` for reasons unrelated to load — a licen
 Liveness splits accordingly:
 
 - **Machine heartbeat** — `docketd` on its own timer. Loss means every task on that machine is suspect.
-- **Per-task liveness** — derived from `started` / `tool-call` / `exited` scoped to a task id, plus process-alive for that PID. Suspended while a task is `blocked_on_input` or `parked` (§11).
+- **Per-task liveness** — derived from `started` / `tool-call` / `exited` scoped to a task id, plus process-alive for that PID. Suspended while a task is `blocked_on_input` or `parked` (§11). (As-built, 2026-08-03: the process-alive half is not wired — see the event-relay reconciliation above. The window is 60s and is not configurable.)
 
 Requeue keys off per-task liveness, so one hung agent is requeued while its siblings keep working.
 
@@ -570,7 +574,7 @@ Docket does **not** speak A2A internally. It is exposed at the outer boundary fo
 
 1. SSH to the box.
 2. Start the harness.
-3. Connect to `docket-mcp`. Present a human-issued enrollment token; exchange for machine credentials. Declare purpose, OS, specs, permission level.
+3. Connect to `docket-mcp`. Present a human-issued enrollment token; exchange for machine credentials. Declare name, purpose, OS, permission level. (As-built, 2026-08-03: **specs are not collected** — the enrollment record is `name` / `purpose` / `os` / `permission_level` only, and CPU/memory exist solely as live load on the heartbeat, never as declared capacity. The same stale "specs" claim is mirrored in a code comment on `MachineRow`. `permission_level` is persisted but not yet consulted by dispatch, forwarding, or any tool decision.)
 4. Run `/docket-enroll`, which reads the enrollment skill from the server and writes the `docketd` config.
 5. Agent guides the human through registering `docketd` as a service. Registration needs sudo, so the human executes it.
 6. **Conformance run.** The control plane dispatches trivial tasks and judges the results itself:
@@ -584,6 +588,8 @@ Docket does **not** speak A2A internally. It is exposed at the outer boundary fo
    - a parked task resumes on this machine from its recorded directory with context intact
    - every declared profile passes the above independently, plus one cross-profile concurrency case
 7. Pass → machine joins the Machine Group as `ready`. Fail → registered but unclaimable, with the failing step named.
+
+**As-built reconciliation (2026-08-03).** Steps 4–7 do not exist. There is no `/docket-enroll` prompt (no MCP prompt is registered at all) and no conformance run: nothing in the plane dispatches trivial work to a new machine or judges it. Nor are `ready` and `unclaimable` machine *states* — there is no machine state enum; readiness is two per-heartbeat booleans, and an enrolled-but-disconnected machine is absent from the Machine Group view rather than shown as unclaimable. Today enrollment yields credentials, the operator authors the runner config with the `docket-enroll` skill, and the skill's manual smoke test stands in for the conformance run. The config-stamping below is likewise unbuilt.
 
 The wizard *displays* results; the control plane *determines* them.
 

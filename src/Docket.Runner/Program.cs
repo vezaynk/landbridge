@@ -89,6 +89,14 @@ public static class Program
         if (!backPressure.ObservesCpu)
             Console.WriteLine("docketd: cpu back-pressure unavailable on this platform; max_cpu_load is inert (memory and disk still gate).");
 
+        // §10 event relay: terminal is the only implemented source. A profile
+        // declaring hooks/otel/none emits one event ever (started, at spawn), so the
+        // plane's per-task liveness window requeues everything it runs that outlives
+        // that window. Silent degradation here reads as a hung harness, so say it
+        // loudly at startup — same posture as the inert-max_cpu_load line above.
+        foreach (var warning in config.EventRelayWarnings())
+            Console.WriteLine(warning);
+
         // §10 + §5: dial the control plane outbound. Credential source, in
         // priority order:
         //   1. DOCKET_MACHINE_TOKEN env — the Aspire dev loop's fixed token, NEVER
