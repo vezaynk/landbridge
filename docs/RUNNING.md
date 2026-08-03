@@ -228,6 +228,222 @@ the worked example in the runner-config reference uses `hooks`, which is the
 intended shape, not what runs today. `subagent-spawned`, `alive`, and
 `auth-failed` events are not produced yet.
 
+## Running `docketd` as a service
+
+On a real machine `docketd` must survive logout and reboot, which means the
+platform's service manager. Two templates ship in [`deploy/`](../deploy):
+
+| Template | Platform | Goes to |
+|---|---|---|
+| [`deploy/docketd.service`](../deploy/docketd.service) | Linux / systemd | `/etc/systemd/system/docketd.service` |
+| [`deploy/com.docket.docketd.plist`](../deploy/com.docket.docketd.plist) | macOS / launchd | `~/Library/LaunchAgents/` or `/Library/LaunchDaemons/` |
+
+Both are heavily commented: every non-obvious setting says why it is there, and
+the systemd unit ends with a list of hardening options that are deliberately
+*absent* because they break a specific `docketd` feature. Read the comments
+before editing — `docketd` spawns agent harnesses as its own children and is the
+containment boundary for them, so a sandbox setting applied to the daemon is also
+applied to every dispatched agent.
+
+**Installing a service is a privileged, system-level change, and the enroll skill
+deliberately hands it to the human.** An enrolling agent prepares the file,
+explains what it does and where it goes, and has the operator run the install and
+enable commands (`ideas/skills/enroll-skill.md`, "Registering the daemon"). The
+commands below are the ones to hand over.
+
+### Substitutions
+
+Both templates carry placeholders. Nothing else needs editing to get a working
+service:
+
+| Placeholder | What to put there |
+|---|---|
+| Binary path | Where you published `docketd` — `/opt/docketd/docketd` (Linux) or `/usr/local/libexec/docketd/docketd` (macOS) in the templates. |
+| `--config` path | Your runner config, e.g. `/etc/docketd/config.json`. Required; `docketd` exits `2` without it. |
+| `--state-dir` path | `/var/lib/docketd` (Linux) or `/Users/<you>/.docket` (macOS). Must match the path you enrolled with. |
+| `User=` / `Group=` (Linux) | The dedicated service account, created below. |
+| `PATH` | The directories holding `claude`, `node`, `git`, `docker` — see the warning below. |
+| `/Users/YOU` (macOS) | Your real home; launchd expands neither `~` nor `$HOME` in a plist. |
+
+> **The `PATH` line is the one people get wrong.** `docketd` copies its own
+> environment onto every harness child at spawn, and both service managers hand a
+> job a minimal `PATH` — systemd's compiled-in default, or launchd's
+> `/usr/bin:/bin:/usr/sbin:/sbin` (no Homebrew, no `nvm`). If the harness binary
+> is not on the `PATH` you set, the spawn fails with `ENOENT` and tasks fail on
+> this machine only, which reads as a plane bug rather than a `PATH` bug.
+
+Point `machine.work_root` at a path inside the state dir
+(`/var/lib/docketd/work`, as in the [runner-config
+reference](../ideas/skills/references/runner-config.md)) so one directory covers
+credentials, transcripts, and per-task scratch. `docketd` creates each
+`{work_root}/{task_id}` itself; the root needs to exist and be writable by the
+service account.
+
+### Linux (systemd)
+
+```bash
+# 1. A dedicated account with a REAL home — the harness reads ~/.claude,
+#    ~/.gitconfig and ~/.ssh out of $HOME.
+sudo useradd --system --create-home --home-dir /home/docketd \
+     --shell /usr/sbin/nologin docketd
+
+# 2. Publish the binary (AssemblyName is `docketd`; add
+#    -r linux-x64 --self-contained if the box has no .NET runtime).
+sudo dotnet publish src/Docket.Runner -c Release -o /opt/docketd
+
+# 3. Config, owned by the service account.
+sudo install -d -o docketd -g docketd -m 0750 /etc/docketd
+sudo install -o docketd -g docketd -m 0640 config.json /etc/docketd/config.json
+
+# 4. Enroll AS THE SERVICE USER, so credentials.json lands in the state dir it
+#    will actually read (0600 in a 0700 dir).
+sudo install -d -o docketd -g docketd -m 0700 /var/lib/docketd
+sudo -u docketd /opt/docketd/docketd --enroll \
+     --control-url https://plane.example.com \
+     --enroll-token-file ./enroll.token \
+     --state-dir /var/lib/docketd
+
+# 5. Install and enable.
+sudo install -m 0644 deploy/docketd.service /etc/systemd/system/docketd.service
+sudo systemd-analyze verify /etc/systemd/system/docketd.service   # optional, catches typos
+sudo systemctl daemon-reload
+sudo systemctl enable --now docketd
+```
+
+Verify:
+
+```bash
+systemctl status docketd
+journalctl -u docketd -f
+```
+
+A healthy start logs one line naming the machine id, the declared profiles, the
+stray count, and the control endpoint:
+
+```
+docketd up: machine=<id> profiles=[default] strays_reaped=0 control=wss://plane.example.com/runner
+```
+
+Then confirm the machine appears in the dashboard's Machine Group. `strays_reaped=0`
+is the normal result under systemd: the unit's cgroup is torn down before a
+restart, so there is usually nothing left to reap. A non-zero count after an
+unclean shutdown is the sweep doing its job.
+
+### macOS (launchd): LaunchAgent or LaunchDaemon
+
+This choice matters more than any other setting in the plist, and neither answer
+is clean.
+
+A **LaunchAgent** (`~/Library/LaunchAgents/`, `launchctl bootstrap gui/…`) runs
+as you, inside your login session. The harness therefore gets the environment it
+was installed into: your unlocked login keychain (where Claude Code keeps its
+credentials on macOS, falling back to `~/.claude/.credentials.json`), your
+`~/.claude` settings and installed MCP servers, your `~/.gitconfig` and
+`~/.ssh`, your Homebrew and `nvm` toolchains, and TCC prompts that resolve
+against your user record instead of failing silently. The cost is that it **does
+not survive logout** — the job is bootstrapped into the GUI session and torn down
+with it. A locked screen is fine; logout, fast user switching, and a reboot with
+no auto-login are not. You also cannot bootstrap it purely over SSH before
+someone has logged in.
+
+A **LaunchDaemon** (`/Library/LaunchDaemons/`, root-owned `0644`,
+`sudo launchctl bootstrap system`) genuinely survives logout and reboot with no
+session at all. The cost is the mirror image: it runs outside any user session,
+so the login keychain is locked and a keychain-backed harness login simply fails;
+`$HOME` is whatever you set it to and `~/.claude` has to be provisioned there
+deliberately; and TCC-protected resources (Desktop, Documents, Downloads, Screen
+Recording, Automation) are denied silently rather than prompting. Setting
+`UserName` to your own account recovers the home directory but *not* the
+keychain — the session unlocks it, not the uid.
+
+Pick by machine, not by preference: a workstation or Mac dev box you are logged
+into anyway wants the LaunchAgent (enable auto-login so a reboot brings it back);
+a headless Mac in a rack wants the LaunchDaemon, with a dedicated service account
+whose `$HOME` you provision and a harness credential it can read without a
+session.
+
+```bash
+# Publish (add -r osx-arm64 --self-contained if the box has no .NET runtime).
+sudo dotnet publish src/Docket.Runner -c Release -o /usr/local/libexec/docketd
+
+# Enroll first, into the same --state-dir the plist passes.
+/usr/local/libexec/docketd/docketd --enroll \
+  --control-url https://plane.example.com \
+  --enroll-token-file ./enroll.token --state-dir ~/.docket
+
+# LaunchAgent (runs as you, dies at logout):
+cp deploy/com.docket.docketd.plist ~/Library/LaunchAgents/
+plutil -lint ~/Library/LaunchAgents/com.docket.docketd.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.docket.docketd.plist
+
+# LaunchDaemon (survives logout; add UserName/GroupName and a real HOME first):
+sudo cp deploy/com.docket.docketd.plist /Library/LaunchDaemons/
+sudo chown root:wheel /Library/LaunchDaemons/com.docket.docketd.plist
+sudo chmod 644 /Library/LaunchDaemons/com.docket.docketd.plist
+sudo launchctl bootstrap system /Library/LaunchDaemons/com.docket.docketd.plist
+```
+
+Verify, then restart or remove:
+
+```bash
+launchctl print gui/$(id -u)/com.docket.docketd     # `system/…` for a daemon
+tail -f ~/Library/Logs/docketd.out.log              # the `docketd up:` line
+launchctl kickstart -k gui/$(id -u)/com.docket.docketd
+launchctl bootout gui/$(id -u)/com.docket.docketd
+```
+
+launchd has no equivalent of systemd's `RestartPreventExitStatus`, so a bad
+config exits `2` and respawns every 10 seconds forever. The reason is on the
+first line of `docketd.err.log` — read it there rather than wondering why the
+machine never appears.
+
+### Windows
+
+**There is no template here, because there is nothing honest to put in one.**
+`docketd` is a plain console application with no Windows Service host
+(`Microsoft.Extensions.Hosting.WindowsServices` is not referenced), so
+`sc.exe create` pointed straight at the binary will not work: the process never
+reports `SERVICE_RUNNING` to the Service Control Manager and the start fails with
+error 1053. Windows also has no `SIGTERM`, so the SCM's stop request cannot reach
+`docketd`'s shutdown path.
+
+Two pragmatic options, neither validated against a real Windows machine:
+
+- **A service wrapper** — NSSM or WinSW hosts the console binary and speaks to
+  the SCM on its behalf. Their default stop sequence sends a console `Ctrl+C`
+  first, which .NET surfaces as `PosixSignal.SIGINT` — a signal `docketd` *does*
+  handle, giving the same ordered teardown as SIGTERM on Linux. Give the wrapper
+  a stop timeout of at least 45 seconds, matching the other two templates.
+- **A scheduled task** at startup, running as a dedicated account with "run
+  whether the user is logged on or not". Simpler, no third-party dependency, and
+  it gives up graceful shutdown entirely — the task is killed, not signalled.
+
+Losing graceful shutdown costs less on Windows than it would elsewhere: each
+worker is sealed at spawn into a kill-on-close Job Object, so `docketd` dying by
+any means — including `TerminateProcess` — makes the OS tear down the whole worker
+tree. That is why the stray reaper's process inventory is empty by design on
+Windows: there is nothing left to discover.
+
+### What a restart does, and how to avoid it hurting
+
+`docketd` holds no state. **A restart kills every agent running on the machine
+and their tasks requeue** — deliberate, not a fault. The templates lean into
+this: `Restart=always` / `KeepAlive` bring the daemon straight back, and on start
+it also kills any stray harness processes it finds, which is what makes the kill
+guarantee survive an unclean shutdown.
+
+A `SIGTERM` (`systemctl stop`, `launchctl bootout`) runs `docketd`'s ordered
+teardown — hard-kill every worker's process tree, close every live relay tunnel,
+join in-flight transcript reads, drain the event ring. It is **not** a graceful
+agent wind-down: no stop turn is injected, and `stop.wind_down_seconds` /
+`min(ttl, wind_down_seconds)` apply only to a `stop` command arriving from the
+control plane, never to daemon shutdown. `TimeoutStopSec=45` / `ExitTimeOut=45`
+covers the teardown itself, not an agent's last turn.
+
+So for a planned restart — a config change, an upgrade, a reboot — **drain the
+machine from the control plane first**, let the running tasks wind down and
+report, and only then stop the service.
+
 ## Configuration reference
 
 Keys are shown in `:`-separated form; as environment variables, replace `:` with
