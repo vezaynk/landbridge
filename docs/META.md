@@ -104,20 +104,23 @@ and re-pinned by **Upgrade** (§4), which recreates the mcp + relay containers o
 and leaves Postgres and its volume alone. Because the pair moves together, a tag is only
 usable once its whole workflow run is green.
 
-**A private GHCR package needs help.** Meta pulls **anonymously** — it sends no registry
-credentials — so it cannot pull a private package by itself. Either:
+**Make the packages public — this is the supported setup.** A GHCR package the workflow
+creates starts out **private**, and meta pulls **anonymously**: it sends no registry
+credentials, so it cannot pull a private package at all. Publishing the first tag is
+therefore two steps — run the workflow, then GitHub → *Packages* → the package → *Package
+settings* → *Change visibility* → *Public*, once per package. After that there is nothing to
+configure and every host can pull.
 
-- **Make the package public** (simplest): GitHub → *Packages* → the package → *Package
-  settings* → *Change visibility* → *Public*. Nothing else to configure.
-- **Pre-pull on every Docker host**: `docker login ghcr.io` (with a PAT carrying
-  `read:packages`), then `docker pull ghcr.io/vezaynk/docket-mcp:<tag>` and the same for
-  the relay. Meta's present-locally check then short-circuits before it would pull. Note a
-  host-side `docker login` alone is **not** enough — the daemon does not use the CLI's
-  credentials for meta's API-driven pull — and this has to be repeated on every host for
-  every new tag.
-
-  Registry credentials configurable in meta (so it could pull a private package itself)
-  are a tracked follow-up, not something you can configure today.
+**If a package has to stay private** (an air-gapped or otherwise closed deployment) the only
+option today is to pre-pull on every Docker host: `docker login ghcr.io` with a PAT carrying
+`read:packages`, then `docker pull ghcr.io/vezaynk/docket-mcp:<tag>` and the same for the
+relay, so meta's present-locally check short-circuits before it would pull. Two caveats
+worth knowing before you rely on it: a host-side `docker login` alone is **not** enough — the
+daemon does not use the CLI's credentials for meta's API-driven pull — and the pre-pull must
+be repeated on every host for every new tag, so an **Upgrade** (§4) stalls on any host where
+the new tag has not been fetched yet. Registry credentials meta could use itself are a
+deliberately deferred follow-up, recorded against this gap; there is nothing to configure
+today.
 
 Either way you will not be guessing: a pull meta cannot satisfy fails the `PullImages` step
 with the image reference and the registry's own words, and says which of the two causes
