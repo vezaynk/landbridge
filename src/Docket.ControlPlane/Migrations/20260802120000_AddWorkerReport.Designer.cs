@@ -3,6 +3,7 @@ using System;
 using Docket.ControlPlane;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Docket.ControlPlane.Migrations
 {
     [DbContext(typeof(DocketDbContext))]
-    partial class DocketDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260802120000_AddWorkerReport")]
+    partial class AddWorkerReport
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
@@ -142,49 +145,6 @@ namespace Docket.ControlPlane.Migrations
                         .HasDatabaseName("ix_lead_events_team_id");
 
                     b.ToTable("lead_events", (string)null);
-                });
-
-            modelBuilder.Entity("Docket.ControlPlane.Auth.LeadMachineBindingRow", b =>
-                {
-                    b.Property<Guid>("Id")
-                        .ValueGeneratedOnAdd()
-                        .HasColumnType("uuid")
-                        .HasColumnName("id");
-
-                    b.Property<DateTimeOffset>("BoundAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("bound_at");
-
-                    b.Property<Guid>("HumanId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("human_id");
-
-                    b.Property<Guid>("MachineId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("machine_id");
-
-                    b.Property<bool>("Revoked")
-                        .HasColumnType("boolean")
-                        .HasColumnName("revoked");
-
-                    b.Property<DateTimeOffset?>("RevokedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("revoked_at");
-
-                    b.HasKey("Id")
-                        .HasName("pk_lead_machine_bindings");
-
-                    b.HasIndex("HumanId")
-                        .IsUnique()
-                        .HasDatabaseName("ix_lead_machine_bindings_one_live_per_human")
-                        .HasFilter("revoked = false");
-
-                    b.HasIndex("MachineId")
-                        .IsUnique()
-                        .HasDatabaseName("ix_lead_machine_bindings_one_live_per_machine")
-                        .HasFilter("revoked = false");
-
-                    b.ToTable("lead_machine_bindings", (string)null);
                 });
 
             modelBuilder.Entity("Docket.ControlPlane.Auth.MachineRow", b =>

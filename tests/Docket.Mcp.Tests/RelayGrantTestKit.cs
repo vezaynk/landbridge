@@ -13,11 +13,13 @@ using Docket.Relay;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
+using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol.Client;
 
 namespace Docket.Mcp.Tests;
@@ -142,6 +144,24 @@ internal static class RelayGrantTestKit
         return await McpClient.CreateAsync(transport, cancellationToken: ct);
     }
 
+    /// <summary>
+    /// <see cref="LeadTools"/> wired for the direct-call tests: the store plus the
+    /// two §8.3 human-path collaborators (the lead↔machine binding and the grant
+    /// service) over <paramref name="db"/>, and a forward orchestrator over
+    /// <paramref name="registry"/> so the same instance the test drives is the one
+    /// commands are sent through. Config is empty, so the relay URL falls back to
+    /// <see cref="WorkerTools.DefaultRelayUrl"/>.
+    /// </summary>
+    public static LeadTools LeadToolsFor(
+        DocketDbContext db, TimeProvider clock, RunnerConnectionRegistry registry, IHttpContextAccessor http) =>
+        new(new TaskStore(db, clock),
+            registry,
+            new LeadMachineBindingService(db, clock),
+            new RelayGrantService(db, clock),
+            new ForwardOrchestrator(registry, new ForwardWaiters(), NullLogger<ForwardOrchestrator>.Instance),
+            http,
+            new ConfigurationBuilder().Build());
+
     // ── Seeding (against the fixture DB, so the plane's own scope sees it) ─────
 
     /// <summary>
@@ -156,7 +176,7 @@ internal static class RelayGrantTestKit
         await using var db = pg.NewContext();
         var store = new TaskStore(db, TimeProvider.System);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(new LeadClaim(team), team, "criteria", CompletionMode.Automated, null, true), ct);
+            new CreateTask(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null, true), ct);
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(Machine, instance, ct);
         await store.RegisterServiceAsync(new WorkerCaller(team, created.Task.Id, instance), serviceName, port, ct);
@@ -178,7 +198,7 @@ internal static class RelayGrantTestKit
         var store = new TaskStore(db, TimeProvider.System);
         var tokens = new TokenService(db, TimeProvider.System);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(new LeadClaim(team), team, "criteria", CompletionMode.Automated, null, true), ct);
+            new CreateTask(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null, true), ct);
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(Machine, instance, ct);
         var token = (await tokens.MintWorkerTokenAsync(team, created.Task.Id, instance, ct)).Token;
@@ -214,14 +234,41 @@ internal static class RelayGrantTestKit
         return (RelayGrantResult.Issued)await grants.IssueAsync(consumer, serviceName, ct);
     }
 
-    /// <summary>A live lead token for <paramref name="team"/>, as a future OAuth callback would mint it.</summary>
-    public static async Task<string> LeadTokenAsync(PostgresFixture pg, TeamId team, CancellationToken ct)
+    /// <summary>A human session that has claimed the Lead of a Team: the human's own
+    /// session id (what a lead↔machine binding keys on, §8.3) and the lead token.</summary>
+    public sealed record SeededLead(Guid HumanId, string HumanToken, string Token);
+
+    /// <summary>
+    /// A live lead claim for <paramref name="team"/>, as a future OAuth callback would
+    /// mint it: a human session, then that human claiming the Team (§4, §5).
+    /// </summary>
+    public static async Task<SeededLead> LeadSessionAsync(PostgresFixture pg, TeamId team, CancellationToken ct)
     {
         await using var db = pg.NewContext();
         var tokens = new TokenService(db, TimeProvider.System);
         var human = await tokens.IssueHumanSessionAsync(ct);
         var claim = (LeadClaimResult.Claimed)await tokens.ClaimLeadAsync(human.Token, team, ct: ct);
-        return claim.Token.Token;
+        // A human's id IS its session credential's id (§5), which is what the Lead
+        // credential's HumanId column points at.
+        return new SeededLead(human.CredentialId, human.Token, claim.Token.Token);
+    }
+
+    /// <summary>A live lead token for <paramref name="team"/>, as a future OAuth callback would mint it.</summary>
+    public static async Task<string> LeadTokenAsync(PostgresFixture pg, TeamId team, CancellationToken ct) =>
+        (await LeadSessionAsync(pg, team, ct)).Token;
+
+    /// <summary>
+    /// An enrolled machine, as <c>/docket-enroll</c> leaves it (§11): the id a Lead
+    /// passes to <c>bind_machine</c>, and the key the connection registry uses.
+    /// </summary>
+    public static async Task<Guid> EnrollMachineAsync(PostgresFixture pg, string name, CancellationToken ct)
+    {
+        await using var db = pg.NewContext();
+        var tokens = new TokenService(db, TimeProvider.System);
+        var enrollment = await tokens.IssueEnrollmentTokenAsync(ct);
+        var credentials = await tokens.ExchangeEnrollmentAsync(
+            enrollment.Token, new MachineDeclaration(name, "a human's own machine", "macos", "standard"), ct);
+        return credentials!.MachineId;
     }
 
     // ── Relay tunnel client helpers (the docketd sides, stubbed by the test) ──

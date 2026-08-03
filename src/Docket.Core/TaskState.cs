@@ -20,11 +20,32 @@ public static class TaskStateExtensions
         state is TaskState.Completed or TaskState.Rejected or TaskState.Canceled;
 }
 
-/// <summary>Spec §7: which verdict identity a task expects, nothing else.</summary>
+/// <summary>
+/// Spec §7: who adjudicates a task's completion. <see cref="Lead"/> (the default)
+/// lets the Lead session's verdict complete the task autonomously — orchestrator
+/// judgment, the Claude Code shape; <see cref="Review"/> additionally requires human
+/// confirmation. Either way a task's own worker can never complete it (§9 check 4,
+/// doer/judge split). There is no automated-verifier mode — CI and tests are
+/// evidence the Lead gathers itself, not a verdict-issuing actor.
+/// </summary>
 public enum CompletionMode
 {
-    Automated,
+    Lead,
     Review,
+}
+
+/// <summary>
+/// Spec §9 check 4: who supplied the completing verdict, recorded on the task so
+/// the completion is legible (rendered on the §12 dashboard task view). Null until
+/// a task reaches <see cref="TaskState.Completed"/>.
+/// </summary>
+public enum VerdictProvenance
+{
+    /// <summary>A Lead session adjudicated (lead mode, autonomous).</summary>
+    LeadSession,
+
+    /// <summary>A human adjudicated (a human session, or a human-confirmed review verdict).</summary>
+    Human,
 }
 
 /// <summary>Spec §11: typed request kinds for blocked_on_input.</summary>

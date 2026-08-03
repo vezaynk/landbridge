@@ -15,9 +15,6 @@ public enum CredentialKind
     /// <summary>Worker token minted at dispatch, scoped to {team, task, instance} (§5).</summary>
     Worker,
 
-    /// <summary>Human-provisioned verifier client credential (§5).</summary>
-    Verifier,
-
     /// <summary>
     /// A human's own session (§5). Every credential descends from a human
     /// (§2 principle 5); this is the root. Obtained via OAuth 2.1 auth-code /
@@ -105,6 +102,66 @@ public sealed class LeadEventRow
 }
 
 /// <summary>
+/// A human's claim on one enrolled machine as <em>their own</em> box (§8.3 human
+/// path): the fact that lets the control plane route a Lead-consumer forward to
+/// where the person is actually sitting. A Lead is a harness client with no
+/// machine of its own (§4) — enrollment and attachment are independent choices —
+/// so the binding is the explicit, revocable, visible statement that closes that
+/// gap.
+///
+/// <para>Keyed on the <b>human</b>, not the Lead credential or the Team: the
+/// machine on a person's desk does not change when their session ends, when they
+/// lead a second Team, or when someone takes their Team over. A takeover
+/// therefore does <em>not</em> inherit the evicted human's box — the new Lead has
+/// its own binding or none (§4).</para>
+///
+/// <para>One live binding per human and per machine, enforced by two partial
+/// unique indexes (<see cref="DocketDbContext.OneLiveBindingPerHumanIndex"/>,
+/// <see cref="DocketDbContext.OneLiveBindingPerMachineIndex"/>) rather than by a
+/// read — the same shape as one-live-Lead-per-Team. Revocation is a soft delete
+/// so an unbind/rebind history survives.</para>
+/// </summary>
+public sealed class LeadMachineBindingRow
+{
+    public Guid Id { get; set; }
+
+    /// <summary>The human session's own credential id (a Lead credential's <see cref="CredentialRow.HumanId"/>).</summary>
+    public Guid HumanId { get; set; }
+
+    /// <summary>The enrolled machine (<see cref="MachineRow.Id"/>) this human sits at.</summary>
+    public Guid MachineId { get; set; }
+
+    public DateTimeOffset BoundAt { get; set; }
+
+    /// <summary>Set by an explicit unbind; a revoked row keeps the history and frees both unique slots.</summary>
+    public bool Revoked { get; set; }
+
+    public DateTimeOffset? RevokedAt { get; set; }
+}
+
+/// <summary>
+/// A live lead↔machine binding as read back (§8.3 human path): the machine's id,
+/// its enrollment name (so a confirmation names something a person recognizes),
+/// and when the binding was made.
+/// </summary>
+public sealed record LeadMachineBinding(Guid MachineId, string MachineName, DateTimeOffset BoundAt);
+
+/// <summary>
+/// Outcome of a bind attempt. <see cref="Refused"/> carries a Lead-facing reason
+/// rather than a <see cref="Docket.Core.Rule"/> — a binding precondition is
+/// plane-side routing state, not one of §9's enforcement checks — and is rendered
+/// by the tool surface exactly like <see cref="ForwardEstablishResult.Failed"/>.
+/// </summary>
+public abstract record LeadMachineBindResult
+{
+    private LeadMachineBindResult() { }
+
+    public sealed record Bound(LeadMachineBinding Binding) : LeadMachineBindResult;
+
+    public sealed record Refused(string Reason) : LeadMachineBindResult;
+}
+
+/// <summary>
 /// An enrolled machine (§11). Purpose/OS/specs/permission level are declared
 /// at enrollment and bound server-side — a machine cannot re-declare its own
 /// privileges (§13).
@@ -133,11 +190,6 @@ public abstract record Principal
 
     public sealed record Machine(Guid MachineId) : Principal;
 
-    public sealed record Verifier : Principal
-    {
-        public Docket.Core.VerifierCredential Actor { get; } = new();
-    }
-
     /// <summary>A human's own session (§5). Carries its session id for lead-claim attribution.</summary>
     public sealed record Human(Guid HumanId) : Principal
     {
@@ -147,8 +199,16 @@ public abstract record Principal
     /// <summary>
     /// A live lead claim (§5). Maps straight to the engine's
     /// <see cref="Docket.Core.LeadClaim"/> so authority stays structural end to end.
+    ///
+    /// <para><see cref="HumanId"/> is the claiming human's session id, carried from
+    /// the credential row (§4: a Lead's authority descends from a human). The engine
+    /// actor stays Team-only — task authority is a Team fact — but the human id is
+    /// what a lead↔machine binding keys on (§8.3 human path), so it rides the
+    /// principal rather than being re-derived from the one-live-Lead-per-Team index.
+    /// Nullable because <see cref="CredentialRow.HumanId"/> is: a synthesized or
+    /// pre-attribution lead credential authenticates but owns no binding.</para>
     /// </summary>
-    public sealed record Lead(Docket.Core.TeamId Team) : Principal
+    public sealed record Lead(Docket.Core.TeamId Team, Guid? HumanId = null) : Principal
     {
         public Docket.Core.LeadClaim Actor => new(Team);
     }

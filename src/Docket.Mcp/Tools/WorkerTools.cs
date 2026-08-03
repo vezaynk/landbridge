@@ -39,10 +39,18 @@ public sealed class WorkerTools(
         DocketClaims.AsWorker(http.HttpContext?.User ?? throw Unauthorized())
         ?? throw Unauthorized();
 
-    private string RelayUrl =>
+    /// <summary>
+    /// The relay base URL the plane hands docketd (§8.3), from config, then
+    /// environment, then the loopback default. Shared with the Lead-facing forward
+    /// (<see cref="LeadTools"/>) so both consumer kinds dial the same relay — one
+    /// resolution, no drift.
+    /// </summary>
+    public static string RelayUrlFrom(IConfiguration config) =>
         config["Docket:RelayUrl"]
         ?? Environment.GetEnvironmentVariable("DOCKET_RELAY_URL")
         ?? DefaultRelayUrl;
+
+    private string RelayUrl => RelayUrlFrom(config);
 
     private string PreviewUrlBase =>
         config[PreviewMint.UrlBaseConfigKey]
@@ -67,14 +75,21 @@ public sealed class WorkerTools(
     [McpServerTool(Name = "report_result"),
      Description("Report the task's result reference and hand it to verification. " +
                  "The reference points at where the work actually is (the workspace substrate), " +
-                 "not the work itself. Reporting is not a claim that verification passed.")]
+                 "not the work itself. Reporting is not a claim that verification passed. " +
+                 "Optionally include a short 'report': a summary of what you did and verified, " +
+                 "evidence pointers, and any proposals — it flows to your Lead as-is (capped at 16 KB; " +
+                 "over-cap is refused — put detail in the workspace behind the reference, not here).")]
     public async Task<string> ReportResult(
         [Description("A reference to where the completed work lives, e.g. a branch or commit.")]
         string resultReference,
-        CancellationToken ct)
+        [Description("Optional in-band summary for your Lead: what you did/verified, evidence pointers, " +
+                     "proposals (e.g. 'task X should run on profile Y'). NOT a substitute for the artifact — " +
+                     "detail belongs in the workspace behind the reference. Capped at 16 KB.")]
+        string? report = null,
+        CancellationToken ct = default)
     {
         var caller = Caller;
-        return Describe(await store.ApplyAsync(caller.Task, new ReportResult(caller, resultReference), ct));
+        return Describe(await store.ApplyAsync(caller.Task, new ReportResult(caller, resultReference, report), ct));
     }
 
     [McpServerTool(Name = "request_input"),
@@ -184,8 +199,10 @@ public sealed class WorkerTools(
 }
 
 /// <summary>
-/// What <c>open_forward</c> hands back (spec §8.3): a <c>127.0.0.1:port</c>
-/// loopback address the worker's client connects to directly. The grant and relay
+/// What <c>open_forward</c> and <c>open_lead_forward</c> hand back (spec §8.3): a
+/// <c>127.0.0.1:port</c> loopback address a client connects to directly — on the
+/// worker's own machine for the former, on the Lead's bound machine for the latter.
+/// The grant and relay
 /// mechanics that stood the tunnel up are held by docketd and deliberately kept
 /// out of this shape — the agent only ever sees an address. <see cref="ForwardId"/>
 /// is retained for correlation/diagnostics, and <see cref="ExpiresAt"/> reflects

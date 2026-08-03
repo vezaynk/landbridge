@@ -59,6 +59,21 @@ public sealed class RelayGrantService(DocketDbContext db, TimeProvider clock)
         MintAsync(team, serviceName, consumerTaskId: null, consumerInstanceId: null, ct);
 
     /// <summary>
+    /// Issues a grant for the §8.3 <b>human</b> path: the consumer is the Lead's own
+    /// bound machine's <c>docketd</c>, not a task, so — exactly as for a preview —
+    /// there is no consumer worker instance to bind and the mint records only the
+    /// producer + Team. Runs the identical check-11 gate as <see cref="IssueAsync"/>
+    /// (registered service owned by a working task in <paramref name="team"/>, which
+    /// for a Lead is its own Team), and the grant validates, is single-use per role,
+    /// and revokes through the same paths. The Lead's authority is what selects
+    /// <paramref name="team"/>; nothing here is broader than what a worker in that
+    /// Team could already reach.
+    /// </summary>
+    public Task<RelayGrantResult> IssueForLeadAsync(
+        TeamId team, string serviceName, CancellationToken ct = default) =>
+        MintAsync(team, serviceName, consumerTaskId: null, consumerInstanceId: null, ct);
+
+    /// <summary>
     /// The shared check-11 gate + mint behind <see cref="IssueAsync"/> (§8.3) and
     /// <see cref="IssueForPreviewAsync"/> (§8.4). Everything is scoped to
     /// <paramref name="team"/> so another Team's services never leak (§8.2).

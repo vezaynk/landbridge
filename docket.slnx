@@ -13,7 +13,6 @@
     <Project Path="src/Docket.Relay/Docket.Relay.csproj" />
     <Project Path="src/Docket.Runner/Docket.Runner.csproj" />
     <Project Path="src/Docket.ServiceDefaults/Docket.ServiceDefaults.csproj" />
-    <Project Path="src/Docket.Verifier/Docket.Verifier.csproj" />
   </Folder>
   <Folder Name="/tests/">
     <Project Path="tests/Docket.ControlPlane.Tests/Docket.ControlPlane.Tests.csproj" />
@@ -28,6 +27,5 @@
     <Project Path="tests/Docket.Runner.Tests/Docket.Runner.Tests.csproj" />
     <Project Path="tests/Docket.Runner.TestHarness/Docket.Runner.TestHarness.csproj" />
     <Project Path="tests/Docket.WorkerHarness/Docket.WorkerHarness.csproj" />
-    <Project Path="tests/Docket.Verifier.Tests/Docket.Verifier.Tests.csproj" />
   </Folder>
 </Solution>

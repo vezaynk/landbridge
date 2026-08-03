@@ -160,7 +160,7 @@ internal sealed class FleetRig(PostgresFixture pg, IReadOnlyList<string>? spawnA
         {
             ["description"] = description,
             ["completionCriteria"] = "the byte path holds",
-            ["mode"] = "automated",
+            ["mode"] = "lead",
             ["profile"] = null,
             ["workspace"] = $"multimachine-{Guid.NewGuid():N}",
         }, cancellationToken: ct);

@@ -19,7 +19,7 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
 
     private TaskStore NewStore(DocketDbContext db) => new(db, new FakeTimeProvider());
 
-    private async Task<TaskId> CreateSubmitted(DocketDbContext db, string? profile = null, CompletionMode mode = CompletionMode.Automated)
+    private async Task<TaskId> CreateSubmitted(DocketDbContext db, string? profile = null, CompletionMode mode = CompletionMode.Lead)
     {
         var result = await NewStore(db).CreateAsync(
             new CreateTask(Lead, Team, "pnpm test", mode, profile, TeamBudgetRemains: true));
@@ -117,11 +117,11 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task Report_result_persists_the_reference_for_the_verifier_to_read()
+    public async Task Report_result_persists_the_reference_on_the_row()
     {
-        // #23, §5, §7: report_result's opaque reference is dropped by CopyFrom; the
-        // store must capture it on working → verifying, both on the row and through
-        // the verifier's read scope.
+        // #23, §7: report_result's opaque reference is dropped by CopyFrom; the store
+        // must capture it on working → verifying so a later read (the Lead reading the
+        // result before adjudicating, §9 check 4) finds it.
         Skip.IfNot(pg.Available, pg.SkipReason);
         await using var db = pg.NewContext();
         var store = NewStore(db);
@@ -133,43 +133,127 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
             new ReportResult(new WorkerCaller(Team, id, instance), "git:branch/result-42")));
         Assert.Equal(TaskState.Verifying, applied.Task.State);
 
-        // A plain store read sees the persisted reference…
-        await using (var v = pg.NewContext())
-            Assert.Equal("git:branch/result-42",
-                (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value)).ResultReference);
-
-        // …and so does the verifier's poll, alongside the criteria it interprets (§5).
-        var view = Assert.Single(await store.ListVerifyingAsync());
-        Assert.Equal(id.Value, view.TaskId);
-        Assert.Equal("git:branch/result-42", view.ResultReference);
-        Assert.Equal("pnpm test", view.CompletionCriteria);
+        await using var v = pg.NewContext();
+        Assert.Equal("git:branch/result-42",
+            (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value)).ResultReference);
     }
 
     [SkippableFact]
-    public async Task List_verifying_returns_only_automated_tasks_never_review_mode()
+    public async Task Report_result_persists_the_in_band_report_and_surfaces_it_to_lead_and_worker()
     {
-        // §7, §10: a review-mode task in verifying takes its verdict through the
-        // Lead's submit_review (human-confirmed), never the automated webhook — so
-        // it must not surface on the verifier's poll.
+        // §10: the worker's optional in-band report is captured verbatim on the row
+        // next to the reference. get_team_state stays prose-free (a has_report FLAG,
+        // never the text); the Lead pulls the text per task via get_task_report; a
+        // successor worker sees it on get_task.
         Skip.IfNot(pg.Available, pg.SkipReason);
         await using var db = pg.NewContext();
         var store = NewStore(db);
+        var id = await CreateSubmitted(db);
+        var instance = WorkerInstanceId.New();
+        var caller = new WorkerCaller(Team, id, instance);
+        await store.DispatchNextAsync(Machine(), instance);
 
-        // Drive one automated task to verifying (only submitted → dispatch is deterministic).
-        var automated = await CreateSubmitted(db, mode: CompletionMode.Automated);
-        var autoInstance = WorkerInstanceId.New();
-        await store.DispatchNextAsync(Machine(), autoInstance);
-        await store.ApplyAsync(automated, new ReportResult(new WorkerCaller(Team, automated, autoInstance), "auto-ref"));
+        const string report = "ran pnpm test (green); touched 3 files; proposes task Y on profile gpu";
+        Assert.IsType<StoreResult.Applied>(
+            await store.ApplyAsync(id, new ReportResult(caller, "git:ref", report)));
 
-        // Then one review task the same way — now the only submitted row.
-        var review = await CreateSubmitted(db, mode: CompletionMode.Review);
-        var reviewInstance = WorkerInstanceId.New();
-        await store.DispatchNextAsync(Machine(), reviewInstance);
-        await store.ApplyAsync(review, new ReportResult(new WorkerCaller(Team, review, reviewInstance), "review-ref"));
+        await using var v = pg.NewContext();
+        var vstore = NewStore(v);
+        // On the row, verbatim.
+        Assert.Equal(report, (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value)).WorkerReport);
+        // get_team_state carries only the FLAG, not the prose (§10 stays prose-free).
+        var summary = (await vstore.GetTeamStateAsync(Team)).Tasks.Single(t => t.TaskId == id.Value);
+        Assert.True(summary.HasReport);
+        // The Lead fetches the text deliberately, per task.
+        var fetched = await vstore.GetTaskReportAsync(Team, id);
+        Assert.Equal(report, fetched!.Report);
+        // On get_task (the incumbent/successor worker's read).
+        var assignment = await vstore.GetAssignmentAsync(caller);
+        Assert.Equal(report, assignment!.Report);
+    }
 
-        var view = Assert.Single(await store.ListVerifyingAsync());
-        Assert.Equal(automated.Value, view.TaskId);
-        Assert.Equal("auto-ref", view.ResultReference);
+    [SkippableFact]
+    public async Task Report_result_without_a_report_leaves_it_null()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await CreateSubmitted(db);
+        var instance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), instance);
+
+        await store.ApplyAsync(id, new ReportResult(new WorkerCaller(Team, id, instance), "git:ref"));
+
+        await using var v = pg.NewContext();
+        var vstore = NewStore(v);
+        Assert.Null((await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value)).WorkerReport);
+        // No report: the flag is false, and the per-task fetch finds the task (it is
+        // the Lead's) but returns a null report.
+        Assert.False((await vstore.GetTeamStateAsync(Team)).Tasks.Single(t => t.TaskId == id.Value).HasReport);
+        var fetched = await vstore.GetTaskReportAsync(Team, id);
+        Assert.NotNull(fetched);
+        Assert.Null(fetched!.Report);
+    }
+
+    [SkippableFact]
+    public async Task Get_task_report_is_team_scoped_and_refuses_a_cross_team_task()
+    {
+        // §13: the per-task report fetch is scoped to the caller's Team, so a task in
+        // another Team returns null — indistinguishable from not-found, leaking nothing.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await CreateSubmitted(db);
+        var instance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), instance);
+        await store.ApplyAsync(id, new ReportResult(new WorkerCaller(Team, id, instance), "git:ref", "secret report"));
+
+        Assert.Null(await store.GetTaskReportAsync(TeamId.New(), id)); // another Team → null
+    }
+
+    [SkippableFact]
+    public async Task Report_over_the_cap_is_rejected_and_the_task_stays_working()
+    {
+        // §10: over-cap is refused; the task does not advance to verifying, so the
+        // worker can re-report with a summary (detail in the workspace).
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await CreateSubmitted(db);
+        var instance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), instance);
+
+        var oversized = new string('x', ReportResult.MaxReportBytes + 1);
+        var rejected = Assert.IsType<StoreResult.Rejected>(
+            await store.ApplyAsync(id, new ReportResult(new WorkerCaller(Team, id, instance), "git:ref", oversized)));
+        Assert.Equal(Rule.ReportWithinSizeCap, rejected.Rule);
+
+        await using var v = pg.NewContext();
+        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(TaskState.Working, row.State);
+        Assert.Null(row.WorkerReport);
+    }
+
+    [SkippableFact]
+    public async Task Lead_verdict_completes_a_lead_task_and_records_provenance()
+    {
+        // §9 check 4: in lead mode the Lead session's accept completes the task with
+        // no human confirmation, and the completion records lead-session provenance.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await CreateSubmitted(db, mode: CompletionMode.Lead);
+        var instance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), instance);
+        await store.ApplyAsync(id, new ReportResult(new WorkerCaller(Team, id, instance), "ref"));
+
+        var applied = Assert.IsType<StoreResult.Applied>(
+            await store.ApplyAsync(id, new VerdictAccept(Lead)));
+        Assert.Equal(TaskState.Completed, applied.Task.State);
+
+        await using var v = pg.NewContext();
+        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(VerdictProvenance.LeadSession, row.CompletionProvenance);
     }
 
     [SkippableFact]
@@ -443,7 +527,7 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
     private async Task<TaskId> SeedBlocked(TaskStore store)
     {
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(Lead, Team, "needs input", CompletionMode.Automated, null, TeamBudgetRemains: true));
+            new CreateTask(Lead, Team, "needs input", CompletionMode.Lead, null, TeamBudgetRemains: true));
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(Machine(), instance);
         await store.ApplyAsync(created.Task.Id,

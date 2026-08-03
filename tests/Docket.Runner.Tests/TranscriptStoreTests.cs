@@ -128,6 +128,28 @@ public sealed class TranscriptStoreTests : IDisposable
     }
 
     [Fact]
+    public void A_pruned_task_is_no_longer_inventoried()
+    {
+        // Retention is the whole story for how long a transcript is readable: the plane
+        // stores no bytes and has no tier of its own, so once the local sweep takes a task
+        // dir the §12 serving path can only report that nothing is held (§12).
+        var store = Store(TimeSpan.FromDays(7));
+        var task = TaskId.New();
+        var writer = store.CreateWriter(task, TranscriptDefaults.MaxBytes);
+        writer.WriteStdoutLine("work that will age out");
+        writer.Dispose();
+
+        Assert.NotNull(store.Inventory(task));
+
+        Backdate(Path.Combine(_root, task.ToString()), _clock.GetUtcNow().UtcDateTime.AddDays(-30));
+        Assert.Equal(1, store.Prune());
+
+        Assert.Null(store.Inventory(task));
+        Assert.False(store.Holds(task));
+        Assert.Null(store.ResolveFile(task, 1, TranscriptStreams.Stdout));
+    }
+
+    [Fact]
     public void Prune_is_disabled_when_retention_is_non_positive()
     {
         var store = Store(TimeSpan.Zero); // 0 (or negative) disables pruning entirely

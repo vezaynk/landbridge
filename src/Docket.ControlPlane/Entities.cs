@@ -54,6 +54,18 @@ public sealed class TaskRow
     public string? ResultReference { get; set; }
 
     /// <summary>
+    /// The worker's optional in-band report (§10), captured on the working →
+    /// verifying transition next to <see cref="ResultReference"/> — the worker's own
+    /// summary of what it did/verified plus proposals. Opaque content the plane
+    /// stores verbatim and never parses (§2 principle 1); its size is capped at the
+    /// engine (<see cref="Docket.Core.ReportResult.MaxReportBytes"/>). Null when the
+    /// worker reported none. Surfaced to the Lead (get_team_state), a successor
+    /// worker (get_task), and the §12 dashboard — agent-authored CLAIMS the Lead
+    /// verifies before accepting (§13), never authority.
+    /// </summary>
+    public string? WorkerReport { get; set; }
+
+    /// <summary>
     /// The ambient W3C trace context (traceparent) captured when the Lead created
     /// the task. Opaque transport metadata, exactly like <see cref="ResultReference"/>:
     /// stored verbatim, never dereferenced by the control plane, never entering
@@ -107,6 +119,14 @@ public sealed class TaskRow
     /// </summary>
     public MachineGonePolicy? OnMachineGone { get; set; }
 
+    /// <summary>
+    /// Who adjudicated this task's completion (§9 check 4): a Lead session or a
+    /// human, set on the verifying → completed transition and null otherwise. Typed
+    /// state the engine derives from the verdict actor (mirrors <see cref="CompletionMode"/>),
+    /// carried by <see cref="CopyFrom"/> and rendered on the §12 dashboard task view.
+    /// </summary>
+    public VerdictProvenance? CompletionProvenance { get; set; }
+
     /// <summary>Postgres system column, used as the optimistic-concurrency token.</summary>
     public uint Version { get; set; }
 
@@ -126,6 +146,7 @@ public sealed class TaskRow
         Park = ParkMachine is { } m
             ? new ParkRecord(m, ParkDirectory, ParkSessionRef, ParkAttempt!.Value)
             : null,
+        CompletionProvenance = CompletionProvenance,
     };
 
     internal void CopyFrom(TaskRecord task)
@@ -139,6 +160,7 @@ public sealed class TaskRow
         ParkDirectory = task.Park?.Directory;
         ParkSessionRef = task.Park?.HarnessSessionRef;
         ParkAttempt = task.Park?.Attempt;
+        CompletionProvenance = task.CompletionProvenance;
     }
 }
 

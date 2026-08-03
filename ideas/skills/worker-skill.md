@@ -13,7 +13,7 @@ Your dispatch carries a task with a `description`, `completion.criteria`, and a 
 
 **Use the workspace you were given.** It was assigned so that concurrent tasks — possibly several on this same machine, possibly from your own Team — don't collide. Do not choose your own working directory, do not work in a shared checkout, do not bind a port you weren't assigned. If the workspace seems wrong or missing something, that's a blocker, not a thing to improvise around.
 
-**The completion criteria are the contract.** Everything else in the description is context for meeting them. When you think you're done, the criteria are what gets checked — by an automated verifier or by a human, never by you.
+**The completion criteria are the contract.** Everything else in the description is context for meeting them. When you think you're done, the criteria are what gets checked — by your Lead or a human, never by you.
 
 **Check `attempt` before you touch anything.** If it is greater than 1, a previous worker held this task and may have touched the workspace before dying or being requeued — and its last action has unknown outcome. Inspect what exists (workspace state, any notes the prior attempt persisted) before trusting or overwriting it, and verify rather than repeat anything with external side effects.
 
@@ -80,9 +80,11 @@ Do not ask for permission to do things you're allowed to do. Do not ask which of
 
 ## Reporting a result
 
-`report_result` needs a reference to where the work actually is — in the workspace substrate, not pasted into the summary. The summary is a short prose account of what you did, what you changed, and anything the Lead should know that isn't obvious from the artifact itself.
+`report_result` needs a reference to where the work actually is — in the workspace substrate, not pasted into the report.
 
-Say what you *didn't* do. Scope you deliberately left, tests you couldn't run, assumptions you made. That is the most useful part of a result and the part most often omitted.
+It also takes an optional `report`: a short in-band summary that flows straight to your Lead. Use it for what you did and verified, pointers to the evidence (which tests you ran and their outcome, a CI link, the files you touched), and any proposals — e.g. "this follow-up should run on profile Y", or "task Z is now unblocked". Keep it a summary: it is capped (16 KB) and **not a substitute for the artifact** — real detail belongs in the workspace behind the reference, and if you go over the cap the report is refused so you move detail there. The report is how your Lead decides whether to accept, so make the verification evidence easy to check.
+
+Say what you *didn't* do. Scope you deliberately left, tests you couldn't run, assumptions you made. That is the most useful part of a report and the part most often omitted.
 
 Your task then goes to verification. You do not mark it complete, and reporting is not a claim that it passed.
 

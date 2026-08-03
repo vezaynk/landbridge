@@ -151,6 +151,16 @@ public static class TaskStateMachine
             return TransitionResult.Reject(Rule.ResultReferenceRequired,
                 "working → verifying requires a result reference");
 
+        // §10: the in-band report is bounded. Over-cap is refused here (a length
+        // check, not content interpretation — the same shape as the non-empty checks
+        // above) so a worker puts real detail in the workspace behind the result
+        // reference, not in the plane. Measured in UTF-8 bytes to match the wire.
+        if (c.Report is { } report
+            && System.Text.Encoding.UTF8.GetByteCount(report) > ReportResult.MaxReportBytes)
+            return TransitionResult.Reject(Rule.ReportWithinSizeCap,
+                $"report exceeds the {ReportResult.MaxReportBytes / 1024} KB in-band cap; " +
+                "keep it a summary and put the detail in the workspace behind the result reference");
+
         return TransitionResult.Ok(
             task with { State = TaskState.Verifying },
             new ClearServicesAndForwards());
@@ -161,23 +171,32 @@ public static class TaskStateMachine
         if (task.State != TaskState.Verifying)
             return WrongState(task, TaskState.Verifying);
 
-        // §7: the mode determines which verdict identity is expected.
-        var authorized = task.CompletionMode switch
+        // §9 check 4 (doer/judge split): completion comes from a Lead or human
+        // credential, NEVER the task's own worker — a WorkerCaller is refused here
+        // structurally, exactly as a subagent never accepts its own work. In `lead`
+        // mode a Lead session adjudicates autonomously (orchestrator judgment); in
+        // `review` mode a Lead verdict additionally carries human confirmation (§7),
+        // while a human session completes either mode outright. The former verifier
+        // credential is gone (§5): CI and tests are evidence the Lead gathers itself,
+        // not a verdict-issuing actor. Provenance is derived from the actor and
+        // recorded on the completing transition (§12 dashboard).
+        var provenance = actor switch
         {
-            CompletionMode.Automated => actor is VerifierCredential,
-            CompletionMode.Review => actor switch
-            {
-                HumanSession => true,
-                LeadClaim lead => lead.Team == task.Team && humanConfirmed,
-                _ => false,
-            },
+            HumanSession => (VerdictProvenance?)VerdictProvenance.Human,
+            LeadClaim lead when lead.Team == task.Team => VerdictProvenance.LeadSession,
+            _ => null,
+        };
+        var authorized = provenance switch
+        {
+            VerdictProvenance.Human => true,
+            VerdictProvenance.LeadSession => task.CompletionMode != CompletionMode.Review || humanConfirmed,
             _ => false,
         };
         if (!authorized)
-            return TransitionResult.Reject(Rule.CompletionRequiresNonAgentVerdict,
-                task.CompletionMode == CompletionMode.Review
+            return TransitionResult.Reject(Rule.CompletionByLeadOrHuman,
+                actor is LeadClaim && task.CompletionMode == CompletionMode.Review
                     ? "review verdicts require human confirmation; a lead claim alone cannot complete a task"
-                    : "automated verdicts require the verifier credential");
+                    : "completion is a Lead or human verdict, never the task's own worker");
 
         var revoke = task.CurrentInstance is { } instance
             ? new Effect[] { new RevokeWorkerInstanceToken(instance) }
@@ -185,7 +204,7 @@ public static class TaskStateMachine
 
         if (accepted)
             return TransitionResult.Ok(
-                task with { State = TaskState.Completed, CurrentInstance = null },
+                task with { State = TaskState.Completed, CurrentInstance = null, CompletionProvenance = provenance },
                 revoke);
 
         var failures = task.VerificationFailures + 1;

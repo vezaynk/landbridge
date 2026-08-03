@@ -35,17 +35,28 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
     // ── Machine Group view (§12) ──────────────────────────────────────────────
 
     /// <summary>
-    /// Live machines with their running tasks (each tagged with its owning Team).
+    /// Live machines with their running tasks (each tagged with its owning Team), and
+    /// whether a human has bound the machine as their own (§8.3 human path — a bound
+    /// machine is a forward target, which an operator should be able to see).
     /// Machines come from the connection registry's full enumeration
     /// (<see cref="RunnerConnectionRegistry.MachineIds"/>), so a machine that is
     /// connected, under back-pressure, and holding no dispatched task still appears
-    /// — exactly the operator signal this view exists to surface (§12). The subagent
-    /// tree is a documented empty state: subagent events reach the plane only as
-    /// liveness pings (§10), nothing is persisted, so there is nothing to nest.
+    /// — exactly the operator signal this view exists to surface (§12). A machine that
+    /// is bound but currently disconnected is deliberately absent here, like every other
+    /// disconnected machine; its Lead sees the binding in <c>get_team_state</c>. The
+    /// subagent tree is a documented empty state: subagent events reach the plane only
+    /// as liveness pings (§10), nothing is persisted, so there is nothing to nest.
     /// </summary>
     public async Task<IReadOnlyList<MachineView>> GetMachinesAsync(CancellationToken ct = default)
     {
         var ids = registry.MachineIds();
+
+        // Live lead↔machine bindings, one read for the whole view (§8.3).
+        var boundBy = (await db.LeadMachineBindings.AsNoTracking()
+                .Where(b => !b.Revoked)
+                .Select(b => new { b.MachineId, b.HumanId, b.BoundAt })
+                .ToListAsync(ct))
+            .ToDictionary(b => b.MachineId.ToString(), b => (b.HumanId, b.BoundAt), StringComparer.Ordinal);
 
         // Resolve owning Team + namespace + state for every tracked task in one read.
         var taskIds = ids.SelectMany(id => registry.TasksOn(id).Select(t => t.Value)).Distinct().ToArray();
@@ -68,13 +79,16 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
                     : new MachineTaskView(t.Value, Guid.Empty, "(unknown)", TaskState.Working))
                 .OrderBy(t => t.Namespace, StringComparer.Ordinal)
                 .ToList();
+            var isBound = boundBy.TryGetValue(id, out var bound);
             machines.Add(new MachineView(
                 id,
                 snapshot.Ready,
                 snapshot.UnderBackPressure,
                 registry.LastHeartbeatFor(id),
                 snapshot.DeclaredProfiles.OrderBy(p => p, StringComparer.Ordinal).ToList(),
-                tasks));
+                tasks,
+                isBound ? bound.HumanId : null,
+                isBound ? bound.BoundAt : null));
         }
 
         return machines.OrderBy(m => m.MachineId, StringComparer.Ordinal).ToList();
@@ -174,6 +188,8 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
                 Parked = t.ParkMachine != null,
                 t.ParkMachine,
                 t.ContinuesTaskId,
+                t.CompletionProvenance,
+                t.WorkerReport,
             })
             .ToListAsync(ct);
 
@@ -208,7 +224,9 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
                 parksByTask.GetValueOrDefault(t.Id),
                 t.Parked ? t.ParkMachine : null,
                 t.State == TaskState.BlockedOnInput ? t.BlockedAt : null,
-                t.ContinuesTaskId))
+                t.ContinuesTaskId,
+                t.State == TaskState.Completed ? t.CompletionProvenance : null,
+                t.WorkerReport))
             .ToList();
 
         var counts = tasks
@@ -349,14 +367,20 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
 
 // ── View records (the JSON twin's wire shape) ──────────────────────────────────
 
-/// <summary>A live machine and the tasks it is running (§12 Machine Group view).</summary>
+/// <summary>A live machine and the tasks it is running (§12 Machine Group view).
+/// <see cref="BoundToHuman"/> is the human who claimed this machine as their own
+/// (§8.3 human path) — so an operator can see which boxes are Lead-facing forward
+/// targets and whose — with <see cref="BoundAt"/> when they did; both null when the
+/// machine is bound by nobody.</summary>
 public sealed record MachineView(
     string MachineId,
     bool Ready,
     bool UnderBackPressure,
     DateTimeOffset? LastHeartbeat,
     IReadOnlyList<string> Profiles,
-    IReadOnlyList<MachineTaskView> RunningTasks);
+    IReadOnlyList<MachineTaskView> RunningTasks,
+    Guid? BoundToHuman = null,
+    DateTimeOffset? BoundAt = null);
 
 /// <summary>A task running on a machine, tagged with its owning Team (§12).</summary>
 public sealed record MachineTaskView(Guid TaskId, Guid TeamId, string Namespace, TaskState State);
@@ -386,8 +410,9 @@ public sealed record TeamDetail(
     DateTimeOffset? LeadSince,
     DateTimeOffset? LastActivity);
 
-/// <summary>One task in a Team, with its park count (§12 "parks per task") and, for
-/// a continuation task, the prior task it resumed (§6/§11 Y-continues-X lineage).</summary>
+/// <summary>One task in a Team, with its park count (§12 "parks per task"); for a
+/// continuation task, the prior task it resumed (§6/§11 Y-continues-X lineage); and,
+/// for a completed task, who adjudicated it (§9 check 4 provenance).</summary>
 public sealed record TeamTaskView(
     Guid TaskId,
     string Namespace,
@@ -397,7 +422,9 @@ public sealed record TeamTaskView(
     int Parks,
     string? ParkMachine,
     DateTimeOffset? BlockedAt,
-    Guid? ContinuesTaskId);
+    Guid? ContinuesTaskId,
+    VerdictProvenance? CompletionProvenance,
+    string? Report);
 
 /// <summary>A live registered service on a Team (§8.2, §12).</summary>
 public sealed record ServiceView(string Name, int Port, Guid TaskId, DateTimeOffset CreatedAt);

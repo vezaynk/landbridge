@@ -39,9 +39,6 @@ public static class DocketClaims
                 claims.Add(new Claim(Kind, nameof(Principal.Machine)));
                 claims.Add(new Claim(Machine, m.MachineId.ToString()));
                 break;
-            case Principal.Verifier:
-                claims.Add(new Claim(Kind, nameof(Principal.Verifier)));
-                break;
             case Principal.Human h:
                 claims.Add(new Claim(Kind, nameof(Principal.Human)));
                 claims.Add(new Claim(Human, h.HumanId.ToString()));
@@ -49,6 +46,11 @@ public static class DocketClaims
             case Principal.Lead l:
                 claims.Add(new Claim(Kind, nameof(Principal.Lead)));
                 claims.Add(new Claim(Team, l.Team.Value.ToString()));
+                // The claiming human, when the credential row attributed one (§4).
+                // Absent on a synthesized claim, which is why the round trip below
+                // reads it optionally rather than asserting it.
+                if (l.HumanId is { } leadHuman)
+                    claims.Add(new Claim(Human, leadHuman.ToString()));
                 break;
             case Principal.EvictedLead e:
                 claims.Add(new Claim(Kind, nameof(Principal.EvictedLead)));
@@ -69,9 +71,10 @@ public static class DocketClaims
                 new TaskId(Guid.Parse(user.FindFirst(Task)!.Value)),
                 new WorkerInstanceId(Guid.Parse(user.FindFirst(Instance)!.Value)))),
             nameof(Principal.Machine) => new Principal.Machine(Guid.Parse(user.FindFirst(Machine)!.Value)),
-            nameof(Principal.Verifier) => new Principal.Verifier(),
             nameof(Principal.Human) => new Principal.Human(Guid.Parse(user.FindFirst(Human)!.Value)),
-            nameof(Principal.Lead) => new Principal.Lead(new TeamId(Guid.Parse(user.FindFirst(Team)!.Value))),
+            nameof(Principal.Lead) => new Principal.Lead(
+                new TeamId(Guid.Parse(user.FindFirst(Team)!.Value)),
+                user.FindFirst(Human) is { } h ? Guid.Parse(h.Value) : null),
             nameof(Principal.EvictedLead) => new Principal.EvictedLead(
                 new TeamId(Guid.Parse(user.FindFirst(Team)!.Value)),
                 Guid.Parse(user.FindFirst(EvictedBy)!.Value),
@@ -91,6 +94,15 @@ public static class DocketClaims
     /// <summary>The engine's lead claim if this principal is a live lead, else null.</summary>
     public static LeadClaim? AsLead(ClaimsPrincipal user) =>
         ToPrincipal(user) is Principal.Lead l ? new LeadClaim(l.Team) : null;
+
+    /// <summary>
+    /// The whole live-lead principal — Team <em>and</em> the claiming human (§4) —
+    /// if this principal is a live lead, else null. <see cref="AsLead"/> is the
+    /// engine-actor view for task transitions; this is for the lead-scoped facts
+    /// the engine has no opinion about, namely the lead↔machine binding (§8.3).
+    /// </summary>
+    public static Principal.Lead? AsLeadPrincipal(ClaimsPrincipal user) =>
+        ToPrincipal(user) as Principal.Lead;
 
     /// <summary>The eviction facts if this principal is an evicted lead, else null (§4).</summary>
     public static Principal.EvictedLead? AsEvictedLead(ClaimsPrincipal user) =>

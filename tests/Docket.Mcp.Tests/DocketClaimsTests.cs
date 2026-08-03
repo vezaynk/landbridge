@@ -46,22 +46,13 @@ public class DocketClaimsTests
     }
 
     [Fact]
-    public void Verifier_principal_round_trips()
-    {
-        var restored = DocketClaims.ToPrincipal(
-            DocketClaims.ToClaimsPrincipal(new Principal.Verifier()));
-
-        Assert.IsType<Principal.Verifier>(restored);
-    }
-
-    [Fact]
     public void A_non_worker_principal_is_not_a_worker_caller()
     {
         var machine = DocketClaims.ToClaimsPrincipal(new Principal.Machine(Guid.NewGuid()));
-        var verifier = DocketClaims.ToClaimsPrincipal(new Principal.Verifier());
+        var human = DocketClaims.ToClaimsPrincipal(new Principal.Human(Guid.NewGuid()));
 
         Assert.Null(DocketClaims.AsWorker(machine));
-        Assert.Null(DocketClaims.AsWorker(verifier));
+        Assert.Null(DocketClaims.AsWorker(human));
     }
 
     [Fact]
@@ -85,6 +76,26 @@ public class DocketClaimsTests
         Assert.Equal(new LeadClaim(team), DocketClaims.AsLead(user));
         Assert.Null(DocketClaims.AsHuman(user));
         Assert.Null(DocketClaims.AsEvictedLead(user));
+        // No human attribution on this claim, so no binding can be owned (§8.3).
+        Assert.Null(DocketClaims.AsLeadPrincipal(user)!.HumanId);
+    }
+
+    [Fact]
+    public void Lead_principal_carries_the_claiming_human_when_the_credential_attributes_one()
+    {
+        var team = TeamId.New();
+        var human = Guid.NewGuid();
+        var user = DocketClaims.ToClaimsPrincipal(new Principal.Lead(team, human));
+
+        // The human rides the lead claim so the §8.3 lead↔machine binding can key on
+        // the person; the engine actor stays Team-only.
+        var lead = Assert.IsType<Principal.Lead>(DocketClaims.ToPrincipal(user));
+        Assert.Equal(team, lead.Team);
+        Assert.Equal(human, lead.HumanId);
+        Assert.Equal(human, DocketClaims.AsLeadPrincipal(user)!.HumanId);
+        Assert.Equal(new LeadClaim(team), DocketClaims.AsLead(user));
+        // Still not a human session — a lead claim is its own credential class (§5).
+        Assert.Null(DocketClaims.AsHuman(user));
     }
 
     [Fact]

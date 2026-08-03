@@ -315,7 +315,8 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
             return null;
 
         return new WorkerAssignment(
-            row.Namespace, row.Description, row.CompletionCriteria, row.Workspace, row.Attempt);
+            row.Namespace, row.Description, row.CompletionCriteria, row.Workspace, row.Attempt,
+            row.WorkerReport);
     }
 
     /// <summary>
@@ -337,6 +338,10 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
                 t.Attempt,
                 Parked = t.ParkMachine != null,
                 t.ContinuesTaskId,
+                t.CompletionProvenance,
+                // §10: the bulk read carries only a flag that a report exists, never
+                // the prose — the Lead fetches the text per task via get_task_report.
+                HasReport = t.WorkerReport != null,
             })
             .ToListAsync(ct);
 
@@ -346,29 +351,27 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
 
         var summaries = rows
             .Select(t => new TeamTaskSummary(
-                t.Id, t.Namespace, t.State, t.CompletionMode, t.Attempt, t.Parked, t.ContinuesTaskId))
+                t.Id, t.Namespace, t.State, t.CompletionMode, t.Attempt, t.Parked,
+                t.ContinuesTaskId, t.CompletionProvenance, t.HasReport))
             .ToList();
 
         return new TeamStateView(team.Value, rows.Count, counts, summaries);
     }
 
     /// <summary>
-    /// The verifier's poll (§5, §10 verifier webhook): every task in
-    /// <see cref="TaskState.Verifying"/> with an <see cref="CompletionMode.Automated"/>
-    /// completion mode, so an automated verifier can find the tasks it may rule on
-    /// and fetch each one's result reference. Review-mode tasks are deliberately
-    /// omitted — their verdict comes through the Lead's <c>submit_review</c>
-    /// (human-confirmed, §7), not this path. A cross-Team read by design: the
-    /// verifier is an Instance-scoped credential (§5), not attached to any Team, so
-    /// it sees every automated task awaiting its check. A pure read — no transition,
-    /// and the only prose it returns is the completion criteria §5 explicitly grants.
+    /// The Lead's deliberate per-task report fetch (§10, §13): the worker's opaque
+    /// in-band report for one task, pulled one item at a time rather than riding the
+    /// bulk <see cref="GetTeamStateAsync"/> read (which carries only a flag). Scoped
+    /// to the caller's own Team in the query, so a task in another Team — or no task
+    /// at all — returns null, indistinguishable and leaking nothing (§13). A non-null
+    /// view with a null <see cref="TaskReportView.Report"/> means the task is the
+    /// Lead's but the worker left no report. A pure read; no transition.
     /// </summary>
-    public async Task<IReadOnlyList<VerifyingTaskView>> ListVerifyingAsync(CancellationToken ct = default) =>
+    public async Task<TaskReportView?> GetTaskReportAsync(TeamId team, TaskId task, CancellationToken ct = default) =>
         await db.Tasks.AsNoTracking()
-            .Where(t => t.State == TaskState.Verifying && t.CompletionMode == CompletionMode.Automated)
-            .OrderBy(t => t.Namespace)
-            .Select(t => new VerifyingTaskView(t.Id, t.Namespace, t.CompletionCriteria, t.ResultReference))
-            .ToListAsync(ct);
+            .Where(t => t.Id == task.Value && t.TeamId == team.Value)
+            .Select(t => new TaskReportView(t.Id, t.Namespace, t.WorkerReport))
+            .FirstOrDefaultAsync(ct);
 
     /// <summary>
     /// The wait-TTL sweeper's poll (§11): every task in
@@ -500,7 +503,12 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
         // ReportResult is the one place the row's ResultReference is written,
         // where the verifier's read scope (§5) later fetches it.
         if (command is ReportResult reported)
+        {
             row.ResultReference = reported.ResultReference;
+            // §10: the worker's in-band report rides the same transition, opaque and
+            // verbatim (the engine already size-capped it). Null leaves the column null.
+            row.WorkerReport = reported.Report;
+        }
         // §11 wait-TTL: stamp when the task entered blocked_on_input so the sweeper
         // can age its wait deadline, and clear it on the way out. Opaque plane
         // plumbing captured here (like ResultReference above), never an engine field —

@@ -24,24 +24,24 @@ using ModelContextProtocol.Protocol;
 namespace Docket.Mcp.Tests;
 
 /// <summary>
-/// The whole task lifecycle end to end (spec §5, §6, §10), created → … →
+/// The whole task lifecycle end to end (spec §5, §6, §9 check 4), created → … →
 /// completed, over real HTTP and real MCP with no LLM. It extends the walking
-/// skeleton with the verifier verdict path:
+/// skeleton with the Lead-adjudicated verdict path:
 ///
 /// <list type="number">
-/// <item>A Lead creates an <c>automated</c> task over real MCP.</item>
+/// <item>A Lead creates a <c>lead</c>-mode task over real MCP.</item>
 /// <item>The real <see cref="DispatchService"/> claims it, mints the worker token,
 ///   and the real <see cref="ProcessSupervisor"/> spawns the fake
 ///   <see cref="Docket.WorkerHarness"/>, which authenticates back to <c>/mcp</c>,
 ///   calls <c>get_task</c>, then <c>report_result(ref)</c> — working → verifying.</item>
-/// <item>A human provisions a verifier credential. The verifier polls
-///   <c>GET /verify/pending</c> over plain HTTP and sees the task <em>with the
-///   reference the worker reported</em> (proving #23 persistence end to end), then
-///   posts <c>POST /verify/{id}</c> <c>accept</c> — verifying → completed.</item>
+/// <item>The Lead reads the reported reference (proving #23 persistence end to end),
+///   then calls <c>submit_review accept</c> over MCP — verifying → completed with
+///   lead-session provenance, no human confirmation (the doer/judge split: the
+///   Lead adjudicates, never the task's own worker).</item>
 /// </list>
 ///
-/// The verifier is not an MCP client: it posts to Docket, not the reverse (§10).
-/// Real <c>claude -p</c> is the operator-run validation (§17.0) and out of scope.
+/// The former automated-verifier module is cut (§7): CI and tests are evidence a
+/// Lead gathers itself. Real <c>claude -p</c> is the operator-run validation (§17.0).
 /// </summary>
 [Collection(PostgresCollection.Name)]
 public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifetime
@@ -87,7 +87,7 @@ public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifet
             {
                 ["description"] = description,
                 ["completionCriteria"] = criteria,
-                ["mode"] = "automated",
+                ["mode"] = "lead",
                 ["profile"] = null,
                 ["workspace"] = workspace,
             }, cancellationToken: ct);
@@ -143,50 +143,36 @@ public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifet
                 Assert.Fail($"worker harness never drove the task to verifying. Harness diagnostic:\n{detail}");
             }
 
-            // The reference the harness reported (§10) — persisted by #23.
+            // The reference the harness reported (§10) — persisted by #23; a plain
+            // row read proves report_result's reference crossed real HTTP + MCP and
+            // landed where the Lead reads it before adjudicating.
             const string reportedRef = "docket-worker-harness:done";
-
-            // ── A human provisions a verifier; it polls over plain HTTP (§5, §10) ──
-            string verifierToken;
-            await using (var db = pg.NewContext())
-                verifierToken = (await new TokenService(db, TimeProvider.System).ProvisionVerifierAsync(ct)).Token;
-
-            using var http = new HttpClient { BaseAddress = new Uri(baseUrl) };
-
-            // GET /verify/pending shows the task AND the reported reference —
-            // proving report_result's reference crossed real HTTP + MCP and landed.
-            using (var pendingReq = new HttpRequestMessage(HttpMethod.Get, "/verify/pending"))
-            {
-                pendingReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", verifierToken);
-                using var pendingResp = await http.SendAsync(pendingReq, ct);
-                Assert.Equal(HttpStatusCode.OK, pendingResp.StatusCode);
-
-                var pending = JsonSerializer.Deserialize<List<VerifyingTaskView>>(
-                    await pendingResp.Content.ReadAsStringAsync(ct),
-                    new JsonSerializerOptions(JsonSerializerDefaults.Web))!;
-                var view = Assert.Single(pending);
-                Assert.Equal(taskId.Value, view.TaskId);
-                Assert.Equal(reportedRef, view.ResultReference);
-                Assert.Equal(criteria, view.CompletionCriteria);
-            }
-
-            // ── POST /verify/{id} accept → verifying → completed ────────────
-            using (var verdictReq = new HttpRequestMessage(HttpMethod.Post, $"/verify/{taskId}")
-            {
-                Content = JsonContent.Create(new { verdict = "accept" }),
-            })
-            {
-                verdictReq.Headers.Authorization = new AuthenticationHeaderValue("Bearer", verifierToken);
-                using var verdictResp = await http.SendAsync(verdictReq, ct);
-                Assert.Equal(HttpStatusCode.OK, verdictResp.StatusCode);
-                using var doc = JsonDocument.Parse(await verdictResp.Content.ReadAsStringAsync(ct));
-                Assert.Equal("Completed", doc.RootElement.GetProperty("state").GetString());
-            }
-
-            // ── The record reached the terminal completed state through the machine ──
             await using (var v = pg.NewContext())
-                Assert.Equal(TaskState.Completed,
-                    (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == taskId.Value, ct)).State);
+                Assert.Equal(reportedRef,
+                    (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == taskId.Value, ct)).ResultReference);
+
+            // ── Lead adjudicates over real MCP: submit_review accept → completed ──
+            // Lead mode (§7, §9 check 4): the Lead session's verdict completes the
+            // task with no human confirmation — the Claude Code shape, orchestrator
+            // judgment over a schema-mandated non-agent verdict.
+            await using (var lead = await ConnectAsync(new Uri(baseUrl + "/"), leadToken, ct))
+            {
+                var verdict = await lead.CallToolAsync("submit_review", new Dictionary<string, object?>
+                {
+                    ["taskId"] = taskId.ToString(),
+                    ["verdict"] = "accept",
+                }, cancellationToken: ct);
+                Assert.NotEqual(true, verdict.IsError);
+                Assert.Contains("Completed", Assert.Single(verdict.Content.OfType<TextContentBlock>()).Text);
+            }
+
+            // ── The record reached completed, with lead-session provenance (§9.4) ──
+            await using (var v = pg.NewContext())
+            {
+                var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == taskId.Value, ct);
+                Assert.Equal(TaskState.Completed, row.State);
+                Assert.Equal(VerdictProvenance.LeadSession, row.CompletionProvenance);
+            }
         }
         finally
         {
@@ -233,7 +219,6 @@ public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifet
         app.UseAuthentication();
         app.UseAuthorization();
         app.MapMcp().RequireAuthorization();
-        app.MapVerifierEndpoints();
         return app;
     }
 

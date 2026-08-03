@@ -216,6 +216,34 @@ public class RunnerWireTests
         Assert.Equal(original, decoded);
     }
 
+    [Fact]
+    public void Read_transcript_command_round_trips_with_a_range()
+    {
+        var original = new ReadTranscriptCommand(
+            TaskId.New(), "req-1", Ordinal: 2, Stream: TranscriptStreams.Stderr,
+            Offset: 65_536, MaxBytes: 4096);
+
+        var decoded = Assert.IsType<ReadTranscriptCommand>(RunnerWire.DecodeCommand(RunnerWire.EncodeCommand(original)));
+
+        Assert.Equal(original, decoded);
+    }
+
+    [Fact]
+    public void Read_transcript_command_defaults_to_an_inventory_of_stdout_from_the_start()
+    {
+        // Ordinal 0 is the inventory request; the rest of the range fields are
+        // irrelevant to it and default to the head of stdout (§12).
+        var original = new ReadTranscriptCommand(TaskId.New(), "req-1");
+
+        var decoded = Assert.IsType<ReadTranscriptCommand>(RunnerWire.DecodeCommand(RunnerWire.EncodeCommand(original)));
+
+        Assert.Equal(original, decoded);
+        Assert.Equal(0, decoded.Ordinal);
+        Assert.Equal(TranscriptStreams.Stdout, decoded.Stream);
+        Assert.Equal(0, decoded.Offset);
+        Assert.Equal(TranscriptStreams.DefaultMaxBytes, decoded.MaxBytes);
+    }
+
     // ── Events ──────────────────────────────────────────────────────────────
 
     [Fact]
@@ -301,6 +329,55 @@ public class RunnerWireTests
         Assert.Equal(original, decoded);
     }
 
+    [Fact]
+    public void Transcript_chunk_event_round_trips_a_range_of_verbatim_text()
+    {
+        // Verbatim means exactly that: quotes, backslashes, control characters, and
+        // multi-byte characters all survive the JSON envelope unchanged (§12, §13).
+        var original = new TranscriptChunkEvent(
+            TaskId.New(), "req-1",
+            Text: "{\"type\":\"assistant\",\"text\":\"a \\\" quote, a \ttab, an émoji 🛠\"}\n",
+            NextOffset: 4096,
+            Eof: false);
+
+        var decoded = Assert.IsType<TranscriptChunkEvent>(RunnerWire.DecodeEvent(RunnerWire.EncodeEvent(original)));
+
+        Assert.Equal(original, decoded);
+        Assert.Null(decoded.Refusal);
+        Assert.Null(decoded.Instances);
+    }
+
+    [Fact]
+    public void Transcript_chunk_event_round_trips_an_inventory()
+    {
+        var original = new TranscriptChunkEvent(
+            TaskId.New(), "req-1",
+            Instances:
+            [
+                new TranscriptInstance(1, 1024, 0, DateTimeOffset.UtcNow),
+                new TranscriptInstance(2, 2048, 96, DateTimeOffset.UtcNow),
+            ]);
+
+        var decoded = Assert.IsType<TranscriptChunkEvent>(RunnerWire.DecodeEvent(RunnerWire.EncodeEvent(original)));
+
+        // Record value-equality compares the list member by reference, so assert contents.
+        Assert.Equal(original.RequestId, decoded.RequestId);
+        Assert.Equal(original.Instances, decoded.Instances);
+        Assert.Equal("", decoded.Text);
+    }
+
+    [Fact]
+    public void Transcript_chunk_event_round_trips_a_refusal()
+    {
+        var original = new TranscriptChunkEvent(
+            TaskId.New(), "req-1", Refusal: TranscriptRefusals.NoTranscript);
+
+        var decoded = Assert.IsType<TranscriptChunkEvent>(RunnerWire.DecodeEvent(RunnerWire.EncodeEvent(original)));
+
+        Assert.Equal(original, decoded);
+        Assert.Equal(TranscriptRefusals.NoTranscript, decoded.Refusal);
+    }
+
     // ── Heartbeat ─────────────────────────────────────────────────────────────
 
     [Fact]
@@ -324,6 +401,31 @@ public class RunnerWireTests
         Assert.Equal(4, decoded.RunningTasks);
         Assert.Equal(new[] { "default", "restricted" }, decoded.Profiles);
         Assert.Equal(original.At, decoded.At);
+    }
+
+    [Fact]
+    public void Heartbeat_carries_the_transcripts_servable_flag_and_defaults_it_false()
+    {
+        var servable = new MachineHeartbeat(
+            "machine-1", Ready: true, UnderBackPressure: false, new SystemLoad(0, 0, 0),
+            RunningTasks: 0, Profiles: ["default"], At: DateTimeOffset.UtcNow,
+            TranscriptsServable: true);
+
+        Assert.True(RunnerWire.DecodeHeartbeat(RunnerWire.EncodeHeartbeat(servable))!.TranscriptsServable);
+
+        // A heartbeat from a runner predating transcript serving omits the property;
+        // it must decode to false so the dashboard offers no link (§12).
+        var legacy = """
+            { "type": "heartbeat", "machine_id": "machine-1", "ready": true,
+              "under_back_pressure": false,
+              "load": { "cpu_load": 0, "memory_load": 0, "disk_usage": 0 },
+              "running_tasks": 0, "profiles": ["default"], "at": "2026-08-02T12:00:00+00:00" }
+            """;
+
+        var decoded = RunnerWire.DecodeHeartbeat(legacy);
+
+        Assert.NotNull(decoded);
+        Assert.False(decoded!.TranscriptsServable);
     }
 
     // ── Rejection: anything outside the vocabulary (§10) ──────────────────────
@@ -355,14 +457,19 @@ public class RunnerWireTests
         Assert.Null(RunnerWire.DecodeHeartbeat("not json at all"));
     }
 
+    /// <summary>
+    /// The frozen §10 lists, spelled out as literals on purpose: adding a member here
+    /// is the tripwire that puts a vocabulary change in front of a reviewer instead of
+    /// letting it ride along in a feature diff.
+    /// </summary>
     [Fact]
     public void Vocabulary_sets_are_the_closed_frozen_lists()
     {
         Assert.Equal(
-            new HashSet<string> { "dispatch", "stop", "kill", "open-forward" },
+            new HashSet<string> { "dispatch", "stop", "kill", "open-forward", "read-transcript" },
             new HashSet<string>(RunnerWire.Commands));
         Assert.Equal(
-            new HashSet<string> { "started", "session-started", "alive", "tool-call", "subagent-spawned", "exited", "auth-failed", "forward-opened", "forward-closed", "rebooted" },
+            new HashSet<string> { "started", "session-started", "alive", "tool-call", "subagent-spawned", "exited", "auth-failed", "forward-opened", "forward-closed", "rebooted", "transcript-chunk" },
             new HashSet<string>(RunnerWire.Events));
     }
 }

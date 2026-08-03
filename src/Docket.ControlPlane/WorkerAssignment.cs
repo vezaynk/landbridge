@@ -20,4 +20,8 @@ public sealed record WorkerAssignment(
     [property: JsonPropertyName("description")] string Description,
     [property: JsonPropertyName("completion_criteria")] string CompletionCriteria,
     [property: JsonPropertyName("workspace")] string? Workspace,
-    [property: JsonPropertyName("attempt")] int Attempt);
+    [property: JsonPropertyName("attempt")] int Attempt,
+    // §10 in-band report: the report a prior attempt left, so a redispatched or
+    // successor worker sees what the last attempt claimed it did (null on attempt 1
+    // or when none was left). Opaque content, exactly like the description above.
+    [property: JsonPropertyName("report")] string? Report = null);

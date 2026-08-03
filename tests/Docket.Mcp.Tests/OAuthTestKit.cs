@@ -83,6 +83,8 @@ internal static class OAuthTestKit
         builder.Services.AddScoped<OAuthAuthorizationCodeService>();
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<RunnerConnectionRegistry>();
+        // §8.3: the forward orchestrator + the lead↔machine binding LeadTools needs.
+        builder.Services.AddDocketForwarding();
         builder.Services.AddHttpContextAccessor();
 
         builder.Services.AddSingleton(OAuthServerConfig.FromPublicMcpUrl(url));

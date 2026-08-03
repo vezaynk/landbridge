@@ -80,7 +80,7 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
             {
                 var store = new TaskStore(db, clock);
                 var created = (StoreResult.Applied)await store.CreateAsync(
-                    new CreateTask(new LeadClaim(team), team, "criteria", CompletionMode.Automated, null, TeamBudgetRemains: true), ct);
+                    new CreateTask(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null, TeamBudgetRemains: true), ct);
                 taskId = created.Task.Id;
             }
 

@@ -221,7 +221,7 @@ public sealed class PreviewConnectServiceTests(PostgresFixture pg) : IAsyncLifet
     {
         var store = new TaskStore(db, clock);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(new LeadClaim(team), team, "criteria", CompletionMode.Automated, null, true));
+            new CreateTask(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null, true));
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(
             new MachineSnapshot("m1", Ready: true, UnderBackPressure: false, new HashSet<string> { "default" }), instance);
