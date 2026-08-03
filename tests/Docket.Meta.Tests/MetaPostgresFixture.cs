@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using Docket.Meta.Data;
+using Docket.Meta.Secrets;
 using Microsoft.EntityFrameworkCore;
 
 namespace Docket.Meta.Tests;
@@ -51,7 +52,37 @@ public sealed class MetaPostgresFixture : IAsyncLifetime
         await MigrateAsync();
     }
 
-    public MetaDbContext NewContext() => new(MetaDbContext.BuildOptions(ConnectionString));
+    /// <summary>The fixture's base64 key — exposed so a rotation test can retire it.</summary>
+    public string ProtectorKey { get; } = MetaSecretProtector.NewKey();
+
+    /// <summary>
+    /// The fixture's default protector. Held on the fixture (not per-context) so every
+    /// context in a test reads back what another wrote; a test that needs a DIFFERENT
+    /// key passes one to <see cref="NewContext(MetaSecretProtector)"/>.
+    /// </summary>
+    public MetaSecretProtector Protector => _protector ??= new MetaSecretProtector([ProtectorKey]);
+    private MetaSecretProtector? _protector;
+
+    public MetaDbContext NewContext() => NewContext(Protector);
+
+    /// <summary>A context over the same database but a caller-chosen key — the wrong-key path.</summary>
+    public MetaDbContext NewContext(MetaSecretProtector protector) =>
+        new(MetaDbContext.BuildOptions(ConnectionString), protector);
+
+    /// <summary>
+    /// Reads a column straight from Postgres, bypassing EF and its value converters —
+    /// the only honest way to assert what actually landed on disk.
+    /// </summary>
+    public async Task<string?> RawColumnAsync(string table, string column, Guid id)
+    {
+        await using var conn = new Npgsql.NpgsqlConnection(ConnectionString);
+        await conn.OpenAsync();
+        await using var cmd = conn.CreateCommand();
+        cmd.CommandText = $"SELECT {column} FROM {table} WHERE id = @id";
+        cmd.Parameters.AddWithValue("id", id);
+        var value = await cmd.ExecuteScalarAsync();
+        return value == DBNull.Value ? null : (string?)value;
+    }
 
     private async Task MigrateAsync()
     {

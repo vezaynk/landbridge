@@ -206,6 +206,28 @@ ordinal is stable across a restart. Files open lazily on the first line (a silen
 stream leaves no file). The root, task dirs, and files are owner-only (0700/0600) — a
 transcript can capture credentials an agent echoed (§13).
 
+**What "verbatim" means — the line boundary.** Capture is **line-oriented**: `docketd`
+reads a line, then writes that line plus a single `\n`. So "verbatim" is exact with
+respect to the **captured file** — the serving path returns the file's bytes unchanged,
+which is what spec §13's "served exactly as captured" states — but the capture step
+itself normalizes line endings, and three consequences follow:
+
+- **CRLF becomes LF.** A harness on Windows emitting `\r\n` lands as `\n`.
+- **A lone `\r` is a line break.** Progress bars and spinners that redraw by returning
+  the carriage — common on **stderr** — are read as separate lines and written as
+  separate `\n`-terminated ones, so the file holds each redraw as its own line instead of
+  one rewritten line.
+- **A final unterminated line gains a `\n`.** Bytes are also decoded as text and
+  re-encoded UTF-8, so output that was not valid UTF-8 is normalized (`U+FFFD`).
+
+This is deliberate, not an oversight. The artifact that matters — a
+`--output-format stream-json` stdout transcript — **is** one JSON object per line, so
+line orientation costs it nothing, and the size cap, the truncation marker, and event
+mapping are all line-oriented too. The only thing reshaped is stderr progress
+*rendering*, which is noise rather than evidence. If a future harness needs stderr
+byte-for-byte (raw ANSI, embedded binary), that is a byte-oriented capture mode, not a
+tweak to this one.
+
 **Size cap.** `max_bytes` (default 50 MiB) bounds each stream (stdout, stderr) per
 instance. On reaching it, `docketd` writes one truncation marker line
 (`{"docket":"transcript_truncated","limit_bytes":N}`) and stops writing that stream.

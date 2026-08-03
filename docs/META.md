@@ -103,10 +103,76 @@ touches an Instance's database.
 | `Meta:PostgresImage` | Postgres image for the per-Instance database container. |
 | `Meta:CaddyAdminUrl` / `Meta:CaddyServerName` | The edge Caddy admin API and server key. |
 | `Meta:MigrateOnStartup` | Apply meta's own migration to its own store at startup (dev convenience). |
+| `Meta:Secrets:Keys` | **Required.** Ordered AES-256 master keys (base64, 32 bytes). Element 0 seals new values; the rest are retired keys kept so existing rows still decrypt. Meta refuses to start when empty. See §2.1. |
 
 Run migrations for meta's store out of band in production (`Meta:MigrateOnStartup=true` is
 the dev shortcut). Each **Instance** container self-migrates on boot — meta sets
 `Docket:MigrateOnStartup=true` in the plane container's env, and image upgrades rely on it.
+
+### 2.1 Key management
+
+Meta must **retain** some Instance secrets to re-inject them when it recreates a container
+on resume or upgrade: the Instance's Postgres password, the relay shared bearer, and — for a
+remote host — that host's mTLS **client private key**. Its own Postgres therefore holds live
+credentials, and those three columns are encrypted at rest with AES-256-GCM under a master
+key you supply.
+
+Generate a key and put it in config or the environment:
+
+```
+openssl rand -base64 32
+```
+
+```
+Meta__Secrets__Keys__0=<the base64 key>
+```
+
+**Meta will not start without it.** There is no plaintext fallback: a meta that cannot
+protect these values refuses to run rather than quietly writing credentials in the clear.
+Startup also fails on a key that is not 32 bytes of valid base64.
+
+What is *not* encrypted, deliberately: the operator passphrase **hash** (already a one-way
+digest of a value meta never keeps) and a host's CA and client **certificates** (public
+material — leaving them legible lets you audit which host a row points at without holding
+the key).
+
+#### Back up the key AND the database
+
+They are useless apart, and losing **either** one strands every Instance:
+
+- Lose the key, keep the database → meta can no longer decrypt the retained secrets. The
+  running containers keep running, but resume, upgrade, and any recreate stop working.
+  Recovery means rebuilding each Instance's credentials by hand.
+- Lose the database, keep the key → the Instance records are gone regardless.
+
+Back the key up somewhere separate from the database dump (a password manager or your
+organisation's secret store). A database dump alone is not enough to restore meta, and — the
+other half of the same property — a leaked database dump alone does not disclose the
+secrets.
+
+#### Rotating the key
+
+Rotation is deliberately *completable*: you can finish it and drop the old key, rather than
+carrying every historical key forever.
+
+1. Generate a new key: `openssl rand -base64 32`.
+2. Put the **new key first** and keep the old one after it:
+   ```
+   Meta__Secrets__Keys__0=<new key>
+   Meta__Secrets__Keys__1=<old key>
+   ```
+3. Restart meta. On startup the rewrap sweep re-seals every live Instance's retained
+   secrets **and every host's mTLS client key** under the new key, logging
+   `rewrapped secrets for N row(s) under key <fp>`.
+4. Confirm that log line, then **remove the old key** and restart again.
+
+Each stored value names the key that sealed it by fingerprint, so during step 3 both keys
+are in use and nothing is unreadable. If you remove a key that some row still needs, meta
+tells you exactly which fingerprint is missing instead of failing obscurely — put it back
+and repeat step 3.
+
+Destroying an Instance shreds its retained secrets (the columns are blanked, not just
+tombstoned), so a destroyed Instance holds nothing a future key rotation needs.
 
 ---
 
@@ -132,7 +198,8 @@ real OAuth and no seeded identities. Enroll machines and provision a verifier th
 Instance's own §5 flows after creation.
 
 Meta **retains** the DB password and relay bearer (it must re-inject them on resume and
-upgrade). Only the operator passphrase is shown-once-and-discarded.
+upgrade), encrypted at rest under the master key from §2.1. Only the operator passphrase is
+shown-once-and-discarded.
 
 > **No signing key.** Docket's tokens are opaque and hashed at rest (spec §5, §13) — there
 > is no signing/HMAC key for an Instance to hold today, so meta generates and injects none.

@@ -1,3 +1,4 @@
+using Docket.Meta.Secrets;
 using Microsoft.EntityFrameworkCore.Design;
 
 namespace Docket.Meta.Data;
@@ -11,6 +12,9 @@ public sealed class MetaDesignTimeDbContextFactory : IDesignTimeDbContextFactory
 {
     public MetaDbContext CreateDbContext(string[] args) =>
         new(MetaDbContext.BuildOptions(
-            Environment.GetEnvironmentVariable("DOCKET_META_DB")
-            ?? "Host=localhost;Database=docket_meta;Username=docket"));
+                Environment.GetEnvironmentVariable("DOCKET_META_DB")
+                ?? "Host=localhost;Database=docket_meta;Username=docket"),
+            // A throwaway key: scaffolding reads the model's SHAPE, and the secret
+            // columns are `text` either way. No data is read or written here.
+            new MetaSecretProtector([MetaSecretProtector.NewKey()]));
 }
