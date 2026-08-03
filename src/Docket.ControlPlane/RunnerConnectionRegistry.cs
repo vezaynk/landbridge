@@ -10,7 +10,8 @@ namespace Docket.ControlPlane;
 /// accepted and the send delegate that writes command frames back down it. The
 /// registry holds, per machine, that delegate, the profiles it declares (learned
 /// from its heartbeat), its readiness, its last heartbeat, and the set of tasks
-/// dispatched to it (each with its last activity time, for the liveness window).
+/// dispatched to it — each with the two liveness clocks §10 needs: when the machine
+/// last said the task's process was alive, and when the task last made progress.
 ///
 /// It is transport-agnostic — nothing here knows about WebSockets — so it is
 /// driven directly in tests. All state is process-local and evaporates on
@@ -56,26 +57,47 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
         }
     }
 
-    /// <summary>Records that a task was dispatched to a machine, stamping activity now.</summary>
+    /// <summary>Records that a task was dispatched to a machine, stamping both clocks now.</summary>
     public void TrackDispatch(string machineId, TaskId task)
     {
         if (!_connections.TryGetValue(machineId, out var conn))
             return;
+        var now = clock.GetUtcNow();
         lock (conn.Gate)
-            conn.Dispatched[task] = clock.GetUtcNow();
+            conn.Dispatched[task] = new TaskActivity(now, now);
     }
 
-    /// <summary>Refreshes a tracked task's last-activity time from an inbound liveness
-    /// signal (started/alive/tool-call) (§10 per-task liveness).</summary>
-    public void RecordActivity(TaskId task)
+    /// <summary>
+    /// Refreshes both clocks from a **progress** signal — <c>started</c>,
+    /// <c>session-started</c>, <c>tool-call</c>, <c>subagent-spawned</c> (§10
+    /// per-task liveness). Progress implies aliveness, so this is the strictly
+    /// stronger of the two records.
+    /// </summary>
+    public void RecordProgress(TaskId task) => Refresh(task, progress: true);
+
+    /// <summary>
+    /// Refreshes only the aliveness clock, from an <c>alive</c> event: docketd
+    /// asserting the harness process still exists, which says nothing about whether
+    /// the agent is getting anywhere. Deliberately does <b>not</b> touch the
+    /// progress clock — if it did, a wedged-but-running agent would be immortal,
+    /// which is the whole reason the two clocks are separate (§10).
+    /// </summary>
+    public void RecordAlive(TaskId task) => Refresh(task, progress: false);
+
+    private void Refresh(TaskId task, bool progress)
     {
+        var now = clock.GetUtcNow();
         foreach (var conn in _connections.Values)
         {
             lock (conn.Gate)
             {
-                if (conn.Dispatched.ContainsKey(task))
+                if (conn.Dispatched.TryGetValue(task, out var current))
                 {
-                    conn.Dispatched[task] = clock.GetUtcNow();
+                    conn.Dispatched[task] = current with
+                    {
+                        LastActivity = now,
+                        LastProgress = progress ? now : current.LastProgress,
+                    };
                     return;
                 }
             }
@@ -201,15 +223,15 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
         return false;
     }
 
-    /// <summary>Every tracked (task, machine, last-activity) triple, for the liveness scan.</summary>
+    /// <summary>Every tracked task with its machine and both clocks, for the liveness scan.</summary>
     public IReadOnlyList<TrackedTask> AllTracked()
     {
         var all = new List<TrackedTask>();
         foreach (var (id, conn) in _connections)
         {
             lock (conn.Gate)
-                foreach (var (task, at) in conn.Dispatched)
-                    all.Add(new TrackedTask(task, id, at));
+                foreach (var (task, activity) in conn.Dispatched)
+                    all.Add(new TrackedTask(task, id, activity.LastActivity, activity.LastProgress));
         }
         return all;
     }
@@ -234,8 +256,19 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
         }
     }
 
-    /// <summary>A tracked dispatch: the task, the machine holding it, and its last activity.</summary>
-    public readonly record struct TrackedTask(TaskId Task, string Machine, DateTimeOffset LastActivity);
+    /// <summary>
+    /// A tracked dispatch and its two liveness clocks (§10).
+    /// <see cref="LastActivity"/> moves on any inbound signal including <c>alive</c>
+    /// — "docketd still says this process exists". <see cref="LastProgress"/> moves
+    /// only on a real progress signal — "the agent is getting somewhere". They are
+    /// separate because a dead process and a wedged one need different detection
+    /// times, and one number cannot carry both.
+    /// </summary>
+    public readonly record struct TrackedTask(
+        TaskId Task, string Machine, DateTimeOffset LastActivity, DateTimeOffset LastProgress);
+
+    /// <summary>The two clocks kept per dispatched task; see <see cref="TrackedTask"/>.</summary>
+    private readonly record struct TaskActivity(DateTimeOffset LastActivity, DateTimeOffset LastProgress);
 
     private sealed class RunnerConnection(Func<RunnerCommand, CancellationToken, Task> send)
     {
@@ -245,6 +278,6 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
         public bool Ready { get; set; }
         public bool UnderBackPressure { get; set; }
         public DateTimeOffset LastHeartbeat { get; set; }
-        public Dictionary<TaskId, DateTimeOffset> Dispatched { get; } = new();
+        public Dictionary<TaskId, TaskActivity> Dispatched { get; } = new();
     }
 }

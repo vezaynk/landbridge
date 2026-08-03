@@ -403,6 +403,19 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
             .FirstOrDefaultAsync(ct);
 
     /// <summary>
+    /// Whether this task has registered a service (§8.2) — i.e. declared that
+    /// something it started is meant to stay reachable. Read by the §10 per-task
+    /// liveness scan: a service-bearing task is exempt from the no-progress ceiling,
+    /// because sitting idle while others use its service is the job, not a hang. It
+    /// is deliberately this fact and not a flag on <c>create_task</c>: the worker
+    /// earns the exemption by a deliberate, observable protocol act at the moment it
+    /// becomes true, rather than the Lead predicting it before any work has happened
+    /// (§2 principle 2 — derive, do not ask).
+    /// </summary>
+    public Task<bool> HasRegisteredServiceAsync(TaskId id, CancellationToken ct = default) =>
+        db.RegisteredServices.AsNoTracking().AnyAsync(s => s.TaskId == id.Value, ct);
+
+    /// <summary>
     /// Stamps the opaque harness session ref onto a task row (§11 resume), from a
     /// <see cref="Docket.Contracts.SessionStartedEvent"/> the runner event sink
     /// received. Not a state transition — this is transport metadata the plane

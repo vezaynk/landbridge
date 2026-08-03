@@ -156,6 +156,53 @@ public class RunnerDaemonTests
     }
 
     [Fact]
+    public async Task The_heartbeat_timer_emits_one_alive_per_live_task()
+    {
+        // §10 per-task liveness, process-alive half. This is the only channel by which
+        // "the harness process still exists" reaches the plane: the machine heartbeat
+        // is machine-scoped, and a profile with no tool-call source produces nothing
+        // else after `started`. Without these events the plane requeues every task
+        // that outlives its liveness window.
+        var h = Build();
+        var alive = TaskId.New();
+        var dies = TaskId.New();
+        await h.Daemon.HandleAsync(TestKit.Dispatch(alive));
+        await h.Daemon.HandleAsync(TestKit.Dispatch(dies));
+        await h.Daemon.StartAsync();
+
+        h.Clock.Advance(TimeSpan.FromSeconds(5)); // one heartbeat interval
+        Assert.True(await TestKit.WaitUntilAsync(
+            () => AliveFor(h, alive) == 1 && AliveFor(h, dies) == 1, TimeSpan.FromSeconds(5)));
+
+        // One process exits; its bookkeeping lingers until teardown. Reporting it alive
+        // would hold off a requeue that should happen, so only the survivor beats on.
+        h.Supervisor.Exited.Add(dies);
+        h.Clock.Advance(TimeSpan.FromSeconds(5));
+        Assert.True(await TestKit.WaitUntilAsync(() => AliveFor(h, alive) == 2, TimeSpan.FromSeconds(5)));
+        Assert.Equal(1, AliveFor(h, dies));
+
+        await h.Daemon.ShutdownAsync();
+    }
+
+    [Fact]
+    public async Task An_idle_machine_emits_no_alive_events()
+    {
+        // Nothing supervised, nothing to assert liveness about — the beat is per task,
+        // not a machine-level keepalive (that is the heartbeat's job).
+        var h = Build();
+        await h.Daemon.StartAsync();
+
+        h.Clock.Advance(TimeSpan.FromSeconds(15));
+        Assert.NotEmpty(h.Recorded.Heartbeats);
+        Assert.DoesNotContain(h.Recorded.Events, e => e.Event is AliveEvent);
+
+        await h.Daemon.ShutdownAsync();
+    }
+
+    private static int AliveFor(Harness h, TaskId task) =>
+        h.Recorded.Events.Count(e => e.Event is AliveEvent a && a.Task == task);
+
+    [Fact]
     public async Task Stop_and_kill_are_always_actioned_as_the_control_channel()
     {
         var h = Build();
@@ -364,6 +411,16 @@ internal sealed class FakeProcessSupervisor : IProcessSupervisor
     public int RunningTotal => _running.Values.Sum();
 
     public IReadOnlyCollection<TaskId> RunningTasks => Spawned.Select(s => s.Task).ToArray();
+
+    /// <summary>
+    /// Every spawned task is "process-alive" unless a test declares otherwise via
+    /// <see cref="Exited"/> — which is how the alive-emitter tests express a process
+    /// that has died but whose bookkeeping is still around.
+    /// </summary>
+    public HashSet<TaskId> Exited { get; } = [];
+
+    public IReadOnlyCollection<TaskId> LiveTasks =>
+        Spawned.Select(s => s.Task).Where(t => !Exited.Contains(t)).ToArray();
 }
 
 /// <summary>A reaper that reports a fixed count and records the machine it was asked to clean.</summary>
