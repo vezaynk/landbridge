@@ -20,6 +20,7 @@ public sealed class RunnerEventSink(
     IServiceScopeFactory scopes,
     RunnerConnectionRegistry registry,
     ForwardWaiters forwards,
+    TranscriptWaiters transcripts,
     ILogger<RunnerEventSink> logger)
 {
     public async Task HandleAsync(RunnerEvent evt, CancellationToken ct = default)
@@ -85,6 +86,21 @@ public sealed class RunnerEventSink(
                 // the port. Hand it to the open_forward call parked on this
                 // forward id so it can return {host, port} to the worker.
                 forwards.Complete(fo.ForwardId, fo.Port);
+                break;
+
+            case TranscriptChunkEvent tc:
+                // §12 serving: hand the range to the dashboard read parked on this request
+                // id. Deliberately NOT a liveness signal — a transcript read is an operator
+                // pulling old bytes off a machine, not the task making progress, and the
+                // task in question is terminal by the time it can be read at all. Calling
+                // RecordActivity here would let a read refresh a dead task's activity clock.
+                //
+                // This case must stay non-blocking: the sink runs on the runner socket's
+                // receive loop, so awaiting anything downstream of the operator's HTTP
+                // response would stall every other inbound frame behind it — including the
+                // heartbeats the liveness scan requeues tasks over. Completing a waiter is
+                // a TrySetResult; the reader's cursor carries the back-pressure instead.
+                transcripts.Complete(tc);
                 break;
 
             case ForwardClosedEvent fc:

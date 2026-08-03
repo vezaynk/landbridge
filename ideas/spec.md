@@ -422,8 +422,10 @@ Skills ship as MCP resources, reaching every agent on connect where the client s
 
 **The only frozen interface in the system.** A runner rejects anything outside the vocabulary.
 
-**Outbound:** `dispatch` · `stop(ttl, disposition)` · `kill` · `open-forward`
-**Inbound:** `started` · `alive` · `tool-call` · `subagent-spawned` · `exited` · `auth-failed` · `forward-opened` · `forward-closed` · `rebooted`
+**Outbound:** `dispatch` · `stop(ttl, disposition)` · `kill` · `open-forward` · `read-transcript`
+**Inbound:** `started` · `session-started` · `alive` · `tool-call` · `subagent-spawned` · `exited` · `auth-failed` · `forward-opened` · `forward-closed` · `rebooted` · `transcript-chunk`
+
+`read-transcript`/`transcript-chunk` are a strict request/reply pair correlated by an opaque request id — the only place in the vocabulary where the control plane pulls and the runner answers, rather than the runner pushing. It exists so transcript bulk is flow-controlled by the reader: one chunk in flight, the next requested only once the reader has taken the last, and replies bypass the runner's bounded event ring entirely (a dropped chunk is a corrupted read, and a transcript backlog must never evict a liveness event or delay a `kill`). The runner sends the file's bytes and interprets nothing (§13). §12 has the read path.
 
 **Every message carries a task id.** A machine runs many agents concurrently; there is no implied current task in either direction. This is the change most expensive to retrofit — get it right before anyone enrolls.
 
@@ -630,11 +632,15 @@ Contractual, not an ops preference.
 
 | Tier | Retention |
 |---|---|
-| Full transcripts | Hours — and load-bearing, since they are the resume-after-reboot substrate |
+| Full transcripts | Machine-local; operator-configured window (`logs.prune_after_days`, default 7 days). Never stored in the control plane. |
 | Structured events | Weeks |
 | Task records | Life of the Account |
 
-Support access to transcripts is a data access problem. Design redaction in rather than retrofitting it.
+Support access to transcripts is a data access problem.
+
+**Transcripts are machine-local and served on demand.** The control plane stores no transcript bytes. `docketd` captures each worker instance's harness stdout and stderr to `<state>/transcripts/<task>/<NNNN>` (opt-in per profile), and the dashboard reads one on demand: the plane asks the machine that ran that dispatch for a byte range, `docketd` replies with one chunk, and the plane relays it into the operator's response without persisting it anywhere. A machine that is offline has no readable transcript, and the dashboard says so rather than hanging — the bytes exist only there. Retention is therefore that machine's own prune window, not a plane-side tier; the earlier "hours" figure assumed a streamed copy in Docket's database, which is not what was built.
+
+**Readable only for terminal tasks, and only by a human.** A transcript is served verbatim (§13), so v1 narrows *when* and *to whom* rather than filtering *what*. When: only `completed`, `rejected`, or `canceled` — a task that can never run again, and whose worker instance token is already revoked. A `verifying` task is deliberately excluded: `report_result` does not revoke the reporting instance's token (the verdict does), so its transcript can still carry a live, replayable worker credential. To whom: a human operator session (§5) — not a Lead over MCP, and not a Lead token presented to the dashboard's structured-data twin, which is the one route that refuses one. Live tailing of a running task stays a machine-local operation for whoever administers that machine; exposing it, and any agent-facing read, is gated on resolving redaction (§13, §16).
 
 Relay traffic is never persisted. Connection metadata is an event; payload is spliced and forgotten.
 
@@ -677,7 +683,11 @@ Relay traffic is never persisted. Connection metadata is an event; payload is sp
 
 **Enrollment tokens must not be passed as arguments.** Pasting into a terminal is the default human behaviour and it lands in shell history. Read from a prompt or a file. Single-use and short TTL bound the damage.
 
-**Transcripts can capture credentials.** An agent that echoes a token, or a tool call carrying one, puts it in the streamed session log and therefore in Docket's database. Redaction belongs on the streaming path, before it lands — not on read.
+**Transcripts can capture credentials.** An agent that echoes a token, or a tool call carrying one, puts it in the session transcript. Transcripts are captured machine-locally and never streamed into Docket's database (§12), and **Docket does not redact them** — how to do that well is unresolved (§16, open question 8), and shipping a pattern filter would have implied a protection it could not deliver. So a transcript is served exactly as captured, and the design compensates with scope instead of filtering: files are owner-only on the machine that wrote them; the read path is a human operator session only; and only a terminal task's transcript is readable, so the worker instance token it may contain is already revoked and the task can never resume. Reading one is closer to logging in to that machine — which its operator can already do — than to publishing it. The read path stores nothing: the control plane relays chunks into the operator's response and never writes, logs, or traces the content.
+
+**A transcript is sensitive beyond credentials.** It legitimately contains everything the agent read — source, customer data, internal hostnames — so no filter would make one safe to publish. Both the dashboard page and the served bytes carry that warning inline, and the enroll skill states it where an operator turns capture on.
+
+**The harness keeps its own session store.** Docket's capture is a tee; the harness's own transcript on that machine is what a resume actually reads, Docket does not touch it, and it should not be described as protected.
 
 **Model provider credentials never touch Docket** — but that is a statement about Docket's exposure, not about their safety. They sit in harness config on machines running agents that read untrusted content, and those agents can read them. Docket cannot prevent that and should not imply otherwise.
 
@@ -740,6 +750,7 @@ The failure mode for everything in these is bounded and recoverable. That is the
 5. **Relay capacity and COGS.** Bandwidth is a direct cost line.
 6. **When does self-hosting arrive**, and does it ship the whole Instance or only `docket-relay`?
 7. **Per-task OS users** (§13): provisioning them needs sudo the enroll flow currently requests once — is per-task user creation acceptable at enrollment, or does peer-credential checking carry v1?
+8. **Transcript redaction is deliberately unresolved.** Transcripts are served verbatim to human operators for terminal tasks only (§12, §13). Pattern redaction (known token shapes, `Authorization` schemes, provider key formats) is the obvious first move and catches only shaped secrets — not a bare password, not a value the printing tool transformed, not anything whose only signal is meaning — so it is a mitigation that would be easy to mistake for a boundary. Deciding this gates three things now deferred: live tailing of a running task, reading a `verifying` task's transcript (whose worker token is still live), and any agent-facing transcript read.
 
 ---
 

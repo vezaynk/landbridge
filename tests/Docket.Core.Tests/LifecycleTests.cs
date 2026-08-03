@@ -27,7 +27,10 @@ public class LifecycleTests
         var task = Expect.Transitioned(result, TaskState.Working);
         Assert.Equal(instance, task.CurrentInstance);
         Assert.Equal(1, task.Attempt);
-        Assert.Contains(new MintWorkerInstanceToken(instance), Expect.Effects(result));
+        // The mint carries the dispatching machine (§12): the instance row is the one
+        // durable record of where a dispatch ran, and a terminal task's transcript can
+        // only be found by asking that machine.
+        Assert.Contains(new MintWorkerInstanceToken(instance, "machine-a"), Expect.Effects(result));
     }
 
     [Fact]

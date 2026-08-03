@@ -106,7 +106,10 @@ internal sealed class FleetRig(PostgresFixture pg, IReadOnlyList<string>? spawnA
             Resume: null,
             new EventsConfig(EventsSource.None, new Dictionary<string, string>()),
             new TelemetryConfig(Otel: false, Endpoint: null),
-            new LogsConfig(Path: null, Format: null),
+            // §12: capture on, so the fleet exercises the real capture → serve path end to
+            // end. Pruning disabled (0) — a rig lives seconds and a sweep would only add
+            // nondeterminism.
+            new LogsConfig(Path: null, Format: null, Capture: true, PruneAfterDays: 0),
             MaxConcurrent: null);
 
         Team = TeamId.New();
@@ -119,9 +122,13 @@ internal sealed class FleetRig(PostgresFixture pg, IReadOnlyList<string>? spawnA
     {
         var workRoot = NewWorkRoot();
         var ring = new OutboundEventRing(capacity: 256);
+        // §12: a real transcript store per machine, so capture writes real files and the
+        // read path answers from them — the same store on both halves, as in production.
+        var transcripts = new TranscriptStore(
+            Path.Combine(workRoot, TranscriptDefaults.DirName), TimeSpan.Zero, TimeProvider.System);
         var supervisor = new ProcessSupervisor(
             new MachineConfig(workRoot, TimeSpan.FromSeconds(15), BackPressureThresholds.Default),
-            ring, TimeProvider.System);
+            ring, TimeProvider.System, taskReaper: null, transcripts);
         var daemon = new DaemonHarness(machineId, new SinkForwardingChannel(_sink));
         await daemon.StartAsync();
 
@@ -137,10 +144,14 @@ internal sealed class FleetRig(PostgresFixture pg, IReadOnlyList<string>? spawnA
 
         // The §10 socket seam: dispatch → the real spawn, open-forward → the real
         // daemon standing up the relay data plane. Nothing else is exercised here.
+        var reader = new TranscriptReader(transcripts);
         _registry.Register(machineId, new HashSet<string> { "default" }, (command, sendCt) => command switch
         {
             DispatchCommand d => Spawn(machine, d),
             OpenForwardCommand => machine.Daemon.Send(command, sendCt),
+            // §12: the real reader answering off the real captured files, replying through
+            // the plane's real sink — the same two hops production makes.
+            ReadTranscriptCommand read => _sink.HandleAsync(reader.Read(read), sendCt),
             _ => Task.CompletedTask,
         });
     }
@@ -150,6 +161,25 @@ internal sealed class FleetRig(PostgresFixture pg, IReadOnlyList<string>? spawnA
         _ranOn[dispatch.Task] = machine.Id; // sticky: survives the worker's own exit/untrack
         machine.Supervisor.Spawn(dispatch, _profile, machine.Id);
         return Task.CompletedTask;
+    }
+
+    /// <summary>The plane's services — for the §12 transcript read path, which is plane-side
+    /// (the relay service and the dashboard queries) rather than an MCP tool.</summary>
+    public IServiceProvider PlaneServices => _plane.Services;
+
+    /// <summary>
+    /// Accept a verifying task over the real Lead MCP surface, driving it to <c>completed</c>
+    /// — the terminal state a transcript is readable in (§12).
+    /// </summary>
+    public async Task AcceptAsync(TaskId task, CancellationToken ct)
+    {
+        await using var lead = await MultiMachineKit.ConnectMcpAsync(new Uri(_baseUrl + "/"), _leadToken, ct);
+        var verdict = await lead.CallToolAsync("submit_review", new Dictionary<string, object?>
+        {
+            ["taskId"] = task.Value.ToString(),
+            ["verdict"] = "accept",
+        }, cancellationToken: ct);
+        Assert.NotEqual(true, verdict.IsError);
     }
 
     /// <summary>Create a task for this fleet's Team via the real Lead MCP surface.</summary>

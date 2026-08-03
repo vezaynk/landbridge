@@ -252,6 +252,37 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
 
     // ── Human inbox (§12) ─────────────────────────────────────────────────────
 
+    // ── Transcripts (§12 serving) ─────────────────────────────────────────────
+
+    /// <summary>
+    /// Where a task's transcripts could be — one entry per dispatch, newest first, with the
+    /// machine that ran it and whether that machine is connected right now. The plane stores
+    /// no transcript bytes, so this is only a set of addresses to ask (§12); a machine that
+    /// is offline holds bytes nobody can read until it returns, which is why connectedness
+    /// is part of the answer rather than something the page discovers by failing.
+    ///
+    /// <para>Instance rows written before the machine column existed have no machine and are
+    /// returned with a null one, so the page can say "attempt 2's machine was not recorded"
+    /// instead of silently listing fewer attempts than the task had.</para>
+    /// </summary>
+    public async Task<IReadOnlyList<TranscriptLocationView>> GetTranscriptLocationsAsync(
+        Guid taskId, CancellationToken ct = default)
+    {
+        var instances = await db.WorkerInstances.AsNoTracking()
+            .Where(w => w.TaskId == taskId)
+            .OrderByDescending(w => w.CreatedAt)
+            .Select(w => new { w.Id, w.MachineId, w.CreatedAt })
+            .ToListAsync(ct);
+
+        return instances
+            .Select(w => new TranscriptLocationView(
+                w.Id,
+                w.MachineId,
+                w.CreatedAt,
+                Connected: w.MachineId is { } m && registry.SnapshotFor(m) is not null))
+            .ToList();
+    }
+
     /// <summary>
     /// Everything waiting on a person across every Team (§12): open questions
     /// (blocked_on_input), tasks awaiting review (verifying + review mode, §7), and
@@ -444,6 +475,15 @@ public sealed record InboxView(
     IReadOnlyList<InputRequestView> Questions,
     IReadOnlyList<ReviewItemView> AwaitingReview,
     IReadOnlyList<ParkedItemView> Parked);
+
+/// <summary>
+/// One dispatch of a task and the machine whose disk may hold its transcript (§12
+/// serving). <see cref="Machine"/> is null for instance rows predating the column;
+/// <see cref="Connected"/> is a snapshot of right now, since transcripts are readable only
+/// while their machine is connected.
+/// </summary>
+public sealed record TranscriptLocationView(
+    Guid InstanceId, string? Machine, DateTimeOffset DispatchedAt, bool Connected);
 
 /// <summary>One interleaved event for the event log (§12). <see cref="Source"/> is
 /// "task" or "lead"; the state and human fields are populated per source. The
