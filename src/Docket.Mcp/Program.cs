@@ -38,6 +38,8 @@ var connectionString = builder.Configuration.GetConnectionString("Docket")
 builder.Services.AddDbContext<DocketDbContext>(o =>
     o.UseNpgsql(connectionString).UseSnakeCaseNamingConvention());
 builder.Services.AddScoped<TaskStore>();
+// §9.9 budget accounting: scoped alongside the store, which commits through it at dispatch.
+builder.Services.AddScoped<TeamBudgetService>();
 builder.Services.AddScoped<TokenService>();
 builder.Services.AddScoped<RelayGrantService>();
 // §8.4 HTTP preview: the mapping store (resolve/create) and the per-connection

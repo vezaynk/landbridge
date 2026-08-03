@@ -216,7 +216,12 @@ public sealed class DispatchService : IHostedService
             // was worked before and parked/requeued) so docketd continues the
             // transcript. Opaque metadata surfaced by the store; docketd resumes
             // only if the resolved profile declares resume.args, else cold-starts.
-            ResumeSessionRef: applied.HarnessSessionRef);
+            ResumeSessionRef: applied.HarnessSessionRef,
+            // §9.9/§9 check 9: the per-dispatch cap committed against the Team's ceiling,
+            // enforced by the harness itself (the profile's {budget} substitution). This is
+            // the backstop that holds even when spend telemetry is absent — which today it
+            // always is, since nothing ingests it. Null when the Team configures no cap.
+            BudgetUsd: applied.BudgetCapUsd);
 
         _registry.TrackDispatch(machineId, task.Id);
         var sent = await _registry.SendAsync(machineId, command, ct);

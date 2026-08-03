@@ -12,7 +12,7 @@ namespace Docket.ControlPlane;
 /// consequences (token mint/revoke, service clearing, park record) are
 /// atomic, and a NOTIFY fires only if the write commits.
 /// </summary>
-public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
+public sealed class TaskStore(DocketDbContext db, TimeProvider clock, TeamBudgetService? budgets = null)
 {
     public async Task<StoreResult> CreateAsync(CreateTask command, CancellationToken ct = default)
     {
@@ -205,6 +205,27 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
         var result = await RunTransition(claimed, new Dispatch(machine, newInstance), ct, tx);
         if (result is StoreResult.Applied applied)
         {
+            // §9.9: pay for this dispatch inside the same transaction as the transition, so a
+            // dispatch that happens is always committed against the Team's ceiling and one
+            // that is refused commits nothing. Per DISPATCH, not per task — each attempt is a
+            // fresh process that can burn the whole cap, so a requeued task commits twice.
+            // An exhausted ceiling rolls the whole claim back: the task stays submitted and
+            // is picked up again only once a human raises the ceiling.
+            decimal? budgetCap = null;
+            if (budgets is not null)
+            {
+                var commit = await budgets.TryCommitDispatchAsync(new TeamId(claimed.TeamId), ct);
+                if (commit is BudgetCommit.Exhausted exhausted)
+                {
+                    await tx.RollbackAsync(ct);
+                    return new StoreResult.Rejected(
+                        Rule.TeamBudgetCeiling,
+                        $"Team budget ceiling reached (committed ${exhausted.CommittedUsd:N2} of " +
+                        $"${exhausted.CeilingUsd:N2}); a human must raise it before more work is dispatched");
+                }
+                budgetCap = ((BudgetCommit.Allowed)commit).CapUsd;
+            }
+
             if (degradeColdStart)
             {
                 // Abandon the transcript: suppress the resume ref for this dispatch,
@@ -243,6 +264,9 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
             {
                 TraceContext = claimed.TraceContext,
                 HarnessSessionRef = degradeColdStart ? null : claimed.HarnessSessionRef,
+                // §9.9: the committed cap rides back so DispatchService can hand it to the
+                // harness as its own hard limit.
+                BudgetCapUsd = budgetCap,
             };
         }
         return result;

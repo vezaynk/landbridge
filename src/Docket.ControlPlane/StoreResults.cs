@@ -20,11 +20,18 @@ public abstract record StoreResult
     /// back to the runner for §11 resume. Null everywhere else; neither touches the
     /// engine (<see cref="TaskRecord"/> stays content-free).
     /// </summary>
+    /// <param name="BudgetCapUsd">
+    /// §9.9: the per-dispatch cap committed against the Team for this dispatch, which the
+    /// caller passes to the harness as <c>DispatchCommand.BudgetUsd</c> — the backstop that
+    /// holds when spend telemetry is absent. Null when the Team configures no cap, and on
+    /// every non-dispatch transition.
+    /// </param>
     public sealed record Applied(
         TaskRecord Task,
         IReadOnlyList<Effect> Effects,
         string? TraceContext = null,
-        string? HarnessSessionRef = null) : StoreResult;
+        string? HarnessSessionRef = null,
+        decimal? BudgetCapUsd = null) : StoreResult;
 
     /// <summary>The engine refused the transition; nothing was written.</summary>
     public sealed record Rejected(Rule Rule, string Reason) : StoreResult;

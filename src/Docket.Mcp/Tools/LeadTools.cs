@@ -31,6 +31,7 @@ namespace Docket.Mcp.Tools;
 [McpServerToolType]
 public sealed class LeadTools(
     TaskStore store,
+    TeamBudgetService budgets,
     RunnerConnectionRegistry registry,
     LeadMachineBindingService bindings,
     RelayGrantService grants,
@@ -163,12 +164,15 @@ public sealed class LeadTools(
             throw new McpException("on_machine_gone only applies together with continues.");
         }
 
-        // TeamBudgetRemains is the store's to compute from budget accounting (§9
-        // check 9); the seam is here — a budget-aware store would supply it.
-        // Description/workspace ride the command as opaque content the store
+        // §9 check 9, for real: until now this was hardcoded true, which made the check a
+        // lie. The Team's ceiling is judged against COMMITTED authorization, not measured
+        // spend — nothing ingests spend telemetry (§9.9) — so this asks whether one more
+        // dispatch could be authorized. An unconfigured Team has no ceiling and always
+        // affords work. Description/workspace ride the command as opaque content the store
         // persists and the engine never reads (§7).
+        var budgetRemains = await budgets.HasHeadroomAsync(lead.Team, ct);
         var result = await store.CreateAsync(
-            new CreateTask(lead, lead.Team, completionCriteria, parsedMode, effectiveProfile, TeamBudgetRemains: true,
+            new CreateTask(lead, lead.Team, completionCriteria, parsedMode, effectiveProfile, budgetRemains,
                 Description: description, Workspace: workspace, Continues: continuation), ct);
 
         return result switch

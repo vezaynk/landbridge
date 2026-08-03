@@ -198,6 +198,7 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
         services.AddDbContext<DocketDbContext>(o =>
             o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
         services.AddScoped<TaskStore>();
+        services.AddScoped<TeamBudgetService>(); // §9.9: the store commits dispatch budget through it
         services.AddSingleton(clock);
         return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
     }
