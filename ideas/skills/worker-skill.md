@@ -60,7 +60,55 @@ If your task runs something other tasks need to reach:
 
 Never register before binding. If you register and the bind then fails, your entry points at whatever process actually owns that port — possibly another Team's — and a consumer will forward into the wrong stack and get plausible wrong answers instead of an error.
 
+"Bind first" means **the port actually answers**, not that you started something and waited. Poll it until it responds, with a bounded number of attempts, and register only then. `sleep 5 && register_service` is the same bug with a delay in front of it: on a slow machine you register a port nothing is listening on yet, and the consumer that forwards into it gets a connection refused it cannot distinguish from a service that crashed.
+
 Bind to loopback. Registration plus the relay is how other agents reach you; exposing a port to the network is not.
+
+## Running a service that must outlive your own turn
+
+A service you start as a child of your own process dies with you: `docketd` kills each task as a whole process tree, so anything you launched goes down when your turn ends. That is correct for a build or a test run and wrong for "stand up the dev server and keep it up".
+
+**Hand the process to the machine's service manager instead.** On Linux, use a transient unit — it writes nothing to disk, so there is no file for anyone to find orphaned later:
+
+```
+systemd-run --user --unit=docket-dev-myapp --collect \
+  --working-directory=/abs/path/to/checkout \
+  --setenv=PATH=/abs/node/bin:/usr/bin:/bin --setenv=PORT=5173 \
+  /abs/node/bin/npm run dev
+```
+
+Stop it with `systemctl --user stop docket-dev-myapp`. Because a transient unit's name is gone once it stops, the idempotent form is *stop, then start* — `systemctl --user stop <unit> 2>/dev/null; systemd-run --user --unit=<unit> …` — rather than anything shaped like a restart. `--collect` reaps the unit automatically if it fails, so a crashed service leaves no residue.
+
+Why this is the sanctioned route rather than a loophole: **the service manager forks the process itself.** The result is not a descendant of your harness, so the tree-kill does not reach it, and it does not inherit `DOCKET_MACHINE_ID`/`DOCKET_TASK_ID`, so the stray reaper's environment scan does not match it. It escapes supervision **by construction** — because a different supervisor owns it and can be asked to stop it — rather than by hiding from ours.
+
+**Better still, where the service is stable and known in advance: ask the operator to declare it.** One unit file they write, own, and track, and your holder task does nothing but check the port answers and call `register_service`. You author nothing, nothing accumulates in their config directories, and stopping the service is a thing they already know how to do. Prefer this whenever the service is a fixture of the project rather than something you are standing up ad hoc.
+
+Three practical traps:
+
+- **`PATH` is not inherited the way you expect.** A transient unit gets the service manager's environment, not your shell's, so `npm`, `node`, `python` and friends must be absolute paths or set explicitly with `--setenv=PATH=…`. This is the most common reason a unit starts and immediately fails.
+- **A user manager can die at logout.** Without `loginctl enable-linger <user>` the whole `--user` manager — and every service under it — goes away when the operator's session ends. If the service needs to survive that, say so to the human; enabling linger is theirs to do, not yours.
+- **Name units per project**, `docket-dev-<project>-<service>`, so two Teams on one machine cannot collide on a unit name the way they must not collide on a port.
+
+**macOS is genuinely weaker here, and worth saying so plainly.** launchd has no clean transient equivalent. `launchctl submit -l <label> -- <cmd>` avoids writing a plist but is deprecated; anything else needs a plist in `~/Library/LaunchAgents`. If you write one, you own removing it: `launchctl bootout gui/$(id -u)/<label>` and delete the file on teardown. And be honest with yourself about the failure mode — if your holder task is hard-killed, both the running job and the plist file are left behind, and nobody is coming to clean them up. On macOS, prefer the operator-declared route.
+
+### Never scrub Docket's environment to escape supervision
+
+**This is a rule, not a preference.** Do not run anything shaped like `env -u DOCKET_MACHINE_ID setsid …`, and do not otherwise unset or rewrite `DOCKET_*` on a process you spawn. It *would* work — that is exactly why it is forbidden. Those variables are how `docketd` finds and kills processes belonging to a machine or a task, so stripping them does not just detach your service, it silently punches a hole in the kill guarantee for **everything**, including a runaway process an operator urgently needs stopped. §13 leans on that guarantee to treat a registered endpoint as trustworthy at all; a process that has hidden from supervision has quietly removed the basis for that trust.
+
+`setsid`/`nohup` on their own are not the answer either, and are worth understanding so you don't reinvent the broken version. They detach from your process group, so a group kill misses them — but the process still carries the inherited `DOCKET_*`, so the reaper finds it on the next scan and kills it anyway. You get a service that survives your turn and then dies at an unpredictable later moment, which is worse than one that dies predictably. On Windows it cannot work at all: every worker is sealed into a kill-on-close Job Object, and escaping a job requires a breakaway flag `docketd` does not set.
+
+### The holder-task idiom
+
+A service manager keeps the *process* alive; it does not keep the *registration* alive. A registration belongs to a task and only exists while that task is `working` — if the task ends or is requeued, its registrations are deleted and consumers lose the forward. So a service that must stay reachable needs a task that stays alive to hold it.
+
+That task is the whole shape:
+
+- **One holder task** starts the service through the service manager, waits for the port to answer, calls `register_service`, and then idles. It does not do the work that uses the service.
+- **Idling is fine and expected.** `register_service` is what tells the control plane this task is service-bearing, which is what exempts it from the no-progress timeout it would otherwise trip by doing nothing. Report progress if you have any, but you do not need to invent activity to stay alive.
+- **Its completion criterion should say what is true**: "runs until cancelled." Do not write a criterion it can only meet by stopping, and do not call `report_result` to look productive — that moves the task out of `working` and takes the registration with it. `cancel` is this task's expected ending, not a failure.
+- **Consumers are ordinary separate tasks** that reach the service with `open_forward` from anywhere in the Team. That is the point: the work is parallel across machines while one cheap task holds the service, which a single worker doing everything on the service's own machine could never be.
+
+This needs a profile permissive enough to invoke a service manager at all — a strict allowlist with no shell access cannot run `systemd-run`. If the profile you are on cannot, that is a machine configuration matter: report it rather than looking for a way around it.
 
 ## Reaching another task's service
 

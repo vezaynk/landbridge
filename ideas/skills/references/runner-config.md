@@ -193,6 +193,26 @@ Lead's answer cannot loosen them mid-flight — granting a capability means
 editing the profile and dispatching a fresh task (§10); `request_input` is for
 judgment questions, not tool grants.
 
+**A profile that must host long-lived services needs to be on the open side of
+this choice.** The supported way for a worker to run a service that outlives its
+own task is to hand it to the machine's service manager (`systemd-run --user`, or
+a unit the operator declares) — see the worker skill's holder-task section. That
+takes shell access, so a strict profile with a narrow `--allowedTools` and no
+`Bash` cannot do it, and a worker on such a profile is expected to report that
+rather than work around it. If this machine is meant to host dev servers or
+databases for a Team, declare a profile that permits it and let the Lead route
+service work there by name.
+
+Worth knowing as the operator: a service started that way is **deliberately
+outside** `docketd`'s supervision — the service manager forks it, so it is
+neither a descendant of the harness (the tree-kill misses it) nor a carrier of
+`DOCKET_*` (the stray reaper's environment scan misses it). That is by
+construction, and it means stopping such a service is the service manager's job,
+not `docketd`'s: a `docketd` restart or a task kill will not take it down. The
+worker skill forbids the other way of achieving the same escape — scrubbing
+`DOCKET_*` off a spawned process — precisely because that one defeats the kill
+guarantee for everything else too.
+
 ## Event relay (§10)
 
 > ⚠️ **Only `events.source: terminal` is implemented. A profile that declares
