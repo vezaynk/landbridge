@@ -147,6 +147,7 @@ internal static class DashboardRenderer
             sb.Append("<table><thead><tr>");
             sb.Append("<th>Namespace</th><th>State</th><th>Mode</th>");
             sb.Append("<th class=\"num\">Attempt</th><th class=\"num\">Parks</th><th>Detail</th><th>Report</th>");
+            sb.Append("<th>Transcript</th>");
             sb.Append("</tr></thead><tbody>");
             foreach (var t in team.Tasks)
             {
@@ -159,6 +160,7 @@ internal static class DashboardRenderer
                 sb.Append($"<td class=\"num\">{parks}</td>");
                 sb.Append($"<td>{TaskDetailCell(t, now)}</td>");
                 sb.Append($"<td>{ReportCell(t)}</td>");
+                sb.Append($"<td>{TranscriptCell(t)}</td>");
                 sb.Append("</tr>");
             }
             sb.Append("</tbody></table>");
@@ -351,6 +353,17 @@ internal static class DashboardRenderer
     /// disclosure so the task table stays compact. It is agent-authored text (§13):
     /// escaped through <see cref="E"/> and never interpreted, only shown.
     /// </summary>
+    /// <summary>
+    /// The §12 transcript link, offered only for a terminal task. A task that can still run
+    /// is shown as not-yet-readable rather than linked-and-then-refused: the rule is a
+    /// security one (a live worker credential may sit in an in-flight transcript, §13), so
+    /// saying so up front beats a 409 the operator has to interpret.
+    /// </summary>
+    private static string TranscriptCell(TeamTaskView t) =>
+        t.State.IsTerminal()
+            ? $"<a href=\"/dashboard/tasks/{t.TaskId}/transcripts\">transcript</a>"
+            : "<span class=\"nt\" title=\"readable once the task reaches a terminal state (§12)\">not yet</span>";
+
     private static string ReportCell(TeamTaskView t) =>
         t.Report is { Length: > 0 } r
             ? $"<details><summary>report</summary><pre class=\"report\">{E(r)}</pre></details>"

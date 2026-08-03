@@ -8,7 +8,14 @@ namespace Docket.Core;
 public abstract record Effect;
 
 /// <summary>Dispatch minted a new worker instance; issue its token (§5).</summary>
-public sealed record MintWorkerInstanceToken(WorkerInstanceId Instance) : Effect;
+/// <param name="Machine">
+/// The machine this dispatch went to. Carried on the effect because the instance row is
+/// the system's one row per dispatch, and it is the only durable record of <em>where</em> a
+/// dispatch ran: the live registry forgets a task the moment it exits (§10), so by the time
+/// a human wants a terminal task's machine-local transcript (§12) nothing else remembers
+/// which machine to ask.
+/// </param>
+public sealed record MintWorkerInstanceToken(WorkerInstanceId Instance, string Machine) : Effect;
 
 /// <summary>
 /// The named instance is no longer the incumbent. Revocation must land before

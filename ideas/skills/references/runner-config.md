@@ -215,11 +215,25 @@ logging is not allowed to affect the task.
 **Local pruning.** `prune_after_days` (default 7; `0` disables) is machine-local disk
 hygiene: on each capturing spawn, `docketd` removes any task's transcript dir whose
 newest file is older than the window. When profiles disagree, the most generous wins
-(any `0` keeps everything; otherwise the longest window). This is **not** the §12
-retention tiers — those, plus redaction on the streaming path and serving to the
-plane, are a later plane-side increment. This increment is capture only; nothing
-leaves the machine, and the transcript is written **verbatim** (redaction is applied
-plane-side, before anything lands off-box).
+(any `0` keeps everything; otherwise the longest window). This window **is** the
+retention story: the control plane stores no transcript bytes and has no retention tier
+of its own (§12), so once the sweep removes a dir the transcript is gone everywhere.
+
+> ⚠️ **Turning capture on means raw agent output becomes readable from the dashboard.**
+> A transcript is served **verbatim** — Docket does **not** redact it (spec §13, open
+> question 8) — so it may contain credentials the agent echoed, customer data, internal
+> hostnames, or anything else it read or printed. What limits exposure is scope, not
+> filtering: an operator reads it only through a **human** dashboard session (a Lead
+> token is refused), and only for a task in a **terminal** state, whose worker
+> credential is already revoked. Treat a downloaded transcript as sensitive: do not
+> paste it into a ticket, a chat, or another agent.
+
+**Serving (§12).** With capture on, a human operator can read a terminal task's
+transcript from the dashboard: the control plane asks this machine for one byte range at
+a time over the runner channel (`read-transcript`), and `docketd` replies with the file's
+bytes. Nothing is cached or stored plane-side, one range is in flight at a time (so a
+large transcript cannot crowd out heartbeats or a `kill`), and a machine that is offline
+simply has no readable transcript until it reconnects.
 
 **`format` / `path`.** `format` is an advisory label for the stdout stream's shape
 (e.g. `stream-json`); it is not acted on. `path` was documented for a never-built

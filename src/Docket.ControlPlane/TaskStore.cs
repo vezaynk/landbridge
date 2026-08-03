@@ -554,6 +554,9 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock)
                         TaskId = row.Id,
                         Revoked = false,
                         CreatedAt = clock.GetUtcNow(),
+                        // §12: the durable record of where this dispatch ran, so a terminal
+                        // task's machine-local transcript can still be found.
+                        MachineId = mint.Machine,
                     });
                     break;
 

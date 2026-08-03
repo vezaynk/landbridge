@@ -114,7 +114,7 @@ public static class TaskStateMachine
                 CurrentInstance = c.NewInstance,
                 Attempt = task.Attempt + 1,
             },
-            new MintWorkerInstanceToken(c.NewInstance));
+            new MintWorkerInstanceToken(c.NewInstance, c.Machine.MachineId));
     }
 
     private static TransitionResult ApplyLivenessLost(TaskRecord task, LivenessLost c)
