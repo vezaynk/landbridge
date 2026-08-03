@@ -119,8 +119,7 @@ worth knowing before you rely on it: a host-side `docker login` alone is **not**
 daemon does not use the CLI's credentials for meta's API-driven pull — and the pre-pull must
 be repeated on every host for every new tag, so an **Upgrade** (§4) stalls on any host where
 the new tag has not been fetched yet. Registry credentials meta could use itself are a
-deliberately deferred follow-up, recorded against this gap; there is nothing to configure
-today.
+deliberately deferred follow-up (**issue #70**) — there is nothing to configure today.
 
 Either way you will not be guessing: a pull meta cannot satisfy fails the `PullImages` step
 with the image reference and the registry's own words, and says which of the two causes
