@@ -43,6 +43,12 @@ namespace Docket.Runner.TestHarness;
 ///                     stdout fixture. Exercises §12 transcript capture: the supervisor
 ///                     tees stdout to the .ndjson transcript and captures stderr to the
 ///                     .stderr file while stdout still maps to events (tee, not divert).
+///   exit-code [n]   — exit immediately with n (default <see cref="ServiceExitCode"/>).
+///                     For §10 service supervision, where the test needs a process that
+///                     really starts and really exits with a known code. The obvious
+///                     `/bin/sh -c "exit 3"` is POSIX-only: on Windows it cannot start at
+///                     all, so nothing runs and there is no exit code to observe — a
+///                     failed spawn masquerading as a failed run.
 ///   echo-argv       — write the argv this process received (one token per line,
 ///                     including this mode word at [0]) to an atomic `argv` marker,
 ///                     then watch stdin like `run`. Lets the §11 resume tests assert
@@ -78,6 +84,15 @@ public static class Program
     /// </summary>
     public const int DeadManExitCode = 66;
 
+    /// <summary>
+    /// Default exit code for the <c>exit-code</c> mode, so a service-supervision test can
+    /// assert against this rather than a literal — the same convention
+    /// <see cref="DeadManExitCode"/> follows. 3 is arbitrary but deliberately not 0 or 1:
+    /// it cannot be confused with a clean exit or with a generic failure the runtime might
+    /// have produced on its own.
+    /// </summary>
+    public const int ServiceExitCode = 3;
+
     public static async Task<int> Main(string[] args)
     {
         // Dead-man's switch, Linux half (§10): SIGKILL us the moment docketd (our
@@ -100,7 +115,7 @@ public static class Program
                 // there is no exit code to observe. Spawning this harness instead means the
                 // process genuinely starts and genuinely exits with the asked-for code on
                 // every platform, which is what a service-supervision test needs to assert.
-                return args.Length > 1 && int.TryParse(args[1], out var code) ? code : 3;
+                return args.Length > 1 && int.TryParse(args[1], out var code) ? code : ServiceExitCode;
 
             case "child":
                 // A bare grandchild: it does NOT watch stdin. On the dead-man path

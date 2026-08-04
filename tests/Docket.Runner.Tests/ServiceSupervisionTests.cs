@@ -295,13 +295,15 @@ public class ServiceSupervisionTests
         // command: on Windows that process cannot start at all, so it never runs and there
         // is no exit code to report — the assertion would be measuring a failed spawn, not
         // a failed run. Those are different states and this test is about the second one.
-        var service = Service("flaky", [TestKit.HarnessPath(), "exit-code", "3"]);
+        var service = Service(
+            "flaky",
+            [TestKit.HarnessPath(), "exit-code", TestHarness.Program.ServiceExitCode.ToString()]);
         await using var sup = new ServiceSupervisor([service], "m1", clock);
         sup.Start();
 
         Assert.True(await TestKit.WaitUntilAsync(
             () => sup.Report().Single().State == ServiceState.Failed, TimeSpan.FromSeconds(10)));
-        Assert.Equal(3, sup.Report().Single().LastExitCode);
+        Assert.Equal(TestHarness.Program.ServiceExitCode, sup.Report().Single().LastExitCode);
         Assert.NotNull(sup.Report().Single().LastFailureAt);
 
         // Backoff runs on the injected clock, so the retry is deterministic.
