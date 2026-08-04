@@ -278,7 +278,7 @@ public class ServiceSupervisionTests
         // a worker-started listener, and refusing that dial would break §8.2 forwards
         // that work today.
         await using var sup = new ServiceSupervisor(
-            [Service("api", ["/bin/echo"], port: 6002)], "m1", TimeProvider.System);
+            [Service("api", [TestKit.HarnessPath()], port: 6002)], "m1", TimeProvider.System);
 
         Assert.Null(sup.IsServiceOnPort(9999));
         Assert.False(sup.IsServiceOnPort(6002)); // declared, not started → down, not unknown
@@ -290,7 +290,12 @@ public class ServiceSupervisionTests
         var clock = new FakeTimeProvider();
         // Exits immediately every time: the supervisor should keep restarting it and the
         // restart count should climb, with the failure visible rather than silent.
-        var service = Service("flaky", ["/bin/sh", "-c", "exit 3"]);
+        //
+        // Spawns the test harness rather than `/bin/sh -c "exit 3"`, which is a POSIX-only
+        // command: on Windows that process cannot start at all, so it never runs and there
+        // is no exit code to report — the assertion would be measuring a failed spawn, not
+        // a failed run. Those are different states and this test is about the second one.
+        var service = Service("flaky", [TestKit.HarnessPath(), "exit-code", "3"]);
         await using var sup = new ServiceSupervisor([service], "m1", clock);
         sup.Start();
 
@@ -306,8 +311,12 @@ public class ServiceSupervisionTests
     }
 
     [Fact]
-    public async Task A_service_that_cannot_start_is_reported_failed_not_crashed()
+    public async Task A_service_that_cannot_start_reports_failed_with_no_exit_code()
     {
+        // The counterpart to the test above, and the distinction that matters: a process
+        // that never STARTED has no exit code, so LastExitCode is null — not 0, which would
+        // render on the dashboard as a clean exit and make a broken command look healthy.
+        // "Exited with code N" and "never ran" are different failures and stay distinguishable.
         var clock = new FakeTimeProvider();
         await using var sup = new ServiceSupervisor(
             [Service("missing", ["/definitely/not/a/binary"])], "m1", clock);
@@ -315,6 +324,8 @@ public class ServiceSupervisionTests
 
         Assert.True(await TestKit.WaitUntilAsync(
             () => sup.Report().Single().State == ServiceState.Failed, TimeSpan.FromSeconds(10)));
+        Assert.Null(sup.Report().Single().LastExitCode);
+        Assert.NotNull(sup.Report().Single().LastFailureAt);
     }
 
     /// <summary>
@@ -407,7 +418,7 @@ public class ServiceSupervisionTests
         // Deliberately off is still "declared and not running", so a dial for its port is
         // refused rather than landing on whatever else has taken it.
         await using var sup = new ServiceSupervisor(
-            [Service("off", ["/bin/echo"], port: 6100) with { Enabled = false }],
+            [Service("off", [TestKit.HarnessPath()], port: 6100) with { Enabled = false }],
             "m1", TimeProvider.System);
 
         Assert.False(sup.IsServiceOnPort(6100));

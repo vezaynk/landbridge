@@ -289,6 +289,10 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
                 new ServiceStatus("web-dev", ServiceState.Running, 5173, started),
                 new ServiceStatus("flaky-api", ServiceState.Failed, 9001, null,
                     Restarts: 4, LastExitCode: 3, LastFailureAt: DateTimeOffset.UtcNow.AddMinutes(-1)),
+                // A service that never started has no exit code. It must not render as 0 —
+                // that would read as a clean exit and make a broken command look healthy.
+                new ServiceStatus("never-ran", ServiceState.Failed, 9002, null,
+                    Restarts: 1, LastExitCode: null, LastFailureAt: DateTimeOffset.UtcNow.AddMinutes(-2)),
             ]));
 
         var html = await GetAuthedAsync(app, "/dashboard/machines", ct);
@@ -307,12 +311,21 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         var machine = doc.RootElement.EnumerateArray()
             .Single(m => m.GetProperty("machineId").GetString() == "svc-box");
         var services = machine.GetProperty("services");
-        Assert.Equal(2, services.GetArrayLength());
+        Assert.Equal(3, services.GetArrayLength());
         var failed = services.EnumerateArray()
             .Single(s => s.GetProperty("name").GetString() == "flaky-api");
         Assert.Equal("Failed", failed.GetProperty("state").GetString());
         Assert.Equal(4, failed.GetProperty("restarts").GetInt32());
         Assert.Equal(3, failed.GetProperty("lastExitCode").GetInt32());
+
+        // An unknown exit code stays unknown across the JSON twin too — absent or null,
+        // never coerced to a number that would read as a clean exit.
+        var neverRan = services.EnumerateArray()
+            .Single(s => s.GetProperty("name").GetString() == "never-ran");
+        Assert.True(
+            !neverRan.TryGetProperty("lastExitCode", out var code)
+            || code.ValueKind == JsonValueKind.Null,
+            "a null exit code must not be rendered as a number");
 
         await app.StopAsync(ct);
     }

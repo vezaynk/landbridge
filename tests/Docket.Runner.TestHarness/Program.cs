@@ -93,6 +93,15 @@ public static class Program
 
         switch (mode)
         {
+            case "exit-code":
+                // Exits immediately with the code in args[1] (default 3). Exists because
+                // the obvious way to write this — `/bin/sh -c "exit 3"` — is a POSIX-only
+                // spawn that cannot start on Windows at all, so the process never runs and
+                // there is no exit code to observe. Spawning this harness instead means the
+                // process genuinely starts and genuinely exits with the asked-for code on
+                // every platform, which is what a service-supervision test needs to assert.
+                return args.Length > 1 && int.TryParse(args[1], out var code) ? code : 3;
+
             case "child":
                 // A bare grandchild: it does NOT watch stdin. On the dead-man path
                 // the parent harness kills it explicitly (portable); on Linux its

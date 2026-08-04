@@ -287,7 +287,7 @@ public sealed class RelayForwardingTests
     }
 
     private static ServiceConfig DeclaredService(string name, int port) =>
-        new(name, ["/bin/echo"], null, new Dictionary<string, string>(StringComparer.Ordinal),
+        new(name, [TestKit.HarnessPath()], null, new Dictionary<string, string>(StringComparer.Ordinal),
             port, null, ServiceDefaults.MaxBackoff, new LogsConfig(null, null));
 
     private static RunnerDaemon BuildDaemon(
