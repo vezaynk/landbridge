@@ -25,7 +25,9 @@ internal static class Given
         WorkerInstanceId? instance = null,
         int verificationFailures = 0,
         int retryLimit = 3,
-        string? profile = null) => new()
+        string? profile = null,
+        int infrastructureRequeues = 0,
+        int requeueLimit = TaskRecord.DefaultInfrastructureRequeueLimit) => new()
     {
         Id = Id,
         Team = Team,
@@ -36,6 +38,8 @@ internal static class Given
         Attempt = state == TaskState.Submitted ? 0 : 1,
         VerificationFailures = verificationFailures,
         VerificationRetryLimit = retryLimit,
+        InfrastructureRequeues = infrastructureRequeues,
+        InfrastructureRequeueLimit = requeueLimit,
         CurrentInstance = instance ??
             (state is TaskState.Working or TaskState.BlockedOnInput or TaskState.Verifying
                 ? WorkerInstanceId.New()

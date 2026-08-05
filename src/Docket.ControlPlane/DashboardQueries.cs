@@ -214,6 +214,12 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
                 t.InputKind,
                 t.InputQuestion,
                 t.InputAnswer,
+                // §6/§9 check 7 (#73): the infrastructure counter and the reason behind
+                // its last increment, so a canceled task on this page can say whether the
+                // requeue cap ended it and what kept failing.
+                t.InfrastructureRequeues,
+                t.InfrastructureRequeueLimit,
+                t.LastRequeueReason,
             })
             .ToListAsync(ct);
 
@@ -265,7 +271,10 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
                 t.WorkerReport,
                 t.InputKind,
                 t.InputQuestion,
-                t.InputAnswer))
+                t.InputAnswer,
+                t.InfrastructureRequeues,
+                t.InfrastructureRequeueLimit,
+                t.LastRequeueReason))
             .ToList();
 
         var counts = tasks
@@ -382,6 +391,9 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
                 e.InputKind,
                 e.AuthOperation, e.AuthTarget, e.AuthErrorCode, e.AuthMissingScope,
                 e.SubagentId, e.SubagentParentId,
+                // §6/§9 check 7 (#73): why a requeue happened. Without it a requeue loop
+                // is N identical rows in this log, which is the state issue #73 describes.
+                e.LivenessReason,
             })
             .ToListAsync(ct);
 
@@ -413,7 +425,8 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
             e.AuthErrorCode,
             e.AuthMissingScope,
             e.SubagentId,
-            e.SubagentParentId));
+            e.SubagentParentId,
+            e.LivenessReason));
 
         var leadEvents = await db.LeadEvents.AsNoTracking()
             .OrderByDescending(e => e.Seq)
@@ -496,7 +509,11 @@ public sealed record TeamDetail(
 /// carry this task's input exchange (§11): the typed <see cref="InputKind"/>, the
 /// worker's <see cref="Question"/>, and the <see cref="Answer"/> given. Unlike the
 /// agent-facing views this is a human surface, so it carries the prose itself (§12) —
-/// a person cannot answer a question they cannot read.</summary>
+/// a person cannot answer a question they cannot read.
+/// <para>The last three are §6's infrastructure counter, the cap it is judged against
+/// (§9 check 7), and the reason behind the last requeue (#73): a canceled task whose
+/// count reached its cap was abandoned by the plane, not called off by a person, and
+/// this is where that difference becomes visible.</para></summary>
 public sealed record TeamTaskView(
     Guid TaskId,
     string Namespace,
@@ -511,7 +528,10 @@ public sealed record TeamTaskView(
     string? Report,
     InputRequestKind? InputKind,
     string? Question,
-    string? Answer);
+    string? Answer,
+    int InfrastructureRequeues = 0,
+    int InfrastructureRequeueLimit = TaskRecord.DefaultInfrastructureRequeueLimit,
+    LivenessLossReason? LastRequeueReason = null);
 
 /// <summary>A live registered service on a Team (§8.2, §12).</summary>
 public sealed record ServiceView(string Name, int Port, Guid TaskId, DateTimeOffset CreatedAt);
@@ -563,7 +583,10 @@ public sealed record TranscriptLocationView(
 /// and default to null everywhere else, so the JSON twin stays a clean structured
 /// shape: <see cref="InputKind"/> on a <c>RequestInput</c> transition, the four
 /// <c>Auth*</c> facts on an <c>auth-failed</c> row, the two <c>Subagent*</c> ids on
-/// a <c>subagent-spawned</c> row.</summary>
+/// a <c>subagent-spawned</c> row, and <see cref="LivenessReason"/> on a
+/// <c>LivenessLost</c> requeue — whose <see cref="ToState"/> also says whether the
+/// requeue redispatched the task (<c>Submitted</c>) or reached its cap and abandoned it
+/// (<c>Canceled</c>, §9 check 7).</summary>
 public sealed record DashboardEvent(
     DateTimeOffset OccurredAt,
     string Source,
@@ -582,4 +605,5 @@ public sealed record DashboardEvent(
     string? AuthErrorCode = null,
     string? AuthMissingScope = null,
     string? SubagentId = null,
-    string? SubagentParentId = null);
+    string? SubagentParentId = null,
+    LivenessLossReason? LivenessReason = null);

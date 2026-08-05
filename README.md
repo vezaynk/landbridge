@@ -164,8 +164,10 @@ Deliberately deferred — do not assume these work:
 - **Event sources beyond `terminal`.** `hooks` and `otel` parse but are wired to
   nothing, so they behave as `none`; `docketd` warns loudly at startup for any
   profile declaring one. The subagent tree and `auth-failed` have no producer.
-- **No cap on infrastructure requeues**, and `LivenessLossReason` isn't persisted,
-  so a wedged task retries indefinitely and every requeue looks alike in the record.
+- **A requeue does not stop the process it gave up on.** Infrastructure requeues are
+  now capped (5 by default, then the task is `canceled` with the reason recorded), but
+  the plane only revokes the predecessor's token — a wedged harness keeps running, and
+  burning model tokens, until its `docketd` restarts and sweeps strays.
 - **SIGTERM does not wind workers down.** A signal hard-kills them; only a `stop`
   *from the plane* is graceful — so **drain a machine before restarting its service**.
 - The enrollment **conformance run** and `/docket-enroll` wizard do not exist; the

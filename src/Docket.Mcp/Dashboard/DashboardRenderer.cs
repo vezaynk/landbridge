@@ -745,6 +745,19 @@ internal static class DashboardRenderer
         // §9 check 4: who adjudicated a completed task — lead-session or human.
         else if (t.State == TaskState.Completed && t.CompletionProvenance is { } who)
             parts.Add($"<span class=\"nt\">accepted by {E(ProvenanceLabel(who))}</span>");
+        // §9 check 7: a canceled task whose infrastructure requeues reached its cap was
+        // abandoned by the plane, not called off by a person — say so, and say what kept
+        // failing, since that is the whole operator signal issue #73 asked for.
+        else if (t.State == TaskState.Canceled
+                 && t.InfrastructureRequeueLimit > 0
+                 && t.InfrastructureRequeues >= t.InfrastructureRequeueLimit)
+            parts.Add($"<span class=\"nt\">abandoned after {t.InfrastructureRequeues} requeues, " +
+                      $"last {E(t.LastRequeueReason?.ToString() ?? "unknown")}</span>");
+        // Below the cap, a task that has been requeued at all is worth naming: the count
+        // climbing is how a wedge looks before it becomes terminal.
+        else if (t.InfrastructureRequeues > 0)
+            parts.Add($"<span class=\"nt\">{t.InfrastructureRequeues} requeues" +
+                      (t.LastRequeueReason is { } why ? $", last {E(why.ToString())}" : "") + "</span>");
         return string.Join(" ", parts);
     }
 
@@ -774,6 +787,15 @@ internal static class DashboardRenderer
     {
         if (e.InputKind is { } kind)
             return Badge(kind.ToString(), "state-blockedoninput");
+
+        // §6/§9 check 7 (#73): which signal drove this requeue, and — when the requeue
+        // was the one that reached the cap — that the task was abandoned rather than
+        // redispatched. Before this the log showed a column of identical rows.
+        if (e.LivenessReason is { } reason)
+            return Badge(reason.ToString(), "state-submitted") +
+                   (e.ToState == TaskState.Canceled
+                       ? " <span class=\"nt\">requeue cap reached — abandoned</span>"
+                       : "");
 
         if (e.Kind == TaskEventRow.AuthFailedKind)
         {

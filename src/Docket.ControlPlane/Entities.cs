@@ -22,6 +22,27 @@ public sealed class TaskRow
     public int VerificationFailures { get; set; }
     public int VerificationRetryLimit { get; set; }
 
+    /// <summary>
+    /// The cap this task's <see cref="InfrastructureRequeues"/> are judged against (§9
+    /// check 7), stamped at creation from control-plane config exactly like
+    /// <see cref="VerificationRetryLimit"/> — so raising the configured cap never
+    /// silently changes the terms of work already in flight, and the row can say "4 of
+    /// 5" without consulting configuration. Non-positive is uncapped.
+    /// </summary>
+    public int InfrastructureRequeueLimit { get; set; }
+
+    /// <summary>
+    /// Why this task was last requeued for infrastructure reasons (§6), carried by
+    /// <see cref="CopyFrom"/> off the engine's record. The event row records every
+    /// requeue's reason as history (<see cref="TaskEventRow.LivenessReason"/>); this is
+    /// the <em>live</em> one — the same row-vs-event-log split
+    /// <see cref="InputKind"/> makes — so <c>get_team_state</c>, <c>get_task_report</c>,
+    /// and the §12 task views can say why a task keeps coming back (or, on a task the
+    /// cap abandoned, why it stopped) without walking the log. Null until the first
+    /// infrastructure requeue; retained afterwards.
+    /// </summary>
+    public LivenessLossReason? LastRequeueReason { get; set; }
+
     public Guid? CurrentInstanceId { get; set; }
 
     // Park record (§11); null unless the task has parked.
@@ -179,6 +200,8 @@ public sealed class TaskRow
         Profile = Profile,
         Attempt = Attempt,
         InfrastructureRequeues = InfrastructureRequeues,
+        InfrastructureRequeueLimit = InfrastructureRequeueLimit,
+        LastRequeueReason = LastRequeueReason,
         VerificationFailures = VerificationFailures,
         VerificationRetryLimit = VerificationRetryLimit,
         CurrentInstance = CurrentInstanceId is { } i ? new WorkerInstanceId(i) : null,
@@ -193,6 +216,10 @@ public sealed class TaskRow
         State = task.State;
         Attempt = task.Attempt;
         InfrastructureRequeues = task.InfrastructureRequeues;
+        // The reason follows the counter it explains. The cap itself is deliberately not
+        // copied back: it is written once at creation and the engine only ever reads it,
+        // so the row stays the authority on this task's terms.
+        LastRequeueReason = task.LastRequeueReason;
         VerificationFailures = task.VerificationFailures;
         CurrentInstanceId = task.CurrentInstance?.Value;
         ParkMachine = task.Park?.Machine;
@@ -355,6 +382,18 @@ public sealed class TaskEventRow
     /// attention a task needs. Null on every non-blocking event.
     /// </summary>
     public InputRequestKind? InputKind { get; set; }
+
+    /// <summary>
+    /// Which signal drove a <c>LivenessLost</c> transition (§6, §9 check 7) — the two
+    /// liveness clocks, a process exit, a reboot, an undelivered dispatch — threaded onto
+    /// the row exactly like <see cref="InputKind"/>. This is the fix for the half of #73
+    /// that made a requeue loop hard to read: the reason was computed at requeue time and
+    /// thrown away, so the §12 event log showed N identical rows. With it, the row's
+    /// <see cref="ToState"/> also says which outcome this requeue took —
+    /// <c>Submitted</c> for a redispatch, <c>Canceled</c> for the one that reached the
+    /// cap. Null on every non-requeue event.
+    /// </summary>
+    public LivenessLossReason? LivenessReason { get; set; }
 
     /// <summary>
     /// The structured facts of an <c>auth-failed</c> telemetry event (§11): the
