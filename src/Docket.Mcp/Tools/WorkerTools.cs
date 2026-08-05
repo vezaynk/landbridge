@@ -181,6 +181,15 @@ public sealed class WorkerTools(
         return new ProcessActionResult(r.Ok, r.Refusal, r.Value);
     }
 
+    [McpServerTool(Name = "list_processes"),
+     Description("List what is running on your machine — the background processes agents started, " +
+                 "and the operator's own declared services, each marked with its kind. Use it to pick " +
+                 "a name that is not taken, to work out why a start was refused, and above all to find " +
+                 "out what an earlier task left running when you have been sent to clean up. A service " +
+                 "is the operator's and not yours to stop; a process is fair game for any task on the " +
+                 "machine.")]
+    public IReadOnlyList<RunningThing> ListProcesses() => processes.List(Caller.Task);
+
     [McpServerTool(Name = "write_process"),
      Description("Write text to a background process's stdin — a command for a REPL, an answer a tool is " +
                  "waiting for, or input for a script. IMPORTANT: this is a pipe, not a terminal. Programs " +

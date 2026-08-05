@@ -107,6 +107,41 @@ public sealed class ProcessControlRelay(RunnerConnectionRegistry registry)
         };
     }
 
+    /// <summary>
+    /// §10: what the machine holding this task is running — <b>both kinds, marked</b>. Read from
+    /// the last heartbeat, so it needs no wire round trip and no new member.
+    ///
+    /// <para>Both kinds, because names and ports share one namespace and a refusal cites the
+    /// existing holder: an agent picking a name, or working out why one was refused, has to be
+    /// able to see what is already taken — including the operator's own services, which it may
+    /// not touch.</para>
+    ///
+    /// <para>This is the enumeration the cleanup story depends on. A continuation agent that has
+    /// lost its notes cannot otherwise discover what an earlier task left running, and guessing
+    /// names is not a recovery path.</para>
+    /// </summary>
+    public IReadOnlyList<RunningThing> List(TaskId task)
+    {
+        var machine = registry.MachineFor(task);
+        if (machine is null)
+            return [];
+
+        var all = new List<RunningThing>();
+        foreach (var s in registry.ServicesOn(machine))
+        {
+            all.Add(new RunningThing(
+                s.Name, "service", s.State.ToString().ToLowerInvariant(),
+                s.Port == 0 ? null : s.Port, s.StartedAt, s.LastExitCode, s.LastFailureAt));
+        }
+        foreach (var p in registry.ProcessesOn(machine))
+        {
+            all.Add(new RunningThing(
+                p.Name, "process", p.State.ToString().ToLowerInvariant(),
+                p.Port == 0 ? null : p.Port, p.StartedAt, p.ExitCode, p.ExitedAt));
+        }
+        return all.OrderBy(x => x.Name, StringComparer.Ordinal).ToList();
+    }
+
     private async Task<Answer> AskAsync(
         TaskId task, TimeSpan timeout, Func<string, RunnerCommand> build, CancellationToken ct)
     {
@@ -164,4 +199,12 @@ public sealed record ProcessStartOutcome(bool Started, int? Port, string? LogPat
 
 /// <summary>What a worker learns from <c>stop_process</c> or <c>write_process</c>.
 /// <see cref="Value"/> is the exit code for a stop, or the byte count for a write.</summary>
+/// <summary>
+/// One thing running on a machine (§10). <see cref="Kind"/> is <c>service</c> (operator-declared,
+/// restart-supervised, not an agent's to stop) or <c>process</c> (agent-started, never restarted).
+/// </summary>
+public sealed record RunningThing(
+    string Name, string Kind, string State, int? Port,
+    DateTimeOffset? StartedAt, int? ExitCode, DateTimeOffset? EndedAt);
+
 public sealed record ProcessControlOutcome(bool Ok, string? Refusal, int? Value);

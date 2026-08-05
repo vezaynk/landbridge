@@ -278,7 +278,7 @@ public class RunnerDaemonTests
             {
               "machine": { "work_root": "/tmp/docketd-fake", "heartbeat_seconds": 5 },
               "profiles": [ { "name": "default", "spawn": ["noop"],
-                "services": { "agent_initiated": true } } ]
+                "processes": { "agent_initiated": true } } ]
             }
             """);
             await using var services = new ServiceSupervisor(

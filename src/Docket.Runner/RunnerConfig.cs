@@ -405,11 +405,11 @@ public sealed record RunnerConfig(
             telemetry,
             logs,
             dto.MaxConcurrent,
-            dto.Services is null
+            dto.Processes is null
                 ? null
-                : new ProfileServicesConfig(
-                    dto.Services.AgentInitiated ?? false,
-                    dto.Services.MaxAgentInitiated is { } cap and > 0 ? cap : 8));
+                : new ProfileProcessesConfig(
+                    dto.Processes.AgentInitiated ?? false,
+                    dto.Processes.Max is { } cap and > 0 ? cap : 8));
     }
 
     private static TEnum ParseEnum<TEnum>(string? raw, TEnum fallback) where TEnum : struct, Enum =>
@@ -457,10 +457,10 @@ public sealed record ProfileConfig(
     TelemetryConfig Telemetry,
     LogsConfig Logs,
     int? MaxConcurrent,
-    ProfileServicesConfig? Services = null)
+    ProfileProcessesConfig? Processes = null)
 {
-    /// <summary>This profile's agent-service policy; the closed default when unstated.</summary>
-    public ProfileServicesConfig ServicePolicy => Services ?? new ProfileServicesConfig();
+    /// <summary>This profile's agent-process policy; the closed default when unstated.</summary>
+    public ProfileProcessesConfig ProcessPolicy => Processes ?? new ProfileProcessesConfig();
 }
 
 /// <summary>How <c>stop</c> is delivered for this profile (§10). The frozen
@@ -565,13 +565,13 @@ public sealed record LogsConfig(
 /// back to the <c>setsid</c>/env-scrubbing route the worker skill forbids. A strict
 /// profile with no shell cannot start a service either way, and refuses honestly.
 /// </summary>
-/// <param name="MaxAgentInitiated">
+/// <param name="Max">
 /// Resource bound, not an authority control: the gate answers <em>may this task start
-/// services</em>, this answers <em>how many</em>. Services are already-running load that
+/// processes</em>, this answers <em>how many</em>. Services are already-running load that
 /// back-pressure cannot gate the way it gates dispatch, so an agent looping on
 /// <c>start_process</c> needs a ceiling.
 /// </param>
-public sealed record ProfileServicesConfig(bool AgentInitiated = false, int MaxAgentInitiated = 8);
+public sealed record ProfileProcessesConfig(bool AgentInitiated = false, int Max = 8);
 
 /// <summary>Accepted <c>services[].backend</c> values (§10).</summary>
 public static class ServiceBackends

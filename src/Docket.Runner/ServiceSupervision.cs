@@ -215,7 +215,7 @@ public sealed class ServiceSupervisor : IAsyncDisposable
     public async Task<ProcessOutcome> StartProcessAsync(
         StartProcessCommand command, ProfileConfig profile, CancellationToken ct)
     {
-        var policy = profile.ServicePolicy;
+        var policy = profile.ProcessPolicy;
         if (!policy.AgentInitiated)
         {
             return ProcessOutcome.Refused(
@@ -283,12 +283,12 @@ public sealed class ServiceSupervisor : IAsyncDisposable
             var running = _state.Count(e =>
                 e.Value.Owner is not null
                 && e.Value.State is not (ServiceState.Exited or ServiceState.Stopped));
-            if (running >= policy.MaxAgentInitiated)
+            if (running >= policy.Max)
             {
                 return ProcessOutcome.Refused(
                     ProcessRefusals.CapReached,
                     $"this machine already holds {running} agent-started processes " +
-                    $"(max_agent_initiated {policy.MaxAgentInitiated})");
+                    $"(max {policy.Max})");
             }
 
             config = new ServiceConfig(

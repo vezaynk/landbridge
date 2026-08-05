@@ -70,16 +70,18 @@ internal sealed class ProfileDto
     public LogsDto? Logs { get; set; }
     public int? MaxConcurrent { get; set; }
 
-    // §10 agent-started processes: whether a task on this profile may call
-    // start_process, and how many the machine may hold. Off by default — enabling it is the
-    // machine owner's deliberate choice, the same shape as the open/strict archetypes.
-    public ProfileServicesDto? Services { get; set; }
+    // §10 agent-started processes: whether a task on this profile may call start_process, and
+    // how many the machine may hold. Off by default — enabling it is the machine owner's
+    // deliberate choice, the same shape as the open/strict archetypes. Named `processes`, not
+    // `services`, because a process and a service are different things (§10) and this is the
+    // key a human types.
+    public ProfileProcessesDto? Processes { get; set; }
 }
 
-internal sealed class ProfileServicesDto
+internal sealed class ProfileProcessesDto
 {
     public bool? AgentInitiated { get; set; }
-    public int? MaxAgentInitiated { get; set; }
+    public int? Max { get; set; }
 }
 
 internal sealed class StopDto

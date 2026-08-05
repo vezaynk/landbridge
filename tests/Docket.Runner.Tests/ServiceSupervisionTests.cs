@@ -434,8 +434,8 @@ public class ServiceSupervisionTests
         {
           "machine": { "work_root": "/tmp/docketd-fake" },
           "profiles": [ { "name": "default", "spawn": ["noop"],
-            "services": { "agent_initiated": {{(agentInitiated ? "true" : "false")}},
-                          "max_agent_initiated": {{cap}} } } ]
+            "processes": { "agent_initiated": {{(agentInitiated ? "true" : "false")}},
+                          "max": {{cap}} } } ]
         }
         """).Default;
 
@@ -581,7 +581,7 @@ public class ServiceSupervisionTests
             var refused = Assert.IsType<ProcessOutcome.RefusedOutcome>(
                 await sup.StartProcessAsync(Ask("three", cwd: cwd), profile, CancellationToken.None));
             Assert.Equal(ProcessRefusals.CapReached, refused.Refusal);
-            Assert.Contains("max_agent_initiated 2", refused.Detail, StringComparison.Ordinal);
+            Assert.Contains("max 2", refused.Detail, StringComparison.Ordinal);
         }
         finally
         {

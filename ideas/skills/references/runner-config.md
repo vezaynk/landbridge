@@ -20,7 +20,7 @@ argv a worker is launched with.
 | `profiles[]` | `telemetry` | `otel` bool (opt-in, default **false**), `endpoint` (OTLP destination; falls back to the one docketd inherited), and `env` (a string map of harness-specific variables, applied verbatim). When on, docketd sets the vendor-neutral `OTEL_*` exporter variables and appends `docket.task_id`/`docket.machine_id` to `OTEL_RESOURCE_ATTRIBUTES`, so the harness's own token/cost telemetry is attributable per task (§10). `otel: true` with **no endpoint configured and none inherited sets nothing at all** and warns once — telemetry is never enabled without a destination. Claude Code additionally needs `"env": { "CLAUDE_CODE_ENABLE_TELEMETRY": "1" }` (its own flag is data, since docketd holds no harness knowledge). **Visibility only**: Docket ingests none of it and enforces no ceiling — see [docs/TELEMETRY.md](../../../docs/TELEMETRY.md). |
 | `profiles[]` | `logs` | §12 machine-local transcript capture: `capture` (bool, default **false**), `max_bytes` (per-stream cap, default 50 MiB), `prune_after_days` (local hygiene, default 7, `0` disables). Legacy `format`/`path` are advisory/reserved — see [Transcript capture](#transcript-capture-12) below. |
 | `profiles[]` | `max_concurrent` | Optional hard cap for a licence/rate/posture reason, unrelated to load (§10). |
-| `profiles[]` | `services` | §10 agent-started **processes**: `agent_initiated` (bool, default **false**) and `max_agent_initiated` (default 8). Whether a task on this profile may call `start_process`, and how many the machine may hold. |
+| `profiles[]` | `processes` | §10 agent-started **processes**: `agent_initiated` (bool, default **false**) and `max` (default 8). Named `processes`, not `services` — they are different things (§10). Whether a task on this profile may call `start_process`, and how many the machine may hold. |
 | `services[]` | — | Optional: long-lived processes `docketd` supervises as its own children. See [Operator-declared services](#operator-declared-services-10) below. |
 
 ## Operator-declared services (§10)
@@ -93,8 +93,7 @@ daemon); a **process** is agent-started via `start_process`, **never restarted**
 until something stops it or this `docketd` restarts (a job). Same supervision, same machine
 tagging, same stray-sweep bound.
 
-Gate processes per profile with `services.agent_initiated`; cap them with
-`max_agent_initiated`. Names and ports are unique across processes *and* services on a
+Gate processes per profile with `processes.agent_initiated`; cap them with `processes.max`. Names and ports are unique across processes *and* services on a
 machine, checked at admission. Ports are optional — a build or a watcher listens on nothing —
 and a port-declaring process takes part in the same refuse-at-dial protection as a service.
 
@@ -260,10 +259,10 @@ Docket:
 // nothing it could not already do with a shell — and it means the agent uses the supported
 // route instead of discovering `setsid`/env-scrubbing, which would defeat the kill guarantee
 // for everything else on the machine.
-"services": { "agent_initiated": true }
+"processes": { "agent_initiated": true }
 ```
 
-On a **strict** profile leave `services.agent_initiated` off (the default): a worker with no
+On a **strict** profile leave `processes.agent_initiated` off (the default): a worker with no
 shell cannot start a background process by hand, and `start_process` refuses honestly rather
 than granting a capability the rest of the profile withholds.
 
