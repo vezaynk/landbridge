@@ -22,6 +22,7 @@
     <Project Path="tests/Docket.Meta.Tests/Docket.Meta.Tests.csproj" />
     <Project Path="tests/Docket.Preview.Tests/Docket.Preview.Tests.csproj" />
     <Project Path="tests/Docket.Relay.Tests/Docket.Relay.Tests.csproj" />
+    <Project Path="tests/Docket.Chaos.Tests/Docket.Chaos.Tests.csproj" />
     <Project Path="tests/Docket.CollabHarness/Docket.CollabHarness.csproj" />
     <Project Path="tests/Docket.MultiMachine.Tests/Docket.MultiMachine.Tests.csproj" />
     <Project Path="tests/Docket.Runner.Tests/Docket.Runner.Tests.csproj" />

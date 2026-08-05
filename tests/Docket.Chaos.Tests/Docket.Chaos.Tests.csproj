@@ -1,0 +1,63 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.10" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="ModelContextProtocol" Version="2.0.0-rc.1" />
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <PackageReference Include="Xunit.SkippableFact" Version="1.5.61" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+  </ItemGroup>
+
+  <!-- Reuse the ControlPlane suite's ephemeral-Postgres fixture verbatim (single
+       source of truth) rather than duplicating it, exactly like Docket.Mcp.Tests
+       and Docket.MultiMachine.Tests. -->
+  <ItemGroup>
+    <Compile Include="..\Docket.ControlPlane.Tests\PostgresFixture.cs" Link="PostgresFixture.cs" />
+  </ItemGroup>
+
+  <!-- The only linked assembly: the store/auth types this suite drives Postgres
+       with (TokenService to mint the machine + Lead credentials, TaskStore to read
+       committed state). Everything this suite exercises at runtime is a REAL
+       separate OS process, so nothing else needs to be on our compile closure. -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Docket.ControlPlane\Docket.ControlPlane.csproj" />
+  </ItemGroup>
+
+  <!-- Build-only edges (the AppHost idiom, src/Docket.AppHost/Docket.AppHost.csproj):
+       this suite resolves each of these binaries BY PATH from its own bin and spawns
+       it as a real process, but never links its assembly. ReferenceOutputAssembly=false
+       keeps them off our closure — which also keeps each apphost startable from its own
+       bin, where its full dependency closure lives — while still guaranteeing MSBuild
+       builds them before us.
+         Docket.Mcp                → the control plane / MCP host under test
+         Docket.Runner             → docketd (AssemblyName `docketd`)
+         Docket.WorkerHarness      → the scripted no-LLM worker that reports and exits
+         Docket.Runner.TestHarness → `run` = a worker that emits nothing and reports
+                                     nothing (the wedged agent), `spawn-child` = a
+                                     planted stray tree for the restart sweep -->
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Docket.Mcp\Docket.Mcp.csproj"
+                      ReferenceOutputAssembly="false" PrivateAssets="all" />
+    <ProjectReference Include="..\..\src\Docket.Runner\Docket.Runner.csproj"
+                      ReferenceOutputAssembly="false" PrivateAssets="all" />
+    <ProjectReference Include="..\Docket.WorkerHarness\Docket.WorkerHarness.csproj"
+                      ReferenceOutputAssembly="false" PrivateAssets="all" />
+    <ProjectReference Include="..\Docket.Runner.TestHarness\Docket.Runner.TestHarness.csproj"
+                      ReferenceOutputAssembly="false" PrivateAssets="all" />
+  </ItemGroup>
+
+</Project>
