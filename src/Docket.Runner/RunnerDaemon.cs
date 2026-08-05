@@ -165,6 +165,9 @@ public sealed class RunnerDaemon
             case ReadTranscriptCommand read:
                 return HandleReadTranscript(read);
 
+            case StartServiceCommand start:
+                return await HandleStartServiceAsync(start, ct);
+
             default:
                 // Unreachable: the hierarchy is closed (§10). Kept explicit so a
                 // future member can't be silently ignored.
@@ -189,6 +192,43 @@ public sealed class RunnerDaemon
             default:
                 return new CommandOutcome.Acknowledged($"open-forward {forward.ForwardId} (no role; ignored)");
         }
+    }
+
+    /// <summary>
+    /// §10 agent-initiated services: admit, start, and reply. The profile gate is enforced
+    /// <b>here on the machine</b>, not on the plane — a profile's meaning is machine-local
+    /// data the control plane never learns (§10), so the plane relays the request and the
+    /// runner decides.
+    /// </summary>
+    private async Task<CommandOutcome> HandleStartServiceAsync(StartServiceCommand start, CancellationToken ct)
+    {
+        var profile = _supervisor.ProfileFor(start.Task) is { } declared ? _config.Resolve(declared) : null;
+
+        // No supervised task means no profile to consult, so no policy can be applied. Refuse
+        // rather than guess: a service outliving a task that is not here has no owner.
+        if (_services is null || profile is null)
+        {
+            _ring.Enqueue(new ServiceStartedEvent(
+                start.Task, start.RequestId, start.Name, Started: false,
+                Refusal: ServiceRefusals.ProfileNotPermitted));
+            return new CommandOutcome.Acknowledged(
+                $"start-service {start.Name} refused (no supervised task on this machine)");
+        }
+
+        var outcome = await _services.StartForTaskAsync(start, profile, ct);
+        var evt = outcome switch
+        {
+            ServiceStartOutcome.StartedOk ok => new ServiceStartedEvent(
+                start.Task, start.RequestId, start.Name, Started: true, ok.Port, null, ok.LogPath),
+            ServiceStartOutcome.ReclaimedOk ok => new ServiceStartedEvent(
+                start.Task, start.RequestId, start.Name, Started: true, ok.Port, null, ok.LogPath),
+            ServiceStartOutcome.RefusedOutcome no => new ServiceStartedEvent(
+                start.Task, start.RequestId, start.Name, Started: false, null, no.Refusal),
+            _ => throw new ArgumentOutOfRangeException(nameof(outcome)),
+        };
+        _ring.Enqueue(evt);
+        return new CommandOutcome.Acknowledged(
+            $"start-service {start.Name}: {(evt.Started ? "started" : evt.Refusal)}");
     }
 
     /// <summary>

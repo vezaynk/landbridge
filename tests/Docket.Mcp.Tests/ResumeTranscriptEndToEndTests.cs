@@ -59,7 +59,7 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
         var registry = new RunnerConnectionRegistry(clock);
         var supervisor = new ProcessSupervisor(
             new MachineConfig(workRoot, TimeSpan.FromSeconds(15), BackPressureThresholds.Default), ring, clock);
-        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), NullLogger<RunnerEventSink>.Instance);
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new StartServiceRelay(registry), NullLogger<RunnerEventSink>.Instance);
         var profile = ResumeProfile(); // emit-stream (Terminal) cold + echo-argv resume
 
         // A drain loop routes the supervisor's outbound events into the sink exactly

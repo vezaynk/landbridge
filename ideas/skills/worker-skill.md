@@ -68,7 +68,28 @@ Bind to loopback. Registration plus the relay is how other agents reach you; exp
 
 A service you start as a child of your own process dies with you: `docketd` kills each task as a whole process tree, so anything you launched goes down when your turn ends. That is correct for a build or a test run and wrong for "stand up the dev server and keep it up".
 
-**Hand the process to the machine's service manager instead.** On Linux, use a transient unit — it writes nothing to disk, so there is no file for anyone to find orphaned later:
+**Use `start_service`.** That is the supported way, and it works the same on every machine:
+
+```
+start_service(
+  name: "web-dev",
+  spawn: ["/abs/node/bin/npm", "run", "dev"],
+  workingDirectory: "/abs/path/to/checkout",
+  env: { "PORT": "5173" },
+  port: 5173, readinessTcpPort: 5173)
+```
+
+`docketd` runs it as **its own child**, not yours, so your turn ending does not kill it. It restarts the process if it dies. **A port is optional** — a file watcher, an indexer, or a batch daemon listens on nothing, and that is a completely ordinary service; omit `port` and `readinessTcpPort` and it counts as running as soon as its process is up.
+
+Three things to know about what you get back. The call returns the **port** you should hand to `register_service` if other tasks need to reach it — starting is not registering, and a service nobody registered is a service no consumer can find. It returns a **log path** on this machine, so you read your own service's output with ordinary file tools rather than needing anything served to you. And it may **refuse** with a reason: the profile may not permit agent-started services, the machine may be at its cap, or another service may already hold the port. A refusal is a fact to report, not something to work around.
+
+**The service is bound to this task.** It outlives your turn, but it is stopped when the task ends. So a service that must stay up across several pieces of work does not belong to a task that finishes — it belongs to a long-lived holder task whose whole job is to hold it (below). Absolute paths matter: the service gets `docketd`'s environment, not your shell's, so pass `PATH` explicitly if the command needs one.
+
+**If your profile refuses**, that is the machine owner's deliberate choice and the answer is to report it, not to route around it. Which brings us to the rule that matters most here.
+
+### The machine's own service manager, where you need one
+
+Occasionally a service must outlive even the Team's work — a database the operator wants running tomorrow. That is a machine fixture, not a task's service, and it belongs to the operator: ask them to declare it in the `docketd` config, or to run it under the machine's service manager themselves. If you are asked to set one up yourself, on Linux a transient unit writes nothing to disk, so there is no file for anyone to find orphaned later:
 
 ```
 systemd-run --user --unit=docket-dev-myapp --collect \

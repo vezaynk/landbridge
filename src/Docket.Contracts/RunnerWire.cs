@@ -24,6 +24,7 @@ public static class RunnerWire
     public const string Kill = "kill";
     public const string OpenForward = "open-forward";
     public const string ReadTranscript = "read-transcript";
+    public const string StartService = "start-service";
 
     public const string Started = "started";
     public const string SessionStarted = "session-started";
@@ -36,6 +37,7 @@ public static class RunnerWire
     public const string ForwardClosed = "forward-closed";
     public const string Rebooted = "rebooted";
     public const string TranscriptChunk = "transcript-chunk";
+    public const string ServiceStarted = "service-started";
 
     /// <summary>The machine-heartbeat envelope discriminator (§10 — docketd's own timer).
     /// Not part of the frozen command/event enum; the heartbeat is the runner's
@@ -44,14 +46,14 @@ public static class RunnerWire
 
     /// <summary>The closed outbound (control plane → runner) vocabulary.</summary>
     public static IReadOnlySet<string> Commands { get; } =
-        new HashSet<string>(StringComparer.Ordinal) { Dispatch, Stop, Kill, OpenForward, ReadTranscript };
+        new HashSet<string>(StringComparer.Ordinal) { Dispatch, Stop, Kill, OpenForward, ReadTranscript, StartService };
 
     /// <summary>The closed inbound (runner → control plane) vocabulary.</summary>
     public static IReadOnlySet<string> Events { get; } =
         new HashSet<string>(StringComparer.Ordinal)
         {
             Started, SessionStarted, Alive, ToolCall, SubagentSpawned, Exited, AuthFailed, ForwardOpened, ForwardClosed, Rebooted,
-            TranscriptChunk,
+            TranscriptChunk, ServiceStarted,
         };
 
     public static bool IsKnownCommand(string? type) => type is not null && Commands.Contains(type);
@@ -81,6 +83,7 @@ public static class RunnerWire
             KillCommand k => (ToObject(k, RunnerWireContext.Default.KillCommand), Kill),
             OpenForwardCommand o => (ToObject(o, RunnerWireContext.Default.OpenForwardCommand), OpenForward),
             ReadTranscriptCommand r => (ToObject(r, RunnerWireContext.Default.ReadTranscriptCommand), ReadTranscript),
+            StartServiceCommand ss => (ToObject(ss, RunnerWireContext.Default.StartServiceCommand), StartService),
             // Unreachable: the hierarchy is closed (§10). Explicit so a future
             // member cannot silently serialize as a typeless envelope.
             _ => throw new ArgumentOutOfRangeException(
@@ -108,6 +111,7 @@ public static class RunnerWire
             ForwardClosedEvent e => (ToObject(e, RunnerWireContext.Default.ForwardClosedEvent), ForwardClosed),
             RebootedEvent e => (ToObject(e, RunnerWireContext.Default.RebootedEvent), Rebooted),
             TranscriptChunkEvent e => (ToObject(e, RunnerWireContext.Default.TranscriptChunkEvent), TranscriptChunk),
+            ServiceStartedEvent e => (ToObject(e, RunnerWireContext.Default.ServiceStartedEvent), ServiceStarted),
             _ => throw new ArgumentOutOfRangeException(
                 nameof(evt), evt.GetType().Name, "outside the runner event vocabulary"),
         };
@@ -156,6 +160,7 @@ public static class RunnerWire
                 Kill => doc.RootElement.Deserialize(RunnerWireContext.Default.KillCommand),
                 OpenForward => doc.RootElement.Deserialize(RunnerWireContext.Default.OpenForwardCommand),
                 ReadTranscript => doc.RootElement.Deserialize(RunnerWireContext.Default.ReadTranscriptCommand),
+                StartService => doc.RootElement.Deserialize(RunnerWireContext.Default.StartServiceCommand),
                 _ => null, // §10: reject anything outside the vocabulary.
             };
             if (command is not null && TryReadString(doc.RootElement, TraceParent, out var tp))
@@ -187,6 +192,7 @@ public static class RunnerWire
                 ForwardClosed => doc.RootElement.Deserialize(RunnerWireContext.Default.ForwardClosedEvent),
                 Rebooted => doc.RootElement.Deserialize(RunnerWireContext.Default.RebootedEvent),
                 TranscriptChunk => doc.RootElement.Deserialize(RunnerWireContext.Default.TranscriptChunkEvent),
+                ServiceStarted => doc.RootElement.Deserialize(RunnerWireContext.Default.ServiceStartedEvent),
                 _ => null,
             };
         }

@@ -1,4 +1,5 @@
 using Docket.Contracts;
+using Docket.Core;
 using Microsoft.Extensions.Time.Testing;
 
 namespace Docket.Runner.Tests;
@@ -424,6 +425,279 @@ public class ServiceSupervisionTests
             "m1", TimeProvider.System);
 
         Assert.False(sup.IsServiceOnPort(6100));
+    }
+
+    // ── §10 agent-initiated services ────────────────────────────────────────────
+
+    private static ProfileConfig ProfileWith(bool agentInitiated, int cap = 8) =>
+        RunnerConfig.Load($$"""
+        {
+          "machine": { "work_root": "/tmp/docketd-fake" },
+          "profiles": [ { "name": "default", "spawn": ["noop"],
+            "services": { "agent_initiated": {{(agentInitiated ? "true" : "false")}},
+                          "max_agent_initiated": {{cap}} } } ]
+        }
+        """).Default;
+
+    private static StartServiceCommand Ask(
+        TaskId task, string name, IReadOnlyList<string>? spawn = null,
+        int? port = null, int? readiness = null) =>
+        new(task, "req-1", name, spawn ?? [TestKit.HarnessPath(), "sleeper"],
+            WorkingDirectory: null, Env: null, Port: port, ReadinessTcpPort: readiness);
+
+    [Fact]
+    public async Task A_profile_that_does_not_permit_agent_services_refuses()
+    {
+        // Off by default, and the refusal names the profile — an operator reading it knows
+        // exactly which declaration to change.
+        await using var sup = new ServiceSupervisor([], "m1", TimeProvider.System);
+        var outcome = await sup.StartForTaskAsync(
+            Ask(TaskId.New(), "dev"), ProfileWith(agentInitiated: false), CancellationToken.None);
+
+        var refused = Assert.IsType<ServiceStartOutcome.RefusedOutcome>(outcome);
+        Assert.Equal(ServiceRefusals.ProfileNotPermitted, refused.Refusal);
+        Assert.Contains("default", refused.Detail, StringComparison.Ordinal);
+        Assert.Empty(sup.Report());
+    }
+
+    [Fact]
+    public async Task A_name_off_the_wire_faces_the_same_validator_as_a_config_name()
+    {
+        // The validator was written as a security control for exactly this case: here the
+        // name is agent-supplied, and it becomes a directory under the state dir.
+        await using var sup = new ServiceSupervisor([], "m1", TimeProvider.System);
+        var outcome = await sup.StartForTaskAsync(
+            Ask(TaskId.New(), "../escape"), ProfileWith(true), CancellationToken.None);
+
+        Assert.Equal(
+            ServiceRefusals.InvalidName,
+            Assert.IsType<ServiceStartOutcome.RefusedOutcome>(outcome).Refusal);
+    }
+
+    [Fact]
+    public async Task A_port_less_service_starts_and_is_running_once_its_process_is_up()
+    {
+        // The shape the user actually asked for: a watcher or indexer with no listener.
+        // "Running" means the process is up — no timer pretending to be a readiness check.
+        var cwd = TestKit.NewWorkRoot();
+        try
+        {
+            await using var sup = new ServiceSupervisor([], "m1", TimeProvider.System);
+            var cmd = Ask(TaskId.New(), "watcher") with { WorkingDirectory = cwd };
+            var outcome = await sup.StartForTaskAsync(cmd, ProfileWith(true), CancellationToken.None);
+
+            var ok = Assert.IsType<ServiceStartOutcome.StartedOk>(outcome);
+            Assert.Null(ok.Port);
+            Assert.Equal(ServiceState.Running, sup.Report().Single().State);
+            // Port-less means invisible to refuse-at-dial: it declares nothing dialable.
+            Assert.Null(sup.IsServiceOnPort(0));
+        }
+        finally
+        {
+            TestKit.TryDeleteRoot(cwd);
+        }
+    }
+
+    [Fact]
+    public async Task An_agent_service_dies_with_its_declaring_task()
+    {
+        var cwd = TestKit.NewWorkRoot();
+        try
+        {
+            await using var sup = new ServiceSupervisor([], "m1", TimeProvider.System);
+            var task = TaskId.New();
+            var cmd = Ask(task, "dev") with { WorkingDirectory = cwd };
+            Assert.IsType<ServiceStartOutcome.StartedOk>(
+                await sup.StartForTaskAsync(cmd, ProfileWith(true), CancellationToken.None));
+            Assert.Single(sup.Report());
+
+            // The lifetime binding: no plane command, no config to re-read — the task ending
+            // is the whole signal, and this is the teardown docketd owns rather than leaving
+            // to the reaper's env scan (which finds nothing on Windows by design).
+            Assert.Equal(1, sup.StopForTask(task));
+            Assert.Empty(sup.Report());
+
+            // And it does not come back: a service whose owner is gone must not be restarted.
+            await Task.Delay(TimeSpan.FromMilliseconds(500));
+            Assert.Empty(sup.Report());
+        }
+        finally
+        {
+            TestKit.TryDeleteRoot(cwd);
+        }
+    }
+
+    [Fact]
+    public async Task Stopping_one_task_leaves_another_tasks_service_alone()
+    {
+        var cwd = TestKit.NewWorkRoot();
+        try
+        {
+            await using var sup = new ServiceSupervisor([], "m1", TimeProvider.System);
+            var mine = TaskId.New();
+            var theirs = TaskId.New();
+            // Same NAME on both: identity is {task, name}, so this is not a collision.
+            await sup.StartForTaskAsync(
+                Ask(mine, "dev") with { WorkingDirectory = cwd }, ProfileWith(true), CancellationToken.None);
+            await sup.StartForTaskAsync(
+                Ask(theirs, "dev") with { WorkingDirectory = cwd }, ProfileWith(true), CancellationToken.None);
+            Assert.Equal(2, sup.Report().Count);
+
+            Assert.Equal(1, sup.StopForTask(mine));
+            Assert.Single(sup.Report());
+        }
+        finally
+        {
+            TestKit.TryDeleteRoot(cwd);
+        }
+    }
+
+    [Fact]
+    public async Task The_same_task_redeclaring_a_name_reclaims_rather_than_being_refused()
+    {
+        var cwd = TestKit.NewWorkRoot();
+        try
+        {
+            await using var sup = new ServiceSupervisor([], "m1", TimeProvider.System);
+            var task = TaskId.New();
+            var cmd = Ask(task, "dev") with { WorkingDirectory = cwd };
+            Assert.IsType<ServiceStartOutcome.StartedOk>(
+                await sup.StartForTaskAsync(cmd, ProfileWith(true), CancellationToken.None));
+
+            // Idempotent: a retrying worker gets its service back instead of being stuck.
+            Assert.IsType<ServiceStartOutcome.ReclaimedOk>(
+                await sup.StartForTaskAsync(cmd, ProfileWith(true), CancellationToken.None));
+            Assert.Single(sup.Report());
+        }
+        finally
+        {
+            TestKit.TryDeleteRoot(cwd);
+        }
+    }
+
+    [Fact]
+    public async Task A_different_task_claiming_a_held_port_is_refused_and_told_who_holds_it()
+    {
+        var cwd = TestKit.NewWorkRoot();
+        try
+        {
+            await using var sup = new ServiceSupervisor(
+                [], "m1", TimeProvider.System, probe: (_, _) => Task.FromResult(true));
+            await sup.StartForTaskAsync(
+                Ask(TaskId.New(), "api", port: 7301, readiness: 7301) with { WorkingDirectory = cwd },
+                ProfileWith(true), CancellationToken.None);
+
+            var outcome = await sup.StartForTaskAsync(
+                Ask(TaskId.New(), "other", port: 7301) with { WorkingDirectory = cwd },
+                ProfileWith(true), CancellationToken.None);
+
+            var refused = Assert.IsType<ServiceStartOutcome.RefusedOutcome>(outcome);
+            Assert.Equal(ServiceRefusals.PortTaken, refused.Refusal);
+            Assert.Contains("'api'", refused.Detail, StringComparison.Ordinal);
+        }
+        finally
+        {
+            TestKit.TryDeleteRoot(cwd);
+        }
+    }
+
+    [Fact]
+    public async Task Port_less_services_never_collide()
+    {
+        var cwd = TestKit.NewWorkRoot();
+        try
+        {
+            await using var sup = new ServiceSupervisor([], "m1", TimeProvider.System);
+            var task = TaskId.New();
+            foreach (var name in new[] { "watch-a", "watch-b", "watch-c" })
+            {
+                Assert.IsType<ServiceStartOutcome.StartedOk>(await sup.StartForTaskAsync(
+                    Ask(task, name) with { WorkingDirectory = cwd }, ProfileWith(true), CancellationToken.None));
+            }
+
+            Assert.Equal(3, sup.Report().Count);
+        }
+        finally
+        {
+            TestKit.TryDeleteRoot(cwd);
+        }
+    }
+
+    [Fact]
+    public async Task The_machine_cap_bounds_how_many_a_task_may_hold()
+    {
+        var cwd = TestKit.NewWorkRoot();
+        try
+        {
+            await using var sup = new ServiceSupervisor([], "m1", TimeProvider.System);
+            var task = TaskId.New();
+            var profile = ProfileWith(true, cap: 2);
+            await sup.StartForTaskAsync(Ask(task, "one") with { WorkingDirectory = cwd }, profile, CancellationToken.None);
+            await sup.StartForTaskAsync(Ask(task, "two") with { WorkingDirectory = cwd }, profile, CancellationToken.None);
+
+            var outcome = await sup.StartForTaskAsync(
+                Ask(task, "three") with { WorkingDirectory = cwd }, profile, CancellationToken.None);
+
+            var refused = Assert.IsType<ServiceStartOutcome.RefusedOutcome>(outcome);
+            Assert.Equal(ServiceRefusals.CapReached, refused.Refusal);
+            Assert.Contains("max_agent_initiated 2", refused.Detail, StringComparison.Ordinal);
+        }
+        finally
+        {
+            TestKit.TryDeleteRoot(cwd);
+        }
+    }
+
+    [Fact]
+    public async Task A_service_that_cannot_start_is_refused_not_left_half_registered()
+    {
+        await using var sup = new ServiceSupervisor([], "m1", TimeProvider.System);
+        var outcome = await sup.StartForTaskAsync(
+            Ask(TaskId.New(), "broken", spawn: ["/definitely/not/a/binary"]),
+            ProfileWith(true), CancellationToken.None);
+
+        Assert.Equal(
+            ServiceRefusals.SpawnFailed,
+            Assert.IsType<ServiceStartOutcome.RefusedOutcome>(outcome).Refusal);
+        // A failed admission leaves nothing behind — otherwise the cap and the port table
+        // would drift against reality.
+        Assert.Empty(sup.Report());
+    }
+
+    [Fact]
+    public async Task An_agent_service_carries_its_task_id_and_a_config_one_does_not()
+    {
+        // The tagging IS the lifetime policy: the task id is what makes the existing per-task
+        // exit sweep reap this, and its absence is what makes a config service an operator fixture.
+        var agentCwd = TestKit.NewWorkRoot();
+        var configCwd = TestKit.NewWorkRoot();
+        try
+        {
+            var task = TaskId.New();
+            await using var sup = new ServiceSupervisor(
+                [Service("fixture", [TestKit.HarnessPath(), "echo-env"], workDir: configCwd)],
+                "machine-xyz", TimeProvider.System);
+            sup.Start();
+
+            await sup.StartForTaskAsync(
+                Ask(task, "agentsvc", spawn: [TestKit.HarnessPath(), "echo-env"]) with { WorkingDirectory = agentCwd },
+                ProfileWith(true), CancellationToken.None);
+
+            var agentEnv = Path.Combine(agentCwd, "env");
+            var configEnv = Path.Combine(configCwd, "env");
+            Assert.True(await TestKit.WaitUntilAsync(
+                () => File.Exists(agentEnv) && File.Exists(configEnv), TimeSpan.FromSeconds(15)));
+
+            Assert.Contains($"DOCKET_TASK_ID={task}", TestKit.ReadLinesShared(agentEnv));
+            Assert.DoesNotContain(
+                TestKit.ReadLinesShared(configEnv),
+                line => line.StartsWith("DOCKET_TASK_ID=", StringComparison.Ordinal));
+        }
+        finally
+        {
+            TestKit.TryDeleteRoot(agentCwd);
+            TestKit.TryDeleteRoot(configCwd);
+        }
     }
 
     [Fact]

@@ -2,8 +2,31 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net.Sockets;
 using Docket.Contracts;
+using Docket.Core;
 
 namespace Docket.Runner;
+
+/// <summary>
+/// The outcome of an agent's <c>start_service</c> (§10). <see cref="Reclaimed"/> is a
+/// success: the same task re-declaring a name it already holds gets its existing service
+/// back rather than a refusal, so a retrying worker is idempotent.
+/// </summary>
+public abstract record ServiceStartOutcome
+{
+    private ServiceStartOutcome() { }
+
+    public sealed record StartedOk(int? Port, string? LogPath) : ServiceStartOutcome;
+
+    public sealed record ReclaimedOk(int? Port, string? LogPath) : ServiceStartOutcome;
+
+    public sealed record RefusedOutcome(string Refusal, string Detail) : ServiceStartOutcome;
+
+    public static ServiceStartOutcome Started(int? port, string? logPath) => new StartedOk(port, logPath);
+
+    public static ServiceStartOutcome Reclaimed(int? port, string? logPath) => new ReclaimedOk(port, logPath);
+
+    public static ServiceStartOutcome Refused(string refusal, string detail) => new RefusedOutcome(refusal, detail);
+}
 
 /// <summary>
 /// Supervises the operator's declared long-lived services (§10), as a deliberate
@@ -44,9 +67,10 @@ public sealed class ServiceSupervisor : IAsyncDisposable
     private readonly ServiceLogStore? _logs;
     private readonly Action<string>? _log;
     private readonly SpawnerThread _spawner = new();
-    private readonly ConcurrentDictionary<string, SupervisedService> _state = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<ServiceKey, SupervisedService> _state = new();
     private readonly CancellationTokenSource _cts = new();
-    private readonly List<Task> _loops = [];
+    private readonly ConcurrentDictionary<Task, byte> _loops = new();
+    private readonly object _admission = new();
 
     /// <param name="probe">
     /// Readiness probe seam. Defaults to a real loopback TCP connect; a test supplies
@@ -69,7 +93,9 @@ public sealed class ServiceSupervisor : IAsyncDisposable
 
         foreach (var service in services)
         {
-            _state[service.Name] = new SupervisedService(service)
+            // Config-declared: no owning task, so no DOCKET_TASK_ID and therefore no
+            // task-exit teardown — that is what makes it an operator fixture (§10).
+            _state[new ServiceKey(null, service.Name)] = new SupervisedService(service)
             {
                 State = service.Enabled ? ServiceState.Stopped : ServiceState.Disabled,
             };
@@ -88,7 +114,7 @@ public sealed class ServiceSupervisor : IAsyncDisposable
             // stop lives in config rather than in a dashboard command a restart would undo.
             if (!service.Enabled)
                 continue;
-            _loops.Add(Task.Run(() => SuperviseAsync(service, _cts.Token)));
+            Launch(new ServiceKey(null, service.Name));
         }
     }
 
@@ -99,14 +125,12 @@ public sealed class ServiceSupervisor : IAsyncDisposable
     public IReadOnlyList<ServiceStatus> Report()
     {
         var report = new List<ServiceStatus>(_state.Count);
-        foreach (var name in _state.Keys.OrderBy(n => n, StringComparer.Ordinal))
+        foreach (var (key, s) in _state.OrderBy(e => e.Key.Name, StringComparer.Ordinal))
         {
-            if (!_state.TryGetValue(name, out var s))
-                continue;
             lock (s.Gate)
             {
                 report.Add(new ServiceStatus(
-                    name,
+                    key.Name,
                     s.State,
                     s.Config.Port ?? s.Config.Readiness?.TcpPort ?? 0,
                     s.StartedAt,
@@ -129,13 +153,174 @@ public sealed class ServiceSupervisor : IAsyncDisposable
     {
         foreach (var s in _state.Values)
         {
+            // A port-less service (a watcher, an indexer) declares nothing dialable and so
+            // can never answer for a port — it is invisible to refuse-at-dial by construction.
             var declared = s.Config.Port ?? s.Config.Readiness?.TcpPort;
-            if (declared != port)
+            if (declared is null || declared != port)
                 continue;
             lock (s.Gate)
                 return s.State == ServiceState.Running;
         }
         return null;
+    }
+
+    /// <summary>
+    /// §10 agent-initiated services: admit and start one declared by a task, or refuse with
+    /// a specific reason. Runs the admission checks in the order an operator would want them
+    /// reported — policy first, then shape, then resources — so the first refusal names the
+    /// thing they actually need to change.
+    ///
+    /// <para>Admission is serialized on <see cref="_admission"/>: the port check and the
+    /// insert must be indivisible, or two concurrent calls could both see a free port and
+    /// both claim it. Config load can check port uniqueness at rest; a dynamic declaration
+    /// has to check it under a lock.</para>
+    /// </summary>
+    public async Task<ServiceStartOutcome> StartForTaskAsync(
+        StartServiceCommand command, ProfileConfig profile, CancellationToken ct)
+    {
+        var policy = profile.ServicePolicy;
+        if (!policy.AgentInitiated)
+        {
+            return ServiceStartOutcome.Refused(
+                ServiceRefusals.ProfileNotPermitted,
+                $"profile '{profile.Name}' does not permit agent-initiated services");
+        }
+
+        if (!RunnerConfig.IsValidServiceName(command.Name))
+        {
+            // The name arrives off the wire here, not from a file an operator wrote — which
+            // is the case the validator was written for: it becomes a directory name, and
+            // the closed path construction depends on it not being able to steer one.
+            return ServiceStartOutcome.Refused(
+                ServiceRefusals.InvalidName,
+                "service name must be 1-64 characters of a-z, A-Z, 0-9, '-' or '_'");
+        }
+
+        if (command.Spawn.Count == 0)
+            return ServiceStartOutcome.Refused(ServiceRefusals.InvalidSpawn, "spawn argv is empty");
+
+        var requestedPort = command.Port ?? command.ReadinessTcpPort;
+        if (requestedPort is { } rp && rp is < 1 or > 65535)
+            return ServiceStartOutcome.Refused(ServiceRefusals.InvalidSpawn, "port must be in 1..65535");
+
+        var key = new ServiceKey(command.Task, command.Name);
+        ServiceConfig config;
+
+        lock (_admission)
+        {
+            // Same task, same name: reclaim rather than refuse, so a worker retrying — or a
+            // redispatched attempt re-declaring what its task calls for — is idempotent
+            // instead of stuck.
+            if (_state.TryGetValue(key, out var existing))
+            {
+                lock (existing.Gate)
+                {
+                    if (existing.State is ServiceState.Running or ServiceState.Starting)
+                    {
+                        return ServiceStartOutcome.Reclaimed(
+                            existing.Config.Port ?? existing.Config.Readiness?.TcpPort,
+                            _logs is null ? null : Path.Combine(_logs.Root, command.Name));
+                    }
+                }
+            }
+
+            // Ports are unique per machine at runtime, exactly as at config load: refuse-at-dial
+            // resolves a dial target BY PORT, so a shared port would make that lookup answer for
+            // whichever it found first. Port-less services trivially coexist and are skipped.
+            if (requestedPort is { } port)
+            {
+                foreach (var (otherKey, other) in _state)
+                {
+                    if (otherKey == key)
+                        continue;
+                    var declared = other.Config.Port ?? other.Config.Readiness?.TcpPort;
+                    if (declared != port)
+                        continue;
+                    return ServiceStartOutcome.Refused(
+                        ServiceRefusals.PortTaken,
+                        $"port {port} is already claimed by service '{otherKey.Name}' on this machine");
+                }
+            }
+
+            var agentOwned = _state.Count(e => e.Key.Task is not null);
+            if (!_state.ContainsKey(key) && agentOwned >= policy.MaxAgentInitiated)
+            {
+                return ServiceStartOutcome.Refused(
+                    ServiceRefusals.CapReached,
+                    $"this machine already holds {agentOwned} agent-started services " +
+                    $"(max_agent_initiated {policy.MaxAgentInitiated})");
+            }
+
+            config = new ServiceConfig(
+                command.Name,
+                command.Spawn,
+                command.WorkingDirectory,
+                command.Env ?? new Dictionary<string, string>(StringComparer.Ordinal),
+                command.Port,
+                command.ReadinessTcpPort is { } tcp
+                    ? new ReadinessConfig(
+                        tcp,
+                        command.ReadinessTimeoutSeconds is { } t and > 0
+                            ? TimeSpan.FromSeconds(t)
+                            : ServiceDefaults.ReadinessTimeout)
+                    : null,
+                ServiceDefaults.MaxBackoff,
+                // Capture is on for an agent-started service: its log path goes back in the
+                // reply so the declaring agent can read it with ordinary file tools.
+                new LogsConfig(null, null, Capture: true));
+
+            _state[key] = new SupervisedService(config)
+            {
+                State = ServiceState.Stopped,
+                Owner = command.Task,
+            };
+        }
+
+        // Start inline so the reply can carry the real outcome — a worker that is told
+        // "started" needs the port to be answering before it registers (§8.2).
+        var s = _state[key];
+        var started = await TryStartAsync(s, ct);
+        if (!started)
+        {
+            _state.TryRemove(key, out _);
+            Stop(s);
+            var refusal = s.LastExitCode is null && s.StartedAt is null
+                ? ServiceRefusals.SpawnFailed
+                : ServiceRefusals.ReadinessTimeout;
+            return ServiceStartOutcome.Refused(refusal, $"service '{command.Name}' did not come up");
+        }
+
+        Launch(key); // supervise it from here: restart on failure until its task ends
+        return ServiceStartOutcome.Started(
+            config.Port ?? config.Readiness?.TcpPort,
+            _logs is null ? null : Path.Combine(_logs.Root, command.Name));
+    }
+
+    /// <summary>
+    /// §10 task-scoped lifetime: stop every service the given task declared. Called from the
+    /// task-exit path, so a service dies with the task that asked for it.
+    ///
+    /// <para>This is deliberately <b>bookkeeping we own</b> rather than leaving it to the
+    /// stray reaper's environment scan. The reaper is the backstop and catches anything that
+    /// escaped — but it finds nothing on Windows by design (containment there is the
+    /// kill-on-close job, which fires on docketd's death, not a task's exit), so relying on
+    /// it alone would make this lifetime guarantee platform-dependent.</para>
+    /// </summary>
+    public int StopForTask(TaskId task)
+    {
+        var stopped = 0;
+        foreach (var (key, s) in _state)
+        {
+            if (key.Task != task)
+                continue;
+            // Remove first: the supervision loop checks membership and will not restart a
+            // service whose owner is gone.
+            _state.TryRemove(key, out _);
+            Stop(s);
+            stopped++;
+            _log?.Invoke($"docketd: service '{key.Name}' stopped with its declaring task {task}");
+        }
+        return stopped;
     }
 
     /// <summary>Kills every supervised service (§10 clean shutdown).</summary>
@@ -149,7 +334,7 @@ public sealed class ServiceSupervisor : IAsyncDisposable
     {
         await _cts.CancelAsync();
         KillAll();
-        foreach (var loop in _loops)
+        foreach (var loop in _loops.Keys)
         {
             try { await loop; }
             catch (OperationCanceledException) { }
@@ -164,12 +349,21 @@ public sealed class ServiceSupervisor : IAsyncDisposable
     /// start (a bad path, a taken port) settles into a slow retry that stays visible in
     /// the heartbeat instead of hot-looping.
     /// </summary>
-    private async Task SuperviseAsync(ServiceConfig service, CancellationToken ct)
+    /// <summary>Starts one supervision loop for an admitted service and tracks it.</summary>
+    private void Launch(ServiceKey key)
     {
-        var backoff = ServiceDefaults.InitialBackoff;
-        var s = _state[service.Name];
+        var loop = Task.Run(() => SuperviseAsync(key, _cts.Token));
+        _loops[loop] = 0;
+    }
 
-        while (!ct.IsCancellationRequested)
+    private async Task SuperviseAsync(ServiceKey key, CancellationToken ct)
+    {
+        if (!_state.TryGetValue(key, out var s))
+            return;
+        var service = s.Config;
+        var backoff = ServiceDefaults.InitialBackoff;
+
+        while (!ct.IsCancellationRequested && _state.ContainsKey(key))
         {
             var started = await TryStartAsync(s, ct);
             if (started)
@@ -178,7 +372,10 @@ public sealed class ServiceSupervisor : IAsyncDisposable
                 await WaitForExitAsync(s, ct);
             }
 
-            if (ct.IsCancellationRequested)
+            // A task-scoped service whose owner has gone is not "failed" — it was torn
+            // down on purpose, and restarting it would resurrect a process whose authority
+            // ended with its task.
+            if (ct.IsCancellationRequested || !_state.ContainsKey(key))
                 return;
 
             lock (s.Gate)
@@ -194,6 +391,8 @@ public sealed class ServiceSupervisor : IAsyncDisposable
 
             try { await Task.Delay(backoff, _clock, ct); }
             catch (OperationCanceledException) { return; }
+            if (!_state.ContainsKey(key))
+                return;
 
             lock (s.Gate)
                 s.Restarts++;
@@ -228,7 +427,14 @@ public sealed class ServiceSupervisor : IAsyncDisposable
         // the restart sweep reaps the previous generation, and deliberately NO task id
         // so per-task exit cleanup steps over them.
         psi.Environment["DOCKET_MACHINE_ID"] = _machineId;
-        psi.Environment.Remove("DOCKET_TASK_ID");
+        // The tagging IS the lifetime policy (§10). A task-owned service carries its task
+        // id, so the existing per-task exit sweep reaps it; a config-declared service
+        // deliberately carries none, so that same sweep steps over it and it survives task
+        // exits as an operator fixture.
+        if (s.Owner is { } owner)
+            psi.Environment["DOCKET_TASK_ID"] = owner.ToString();
+        else
+            psi.Environment.Remove("DOCKET_TASK_ID");
 
         var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
 
@@ -399,11 +605,22 @@ public sealed class ServiceSupervisor : IAsyncDisposable
         catch (InvalidOperationException) { return null; }
     }
 
+    /// <summary>
+    /// A service's machine-local identity. Scoped to the declaring task so two tasks may
+    /// each hold a <c>dev</c> without colliding — what actually collides is the <b>port</b>,
+    /// which admission checks separately. A null task is a config-declared service.
+    /// </summary>
+    private readonly record struct ServiceKey(TaskId? Task, string Name);
+
     /// <summary>One supervised service's mutable state, guarded by its own gate.</summary>
     private sealed class SupervisedService(ServiceConfig config)
     {
         public object Gate { get; } = new();
         public ServiceConfig Config { get; } = config;
+
+        /// <summary>The task that declared this service, or null for a config-declared one.
+        /// Decides whether the spawn carries <c>DOCKET_TASK_ID</c>, i.e. its lifetime.</summary>
+        public TaskId? Owner { get; init; }
         public Process? Process { get; set; }
         public ServiceState State { get; set; } = ServiceState.Stopped;
         public DateTimeOffset? StartedAt { get; set; }

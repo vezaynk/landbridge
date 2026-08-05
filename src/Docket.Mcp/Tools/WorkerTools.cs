@@ -27,7 +27,8 @@ public sealed class WorkerTools(
     ForwardOrchestrator forwards,
     PreviewMappingService previews,
     IHttpContextAccessor http,
-    IConfiguration config)
+    IConfiguration config,
+    StartServiceRelay services)
 {
     /// <summary>The relay a worker dials when config supplies none (§8.3), mirroring <see cref="DispatchService.DefaultPublicMcpUrl"/>.</summary>
     public const string DefaultRelayUrl = "http://127.0.0.1:5100";
@@ -117,6 +118,55 @@ public sealed class WorkerTools(
 
         var caller = Caller;
         return Describe(await store.ApplyAsync(caller.Task, new RequestInput(caller, parsed, question), ct));
+    }
+
+    [McpServerTool(Name = "start_service"),
+     Description("Start a long-running background process that outlives your current turn — a dev " +
+                 "server, a watcher, an indexer, a batch daemon. docketd supervises it as its own " +
+                 "child and restarts it if it dies, so it is NOT killed when your turn ends. It IS " +
+                 "stopped when this task ends, so a service meant to outlive your work belongs to a " +
+                 "task whose job is to hold it. A port is optional: plenty of useful background work " +
+                 "listens on nothing. Never try to escape supervision by hand (no setsid, and never " +
+                 "unset DOCKET_* on something you spawn) — this tool is the supported way.")]
+    public async Task<StartServiceResult> StartService(
+        [Description("A short machine-local name for this service: 1-64 characters of a-z, A-Z, 0-9, '-' or '_'.")]
+        string name,
+        [Description("The command as argv — the program first, then each argument separately. Never a " +
+                     "shell string. Use absolute paths: the service gets docketd's environment, not your shell's.")]
+        string[] spawn,
+        [Description("Directory to run in. Absolute. Defaults to docketd's own working directory, which is " +
+                     "probably not what you want.")]
+        string? workingDirectory = null,
+        [Description("Environment variables to set. Nothing is inherited implicitly, so pass PATH here if " +
+                     "the command needs one.")]
+        Dictionary<string, string>? env = null,
+        [Description("The loopback port this service listens on, if any. Omit for a service with no " +
+                     "listener. Must be unique among services on this machine.")]
+        int? port = null,
+        [Description("Port that must accept a connection before this call returns success. Usually the same " +
+                     "as port. Omit for a port-less service, which is running as soon as its process is up.")]
+        int? readinessTcpPort = null,
+        [Description("How long to wait for the readiness port, in seconds. Omit for the default.")]
+        double? readinessTimeoutSeconds = null,
+        CancellationToken ct = default)
+    {
+        var caller = Caller;
+        var result = await services.StartAsync(
+            caller.Task, name, spawn, workingDirectory, env,
+            port, readinessTcpPort, readinessTimeoutSeconds, ct);
+
+        if (!result.Started)
+            return new StartServiceResult(false, null, null, result.Refusal, null);
+
+        // §8.2: starting is a machine act, registering is a Team-visibility act, and they are
+        // deliberately separate — a private helper should not have to be advertised. So say
+        // plainly that this is not reachable yet, because an agent that assumes otherwise
+        // produces a service no consumer can find.
+        var next = result.Port is { } p
+            ? $"Not yet visible to your Team — call register_service with name '{name}' and port {p} if other tasks need to reach it."
+            : "This service has no port, so there is nothing to register or forward to.";
+
+        return new StartServiceResult(true, result.Port, result.LogPath, null, next);
     }
 
     [McpServerTool(Name = "register_service"),
@@ -235,6 +285,18 @@ public sealed record OpenForwardResult(
 /// <see cref="ExpiresAt"/> when the preview stops admitting new connections.
 /// snake_case-pinned like <see cref="OpenForwardResult"/>.
 /// </summary>
+/// <summary>
+/// What a worker learns from <c>start_service</c> (§10).
+/// </summary>
+/// <param name="Port">The port the service owns, or null for a port-less one.</param>
+/// <param name="LogPath">Where the machine captured this run's output. The agent is on that
+/// machine, so it reads its own service's logs with ordinary file tools — no serving path and
+/// no redaction question (§16 open question 8).</param>
+/// <param name="Refusal">Why it was refused, from the machine, or null on success.</param>
+/// <param name="NextStep">What to do now — in particular that starting is not registering.</param>
+public sealed record StartServiceResult(
+    bool Started, int? Port, string? LogPath, string? Refusal, string? NextStep);
+
 public sealed record OpenPreviewResult(
     [property: JsonPropertyName("url")] string Url,
     [property: JsonPropertyName("auth")] string Auth,

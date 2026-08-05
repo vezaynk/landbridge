@@ -399,7 +399,12 @@ public sealed record RunnerConfig(
             events,
             telemetry,
             logs,
-            dto.MaxConcurrent);
+            dto.MaxConcurrent,
+            dto.Services is null
+                ? null
+                : new ProfileServicesConfig(
+                    dto.Services.AgentInitiated ?? false,
+                    dto.Services.MaxAgentInitiated is { } cap and > 0 ? cap : 8));
     }
 
     private static TEnum ParseEnum<TEnum>(string? raw, TEnum fallback) where TEnum : struct, Enum =>
@@ -446,7 +451,12 @@ public sealed record ProfileConfig(
     EventsConfig Events,
     TelemetryConfig Telemetry,
     LogsConfig Logs,
-    int? MaxConcurrent);
+    int? MaxConcurrent,
+    ProfileServicesConfig? Services = null)
+{
+    /// <summary>This profile's agent-service policy; the closed default when unstated.</summary>
+    public ProfileServicesConfig ServicePolicy => Services ?? new ProfileServicesConfig();
+}
 
 /// <summary>How <c>stop</c> is delivered for this profile (§10). The frozen
 /// vocabulary names the command; the config names the transport.</summary>
@@ -540,6 +550,23 @@ public sealed record LogsConfig(
     bool Capture = false,
     long MaxBytes = TranscriptDefaults.MaxBytes,
     int PruneAfterDays = TranscriptDefaults.PruneAfterDays);
+
+/// <summary>
+/// §10 per-profile policy for agent-initiated services. <b>Off by default</b>: a worker
+/// starting a long-lived process is a machine capability the operator grants, not a
+/// default. Deliberately gated by profile rather than by an allowlist of permitted
+/// commands — a worker on an open profile can already run a dev server by hand, so
+/// restricting the sanctioned tool below its existing capability would only push agents
+/// back to the <c>setsid</c>/env-scrubbing route the worker skill forbids. A strict
+/// profile with no shell cannot start a service either way, and refuses honestly.
+/// </summary>
+/// <param name="MaxAgentInitiated">
+/// Resource bound, not an authority control: the gate answers <em>may this task start
+/// services</em>, this answers <em>how many</em>. Services are already-running load that
+/// back-pressure cannot gate the way it gates dispatch, so an agent looping on
+/// <c>start_service</c> needs a ceiling.
+/// </param>
+public sealed record ProfileServicesConfig(bool AgentInitiated = false, int MaxAgentInitiated = 8);
 
 /// <summary>Accepted <c>services[].backend</c> values (§10).</summary>
 public static class ServiceBackends

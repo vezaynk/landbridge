@@ -22,6 +22,7 @@ namespace Docket.Contracts;
 [JsonSerializable(typeof(KillCommand))]
 [JsonSerializable(typeof(OpenForwardCommand))]
 [JsonSerializable(typeof(ReadTranscriptCommand))]
+[JsonSerializable(typeof(StartServiceCommand))]
 [JsonSerializable(typeof(StartedEvent))]
 [JsonSerializable(typeof(SessionStartedEvent))]
 [JsonSerializable(typeof(AliveEvent))]
@@ -33,5 +34,6 @@ namespace Docket.Contracts;
 [JsonSerializable(typeof(ForwardClosedEvent))]
 [JsonSerializable(typeof(RebootedEvent))]
 [JsonSerializable(typeof(TranscriptChunkEvent))]
+[JsonSerializable(typeof(ServiceStartedEvent))]
 [JsonSerializable(typeof(MachineHeartbeat))]
 internal sealed partial class RunnerWireContext : JsonSerializerContext;

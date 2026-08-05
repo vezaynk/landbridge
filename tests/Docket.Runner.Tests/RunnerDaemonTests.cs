@@ -241,6 +241,77 @@ public class RunnerDaemonTests
         await h.Daemon.ShutdownAsync();
     }
 
+    [Fact]
+    public async Task A_start_service_command_is_refused_when_no_supervised_task_owns_it()
+    {
+        // §10: the profile carries the policy, and only a task this machine actually holds
+        // has a profile to consult. Refusing beats guessing — a service with no owner has no
+        // lifetime, which is the one thing this design will not allow.
+        await using var services = new ServiceSupervisor([], "machine-1", TimeProvider.System);
+        var h = Build(services: services);
+        await h.Daemon.StartAsync(); // the ring pump is what carries the reply to the channel
+
+        var outcome = await h.Daemon.HandleAsync(new StartServiceCommand(
+            TaskId.New(), "req-1", "dev", [TestKit.HarnessPath(), "sleeper"]));
+
+        Assert.IsType<CommandOutcome.Acknowledged>(outcome);
+        Assert.True(await TestKit.WaitUntilAsync(
+            () => h.Recorded.Events.Any(e => e.Event is ServiceStartedEvent), TimeSpan.FromSeconds(5)));
+        var reply = (ServiceStartedEvent)h.Recorded.Events.First(e => e.Event is ServiceStartedEvent).Event;
+        Assert.False(reply.Started);
+        Assert.Equal(ServiceRefusals.ProfileNotPermitted, reply.Refusal);
+        Assert.Equal("req-1", reply.RequestId);
+
+        await h.Daemon.ShutdownAsync();
+    }
+
+    [Fact]
+    public async Task A_start_service_command_replies_with_the_port_and_log_path()
+    {
+        // The reply is what a worker acts on: the port it must register (§8.2) and where its
+        // own logs are, so it reads them with file tools rather than needing a serving path.
+        var cwd = TestKit.NewWorkRoot();
+        var state = TestKit.NewWorkRoot();
+        try
+        {
+            var config = RunnerConfig.Load("""
+            {
+              "machine": { "work_root": "/tmp/docketd-fake", "heartbeat_seconds": 5 },
+              "profiles": [ { "name": "default", "spawn": ["noop"],
+                "services": { "agent_initiated": true } } ]
+            }
+            """);
+            await using var services = new ServiceSupervisor(
+                [], "machine-1", TimeProvider.System,
+                logs: new ServiceLogStore(Path.Combine(state, ServiceLogStore.DirName)),
+                probe: (_, _) => Task.FromResult(true));
+            var h = Build(config, services: services);
+            await h.Daemon.StartAsync();
+
+            // The daemon resolves the profile from the supervised task, so dispatch one first.
+            var task = TaskId.New();
+            await h.Daemon.HandleAsync(TestKit.Dispatch(task));
+
+            await h.Daemon.HandleAsync(new StartServiceCommand(
+                task, "req-2", "dev", [TestKit.HarnessPath(), "sleeper"],
+                WorkingDirectory: cwd, Env: null, Port: 7401, ReadinessTcpPort: 7401));
+
+            Assert.True(await TestKit.WaitUntilAsync(
+                () => h.Recorded.Events.Any(e => e.Event is ServiceStartedEvent), TimeSpan.FromSeconds(15)));
+            var reply = (ServiceStartedEvent)h.Recorded.Events.First(e => e.Event is ServiceStartedEvent).Event;
+            Assert.True(reply.Started, reply.Refusal);
+            Assert.Equal(7401, reply.Port);
+            Assert.Contains("dev", reply.LogPath!, StringComparison.Ordinal);
+
+            await h.Daemon.ShutdownAsync();
+        }
+        finally
+        {
+            TestKit.TryDeleteRoot(cwd);
+            TestKit.TryDeleteRoot(state);
+        }
+    }
+
     private static int AliveFor(Harness h, TaskId task) =>
         h.Recorded.Events.Count(e => e.Event is AliveEvent a && a.Task == task);
 
@@ -463,6 +534,11 @@ internal sealed class FakeProcessSupervisor : IProcessSupervisor
 
     public IReadOnlyCollection<TaskId> LiveTasks =>
         Spawned.Select(s => s.Task).Where(t => !Exited.Contains(t)).ToArray();
+
+    /// <summary>Every spawned task ran on "default" unless a test says otherwise — enough for
+    /// §10 agent-service policy lookups, which only need the profile name.</summary>
+    public string? ProfileFor(TaskId task) =>
+        Spawned.Any(s => s.Task == task) ? "default" : null;
 }
 
 /// <summary>A reaper that reports a fixed count and records the machine it was asked to clean.</summary>

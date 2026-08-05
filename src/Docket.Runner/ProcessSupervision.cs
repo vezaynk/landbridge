@@ -66,6 +66,9 @@ public interface IProcessSupervisor
     /// <summary>Supervised tasks whose process is still alive — the source of the
     /// periodic <c>alive</c> event that carries process-alive to the plane (§10).</summary>
     IReadOnlyCollection<TaskId> LiveTasks { get; }
+
+    /// <summary>The profile a supervised task runs under, or null if not held here (§10).</summary>
+    string? ProfileFor(TaskId task);
 }
 
 /// <summary>One supervised harness process and the per-task state around it.</summary>
@@ -172,6 +175,14 @@ public sealed class ProcessSupervisor : IProcessSupervisor
     private readonly OutboundEventRing _ring;
     private readonly TimeProvider _clock;
     private readonly StrayReaper? _taskReaper;
+
+    /// <summary>
+    /// §10 task-scoped service lifetime: invoked when a task's process ends, so services
+    /// that task declared are stopped with it. Bookkeeping we own, deliberately not left to
+    /// the stray reaper's environment scan — that scan finds nothing on Windows by design, so
+    /// reaper-only teardown would make this guarantee platform-dependent.
+    /// </summary>
+    private readonly Action<TaskId>? _onTaskExit;
     private readonly TranscriptStore? _transcripts;
     private readonly ConcurrentDictionary<TaskId, SupervisedTask> _tasks = new();
     private readonly SpawnerThread _spawner = new();
@@ -190,12 +201,14 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         OutboundEventRing ring,
         TimeProvider clock,
         StrayReaper? taskReaper = null,
-        TranscriptStore? transcripts = null)
+        TranscriptStore? transcripts = null,
+        Action<TaskId>? onTaskExit = null)
     {
         _machine = machine;
         _ring = ring;
         _clock = clock;
         _taskReaper = taskReaper;
+        _onTaskExit = onTaskExit;
         _transcripts = transcripts;
     }
 
@@ -218,6 +231,13 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         _tasks.Values.Count(t => string.Equals(t.Profile, profile, StringComparison.Ordinal));
 
     public bool TryGet(TaskId task, out SupervisedTask supervised) => _tasks.TryGetValue(task, out supervised!);
+
+    /// <summary>
+    /// The profile name a supervised task is running under, or null if this machine holds no
+    /// such task. §10 agent-initiated services consult it: the policy for what a task may
+    /// start lives on its profile, and only the machine knows which profile that is.
+    /// </summary>
+    public string? ProfileFor(TaskId task) => _tasks.TryGetValue(task, out var t) ? t.Profile : null;
 
     /// <summary>Identity of the thread that executed a spawn's <c>Process.Start</c>.</summary>
     internal readonly record struct SpawnThreadObservation(int ManagedThreadId, bool IsThreadPoolThread);
@@ -617,6 +637,14 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         catch (InvalidOperationException) { exitCode = -1; }
 
         _ring.Enqueue(new ExitedEvent(supervised.Task, exitCode, _clock.GetUtcNow()));
+
+        // §10 task-scoped services: stop what this task declared, before the reaper sweep.
+        // Explicit and portable; the sweep below is the backstop for anything that escaped.
+        try { _onTaskExit?.Invoke(supervised.Task); }
+        catch (Exception e) when (e is InvalidOperationException or ObjectDisposedException)
+        {
+            // teardown is best-effort: never let it break the exit path
+        }
 
         // §10: task-exit stray cleanup keyed by DOCKET_TASK_ID, best-effort.
         try { _taskReaper?.ReapTask(machineId, supervised.Task.ToString()); }

@@ -69,6 +69,17 @@ internal sealed class ProfileDto
     public TelemetryDto? Telemetry { get; set; }
     public LogsDto? Logs { get; set; }
     public int? MaxConcurrent { get; set; }
+
+    // §10 agent-initiated services: whether a task on this profile may call
+    // start_service, and how many it may hold. Off by default — enabling it is the
+    // machine owner's deliberate choice, the same shape as the open/strict archetypes.
+    public ProfileServicesDto? Services { get; set; }
+}
+
+internal sealed class ProfileServicesDto
+{
+    public bool? AgentInitiated { get; set; }
+    public int? MaxAgentInitiated { get; set; }
 }
 
 internal sealed class StopDto
