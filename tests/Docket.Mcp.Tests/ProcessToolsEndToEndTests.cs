@@ -216,15 +216,20 @@ public sealed class ProcessToolsEndToEndTests(PostgresFixture pg) : IAsyncLifeti
         await using (var second = await RelayGrantTestKit.ConnectMcpAsync(
             RelayGrantTestKit.BaseUri(plane), cleaner.Token, ct))
         {
+            // Discovery is the load-bearing half of the cleanup story: a continuation that has
+            // lost its notes cannot be handed the name, so it must find the survivor itself.
+            // The name below is taken FROM the list result, never from this test's knowledge —
+            // if list_processes were a stub, the stop could not be addressed at all.
             var listed = await CallAsync(second, "list_processes", new Dictionary<string, object?>(), ct);
-            Assert.Contains(
-                listed.EnumerateArray(),
-                e => e.GetProperty("name").GetString() == "long-build"
-                     && e.GetProperty("kind").GetString() == "process");
+            var survivor = Assert.Single(
+                listed.EnumerateArray().ToList(), e => e.GetProperty("kind").GetString() == "process");
+            var discoveredName = survivor.GetProperty("name").GetString()!;
+            Assert.Equal("long-build", discoveredName); // sanity: it found the right one
+            Assert.Equal("running", survivor.GetProperty("state").GetString());
 
             var stopped = await CallAsync(second, "stop_process", new Dictionary<string, object?>
             {
-                ["name"] = "long-build",
+                ["name"] = discoveredName,
             }, ct);
             Assert.True(stopped.GetProperty("ok").GetBoolean());
             Assert.Equal(0, stopped.GetProperty("value").GetInt32()); // the exit, recorded
