@@ -158,7 +158,12 @@ per-task liveness is suspended and process exit is not a failure (§11).
 Two counters, not one (`TaskRecord.InfrastructureRequeues` vs
 `VerificationFailures`): a machine rebooting three times must not exhaust the
 budget a task has for failing its criteria. **Only the verification counter drives
-`rejected`** (default limit 3). Terminal states — `completed`, `rejected`,
+`rejected`** (default limit 3). Both are capped, but they end differently: the
+infrastructure cap (`InfrastructureRequeueLimit`, default 5, configurable via
+`Docket:InfrastructureRequeueLimit`, non-positive for uncapped) abandons the task as
+`canceled` — the plane giving up on placing the work, not a verdict on it — and every
+requeue records `LivenessLossReason` on the task row and its event row so the trail
+says which signal fired. Terminal states — `completed`, `rejected`,
 `canceled` — are final and never resumed. Leaving `working` clears the task's
 registered services and releases its relay forwards
 (`ClearServicesAndForwards`).

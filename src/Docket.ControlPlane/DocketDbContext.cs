@@ -64,6 +64,9 @@ public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) :
             // §11: the live input request's kind, stored as its enum name like the
             // event row's copy of the same enum. Null unless the task has ever asked.
             e.Property(t => t.InputKind).HasConversion<string>();
+            // §6/§9 check 7: why the task was last requeued, same enum-name storage as
+            // the event row's copy. Null until the first infrastructure requeue.
+            e.Property(t => t.LastRequeueReason).HasConversion<string>();
             e.Property(t => t.Version).IsRowVersion(); // maps to Postgres xmin
         });
 
@@ -94,6 +97,8 @@ public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) :
             // The typed input-request kind stores as its enum name, exactly like
             // the from/to states above (§10/§12 derived telemetry, #50).
             e.Property(ev => ev.InputKind).HasConversion<string>();
+            // The requeue's reason, same enum-name storage (§6/§9 check 7, #73).
+            e.Property(ev => ev.LivenessReason).HasConversion<string>();
         });
 
         b.Entity<CredentialRow>(e =>

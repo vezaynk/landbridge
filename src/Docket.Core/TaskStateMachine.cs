@@ -129,14 +129,28 @@ public static class TaskStateMachine
         if (task.State == TaskState.Working)
             effects.Add(new ClearServicesAndForwards());
 
-        return TransitionResult.Ok(
-            task with
-            {
-                State = TaskState.Submitted,
-                CurrentInstance = null,
-                InfrastructureRequeues = task.InfrastructureRequeues + 1,
-            },
-            effects.ToArray());
+        // The reason rides onto the record so the requeue trail says WHICH signal fired
+        // (#73): without it every requeue is indistinguishable, and a task looping on a
+        // wedged machine reads exactly like one whose machine rebooted twice.
+        var requeued = task with
+        {
+            CurrentInstance = null,
+            InfrastructureRequeues = task.InfrastructureRequeues + 1,
+            LastRequeueReason = c.Reason,
+        };
+
+        // §9 check 7: infrastructure requeues are capped. At the cap the task is
+        // abandoned rather than dispatched again — terminal as `canceled`, the state §6
+        // already gives the control plane for "this work was called off", and deliberately
+        // NOT `rejected`: rejection is the verification counter's alone (§6, two
+        // counters), and blaming the work for a machine that keeps failing it punishes the
+        // wrong party. The workspace is preserved (no discard effect) — whatever wedged
+        // every attempt is the evidence a human needs — and the reason that ended it stays
+        // on the record for get_task_report/get_team_state.
+        if (requeued.InfrastructureRequeuesExhausted)
+            return TransitionResult.Ok(requeued with { State = TaskState.Canceled }, effects.ToArray());
+
+        return TransitionResult.Ok(requeued with { State = TaskState.Submitted }, effects.ToArray());
     }
 
     private static TransitionResult ApplyReportResult(TaskRecord task, ReportResult c)

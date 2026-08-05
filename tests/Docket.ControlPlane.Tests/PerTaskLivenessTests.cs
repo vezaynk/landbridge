@@ -183,6 +183,127 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Contains(id, registry.TasksOn("m1"));
     }
 
+    [SkippableFact]
+    public async Task Each_requeue_records_which_signal_fired()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+        var id = await SeedWorkingTaskAsync(clock, "m1");
+        var registry = LiveMachine(clock, "m1", id);
+        var dispatch = NewDispatch(clock, registry);
+
+        // #73: the reason used to be computed here and thrown away, so a task requeued
+        // twice for two entirely different faults left two identical marks. First fault:
+        // the process is alive but wedged — the no-progress ceiling.
+        StayAliveFor(clock, registry, id, Ceiling + TimeSpan.FromMinutes(1));
+        await dispatch.CheckLivenessAsync(CancellationToken.None);
+        Assert.Equal(LivenessLossReason.NoProgress, await LastReasonAsync(id));
+
+        // Second fault, after a redispatch: docketd stops asserting the process exists
+        // at all. Same counter, different signal, and the row now holds the live one.
+        await RedispatchAsync(clock, registry, "m1", id);
+        clock.Advance(Window + TimeSpan.FromSeconds(1));
+        await dispatch.CheckLivenessAsync(CancellationToken.None);
+        Assert.Equal(LivenessLossReason.LivenessTimeout, await LastReasonAsync(id));
+
+        // And the event log keeps both, in order, each with its own reason — which is what
+        // makes a requeue loop diagnosable instead of a column of identical rows (§12).
+        await using var db = pg.NewContext();
+        var requeues = await db.TaskEvents.AsNoTracking()
+            .Where(e => e.TaskId == id.Value && e.Kind == nameof(LivenessLost))
+            .OrderBy(e => e.Seq)
+            .Select(e => new { e.LivenessReason, e.FromState, e.ToState })
+            .ToListAsync();
+
+        Assert.Equal(
+            new LivenessLossReason?[] { LivenessLossReason.NoProgress, LivenessLossReason.LivenessTimeout },
+            requeues.Select(e => e.LivenessReason).ToArray());
+        Assert.All(requeues, e =>
+        {
+            Assert.Equal(TaskState.Working, e.FromState);
+            Assert.Equal(TaskState.Submitted, e.ToState);
+        });
+    }
+
+    [SkippableFact]
+    public async Task A_task_that_keeps_wedging_is_abandoned_at_its_requeue_cap()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+        // A cap of two, so the loop this test drives is short; the shipped default is
+        // TaskRecord.DefaultInfrastructureRequeueLimit. The cap lives on the row, stamped
+        // at creation (§9 check 7), which is why seeding it here is enough — nothing in
+        // the liveness path needs to know the configured value.
+        var id = await SeedWorkingTaskAsync(clock, "m1", requeueLimit: 2);
+        var registry = LiveMachine(clock, "m1", id);
+        var dispatch = NewDispatch(clock, registry);
+
+        // Requeue one: below the cap, so the task goes back to submitted and gets another
+        // machine — exactly the behaviour that must survive the cap.
+        StayAliveFor(clock, registry, id, Ceiling + TimeSpan.FromMinutes(1));
+        await dispatch.CheckLivenessAsync(CancellationToken.None);
+        Assert.Equal(TaskState.Submitted, await StateAsync(clock, id));
+
+        // Requeue two wedges the same way and reaches the cap. Terminal as canceled, with
+        // the reason that ended it — never rejected (§6, two counters).
+        await RedispatchAsync(clock, registry, "m1", id);
+        StayAliveFor(clock, registry, id, Ceiling + TimeSpan.FromMinutes(1));
+        await dispatch.CheckLivenessAsync(CancellationToken.None);
+
+        Assert.Equal(TaskState.Canceled, await StateAsync(clock, id));
+        Assert.DoesNotContain(id, registry.TasksOn("m1"));
+
+        await using var db = pg.NewContext();
+        var row = await db.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(2, row.InfrastructureRequeues);
+        Assert.Equal(0, row.VerificationFailures);
+        Assert.Equal(LivenessLossReason.NoProgress, row.LastRequeueReason);
+
+        // The abandoning requeue is its own event row: LivenessLost, working → canceled,
+        // carrying the reason. That row is how the §12 log distinguishes the cap from a
+        // cancel a person asked for.
+        var abandoning = await db.TaskEvents.AsNoTracking()
+            .Where(e => e.TaskId == id.Value && e.ToState == TaskState.Canceled)
+            .SingleAsync();
+        Assert.Equal(nameof(LivenessLost), abandoning.Kind);
+        Assert.Equal(LivenessLossReason.NoProgress, abandoning.LivenessReason);
+
+        // And it reaches the Lead through both reads it would actually use (§10).
+        var store = new TaskStore(db, clock);
+        var team = new TeamId(row.TeamId);
+        var report = await store.GetTaskReportAsync(team, id);
+        Assert.Equal(2, report!.InfrastructureRequeues);
+        Assert.Equal(2, report.InfrastructureRequeueLimit);
+        Assert.Equal(LivenessLossReason.NoProgress, report.LastRequeueReason);
+
+        var summary = Assert.Single((await store.GetTeamStateAsync(team)).Tasks);
+        Assert.Equal(TaskState.Canceled, summary.State);
+        Assert.Equal(2, summary.InfrastructureRequeues);
+        Assert.Equal(LivenessLossReason.NoProgress, summary.LastRequeueReason);
+    }
+
+    [SkippableFact]
+    public async Task An_abandoned_task_is_not_dispatched_again()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+        var id = await SeedWorkingTaskAsync(clock, "m1", requeueLimit: 1);
+        var registry = LiveMachine(clock, "m1", id);
+
+        // A cap of one abandons on the first loss. The point of the terminal state is that
+        // the dispatch loop stops paying for this task: a canceled row is not claimable,
+        // so the ~30-minute-per-attempt burn (and its budget commitment, §9.9) ends here.
+        clock.Advance(Window + TimeSpan.FromSeconds(1));
+        await NewDispatch(clock, registry).CheckLivenessAsync(CancellationToken.None);
+        Assert.Equal(TaskState.Canceled, await StateAsync(clock, id));
+
+        await using var db = pg.NewContext();
+        var claim = await new TaskStore(db, clock).DispatchNextAsync(
+            new MachineSnapshot("m1", Ready: true, UnderBackPressure: false, Set("default")),
+            WorkerInstanceId.New());
+        Assert.IsType<StoreResult.NotFound>(claim);
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -221,12 +342,18 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
         return registry;
     }
 
-    /// <summary>Create → dispatch, leaving the task in <c>working</c> on the machine.</summary>
+    /// <summary>
+    /// Create → dispatch, leaving the task in <c>working</c> on the machine.
+    /// <paramref name="requeueLimit"/> stamps §9 check 7's cap onto the new row through
+    /// the store policy the host configures, so a cap test drives the real seam rather
+    /// than writing the column by hand.
+    /// </summary>
     private async Task<TaskId> SeedWorkingTaskAsync(
-        TimeProvider clock, string machineId, bool registerService = false)
+        TimeProvider clock, string machineId, bool registerService = false, int? requeueLimit = null)
     {
         await using var db = pg.NewContext();
-        var store = new TaskStore(db, clock);
+        var store = new TaskStore(db, clock,
+            policy: requeueLimit is { } limit ? new TaskStorePolicy(limit) : null);
         var team = TeamId.New();
         var created = (StoreResult.Applied)await store.CreateAsync(
             new CreateTask(new LeadClaim(team), team, "completion criteria", CompletionMode.Lead, null,
@@ -256,19 +383,45 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
         var services = new ServiceCollection();
         services.AddDbContext<DocketDbContext>(o =>
             o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
-        services.AddScoped<TaskStore>();
+        // §9.9: the store and the budget accounting it commits through are one
+        // registration, and CheckLivenessAsync resolves both — the budget sweep rides the
+        // same timer as the liveness scan.
+        services.AddDocketStore();
         services.AddScoped<TokenService>();
-        // §9.9: CheckLivenessAsync also sweeps exhausted budgets, which resolves this
-        // from the scope — the same registration the other sweeper fixtures make.
-        services.AddScoped<TeamBudgetService>();
         services.AddSingleton(clock);
         return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
+    }
+
+    /// <summary>
+    /// Claims the requeued task for the machine again and re-tracks it, which resets both
+    /// clocks — a fresh attempt, exactly as a real dispatch pass would leave it. Driven
+    /// through the store rather than <see cref="DispatchService.RunDispatchPassAsync"/> so
+    /// the wedge these tests build is not racing a dispatch loop.
+    /// </summary>
+    private async Task RedispatchAsync(
+        TimeProvider clock, RunnerConnectionRegistry registry, string machineId, TaskId id)
+    {
+        await using var db = pg.NewContext();
+        Assert.IsType<StoreResult.Applied>(await new TaskStore(db, clock).DispatchNextAsync(
+            new MachineSnapshot(machineId, Ready: true, UnderBackPressure: false, Set("default")),
+            WorkerInstanceId.New()));
+        registry.TrackDispatch(machineId, id);
     }
 
     private async Task<TaskState?> StateAsync(TimeProvider clock, TaskId id)
     {
         await using var db = pg.NewContext();
         return await new TaskStore(db, clock).GetStateAsync(id);
+    }
+
+    /// <summary>The live reason on the row — §6's infrastructure counter, with a why (#73).</summary>
+    private async Task<LivenessLossReason?> LastReasonAsync(TaskId id)
+    {
+        await using var db = pg.NewContext();
+        return await db.Tasks.AsNoTracking()
+            .Where(t => t.Id == id.Value)
+            .Select(t => t.LastRequeueReason)
+            .SingleAsync();
     }
 
     private static IReadOnlySet<string> Set(params string[] names) =>

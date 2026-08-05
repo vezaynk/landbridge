@@ -12,7 +12,11 @@ namespace Docket.ControlPlane;
 /// consequences (token mint/revoke, service clearing, park record) are
 /// atomic, and a NOTIFY fires only if the write commits.
 /// </summary>
-public sealed class TaskStore(DocketDbContext db, TimeProvider clock, TeamBudgetService? budgets = null)
+public sealed class TaskStore(
+    DocketDbContext db,
+    TimeProvider clock,
+    TeamBudgetService? budgets = null,
+    TaskStorePolicy? policy = null)
 {
     public async Task<StoreResult> CreateAsync(CreateTask command, CancellationToken ct = default)
     {
@@ -22,7 +26,16 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock, TeamBudget
         if (result is TransitionResult.Rejected r)
             return new StoreResult.Rejected(r.Rule, r.Reason);
 
-        var task = ((TransitionResult.Transitioned)result).Task;
+        // §9 check 7: the task's infrastructure requeue cap is fixed here, from
+        // control-plane config, exactly as VerificationRetryLimit is fixed by the engine's
+        // default — a task carries its own terms, so changing the configured cap never
+        // moves the goalposts under work already in flight. Applied to the record too, so
+        // what the caller gets back and what the row holds cannot disagree.
+        var task = ((TransitionResult.Transitioned)result).Task with
+        {
+            InfrastructureRequeueLimit =
+                policy?.InfrastructureRequeueLimit ?? TaskRecord.DefaultInfrastructureRequeueLimit,
+        };
         db.Tasks.Add(new TaskRow
         {
             Id = id.Value,
@@ -32,6 +45,7 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock, TeamBudget
             State = task.State,
             Profile = task.Profile,
             VerificationRetryLimit = task.VerificationRetryLimit,
+            InfrastructureRequeueLimit = task.InfrastructureRequeueLimit,
             // Opaque content the engine never interpreted (§7): persisted verbatim
             // straight off the command, alongside the criteria.
             CompletionCriteria = command.CompletionCriteria,
@@ -371,6 +385,11 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock, TeamBudget
                 Parked = t.ParkMachine != null,
                 t.ContinuesTaskId,
                 t.CompletionProvenance,
+                // §6/§9 check 7: the infrastructure story is structure, so it rides the
+                // bulk read — the count and why the last requeue happened. On a canceled
+                // task the reason is how a Lead tells the cap from a deliberate cancel.
+                t.InfrastructureRequeues,
+                t.LastRequeueReason,
                 // §10: the bulk read carries only a flag that a report exists, never
                 // the prose — the Lead fetches the text per task via get_task_report.
                 HasReport = t.WorkerReport != null,
@@ -390,7 +409,8 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock, TeamBudget
             .Select(t => new TeamTaskSummary(
                 t.Id, t.Namespace, t.State, t.CompletionMode, t.Attempt, t.Parked,
                 t.ContinuesTaskId, t.CompletionProvenance, t.HasReport,
-                t.InputKind, t.HasQuestion))
+                t.InputKind, t.HasQuestion,
+                t.InfrastructureRequeues, t.LastRequeueReason))
             .ToList();
 
         return new TeamStateView(team.Value, rows.Count, counts, summaries);
@@ -408,7 +428,13 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock, TeamBudget
     public async Task<TaskReportView?> GetTaskReportAsync(TeamId team, TaskId task, CancellationToken ct = default) =>
         await db.Tasks.AsNoTracking()
             .Where(t => t.Id == task.Value && t.TeamId == team.Value)
-            .Select(t => new TaskReportView(t.Id, t.Namespace, t.WorkerReport))
+            // §6/§9 check 7: the infrastructure account rides the per-task fetch in full —
+            // count, cap, and the last reason — because this is where a Lead asks "what
+            // happened to this task", and for a task the cap abandoned it is the ONLY
+            // answer: there is no worker report to read when nothing ever finished.
+            .Select(t => new TaskReportView(
+                t.Id, t.Namespace, t.WorkerReport,
+                t.InfrastructureRequeues, t.InfrastructureRequeueLimit, t.LastRequeueReason))
             .FirstOrDefaultAsync(ct);
 
     /// <summary>
@@ -683,8 +709,13 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock, TeamBudget
         if (answerText is not null)
             row.InputAnswer = answerText;
         ApplyEffects(row, ok.Effects);
+        // §6/§9 check 7 (#73): the requeue's reason onto its own event row, the same way
+        // the input-request kind rides its transition. The row's from/to states already
+        // say which outcome the requeue took, so reason + to-state is the whole story an
+        // operator needs — where before every requeue row was identical.
         AppendEvent(row.Id, row.TeamId, command.GetType().Name, before, row.State,
-            detail: DescribeEffects(ok.Effects), inputKind: inputKind);
+            detail: DescribeEffects(ok.Effects), inputKind: inputKind,
+            livenessReason: (command as LivenessLost)?.Reason);
 
         try
         {
@@ -751,7 +782,7 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock, TeamBudget
 
     private void AppendEvent(
         Guid taskId, Guid teamId, string kind, TaskState? from, TaskState to, string? detail,
-        InputRequestKind? inputKind = null)
+        InputRequestKind? inputKind = null, LivenessLossReason? livenessReason = null)
         => db.TaskEvents.Add(new TaskEventRow
         {
             TaskId = taskId,
@@ -761,6 +792,7 @@ public sealed class TaskStore(DocketDbContext db, TimeProvider clock, TeamBudget
             ToState = to,
             Detail = detail,
             InputKind = inputKind,
+            LivenessReason = livenessReason,
             OccurredAt = clock.GetUtcNow(),
         });
 
