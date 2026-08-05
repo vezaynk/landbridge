@@ -86,7 +86,9 @@ start_process(
 
 Two things come back. A **log path** on this machine, so you read its output with ordinary file tools. And possibly a **refusal**: your profile may not permit background processes, the machine may be at its cap, or the name may already be taken. A refusal is a fact to report, not something to work around.
 
-**One flag worth knowing: `openStdin`.** It defaults to true, which is what lets you talk to the process with `write_process` and what gives `stop_process` a graceful path. Pass `openStdin: false` for a program that would sit forever waiting on input nobody is going to send — its first read then returns end-of-input instead of hanging. Two things you give up, and you should decide deliberately rather than discover them: `write_process` will refuse, and stopping it becomes a short wait and then a kill, with no chance for it to finish tidily. It also does *not* make stdin a terminal, so a program that changes behaviour when stdin is not a TTY still will.
+**One flag worth knowing: `openStdin`, and it defaults to false.** Most background work is fire-and-forget, so by default nothing is held open and a program that reads stdin sees end-of-input immediately instead of hanging forever on input nobody will send.
+
+**Pass `openStdin: true` if you intend to talk to the process.** That is the only way `write_process` works, and the only way `stop_process` can stop it gracefully — without a pipe, stopping is a short wait and then a kill, with no chance for it to finish tidily. Decide when you start it: changing your mind later means stopping and restarting. It does *not* make stdin a terminal either way, so a program that changes behaviour when stdin is not a TTY still will.
 
 **Nothing stops it for you.** Not your turn ending, not the task completing. So:
 
@@ -96,9 +98,15 @@ Two things come back. A **log path** on this machine, so you read its output wit
 
 ### Talking to a process: `write_process`
 
-`write_process(name, data)` writes to its stdin — a command for a REPL, an answer a script is waiting for.
+`write_process(name, data)` writes to its stdin — a command for a REPL, an answer a script is waiting for. **It only works on a process you started with `openStdin: true`**; otherwise it refuses and says so, which is a start-time choice rather than a wrong name. So the interactive shape starts like this:
 
-If the process was started with `openStdin: false` this refuses outright, and says so — that is a start-time choice, not a wrong name.
+```
+start_process(
+  name: "py-repl",
+  spawn: ["/abs/bin/python", "-u", "-i"],
+  workingDirectory: "/abs/path",
+  openStdin: true)          // required — you are going to write to it
+```
 
 **It is a pipe, not a terminal, and that changes behaviour.** Programs that check whether stdin is a TTY may not prompt at all, may buffer output in blocks instead of lines, or may refuse to run. A password prompt that reads `/dev/tty` will never see what you write. A full-screen or curses program will not work — do not try.
 

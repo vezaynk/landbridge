@@ -162,17 +162,20 @@ public sealed record ReadTranscriptCommand(
 /// because they declare nothing to dial.
 /// </remarks>
 /// <param name="OpenStdin">
-/// Whether the child gets a usable stdin pipe. Default <c>true</c>, which preserves the
-/// dead-man behaviour and makes <c>write-process</c> work. Set false for a program that blocks
-/// forever reading a stdin nobody will write to: docketd then redirects stdin and closes it
-/// immediately, so the child's first read returns EOF rather than hanging. That is the portable
-/// choice — .NET has no cross-platform null-device handle, and leaving stdin un-redirected would
+/// Whether the child gets a usable stdin pipe. <b>Default false</b>: the common case is
+/// fire-and-forget — a build, a dev server, a watcher — which gets the simplest spawn with
+/// nothing held open, and its first read returns EOF rather than blocking on input nobody will
+/// send. Closing is done by redirecting stdin and closing it at once, which is the portable
+/// choice: .NET has no cross-platform null-device handle, and leaving stdin un-redirected would
 /// hand the child whatever docketd inherited, which is not a defined thing to give it.
 ///
-/// <para>It does <b>not</b> make stdin a terminal. A program that changes behaviour because
-/// <c>isatty</c> is false behaves the same either way; a real TTY needs a pty, which is out of
-/// scope. Closing stdin fixes <em>blocking</em>, not <em>detection</em> — and it costs you
-/// <c>write-process</c> and the graceful EOF half of <c>stop-process</c>.</para>
+/// <para>Ask for true when you intend to talk to the process — <c>write-process</c> is therefore
+/// <b>opt-in by construction</b>, and so is the graceful EOF half of <c>stop-process</c>. A
+/// process started without stdin can only be stopped hard.</para>
+///
+/// <para>Either way it is <b>not</b> a terminal. A program that changes behaviour because
+/// <c>isatty</c> is false behaves the same however this is set; a real TTY needs a pty, which is
+/// out of scope. Opening stdin buys you a writable pipe, not interactivity.</para>
 /// </param>
 public sealed record StartProcessCommand(
     TaskId Task,
@@ -181,7 +184,7 @@ public sealed record StartProcessCommand(
     IReadOnlyList<string> Spawn,
     string? WorkingDirectory = null,
     IReadOnlyDictionary<string, string>? Env = null,
-    bool OpenStdin = true) : RunnerCommand;
+    bool OpenStdin = false) : RunnerCommand;
 
 /// <summary>
 /// <c>stop-process</c> (§10) — end an agent-started process. Machine-scoped: any worker
@@ -270,9 +273,9 @@ public static class ProcessRefusals
     public const string StdinUnavailable = "stdin-unavailable";
 
     /// <summary>
-    /// It was started with <c>open_stdin: false</c>, so there is no pipe to write to. Distinct
-    /// from a wrong name and from a broken pipe: the caller learns the process exists and is
-    /// running, and that this was a choice made at start time.
+    /// It was started without a stdin pipe — the default. Distinct from a wrong name and from a
+    /// broken pipe: the caller learns the process exists and is running, and that writing to it
+    /// required asking for <c>open_stdin</c> at start time.
     /// </summary>
     public const string StdinNotOpened = "stdin-not-opened";
 

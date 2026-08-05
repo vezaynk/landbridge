@@ -99,8 +99,8 @@ an exited process releases its name. **Ports are not part of a process at all**,
 one place the two diverge sharply: a service declares a port and gets refuse-at-dial protection, a
 process declares nothing and is invisible to it. If an agent's process listens on something that
 is the agent's business, and reachability is a separate `register_service` call. Processes also
-carry a start-time stdin choice (`open_stdin`, default on); closed stdin means no `write_process`
-and no graceful stop.
+carry a start-time stdin choice (`open_stdin`, **default off**): without a pipe there is no
+`write_process` and no graceful stop, which suits the fire-and-forget majority.
 
 Worth knowing as the operator: **nothing reclaims a process when its task ends.** Cleanup is
 the Lead's job via a continuation task, and the Machine Group view is where you see what a

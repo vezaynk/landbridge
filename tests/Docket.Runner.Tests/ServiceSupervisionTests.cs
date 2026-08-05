@@ -440,7 +440,7 @@ public class ServiceSupervisionTests
         """).Default;
 
     private static StartProcessCommand Ask(
-        string name, IReadOnlyList<string>? spawn = null, string? cwd = null, bool openStdin = true) =>
+        string name, IReadOnlyList<string>? spawn = null, string? cwd = null, bool openStdin = false) =>
         new(TaskId.New(), "req-1", name, spawn ?? [TestKit.HarnessPath(), "sleeper"],
             WorkingDirectory: cwd, Env: null, OpenStdin: openStdin);
 
@@ -675,8 +675,10 @@ public class ServiceSupervisionTests
         {
             var logs = new ServiceLogStore(Path.Combine(state, ServiceLogStore.DirName));
             await using var sup = new ServiceSupervisor([], "m1", TimeProvider.System, logs: logs);
+            // Opt in explicitly: stdin is closed by default, so write_process only works for a
+            // process whose starter asked for a pipe.
             Assert.IsType<ProcessOutcome.StartedOk>(await sup.StartProcessAsync(
-                Ask("repl", spawn: [TestKit.HarnessPath(), "echo-stdin"], cwd: cwd),
+                Ask("repl", spawn: [TestKit.HarnessPath(), "echo-stdin"], cwd: cwd, openStdin: true),
                 ProfileWith(true), CancellationToken.None));
 
             var written = Assert.IsType<ProcessOutcome.WrittenOk>(
@@ -698,22 +700,24 @@ public class ServiceSupervisionTests
     }
 
     [Fact]
-    public async Task A_process_started_with_closed_stdin_refuses_writes_with_its_own_cause()
+    public async Task A_process_started_without_stdin_refuses_writes_with_its_own_cause()
     {
-        // The refusal must say "no pipe was opened", not "no such process" and not "broken pipe":
-        // the caller needs to learn this was a choice made at start time, so it knows to restart
-        // the process differently rather than hunt for a wrong name.
+        // The DEFAULT path, so this is the refusal an agent is most likely to meet. It must say
+        // "no pipe was opened", not "no such process" and not "broken pipe": the caller needs to
+        // learn writing required asking for stdin at start, so it restarts the process differently
+        // rather than hunting for a typo.
         var cwd = TestKit.NewWorkRoot();
         try
         {
             await using var sup = new ServiceSupervisor([], "m1", TimeProvider.System);
+            // No flag at all — the default is closed.
             Assert.IsType<ProcessOutcome.StartedOk>(await sup.StartProcessAsync(
-                Ask("quiet", cwd: cwd, openStdin: false), ProfileWith(true), CancellationToken.None));
+                Ask("quiet", cwd: cwd), ProfileWith(true), CancellationToken.None));
 
             var refused = Assert.IsType<ProcessOutcome.RefusedOutcome>(
                 await sup.WriteProcessAsync("quiet", "hello", true, CancellationToken.None));
             Assert.Equal(ProcessRefusals.StdinNotOpened, refused.Refusal);
-            Assert.Contains("open_stdin false", refused.Detail, StringComparison.Ordinal);
+            Assert.Contains("without a stdin pipe", refused.Detail, StringComparison.Ordinal);
 
             // And the mode is reported, so a cleanup agent knows there is no graceful stop.
             Assert.False(sup.ReportProcesses().Single().StdinOpen);
@@ -725,20 +729,21 @@ public class ServiceSupervisionTests
     }
 
     [Fact]
-    public async Task Closed_stdin_still_stops_and_open_stdin_is_the_default()
+    public async Task A_process_without_stdin_still_stops_and_asking_for_stdin_is_opt_in()
     {
-        // Choosing closed stdin is choosing a hard stop: there is no EOF lever, so stop is the
-        // bounded wait and then the tree. It must still work.
+        // Without stdin there is no EOF lever, so stop is the bounded wait and then the tree. That
+        // is the default path and it must still work.
         var cwd = TestKit.NewWorkRoot();
         try
         {
             await using var sup = new ServiceSupervisor([], "m1", TimeProvider.System);
-            await sup.StartProcessAsync(Ask("hard", cwd: cwd, openStdin: false), ProfileWith(true), CancellationToken.None);
+            await sup.StartProcessAsync(Ask("hard", cwd: cwd), ProfileWith(true), CancellationToken.None);
+            Assert.False(sup.ReportProcesses().Single().StdinOpen); // the default
             Assert.IsType<ProcessOutcome.StoppedOk>(await sup.StopProcessAsync("hard", CancellationToken.None));
             Assert.Empty(sup.ReportProcesses());
 
-            // Default is open, which is what makes write_process work without being asked for.
-            await sup.StartProcessAsync(Ask("chatty", cwd: cwd), ProfileWith(true), CancellationToken.None);
+            // Asking for stdin is what makes write_process and a graceful stop available.
+            await sup.StartProcessAsync(Ask("chatty", cwd: cwd, openStdin: true), ProfileWith(true), CancellationToken.None);
             Assert.True(sup.ReportProcesses().Single().StdinOpen);
         }
         finally

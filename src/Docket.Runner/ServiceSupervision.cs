@@ -405,7 +405,8 @@ public sealed class ServiceSupervisor : IAsyncDisposable
             {
                 return ProcessOutcome.Refused(
                     ProcessRefusals.StdinNotOpened,
-                    $"'{name}' was started with open_stdin false, so it has no pipe to write to");
+                    $"'{name}' was started without a stdin pipe (the default), so there is nothing to " +
+                    "write to — restart it with open_stdin true if you need to talk to it");
             }
             if (s.State != ServiceState.Running)
                 return ProcessOutcome.Refused(ProcessRefusals.NotRunning, $"'{name}' is not running");
@@ -760,9 +761,13 @@ public sealed class ServiceSupervisor : IAsyncDisposable
         /// Provenance for a process; a config service has none.</summary>
         public TaskId? Owner { get; init; }
 
-        /// <summary>§10: whether this process was given a usable stdin pipe. False means no
-        /// <c>write_process</c> and no graceful EOF stop — choosing closed stdin is choosing a
-        /// hard stop. Always true for a config-declared service (the dead-man pipe).</summary>
+        /// <summary>
+        /// §10: whether this entry has a usable stdin pipe. For an agent-started process this is
+        /// whatever the caller asked for, and the default is <b>false</b> — no
+        /// <c>write_process</c>, and no graceful EOF stop. The initializer default stays true
+        /// because a <em>config-declared service</em> always holds its dead-man pipe; only the
+        /// process path sets it from the wire.
+        /// </summary>
         public bool StdinOpen { get; init; } = true;
         public Process? Process { get; set; }
         public ServiceState State { get; set; } = ServiceState.Stopped;

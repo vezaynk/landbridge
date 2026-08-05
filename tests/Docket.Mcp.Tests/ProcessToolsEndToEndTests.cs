@@ -127,7 +127,7 @@ public sealed class ProcessToolsEndToEndTests(PostgresFixture pg) : IAsyncLifeti
     }
 
     [SkippableFact]
-    public async Task Starting_with_closed_stdin_is_reflected_in_the_guidance()
+    public async Task Starting_without_stdin_is_the_default_and_the_guidance_says_so()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
@@ -146,18 +146,18 @@ public sealed class ProcessToolsEndToEndTests(PostgresFixture pg) : IAsyncLifeti
         await using var client = await RelayGrantTestKit.ConnectMcpAsync(
             RelayGrantTestKit.BaseUri(plane), worker.Token, ct);
 
+        // No flag: stdin is closed by default, which is the fire-and-forget case.
         var payload = await CallAsync(client, "start_process", new Dictionary<string, object?>
         {
             ["name"] = "batch",
             ["spawn"] = new[] { "/bin/batch" },
-            ["openStdin"] = false,
         }, ct);
 
         Assert.True(payload.GetProperty("started").GetBoolean());
-        // An agent that closed stdin must be told what it gave up, at the moment it gave it up —
-        // not left to discover it when write_process refuses later.
+        // An agent must be told what the default cost it, at the moment it starts — not left to
+        // discover it when write_process refuses later.
         var next = payload.GetProperty("nextStep").GetString()!;
-        Assert.Contains("stdin closed", next, StringComparison.Ordinal);
+        Assert.Contains("without stdin", next, StringComparison.Ordinal);
         Assert.Contains("hard stop", next, StringComparison.Ordinal);
 
         await plane.StopAsync(ct);
@@ -234,7 +234,7 @@ public sealed class ProcessToolsEndToEndTests(PostgresFixture pg) : IAsyncLifeti
             // the honest check.)
             Assert.True(!survivor.TryGetProperty("port", out var portEl)
                         || portEl.ValueKind == JsonValueKind.Null);
-            Assert.True(survivor.GetProperty("stdinOpen").GetBoolean());
+            Assert.False(survivor.GetProperty("stdinOpen").GetBoolean()); // started fire-and-forget
 
             var stopped = await CallAsync(second, "stop_process", new Dictionary<string, object?>
             {
@@ -269,10 +269,12 @@ public sealed class ProcessToolsEndToEndTests(PostgresFixture pg) : IAsyncLifeti
         await using var client = await RelayGrantTestKit.ConnectMcpAsync(
             RelayGrantTestKit.BaseUri(plane), worker.Token, ct);
 
+        // Opt in to stdin: write_process is opt-in by construction now.
         await CallAsync(client, "start_process", new Dictionary<string, object?>
         {
             ["name"] = "repl",
             ["spawn"] = new[] { "/bin/python" },
+            ["openStdin"] = true,
         }, ct);
 
         var written = await CallAsync(client, "write_process", new Dictionary<string, object?>

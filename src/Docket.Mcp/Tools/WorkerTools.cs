@@ -140,12 +140,14 @@ public sealed class WorkerTools(
         [Description("Environment variables to set. Nothing is inherited implicitly, so pass PATH here if " +
                      "the command needs one.")]
         Dictionary<string, string>? env = null,
-        [Description("Whether the process gets a stdin pipe you can write to. Default true. Set false for a " +
-                     "program that would block forever reading input nobody sends — its first read then " +
-                     "returns end-of-input instead of hanging. The cost: no write_process, and no graceful " +
-                     "stop (stopping it becomes a short wait and then a kill). It does not make stdin a " +
+        [Description("Whether the process gets a stdin pipe you can write to. DEFAULT FALSE — most " +
+                     "background work is fire-and-forget and is better off with nothing held open, and a " +
+                     "program that reads stdin sees end-of-input immediately instead of blocking forever. " +
+                     "Pass true only if you intend to write to it: write_process refuses on a process " +
+                     "started without a pipe, and only a process with stdin can be stopped gracefully " +
+                     "(otherwise stopping is a short wait and then a kill). Either way stdin is not a " +
                      "terminal, so programs that behave differently when stdin is not a TTY still will.")]
-        bool openStdin = true,
+        bool openStdin = false,
         CancellationToken ct = default)
     {
         var caller = Caller;
@@ -163,7 +165,9 @@ public sealed class WorkerTools(
             "Docket does not track this process's port. If other tasks need to reach it, call " +
             "register_service with the name and the port it bound. Read its output at the log " +
             $"path, and stop it with stop_process when the work is done — nothing stops it for you." +
-            (openStdin ? "" : " Started with stdin closed: write_process will refuse, and stopping it is a hard stop.");
+            (openStdin
+                ? " Stdin is open, so you can write_process to it and stop_process can stop it gracefully."
+                : " Started without stdin (the default): write_process will refuse, and stopping it is a hard stop. Restart it with openStdin true if you need to talk to it.");
 
         return new StartProcessResult(true, result.LogPath, null, next);
     }

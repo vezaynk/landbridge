@@ -58,9 +58,9 @@ public sealed record MachineHeartbeat(
 /// <param name="DeclaredByTask">Provenance, not ownership: the task whose worker started it.
 /// The process is machine-scoped and outlives that task, and any worker on this machine may
 /// stop it — which is what lets a Lead's cleanup continuation tidy up.</param>
-/// <param name="StdinOpen">Whether it has a usable stdin pipe. A cleanup agent needs this
-/// before choosing how to stop it: without stdin there is no graceful EOF lever, so stopping is
-/// the bounded wait and then a tree kill.</param>
+/// <param name="StdinOpen">Whether it has a usable stdin pipe — false unless the starter asked
+/// for one. A cleanup agent needs this before choosing how to stop it: without stdin there is no
+/// graceful EOF lever, so stopping is the bounded wait and then a tree kill.</param>
 public sealed record ProcessStatus(
     string Name,
     ServiceState State,
@@ -68,7 +68,7 @@ public sealed record ProcessStatus(
     DateTimeOffset? StartedAt = null,
     int? ExitCode = null,
     DateTimeOffset? ExitedAt = null,
-    bool StdinOpen = true);
+    bool StdinOpen = false);
 
 /// <summary>
 /// What a machine reports about one declared service (§10, §12). Reported, never
