@@ -100,8 +100,8 @@ public sealed class PreviewConnectService(
         if (string.IsNullOrWhiteSpace(session))
             return false;
         // Same validation the dashboard uses (§12): a live Human session sees any
-        // preview; a Lead is scoped to its own Team. An evicted/expired/worker/
-        // verifier token authorizes nothing here.
+        // preview; a Lead is scoped to its own Team. An evicted, expired, or worker
+        // token authorizes nothing here.
         return await tokens.ValidateAsync(session, ct) switch
         {
             Principal.Human => true,

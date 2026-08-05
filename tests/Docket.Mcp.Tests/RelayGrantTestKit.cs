@@ -240,8 +240,8 @@ internal static class RelayGrantTestKit
     public sealed record SeededLead(Guid HumanId, string HumanToken, string Token);
 
     /// <summary>
-    /// A live lead claim for <paramref name="team"/>, as a future OAuth callback would
-    /// mint it: a human session, then that human claiming the Team (§4, §5).
+    /// A live lead claim for <paramref name="team"/>, minted through the same seam the
+    /// OAuth callback uses: a human session, then that human claiming the Team (§4, §5).
     /// </summary>
     public static async Task<SeededLead> LeadSessionAsync(PostgresFixture pg, TeamId team, CancellationToken ct)
     {
@@ -254,7 +254,7 @@ internal static class RelayGrantTestKit
         return new SeededLead(human.CredentialId, human.Token, claim.Token.Token);
     }
 
-    /// <summary>A live lead token for <paramref name="team"/>, as a future OAuth callback would mint it.</summary>
+    /// <summary>A live lead token for <paramref name="team"/>, through the same seam the OAuth callback uses.</summary>
     public static async Task<string> LeadTokenAsync(PostgresFixture pg, TeamId team, CancellationToken ct) =>
         (await LeadSessionAsync(pg, team, ct)).Token;
 

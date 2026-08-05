@@ -11,9 +11,10 @@ namespace Docket.Mcp.Skills;
 ///
 /// <para>
 /// Scoping is <b>advisory</b>, by deliberate choice. All four skills list and read
-/// for any authenticated principal; the dispatch prompt (and the <c>/docket-*</c>
-/// prompts) point each agent at its own URI. Three reasons this is not a hard
-/// per-principal ACL:
+/// for any authenticated principal, and an agent finds its own URI through
+/// <c>resources/list</c> — no MCP prompt is registered on this branch, so the
+/// <c>/docket-*</c> prompts §10 sketches are not what steers anyone here yet. Three
+/// reasons this is not a hard per-principal ACL:
 /// </para>
 /// <list type="number">
 ///   <item><description>
@@ -37,8 +38,9 @@ namespace Docket.Mcp.Skills;
 ///   </description></item>
 /// </list>
 /// Skills are not secret, so the cost of a worker being able to read the Lead skill
-/// is zero; the value of scoping is keeping an agent pointed at the right guidance,
-/// which the dispatch prompt already does.
+/// is zero; the value of scoping would be keeping an agent pointed at the right
+/// guidance, and the URI names plus the descriptions below are all that does that
+/// today.
 /// </summary>
 [McpServerResourceType]
 public sealed class SkillResources

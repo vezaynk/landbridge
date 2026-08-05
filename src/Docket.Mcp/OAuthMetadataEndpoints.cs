@@ -6,7 +6,7 @@ namespace Docket.Mcp;
 /// <summary>
 /// The two OAuth 2.1 discovery documents an MCP client fetches to learn how to
 /// authenticate to this Instance (spec §5). Plain anonymous HTTP in the narrow,
-/// non-MCP style of <see cref="VerifierEndpoints"/> — a client must be able to
+/// non-MCP style of <see cref="EnrollmentEndpoints"/> — a client must be able to
 /// read them <em>before</em> it has a token, so neither is behind
 /// <c>RequireAuthorization</c>.
 ///
