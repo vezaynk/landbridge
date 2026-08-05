@@ -42,13 +42,17 @@ public sealed record RunnerConfig(
     /// but are consumed nowhere, so they behave exactly as
     /// <see cref="EventsSource.None"/>.
     ///
-    /// <para>This is <b>not</b> cosmetic degradation. Plane-side per-task activity
-    /// is refreshed only by an inbound event, and a non-terminal profile emits one
-    /// event ever — <c>started</c>, at spawn. The plane requeues a working task
-    /// whose activity is older than its liveness window, so such a profile loses
-    /// and redispatches every task that outlives that window, without a cap. The
-    /// spec's "degrades to process-alive" fallback is not wired, so nothing catches
-    /// this — hence a loud startup line rather than silence.</para>
+    /// <para>What this costs, stated accurately: such a profile has <b>no progress
+    /// signal</b>. It still emits <c>started</c>, <c>exited</c>, and the periodic
+    /// <c>alive</c> — <c>EmitAliveEvents</c> is not gated on the events source — so the
+    /// short aliveness clock is satisfied and a task is not requeued merely for being
+    /// quiet. What it loses is <c>tool-call</c>, and therefore the progress clock: the
+    /// §10 no-progress ceiling (30 minutes by default) is the only thing governing such a
+    /// task, so work that legitimately runs longer than that without a tool call is
+    /// requeued, and a wedged agent cannot be told from a busy one in the meantime.
+    /// Worth a loud startup line, but not the catastrophe an earlier version of this
+    /// comment described — that text predated the <c>alive</c> emitter this repo now has
+    /// (see <c>DefaultNoProgressCeiling</c> and the process-alive half in §10).</para>
     ///
     /// <para>Returned rather than logged so it is testable; the daemon prints these
     /// alongside the <c>max_cpu_load is inert</c> notice.</para>
@@ -71,15 +75,16 @@ public sealed record RunnerConfig(
                 ? $"events.source '{declared}' is not implemented and behaves as 'none'"
                 : "events.source is 'none'";
             warnings.Add(
-                $"docketd: profile '{name}': {unimplemented} — no tool-call events, " +
-                "so per-task liveness refreshes only once at spawn.");
+                $"docketd: profile '{name}': {unimplemented} — no tool-call events, so this " +
+                "profile has no progress signal: a hung agent cannot be told from a busy one.");
         }
 
         warnings.Add(
-            "docketd: the control plane requeues a working task with no activity inside its " +
-            "per-task liveness window (60s), so the profiles above will lose and redispatch any " +
-            "task that runs longer than that, repeatedly. Use events.source 'terminal' if the " +
-            "harness can stream structured output on stdout (§10).");
+            "docketd: the periodic alive event still satisfies the short liveness clock, so such a " +
+            "task is not requeued merely for being quiet — but with no progress signal the " +
+            "no-progress ceiling (30 minutes by default) is the only clock governing it, so work " +
+            "that legitimately runs longer than that without a tool call is requeued. Use " +
+            "events.source 'terminal' if the harness can stream structured output on stdout (§10).");
         return warnings;
     }
 

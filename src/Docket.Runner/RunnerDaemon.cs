@@ -380,8 +380,8 @@ public sealed class RunnerDaemon
     /// catches a wedged one.
     ///
     /// <para>Goes through the ring like any other event, so it is ordered with them,
-    /// subject to the same drop-oldest bound, and needs no new wire member:
-    /// <c>alive</c> has been in the frozen vocabulary all along with no producer.</para>
+    /// subject to the same drop-oldest bound, and needed no new wire member: <c>alive</c> sat
+    /// in the frozen vocabulary with no producer until this method became one.</para>
     /// </summary>
     private void EmitAliveEvents()
     {

@@ -212,7 +212,7 @@ public class RunnerConfigTests
     }
 
     [Fact]
-    public void Non_terminal_event_sources_are_each_warned_with_the_requeue_consequence()
+    public void Non_terminal_event_sources_are_each_warned_with_the_no_progress_consequence()
     {
         // ValidJson declares default=hooks and restricted=none: both are blind.
         var warnings = RunnerConfig.Load(ValidJson).EventRelayWarnings();
@@ -225,14 +225,19 @@ public class RunnerConfigTests
         Assert.Contains(perProfile, w => w.Contains("profile 'restricted'", StringComparison.Ordinal)
             && w.Contains("events.source is 'none'", StringComparison.Ordinal));
         Assert.All(perProfile, w =>
-            Assert.Contains("liveness refreshes only once at spawn", w, StringComparison.Ordinal));
+            Assert.Contains("no progress signal", w, StringComparison.Ordinal));
 
-        // The consequence line is the whole point of the warning: name the requeue,
-        // the window, and the value that fixes it.
+        // The consequence line is the whole point of the warning, and it must say the ACCURATE
+        // thing: the periodic alive event satisfies the short clock, so what is actually lost is
+        // the progress signal and the no-progress ceiling is what governs. An earlier version of
+        // this test pinned the opposite claim, which went stale the moment the alive emitter
+        // landed — the warning is only useful if its stated reason is true.
         var consequence = warnings[^1];
-        Assert.Contains("requeue", consequence, StringComparison.Ordinal);
-        Assert.Contains("60s", consequence, StringComparison.Ordinal);
+        Assert.Contains("alive", consequence, StringComparison.Ordinal);
+        Assert.Contains("no-progress ceiling", consequence, StringComparison.Ordinal);
+        Assert.Contains("30 minutes", consequence, StringComparison.Ordinal);
         Assert.Contains("terminal", consequence, StringComparison.Ordinal);
+        Assert.DoesNotContain("60s", consequence, StringComparison.Ordinal);
     }
 
     [Fact]

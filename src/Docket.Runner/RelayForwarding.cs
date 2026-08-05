@@ -26,7 +26,10 @@ namespace Docket.Runner;
 /// and the relay pairs exactly two ends per id, so the consumer listener accepts
 /// <em>exactly one</em> connection. §8.3's "one listener, N tunnels"
 /// generalization — a fresh tunnel per accepted connection — is deferred; it slots
-/// in at the accept loop below.</para>
+/// in at the accept loop below. That deferral is about the <em>listener</em>: §8.4
+/// preview already has a per-connection story, by minting a fresh grant and forward id
+/// for each browser connection rather than multiplexing one listener, so "deferred"
+/// here does not mean no per-connection path exists.</para>
 /// </summary>
 public sealed class RelayForwarder : IAsyncDisposable
 {

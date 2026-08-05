@@ -341,7 +341,9 @@ public sealed record SubagentSpawnedEvent(
 public sealed record ExitedEvent(TaskId Task, int ExitCode, DateTimeOffset At) : RunnerEvent;
 
 /// <summary><c>auth-failed</c> — reports structured facts (§11): operation,
-/// target, error code, missing scope. The control plane renders remediation.</summary>
+/// target, error code, missing scope — which is what a remediation menu would render from
+/// (§11). The plane persists the facts and shows them on the event log; no remediation menu
+/// is built.</summary>
 public sealed record AuthFailedEvent(
     TaskId Task, string Operation, string Target, string ErrorCode, string? MissingScope) : RunnerEvent;
 
