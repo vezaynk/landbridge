@@ -12,7 +12,8 @@ public sealed class StaticSecretGrantValidatorOptions
 
     /// <summary>
     /// Accept every grant. Loudly insecure — for local dev / smoke only. Real
-    /// grant checking is the control-plane validator (a later increment).
+    /// grant checking is <see cref="ControlPlaneGrantValidator"/>, which takes over
+    /// as soon as <c>Relay:ControlPlane:Url</c> is set.
     /// </summary>
     public bool AllowAll { get; set; }
 
@@ -21,11 +22,12 @@ public sealed class StaticSecretGrantValidatorOptions
 }
 
 /// <summary>
-/// The default, fail-closed <see cref="IGrantValidator"/> for this increment.
-/// With no configuration it rejects every grant; set <c>Relay:Grant:AllowAll</c>
-/// or <c>Relay:Grant:SharedSecret</c> to open it. This is a placeholder for the
-/// real control-plane grant check (spec §8.3), which is a later increment — no
-/// control-plane URL is baked in here.
+/// The fail-closed <see cref="IGrantValidator"/> of last resort: registered only
+/// when no <c>Relay:ControlPlane:Url</c> is configured. With no configuration at all
+/// it rejects every grant; set <c>Relay:Grant:AllowAll</c> or
+/// <c>Relay:Grant:SharedSecret</c> to open it. The real control-plane grant check
+/// (spec §8.3) is <see cref="ControlPlaneGrantValidator"/> — no control-plane URL is
+/// baked in here.
 /// </summary>
 public sealed class StaticSecretGrantValidator : IGrantValidator
 {

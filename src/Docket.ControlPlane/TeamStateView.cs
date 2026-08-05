@@ -51,6 +51,13 @@ public sealed record LeadMachineView(Guid MachineId, string MachineName, DateTim
 /// it is the triage fact — <c>auth_help</c> needs a human, a <c>question</c> the Lead
 /// can take — while the question's text does not, and is pulled per task with
 /// <c>get_task_question</c>.
+/// <see cref="InfrastructureRequeues"/> and <see cref="LastRequeueReason"/> are the §6
+/// infrastructure counter and the signal behind its last increment (#73) — both
+/// structure, and both here because a task quietly on its fourth machine is a shape of
+/// trouble <see cref="Attempt"/> alone does not name. On a
+/// <see cref="TaskState.Canceled"/> task a non-null reason is what distinguishes the
+/// requeue cap (§9 check 7) from a cancel someone asked for; the cap it was measured
+/// against comes with the per-task <c>get_task_report</c> fetch.
 /// </summary>
 public sealed record TeamTaskSummary(
     Guid TaskId,
@@ -63,7 +70,9 @@ public sealed record TeamTaskSummary(
     VerdictProvenance? CompletionProvenance,
     bool HasReport,
     InputRequestKind? InputKind,
-    bool HasQuestion);
+    bool HasQuestion,
+    int InfrastructureRequeues = 0,
+    LivenessLossReason? LastRequeueReason = null);
 
 /// <summary>
 /// One task's worker report (§10), returned by the Lead's deliberate per-task
@@ -71,11 +80,22 @@ public sealed record TeamTaskSummary(
 /// the bulk status read). <see cref="Report"/> is the opaque worker-authored text,
 /// null when the task has left none. Team-scoped at the store, so this is only ever
 /// built for a task in the caller's own Team.
+///
+/// <para>The infrastructure account travels with it (§6/§9 check 7, #73):
+/// <see cref="InfrastructureRequeues"/> of <see cref="InfrastructureRequeueLimit"/>
+/// requeues, and <see cref="LastRequeueReason"/> for the signal behind the last one.
+/// This is the read that answers "what happened to this task", and on a task the cap
+/// abandoned it is the <em>only</em> answer available — nothing ever finished, so there
+/// is no report to explain it. A count that has reached the limit means the cap ended
+/// the task; a non-positive limit means the cap is configured off.</para>
 /// </summary>
 public sealed record TaskReportView(
     Guid TaskId,
     string Namespace,
-    string? Report);
+    string? Report,
+    int InfrastructureRequeues = 0,
+    int InfrastructureRequeueLimit = TaskRecord.DefaultInfrastructureRequeueLimit,
+    LivenessLossReason? LastRequeueReason = null);
 
 /// <summary>
 /// One task's input exchange (§10/§11), returned by the Lead's deliberate per-task

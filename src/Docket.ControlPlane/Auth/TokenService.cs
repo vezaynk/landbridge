@@ -31,13 +31,13 @@ public sealed class TokenService(DocketDbContext db, TimeProvider clock)
     /// Mints a human session token (§5) — the root every other credential
     /// descends from (§2 principle 5).
     ///
-    /// This is the seam a future OAuth 2.1 flow plugs into: the browser
-    /// authorization-code / device-flow wire protocol (PKCE, device
-    /// authorization endpoint, the redirect dance) is deliberately NOT built
-    /// here — the control plane is the OAuth authorization server (§5), but that
-    /// endpoint surface is out of scope for this change. A completed OAuth
-    /// callback would call exactly this method to turn a verified human into a
-    /// session token, which keeps the human/Lead path testable headlessly.
+    /// This is the seam the OAuth 2.1 flow plugs into, and it stays deliberately
+    /// free of wire protocol: the control plane is the OAuth authorization server
+    /// (§5), but the authorization-code exchange itself — PKCE, the redirect dance,
+    /// CIMD — lives in <c>Docket.Mcp.OAuthEndpoints</c>, which calls exactly this
+    /// method to turn a verified human into a session token. The token is identical
+    /// either way, which is what keeps the human/Lead path testable headlessly: the
+    /// tests mint through here directly. No device flow is built.
     /// </summary>
     public async Task<IssuedToken> IssueHumanSessionAsync(CancellationToken ct = default)
     {

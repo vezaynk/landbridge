@@ -71,11 +71,39 @@ public enum CancelDisposition
     Budget,
 }
 
-/// <summary>Why the control plane requeued a task (infrastructure counter, §6).</summary>
+/// <summary>
+/// Why the control plane requeued a task (infrastructure counter, §6). Recorded on
+/// the requeue — on the task row and its event row — because otherwise every requeue
+/// in the trail looks identical and a diagnosing operator cannot tell a wedged agent
+/// from a dying machine (#73). The values name the signal that fired, not a severity:
+/// nothing here decides anything, the two clocks and the runner events do.
+/// </summary>
 public enum LivenessLossReason
 {
+    /// <summary>The dispatch command never reached the machine, so nothing is running.</summary>
     AckTimeout,
+
+    /// <summary>
+    /// docketd stopped asserting the harness process is alive (§10's aliveness clock,
+    /// ~60s). The process died without an <c>exited</c>, or the daemon itself is wedged.
+    /// </summary>
     LivenessTimeout,
+
+    /// <summary>
+    /// The process is alive but produced no progress signal past the no-progress
+    /// ceiling (§10's second clock, ~30min): the wedged-agent case. Distinct from
+    /// <see cref="LivenessTimeout"/> because the remedies differ — a wedged agent is a
+    /// task/harness problem, a silent daemon is a machine problem.
+    /// </summary>
+    NoProgress,
+
+    /// <summary>
+    /// The harness process exited while the task was still <c>working</c> (a runner
+    /// <c>exited</c> event, §10) — it died rather than reporting a result.
+    /// </summary>
+    ProcessExited,
+
+    /// <summary>The runner restarted adopting nothing, or its machine went silent (§10).</summary>
     MachineReboot,
 }
 

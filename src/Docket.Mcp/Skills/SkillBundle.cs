@@ -7,10 +7,10 @@ namespace Docket.Mcp.Skills;
 /// neutral, the skill is opinionated. The content is authored elsewhere and
 /// shipped as-is; nothing here rewrites it.
 ///
-/// URIs are stable and self-describing so the dispatch prompt (and the
-/// <c>/docket-*</c> prompts) can point each agent at its own skill without this
-/// code and the prompt drifting apart: a worker reads <see cref="WorkerUri"/>,
-/// a Lead reads <see cref="LeadUri"/>.
+/// URIs are stable and self-describing so that whatever points an agent at its own
+/// skill cannot drift from this code: a worker reads <see cref="WorkerUri"/>, a Lead
+/// reads <see cref="LeadUri"/>. Today that is the URI name itself over
+/// <c>resources/list</c> — the <c>/docket-*</c> prompts are not registered.
 /// </summary>
 public static class SkillBundle
 {

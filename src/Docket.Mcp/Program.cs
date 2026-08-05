@@ -39,7 +39,12 @@ builder.Services.AddDbContext<DocketDbContext>(o =>
     o.UseNpgsql(connectionString).UseSnakeCaseNamingConvention());
 // The §15 write path plus the §9.9 budget accounting it commits through at dispatch — one
 // registration, because a store without the accounting silently commits nothing.
-builder.Services.AddDocketStore();
+// InfrastructureRequeueLimit is §9 check 7's cap, stamped onto each new task: how many
+// times a task may be requeued for infrastructure reasons (ack timeout, either liveness
+// clock, process exit, reboot) before it is abandoned rather than redispatched. Unset
+// takes the documented default; a non-positive value configures the cap off.
+builder.Services.AddDocketStore(
+    builder.Configuration.GetValue<int?>("Docket:InfrastructureRequeueLimit"));
 builder.Services.AddScoped<TokenService>();
 builder.Services.AddScoped<RelayGrantService>();
 // §8.4 HTTP preview: the mapping store (resolve/create) and the per-connection

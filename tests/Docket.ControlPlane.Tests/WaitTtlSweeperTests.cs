@@ -68,8 +68,10 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
         // Park record (§11): the machine and attempt the plane knows…
         Assert.Equal("m1", row.ParkMachine);
         Assert.Equal(1, row.ParkAttempt);
-        // …and null for the runner-side facts the plane does not hold yet (§11
-        // resume seam): a wait-TTL park cold-starts from the workspace.
+        // …and null for the runner-side facts that have no source here (§11 resume
+        // seam): the plane never holds a working directory at all, and this task
+        // reported no session ref (no session-started event — the next test covers the
+        // case where it did), so this park cold-starts from the workspace.
         Assert.Null(row.ParkDirectory);
         Assert.Null(row.ParkSessionRef);
         Assert.Null(row.CurrentInstanceId);

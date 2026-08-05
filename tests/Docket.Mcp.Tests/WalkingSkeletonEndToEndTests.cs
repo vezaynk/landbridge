@@ -161,9 +161,10 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
             Assert.Contains("\"attempt\":1", assignmentJson);
 
             // ── report_result drove the record through the real state machine ──
-            // (Persisting the opaque result reference / result_summary onto the row
-            // is a separate §7-content concern the store does not yet capture — the
-            // skeleton's proof is that the transition committed, not its content.)
+            // (Persisting the opaque result reference onto the row is a separate
+            // §7-content concern the store does capture — FullLifecycleEndToEndTests
+            // asserts it — but the skeleton's proof is that the transition committed,
+            // not its content.)
             await using (var v = pg.NewContext())
                 Assert.Equal(TaskState.Verifying,
                     (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == taskId.Value, ct)).State);

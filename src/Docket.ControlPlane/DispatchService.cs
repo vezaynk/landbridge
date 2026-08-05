@@ -20,9 +20,11 @@ namespace Docket.ControlPlane;
 /// <em>before</em> the command is sent, so a failed send requeues a now-working
 /// task rather than losing it (§10 best-effort commands).
 ///
-/// A liveness timer requeues working tasks that go quiet past the window, and
-/// requeue-on-disconnect (the socket loop calling the event sink) covers a
-/// vanished machine. Fine-grained ack-vs-liveness split is deferred.
+/// A liveness timer requeues working tasks on either of two clocks — no
+/// process-aliveness signal, or no forward progress for far longer (see
+/// <see cref="CheckLivenessAsync"/>) — and requeue-on-disconnect (the socket loop
+/// calling the event sink) covers a vanished machine. Fine-grained ack-vs-liveness
+/// split is deferred.
 /// </summary>
 public sealed class DispatchService : IHostedService
 {
@@ -339,6 +341,13 @@ public sealed class DispatchService : IHostedService
     /// its job, so "no tool calls for half an hour" is its success condition rather
     /// than a symptom. It stays subject to the aliveness clock, so a service-bearing
     /// task whose process dies is still requeued promptly.</para>
+    ///
+    /// <para>Requeues are not unlimited (§9 check 7): whichever clock fires, the store's
+    /// transition abandons the task once its infrastructure requeue cap is reached, so a
+    /// task that wedges every machine it lands on stops looping instead of burning a
+    /// dispatch's authorization every half hour forever. This method neither counts nor
+    /// decides — the count is on the record and the decision is the engine's; it supplies
+    /// the fact of which signal fired.</para>
     /// </summary>
     public async Task CheckLivenessAsync(CancellationToken ct)
     {
@@ -366,14 +375,26 @@ public sealed class DispatchService : IHostedService
                         break;
                     }
 
-                    // LivenessLossReason is not persisted (§10 follow-up), so which
-                    // clock fired is only recoverable from this line. Log it.
+                    // Which clock fired IS the reason, and it is persisted with the
+                    // requeue now (§6, #73) rather than surviving only in this log line:
+                    // aliveness loss is a machine/daemon problem, no-progress is a wedged
+                    // agent, and the remedies differ. The requeue may also be the one that
+                    // reaches the task's cap (§9 check 7), in which case the store's
+                    // transition takes the task terminal instead of back to submitted —
+                    // either way this dispatch is over, so the untrack below is unchanged.
+                    var reason = notAlive
+                        ? LivenessLossReason.LivenessTimeout
+                        : LivenessLossReason.NoProgress;
                     _logger.LogWarning(
-                        "requeueing task {Task} on {Machine}: {Clock} (last alive {Alive} ago, last progress {Progress} ago)",
-                        tracked.Task, tracked.Machine,
-                        notAlive ? "no aliveness signal" : "no progress",
+                        "requeueing task {Task} on {Machine}: {Reason} (last alive {Alive} ago, last progress {Progress} ago)",
+                        tracked.Task, tracked.Machine, reason,
                         now - tracked.LastActivity, now - tracked.LastProgress);
-                    await store.ApplyAsync(tracked.Task, new LivenessLost(LivenessLossReason.LivenessTimeout), ct);
+                    var requeue = await store.ApplyAsync(tracked.Task, new LivenessLost(reason), ct);
+                    if (requeue is StoreResult.Applied { Task.State: TaskState.Canceled } abandoned)
+                        _logger.LogError(
+                            "task {Task} abandoned after {Requeues} infrastructure requeues (cap {Cap}), last reason {Reason}",
+                            tracked.Task, abandoned.Task.InfrastructureRequeues,
+                            abandoned.Task.InfrastructureRequeueLimit, reason);
                     _registry.Untrack(tracked.Task);
                     break;
                 case null:
