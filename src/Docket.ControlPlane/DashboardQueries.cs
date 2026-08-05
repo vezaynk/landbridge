@@ -96,7 +96,8 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
                 isBound ? bound.HumanId : null,
                 isBound ? bound.BoundAt : null,
                 // §10/§12: passed through from the last heartbeat, unexamined.
-                registry.ServicesOn(id)));
+                registry.ServicesOn(id),
+                registry.ProcessesOn(id)));
         }
 
         return machines.OrderBy(m => m.MachineId, StringComparer.Ordinal).ToList();
@@ -456,7 +457,8 @@ public sealed record MachineView(
     IReadOnlyList<MachineTaskView> RunningTasks,
     Guid? BoundToHuman = null,
     DateTimeOffset? BoundAt = null,
-    IReadOnlyList<ServiceStatus>? Services = null);
+    IReadOnlyList<ServiceStatus>? Services = null,
+    IReadOnlyList<ProcessStatus>? Processes = null);
 
 /// <summary>A task running on a machine, tagged with its owning Team (§12).</summary>
 public sealed record MachineTaskView(Guid TaskId, Guid TeamId, string Namespace, TaskState State);

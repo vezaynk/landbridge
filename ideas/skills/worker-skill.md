@@ -68,10 +68,10 @@ Bind to loopback. Registration plus the relay is how other agents reach you; exp
 
 A service you start as a child of your own process dies with you: `docketd` kills each task as a whole process tree, so anything you launched goes down when your turn ends. That is correct for a build or a test run and wrong for "stand up the dev server and keep it up".
 
-**Use `start_service`.** That is the supported way, and it works the same on every machine:
+**Use `start_process`.** That is the supported way, and it works the same on every machine:
 
 ```
-start_service(
+start_process(
   name: "web-dev",
   spawn: ["/abs/node/bin/npm", "run", "dev"],
   workingDirectory: "/abs/path/to/checkout",
@@ -79,17 +79,29 @@ start_service(
   port: 5173, readinessTcpPort: 5173)
 ```
 
-`docketd` runs it as **its own child**, not yours, so your turn ending does not kill it. It restarts the process if it dies. **A port is optional** — a file watcher, an indexer, or a batch daemon listens on nothing, and that is a completely ordinary service; omit `port` and `readinessTcpPort` and it counts as running as soon as its process is up.
+`docketd` runs it as **its own child**, not yours, so it survives your turn ending, you blocking on a question, and this task finishing. **A port is optional** — a long build, a test run, a file watcher, an indexer: all listen on nothing, and that is completely ordinary. Omit `port` and `readinessTcpPort` and it counts as running once its process is up.
 
-Three things to know about what you get back. The call returns the **port** you should hand to `register_service` if other tasks need to reach it — starting is not registering, and a service nobody registered is a service no consumer can find. It returns a **log path** on this machine, so you read your own service's output with ordinary file tools rather than needing anything served to you. And it may **refuse** with a reason: the profile may not permit agent-started services, the machine may be at its cap, or another service may already hold the port. A refusal is a fact to report, not something to work around.
+**It is never restarted.** If it exits, that is recorded — exit code and time — and left for you, or for whoever is resumed later, to interpret. A crash is information, and hiding it behind an automatic retry would throw away the one thing you need to know.
 
-**The service is bound to this task.** It outlives your turn, but it is stopped when the task ends. So a service that must stay up across several pieces of work does not belong to a task that finishes — it belongs to a long-lived holder task whose whole job is to hold it (below). Absolute paths matter: the service gets `docketd`'s environment, not your shell's, so pass `PATH` explicitly if the command needs one.
+Three things come back. The **port** to hand to `register_service` if other tasks need to reach it — starting is not registering, and a process nobody registered is one no consumer can find. A **log path** on this machine, so you read its output with ordinary file tools. And possibly a **refusal**: your profile may not permit background processes, the machine may be at its cap, or the name or port may already be taken. A refusal is a fact to report, not something to work around.
 
-**If your profile refuses**, that is the machine owner's deliberate choice and the answer is to report it, not to route around it. Which brings us to the rule that matters most here.
+**Nothing stops it for you.** Not your turn ending, not the task completing. So:
 
-### The machine's own service manager, where you need one
+- **Stop what you started** when the work is genuinely done: `stop_process(name)`.
+- If it must outlive *this* task, say so in your report, and expect a later cleanup task. Any worker on that machine can stop it, so the agent that tidies up need not be you.
+- Names are unique per machine, shared with the operator's own declared services. Pick something specific (`build-payments`, not `build`).
 
-Occasionally a service must outlive even the Team's work — a database the operator wants running tomorrow. That is a machine fixture, not a task's service, and it belongs to the operator: ask them to declare it in the `docketd` config, or to run it under the machine's service manager themselves. If you are asked to set one up yourself, on Linux a transient unit writes nothing to disk, so there is no file for anyone to find orphaned later:
+### Talking to a process: `write_process`
+
+`write_process(name, data)` writes to its stdin — a command for a REPL, an answer a script is waiting for.
+
+**It is a pipe, not a terminal, and that changes behaviour.** Programs that check whether stdin is a TTY may not prompt at all, may buffer output in blocks instead of lines, or may refuse to run. A password prompt that reads `/dev/tty` will never see what you write. A full-screen or curses program will not work — do not try.
+
+Success means the pipe accepted your bytes. It does **not** mean the program understood them, and there is no reply channel on a pipe. Whatever it says back goes to its output, so the loop is: **write, read the log, decide.** Writes are capped at 16 KB; send several for more, and a newline is appended unless you turn that off.
+
+### When a machine needs something permanent
+
+Occasionally a process must outlive even the Team's work — a database the operator wants running tomorrow. That is a machine fixture, not a task's service, and it belongs to the operator: ask them to declare it in the `docketd` config, or to run it under the machine's service manager themselves. If you are asked to set one up yourself, on Linux a transient unit writes nothing to disk, so there is no file for anyone to find orphaned later:
 
 ```
 systemd-run --user --unit=docket-dev-myapp --collect \

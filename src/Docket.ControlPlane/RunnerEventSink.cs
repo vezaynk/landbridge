@@ -21,7 +21,7 @@ public sealed class RunnerEventSink(
     RunnerConnectionRegistry registry,
     ForwardWaiters forwards,
     TranscriptWaiters transcripts,
-    StartServiceRelay services,
+    ProcessControlRelay processes,
     ILogger<RunnerEventSink> logger)
 {
     public async Task HandleAsync(RunnerEvent evt, CancellationToken ct = default)
@@ -94,12 +94,12 @@ public sealed class RunnerEventSink(
                 forwards.Complete(fo.ForwardId, fo.Port);
                 break;
 
-            case ServiceStartedEvent ss:
-                // §10: hand the machine's answer to the parked start_service call. Like the
-                // transcript reply this is a TrySetResult and nothing more — the sink is on
-                // the receive loop, so awaiting anything here would delay heartbeats and
-                // alive events behind it.
-                services.Complete(ss);
+            case ProcessStartedEvent or ProcessStoppedEvent or ProcessWrittenEvent:
+                // §10: hand the machine's answer to the parked start/stop/write call. Like the
+                // transcript reply this is a TrySetResult and nothing more — the sink is on the
+                // receive loop, so awaiting anything here would delay heartbeats and alive
+                // events behind it.
+                processes.Complete(evt);
                 break;
 
             case TranscriptChunkEvent tc:

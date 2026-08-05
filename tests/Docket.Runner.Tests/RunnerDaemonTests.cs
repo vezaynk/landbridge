@@ -242,7 +242,7 @@ public class RunnerDaemonTests
     }
 
     [Fact]
-    public async Task A_start_service_command_is_refused_when_no_supervised_task_owns_it()
+    public async Task A_start_process_command_is_refused_when_no_supervised_task_owns_it()
     {
         // §10: the profile carries the policy, and only a task this machine actually holds
         // has a profile to consult. Refusing beats guessing — a service with no owner has no
@@ -251,22 +251,22 @@ public class RunnerDaemonTests
         var h = Build(services: services);
         await h.Daemon.StartAsync(); // the ring pump is what carries the reply to the channel
 
-        var outcome = await h.Daemon.HandleAsync(new StartServiceCommand(
+        var outcome = await h.Daemon.HandleAsync(new StartProcessCommand(
             TaskId.New(), "req-1", "dev", [TestKit.HarnessPath(), "sleeper"]));
 
         Assert.IsType<CommandOutcome.Acknowledged>(outcome);
         Assert.True(await TestKit.WaitUntilAsync(
-            () => h.Recorded.Events.Any(e => e.Event is ServiceStartedEvent), TimeSpan.FromSeconds(5)));
-        var reply = (ServiceStartedEvent)h.Recorded.Events.First(e => e.Event is ServiceStartedEvent).Event;
+            () => h.Recorded.Events.Any(e => e.Event is ProcessStartedEvent), TimeSpan.FromSeconds(5)));
+        var reply = (ProcessStartedEvent)h.Recorded.Events.First(e => e.Event is ProcessStartedEvent).Event;
         Assert.False(reply.Started);
-        Assert.Equal(ServiceRefusals.ProfileNotPermitted, reply.Refusal);
+        Assert.Equal(ProcessRefusals.ProfileNotPermitted, reply.Refusal);
         Assert.Equal("req-1", reply.RequestId);
 
         await h.Daemon.ShutdownAsync();
     }
 
     [Fact]
-    public async Task A_start_service_command_replies_with_the_port_and_log_path()
+    public async Task A_start_process_command_replies_with_the_port_and_log_path()
     {
         // The reply is what a worker acts on: the port it must register (§8.2) and where its
         // own logs are, so it reads them with file tools rather than needing a serving path.
@@ -292,13 +292,13 @@ public class RunnerDaemonTests
             var task = TaskId.New();
             await h.Daemon.HandleAsync(TestKit.Dispatch(task));
 
-            await h.Daemon.HandleAsync(new StartServiceCommand(
+            await h.Daemon.HandleAsync(new StartProcessCommand(
                 task, "req-2", "dev", [TestKit.HarnessPath(), "sleeper"],
                 WorkingDirectory: cwd, Env: null, Port: 7401, ReadinessTcpPort: 7401));
 
             Assert.True(await TestKit.WaitUntilAsync(
-                () => h.Recorded.Events.Any(e => e.Event is ServiceStartedEvent), TimeSpan.FromSeconds(15)));
-            var reply = (ServiceStartedEvent)h.Recorded.Events.First(e => e.Event is ServiceStartedEvent).Event;
+                () => h.Recorded.Events.Any(e => e.Event is ProcessStartedEvent), TimeSpan.FromSeconds(15)));
+            var reply = (ProcessStartedEvent)h.Recorded.Events.First(e => e.Event is ProcessStartedEvent).Event;
             Assert.True(reply.Started, reply.Refusal);
             Assert.Equal(7401, reply.Port);
             Assert.Contains("dev", reply.LogPath!, StringComparison.Ordinal);

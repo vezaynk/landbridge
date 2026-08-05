@@ -133,30 +133,35 @@ public sealed record ReadTranscriptCommand(
     int MaxBytes = TranscriptStreams.DefaultMaxBytes) : RunnerCommand;
 
 /// <summary>
-/// <c>start-service</c> (§10) — an agent-declared long-lived process. <b>The task id is
-/// the lifetime binding, not just addressing</b>: docketd stamps it as
-/// <c>DOCKET_TASK_ID</c> on the spawn, so the service dies with its declaring task
-/// through the same task-exit cleanup that already governs a worker's own strays. A
-/// config-declared service deliberately carries no task id, which is exactly why it
-/// survives task exits — the tagging <em>is</em> the lifetime policy.
+/// <c>start-process</c> (§10) — an agent-started background process.
+///
+/// <para><b>A process is not a service, and the distinction does real work.</b> A
+/// <em>service</em> is operator-declared in config, restart-supervised, and bound to the
+/// machine generation — a daemon. A <em>process</em> is agent-started over this wire, never
+/// restarted, its exit recorded, and cleaned up by Lead orchestration — a job. Same
+/// supervision substrate, same machine tagging, same stray-sweep bound; different
+/// declaration source, restart policy, and name. Neither is a Docket <em>task</em>.</para>
+///
+/// <para><b>Machine-scoped, not task-scoped.</b> The task id here is provenance and nothing
+/// more: the process outlives the worker's turn, the task blocking, and the task completing.
+/// It ends on an explicit <see cref="StopProcessCommand"/>, on its own exit, or with the
+/// daemon (the stray sweep). Cleanup is orchestration — a Lead sends a continuation task and
+/// the resumed agent stops what it started — because a process that survived its task's
+/// state machine cannot be reclaimed by that state machine.</para>
 /// </summary>
-/// <param name="RequestId">Opaque correlation id; the reply carries it back verbatim.</param>
-/// <param name="Name">Machine-local identity, scoped to <paramref name="Task"/>. Validated
-/// against the same allowlist a config-declared name faces — and here it genuinely guards
-/// wire input rather than something an operator typed.</param>
+/// <param name="Name">Machine-scoped identity, validated against the same allowlist a
+/// config-declared service name faces. Unique across processes <em>and</em> services on this
+/// machine: one namespace, so a collision is always reported rather than resolved silently.</param>
 /// <param name="Port">
-/// The loopback port this service owns, when it has one. <b>Optional and first-class
-/// absent</b>: a watcher, indexer, or batch daemon listens on nothing. A port-less service
-/// never participates in §8.2 registration or refuse-at-dial — there is nothing to reach —
-/// while status, logs, restart, and lifetime apply unchanged.
+/// The loopback port this process owns, when it has one. <b>Optional and first-class
+/// absent</b>: a build, a watcher, or an indexer listens on nothing.
 /// </param>
 /// <param name="ReadinessTcpPort">
-/// Port that must accept a connection before the service counts as running. Omit for a
-/// port-less service, which is <c>running</c> once its process is up: the honest answer,
-/// since a timer ("still alive after N seconds") is a heuristic dressed as a check, and a
-/// crash is already caught by the ordinary exit path.
+/// Port that must answer before this counts as running. Omit for a port-less process, which
+/// is running once its process is up — the honest answer, since a "still alive after N
+/// seconds" timer is a heuristic dressed as a check.
 /// </param>
-public sealed record StartServiceCommand(
+public sealed record StartProcessCommand(
     TaskId Task,
     string RequestId,
     string Name,
@@ -166,6 +171,105 @@ public sealed record StartServiceCommand(
     int? Port = null,
     int? ReadinessTcpPort = null,
     double? ReadinessTimeoutSeconds = null) : RunnerCommand;
+
+/// <summary>
+/// <c>stop-process</c> (§10) — end an agent-started process. Machine-scoped: any worker
+/// dispatched to this machine may stop any process on it, which is what lets a Lead's
+/// cleanup continuation — a <em>new</em> task id — tidy up what an earlier task started.
+/// </summary>
+public sealed record StopProcessCommand(
+    TaskId Task, string RequestId, string Name) : RunnerCommand;
+
+/// <summary>
+/// <c>write-process</c> (§10) — write to an agent-started process's stdin.
+///
+/// <para><b>This is a pipe, not a TTY</b>, and that is not a detail. Programs that check
+/// whether stdin is a terminal behave differently on one: no interactive prompts, block
+/// buffering instead of line buffering, and some refuse outright. A password prompt that
+/// reads <c>/dev/tty</c> never sees these bytes at all, and a curses/TUI program will not
+/// work. The reply confirms the bytes were accepted by the pipe — never that the program
+/// understood them; the answer, if any, appears in the log file.</para>
+/// </summary>
+/// <param name="Data">UTF-8 text, capped at <see cref="ProcessStdin.MaxBytes"/>. Several
+/// writes for more. No binary in v1.</param>
+/// <param name="AppendNewline">Append a newline, the default: line-oriented is the 95% case
+/// (REPLs, command-driven daemons) and a partial write is the exception.</param>
+public sealed record WriteProcessCommand(
+    TaskId Task, string RequestId, string Name, string Data, bool AppendNewline = true) : RunnerCommand;
+
+/// <summary>Limits on <c>write-process</c> payloads (§10), shared by both sides.</summary>
+public static class ProcessStdin
+{
+    /// <summary>Cap on one write, matching the in-band prose discipline elsewhere (16 KB).</summary>
+    public const int MaxBytes = 16 * 1024;
+}
+
+/// <summary>The reply to <see cref="StartProcessCommand"/> (§10).</summary>
+/// <param name="Port">The port it owns, echoed so the worker can register it (§8.2). Null for
+/// a port-less process, which has nothing to register.</param>
+/// <param name="LogPath">Where this run's output is captured on the machine. The declaring
+/// agent is on that machine, so it reads its own process's output with ordinary file tools —
+/// no serving path, no redaction question (§16 open question 8).</param>
+public sealed record ProcessStartedEvent(
+    TaskId Task,
+    string RequestId,
+    string Name,
+    bool Started,
+    int? Port = null,
+    string? Refusal = null,
+    string? LogPath = null) : RunnerEvent;
+
+/// <summary>The reply to <see cref="StopProcessCommand"/> (§10).</summary>
+/// <param name="ExitCode">The code it ended with, when the machine observed one.</param>
+public sealed record ProcessStoppedEvent(
+    TaskId Task, string RequestId, string Name, bool Stopped,
+    int? ExitCode = null, string? Refusal = null) : RunnerEvent;
+
+/// <summary>The reply to <see cref="WriteProcessCommand"/> (§10). Confirms the pipe accepted
+/// the bytes, never that the program understood them.</summary>
+public sealed record ProcessWrittenEvent(
+    TaskId Task, string RequestId, string Name, bool Written,
+    int Bytes = 0, string? Refusal = null) : RunnerEvent;
+
+/// <summary>The closed refusal vocabulary for the §10 process commands.</summary>
+public static class ProcessRefusals
+{
+    /// <summary>The profile does not permit agent-started processes (the operator's choice).</summary>
+    public const string ProfileNotPermitted = "profile-not-permitted";
+
+    /// <summary>The machine's cap on agent-started processes is reached.</summary>
+    public const string CapReached = "cap-reached";
+
+    /// <summary>The name is not a valid machine-local identifier.</summary>
+    public const string InvalidName = "invalid-name";
+
+    /// <summary>Empty argv — nothing to run.</summary>
+    public const string InvalidSpawn = "invalid-spawn";
+
+    /// <summary>That name is already held on this machine, by a process or a service.</summary>
+    public const string NameTaken = "name-taken";
+
+    /// <summary>Another live process or service already holds the requested port.</summary>
+    public const string PortTaken = "port-taken";
+
+    /// <summary>The process started but its readiness port never answered.</summary>
+    public const string ReadinessTimeout = "readiness-timeout";
+
+    /// <summary>The process could not be started at all (bad argv, missing binary).</summary>
+    public const string SpawnFailed = "spawn-failed";
+
+    /// <summary>No agent-started process by that name on this machine.</summary>
+    public const string NoSuchProcess = "no-such-process";
+
+    /// <summary>It is not running, so there is nothing to stop or write to.</summary>
+    public const string NotRunning = "not-running";
+
+    /// <summary>Its stdin is closed or the pipe broke.</summary>
+    public const string StdinUnavailable = "stdin-unavailable";
+
+    /// <summary>The payload exceeds <see cref="ProcessStdin.MaxBytes"/>.</summary>
+    public const string PayloadTooLarge = "payload-too-large";
+}
 
 /// <summary>The two captured stream names and the default range size (§12), shared by
 /// both sides so the wire strings live in one place.</summary>
@@ -235,57 +339,6 @@ public sealed record SubagentSpawnedEvent(
 /// <summary><c>exited</c> — the harness process ended (§10). Observed directly
 /// by process supervision, not inferred.</summary>
 public sealed record ExitedEvent(TaskId Task, int ExitCode, DateTimeOffset At) : RunnerEvent;
-
-/// <summary>
-/// <c>service-started</c> — the reply to <see cref="StartServiceCommand"/> (§10).
-/// </summary>
-/// <param name="Port">The port the service owns, echoed so the worker can register it
-/// (§8.2). Null for a port-less service, which has nothing to register.</param>
-/// <param name="Refusal">
-/// Why it was refused, from a closed set (<see cref="ServiceRefusals"/>), or null on
-/// success. A refusal names the specific cause — the profile does not permit
-/// agent-initiated services, the machine cap is reached, the name is invalid, another
-/// task holds the port — because "could not start your service" is unactionable.
-/// </param>
-/// <param name="LogPath">
-/// Where this run's captured output lives on the machine, when capture is on. Returned so
-/// the declaring agent can read its own service's logs with ordinary file tools: it is
-/// already on that machine, so this needs no serving path and raises no redaction question
-/// (§16 open question 8).
-/// </param>
-public sealed record ServiceStartedEvent(
-    TaskId Task,
-    string RequestId,
-    string Name,
-    bool Started,
-    int? Port = null,
-    string? Refusal = null,
-    string? LogPath = null) : RunnerEvent;
-
-/// <summary>The closed refusal vocabulary for <c>start-service</c> (§10).</summary>
-public static class ServiceRefusals
-{
-    /// <summary>The profile does not permit agent-initiated services (operator's choice).</summary>
-    public const string ProfileNotPermitted = "profile-not-permitted";
-
-    /// <summary>The machine's cap on agent-started services is reached.</summary>
-    public const string CapReached = "cap-reached";
-
-    /// <summary>The name is not a valid machine-local identifier.</summary>
-    public const string InvalidName = "invalid-name";
-
-    /// <summary>Empty argv — nothing to run.</summary>
-    public const string InvalidSpawn = "invalid-spawn";
-
-    /// <summary>Another live service already holds the requested port on this machine.</summary>
-    public const string PortTaken = "port-taken";
-
-    /// <summary>The process started but its readiness port never answered.</summary>
-    public const string ReadinessTimeout = "readiness-timeout";
-
-    /// <summary>The process could not be started at all (bad argv, missing binary).</summary>
-    public const string SpawnFailed = "spawn-failed";
-}
 
 /// <summary><c>auth-failed</c> — reports structured facts (§11): operation,
 /// target, error code, missing scope. The control plane renders remediation.</summary>

@@ -7,25 +7,29 @@ using Docket.Core;
 namespace Docket.Runner;
 
 /// <summary>
-/// The outcome of an agent's <c>start_service</c> (§10). <see cref="Reclaimed"/> is a
-/// success: the same task re-declaring a name it already holds gets its existing service
-/// back rather than a refusal, so a retrying worker is idempotent.
+/// The outcome of a §10 process command. One type for start/stop/write because the callers
+/// share a reply shape and a closed refusal vocabulary; the payload differs by which of the
+/// three you asked for.
 /// </summary>
-public abstract record ServiceStartOutcome
+public abstract record ProcessOutcome
 {
-    private ServiceStartOutcome() { }
+    private ProcessOutcome() { }
 
-    public sealed record StartedOk(int? Port, string? LogPath) : ServiceStartOutcome;
+    public sealed record StartedOk(int? Port, string? LogPath) : ProcessOutcome;
 
-    public sealed record ReclaimedOk(int? Port, string? LogPath) : ServiceStartOutcome;
+    public sealed record StoppedOk(int? ExitCode) : ProcessOutcome;
 
-    public sealed record RefusedOutcome(string Refusal, string Detail) : ServiceStartOutcome;
+    public sealed record WrittenOk(int Bytes) : ProcessOutcome;
 
-    public static ServiceStartOutcome Started(int? port, string? logPath) => new StartedOk(port, logPath);
+    public sealed record RefusedOutcome(string Refusal, string Detail) : ProcessOutcome;
 
-    public static ServiceStartOutcome Reclaimed(int? port, string? logPath) => new ReclaimedOk(port, logPath);
+    public static ProcessOutcome Started(int? port, string? logPath) => new StartedOk(port, logPath);
 
-    public static ServiceStartOutcome Refused(string refusal, string detail) => new RefusedOutcome(refusal, detail);
+    public static ProcessOutcome Stopped(int? exitCode) => new StoppedOk(exitCode);
+
+    public static ProcessOutcome Written(int bytes) => new WrittenOk(bytes);
+
+    public static ProcessOutcome Refused(string refusal, string detail) => new RefusedOutcome(refusal, detail);
 }
 
 /// <summary>
@@ -67,9 +71,10 @@ public sealed class ServiceSupervisor : IAsyncDisposable
     private readonly ServiceLogStore? _logs;
     private readonly Action<string>? _log;
     private readonly SpawnerThread _spawner = new();
-    private readonly ConcurrentDictionary<ServiceKey, SupervisedService> _state = new();
+    private readonly ConcurrentDictionary<string, SupervisedService> _state = new(StringComparer.Ordinal);
     private readonly CancellationTokenSource _cts = new();
     private readonly ConcurrentDictionary<Task, byte> _loops = new();
+    private readonly ConcurrentDictionary<string, Task> _watchers = new(StringComparer.Ordinal);
     private readonly object _admission = new();
 
     /// <param name="probe">
@@ -93,9 +98,7 @@ public sealed class ServiceSupervisor : IAsyncDisposable
 
         foreach (var service in services)
         {
-            // Config-declared: no owning task, so no DOCKET_TASK_ID and therefore no
-            // task-exit teardown — that is what makes it an operator fixture (§10).
-            _state[new ServiceKey(null, service.Name)] = new SupervisedService(service)
+            _state[service.Name] = new SupervisedService(service)
             {
                 State = service.Enabled ? ServiceState.Stopped : ServiceState.Disabled,
             };
@@ -114,7 +117,7 @@ public sealed class ServiceSupervisor : IAsyncDisposable
             // stop lives in config rather than in a dashboard command a restart would undo.
             if (!service.Enabled)
                 continue;
-            Launch(new ServiceKey(null, service.Name));
+            Launch(service.Name);
         }
     }
 
@@ -122,15 +125,46 @@ public sealed class ServiceSupervisor : IAsyncDisposable
     /// What the heartbeat reports (§10, §12): the machine's own view of each declared
     /// service. Ordered by name so the dashboard is stable between refreshes.
     /// </summary>
-    public IReadOnlyList<ServiceStatus> Report()
+    public IReadOnlyList<ServiceStatus> Report() => ReportServices();
+
+    /// <summary>
+    /// §10/§12: agent-started <b>processes</b>, reported separately from services because they
+    /// are a different thing — never restarted, so <c>exited</c> is a resting state, and
+    /// machine-scoped rather than operator-declared.
+    /// </summary>
+    public IReadOnlyList<ProcessStatus> ReportProcesses()
+    {
+        var report = new List<ProcessStatus>();
+        foreach (var (name, s) in _state.OrderBy(e => e.Key, StringComparer.Ordinal))
+        {
+            if (s.Owner is not { } owner)
+                continue; // a config-declared service
+            lock (s.Gate)
+            {
+                report.Add(new ProcessStatus(
+                    name,
+                    s.State,
+                    owner.Value,
+                    s.Config.Port ?? s.Config.Readiness?.TcpPort ?? 0,
+                    s.StartedAt,
+                    s.LastExitCode,
+                    s.LastFailureAt));
+            }
+        }
+        return report;
+    }
+
+    private IReadOnlyList<ServiceStatus> ReportServices()
     {
         var report = new List<ServiceStatus>(_state.Count);
-        foreach (var (key, s) in _state.OrderBy(e => e.Key.Name, StringComparer.Ordinal))
+        foreach (var (key, s) in _state.OrderBy(e => e.Key, StringComparer.Ordinal))
         {
+            if (s.Owner is not null)
+                continue; // an agent-started process; reported separately
             lock (s.Gate)
             {
                 report.Add(new ServiceStatus(
-                    key.Name,
+                    key,
                     s.State,
                     s.Config.Port ?? s.Config.Readiness?.TcpPort ?? 0,
                     s.StartedAt,
@@ -165,89 +199,80 @@ public sealed class ServiceSupervisor : IAsyncDisposable
     }
 
     /// <summary>
-    /// §10 agent-initiated services: admit and start one declared by a task, or refuse with
-    /// a specific reason. Runs the admission checks in the order an operator would want them
-    /// reported — policy first, then shape, then resources — so the first refusal names the
-    /// thing they actually need to change.
+    /// §10: admit and start an agent-declared <b>process</b>, or refuse with a specific reason.
+    /// Checks run in the order an operator would want them reported — policy, then shape, then
+    /// resources — so the first refusal names the thing that actually needs changing.
     ///
-    /// <para>Admission is serialized on <see cref="_admission"/>: the port check and the
-    /// insert must be indivisible, or two concurrent calls could both see a free port and
-    /// both claim it. Config load can check port uniqueness at rest; a dynamic declaration
-    /// has to check it under a lock.</para>
+    /// <para>Serialized on <see cref="_admission"/>: the name and port checks and the insert
+    /// must be indivisible, or two concurrent calls could both see a name free and both take
+    /// it. Config load can check uniqueness at rest; a wire declaration has to check it under
+    /// a lock.</para>
+    ///
+    /// <para><b>No restart.</b> A process is a job, not a daemon: it is spawned, watched, and
+    /// its exit recorded for the agent to act on. Hiding a crash behind a backoff ladder would
+    /// throw away the one piece of information the agent needs.</para>
     /// </summary>
-    public async Task<ServiceStartOutcome> StartForTaskAsync(
-        StartServiceCommand command, ProfileConfig profile, CancellationToken ct)
+    public async Task<ProcessOutcome> StartProcessAsync(
+        StartProcessCommand command, ProfileConfig profile, CancellationToken ct)
     {
         var policy = profile.ServicePolicy;
         if (!policy.AgentInitiated)
         {
-            return ServiceStartOutcome.Refused(
-                ServiceRefusals.ProfileNotPermitted,
-                $"profile '{profile.Name}' does not permit agent-initiated services");
+            return ProcessOutcome.Refused(
+                ProcessRefusals.ProfileNotPermitted,
+                $"profile '{profile.Name}' does not permit agent-started processes");
         }
 
         if (!RunnerConfig.IsValidServiceName(command.Name))
         {
-            // The name arrives off the wire here, not from a file an operator wrote — which
-            // is the case the validator was written for: it becomes a directory name, and
-            // the closed path construction depends on it not being able to steer one.
-            return ServiceStartOutcome.Refused(
-                ServiceRefusals.InvalidName,
-                "service name must be 1-64 characters of a-z, A-Z, 0-9, '-' or '_'");
+            // The name arrives off the wire here, not from a file an operator wrote — which is
+            // the case the validator exists for: it becomes a directory name, and the closed
+            // path construction depends on it being unable to steer one.
+            return ProcessOutcome.Refused(
+                ProcessRefusals.InvalidName,
+                "name must be 1-64 characters of a-z, A-Z, 0-9, '-' or '_'");
         }
 
         if (command.Spawn.Count == 0)
-            return ServiceStartOutcome.Refused(ServiceRefusals.InvalidSpawn, "spawn argv is empty");
+            return ProcessOutcome.Refused(ProcessRefusals.InvalidSpawn, "spawn argv is empty");
 
         var requestedPort = command.Port ?? command.ReadinessTcpPort;
         if (requestedPort is { } rp && rp is < 1 or > 65535)
-            return ServiceStartOutcome.Refused(ServiceRefusals.InvalidSpawn, "port must be in 1..65535");
+            return ProcessOutcome.Refused(ProcessRefusals.InvalidSpawn, "port must be in 1..65535");
 
-        var key = new ServiceKey(command.Task, command.Name);
         ServiceConfig config;
-
         lock (_admission)
         {
-            // Same task, same name: reclaim rather than refuse, so a worker retrying — or a
-            // redispatched attempt re-declaring what its task calls for — is idempotent
-            // instead of stuck.
-            if (_state.TryGetValue(key, out var existing))
+            // One namespace across processes AND services, so a clash is always reported rather
+            // than silently resolved. Names are machine-scoped because the agent that cleans up
+            // is a continuation — a different task id — so a task-scoped name would be
+            // unreachable by the very worker sent to tidy it.
+            if (_state.TryGetValue(command.Name, out var existing))
             {
-                lock (existing.Gate)
-                {
-                    if (existing.State is ServiceState.Running or ServiceState.Starting)
-                    {
-                        return ServiceStartOutcome.Reclaimed(
-                            existing.Config.Port ?? existing.Config.Readiness?.TcpPort,
-                            _logs is null ? null : Path.Combine(_logs.Root, command.Name));
-                    }
-                }
+                var kind = existing.Owner is null ? "service" : "process";
+                return ProcessOutcome.Refused(
+                    ProcessRefusals.NameTaken,
+                    $"the name '{command.Name}' is already held by a {kind} on this machine");
             }
 
-            // Ports are unique per machine at runtime, exactly as at config load: refuse-at-dial
-            // resolves a dial target BY PORT, so a shared port would make that lookup answer for
-            // whichever it found first. Port-less services trivially coexist and are skipped.
             if (requestedPort is { } port)
             {
-                foreach (var (otherKey, other) in _state)
+                foreach (var (otherName, other) in _state)
                 {
-                    if (otherKey == key)
+                    if ((other.Config.Port ?? other.Config.Readiness?.TcpPort) != port)
                         continue;
-                    var declared = other.Config.Port ?? other.Config.Readiness?.TcpPort;
-                    if (declared != port)
-                        continue;
-                    return ServiceStartOutcome.Refused(
-                        ServiceRefusals.PortTaken,
-                        $"port {port} is already claimed by service '{otherKey.Name}' on this machine");
+                    return ProcessOutcome.Refused(
+                        ProcessRefusals.PortTaken,
+                        $"port {port} is already claimed by '{otherName}' on this machine");
                 }
             }
 
-            var agentOwned = _state.Count(e => e.Key.Task is not null);
-            if (!_state.ContainsKey(key) && agentOwned >= policy.MaxAgentInitiated)
+            var running = _state.Count(e => e.Value.Owner is not null);
+            if (running >= policy.MaxAgentInitiated)
             {
-                return ServiceStartOutcome.Refused(
-                    ServiceRefusals.CapReached,
-                    $"this machine already holds {agentOwned} agent-started services " +
+                return ProcessOutcome.Refused(
+                    ProcessRefusals.CapReached,
+                    $"this machine already holds {running} agent-started processes " +
                     $"(max_agent_initiated {policy.MaxAgentInitiated})");
             }
 
@@ -265,62 +290,127 @@ public sealed class ServiceSupervisor : IAsyncDisposable
                             : ServiceDefaults.ReadinessTimeout)
                     : null,
                 ServiceDefaults.MaxBackoff,
-                // Capture is on for an agent-started service: its log path goes back in the
-                // reply so the declaring agent can read it with ordinary file tools.
+                // Capture on: the log path goes back in the reply so the declaring agent reads
+                // its own output with file tools.
                 new LogsConfig(null, null, Capture: true));
 
-            _state[key] = new SupervisedService(config)
+            _state[command.Name] = new SupervisedService(config)
             {
                 State = ServiceState.Stopped,
                 Owner = command.Task,
             };
         }
 
-        // Start inline so the reply can carry the real outcome — a worker that is told
-        // "started" needs the port to be answering before it registers (§8.2).
-        var s = _state[key];
-        var started = await TryStartAsync(s, ct);
-        if (!started)
+        var s = _state[command.Name];
+        if (!await TryStartAsync(s, ct))
         {
-            _state.TryRemove(key, out _);
+            _state.TryRemove(command.Name, out _);
             Stop(s);
-            var refusal = s.LastExitCode is null && s.StartedAt is null
-                ? ServiceRefusals.SpawnFailed
-                : ServiceRefusals.ReadinessTimeout;
-            return ServiceStartOutcome.Refused(refusal, $"service '{command.Name}' did not come up");
+            var refusal = s.StartedAt is null && s.LastExitCode is null
+                ? ProcessRefusals.SpawnFailed
+                : ProcessRefusals.ReadinessTimeout;
+            return ProcessOutcome.Refused(refusal, $"'{command.Name}' did not come up");
         }
 
-        Launch(key); // supervise it from here: restart on failure until its task ends
-        return ServiceStartOutcome.Started(
+        // Watch for exit and record it. No restart: the exit code is the point.
+        _watchers[command.Name] = Task.Run(() => WatchProcessAsync(command.Name, s, _cts.Token));
+
+        return ProcessOutcome.Started(
             config.Port ?? config.Readiness?.TcpPort,
             _logs is null ? null : Path.Combine(_logs.Root, command.Name));
     }
 
     /// <summary>
-    /// §10 task-scoped lifetime: stop every service the given task declared. Called from the
-    /// task-exit path, so a service dies with the task that asked for it.
-    ///
-    /// <para>This is deliberately <b>bookkeeping we own</b> rather than leaving it to the
-    /// stray reaper's environment scan. The reaper is the backstop and catches anything that
-    /// escaped — but it finds nothing on Windows by design (containment there is the
-    /// kill-on-close job, which fires on docketd's death, not a task's exit), so relying on
-    /// it alone would make this lifetime guarantee platform-dependent.</para>
+    /// §10: stop an agent-started process. <b>Machine-scoped</b> — any worker dispatched here
+    /// may stop any process here, which is precisely what lets a Lead's cleanup continuation (a
+    /// new task id) tidy up what an earlier task started. Cleanup is orchestration, not
+    /// enforcement.
     /// </summary>
-    public int StopForTask(TaskId task)
+    public ProcessOutcome StopProcess(string name)
     {
-        var stopped = 0;
-        foreach (var (key, s) in _state)
+        if (!_state.TryGetValue(name, out var s) || s.Owner is null)
         {
-            if (key.Task != task)
-                continue;
-            // Remove first: the supervision loop checks membership and will not restart a
-            // service whose owner is gone.
-            _state.TryRemove(key, out _);
-            Stop(s);
-            stopped++;
-            _log?.Invoke($"docketd: service '{key.Name}' stopped with its declaring task {task}");
+            return ProcessOutcome.Refused(
+                ProcessRefusals.NoSuchProcess, $"no agent-started process named '{name}' here");
         }
-        return stopped;
+
+        int? exitCode;
+        lock (s.Gate)
+            exitCode = s.LastExitCode;
+
+        _state.TryRemove(name, out _);
+        Stop(s);
+        _log?.Invoke($"docketd: process '{name}' stopped on request");
+        return ProcessOutcome.Stopped(exitCode);
+    }
+
+    /// <summary>
+    /// §10: write to an agent-started process's stdin, reusing the same held-open pipe the
+    /// message-mode worker stop injects a turn into.
+    ///
+    /// <para><b>It is a pipe, not a TTY.</b> Success means the pipe accepted the bytes — never
+    /// that the program understood them, and never that a prompt was answered. A program that
+    /// checks for a terminal behaves differently here, and one that reads <c>/dev/tty</c> never
+    /// sees this at all. Whatever it says back appears in the log file.</para>
+    /// </summary>
+    public async Task<ProcessOutcome> WriteProcessAsync(
+        string name, string data, bool appendNewline, CancellationToken ct)
+    {
+        if (System.Text.Encoding.UTF8.GetByteCount(data) > ProcessStdin.MaxBytes)
+        {
+            return ProcessOutcome.Refused(
+                ProcessRefusals.PayloadTooLarge,
+                $"a single write is capped at {ProcessStdin.MaxBytes} bytes; send several");
+        }
+
+        if (!_state.TryGetValue(name, out var s) || s.Owner is null)
+        {
+            return ProcessOutcome.Refused(
+                ProcessRefusals.NoSuchProcess, $"no agent-started process named '{name}' here");
+        }
+
+        Process? process;
+        lock (s.Gate)
+        {
+            if (s.State != ServiceState.Running)
+                return ProcessOutcome.Refused(ProcessRefusals.NotRunning, $"'{name}' is not running");
+            process = s.Process;
+        }
+
+        if (process is null)
+            return ProcessOutcome.Refused(ProcessRefusals.NotRunning, $"'{name}' is not running");
+
+        try
+        {
+            var payload = appendNewline ? data + "\n" : data;
+            await process.StandardInput.WriteAsync(payload.AsMemory(), ct);
+            await process.StandardInput.FlushAsync(ct);
+            return ProcessOutcome.Written(System.Text.Encoding.UTF8.GetByteCount(payload));
+        }
+        catch (Exception e) when (e is IOException or ObjectDisposedException or InvalidOperationException)
+        {
+            return ProcessOutcome.Refused(
+                ProcessRefusals.StdinUnavailable, $"'{name}' stdin is closed or broken: {e.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Records an agent-started process's exit and stops there. No restart, no backoff: for a
+    /// job, the exit code IS the result, and the agent — possibly a resumed one — decides.
+    /// </summary>
+    private async Task WatchProcessAsync(string name, SupervisedService s, CancellationToken ct)
+    {
+        await WaitForExitAsync(s, ct);
+        if (ct.IsCancellationRequested)
+            return;
+
+        lock (s.Gate)
+        {
+            s.State = ServiceState.Exited;
+            s.LastFailureAt = _clock.GetUtcNow();
+            s.StartedAt = null;
+        }
+        _log?.Invoke($"docketd: process '{name}' exited (code {s.LastExitCode?.ToString() ?? "n/a"}); not restarted");
     }
 
     /// <summary>Kills every supervised service (§10 clean shutdown).</summary>
@@ -350,13 +440,13 @@ public sealed class ServiceSupervisor : IAsyncDisposable
     /// the heartbeat instead of hot-looping.
     /// </summary>
     /// <summary>Starts one supervision loop for an admitted service and tracks it.</summary>
-    private void Launch(ServiceKey key)
+    private void Launch(string name)
     {
-        var loop = Task.Run(() => SuperviseAsync(key, _cts.Token));
+        var loop = Task.Run(() => SuperviseAsync(name, _cts.Token));
         _loops[loop] = 0;
     }
 
-    private async Task SuperviseAsync(ServiceKey key, CancellationToken ct)
+    private async Task SuperviseAsync(string key, CancellationToken ct)
     {
         if (!_state.TryGetValue(key, out var s))
             return;
@@ -427,14 +517,13 @@ public sealed class ServiceSupervisor : IAsyncDisposable
         // the restart sweep reaps the previous generation, and deliberately NO task id
         // so per-task exit cleanup steps over them.
         psi.Environment["DOCKET_MACHINE_ID"] = _machineId;
-        // The tagging IS the lifetime policy (§10). A task-owned service carries its task
-        // id, so the existing per-task exit sweep reaps it; a config-declared service
-        // deliberately carries none, so that same sweep steps over it and it survives task
-        // exits as an operator fixture.
-        if (s.Owner is { } owner)
-            psi.Environment["DOCKET_TASK_ID"] = owner.ToString();
-        else
-            psi.Environment.Remove("DOCKET_TASK_ID");
+        // §10: machine id only, and DELIBERATELY no DOCKET_TASK_ID — for services and
+        // agent-started processes alike. The task-id tag is what the per-task exit sweep reaps
+        // by, so carrying it would kill a process the moment its declaring worker's turn ended:
+        // exactly the loss this feature exists to prevent. Both kinds are therefore bound to
+        // the machine generation and nothing smaller, and both are ended only by an explicit
+        // stop, their own exit, or this daemon's restart sweep.
+        psi.Environment.Remove("DOCKET_TASK_ID");
 
         var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
 

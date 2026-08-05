@@ -213,7 +213,7 @@ public sealed class TranscriptRelayServiceTests(PostgresFixture pg) : IAsyncLife
         var registry = new RunnerConnectionRegistry(clock);
         var waiters = new TranscriptWaiters();
         var scopes = ScopeFactory(clock);
-        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), waiters, new StartServiceRelay(registry), NullLogger<RunnerEventSink>.Instance);
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), waiters, new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
         var harness = new Harness
         {
             Clock = clock,

@@ -552,8 +552,8 @@ public sealed record LogsConfig(
     int PruneAfterDays = TranscriptDefaults.PruneAfterDays);
 
 /// <summary>
-/// §10 per-profile policy for agent-initiated services. <b>Off by default</b>: a worker
-/// starting a long-lived process is a machine capability the operator grants, not a
+/// §10 per-profile policy for agent-started processes. <b>Off by default</b>: a worker
+/// starting a background process is a machine capability the operator grants, not a
 /// default. Deliberately gated by profile rather than by an allowlist of permitted
 /// commands — a worker on an open profile can already run a dev server by hand, so
 /// restricting the sanctioned tool below its existing capability would only push agents
@@ -564,7 +564,7 @@ public sealed record LogsConfig(
 /// Resource bound, not an authority control: the gate answers <em>may this task start
 /// services</em>, this answers <em>how many</em>. Services are already-running load that
 /// back-pressure cannot gate the way it gates dispatch, so an agent looping on
-/// <c>start_service</c> needs a ceiling.
+/// <c>start_process</c> needs a ceiling.
 /// </param>
 public sealed record ProfileServicesConfig(bool AgentInitiated = false, int MaxAgentInitiated = 8);
 
@@ -596,9 +596,9 @@ public static class ServiceDefaults
 /// the kill guarantee inside Docket on every OS rather than depending on a system
 /// service manager that macOS and containers may not have.
 ///
-/// <para>Config-declared only in v1. An agent-initiated service would need a worker
-/// tool and a new wire command, plus an answer to who may declare a process that
-/// outlives the task requesting it (§13) — deliberately out of scope.</para>
+/// <para>This record is also reused for an agent-started <b>process</b> (§10
+/// <c>start_process</c>), which differs in policy rather than in shape: never restarted,
+/// declared over the wire, and machine-scoped. See <see cref="ServiceSupervisor"/>.</para>
 /// </summary>
 public sealed record ServiceConfig(
     string Name,

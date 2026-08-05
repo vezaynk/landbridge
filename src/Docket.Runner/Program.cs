@@ -78,17 +78,15 @@ public static class Program
         var transcripts = new TranscriptStore(
             Path.Combine(stateDir, TranscriptDefaults.DirName), retention, clock);
 
-        // §10 services. Constructed before the process supervisor so the task-exit hook can
-        // reach it: a task-declared service must stop with its task, and that teardown is
-        // ours to run rather than the stray reaper's to discover.
+        // §10 services and agent-started processes. Both are docketd's own children, tagged
+        // with the machine id only: they outlive every task, and the only thing that ends them
+        // is an explicit stop, their own exit, or this daemon's restart (the stray sweep).
         var services = new ServiceSupervisor(
             config.DeclaredServices, machineId, clock,
             logs: new ServiceLogStore(Path.Combine(stateDir, ServiceLogStore.DirName)),
             log: Console.WriteLine);
 
-        var supervisor = new ProcessSupervisor(
-            config.Machine, ring, clock, reaper, transcripts,
-            onTaskExit: task => services.StopForTask(task));
+        var supervisor = new ProcessSupervisor(config.Machine, ring, clock, reaper, transcripts);
         var backPressure = new BackPressureMonitor(
             SystemLoadReader.ForCurrentPlatform(config.Machine.WorkRoot), config.Machine.BackPressure);
 

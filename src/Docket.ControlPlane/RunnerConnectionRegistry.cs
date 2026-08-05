@@ -57,6 +57,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
             // machine reports and forms no opinion about service health. Null (a runner
             // predating the field) leaves the previous list rather than blanking it.
             conn.Services = heartbeat.Services ?? conn.Services;
+            conn.Processes = heartbeat.Processes ?? conn.Processes;
             conn.LastHeartbeat = clock.GetUtcNow();
         }
     }
@@ -165,6 +166,15 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
             return [];
         lock (conn.Gate)
             return conn.Services;
+    }
+
+    /// <summary>The agent-started processes a machine last reported (§10, §12).</summary>
+    public IReadOnlyList<ProcessStatus> ProcessesOn(string machineId)
+    {
+        if (!_connections.TryGetValue(machineId, out var conn))
+            return [];
+        lock (conn.Gate)
+            return conn.Processes;
     }
 
     /// <summary>The tasks currently tracked as dispatched to a machine.</summary>
@@ -296,6 +306,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
         public bool UnderBackPressure { get; set; }
         public DateTimeOffset LastHeartbeat { get; set; }
         public IReadOnlyList<ServiceStatus> Services { get; set; } = [];
+        public IReadOnlyList<ProcessStatus> Processes { get; set; } = [];
         public Dictionary<TaskId, TaskActivity> Dispatched { get; } = new();
     }
 }

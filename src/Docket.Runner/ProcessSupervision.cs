@@ -176,13 +176,6 @@ public sealed class ProcessSupervisor : IProcessSupervisor
     private readonly TimeProvider _clock;
     private readonly StrayReaper? _taskReaper;
 
-    /// <summary>
-    /// §10 task-scoped service lifetime: invoked when a task's process ends, so services
-    /// that task declared are stopped with it. Bookkeeping we own, deliberately not left to
-    /// the stray reaper's environment scan — that scan finds nothing on Windows by design, so
-    /// reaper-only teardown would make this guarantee platform-dependent.
-    /// </summary>
-    private readonly Action<TaskId>? _onTaskExit;
     private readonly TranscriptStore? _transcripts;
     private readonly ConcurrentDictionary<TaskId, SupervisedTask> _tasks = new();
     private readonly SpawnerThread _spawner = new();
@@ -201,14 +194,12 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         OutboundEventRing ring,
         TimeProvider clock,
         StrayReaper? taskReaper = null,
-        TranscriptStore? transcripts = null,
-        Action<TaskId>? onTaskExit = null)
+        TranscriptStore? transcripts = null)
     {
         _machine = machine;
         _ring = ring;
         _clock = clock;
         _taskReaper = taskReaper;
-        _onTaskExit = onTaskExit;
         _transcripts = transcripts;
     }
 
@@ -234,7 +225,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
 
     /// <summary>
     /// The profile name a supervised task is running under, or null if this machine holds no
-    /// such task. §10 agent-initiated services consult it: the policy for what a task may
+    /// such task. §10 agent-started processes consult it: the policy for what a task may
     /// start lives on its profile, and only the machine knows which profile that is.
     /// </summary>
     public string? ProfileFor(TaskId task) => _tasks.TryGetValue(task, out var t) ? t.Profile : null;
@@ -637,14 +628,6 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         catch (InvalidOperationException) { exitCode = -1; }
 
         _ring.Enqueue(new ExitedEvent(supervised.Task, exitCode, _clock.GetUtcNow()));
-
-        // §10 task-scoped services: stop what this task declared, before the reaper sweep.
-        // Explicit and portable; the sweep below is the backstop for anything that escaped.
-        try { _onTaskExit?.Invoke(supervised.Task); }
-        catch (Exception e) when (e is InvalidOperationException or ObjectDisposedException)
-        {
-            // teardown is best-effort: never let it break the exit path
-        }
 
         // §10: task-exit stray cleanup keyed by DOCKET_TASK_ID, best-effort.
         try { _taskReaper?.ReapTask(machineId, supervised.Task.ToString()); }
