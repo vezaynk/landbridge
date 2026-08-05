@@ -340,9 +340,11 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
     /// tasks awaiting review (verifying + review mode, §7), and parked tasks awaiting
     /// an answer (§11) with the same question. This is where a person answers, so it is
     /// the one place the question's prose has to be legible verbatim — a §12 human
-    /// surface, not a §10 agent read. Two §12 rows remain structural empty states
-    /// rather than omissions: auth failures (the runner reports them but the sink only
-    /// logs them — §11, no event row is written) and permission requests (not built).
+    /// surface, not a §10 agent read. Two §12 rows remain structural empty states rather
+    /// than omissions, for different reasons: permission requests have no source at all,
+    /// while auth failures do have one — the sink persists them as task event rows (#50)
+    /// and the event log renders them — and this view simply does not join them yet,
+    /// which is a rendering gap rather than a missing column.
     /// </summary>
     public async Task<InboxView> GetInboxAsync(CancellationToken ct = default)
     {

@@ -20,9 +20,11 @@ namespace Docket.ControlPlane;
 /// <em>before</em> the command is sent, so a failed send requeues a now-working
 /// task rather than losing it (§10 best-effort commands).
 ///
-/// A liveness timer requeues working tasks that go quiet past the window, and
-/// requeue-on-disconnect (the socket loop calling the event sink) covers a
-/// vanished machine. Fine-grained ack-vs-liveness split is deferred.
+/// A liveness timer requeues working tasks on either of two clocks — no
+/// process-aliveness signal, or no forward progress for far longer (see
+/// <see cref="CheckLivenessAsync"/>) — and requeue-on-disconnect (the socket loop
+/// calling the event sink) covers a vanished machine. Fine-grained ack-vs-liveness
+/// split is deferred.
 /// </summary>
 public sealed class DispatchService : IHostedService
 {

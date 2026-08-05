@@ -517,8 +517,8 @@ public sealed class TaskStore(
     /// <summary>
     /// Records a runner <c>auth-failed</c> event (§11) as a first-class task event
     /// row — the structured operation/target/error-code/missing-scope facts the
-    /// runner reported — so the §12 dashboard can surface it (remediation menu
-    /// rendering itself stays deferred, #50 persists; #54-adjacent renders it).
+    /// runner reported — which the §12 event log renders as its own detail line
+    /// (#50). The actionable remediation menu §11 describes is still not built.
     /// Not a state transition: an auth failure does not move the task through §6,
     /// so this appends an event row with no from/to state, runs no engine
     /// transition, and takes no xmin token — but fires the same NOTIFY a transition
@@ -655,8 +655,10 @@ public sealed class TaskStore(
         // captures on the working → verifying transition. The engine and
         // TaskRecord stay content-free (the reference never lands on the pure
         // state), and CopyFrom deliberately does not carry it — so a succeeding
-        // ReportResult is the one place the row's ResultReference is written,
-        // where the verifier's read scope (§5) later fetches it.
+        // ReportResult is the one place the row's ResultReference is written. The
+        // verifier read scope this was written for is gone (§7: completion is
+        // Lead-adjudicated), and no read surface exposes the column today; the
+        // worker's in-band report below is what a Lead actually reads.
         if (command is ReportResult reported)
         {
             row.ResultReference = reported.ResultReference;

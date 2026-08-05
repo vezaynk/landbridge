@@ -10,12 +10,12 @@ namespace Docket.Relay;
 /// credential only: once a splice is established it persists until a side goes
 /// away, and is never re-validated mid-flight (no renewal path).</para>
 ///
-/// <para>The default implementation is a configurable static stub
-/// (<see cref="StaticSecretGrantValidator"/>). The real implementation — an
-/// HTTP call to the control plane that checks the grant against
-/// <c>{consumer, service, expiry}</c> — is a later increment. The seam is
-/// injectable so tests and the eventual control-plane client can substitute
-/// their own.</para>
+/// <para>The real implementation is <see cref="ControlPlaneGrantValidator"/> — an
+/// HTTP call to the control plane, which checks the grant against
+/// <c>{consumer, service, expiry}</c> — and it is what runs whenever
+/// <c>Relay:ControlPlane:Url</c> is configured. With no plane URL the fail-closed
+/// <see cref="StaticSecretGrantValidator"/> stands in for local dev. The seam stays
+/// injectable so a test can substitute its own.</para>
 /// </summary>
 public interface IGrantValidator
 {

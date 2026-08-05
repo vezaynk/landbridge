@@ -6,16 +6,17 @@ namespace Docket.Core;
 /// All fields are opaque to the control plane; it stores and returns them,
 /// never dereferences them.
 ///
-/// <see cref="Directory"/> and <see cref="HarnessSessionRef"/> are nullable
-/// because they originate <em>runner-side</em> (§11's resume seam): a harness
-/// working directory and Claude Code session id are machine-local facts the
-/// control plane does not hold. When a park is written by the wait-TTL sweeper —
-/// which knows only the machine it dispatched to and the attempt — they are null,
-/// and redispatch cold-starts from the workspace plus the worker's persisted
-/// notes (§11 explicitly allows this when the recorded directory is absent). The
-/// real-harness resume milestone (§11) supplies them via a runner event; until
-/// then null honestly means "not known to the plane" rather than an empty path.
-/// A <see cref="StopPreserveAndPark"/> issued through a runner may carry them.
+/// <see cref="Directory"/> and <see cref="HarnessSessionRef"/> are nullable because
+/// they originate <em>runner-side</em> (§11's resume seam): a harness working
+/// directory and session id are machine-local facts the plane cannot observe on its
+/// own. The session ref does reach it — the runner's <c>session-started</c> event
+/// stamps it on the task row, and the wait-TTL sweeper copies it into the park record
+/// so redispatch can resume the transcript — so it is null only for a work session
+/// that never reported one. The directory has no producer at all and is always null
+/// from the sweeper, so such a redispatch cold-starts from the workspace plus the
+/// worker's persisted notes (§11 explicitly allows this when the recorded directory is
+/// absent), and null honestly means "not known to the plane" rather than an empty path.
+/// A <see cref="StopPreserveAndPark"/> issued through a runner may carry either.
 /// </summary>
 public sealed record ParkRecord(
     string Machine,

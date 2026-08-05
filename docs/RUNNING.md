@@ -148,11 +148,14 @@ proactively at ~50% of its remaining lifetime and reactively on a 401 reconnect.
 The long-lived refresh token is the only durable secret and is bound to the
 machine id, so a copied credential file fails on another host.
 
-> **Not yet built.** Spec §11 describes an agent-guided `/docket-enroll` wizard
-> that writes the runner config and a control-plane **conformance run** that
-> dispatches trivial tasks and judges the machine before it joins as `ready`.
-> Neither the wizard prompt nor the conformance run exists on this branch; today
-> enrollment yields credentials and you author the runner config yourself.
+> **Half built.** The agent-guided enrollment §11 describes ships as a *skill*, not a
+> prompt: `docket-enroll` (`docket://skills/enroll`) walks an agent through probing the
+> harness, writing the runner config, handing the service install to the human, and
+> smoke-testing the machine. No MCP prompt is registered, so there is no `/docket-enroll`
+> slash command to invoke it — the client reads the skill off `resources/list`. The
+> control-plane **conformance run** — dispatching trivial tasks and judging the machine
+> before it joins as `ready` — does not exist; nothing in the plane probes a new machine,
+> and the skill's manual smoke test is its stand-in.
 
 ## The runner config
 
@@ -229,8 +232,10 @@ On this branch only **`terminal`** (parse Claude Code stream-json stdout →
 falls back to process-alive, progress renders as "not reported") are implemented.
 The `hooks` and `otel` sources are valid config values but **not yet wired** —
 the worked example in the runner-config reference uses `hooks`, which is the
-intended shape, not what runs today. `subagent-spawned`, `alive`, and
-`auth-failed` events are not produced yet.
+intended shape, not what runs today. Of the frozen event vocabulary, only
+`subagent-spawned` and `auth-failed` still have no producer; `alive` is emitted by
+`docketd`'s own heartbeat loop regardless of the events source, which is what keeps a
+long-running task on a `terminal` profile from being requeued while it is quiet.
 
 ## Running `docketd` as a service
 

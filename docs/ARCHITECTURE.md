@@ -182,8 +182,8 @@ the vocabulary (`RunnerWire.Decode*` returns null on an unknown `type`).
 
 | Direction | Messages |
 |---|---|
-| **Outbound** (plane → runner) | `dispatch` · `stop(ttl, disposition)` · `kill` · `open-forward` |
-| **Inbound** (runner → plane) | `started` · `alive` · `tool-call` · `subagent-spawned` · `exited` · `auth-failed` · `forward-opened` · `forward-closed` · `rebooted` |
+| **Outbound** (plane → runner) | `dispatch` · `stop(ttl, disposition)` · `kill` · `open-forward` · `read-transcript` |
+| **Inbound** (runner → plane) | `started` · `session-started` · `alive` · `tool-call` · `subagent-spawned` · `exited` · `auth-failed` · `forward-opened` · `forward-closed` · `rebooted` · `transcript-chunk` |
 
 **Every message carries a task id** — it is the required first field of every
 record. The one exception is `rebooted`, which is machine-scoped precisely because
@@ -196,11 +196,12 @@ discriminator alongside the payload fields (plus an optional `traceparent`
 envelope key for tracing and a `heartbeat` message that carries a machine's
 declared profiles and load). Nothing in the vocabulary is domain-specific.
 
-> **Implemented subset.** The vocabulary is frozen and complete in the types, but
-> `docketd` on this branch *emits* only `started`, `tool-call`, `exited`,
-> `rebooted`, `forward-opened`, and `forward-closed`. `alive`, `auth-failed`, and
-> `subagent-spawned` are defined but not yet produced (progress renders as "not
-> reported" rather than fabricated — spec §10, §12).
+> **Implemented subset.** The vocabulary is frozen and complete in the types, and
+> `docketd` on this branch emits all of it except two: `auth-failed` and
+> `subagent-spawned` are defined but not yet produced (their dashboard rows render as
+> "not reported" rather than fabricated — spec §10, §12). Everything else has a
+> producer, including `alive` (docketd's own per-task process-alive assertion, §10),
+> `session-started`, and `transcript-chunk`.
 
 ## `stop` is a message, not a signal
 
@@ -268,10 +269,12 @@ thing between the relay and a fleet-wide port scanner (§13). The relay validato
 is **fail-closed**: an unreachable or unconfigured plane refuses every tunnel.
 
 > **Implemented subset.** The generic-TCP splice, `ForwardRegistry` rendezvous,
-> and fail-closed control-plane grant validation work today. Deferred: the
-> per-Team **byte counter and forward rate limit** (§8.3, §9.10 — the splice loop
-> is the marked seam), the **HTTP layer** (subdomain-per-service; TCP is the
-> primitive to build first), and generalizing beyond **one tunnel per forward id**.
+> fail-closed control-plane grant validation, the per-Team **byte counter** and the
+> **forward rate limit** (§9.10 — counted in the splice loop and reported to the plane;
+> the limit is enforced at grant mint), and the **HTTP layer** (§8.4's
+> subdomain-per-service preview) all work today. Still deferred: generalizing beyond
+> **one tunnel per forward id**, and any *enforcement* on the byte counter — §8.3
+> forbids severing an established splice, so a reached ceiling has no defined action.
 
 ## Observability (§12)
 
@@ -285,10 +288,13 @@ awaiting review, parked tasks). Lead takeovers, machine reboots, and evictions
 land in the event log.
 
 Views render as a plain server-rendered web dashboard (spec §12: "a plain web
-dashboard first"); MCP Apps are not built. Several §12 data points — the subagent
-tree, budget/byte burn, the typed input-request kind, auth-failure and permission
-events — have no source in the schema yet and render as honest empty states
-rather than fabricated numbers. Cross-process tracing is real: the host exports
+dashboard first"); MCP Apps are not built. Most of §12's data points now have a
+source: a Team's committed budget and its measured relay byte burn are both surfaced
+(§9.9/§9.10), and the derived-telemetry events — auth failures, subagent spawns, and
+the typed input-request kind — are persisted as task event rows and render structured
+in the event log. What genuinely has no source is **permission requests** and the
+**subagent tree nested under a machine**, which render as honest empty states rather
+than fabricated numbers. Cross-process tracing is real: the host exports
 OpenTelemetry (traces/metrics/logs via `Docket.ServiceDefaults`), and a stored
 `traceparent` lets one trace span `create_task → dispatch → runner → worker`.
 
