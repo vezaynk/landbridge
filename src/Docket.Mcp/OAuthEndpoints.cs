@@ -11,7 +11,7 @@ namespace Docket.Mcp;
 /// <c>/oauth/token</c>, the front door a human — and an MCP client like Claude
 /// Code acting for one — walks through to obtain the existing opaque
 /// <c>dkt_h_</c> human session token. Plain anonymous HTTP in the narrow,
-/// non-MCP style of <see cref="VerifierEndpoints"/>; the endpoints are the
+/// non-MCP style of <see cref="EnrollmentEndpoints"/>; the endpoints are the
 /// transport shell and all the credential logic lives in the control-plane
 /// services (<see cref="OAuthAuthorizationCodeService"/>,
 /// <see cref="TokenService"/>, <see cref="IOperatorVerifier"/>,

@@ -73,7 +73,12 @@ public sealed record Continuation(
 public sealed record Dispatch(MachineSnapshot Machine, WorkerInstanceId NewInstance)
     : TaskCommand(ControlPlaneActor.Instance);
 
-/// <summary>working|blocked_on_input → submitted (infrastructure counter).</summary>
+/// <summary>
+/// working|blocked_on_input → submitted (infrastructure counter), or → canceled once
+/// that counter reaches the task's cap (§9 check 7). <see cref="Reason"/> names the
+/// signal that fired and is persisted on the requeue, so the trail distinguishes a
+/// wedged agent from a silent daemon from a rebooted runner (#73).
+/// </summary>
 public sealed record LivenessLost(LivenessLossReason Reason)
     : TaskCommand(ControlPlaneActor.Instance);
 

@@ -49,8 +49,8 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
 
         var team = TeamId.New();
 
-        // A human session claims the Lead of the Team, exactly as a future OAuth
-        // callback would drive it (§5).
+        // A human session claims the Lead of the Team, through the same seam the OAuth
+        // callback drives (§5) — minted directly here so the test stays headless.
         string leadToken;
         await using (var db = pg.NewContext())
         {

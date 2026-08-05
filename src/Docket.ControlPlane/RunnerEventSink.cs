@@ -142,8 +142,12 @@ public sealed class RunnerEventSink(
             // task requeues against the infrastructure counter. If it already
             // reached verifying/terminal (worker reported first), the exit is
             // expected and moot. Exit-without-submit refinement deferred.
+            //
+            // The reason is the exit itself (#73), not a liveness timeout: nothing timed
+            // out here, the process died, and telling the two apart in the trail is the
+            // difference between "the harness crashed" and "the daemon went quiet".
             if (state == TaskState.Working)
-                await store.ApplyAsync(e.Task, new LivenessLost(LivenessLossReason.LivenessTimeout), ct);
+                await store.ApplyAsync(e.Task, new LivenessLost(LivenessLossReason.ProcessExited), ct);
         });
 
         // §6/§11: blocked_on_input holds a task whose harness process is *expected*

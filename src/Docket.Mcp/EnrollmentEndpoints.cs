@@ -4,8 +4,8 @@ namespace Docket.Mcp;
 
 /// <summary>
 /// The machine bootstrap surface (spec §5 Bootstrap, §11, §13). Plain HTTP, in
-/// the narrow non-MCP style of <see cref="VerifierEndpoints"/> and
-/// <see cref="RelayValidationEndpoints"/>: docketd exchanges a human-issued
+/// the narrow non-MCP style of <see cref="RelayValidationEndpoints"/>: docketd
+/// exchanges a human-issued
 /// enrollment token for machine credentials at <c>/enroll</c>, then keeps its
 /// short-lived access token fresh at <c>/machine/refresh</c>.
 ///

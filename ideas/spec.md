@@ -220,7 +220,8 @@ Additional states: `blocked_on_input`, `parked`, `canceled`. `blocked_on_input` 
 |---|---|---|
 | → `submitted` | Lead | session carries lead claim for this Team; completion criteria non-empty; namespace assigned; Team budget remains |
 | `submitted` → `working` | control plane dispatch | the dispatch transaction *is* the claim: single dispatch per task (`SKIP LOCKED`), target machine `ready`, not under back-pressure, and declaring a profile matching the task's `profile`, if set. Workers do not claim; they are dispatched (§5). |
-| `working` → `submitted` | control plane | ack timeout, per-task liveness loss, or machine reboot; increments the infrastructure counter; revokes the worker-instance token |
+| `working` → `submitted` | control plane | ack timeout, per-task liveness loss, or machine reboot; increments the infrastructure counter and records **why** on the task and its event row (which clock fired, or that the process exited, or that the runner rebooted); revokes the worker-instance token. Unless that increment reaches the task's cap — then the row below |
+| `working` \| `blocked_on_input` → `canceled` | control plane | the infrastructure counter reached the task's configured cap (§9 check 7). The task is abandoned rather than dispatched again: the reason that ended it is recorded, services and forwards are released, the predecessor's token is revoked, and **the workspace is preserved** — whatever wedged every attempt is the evidence a human needs. Never `rejected`; see *two counters* below |
 | `working` → `verifying` | working agent | result reference present; caller is the incumbent worker instance |
 | `verifying` → `completed` | Lead or human | **caller is a Lead or human credential, never the task's own worker** (doer/judge split); in `review` mode the verdict carries human confirmation (§7); verdict provenance (`lead-session` \| `human`) is recorded on the completion event |
 | `verifying` → `submitted` | Lead or human | verdict is `fail` and verification retries remain |
@@ -236,6 +237,8 @@ Additional states: `blocked_on_input`, `parked`, `canceled`. `blocked_on_input` 
 No row requires reading a task description or interpreting its criteria.
 
 **Two counters, not one.** Verification failures and infrastructure requeues are different things. A machine rebooting three times should not exhaust the budget a task has for failing its criteria. Only the verification counter drives `rejected`.
+
+**Both counters have a ceiling; they reach different states.** Verification exhaustion `reject`s — a verdict on the work. Infrastructure exhaustion `cancel`s — the plane giving up on *placing* the work, which says nothing about whether the work was any good, so it must not consume the task's verification budget or borrow rejection's meaning. Uncapped is not an option: a task that wedges whatever machine it lands on used to requeue forever, and since #72 each attempt burns the no-progress ceiling (30 min) and commits a fresh per-dispatch budget cap (§9.9), so an unattended loop spends steadily while making no progress. The cap is per-task, fixed at creation from control-plane config so raising it never moves the goalposts under work already in flight, and configuring it non-positive restores the old unbounded behaviour for an operator who wants it. What a `canceled` task keeps is its workspace and its recorded reason; recovery is a new task (`continues:` if the transcript is worth resuming), which honestly re-arms the counter rather than quietly extending it.
 
 Terminal states — `completed`, `rejected`, `canceled` — are final and never resumed.
 
@@ -381,7 +384,7 @@ Preview traffic rides the same per-Team accounting as any other forward (§9 che
 4. Completion comes from a Lead or human credential, **never the task's own worker** (doer/judge split); `review` verdicts carry human confirmation; verdict provenance (`lead-session` | `human`) is recorded on the completion event.
 5. Single dispatch per task; the dispatched machine is accepting work and declares a matching profile name.
 6. One Lead per Team; takeover is explicit and logged.
-7. Ack timeout and per-task liveness timeout → requeue.
+7. Ack timeout and per-task liveness timeout → requeue, **capped per task**: the requeue that reaches the cap abandons the task as `canceled` instead (§6), never `rejected`. Every requeue records which signal fired — undelivered dispatch, aliveness loss, no progress, process exit, machine reboot — on the task and on its event row.
 8. Verification retries exhausted → `rejected`.
 9. Team budget ceiling on **committed authorization** — containment, not metering: each dispatch commits the per-dispatch harness cap it is handed, and reaching the ceiling refuses new dispatch *and* `stop`s the Team's working tasks. Measured spend is not an input; nothing ingests it (see the as-built note below).
 10. Forward rate limit per Team per window, enforced at grant mint — the enforcing half. Per-Team relay bytes are **measured and reported, but nothing is enforced on them**: there is no byte *allowance*, because §8.3 forbids severing an established splice (see the as-built note below).
@@ -391,6 +394,8 @@ Preview traffic rides the same per-Team accounting as any other forward (§9 che
 14. Worker-triggered transitions are accepted only from the incumbent worker instance; requeue and redispatch revoke the predecessor's token first.
 
 Nothing else. Any addition that requires knowing what a task is *about* should be rejected outright.
+
+**Check 7's cap: 5 by default, and a recorded reason on every requeue.** The default is five because a task should survive an ordinary bad patch — one flaky dispatch, a reboot, a redeploy — and should not survive being unplaceable: five attempts at a 30-minute no-progress ceiling bounds a wedged task to hours rather than forever, and five per-dispatch budget commitments rather than unbounded ones (§9.9). The cap counts requeues from `blocked_on_input` too, or a task that only ever wedges while waiting would escape it. **Recording the reason is half the fix and the more load-bearing half:** the reason was previously computed at requeue time and discarded, so N requeues left N identical marks in the record and the §12 event log, and the one thing an operator needed to know — whether this is a wedged agent (no progress), a silent daemon (aliveness lost), a crashing harness (process exited), or a rebooting machine — was recoverable only from plane logs. It now lands on the task row (the live reason, for `get_task_report` / `get_team_state`) and on each requeue's own event row (the history, for the §12 log), the same row-vs-event-log split the typed input-request kind uses. A `canceled` task whose infrastructure count reached its cap is therefore distinguishable from one a person called off, which is what makes the terminal state honest rather than mysterious.
 
 **Subagent depth is the harness's problem.** Fan-out cost is contained by check 9 instead — the budget ceiling bounds authorized spend regardless of tree shape, because a subagent tree runs inside its parent dispatch and therefore inside that dispatch's committed cap. Enforcement is refusing new dispatch plus `stop`/`kill`, since Docket does not hold the model keys and cannot stop an in-flight call.
 
