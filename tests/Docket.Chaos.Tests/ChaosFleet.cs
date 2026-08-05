@@ -182,16 +182,6 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     }
 
     /// <summary>
-    /// Waits for a line on the plane's own log, up to <paramref name="timeout"/>.
-    /// Which liveness clock reclaimed a task is deliberately NOT persisted (§10
-    /// follow-up: <c>LivenessLossReason</c> is dropped on the way to the row), so the
-    /// plane's warning is the only place that fact is recoverable — which makes reading
-    /// it the only way a test can tell the two clocks apart.
-    /// </summary>
-    public Task<string?> WaitForPlaneLogAsync(Func<string, bool> match, TimeSpan timeout) =>
-        (_plane ?? throw new InvalidOperationException("the plane is not running")).WaitForLineAsync(match, timeout);
-
-    /// <summary>
     /// SIGKILL docketd — no handler, no flush, no child cleanup (§17.8). The plane
     /// notices the dropped socket and requeues everything the machine held; asserting
     /// that is the caller's job.
@@ -363,7 +353,26 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
             .CountAsync(w => w.TaskId == task.Value && !w.Revoked, ct);
         return new TaskFacts(
             row.State, row.Attempt, row.InfrastructureRequeues, row.CurrentInstanceId, row.ResultReference,
-            liveInstances);
+            liveInstances, row.LastRequeueReason, row.InfrastructureRequeueLimit);
+    }
+
+    /// <summary>
+    /// Every requeue this task has taken, in order, with the reason each one carries
+    /// (<c>task_events.liveness_reason</c>). Since #73 the reason is committed rather
+    /// than living only in a log line, so a scenario can assert WHICH signal reclaimed a
+    /// task from durable state — and, just as usefully, that the other signals did not
+    /// fire. The event kind is the command's type name, so a requeue row is a
+    /// <c>LivenessLost</c>.
+    /// </summary>
+    public async Task<IReadOnlyList<LivenessLossReason?>> RequeueReasonsAsync(
+        TaskId task, CancellationToken ct)
+    {
+        await using var db = pg.NewContext();
+        return await db.TaskEvents.AsNoTracking()
+            .Where(e => e.TaskId == task.Value && e.Kind == nameof(LivenessLost))
+            .OrderBy(e => e.OccurredAt)
+            .Select(e => e.LivenessReason)
+            .ToListAsync(ct);
     }
 
     /// <summary>
@@ -419,7 +428,9 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
                 }
                 sb.AppendLine(
                     $"║ {task}: state={row.State} attempt={row.Attempt} " +
-                    $"infraRequeues={row.InfrastructureRequeues} verificationFailures={row.VerificationFailures} " +
+                    $"infraRequeues={row.InfrastructureRequeues}/{row.InfrastructureRequeueLimit} " +
+                    $"lastRequeueReason={row.LastRequeueReason?.ToString() ?? "(none)"} " +
+                    $"verificationFailures={row.VerificationFailures} " +
                     $"profile={row.Profile ?? "(default)"} result={row.ResultReference ?? "(none)"} " +
                     $"instance={row.CurrentInstanceId?.ToString() ?? "(none)"}");
 
@@ -435,6 +446,7 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
                     sb.AppendLine(
                         $"║   {e.OccurredAt:HH:mm:ss.fff} {e.Kind} " +
                         $"{e.FromState?.ToString() ?? "-"}->{e.ToState?.ToString() ?? "-"}" +
+                        (e.LivenessReason is { } reason ? $" reason={reason}" : "") +
                         (e.Detail is { Length: > 0 } d ? $" [{d}]" : ""));
             }
         }
@@ -593,4 +605,6 @@ internal readonly record struct TaskFacts(
     int InfrastructureRequeues,
     Guid? CurrentInstanceId,
     string? ResultReference,
-    int LiveInstanceCount);
+    int LiveInstanceCount,
+    LivenessLossReason? LastRequeueReason,
+    int InfrastructureRequeueLimit);

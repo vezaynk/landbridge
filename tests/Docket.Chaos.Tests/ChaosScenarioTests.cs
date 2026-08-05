@@ -29,10 +29,18 @@ namespace Docket.Chaos.Tests;
 /// mid-decomposition, close a laptop and reattach, park a task and answer it after the
 /// machine is gone.</para>
 ///
-/// <para><b>Requeue counts are asserted tolerantly on purpose.</b> A cap on
-/// infrastructure requeues is in flight (issue #73), so these scenarios assert "at
-/// least one requeue" and "eventually leaves the state it was stuck in" rather than an
-/// exact count or retry-forever behaviour.</para>
+/// <para><b>Requeue counts are asserted tolerantly on purpose.</b> Infrastructure
+/// requeues are capped (#73, default 5 per task) and a task that reaches its cap is
+/// abandoned as <c>canceled</c>, so these scenarios assert "at least one requeue" and
+/// "eventually leaves the state it was stuck in" — never an exact count, and never
+/// retry-forever behaviour. Where a scenario could drift into the cap it says so and
+/// asserts it has not; the cap itself is covered by
+/// <c>Docket.Core.Tests.RequeueCapTests</c>.</para>
+///
+/// <para><b>Requeue reasons are read from committed state</b>
+/// (<c>tasks.last_requeue_reason</c> and <c>task_events.liveness_reason</c>, both added
+/// by #73), not from the plane's log. That matters most for the wedged-worker scenario,
+/// where every clock bumps the same counter and only the reason distinguishes them.</para>
 /// </summary>
 [Collection(PostgresCollection.Name)]
 public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
@@ -149,6 +157,27 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
                 await fleet.DiagnoseAsync(siblings, ct));
             Assert.Null(facts.CurrentInstanceId);
             Assert.Equal(0, facts.LiveInstanceCount);
+
+            // The requeue must be attributed to the machine going away, not to a liveness
+            // clock lapsing — those are different scenarios, and before the reason was
+            // persisted (#73) the only way to keep them apart here was to push the
+            // no-progress ceiling far out and trust it. Now it is assertable.
+            //
+            // Asserted over the whole requeue trail rather than as the LAST reason,
+            // because the two siblings do not end up with the same trail. The disconnect
+            // requeues both with MachineReboot, and that commit's notify wakes the
+            // dispatch loop while the dying connection is still registered
+            // (RunnerEndpoint requeues in its `finally` BEFORE unregistering). A pass
+            // claims ONE task, cannot write to the dead socket, and requeues it again as
+            // AckTimeout; by the next pass the connection is gone, so the other sibling
+            // keeps the bare MachineReboot trail. Which of the two pays the extra requeue
+            // varies per run. Both reasons are the same underlying fact — the machine is
+            // gone — so what is worth asserting is that the trail says machine-gone and
+            // that NEITHER liveness clock fired.
+            var reasons = await fleet.RequeueReasonsAsync(task, ct);
+            Assert.Contains(LivenessLossReason.MachineReboot, reasons);
+            Assert.DoesNotContain(LivenessLossReason.NoProgress, reasons);
+            Assert.DoesNotContain(LivenessLossReason.LivenessTimeout, reasons);
         }
 
         // ── 2. The restart sweep runs before the daemon accepts anything.
@@ -253,11 +282,12 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
     /// since babysitting a service legitimately looks like no progress) and asserts the
     /// task is reclaimed once the ceiling lapses.</para>
     ///
-    /// <para>Tolerant by construction (issue #73): it asserts the task leaves
-    /// <c>working</c> with at least one infrastructure requeue counted, not how many
-    /// times it is retried afterwards. The wedge is deterministic, so redispatch will
-    /// wedge again — whether that recurs forever or hits a cap is exactly what this
-    /// test must not pin down.</para>
+    /// <para>Tolerant by construction (#73): it asserts the task leaves <c>working</c>
+    /// with at least one infrastructure requeue counted and that every requeue so far was
+    /// attributed to no-progress — not how many times it is retried afterwards. The wedge
+    /// is deterministic, so redispatch wedges again and the task would eventually reach
+    /// its cap and be abandoned; that end state belongs to the cap's own tests, so this
+    /// one asserts it stops short of it.</para>
     /// </summary>
     [SkippableFact]
     public async Task A_wedged_worker_is_reclaimed_when_the_no_progress_ceiling_lapses()
@@ -297,16 +327,24 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
         // Which clock fired is the whole point, and both clocks bump the same counter —
         // so without this the test would equally pass if docketd had simply stopped
         // reporting the worker alive, which is a different scenario with a different
-        // detection time. The plane's warning is the only place that distinction
-        // survives, and it must read "no progress": the worker was still alive.
-        var reclaimed = await fleet.WaitForPlaneLogAsync(
-            l => l.Contains("requeueing task", StringComparison.Ordinal)
-                 && l.Contains(task.ToString(), StringComparison.OrdinalIgnoreCase),
-            TransitionBudget);
-        Assert.True(reclaimed is not null,
-            "the plane never logged which clock reclaimed the task\n" + await fleet.DiagnoseAsync([task], ct));
-        Assert.Contains("no progress", reclaimed!, StringComparison.Ordinal);
-        Assert.DoesNotContain("no aliveness signal", reclaimed!, StringComparison.Ordinal);
+        // detection time and a different remedy (a machine problem, not a wedged agent).
+        // Since #73 the reason is committed on both surfaces, so this reads durable state
+        // rather than scraping a log line.
+        var reasons = await fleet.RequeueReasonsAsync(task, ct);
+        Assert.NotEmpty(reasons);
+        Assert.All(reasons, reason => Assert.Equal(LivenessLossReason.NoProgress, reason));
+        var reclaimed = (await fleet.FactsAsync(task, ct))!.Value;
+        Assert.Equal(LivenessLossReason.NoProgress, reclaimed.LastRequeueReason);
+
+        // The wedge is deterministic, so it re-wedges on every redispatch and would walk
+        // the task to its requeue cap and abandon it (§9 check 7) if this ran long
+        // enough. Asserting we are still short of the cap is what keeps this a test about
+        // the no-progress clock rather than an accidental test of the cap — which has its
+        // own coverage in Docket.Core.Tests.RequeueCapTests.
+        Assert.True(reclaimed.InfrastructureRequeues < reclaimed.InfrastructureRequeueLimit,
+            $"the wedge reached its requeue cap ({reclaimed.InfrastructureRequeues}/" +
+            $"{reclaimed.InfrastructureRequeueLimit}) before this scenario could assert on it\n" +
+            await fleet.DiagnoseAsync([task], ct));
     }
 
     // ── Shared assertions ───────────────────────────────────────────────────────
