@@ -247,12 +247,22 @@ public sealed class ServiceSupervisor : IAsyncDisposable
             // than silently resolved. Names are machine-scoped because the agent that cleans up
             // is a continuation — a different task id — so a task-scoped name would be
             // unreachable by the very worker sent to tidy it.
+            // Names are unique among LIVE entries only. An exited process has released its
+            // name, so a retry — or a later task reusing the same name — is not blocked by a
+            // corpse. A config-declared service always holds its name, exited or not, because
+            // it will be restarted into it.
             if (_state.TryGetValue(command.Name, out var existing))
             {
-                var kind = existing.Owner is null ? "service" : "process";
-                return ProcessOutcome.Refused(
-                    ProcessRefusals.NameTaken,
-                    $"the name '{command.Name}' is already held by a {kind} on this machine");
+                var live = existing.Owner is null || existing.State is not (ServiceState.Exited or ServiceState.Stopped);
+                if (live)
+                {
+                    var kind = existing.Owner is null ? "service" : "process";
+                    return ProcessOutcome.Refused(
+                        ProcessRefusals.NameTaken,
+                        $"the name '{command.Name}' is already held by a running {kind} on this machine");
+                }
+
+                _state.TryRemove(command.Name, out _); // reclaim the exited entry's name
             }
 
             if (requestedPort is { } port)
@@ -261,13 +271,18 @@ public sealed class ServiceSupervisor : IAsyncDisposable
                 {
                     if ((other.Config.Port ?? other.Config.Readiness?.TcpPort) != port)
                         continue;
+                    // Same reasoning as names: an exited process is not holding a port.
+                    if (other.Owner is not null && other.State is ServiceState.Exited or ServiceState.Stopped)
+                        continue;
                     return ProcessOutcome.Refused(
                         ProcessRefusals.PortTaken,
                         $"port {port} is already claimed by '{otherName}' on this machine");
                 }
             }
 
-            var running = _state.Count(e => e.Value.Owner is not null);
+            var running = _state.Count(e =>
+                e.Value.Owner is not null
+                && e.Value.State is not (ServiceState.Exited or ServiceState.Stopped));
             if (running >= policy.MaxAgentInitiated)
             {
                 return ProcessOutcome.Refused(
@@ -326,7 +341,7 @@ public sealed class ServiceSupervisor : IAsyncDisposable
     /// new task id) tidy up what an earlier task started. Cleanup is orchestration, not
     /// enforcement.
     /// </summary>
-    public ProcessOutcome StopProcess(string name)
+    public async Task<ProcessOutcome> StopProcessAsync(string name, CancellationToken ct)
     {
         if (!_state.TryGetValue(name, out var s) || s.Owner is null)
         {
@@ -334,14 +349,44 @@ public sealed class ServiceSupervisor : IAsyncDisposable
                 ProcessRefusals.NoSuchProcess, $"no agent-started process named '{name}' here");
         }
 
-        int? exitCode;
+        Process? process;
         lock (s.Gate)
-            exitCode = s.LastExitCode;
+            process = s.Process;
+
+        // Graceful first, then the kill — the same wind-down shape a message-mode worker stop
+        // uses (§10/§11): close the held-open stdin so a child watching its input sees EOF and
+        // can exit on its own terms, wait a bounded moment, and only then take the tree. A
+        // build flushing its output deserves that; a wedged one does not get to refuse.
+        if (process is not null && !SafeHasExited(process))
+        {
+            try { process.StandardInput.Close(); }
+            catch (Exception e) when (e is IOException or ObjectDisposedException or InvalidOperationException)
+            {
+                // stdin already gone; the kill below is the whole story
+            }
+
+            try { await process.WaitForExitAsync(ct).WaitAsync(ServiceDefaults.StopWindDown, ct); }
+            catch (Exception e) when (e is TimeoutException or OperationCanceledException)
+            {
+                // did not go quietly
+            }
+        }
 
         _state.TryRemove(name, out _);
         Stop(s);
-        _log?.Invoke($"docketd: process '{name}' stopped on request");
+
+        int? exitCode;
+        lock (s.Gate)
+            exitCode = s.LastExitCode ?? (process is not null ? SafeExitCode(process) : null);
+
+        _log?.Invoke($"docketd: process '{name}' stopped on request (exit {exitCode?.ToString() ?? "n/a"})");
         return ProcessOutcome.Stopped(exitCode);
+    }
+
+    private static bool SafeHasExited(Process p)
+    {
+        try { return p.HasExited; }
+        catch (InvalidOperationException) { return true; }
     }
 
     /// <summary>

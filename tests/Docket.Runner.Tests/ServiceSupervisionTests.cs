@@ -615,17 +615,38 @@ public class ServiceSupervisionTests
             Assert.Single(sup.ReportProcesses());
 
             // A different task id — exactly what a Lead's cleanup continuation carries.
-            Assert.IsType<ProcessOutcome.StoppedOk>(sup.StopProcess("dev"));
+            Assert.IsType<ProcessOutcome.StoppedOk>(await sup.StopProcessAsync("dev", CancellationToken.None));
             Assert.Empty(sup.ReportProcesses());
 
             Assert.Equal(
                 ProcessRefusals.NoSuchProcess,
-                Assert.IsType<ProcessOutcome.RefusedOutcome>(sup.StopProcess("dev")).Refusal);
+                Assert.IsType<ProcessOutcome.RefusedOutcome>(await sup.StopProcessAsync("dev", CancellationToken.None)).Refusal);
         }
         finally
         {
             TestKit.TryDeleteRoot(cwd);
         }
+    }
+
+    [Fact]
+    public async Task An_exited_process_releases_its_name_and_port()
+    {
+        // Uniqueness is among LIVE entries. A corpse must not block a retry — otherwise a
+        // resumed agent re-running the same job would be stuck on a name it already owns.
+        await using var sup = new ServiceSupervisor(
+            [], "m1", TimeProvider.System, probe: (_, _) => Task.FromResult(true));
+        var profile = ProfileWith(true, cap: 1);
+
+        Assert.IsType<ProcessOutcome.StartedOk>(await sup.StartProcessAsync(
+            Ask("job", spawn: [TestKit.HarnessPath(), "exit-code", "3"], port: 7601, readiness: 7601),
+            profile, CancellationToken.None));
+        Assert.True(await TestKit.WaitUntilAsync(
+            () => sup.ReportProcesses().Single().State == ServiceState.Exited, TimeSpan.FromSeconds(10)));
+
+        // Same name, same port, and a cap of 1 that the corpse must not be counted against.
+        Assert.IsType<ProcessOutcome.StartedOk>(await sup.StartProcessAsync(
+            Ask("job", spawn: [TestKit.HarnessPath(), "exit-code", "3"], port: 7601, readiness: 7601),
+            profile, CancellationToken.None));
     }
 
     [Fact]
@@ -642,7 +663,7 @@ public class ServiceSupervisionTests
 
             Assert.Equal(
                 ProcessRefusals.NoSuchProcess,
-                Assert.IsType<ProcessOutcome.RefusedOutcome>(sup.StopProcess("fixture")).Refusal);
+                Assert.IsType<ProcessOutcome.RefusedOutcome>(await sup.StopProcessAsync("fixture", CancellationToken.None)).Refusal);
         }
         finally
         {

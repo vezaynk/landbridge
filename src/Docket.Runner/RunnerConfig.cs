@@ -586,6 +586,13 @@ public static class ServiceDefaults
 
     /// <summary>First restart delay; doubles up to <see cref="MaxBackoff"/>.</summary>
     public static readonly TimeSpan InitialBackoff = TimeSpan.FromSeconds(1);
+
+    /// <summary>
+    /// How long <c>stop_process</c> waits after closing stdin before taking the tree — the same
+    /// graceful-then-kill shape a message-mode worker stop uses (§10/§11). Long enough for a
+    /// build to flush, short enough that a wedged process cannot stall a cleanup task.
+    /// </summary>
+    public static readonly TimeSpan StopWindDown = TimeSpan.FromSeconds(10);
 }
 
 /// <summary>

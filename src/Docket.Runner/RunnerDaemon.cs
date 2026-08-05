@@ -169,7 +169,7 @@ public sealed class RunnerDaemon
                 return await HandleStartProcessAsync(start, ct);
 
             case StopProcessCommand stop2:
-                return HandleStopProcess(stop2);
+                return await HandleStopProcessAsync(stop2, ct);
 
             case WriteProcessCommand write:
                 return await HandleWriteProcessAsync(write, ct);
@@ -237,10 +237,11 @@ public sealed class RunnerDaemon
     /// continuation with a different task id, so a task-scoped stop would be unusable by the
     /// very agent dispatched to tidy.
     /// </summary>
-    private CommandOutcome HandleStopProcess(StopProcessCommand stop)
+    private async Task<CommandOutcome> HandleStopProcessAsync(StopProcessCommand stop, CancellationToken ct)
     {
-        var outcome = _services?.StopProcess(stop.Name)
-            ?? ProcessOutcome.Refused(ProcessRefusals.NoSuchProcess, "this machine supervises no processes");
+        var outcome = _services is null
+            ? ProcessOutcome.Refused(ProcessRefusals.NoSuchProcess, "this machine supervises no processes")
+            : await _services.StopProcessAsync(stop.Name, ct);
         _ring.Enqueue(outcome switch
         {
             ProcessOutcome.StoppedOk ok => new ProcessStoppedEvent(
