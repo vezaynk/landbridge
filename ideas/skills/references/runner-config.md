@@ -20,6 +20,79 @@ argv a worker is launched with.
 | `profiles[]` | `telemetry` | `otel` bool (opt-in, default **false**), `endpoint` (OTLP destination; falls back to the one docketd inherited), and `env` (a string map of harness-specific variables, applied verbatim). When on, docketd sets the vendor-neutral `OTEL_*` exporter variables and appends `docket.task_id`/`docket.machine_id` to `OTEL_RESOURCE_ATTRIBUTES`, so the harness's own token/cost telemetry is attributable per task (§10). `otel: true` with **no endpoint configured and none inherited sets nothing at all** and warns once — telemetry is never enabled without a destination. Claude Code additionally needs `"env": { "CLAUDE_CODE_ENABLE_TELEMETRY": "1" }` (its own flag is data, since docketd holds no harness knowledge). **Visibility only**: Docket ingests none of it and enforces no ceiling — see [docs/TELEMETRY.md](../../../docs/TELEMETRY.md). |
 | `profiles[]` | `logs` | §12 machine-local transcript capture: `capture` (bool, default **false**), `max_bytes` (per-stream cap, default 50 MiB), `prune_after_days` (local hygiene, default 7, `0` disables). Legacy `format`/`path` are advisory/reserved — see [Transcript capture](#transcript-capture-12) below. |
 | `profiles[]` | `max_concurrent` | Optional hard cap for a licence/rate/posture reason, unrelated to load (§10). |
+| `services[]` | — | Optional: long-lived processes `docketd` supervises as its own children. See [Operator-declared services](#operator-declared-services-10) below. |
+
+## Operator-declared services (§10)
+
+A worker that starts `npm run dev` loses it the moment its task ends — the service is
+inside the task's process tree, which is tree-killed, and it carries `DOCKET_*`, which
+the stray reaper matches. For a service that must outlive the task using it, declare it
+here and `docketd` supervises it as **its own child**, outside every task's tree:
+
+```jsonc
+"services": [
+  {
+    "name": "web-dev",                    // [a-zA-Z0-9_-]{1,64} — becomes a directory name
+    "spawn": ["/abs/node/bin/npm", "run", "dev"],   // argv, never a shell
+    "working_directory": "/abs/path/to/checkout",
+    "env": { "PORT": "5173" },            // explicit: nothing is inherited implicitly
+    "port": 5173,                         // the loopback port this service owns
+    "readiness": { "tcp_port": 5173, "timeout_seconds": 60 },
+    "restart": { "max_backoff_seconds": 60 },
+    "logs": { "capture": true },          // → <state>/services/web-dev/NNNN.ndjson
+    "backend": "direct",                  // the only supported value
+    "enabled": true                       // false = declared but deliberately not started
+  }
+]
+```
+
+**Why this is not an escape hatch.** The process is not a descendant of any harness, so
+the task tree-kill does not reach it, and it is tagged with `DOCKET_MACHINE_ID` but
+deliberately **not** `DOCKET_TASK_ID` — so the restart sweep (keyed on machine id) reaps
+the previous generation when `docketd` restarts, while per-task exit cleanup (which
+requires a matching task id) steps over it. It escapes the task's lifetime while staying
+inside Docket's kill guarantee, on every OS, with no `setsid` and no environment
+scrubbing. The worker skill forbids the other route to the same effect for exactly that
+reason.
+
+**Names and ports must both be unique on a machine.** Names because they are identifiers
+(and directory names); ports because a forward dial is resolved to a service *by port*, so a
+shared port would make that lookup answer for whichever service came first, and the resulting
+refusal would make no sense from the consumer's side. `docketd` rejects either at config load
+and names both offenders — it prints the problem and exits non-zero before connecting, so this
+is caught at start rather than at the first dial.
+
+**`readiness` is a real check.** The port must accept a connection before the service is
+reported `running`. That is what a holder task waits for before calling
+`register_service` (§8.2), and what lets `docketd` refuse a forward dial for a service
+that is down instead of connecting to whatever else may hold the port.
+
+**Restart, not re-adopt.** On `docketd` restart every service is killed and started
+again from config; there is no PID registry and no attempt to inherit survivors. Absolute
+paths in `spawn` and an explicit `env` matter for the same reason they do under a system
+service manager: the service gets `docketd`'s environment, not your shell's.
+
+**`backend`** is `direct` today and a config naming anything else is refused rather than
+quietly supervised the other way. Delegation to `systemd-run`/`pm2`/`docker` is a later
+option, and it costs the property refuse-at-dial relies on: `docketd` would no longer own
+the process, so "is my service up" becomes a query rather than a fact.
+
+**To stop a service, set `enabled: false`** — not a dashboard button, and deliberately so.
+A service's desired state lives in this file, so a command that stopped it would leave the
+config and reality disagreeing until the next restart silently undid it; keeping the switch
+here means the declaration is always the truth. A disabled service is still declared: it
+reports as `disabled` (distinct from `stopped`, so you can tell "I turned this off" from
+"this died and nobody meant it"), and a forward dial for its port is still refused rather
+than connecting to whatever else has taken it.
+
+**Status, not logs, on the dashboard.** Each service's state, port, uptime, restart count
+and last exit code ride the machine heartbeat to the §12 Machine Group view. The log
+*contents* stay on the machine — serving them would be live tailing, which §16 open
+question 8 defers. Read them on the box, under the state dir.
+
+Services are not tasks: they never count toward `max_concurrent`, and the load they
+consume is already visible to back-pressure. And they need a profile permissive enough to
+be useful alongside — see the archetypes below.
 
 ## Spawn substitutions
 

@@ -215,7 +215,21 @@ public sealed record AuthFailedEvent(
 public sealed record ForwardOpenedEvent(TaskId Task, string ForwardId, int Port) : RunnerEvent;
 
 /// <summary><c>forward-closed</c> — a relay forward for this task closed (§8.3).</summary>
-public sealed record ForwardClosedEvent(TaskId Task, string ForwardId) : RunnerEvent;
+/// <summary>
+/// <c>forward-closed</c> — a forward's splice ended, or it never opened (§8.3).
+/// </summary>
+/// <param name="Refusal">
+/// Why it closed, when the machine knows something more useful than "an end closed".
+/// Additive and optional: an older runner omits it and the plane falls back to its
+/// generic sentence. The case that motivated it is §8.2's oldest hazard — a
+/// registration outliving the process it advertises. Where the port belongs to a
+/// docketd-supervised service that is <em>not</em> running, docketd refuses the dial
+/// instead of connecting to whatever else may now hold that port, and this carries the
+/// reason far enough that the consumer is told the service is down rather than being
+/// handed a bare connection error.
+/// </param>
+public sealed record ForwardClosedEvent(
+    TaskId Task, string ForwardId, string? Refusal = null) : RunnerEvent;
 
 /// <summary>
 /// <c>rebooted</c> — the runner restarted and adopted nothing (§10 runner

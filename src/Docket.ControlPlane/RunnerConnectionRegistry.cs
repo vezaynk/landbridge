@@ -53,6 +53,10 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
             conn.Ready = heartbeat.Ready && !heartbeat.UnderBackPressure;
             conn.UnderBackPressure = heartbeat.UnderBackPressure;
             conn.Profiles = new HashSet<string>(heartbeat.Profiles, StringComparer.Ordinal);
+            // §10/§12: stored verbatim and never interpreted — the plane renders what the
+            // machine reports and forms no opinion about service health. Null (a runner
+            // predating the field) leaves the previous list rather than blanking it.
+            conn.Services = heartbeat.Services ?? conn.Services;
             conn.LastHeartbeat = clock.GetUtcNow();
         }
     }
@@ -148,6 +152,19 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
             return null;
         lock (conn.Gate)
             return conn.LastHeartbeat;
+    }
+
+    /// <summary>
+    /// The services a machine last reported (§10, §12). Empty for a machine that
+    /// declares none or predates the heartbeat field — the plane does not distinguish
+    /// those, because neither gives it anything to render.
+    /// </summary>
+    public IReadOnlyList<ServiceStatus> ServicesOn(string machineId)
+    {
+        if (!_connections.TryGetValue(machineId, out var conn))
+            return [];
+        lock (conn.Gate)
+            return conn.Services;
     }
 
     /// <summary>The tasks currently tracked as dispatched to a machine.</summary>
@@ -278,6 +295,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
         public bool Ready { get; set; }
         public bool UnderBackPressure { get; set; }
         public DateTimeOffset LastHeartbeat { get; set; }
+        public IReadOnlyList<ServiceStatus> Services { get; set; } = [];
         public Dictionary<TaskId, TaskActivity> Dispatched { get; } = new();
     }
 }

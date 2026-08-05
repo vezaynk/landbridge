@@ -1,3 +1,4 @@
+using Docket.Contracts;
 using Docket.ControlPlane.Auth;
 using Docket.Core;
 using Microsoft.EntityFrameworkCore;
@@ -93,7 +94,9 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
                 snapshot.DeclaredProfiles.OrderBy(p => p, StringComparer.Ordinal).ToList(),
                 tasks,
                 isBound ? bound.HumanId : null,
-                isBound ? bound.BoundAt : null));
+                isBound ? bound.BoundAt : null,
+                // §10/§12: passed through from the last heartbeat, unexamined.
+                registry.ServicesOn(id)));
         }
 
         return machines.OrderBy(m => m.MachineId, StringComparer.Ordinal).ToList();
@@ -452,7 +455,8 @@ public sealed record MachineView(
     IReadOnlyList<string> Profiles,
     IReadOnlyList<MachineTaskView> RunningTasks,
     Guid? BoundToHuman = null,
-    DateTimeOffset? BoundAt = null);
+    DateTimeOffset? BoundAt = null,
+    IReadOnlyList<ServiceStatus>? Services = null);
 
 /// <summary>A task running on a machine, tagged with its owning Team (§12).</summary>
 public sealed record MachineTaskView(Guid TaskId, Guid TeamId, string Namespace, TaskState State);

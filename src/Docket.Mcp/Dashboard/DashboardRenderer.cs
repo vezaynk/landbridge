@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using Docket.Contracts;
 using Docket.ControlPlane;
 using Docket.Core;
 using static Docket.Mcp.Dashboard.DashboardHtml;
@@ -70,7 +71,54 @@ internal static class DashboardRenderer
                 }
                 sb.Append("</ul>");
             }
+
+            AppendServices(sb, m, now);
             sb.Append("</section>");
+        }
+
+        static void AppendServices(StringBuilder sb, MachineView m, DateTimeOffset now)
+        {
+            // §10/§12: exactly what the machine reported on its last heartbeat. The plane
+            // stores and renders; it forms no opinion about whether a service is healthy,
+            // and there is nothing persisted here to go stale — a disconnected machine
+            // drops off this page entirely, services and all.
+            if (m.Services is not { Count: > 0 })
+                return;
+
+            sb.Append("<div class=\"machine-services\">");
+            sb.Append("<h3>Services <span class=\"nt\">declared by the operator on this machine</span></h3>");
+            sb.Append("<table><thead><tr>");
+            sb.Append("<th>Service</th><th>State</th><th>Port</th><th>Up for</th>" +
+                      "<th>Restarts</th><th>Last exit</th><th>Last failure</th>");
+            sb.Append("</tr></thead><tbody>");
+
+            foreach (var s in m.Services)
+            {
+                var badge = s.State switch
+                {
+                    ServiceState.Running => Badge("running", "ready"),
+                    ServiceState.Starting => Badge("starting", "state-submitted"),
+                    ServiceState.Failed => Badge("failed", "down"),
+                    ServiceState.Disabled => Badge("disabled", "nt"),
+                    _ => Badge("stopped", "backpressure"),
+                };
+                sb.Append("<tr>");
+                sb.Append($"<td><code>{E(s.Name)}</code></td>");
+                sb.Append($"<td>{badge}</td>");
+                sb.Append($"<td>{(s.Port == 0 ? "<span class=\"nt\">n/a</span>" : s.Port.ToString())}</td>");
+                sb.Append($"<td>{(s.StartedAt is null ? "<span class=\"nt\">—</span>" : E(Age(s.StartedAt, now)))}</td>");
+                sb.Append($"<td>{s.Restarts}</td>");
+                sb.Append($"<td>{(s.LastExitCode is { } code ? code.ToString() : "<span class=\"nt\">—</span>")}</td>");
+                sb.Append($"<td>{(s.LastFailureAt is null ? "<span class=\"nt\">never</span>" : E(Age(s.LastFailureAt, now)))}</td>");
+                sb.Append("</tr>");
+            }
+
+            sb.Append("</tbody></table>");
+            // Honest about the one thing this view deliberately does not offer, so an
+            // operator looks in the right place instead of hunting for a link.
+            sb.Append("<p class=\"nt\">Log contents are captured on the machine, under the state " +
+                      "directory, and are not served here (§16 open question 8).</p>");
+            sb.Append("</div>");
         }
 
         return Page("Machine Group", "machines", sb.ToString());

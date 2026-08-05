@@ -160,16 +160,34 @@ public static class Program
         // gate on who may read a transcript is the plane's (human operator, terminal task
         // only), not something docketd second-guesses; a machine that captured nothing
         // simply answers with an empty inventory.
+        // §10 operator-declared services: docketd's own children, so they outlive the
+        // tasks that use them without escaping supervision. Started AFTER the daemon's
+        // restart sweep, which reaps the previous generation by machine id — starting
+        // them first would have this generation kill what it just spawned.
+        ServiceSupervisor? services = null;
+        if (config.DeclaredServices.Count > 0)
+        {
+            services = new ServiceSupervisor(
+                config.DeclaredServices, machineId, clock,
+                logs: new ServiceLogStore(Path.Combine(stateDir, ServiceLogStore.DirName)),
+                log: Console.WriteLine);
+        }
+
         var daemon = new RunnerDaemon(
             machineId, config, supervisor, backPressure, channel, ring, reaper, clock,
-            transcripts: new TranscriptReader(transcripts));
+            transcripts: new TranscriptReader(transcripts),
+            services: services);
         await daemon.StartAsync();
+        services?.Start();
 
         // Outbound-only: the receive loop runs on the socket docketd dialed, not
         // a listener (§10). Commands arriving on it drive the daemon.
         wsChannel?.Start((command, ct) => daemon.HandleAsync(command, ct));
 
-        Console.WriteLine($"docketd up: machine={machineId} profiles=[{string.Join(", ", config.DeclaredProfiles)}] strays_reaped={daemon.StraysReaped} control={channelMode}");
+        var declaredServices = config.DeclaredServices.Count == 0
+            ? ""
+            : $" services=[{string.Join(", ", config.DeclaredServices.Select(x => x.Name))}]";
+        Console.WriteLine($"docketd up: machine={machineId} profiles=[{string.Join(", ", config.DeclaredProfiles)}]{declaredServices} strays_reaped={daemon.StraysReaped} control={channelMode}");
 
         using var shutdown = new CancellationTokenSource();
         using var sigint = PosixSignalRegistration.Create(PosixSignal.SIGINT, ctx => { ctx.Cancel = true; shutdown.Cancel(); });
@@ -186,6 +204,8 @@ public static class Program
 
         Console.WriteLine("docketd shutting down; killing everything it started");
         await daemon.ShutdownAsync();
+        if (services is not null)
+            await services.DisposeAsync();
         if (wsChannel is not null)
             await wsChannel.DisposeAsync();
         if (refresher is not null)
