@@ -93,6 +93,65 @@ jobs:
         env:
           DOCKET_TEST_PG: Host=localhost;Port=5432;Username=docket;Password=docket;Database=docket_multimachine
 
+  # ── spec §17.8 chaos suite ──────────────────────────────────────────────────────
+  #
+  # Its own job rather than another step in the matrix above, because it is the one
+  # suite that SIGKILLs real processes: it spawns the real control plane, the real
+  # docketd and real worker binaries as separate OS processes and kills them mid-task.
+  # Isolating it means a chaos scenario that leaks a process or wedges cannot take the
+  # ordinary unit/integration legs down with it, and its failures are unambiguous.
+  #
+  # ubuntu-only on purpose: the §10 restart sweep discovers strays through
+  # /proc/<pid>/environ (ProcFsProcessInventory), and on Windows it is a documented
+  # deferral (NullProcessInventory) that would make the scenarios assert nothing — the
+  # tests skip themselves there rather than pass vacuously.
+  #
+  # Runtime is bounded by construction, not by hope: the plane's liveness windows and
+  # docketd's heartbeat are configuration, so the scenarios shrink a 30-minute
+  # no-progress ceiling to seconds instead of waiting real durations, and every wait
+  # has a hard deadline that dumps process output and task state on expiry. The whole
+  # suite runs in well under a minute; the job timeout is a backstop for a hang.
+  chaos:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: 1
+      DOTNET_NOLOGO: 1
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: docket
+          POSTGRES_PASSWORD: docket
+          POSTGRES_DB: docket
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U docket"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Restore
+        run: dotnet restore
+
+      # The suite spawns four real binaries (Docket.Mcp, docketd, and the two worker
+      # harnesses) resolved from their own bin directories, so build the solution —
+      # the build-only ProjectReferences guarantee all four are present.
+      - name: Build
+        run: dotnet build --no-restore -c Release
+
+      - name: Test - Docket.Chaos (spec §17.8 chaos scenarios)
+        run: dotnet test tests/Docket.Chaos.Tests --no-build -c Release
+        env:
+          DOCKET_TEST_PG: Host=localhost;Port=5432;Username=docket;Password=docket;Database=docket_chaos
+
   # ── Opt-in real-claude multi-machine E2E (spec §8.3 real tier, task #57) ────────
   #
   # Spawns REAL `claude -p` workers across a two-machine fleet and drives a task —
