@@ -140,32 +140,32 @@ public sealed class WorkerTools(
         [Description("Environment variables to set. Nothing is inherited implicitly, so pass PATH here if " +
                      "the command needs one.")]
         Dictionary<string, string>? env = null,
-        [Description("The loopback port this process listens on, if any. Omit for a process with no listener.")]
-        int? port = null,
-        [Description("Port that must accept a connection before this call returns success. Usually the same " +
-                     "as port. Omit for a port-less process, which is running as soon as its process is up.")]
-        int? readinessTcpPort = null,
-        [Description("How long to wait for the readiness port, in seconds. Omit for the default.")]
-        double? readinessTimeoutSeconds = null,
+        [Description("Whether the process gets a stdin pipe you can write to. Default true. Set false for a " +
+                     "program that would block forever reading input nobody sends — its first read then " +
+                     "returns end-of-input instead of hanging. The cost: no write_process, and no graceful " +
+                     "stop (stopping it becomes a short wait and then a kill). It does not make stdin a " +
+                     "terminal, so programs that behave differently when stdin is not a TTY still will.")]
+        bool openStdin = true,
         CancellationToken ct = default)
     {
         var caller = Caller;
         var result = await processes.StartAsync(
-            caller.Task, name, spawn, workingDirectory, env,
-            port, readinessTcpPort, readinessTimeoutSeconds, ct);
+            caller.Task, name, spawn, workingDirectory, env, openStdin, ct);
 
         if (!result.Started)
-            return new StartProcessResult(false, null, null, result.Refusal, null);
+            return new StartProcessResult(false, null, result.Refusal, null);
 
-        // Starting is a machine act; registering is a Team-visibility act, and they are
-        // deliberately separate — a private helper should not have to be advertised. Say so,
-        // because an agent that assumes otherwise leaves a process no consumer can find.
-        var next = result.Port is { } p
-            ? $"Not yet visible to your Team — call register_service with name '{name}' and port {p} if other tasks need to reach it. " +
-              "Read its output at the log path. Stop it with stop_process when the work is done."
-            : "No port, so there is nothing to register. Read its output at the log path, and stop it with stop_process when the work is done.";
+        // Uniform guidance, with no port branch: Docket tracks no port for a process, so
+        // reachability is always a separate deliberate act (§8.2) rather than something this call
+        // half-did. And nothing stops the process for you, which is the other thing an agent
+        // reliably forgets.
+        var next =
+            "Docket does not track this process's port. If other tasks need to reach it, call " +
+            "register_service with the name and the port it bound. Read its output at the log " +
+            $"path, and stop it with stop_process when the work is done — nothing stops it for you." +
+            (openStdin ? "" : " Started with stdin closed: write_process will refuse, and stopping it is a hard stop.");
 
-        return new StartProcessResult(true, result.Port, result.LogPath, null, next);
+        return new StartProcessResult(true, result.LogPath, null, next);
     }
 
     [McpServerTool(Name = "stop_process"),
@@ -326,14 +326,15 @@ public sealed record OpenForwardResult(
 /// <see cref="ExpiresAt"/> when the preview stops admitting new connections.
 /// snake_case-pinned like <see cref="OpenForwardResult"/>.
 /// </summary>
-/// <summary>What a worker learns from <c>start_process</c> (§10).</summary>
+/// <summary>What a worker learns from <c>start_process</c> (§10). No port: this is a process
+/// manager, and reachability is §8.2's noun.</summary>
 /// <param name="LogPath">Where the machine captured this run's output. The agent is on that
 /// machine, so it reads its own process's output with ordinary file tools — no serving path and
 /// no redaction question (§16 open question 8).</param>
 /// <param name="NextStep">What to do now — in particular that starting is not registering, and
 /// that nothing stops this process for you.</param>
 public sealed record StartProcessResult(
-    bool Started, int? Port, string? LogPath, string? Refusal, string? NextStep);
+    bool Started, string? LogPath, string? Refusal, string? NextStep);
 
 /// <summary>The result of <c>stop_process</c> or <c>write_process</c> (§10).
 /// <see cref="Value"/> is the exit code for a stop, or the bytes accepted for a write.</summary>

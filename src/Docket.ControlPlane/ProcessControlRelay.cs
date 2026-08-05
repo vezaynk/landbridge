@@ -56,22 +56,20 @@ public sealed class ProcessControlRelay(RunnerConnectionRegistry registry)
     /// <summary>Start an agent-declared background process on the machine holding this task.</summary>
     public async Task<ProcessStartOutcome> StartAsync(
         TaskId task, string name, IReadOnlyList<string> spawn, string? workingDirectory,
-        IReadOnlyDictionary<string, string>? env, int? port, int? readinessTcpPort,
-        double? readinessTimeoutSeconds, CancellationToken ct)
+        IReadOnlyDictionary<string, string>? env, bool openStdin, CancellationToken ct)
     {
         var sent = await AskAsync(
             task, StartTimeout,
             requestId => new StartProcessCommand(
-                task, requestId, name, spawn, workingDirectory, env,
-                port, readinessTcpPort, readinessTimeoutSeconds),
+                task, requestId, name, spawn, workingDirectory, env, openStdin),
             ct);
 
         return sent switch
         {
-            Answer.Unreachable u => new ProcessStartOutcome(false, null, null, u.Why),
+            Answer.Unreachable u => new ProcessStartOutcome(false, null, u.Why),
             Answer.Reply { Event: ProcessStartedEvent e } =>
-                new ProcessStartOutcome(e.Started, e.Port, e.LogPath, e.Refusal),
-            _ => new ProcessStartOutcome(false, null, null, "the machine sent an unexpected reply"),
+                new ProcessStartOutcome(e.Started, e.LogPath, e.Refusal),
+            _ => new ProcessStartOutcome(false, null, "the machine sent an unexpected reply"),
         };
     }
 
@@ -131,13 +129,17 @@ public sealed class ProcessControlRelay(RunnerConnectionRegistry registry)
         {
             all.Add(new RunningThing(
                 s.Name, "service", s.State.ToString().ToLowerInvariant(),
-                s.Port == 0 ? null : s.Port, s.StartedAt, s.LastExitCode, s.LastFailureAt));
+                s.Port == 0 ? null : s.Port, s.StartedAt, s.LastExitCode, s.LastFailureAt,
+                StdinOpen: true));
         }
         foreach (var p in registry.ProcessesOn(machine))
         {
+            // Port is null for a process by construction — Docket tracks no port for one. The
+            // stdin mode is here because a cleanup agent must know whether a graceful stop even
+            // exists before it calls stop_process.
             all.Add(new RunningThing(
                 p.Name, "process", p.State.ToString().ToLowerInvariant(),
-                p.Port == 0 ? null : p.Port, p.StartedAt, p.ExitCode, p.ExitedAt));
+                null, p.StartedAt, p.ExitCode, p.ExitedAt, p.StdinOpen));
         }
         return all.OrderBy(x => x.Name, StringComparer.Ordinal).ToList();
     }
@@ -191,11 +193,11 @@ public sealed class ProcessControlRelay(RunnerConnectionRegistry registry)
 }
 
 /// <summary>
-/// What a worker learns from <c>start_process</c>. <see cref="Port"/> is null for a port-less
-/// process — nothing to register or forward to. <see cref="LogPath"/> is where the machine
-/// captured this run, so the agent reads its own process's output with ordinary file tools.
+/// What a worker learns from <c>start_process</c>. No port: this is a process manager, and
+/// reachability is §8.2's noun. <see cref="LogPath"/> is where the machine captured this run, so
+/// the agent reads its own process's output with ordinary file tools.
 /// </summary>
-public sealed record ProcessStartOutcome(bool Started, int? Port, string? LogPath, string? Refusal);
+public sealed record ProcessStartOutcome(bool Started, string? LogPath, string? Refusal);
 
 /// <summary>What a worker learns from <c>stop_process</c> or <c>write_process</c>.
 /// <see cref="Value"/> is the exit code for a stop, or the byte count for a write.</summary>
@@ -203,8 +205,11 @@ public sealed record ProcessStartOutcome(bool Started, int? Port, string? LogPat
 /// One thing running on a machine (§10). <see cref="Kind"/> is <c>service</c> (operator-declared,
 /// restart-supervised, not an agent's to stop) or <c>process</c> (agent-started, never restarted).
 /// </summary>
+/// <param name="Port">Only a config-declared service has one; always null for a process.</param>
+/// <param name="StdinOpen">Whether a graceful (EOF) stop is available. False means stopping it is
+/// a bounded wait and then a tree kill.</param>
 public sealed record RunningThing(
     string Name, string Kind, string State, int? Port,
-    DateTimeOffset? StartedAt, int? ExitCode, DateTimeOffset? EndedAt);
+    DateTimeOffset? StartedAt, int? ExitCode, DateTimeOffset? EndedAt, bool StdinOpen);
 
 public sealed record ProcessControlOutcome(bool Ok, string? Refusal, int? Value);

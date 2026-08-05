@@ -440,10 +440,9 @@ public class ServiceSupervisionTests
         """).Default;
 
     private static StartProcessCommand Ask(
-        string name, IReadOnlyList<string>? spawn = null, string? cwd = null,
-        int? port = null, int? readiness = null) =>
+        string name, IReadOnlyList<string>? spawn = null, string? cwd = null, bool openStdin = true) =>
         new(TaskId.New(), "req-1", name, spawn ?? [TestKit.HarnessPath(), "sleeper"],
-            WorkingDirectory: cwd, Env: null, Port: port, ReadinessTcpPort: readiness);
+            WorkingDirectory: cwd, Env: null, OpenStdin: openStdin);
 
     [Fact]
     public async Task A_profile_that_does_not_permit_processes_refuses()
@@ -469,23 +468,41 @@ public class ServiceSupervisionTests
     }
 
     [Fact]
-    public async Task A_port_less_process_runs_once_its_process_is_up_and_is_reported_separately()
+    public async Task A_process_runs_once_its_os_process_is_up_and_declares_no_port()
     {
-        // The shape the user asked for: a build or a watcher with no listener.
+        // Ports are out of scope for a process (§10): this is a process manager, and reachability
+        // is §8.2's noun. "Running" therefore means the OS process is up, full stop.
         var cwd = TestKit.NewWorkRoot();
         try
         {
             await using var sup = new ServiceSupervisor([], "m1", TimeProvider.System);
-            var ok = Assert.IsType<ProcessOutcome.StartedOk>(
+            Assert.IsType<ProcessOutcome.StartedOk>(
                 await sup.StartProcessAsync(Ask("watcher", cwd: cwd), ProfileWith(true), CancellationToken.None));
-            Assert.Null(ok.Port);
 
-            // Reported as a PROCESS, never mixed into the services list — a reader must not have
-            // to work out which kind they are looking at.
+            // Reported as a PROCESS, never mixed into the services list.
             var reported = Assert.Single(sup.ReportProcesses());
             Assert.Equal(ServiceState.Running, reported.State);
-            Assert.Equal(0, reported.Port);
             Assert.Empty(sup.Report());
+        }
+        finally
+        {
+            TestKit.TryDeleteRoot(cwd);
+        }
+    }
+
+    [Fact]
+    public async Task A_process_is_invisible_to_refuse_at_dial_whatever_it_listens_on()
+    {
+        // If a process happens to bind something, that is the agent's business — Docket tracks no
+        // port for it, so it must never answer for one. Otherwise stopping a process could start
+        // refusing dials for a listener Docket never knew about.
+        var cwd = TestKit.NewWorkRoot();
+        try
+        {
+            await using var sup = new ServiceSupervisor([], "m1", TimeProvider.System);
+            await sup.StartProcessAsync(Ask("server", cwd: cwd), ProfileWith(true), CancellationToken.None);
+
+            Assert.Null(sup.IsServiceOnPort(5173));
             Assert.Null(sup.IsServiceOnPort(0));
         }
         finally
@@ -544,29 +561,7 @@ public class ServiceSupervisionTests
     }
 
     [Fact]
-    public async Task A_held_port_is_refused_and_names_the_holder()
-    {
-        var cwd = TestKit.NewWorkRoot();
-        try
-        {
-            await using var sup = new ServiceSupervisor(
-                [], "m1", TimeProvider.System, probe: (_, _) => Task.FromResult(true));
-            await sup.StartProcessAsync(
-                Ask("api", cwd: cwd, port: 7501, readiness: 7501), ProfileWith(true), CancellationToken.None);
-
-            var refused = Assert.IsType<ProcessOutcome.RefusedOutcome>(await sup.StartProcessAsync(
-                Ask("other", cwd: cwd, port: 7501), ProfileWith(true), CancellationToken.None));
-            Assert.Equal(ProcessRefusals.PortTaken, refused.Refusal);
-            Assert.Contains("'api'", refused.Detail, StringComparison.Ordinal);
-        }
-        finally
-        {
-            TestKit.TryDeleteRoot(cwd);
-        }
-    }
-
-    [Fact]
-    public async Task Port_less_processes_never_collide_and_the_cap_bounds_them()
+    public async Task Several_processes_coexist_and_the_cap_bounds_them()
     {
         var cwd = TestKit.NewWorkRoot();
         try
@@ -629,7 +624,7 @@ public class ServiceSupervisionTests
     }
 
     [Fact]
-    public async Task An_exited_process_releases_its_name_and_port()
+    public async Task An_exited_process_releases_its_name()
     {
         // Uniqueness is among LIVE entries. A corpse must not block a retry — otherwise a
         // resumed agent re-running the same job would be stuck on a name it already owns.
@@ -638,15 +633,13 @@ public class ServiceSupervisionTests
         var profile = ProfileWith(true, cap: 1);
 
         Assert.IsType<ProcessOutcome.StartedOk>(await sup.StartProcessAsync(
-            Ask("job", spawn: [TestKit.HarnessPath(), "exit-code", "3"], port: 7601, readiness: 7601),
-            profile, CancellationToken.None));
+            Ask("job", spawn: [TestKit.HarnessPath(), "exit-code", "3"]), profile, CancellationToken.None));
         Assert.True(await TestKit.WaitUntilAsync(
             () => sup.ReportProcesses().Single().State == ServiceState.Exited, TimeSpan.FromSeconds(10)));
 
-        // Same name, same port, and a cap of 1 that the corpse must not be counted against.
+        // Same name, and a cap of 1 that the corpse must not be counted against.
         Assert.IsType<ProcessOutcome.StartedOk>(await sup.StartProcessAsync(
-            Ask("job", spawn: [TestKit.HarnessPath(), "exit-code", "3"], port: 7601, readiness: 7601),
-            profile, CancellationToken.None));
+            Ask("job", spawn: [TestKit.HarnessPath(), "exit-code", "3"]), profile, CancellationToken.None));
     }
 
     [Fact]
@@ -701,6 +694,56 @@ public class ServiceSupervisionTests
         {
             TestKit.TryDeleteRoot(cwd);
             TestKit.TryDeleteRoot(state);
+        }
+    }
+
+    [Fact]
+    public async Task A_process_started_with_closed_stdin_refuses_writes_with_its_own_cause()
+    {
+        // The refusal must say "no pipe was opened", not "no such process" and not "broken pipe":
+        // the caller needs to learn this was a choice made at start time, so it knows to restart
+        // the process differently rather than hunt for a wrong name.
+        var cwd = TestKit.NewWorkRoot();
+        try
+        {
+            await using var sup = new ServiceSupervisor([], "m1", TimeProvider.System);
+            Assert.IsType<ProcessOutcome.StartedOk>(await sup.StartProcessAsync(
+                Ask("quiet", cwd: cwd, openStdin: false), ProfileWith(true), CancellationToken.None));
+
+            var refused = Assert.IsType<ProcessOutcome.RefusedOutcome>(
+                await sup.WriteProcessAsync("quiet", "hello", true, CancellationToken.None));
+            Assert.Equal(ProcessRefusals.StdinNotOpened, refused.Refusal);
+            Assert.Contains("open_stdin false", refused.Detail, StringComparison.Ordinal);
+
+            // And the mode is reported, so a cleanup agent knows there is no graceful stop.
+            Assert.False(sup.ReportProcesses().Single().StdinOpen);
+        }
+        finally
+        {
+            TestKit.TryDeleteRoot(cwd);
+        }
+    }
+
+    [Fact]
+    public async Task Closed_stdin_still_stops_and_open_stdin_is_the_default()
+    {
+        // Choosing closed stdin is choosing a hard stop: there is no EOF lever, so stop is the
+        // bounded wait and then the tree. It must still work.
+        var cwd = TestKit.NewWorkRoot();
+        try
+        {
+            await using var sup = new ServiceSupervisor([], "m1", TimeProvider.System);
+            await sup.StartProcessAsync(Ask("hard", cwd: cwd, openStdin: false), ProfileWith(true), CancellationToken.None);
+            Assert.IsType<ProcessOutcome.StoppedOk>(await sup.StopProcessAsync("hard", CancellationToken.None));
+            Assert.Empty(sup.ReportProcesses());
+
+            // Default is open, which is what makes write_process work without being asked for.
+            await sup.StartProcessAsync(Ask("chatty", cwd: cwd), ProfileWith(true), CancellationToken.None);
+            Assert.True(sup.ReportProcesses().Single().StdinOpen);
+        }
+        finally
+        {
+            TestKit.TryDeleteRoot(cwd);
         }
     }
 

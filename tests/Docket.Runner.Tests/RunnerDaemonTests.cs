@@ -266,7 +266,7 @@ public class RunnerDaemonTests
     }
 
     [Fact]
-    public async Task A_start_process_command_replies_with_the_port_and_log_path()
+    public async Task A_start_process_command_replies_with_the_log_path()
     {
         // The reply is what a worker acts on: the port it must register (§8.2) and where its
         // own logs are, so it reads them with file tools rather than needing a serving path.
@@ -294,13 +294,12 @@ public class RunnerDaemonTests
 
             await h.Daemon.HandleAsync(new StartProcessCommand(
                 task, "req-2", "dev", [TestKit.HarnessPath(), "sleeper"],
-                WorkingDirectory: cwd, Env: null, Port: 7401, ReadinessTcpPort: 7401));
+                WorkingDirectory: cwd, Env: null));
 
             Assert.True(await TestKit.WaitUntilAsync(
                 () => h.Recorded.Events.Any(e => e.Event is ProcessStartedEvent), TimeSpan.FromSeconds(15)));
             var reply = (ProcessStartedEvent)h.Recorded.Events.First(e => e.Event is ProcessStartedEvent).Event;
             Assert.True(reply.Started, reply.Refusal);
-            Assert.Equal(7401, reply.Port);
             Assert.Contains("dev", reply.LogPath!, StringComparison.Ordinal);
 
             await h.Daemon.ShutdownAsync();

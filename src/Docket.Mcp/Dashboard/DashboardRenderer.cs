@@ -89,7 +89,9 @@ internal static class DashboardRenderer
             sb.Append("<div class=\"machine-services\">");
             sb.Append("<h3>Background processes <span class=\"nt\">started by agents on this machine</span></h3>");
             sb.Append("<table><thead><tr>");
-            sb.Append("<th>Process</th><th>State</th><th>Port</th><th>Up for</th>" +
+            // No port column: Docket tracks no port for a process (§10). Stdin is here because a
+            // cleanup agent needs to know whether a graceful stop exists.
+            sb.Append("<th>Process</th><th>State</th><th>Stdin</th><th>Up for</th>" +
                       "<th>Exit</th><th>Ended</th><th>Started by task</th>");
             sb.Append("</tr></thead><tbody>");
 
@@ -106,7 +108,7 @@ internal static class DashboardRenderer
                 sb.Append("<tr>");
                 sb.Append($"<td><code>{E(p.Name)}</code></td>");
                 sb.Append($"<td>{badge}</td>");
-                sb.Append($"<td>{(p.Port == 0 ? "<span class=\"nt\">n/a</span>" : p.Port.ToString())}</td>");
+                sb.Append($"<td>{(p.StdinOpen ? "open" : "<span class=\"nt\">closed</span>")}</td>");
                 sb.Append($"<td>{(p.StartedAt is null ? "<span class=\"nt\">—</span>" : E(Age(p.StartedAt, now)))}</td>");
                 sb.Append($"<td>{(p.ExitCode is { } c ? c.ToString() : "<span class=\"nt\">—</span>")}</td>");
                 sb.Append($"<td>{(p.ExitedAt is null ? "<span class=\"nt\">—</span>" : E(Age(p.ExitedAt, now)))}</td>");
@@ -118,7 +120,9 @@ internal static class DashboardRenderer
             // Say the leak out loud: nothing reclaims these when a task ends, by design.
             sb.Append("<p class=\"nt\">A process outlives the task that started it and is never " +
                       "restarted. Nothing stops it automatically — a Lead sends a cleanup task, " +
-                      "or it runs until this machine's docketd restarts.</p>");
+                      "or it runs until this machine's docketd restarts. Docket tracks no port for " +
+                      "a process; reachability is a registered service (§8.2). A process with " +
+                      "closed stdin has no graceful stop.</p>");
             sb.Append("</div>");
         }
 

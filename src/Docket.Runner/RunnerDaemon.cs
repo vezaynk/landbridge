@@ -224,9 +224,9 @@ public sealed class RunnerDaemon
         _ring.Enqueue(outcome switch
         {
             ProcessOutcome.StartedOk ok => new ProcessStartedEvent(
-                start.Task, start.RequestId, start.Name, true, ok.Port, null, ok.LogPath),
+                start.Task, start.RequestId, start.Name, true, null, ok.LogPath),
             ProcessOutcome.RefusedOutcome no => new ProcessStartedEvent(
-                start.Task, start.RequestId, start.Name, false, null, no.Refusal),
+                start.Task, start.RequestId, start.Name, false, no.Refusal),
             _ => throw new ArgumentOutOfRangeException(nameof(outcome)),
         });
         return new CommandOutcome.Acknowledged($"start-process {start.Name}");

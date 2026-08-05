@@ -52,12 +52,12 @@ public sealed class ProcessToolsEndToEndTests(PostgresFixture pg) : IAsyncLifeti
                     if (_live.ContainsKey(s.Name))
                     {
                         await sink.HandleAsync(new ProcessStartedEvent(
-                            s.Task, s.RequestId, s.Name, false, null, ProcessRefusals.NameTaken), ct);
+                            s.Task, s.RequestId, s.Name, false, ProcessRefusals.NameTaken), ct);
                         return;
                     }
                     _live[s.Name] = null;
                     await sink.HandleAsync(new ProcessStartedEvent(
-                        s.Task, s.RequestId, s.Name, true, s.Port,
+                        s.Task, s.RequestId, s.Name, true,
                         LogPath: $"/state/processes/{s.Name}"), ct);
                     return;
 
@@ -88,7 +88,7 @@ public sealed class ProcessToolsEndToEndTests(PostgresFixture pg) : IAsyncLifeti
     }
 
     [SkippableFact]
-    public async Task A_worker_starts_a_process_and_is_told_the_port_the_log_path_and_what_to_do_next()
+    public async Task A_worker_starts_a_process_and_is_told_the_log_path_and_what_to_do_next()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
@@ -111,14 +111,15 @@ public sealed class ProcessToolsEndToEndTests(PostgresFixture pg) : IAsyncLifeti
         {
             ["name"] = "web-dev",
             ["spawn"] = new[] { "/bin/npm", "run", "dev" },
-            ["port"] = 5173,
         }, ct);
 
         Assert.True(payload.GetProperty("started").GetBoolean());
-        Assert.Equal(5173, payload.GetProperty("port").GetInt32());
         Assert.Contains("web-dev", payload.GetProperty("logPath").GetString()!, StringComparison.Ordinal);
-        // The guidance sentence: starting is not registering, and nothing stops it for you.
+        // Ports are out of scope: the reply must carry no port at all, so nobody reads one into it.
+        Assert.False(payload.TryGetProperty("port", out _));
+        // Guidance: Docket tracks no port, registering is separate, and nothing stops it for you.
         var next = payload.GetProperty("nextStep").GetString()!;
+        Assert.Contains("does not track this process's port", next, StringComparison.Ordinal);
         Assert.Contains("register_service", next, StringComparison.Ordinal);
         Assert.Contains("stop_process", next, StringComparison.Ordinal);
 
@@ -126,7 +127,7 @@ public sealed class ProcessToolsEndToEndTests(PostgresFixture pg) : IAsyncLifeti
     }
 
     [SkippableFact]
-    public async Task A_port_less_process_is_told_there_is_nothing_to_register()
+    public async Task Starting_with_closed_stdin_is_reflected_in_the_guidance()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
@@ -147,15 +148,17 @@ public sealed class ProcessToolsEndToEndTests(PostgresFixture pg) : IAsyncLifeti
 
         var payload = await CallAsync(client, "start_process", new Dictionary<string, object?>
         {
-            ["name"] = "indexer",
-            ["spawn"] = new[] { "/bin/index" },
+            ["name"] = "batch",
+            ["spawn"] = new[] { "/bin/batch" },
+            ["openStdin"] = false,
         }, ct);
 
         Assert.True(payload.GetProperty("started").GetBoolean());
-        // Absent or null — never coerced to a number, which would imply something to dial.
-        Assert.True(!payload.TryGetProperty("port", out var portEl) || portEl.ValueKind == JsonValueKind.Null);
-        // Port-less means nothing to register — guidance must not tell it otherwise.
-        Assert.Contains("nothing to register", payload.GetProperty("nextStep").GetString()!, StringComparison.Ordinal);
+        // An agent that closed stdin must be told what it gave up, at the moment it gave it up —
+        // not left to discover it when write_process refuses later.
+        var next = payload.GetProperty("nextStep").GetString()!;
+        Assert.Contains("stdin closed", next, StringComparison.Ordinal);
+        Assert.Contains("hard stop", next, StringComparison.Ordinal);
 
         await plane.StopAsync(ct);
     }
@@ -226,6 +229,12 @@ public sealed class ProcessToolsEndToEndTests(PostgresFixture pg) : IAsyncLifeti
             var discoveredName = survivor.GetProperty("name").GetString()!;
             Assert.Equal("long-build", discoveredName); // sanity: it found the right one
             Assert.Equal("running", survivor.GetProperty("state").GetString());
+            // A process carries no port — absent or null, never a number. (The serializer omits
+            // nulls, so the property may not be there at all; asserting the absence directly is
+            // the honest check.)
+            Assert.True(!survivor.TryGetProperty("port", out var portEl)
+                        || portEl.ValueKind == JsonValueKind.Null);
+            Assert.True(survivor.GetProperty("stdinOpen").GetBoolean());
 
             var stopped = await CallAsync(second, "stop_process", new Dictionary<string, object?>
             {

@@ -75,15 +75,18 @@ start_process(
   name: "web-dev",
   spawn: ["/abs/node/bin/npm", "run", "dev"],
   workingDirectory: "/abs/path/to/checkout",
-  env: { "PORT": "5173" },
-  port: 5173, readinessTcpPort: 5173)
+  env: { "PORT": "5173" })
 ```
 
-`docketd` runs it as **its own child**, not yours, so it survives your turn ending, you blocking on a question, and this task finishing. **A port is optional** — a long build, a test run, a file watcher, an indexer: all listen on nothing, and that is completely ordinary. Omit `port` and `readinessTcpPort` and it counts as running once its process is up.
+`docketd` runs it as **its own child**, not yours, so it survives your turn ending, you blocking on a question, and this task finishing. It is running as soon as its process is up.
+
+**Docket does not deal with ports here at all.** If your process listens on something, that is yours to manage, exactly as if you had started it from a shell — pass the port in `env` if the program needs telling. If *other tasks* need to reach it, that is a separate, deliberate act: `register_service` with the name and the port it bound. Two processes fighting over a port is your problem to avoid, the same way no-restarts means a crash is yours to interpret.
 
 **It is never restarted.** If it exits, that is recorded — exit code and time — and left for you, or for whoever is resumed later, to interpret. A crash is information, and hiding it behind an automatic retry would throw away the one thing you need to know.
 
-Three things come back. The **port** to hand to `register_service` if other tasks need to reach it — starting is not registering, and a process nobody registered is one no consumer can find. A **log path** on this machine, so you read its output with ordinary file tools. And possibly a **refusal**: your profile may not permit background processes, the machine may be at its cap, or the name or port may already be taken. A refusal is a fact to report, not something to work around.
+Two things come back. A **log path** on this machine, so you read its output with ordinary file tools. And possibly a **refusal**: your profile may not permit background processes, the machine may be at its cap, or the name may already be taken. A refusal is a fact to report, not something to work around.
+
+**One flag worth knowing: `openStdin`.** It defaults to true, which is what lets you talk to the process with `write_process` and what gives `stop_process` a graceful path. Pass `openStdin: false` for a program that would sit forever waiting on input nobody is going to send — its first read then returns end-of-input instead of hanging. Two things you give up, and you should decide deliberately rather than discover them: `write_process` will refuse, and stopping it becomes a short wait and then a kill, with no chance for it to finish tidily. It also does *not* make stdin a terminal, so a program that changes behaviour when stdin is not a TTY still will.
 
 **Nothing stops it for you.** Not your turn ending, not the task completing. So:
 
@@ -94,6 +97,8 @@ Three things come back. The **port** to hand to `register_service` if other task
 ### Talking to a process: `write_process`
 
 `write_process(name, data)` writes to its stdin — a command for a REPL, an answer a script is waiting for.
+
+If the process was started with `openStdin: false` this refuses outright, and says so — that is a start-time choice, not a wrong name.
 
 **It is a pipe, not a terminal, and that changes behaviour.** Programs that check whether stdin is a TTY may not prompt at all, may buffer output in blocks instead of lines, or may refuse to run. A password prompt that reads `/dev/tty` will never see what you write. A full-screen or curses program will not work — do not try.
 
@@ -137,6 +142,7 @@ Nothing stops your processes automatically — not your turn ending, not the tas
 - **Stop what you started** with `stop_process(name)` once the work is genuinely done. It closes the process's stdin first and gives it a moment to exit on its own before taking it down, so a build gets to flush.
 - **If it must outlive this task**, say so plainly in your report, and name the processes you left running. Your Lead will send a continuation task to clean up — and because a continuation resumes *this* session, that will most likely be you, still remembering what you started.
 - **Any worker on the machine can stop any process on it**, so the agent that tidies up need not be the one that started things.
+- **Check what is already running** with `list_processes` — it shows both the processes agents started and the operator's own services, marked, plus whether each has stdin open (so you know whether a graceful stop exists before you call one).
 - **Pick specific names.** They are unique per machine and share a namespace with the operator's own declared services, so `build-payments` is a good name and `build` will collide with somebody. A suffix is the cheapest way to be safe: `dev-<short-task-id>`, or `<project>-<purpose>`. A name is released once the process exits, so a retry can reuse it.
 
 ## Asking questions

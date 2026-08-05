@@ -152,14 +152,27 @@ public sealed record ReadTranscriptCommand(
 /// <param name="Name">Machine-scoped identity, validated against the same allowlist a
 /// config-declared service name faces. Unique across processes <em>and</em> services on this
 /// machine: one namespace, so a collision is always reported rather than resolved silently.</param>
-/// <param name="Port">
-/// The loopback port this process owns, when it has one. <b>Optional and first-class
-/// absent</b>: a build, a watcher, or an indexer listens on nothing.
-/// </param>
-/// <param name="ReadinessTcpPort">
-/// Port that must answer before this counts as running. Omit for a port-less process, which
-/// is running once its process is up — the honest answer, since a "still alive after N
-/// seconds" timer is a heuristic dressed as a check.
+/// <remarks>
+/// <b>Ports are entirely out of scope here.</b> This is a process manager: it keeps a process
+/// alive and reports how it ended. Reachability is a different noun with its own surface —
+/// §8.2 <c>register_service</c> — and there is no overlap to reconcile. If a process happens to
+/// listen on something, that is the agent's business, exactly as if it had started the server
+/// from a shell; a port clash between two processes is the agent's problem too, consistent with
+/// there being no restarts. Processes are therefore invisible to refuse-at-dial by construction,
+/// because they declare nothing to dial.
+/// </remarks>
+/// <param name="OpenStdin">
+/// Whether the child gets a usable stdin pipe. Default <c>true</c>, which preserves the
+/// dead-man behaviour and makes <c>write-process</c> work. Set false for a program that blocks
+/// forever reading a stdin nobody will write to: docketd then redirects stdin and closes it
+/// immediately, so the child's first read returns EOF rather than hanging. That is the portable
+/// choice — .NET has no cross-platform null-device handle, and leaving stdin un-redirected would
+/// hand the child whatever docketd inherited, which is not a defined thing to give it.
+///
+/// <para>It does <b>not</b> make stdin a terminal. A program that changes behaviour because
+/// <c>isatty</c> is false behaves the same either way; a real TTY needs a pty, which is out of
+/// scope. Closing stdin fixes <em>blocking</em>, not <em>detection</em> — and it costs you
+/// <c>write-process</c> and the graceful EOF half of <c>stop-process</c>.</para>
 /// </param>
 public sealed record StartProcessCommand(
     TaskId Task,
@@ -168,9 +181,7 @@ public sealed record StartProcessCommand(
     IReadOnlyList<string> Spawn,
     string? WorkingDirectory = null,
     IReadOnlyDictionary<string, string>? Env = null,
-    int? Port = null,
-    int? ReadinessTcpPort = null,
-    double? ReadinessTimeoutSeconds = null) : RunnerCommand;
+    bool OpenStdin = true) : RunnerCommand;
 
 /// <summary>
 /// <c>stop-process</c> (§10) — end an agent-started process. Machine-scoped: any worker
@@ -205,8 +216,6 @@ public static class ProcessStdin
 }
 
 /// <summary>The reply to <see cref="StartProcessCommand"/> (§10).</summary>
-/// <param name="Port">The port it owns, echoed so the worker can register it (§8.2). Null for
-/// a port-less process, which has nothing to register.</param>
 /// <param name="LogPath">Where this run's output is captured on the machine. The declaring
 /// agent is on that machine, so it reads its own process's output with ordinary file tools —
 /// no serving path, no redaction question (§16 open question 8).</param>
@@ -215,7 +224,6 @@ public sealed record ProcessStartedEvent(
     string RequestId,
     string Name,
     bool Started,
-    int? Port = null,
     string? Refusal = null,
     string? LogPath = null) : RunnerEvent;
 
@@ -249,12 +257,6 @@ public static class ProcessRefusals
     /// <summary>That name is already held on this machine, by a process or a service.</summary>
     public const string NameTaken = "name-taken";
 
-    /// <summary>Another live process or service already holds the requested port.</summary>
-    public const string PortTaken = "port-taken";
-
-    /// <summary>The process started but its readiness port never answered.</summary>
-    public const string ReadinessTimeout = "readiness-timeout";
-
     /// <summary>The process could not be started at all (bad argv, missing binary).</summary>
     public const string SpawnFailed = "spawn-failed";
 
@@ -266,6 +268,13 @@ public static class ProcessRefusals
 
     /// <summary>Its stdin is closed or the pipe broke.</summary>
     public const string StdinUnavailable = "stdin-unavailable";
+
+    /// <summary>
+    /// It was started with <c>open_stdin: false</c>, so there is no pipe to write to. Distinct
+    /// from a wrong name and from a broken pipe: the caller learns the process exists and is
+    /// running, and that this was a choice made at start time.
+    /// </summary>
+    public const string StdinNotOpened = "stdin-not-opened";
 
     /// <summary>The payload exceeds <see cref="ProcessStdin.MaxBytes"/>.</summary>
     public const string PayloadTooLarge = "payload-too-large";

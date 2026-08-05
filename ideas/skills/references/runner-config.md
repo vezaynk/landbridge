@@ -93,9 +93,14 @@ daemon); a **process** is agent-started via `start_process`, **never restarted**
 until something stops it or this `docketd` restarts (a job). Same supervision, same machine
 tagging, same stray-sweep bound.
 
-Gate processes per profile with `processes.agent_initiated`; cap them with `processes.max`. Names and ports are unique across processes *and* services on a
-machine, checked at admission. Ports are optional — a build or a watcher listens on nothing —
-and a port-declaring process takes part in the same refuse-at-dial protection as a service.
+Gate processes per profile with `processes.agent_initiated`; cap them with `processes.max`. Names
+are unique across processes *and* services on a machine, checked at admission among live entries —
+an exited process releases its name. **Ports are not part of a process at all**, and that is the
+one place the two diverge sharply: a service declares a port and gets refuse-at-dial protection, a
+process declares nothing and is invisible to it. If an agent's process listens on something that
+is the agent's business, and reachability is a separate `register_service` call. Processes also
+carry a start-time stdin choice (`open_stdin`, default on); closed stdin means no `write_process`
+and no graceful stop.
 
 Worth knowing as the operator: **nothing reclaims a process when its task ends.** Cleanup is
 the Lead's job via a continuation task, and the Machine Group view is where you see what a

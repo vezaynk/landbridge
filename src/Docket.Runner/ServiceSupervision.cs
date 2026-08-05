@@ -15,7 +15,7 @@ public abstract record ProcessOutcome
 {
     private ProcessOutcome() { }
 
-    public sealed record StartedOk(int? Port, string? LogPath) : ProcessOutcome;
+    public sealed record StartedOk(string? LogPath) : ProcessOutcome;
 
     public sealed record StoppedOk(int? ExitCode) : ProcessOutcome;
 
@@ -23,7 +23,7 @@ public abstract record ProcessOutcome
 
     public sealed record RefusedOutcome(string Refusal, string Detail) : ProcessOutcome;
 
-    public static ProcessOutcome Started(int? port, string? logPath) => new StartedOk(port, logPath);
+    public static ProcessOutcome Started(string? logPath) => new StartedOk(logPath);
 
     public static ProcessOutcome Stopped(int? exitCode) => new StoppedOk(exitCode);
 
@@ -145,10 +145,10 @@ public sealed class ServiceSupervisor : IAsyncDisposable
                     name,
                     s.State,
                     owner.Value,
-                    s.Config.Port ?? s.Config.Readiness?.TcpPort ?? 0,
                     s.StartedAt,
                     s.LastExitCode,
-                    s.LastFailureAt));
+                    s.LastFailureAt,
+                    s.StdinOpen));
             }
         }
         return report;
@@ -187,8 +187,11 @@ public sealed class ServiceSupervisor : IAsyncDisposable
     {
         foreach (var s in _state.Values)
         {
-            // A port-less service (a watcher, an indexer) declares nothing dialable and so
-            // can never answer for a port — it is invisible to refuse-at-dial by construction.
+            // Only config-declared services ever have a port. A §10 process declares none, so it
+            // is invisible to refuse-at-dial by construction — and must stay so, or stopping a
+            // process could start refusing dials for a listener Docket never tracked.
+            if (s.Owner is not null)
+                continue;
             var declared = s.Config.Port ?? s.Config.Readiness?.TcpPort;
             if (declared is null || declared != port)
                 continue;
@@ -236,10 +239,6 @@ public sealed class ServiceSupervisor : IAsyncDisposable
         if (command.Spawn.Count == 0)
             return ProcessOutcome.Refused(ProcessRefusals.InvalidSpawn, "spawn argv is empty");
 
-        var requestedPort = command.Port ?? command.ReadinessTcpPort;
-        if (requestedPort is { } rp && rp is < 1 or > 65535)
-            return ProcessOutcome.Refused(ProcessRefusals.InvalidSpawn, "port must be in 1..65535");
-
         ServiceConfig config;
         lock (_admission)
         {
@@ -265,21 +264,9 @@ public sealed class ServiceSupervisor : IAsyncDisposable
                 _state.TryRemove(command.Name, out _); // reclaim the exited entry's name
             }
 
-            if (requestedPort is { } port)
-            {
-                foreach (var (otherName, other) in _state)
-                {
-                    if ((other.Config.Port ?? other.Config.Readiness?.TcpPort) != port)
-                        continue;
-                    // Same reasoning as names: an exited process is not holding a port.
-                    if (other.Owner is not null && other.State is ServiceState.Exited or ServiceState.Stopped)
-                        continue;
-                    return ProcessOutcome.Refused(
-                        ProcessRefusals.PortTaken,
-                        $"port {port} is already claimed by '{otherName}' on this machine");
-                }
-            }
-
+            // No port check: a process declares no port (§10). The admission lock now guards
+            // machine-scoped NAME uniqueness only — still indivisible, because two concurrent
+            // starts could otherwise both see a name free and both take it.
             var running = _state.Count(e =>
                 e.Value.Owner is not null
                 && e.Value.State is not (ServiceState.Exited or ServiceState.Stopped));
@@ -296,14 +283,8 @@ public sealed class ServiceSupervisor : IAsyncDisposable
                 command.Spawn,
                 command.WorkingDirectory,
                 command.Env ?? new Dictionary<string, string>(StringComparer.Ordinal),
-                command.Port,
-                command.ReadinessTcpPort is { } tcp
-                    ? new ReadinessConfig(
-                        tcp,
-                        command.ReadinessTimeoutSeconds is { } t and > 0
-                            ? TimeSpan.FromSeconds(t)
-                            : ServiceDefaults.ReadinessTimeout)
-                    : null,
+                Port: null,
+                Readiness: null, // a process is running once its OS process is up (§10)
                 ServiceDefaults.MaxBackoff,
                 // Capture on: the log path goes back in the reply so the declaring agent reads
                 // its own output with file tools.
@@ -313,6 +294,7 @@ public sealed class ServiceSupervisor : IAsyncDisposable
             {
                 State = ServiceState.Stopped,
                 Owner = command.Task,
+                StdinOpen = command.OpenStdin,
             };
         }
 
@@ -321,18 +303,15 @@ public sealed class ServiceSupervisor : IAsyncDisposable
         {
             _state.TryRemove(command.Name, out _);
             Stop(s);
-            var refusal = s.StartedAt is null && s.LastExitCode is null
-                ? ProcessRefusals.SpawnFailed
-                : ProcessRefusals.ReadinessTimeout;
-            return ProcessOutcome.Refused(refusal, $"'{command.Name}' did not come up");
+            // With no readiness check there is exactly one way to fail to come up.
+            return ProcessOutcome.Refused(
+                ProcessRefusals.SpawnFailed, $"'{command.Name}' could not be started");
         }
 
         // Watch for exit and record it. No restart: the exit code is the point.
         _watchers[command.Name] = Task.Run(() => WatchProcessAsync(command.Name, s, _cts.Token));
 
-        return ProcessOutcome.Started(
-            config.Port ?? config.Readiness?.TcpPort,
-            _logs is null ? null : Path.Combine(_logs.Root, command.Name));
+        return ProcessOutcome.Started(_logs is null ? null : Path.Combine(_logs.Root, command.Name));
     }
 
     /// <summary>
@@ -357,7 +336,12 @@ public sealed class ServiceSupervisor : IAsyncDisposable
         // uses (§10/§11): close the held-open stdin so a child watching its input sees EOF and
         // can exit on its own terms, wait a bounded moment, and only then take the tree. A
         // build flushing its output deserves that; a wedged one does not get to refuse.
-        if (process is not null && !SafeHasExited(process))
+        //
+        // That lever only exists when stdin was opened. For an open_stdin:false process there is
+        // nothing to signal portably — signals do not cross to Windows, which is why there is no
+        // signal_process — so its stop is the bounded wait and then the tree. Choosing closed
+        // stdin is choosing a hard stop, and the skill says so.
+        if (process is not null && !SafeHasExited(process) && s.StdinOpen)
         {
             try { process.StandardInput.Close(); }
             catch (Exception e) when (e is IOException or ObjectDisposedException or InvalidOperationException)
@@ -417,6 +401,12 @@ public sealed class ServiceSupervisor : IAsyncDisposable
         Process? process;
         lock (s.Gate)
         {
+            if (!s.StdinOpen)
+            {
+                return ProcessOutcome.Refused(
+                    ProcessRefusals.StdinNotOpened,
+                    $"'{name}' was started with open_stdin false, so it has no pipe to write to");
+            }
             if (s.State != ServiceState.Running)
                 return ProcessOutcome.Refused(ProcessRefusals.NotRunning, $"'{name}' is not running");
             process = s.Process;
@@ -544,8 +534,10 @@ public sealed class ServiceSupervisor : IAsyncDisposable
             // §10: argv, never a shell — the same rule as a task spawn.
             RedirectStandardOutput = _logs is not null && service.Logs.Capture,
             RedirectStandardError = _logs is not null && service.Logs.Capture,
-            // Held open so the child sees a parent that is alive; closing it on our
-            // death is the same dead-man's switch a task spawn relies on.
+            // Always redirected: held open it is the dead-man's switch a task spawn relies on,
+            // and closed immediately (below) it is the portable way to give a child a stdin that
+            // returns EOF instead of blocking. Leaving it un-redirected would hand the child
+            // whatever docketd inherited, which is not a defined thing to give it.
             RedirectStandardInput = true,
             UseShellExecute = false,
         };
@@ -602,6 +594,18 @@ public sealed class ServiceSupervisor : IAsyncDisposable
             s.Process = process;
             s.State = ServiceState.Starting;
             s.StartedAt = _clock.GetUtcNow();
+        }
+
+        // §10 open_stdin: false — close the pipe at once so the child's first read is EOF rather
+        // than a wait for input nobody will send. It does NOT make stdin a terminal: isatty is
+        // false either way, so this fixes blocking, not detection.
+        if (!s.StdinOpen)
+        {
+            try { process.StandardInput.Close(); }
+            catch (Exception e) when (e is IOException or ObjectDisposedException or InvalidOperationException)
+            {
+                // nothing to close; the child simply never had a writable pipe
+            }
         }
 
         if (_logs is not null && service.Logs.Capture)
@@ -753,8 +757,13 @@ public sealed class ServiceSupervisor : IAsyncDisposable
         public ServiceConfig Config { get; } = config;
 
         /// <summary>The task that declared this service, or null for a config-declared one.
-        /// Decides whether the spawn carries <c>DOCKET_TASK_ID</c>, i.e. its lifetime.</summary>
+        /// Provenance for a process; a config service has none.</summary>
         public TaskId? Owner { get; init; }
+
+        /// <summary>§10: whether this process was given a usable stdin pipe. False means no
+        /// <c>write_process</c> and no graceful EOF stop — choosing closed stdin is choosing a
+        /// hard stop. Always true for a config-declared service (the dead-man pipe).</summary>
+        public bool StdinOpen { get; init; } = true;
         public Process? Process { get; set; }
         public ServiceState State { get; set; } = ServiceState.Stopped;
         public DateTimeOffset? StartedAt { get; set; }
