@@ -49,6 +49,8 @@ namespace Docket.Runner.TestHarness;
 ///                     `/bin/sh -c "exit 3"` is POSIX-only: on Windows it cannot start at
 ///                     all, so nothing runs and there is no exit code to observe — a
 ///                     failed spawn masquerading as a failed run.
+///   echo-stdin      — echo each stdin line to stdout as `got: <line>`, so a §10
+///                     write_process test can prove the bytes arrived by reading the log.
 ///   echo-argv       — write the argv this process received (one token per line,
 ///                     including this mode word at [0]) to an atomic `argv` marker,
 ///                     then watch stdin like `run`. Lets the §11 resume tests assert
@@ -108,6 +110,20 @@ public static class Program
 
         switch (mode)
         {
+            case "echo-stdin":
+                // §10 write_process: echo each stdin line to stdout, so a test can prove a write
+                // reached the pipe by reading the captured log — which is exactly the loop an
+                // agent uses, since a pipe carries no reply channel of its own.
+                {
+                    string? line;
+                    while ((line = await Console.In.ReadLineAsync()) is not null)
+                    {
+                        await Console.Out.WriteLineAsync($"got: {line}");
+                        await Console.Out.FlushAsync();
+                    }
+                    return 0;
+                }
+
             case "exit-code":
                 // Exits immediately with the code in args[1] (default 3). Exists because
                 // the obvious way to write this — `/bin/sh -c "exit 3"` — is a POSIX-only

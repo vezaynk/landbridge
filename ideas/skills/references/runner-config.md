@@ -20,6 +20,7 @@ argv a worker is launched with.
 | `profiles[]` | `telemetry` | `otel` bool (opt-in, default **false**), `endpoint` (OTLP destination; falls back to the one docketd inherited), and `env` (a string map of harness-specific variables, applied verbatim). When on, docketd sets the vendor-neutral `OTEL_*` exporter variables and appends `docket.task_id`/`docket.machine_id` to `OTEL_RESOURCE_ATTRIBUTES`, so the harness's own token/cost telemetry is attributable per task (§10). `otel: true` with **no endpoint configured and none inherited sets nothing at all** and warns once — telemetry is never enabled without a destination. Claude Code additionally needs `"env": { "CLAUDE_CODE_ENABLE_TELEMETRY": "1" }` (its own flag is data, since docketd holds no harness knowledge). **Visibility only**: Docket ingests none of it and enforces no ceiling — see [docs/TELEMETRY.md](../../../docs/TELEMETRY.md). |
 | `profiles[]` | `logs` | §12 machine-local transcript capture: `capture` (bool, default **false**), `max_bytes` (per-stream cap, default 50 MiB), `prune_after_days` (local hygiene, default 7, `0` disables). Legacy `format`/`path` are advisory/reserved — see [Transcript capture](#transcript-capture-12) below. |
 | `profiles[]` | `max_concurrent` | Optional hard cap for a licence/rate/posture reason, unrelated to load (§10). |
+| `profiles[]` | `processes` | §10 agent-started **processes**: `agent_initiated` (bool, default **false**) and `max` (default 8). Named `processes`, not `services` — they are different things (§10). Whether a task on this profile may call `start_process`, and how many the machine may hold. |
 | `services[]` | — | Optional: long-lived processes `docketd` supervises as its own children. See [Operator-declared services](#operator-declared-services-10) below. |
 
 ## Operator-declared services (§10)
@@ -84,6 +85,26 @@ here means the declaration is always the truth. A disabled service is still decl
 reports as `disabled` (distinct from `stopped`, so you can tell "I turned this off" from
 "this died and nobody meant it"), and a forward dial for its port is still refused rather
 than connecting to whatever else has taken it.
+
+**Agents can start their own background processes**, and on most machines that is the primary
+path — the `services[]` block above is for operator-owned fixtures. The two are different
+things and §10 defines both: a **service** is operator-declared and restart-supervised (a
+daemon); a **process** is agent-started via `start_process`, **never restarted**, and lives
+until something stops it or this `docketd` restarts (a job). Same supervision, same machine
+tagging, same stray-sweep bound.
+
+Gate processes per profile with `processes.agent_initiated`; cap them with `processes.max`. Names
+are unique across processes *and* services on a machine, checked at admission among live entries —
+an exited process releases its name. **Ports are not part of a process at all**, and that is the
+one place the two diverge sharply: a service declares a port and gets refuse-at-dial protection, a
+process declares nothing and is invisible to it. If an agent's process listens on something that
+is the agent's business, and reachability is a separate `register_service` call. Processes also
+carry a start-time stdin choice (`open_stdin`, **default off**): without a pipe there is no
+`write_process` and no graceful stop, which suits the fire-and-forget majority.
+
+Worth knowing as the operator: **nothing reclaims a process when its task ends.** Cleanup is
+the Lead's job via a continuation task, and the Machine Group view is where you see what a
+machine is still holding.
 
 **Status, not logs, on the dashboard.** Each service's state, port, uptime, restart count
 and last exit code ride the machine heartbeat to the §12 Machine Group view. The log
@@ -223,7 +244,8 @@ targets a profile *name*; what that name can do (which MCP servers, which
 commands) is the machine's declaration, invisible to the plane (§1's
 infrastructure/work split, §10's "everything specific is data").
 
-**Open** — the worker uses the machine like its owner would. Omit
+**Open** — the worker uses the machine like its owner would, including starting its own
+background processes (§10 `start_process`). Omit
 `--allowedTools` entirely (with `--permission-mode bypassPermissions` every
 tool is available) and omit `--strict-mcp-config`: the injected `{mcp_config}`
 then **merges** with the machine's own user- and project-scope MCP servers, so
@@ -237,8 +259,17 @@ Docket:
   "--mcp-config", "{mcp_config}",
   "--output-format", "stream-json", "--input-format", "stream-json",
   "--permission-mode", "bypassPermissions"
-]
+],
+// §10: let a worker start its own background processes. On an open profile this grants
+// nothing it could not already do with a shell — and it means the agent uses the supported
+// route instead of discovering `setsid`/env-scrubbing, which would defeat the kill guarantee
+// for everything else on the machine.
+"processes": { "agent_initiated": true }
 ```
+
+On a **strict** profile leave `processes.agent_initiated` off (the default): a worker with no
+shell cannot start a background process by hand, and `start_process` refuses honestly rather
+than granting a capability the rest of the profile withholds.
 
 **Strict** — the worker gets an enumerated toolbox and nothing else. Keep
 `--allowedTools` narrow and add `--strict-mcp-config`, which makes the injected

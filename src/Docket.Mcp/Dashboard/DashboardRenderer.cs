@@ -73,7 +73,57 @@ internal static class DashboardRenderer
             }
 
             AppendServices(sb, m, now);
+            AppendProcesses(sb, m, now);
             sb.Append("</section>");
+        }
+
+        // §10/§12: agent-started processes, in their own table. A process is a job — never
+        // restarted, `exited` is where it rests — and nothing reclaims it when its declaring
+        // task ends, so this view is also the safety net that makes an un-cleaned-up process
+        // visible to the operator.
+        static void AppendProcesses(StringBuilder sb, MachineView m, DateTimeOffset now)
+        {
+            if (m.Processes is not { Count: > 0 })
+                return;
+
+            sb.Append("<div class=\"machine-services\">");
+            sb.Append("<h3>Background processes <span class=\"nt\">started by agents on this machine</span></h3>");
+            sb.Append("<table><thead><tr>");
+            // No port column: Docket tracks no port for a process (§10). Stdin is here because a
+            // cleanup agent needs to know whether a graceful stop exists.
+            sb.Append("<th>Process</th><th>State</th><th>Stdin</th><th>Up for</th>" +
+                      "<th>Exit</th><th>Ended</th><th>Started by task</th>");
+            sb.Append("</tr></thead><tbody>");
+
+            foreach (var p in m.Processes)
+            {
+                var badge = p.State switch
+                {
+                    ServiceState.Running => Badge("running", "ready"),
+                    ServiceState.Starting => Badge("starting", "state-submitted"),
+                    ServiceState.Exited => Badge("exited", "backpressure"),
+                    ServiceState.Failed => Badge("failed", "down"),
+                    _ => Badge("stopped", "backpressure"),
+                };
+                sb.Append("<tr>");
+                sb.Append($"<td><code>{E(p.Name)}</code></td>");
+                sb.Append($"<td>{badge}</td>");
+                sb.Append($"<td>{(p.StdinOpen ? "open" : "<span class=\"nt\">closed</span>")}</td>");
+                sb.Append($"<td>{(p.StartedAt is null ? "<span class=\"nt\">—</span>" : E(Age(p.StartedAt, now)))}</td>");
+                sb.Append($"<td>{(p.ExitCode is { } c ? c.ToString() : "<span class=\"nt\">—</span>")}</td>");
+                sb.Append($"<td>{(p.ExitedAt is null ? "<span class=\"nt\">—</span>" : E(Age(p.ExitedAt, now)))}</td>");
+                sb.Append($"<td><span class=\"mono nt\">{E(ShortId(p.DeclaredByTask))}</span></td>");
+                sb.Append("</tr>");
+            }
+
+            sb.Append("</tbody></table>");
+            // Say the leak out loud: nothing reclaims these when a task ends, by design.
+            sb.Append("<p class=\"nt\">A process outlives the task that started it and is never " +
+                      "restarted. Nothing stops it automatically — a Lead sends a cleanup task, " +
+                      "or it runs until this machine's docketd restarts. Docket tracks no port for " +
+                      "a process; reachability is a registered service (§8.2). A process with " +
+                      "closed stdin has no graceful stop.</p>");
+            sb.Append("</div>");
         }
 
         static void AppendServices(StringBuilder sb, MachineView m, DateTimeOffset now)

@@ -132,6 +132,157 @@ public sealed record ReadTranscriptCommand(
     long Offset = 0,
     int MaxBytes = TranscriptStreams.DefaultMaxBytes) : RunnerCommand;
 
+/// <summary>
+/// <c>start-process</c> (§10) — an agent-started background process.
+///
+/// <para><b>A process is not a service, and the distinction does real work.</b> A
+/// <em>service</em> is operator-declared in config, restart-supervised, and bound to the
+/// machine generation — a daemon. A <em>process</em> is agent-started over this wire, never
+/// restarted, its exit recorded, and cleaned up by Lead orchestration — a job. Same
+/// supervision substrate, same machine tagging, same stray-sweep bound; different
+/// declaration source, restart policy, and name. Neither is a Docket <em>task</em>.</para>
+///
+/// <para><b>Machine-scoped, not task-scoped.</b> The task id here is provenance and nothing
+/// more: the process outlives the worker's turn, the task blocking, and the task completing.
+/// It ends on an explicit <see cref="StopProcessCommand"/>, on its own exit, or with the
+/// daemon (the stray sweep). Cleanup is orchestration — a Lead sends a continuation task and
+/// the resumed agent stops what it started — because a process that survived its task's
+/// state machine cannot be reclaimed by that state machine.</para>
+/// </summary>
+/// <param name="Name">Machine-scoped identity, validated against the same allowlist a
+/// config-declared service name faces. Unique across processes <em>and</em> services on this
+/// machine: one namespace, so a collision is always reported rather than resolved silently.</param>
+/// <remarks>
+/// <b>Ports are entirely out of scope here.</b> This is a process manager: it keeps a process
+/// alive and reports how it ended. Reachability is a different noun with its own surface —
+/// §8.2 <c>register_service</c> — and there is no overlap to reconcile. If a process happens to
+/// listen on something, that is the agent's business, exactly as if it had started the server
+/// from a shell; a port clash between two processes is the agent's problem too, consistent with
+/// there being no restarts. Processes are therefore invisible to refuse-at-dial by construction,
+/// because they declare nothing to dial.
+/// </remarks>
+/// <param name="OpenStdin">
+/// Whether the child gets a usable stdin pipe. <b>Default false</b>: the common case is
+/// fire-and-forget — a build, a dev server, a watcher — which gets the simplest spawn with
+/// nothing held open, and its first read returns EOF rather than blocking on input nobody will
+/// send. Closing is done by redirecting stdin and closing it at once, which is the portable
+/// choice: .NET has no cross-platform null-device handle, and leaving stdin un-redirected would
+/// hand the child whatever docketd inherited, which is not a defined thing to give it.
+///
+/// <para>Ask for true when you intend to talk to the process — <c>write-process</c> is therefore
+/// <b>opt-in by construction</b>, and so is the graceful EOF half of <c>stop-process</c>. A
+/// process started without stdin can only be stopped hard.</para>
+///
+/// <para>Either way it is <b>not</b> a terminal. A program that changes behaviour because
+/// <c>isatty</c> is false behaves the same however this is set; a real TTY needs a pty, which is
+/// out of scope. Opening stdin buys you a writable pipe, not interactivity.</para>
+/// </param>
+public sealed record StartProcessCommand(
+    TaskId Task,
+    string RequestId,
+    string Name,
+    IReadOnlyList<string> Spawn,
+    string? WorkingDirectory = null,
+    IReadOnlyDictionary<string, string>? Env = null,
+    bool OpenStdin = false) : RunnerCommand;
+
+/// <summary>
+/// <c>stop-process</c> (§10) — end an agent-started process. Machine-scoped: any worker
+/// dispatched to this machine may stop any process on it, which is what lets a Lead's
+/// cleanup continuation — a <em>new</em> task id — tidy up what an earlier task started.
+/// </summary>
+public sealed record StopProcessCommand(
+    TaskId Task, string RequestId, string Name) : RunnerCommand;
+
+/// <summary>
+/// <c>write-process</c> (§10) — write to an agent-started process's stdin.
+///
+/// <para><b>This is a pipe, not a TTY</b>, and that is not a detail. Programs that check
+/// whether stdin is a terminal behave differently on one: no interactive prompts, block
+/// buffering instead of line buffering, and some refuse outright. A password prompt that
+/// reads <c>/dev/tty</c> never sees these bytes at all, and a curses/TUI program will not
+/// work. The reply confirms the bytes were accepted by the pipe — never that the program
+/// understood them; the answer, if any, appears in the log file.</para>
+/// </summary>
+/// <param name="Data">UTF-8 text, capped at <see cref="ProcessStdin.MaxBytes"/>. Several
+/// writes for more. No binary in v1.</param>
+/// <param name="AppendNewline">Append a newline, the default: line-oriented is the 95% case
+/// (REPLs, command-driven daemons) and a partial write is the exception.</param>
+public sealed record WriteProcessCommand(
+    TaskId Task, string RequestId, string Name, string Data, bool AppendNewline = true) : RunnerCommand;
+
+/// <summary>Limits on <c>write-process</c> payloads (§10), shared by both sides.</summary>
+public static class ProcessStdin
+{
+    /// <summary>Cap on one write, matching the in-band prose discipline elsewhere (16 KB).</summary>
+    public const int MaxBytes = 16 * 1024;
+}
+
+/// <summary>The reply to <see cref="StartProcessCommand"/> (§10).</summary>
+/// <param name="LogPath">Where this run's output is captured on the machine. The declaring
+/// agent is on that machine, so it reads its own process's output with ordinary file tools —
+/// no serving path, no redaction question (§16 open question 8).</param>
+public sealed record ProcessStartedEvent(
+    TaskId Task,
+    string RequestId,
+    string Name,
+    bool Started,
+    string? Refusal = null,
+    string? LogPath = null) : RunnerEvent;
+
+/// <summary>The reply to <see cref="StopProcessCommand"/> (§10).</summary>
+/// <param name="ExitCode">The code it ended with, when the machine observed one.</param>
+public sealed record ProcessStoppedEvent(
+    TaskId Task, string RequestId, string Name, bool Stopped,
+    int? ExitCode = null, string? Refusal = null) : RunnerEvent;
+
+/// <summary>The reply to <see cref="WriteProcessCommand"/> (§10). Confirms the pipe accepted
+/// the bytes, never that the program understood them.</summary>
+public sealed record ProcessWrittenEvent(
+    TaskId Task, string RequestId, string Name, bool Written,
+    int Bytes = 0, string? Refusal = null) : RunnerEvent;
+
+/// <summary>The closed refusal vocabulary for the §10 process commands.</summary>
+public static class ProcessRefusals
+{
+    /// <summary>The profile does not permit agent-started processes (the operator's choice).</summary>
+    public const string ProfileNotPermitted = "profile-not-permitted";
+
+    /// <summary>The machine's cap on agent-started processes is reached.</summary>
+    public const string CapReached = "cap-reached";
+
+    /// <summary>The name is not a valid machine-local identifier.</summary>
+    public const string InvalidName = "invalid-name";
+
+    /// <summary>Empty argv — nothing to run.</summary>
+    public const string InvalidSpawn = "invalid-spawn";
+
+    /// <summary>That name is already held on this machine, by a process or a service.</summary>
+    public const string NameTaken = "name-taken";
+
+    /// <summary>The process could not be started at all (bad argv, missing binary).</summary>
+    public const string SpawnFailed = "spawn-failed";
+
+    /// <summary>No agent-started process by that name on this machine.</summary>
+    public const string NoSuchProcess = "no-such-process";
+
+    /// <summary>It is not running, so there is nothing to stop or write to.</summary>
+    public const string NotRunning = "not-running";
+
+    /// <summary>Its stdin is closed or the pipe broke.</summary>
+    public const string StdinUnavailable = "stdin-unavailable";
+
+    /// <summary>
+    /// It was started without a stdin pipe — the default. Distinct from a wrong name and from a
+    /// broken pipe: the caller learns the process exists and is running, and that writing to it
+    /// required asking for <c>open_stdin</c> at start time.
+    /// </summary>
+    public const string StdinNotOpened = "stdin-not-opened";
+
+    /// <summary>The payload exceeds <see cref="ProcessStdin.MaxBytes"/>.</summary>
+    public const string PayloadTooLarge = "payload-too-large";
+}
+
 /// <summary>The two captured stream names and the default range size (§12), shared by
 /// both sides so the wire strings live in one place.</summary>
 public static class TranscriptStreams
@@ -202,7 +353,9 @@ public sealed record SubagentSpawnedEvent(
 public sealed record ExitedEvent(TaskId Task, int ExitCode, DateTimeOffset At) : RunnerEvent;
 
 /// <summary><c>auth-failed</c> — reports structured facts (§11): operation,
-/// target, error code, missing scope. The control plane renders remediation.</summary>
+/// target, error code, missing scope — which is what a remediation menu would render from
+/// (§11). The plane persists the facts and shows them on the event log; no remediation menu
+/// is built.</summary>
 public sealed record AuthFailedEvent(
     TaskId Task, string Operation, string Target, string ErrorCode, string? MissingScope) : RunnerEvent;
 

@@ -16,7 +16,7 @@ internal sealed class RunnerConfigDto
 
 // §10 operator-declared services: long-lived processes docketd supervises as its own
 // children, outside any task's process tree. Config-declared only in v1 — an
-// agent-initiated service would need a new worker tool and a new wire command.
+// agent-started process is declared over the wire instead (§10 start_process).
 internal sealed class ServiceDto
 {
     public string? Name { get; set; }
@@ -69,6 +69,19 @@ internal sealed class ProfileDto
     public TelemetryDto? Telemetry { get; set; }
     public LogsDto? Logs { get; set; }
     public int? MaxConcurrent { get; set; }
+
+    // §10 agent-started processes: whether a task on this profile may call start_process, and
+    // how many the machine may hold. Off by default — enabling it is the machine owner's
+    // deliberate choice, the same shape as the open/strict archetypes. Named `processes`, not
+    // `services`, because a process and a service are different things (§10) and this is the
+    // key a human types.
+    public ProfileProcessesDto? Processes { get; set; }
+}
+
+internal sealed class ProfileProcessesDto
+{
+    public bool? AgentInitiated { get; set; }
+    public int? Max { get; set; }
 }
 
 internal sealed class StopDto

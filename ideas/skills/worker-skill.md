@@ -68,7 +68,53 @@ Bind to loopback. Registration plus the relay is how other agents reach you; exp
 
 A service you start as a child of your own process dies with you: `docketd` kills each task as a whole process tree, so anything you launched goes down when your turn ends. That is correct for a build or a test run and wrong for "stand up the dev server and keep it up".
 
-**Hand the process to the machine's service manager instead.** On Linux, use a transient unit — it writes nothing to disk, so there is no file for anyone to find orphaned later:
+**Use `start_process`.** That is the supported way, and it works the same on every machine:
+
+```
+start_process(
+  name: "web-dev",
+  spawn: ["/abs/node/bin/npm", "run", "dev"],
+  workingDirectory: "/abs/path/to/checkout",
+  env: { "PORT": "5173" })
+```
+
+`docketd` runs it as **its own child**, not yours, so it survives your turn ending, you blocking on a question, and this task finishing. It is running as soon as its process is up.
+
+**Docket does not deal with ports here at all.** If your process listens on something, that is yours to manage, exactly as if you had started it from a shell — pass the port in `env` if the program needs telling. If *other tasks* need to reach it, that is a separate, deliberate act: `register_service` with the name and the port it bound. Two processes fighting over a port is your problem to avoid, the same way no-restarts means a crash is yours to interpret.
+
+**It is never restarted.** If it exits, that is recorded — exit code and time — and left for you, or for whoever is resumed later, to interpret. A crash is information, and hiding it behind an automatic retry would throw away the one thing you need to know.
+
+Two things come back. A **log path** on this machine, so you read its output with ordinary file tools. And possibly a **refusal**: your profile may not permit background processes, the machine may be at its cap, or the name may already be taken. A refusal is a fact to report, not something to work around.
+
+**One flag worth knowing: `openStdin`, and it defaults to false.** Most background work is fire-and-forget, so by default nothing is held open and a program that reads stdin sees end-of-input immediately instead of hanging forever on input nobody will send.
+
+**Pass `openStdin: true` if you intend to talk to the process.** That is the only way `write_process` works, and the only way `stop_process` can stop it gracefully — without a pipe, stopping is a short wait and then a kill, with no chance for it to finish tidily. Decide when you start it: changing your mind later means stopping and restarting. It does *not* make stdin a terminal either way, so a program that changes behaviour when stdin is not a TTY still will.
+
+**Nothing stops it for you.** Not your turn ending, not the task completing. So:
+
+- **Stop what you started** when the work is genuinely done: `stop_process(name)`.
+- If it must outlive *this* task, say so in your report, and expect a later cleanup task. Any worker on that machine can stop it, so the agent that tidies up need not be you.
+- Names are unique per machine, shared with the operator's own declared services. Pick something specific (`build-payments`, not `build`).
+
+### Talking to a process: `write_process`
+
+`write_process(name, data)` writes to its stdin — a command for a REPL, an answer a script is waiting for. **It only works on a process you started with `openStdin: true`**; otherwise it refuses and says so, which is a start-time choice rather than a wrong name. So the interactive shape starts like this:
+
+```
+start_process(
+  name: "py-repl",
+  spawn: ["/abs/bin/python", "-u", "-i"],
+  workingDirectory: "/abs/path",
+  openStdin: true)          // required — you are going to write to it
+```
+
+**It is a pipe, not a terminal, and that changes behaviour.** Programs that check whether stdin is a TTY may not prompt at all, may buffer output in blocks instead of lines, or may refuse to run. A password prompt that reads `/dev/tty` will never see what you write. A full-screen or curses program will not work — do not try.
+
+Success means the pipe accepted your bytes. It does **not** mean the program understood them, and there is no reply channel on a pipe. Whatever it says back goes to its output, so the loop is: **write, read the log, decide.** Writes are capped at 16 KB; send several for more, and a newline is appended unless you turn that off.
+
+### When a machine needs something permanent
+
+Occasionally a process must outlive even the Team's work — a database the operator wants running tomorrow. That is a machine fixture, not a task's service, and it belongs to the operator: ask them to declare it in the `docketd` config, or to run it under the machine's service manager themselves. If you are asked to set one up yourself, on Linux a transient unit writes nothing to disk, so there is no file for anyone to find orphaned later:
 
 ```
 systemd-run --user --unit=docket-dev-myapp --collect \
@@ -81,7 +127,7 @@ Stop it with `systemctl --user stop docket-dev-myapp`. Because a transient unit'
 
 Why this is the sanctioned route rather than a loophole: **the service manager forks the process itself.** The result is not a descendant of your harness, so the tree-kill does not reach it, and it does not inherit `DOCKET_MACHINE_ID`/`DOCKET_TASK_ID`, so the stray reaper's environment scan does not match it. It escapes supervision **by construction** — because a different supervisor owns it and can be asked to stop it — rather than by hiding from ours.
 
-**Better still, where the service is stable and known in advance: ask the operator to declare it.** One unit file they write, own, and track, and your holder task does nothing but check the port answers and call `register_service`. You author nothing, nothing accumulates in their config directories, and stopping the service is a thing they already know how to do. Prefer this whenever the service is a fixture of the project rather than something you are standing up ad hoc.
+**Better still, where the service is stable and known in advance: ask the operator to declare it.** One unit file they write, own, and track, and your task does nothing but check the port answers and call `register_service`. You author nothing, nothing accumulates in their config directories, and stopping the service is a thing they already know how to do. Prefer this whenever the service is a fixture of the project rather than something you are standing up ad hoc.
 
 Three practical traps:
 
@@ -89,7 +135,7 @@ Three practical traps:
 - **A user manager can die at logout.** Without `loginctl enable-linger <user>` the whole `--user` manager — and every service under it — goes away when the operator's session ends. If the service needs to survive that, say so to the human; enabling linger is theirs to do, not yours.
 - **Name units per project**, `docket-dev-<project>-<service>`, so two Teams on one machine cannot collide on a unit name the way they must not collide on a port.
 
-**macOS is genuinely weaker here, and worth saying so plainly.** launchd has no clean transient equivalent. `launchctl submit -l <label> -- <cmd>` avoids writing a plist but is deprecated; anything else needs a plist in `~/Library/LaunchAgents`. If you write one, you own removing it: `launchctl bootout gui/$(id -u)/<label>` and delete the file on teardown. And be honest with yourself about the failure mode — if your holder task is hard-killed, both the running job and the plist file are left behind, and nobody is coming to clean them up. On macOS, prefer the operator-declared route.
+**macOS is genuinely weaker here, and worth saying so plainly.** launchd has no clean transient equivalent. `launchctl submit -l <label> -- <cmd>` avoids writing a plist but is deprecated; anything else needs a plist in `~/Library/LaunchAgents`. If you write one, you own removing it: `launchctl bootout gui/$(id -u)/<label>` and delete the file on teardown. And be honest with yourself about the failure mode — if your task is hard-killed, both the running job and the plist file are left behind, and nobody is coming to clean them up. On macOS, prefer the operator-declared route.
 
 ### Never scrub Docket's environment to escape supervision
 
@@ -97,24 +143,15 @@ Three practical traps:
 
 `setsid`/`nohup` on their own are not the answer either, and are worth understanding so you don't reinvent the broken version. They detach from your process group, so a group kill misses them — but the process still carries the inherited `DOCKET_*`, so the reaper finds it on the next scan and kills it anyway. You get a service that survives your turn and then dies at an unpredictable later moment, which is worse than one that dies predictably. On Windows it cannot work at all: every worker is sealed into a kill-on-close Job Object, and escaping a job requires a breakaway flag `docketd` does not set.
 
-### The holder-task idiom
+### Cleaning up after yourself
 
-A service manager keeps the *process* alive; it does not keep the *registration* alive. A registration belongs to a task and only exists while that task is `working` — if the task ends or is requeued, its registrations are deleted and consumers lose the forward. So a service that must stay reachable needs a task that stays alive to hold it.
+Nothing stops your processes automatically — not your turn ending, not the task completing. That is deliberate, and it makes tidying up part of finishing the work:
 
-That task is the whole shape:
-
-- **One holder task** starts the service through the service manager, waits for the port to answer, calls `register_service`, and then idles. It does not do the work that uses the service.
-- **Idling is fine and expected.** `register_service` is what tells the control plane this task is service-bearing, which is what exempts it from the no-progress timeout it would otherwise trip by doing nothing. Report progress if you have any, but you do not need to invent activity to stay alive.
-- **Its completion criterion should say what is true**: "runs until cancelled." Do not write a criterion it can only meet by stopping, and do not call `report_result` to look productive — that moves the task out of `working` and takes the registration with it. `cancel` is this task's expected ending, not a failure.
-- **Consumers are ordinary separate tasks** that reach the service with `open_forward` from anywhere in the Team. That is the point: the work is parallel across machines while one cheap task holds the service, which a single worker doing everything on the service's own machine could never be.
-
-This needs a profile permissive enough to invoke a service manager at all — a strict allowlist with no shell access cannot run `systemd-run`. If the profile you are on cannot, that is a machine configuration matter: report it rather than looking for a way around it.
-
-## Reaching another task's service
-
-`open_forward(name)` gives you a local port that tunnels to a registered service in your Team. Connect to `127.0.0.1` on the returned port as if the service were local.
-
-If the service isn't registered yet, you'll be parked and woken when it appears. If it's unreachable, that surfaces as a blocker for a human — don't retry in a loop.
+- **Stop what you started** with `stop_process(name)` once the work is genuinely done. It closes the process's stdin first and gives it a moment to exit on its own before taking it down, so a build gets to flush.
+- **If it must outlive this task**, say so plainly in your report, and name the processes you left running. Your Lead will send a continuation task to clean up — and because a continuation resumes *this* session, that will most likely be you, still remembering what you started.
+- **Any worker on the machine can stop any process on it**, so the agent that tidies up need not be the one that started things.
+- **Check what is already running** with `list_processes` — it shows both the processes agents started and the operator's own services, marked, plus whether each has stdin open (so you know whether a graceful stop exists before you call one).
+- **Pick specific names.** They are unique per machine and share a namespace with the operator's own declared services, so `build-payments` is a good name and `build` will collide with somebody. A suffix is the cheapest way to be safe: `dev-<short-task-id>`, or `<project>-<purpose>`. A name is released once the process exits, so a retry can reuse it.
 
 ## Asking questions
 

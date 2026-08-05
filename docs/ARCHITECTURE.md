@@ -182,8 +182,8 @@ the vocabulary (`RunnerWire.Decode*` returns null on an unknown `type`).
 
 | Direction | Messages |
 |---|---|
-| **Outbound** (plane → runner) | `dispatch` · `stop(ttl, disposition)` · `kill` · `open-forward` · `read-transcript` |
-| **Inbound** (runner → plane) | `started` · `session-started` · `alive` · `tool-call` · `subagent-spawned` · `exited` · `auth-failed` · `forward-opened` · `forward-closed` · `rebooted` · `transcript-chunk` |
+| **Outbound** (plane → runner) | `dispatch` · `stop(ttl, disposition)` · `kill` · `open-forward` · `read-transcript` · `start-process` · `stop-process` · `write-process` |
+| **Inbound** (runner → plane) | `started` · `session-started` · `alive` · `tool-call` · `subagent-spawned` · `exited` · `auth-failed` · `forward-opened` · `forward-closed` · `rebooted` · `transcript-chunk` · `process-started` · `process-stopped` · `process-written` |
 
 **Every message carries a task id** — it is the required first field of every
 record. The one exception is `rebooted`, which is machine-scoped precisely because
@@ -201,7 +201,17 @@ declared profiles and load). Nothing in the vocabulary is domain-specific.
 > `subagent-spawned` are defined but not yet produced (their dashboard rows render as
 > "not reported" rather than fabricated — spec §10, §12). Everything else has a
 > producer, including `alive` (docketd's own per-task process-alive assertion, §10),
-> `session-started`, and `transcript-chunk`.
+> `session-started`, `transcript-chunk`, and the three §10 process replies
+> (`process-started`, `process-stopped`, `process-written`) — each produced by the
+> handler for its command, and each handled on the plane by the process-control relay's
+> request/reply rendezvous.
+>
+> The three outbound `*-process` commands are the agent-facing half of §10's background
+> processes: a worker starts a long-running child of `docketd`, writes to its stdin, and
+> stops it. They are the largest single addition the frozen vocabulary has taken, and
+> they are distinct records rather than one polymorphic command for the same reason
+> `stop` and `kill` are distinct — the closed hierarchy is the boundary, and the three
+> replies carry genuinely different payloads (port + log path, exit code, bytes accepted).
 
 ## `stop` is a message, not a signal
 

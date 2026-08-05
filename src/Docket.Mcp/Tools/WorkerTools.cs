@@ -27,7 +27,8 @@ public sealed class WorkerTools(
     ForwardOrchestrator forwards,
     PreviewMappingService previews,
     IHttpContextAccessor http,
-    IConfiguration config)
+    IConfiguration config,
+    ProcessControlRelay processes)
 {
     /// <summary>The relay a worker dials when config supplies none (§8.3), mirroring <see cref="DispatchService.DefaultPublicMcpUrl"/>.</summary>
     public const string DefaultRelayUrl = "http://127.0.0.1:5100";
@@ -117,6 +118,100 @@ public sealed class WorkerTools(
 
         var caller = Caller;
         return Describe(await store.ApplyAsync(caller.Task, new RequestInput(caller, parsed, question), ct));
+    }
+
+    [McpServerTool(Name = "start_process"),
+     Description("Start a background process that keeps running after your turn ends — a build, a dev " +
+                 "server, a watcher, a test run, a REPL. docketd supervises it as its own child, so it " +
+                 "survives you exiting, blocking on a question, and this task finishing. It is NOT " +
+                 "restarted if it exits: the exit code is the result, and you (or the agent resumed " +
+                 "later) decide what it means. A port is optional — plenty of long work listens on " +
+                 "nothing. Never try to escape supervision by hand: no setsid, and never unset DOCKET_* " +
+                 "on something you spawn.")]
+    public async Task<StartProcessResult> StartProcess(
+        [Description("A name for this process, unique on this machine: 1-64 characters of a-z, A-Z, 0-9, '-' or '_'.")]
+        string name,
+        [Description("The command as argv — the program first, then each argument separately. Never a " +
+                     "shell string. Use absolute paths: the process gets docketd's environment, not your shell's.")]
+        string[] spawn,
+        [Description("Directory to run in. Absolute. Defaults to docketd's own working directory, which is " +
+                     "probably not what you want.")]
+        string? workingDirectory = null,
+        [Description("Environment variables to set. Nothing is inherited implicitly, so pass PATH here if " +
+                     "the command needs one.")]
+        Dictionary<string, string>? env = null,
+        [Description("Whether the process gets a stdin pipe you can write to. DEFAULT FALSE — most " +
+                     "background work is fire-and-forget and is better off with nothing held open, and a " +
+                     "program that reads stdin sees end-of-input immediately instead of blocking forever. " +
+                     "Pass true only if you intend to write to it: write_process refuses on a process " +
+                     "started without a pipe, and only a process with stdin can be stopped gracefully " +
+                     "(otherwise stopping is a short wait and then a kill). Either way stdin is not a " +
+                     "terminal, so programs that behave differently when stdin is not a TTY still will.")]
+        bool openStdin = false,
+        CancellationToken ct = default)
+    {
+        var caller = Caller;
+        var result = await processes.StartAsync(
+            caller.Task, name, spawn, workingDirectory, env, openStdin, ct);
+
+        if (!result.Started)
+            return new StartProcessResult(false, null, result.Refusal, null);
+
+        // Uniform guidance, with no port branch: Docket tracks no port for a process, so
+        // reachability is always a separate deliberate act (§8.2) rather than something this call
+        // half-did. And nothing stops the process for you, which is the other thing an agent
+        // reliably forgets.
+        var next =
+            "Docket does not track this process's port. If other tasks need to reach it, call " +
+            "register_service with the name and the port it bound. Read its output at the log " +
+            $"path, and stop it with stop_process when the work is done — nothing stops it for you." +
+            (openStdin
+                ? " Stdin is open, so you can write_process to it and stop_process can stop it gracefully."
+                : " Started without stdin (the default): write_process will refuse, and stopping it is a hard stop. Restart it with openStdin true if you need to talk to it.");
+
+        return new StartProcessResult(true, result.LogPath, null, next);
+    }
+
+    [McpServerTool(Name = "stop_process"),
+     Description("Stop a background process on this machine by name. Any task dispatched to the machine " +
+                 "may stop any process on it — including one an earlier task started, which is how a " +
+                 "cleanup task tidies up. Processes are not cleaned up automatically when a task ends, so " +
+                 "stopping what you started is part of finishing the work.")]
+    public async Task<ProcessActionResult> StopProcess(
+        [Description("The name the process was started with.")] string name,
+        CancellationToken ct = default)
+    {
+        var r = await processes.StopAsync(Caller.Task, name, ct);
+        return new ProcessActionResult(r.Ok, r.Refusal, r.Value);
+    }
+
+    [McpServerTool(Name = "list_processes"),
+     Description("List what is running on your machine — the background processes agents started, " +
+                 "and the operator's own declared services, each marked with its kind. Use it to pick " +
+                 "a name that is not taken, to work out why a start was refused, and above all to find " +
+                 "out what an earlier task left running when you have been sent to clean up. A service " +
+                 "is the operator's and not yours to stop; a process is fair game for any task on the " +
+                 "machine.")]
+    public IReadOnlyList<RunningThing> ListProcesses() => processes.List(Caller.Task);
+
+    [McpServerTool(Name = "write_process"),
+     Description("Write text to a background process's stdin — a command for a REPL, an answer a tool is " +
+                 "waiting for, or input for a script. IMPORTANT: this is a pipe, not a terminal. Programs " +
+                 "that check for a TTY behave differently: they may not prompt, may buffer their output in " +
+                 "blocks, or may refuse entirely, and a password prompt that reads /dev/tty will never see " +
+                 "this. A curses or full-screen program will not work at all. Success means the pipe took " +
+                 "the bytes, NOT that the program understood them — whatever it says back appears in the " +
+                 "log file, so the loop is: write, read the log, decide.")]
+    public async Task<ProcessActionResult> WriteProcess(
+        [Description("The name the process was started with.")] string name,
+        [Description("UTF-8 text to write. Capped at 16 KB per call; send several for more.")] string data,
+        [Description("Append a newline, the default. Most programs read a line at a time, so leave this on " +
+                     "unless you are deliberately sending a partial line.")]
+        bool appendNewline = true,
+        CancellationToken ct = default)
+    {
+        var r = await processes.WriteAsync(Caller.Task, name, data, appendNewline, ct);
+        return new ProcessActionResult(r.Ok, r.Refusal, r.Value);
     }
 
     [McpServerTool(Name = "register_service"),
@@ -235,6 +330,20 @@ public sealed record OpenForwardResult(
 /// <see cref="ExpiresAt"/> when the preview stops admitting new connections.
 /// snake_case-pinned like <see cref="OpenForwardResult"/>.
 /// </summary>
+/// <summary>What a worker learns from <c>start_process</c> (§10). No port: this is a process
+/// manager, and reachability is §8.2's noun.</summary>
+/// <param name="LogPath">Where the machine captured this run's output. The agent is on that
+/// machine, so it reads its own process's output with ordinary file tools — no serving path and
+/// no redaction question (§16 open question 8).</param>
+/// <param name="NextStep">What to do now — in particular that starting is not registering, and
+/// that nothing stops this process for you.</param>
+public sealed record StartProcessResult(
+    bool Started, string? LogPath, string? Refusal, string? NextStep);
+
+/// <summary>The result of <c>stop_process</c> or <c>write_process</c> (§10).
+/// <see cref="Value"/> is the exit code for a stop, or the bytes accepted for a write.</summary>
+public sealed record ProcessActionResult(bool Ok, string? Refusal, int? Value);
+
 public sealed record OpenPreviewResult(
     [property: JsonPropertyName("url")] string Url,
     [property: JsonPropertyName("auth")] string Auth,

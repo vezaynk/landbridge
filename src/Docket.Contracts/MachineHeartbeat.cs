@@ -45,7 +45,30 @@ public sealed record MachineHeartbeat(
     IReadOnlyList<string> Profiles,
     DateTimeOffset At,
     bool TranscriptsServable = false,
-    IReadOnlyList<ServiceStatus>? Services = null);
+    IReadOnlyList<ServiceStatus>? Services = null,
+    IReadOnlyList<ProcessStatus>? Processes = null);
+
+/// <summary>
+/// What a machine reports about one agent-started <b>process</b> (§10, §12) — deliberately a
+/// separate list from <see cref="ServiceStatus"/> rather than a flag on it, so a reader is
+/// never left working out which kind they are looking at. A service is operator-declared and
+/// restart-supervised; a process is agent-started and never restarted, so <see cref="Exited"/>
+/// is a resting state here rather than a transient one.
+/// </summary>
+/// <param name="DeclaredByTask">Provenance, not ownership: the task whose worker started it.
+/// The process is machine-scoped and outlives that task, and any worker on this machine may
+/// stop it — which is what lets a Lead's cleanup continuation tidy up.</param>
+/// <param name="StdinOpen">Whether it has a usable stdin pipe — false unless the starter asked
+/// for one. A cleanup agent needs this before choosing how to stop it: without stdin there is no
+/// graceful EOF lever, so stopping is the bounded wait and then a tree kill.</param>
+public sealed record ProcessStatus(
+    string Name,
+    ServiceState State,
+    Guid DeclaredByTask,
+    DateTimeOffset? StartedAt = null,
+    int? ExitCode = null,
+    DateTimeOffset? ExitedAt = null,
+    bool StdinOpen = false);
 
 /// <summary>
 /// What a machine reports about one declared service (§10, §12). Reported, never
@@ -78,6 +101,13 @@ public enum ServiceState
 
     /// <summary>Not running and not being retried — the supervisor gave up or was told to stop.</summary>
     Stopped,
+
+    /// <summary>
+    /// Ran and ended. A resting state for an agent-started process (§10), which is never
+    /// restarted — its exit code is information for the agent to act on, not something to hide
+    /// behind a backoff ladder. A config-declared service does not rest here: it is restarted.
+    /// </summary>
+    Exited,
 
     /// <summary>
     /// Declared with <c>enabled: false</c> and deliberately not started. Distinct from

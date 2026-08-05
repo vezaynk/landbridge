@@ -78,6 +78,14 @@ public static class Program
         var transcripts = new TranscriptStore(
             Path.Combine(stateDir, TranscriptDefaults.DirName), retention, clock);
 
+        // §10 services and agent-started processes. Both are docketd's own children, tagged
+        // with the machine id only: they outlive every task, and the only thing that ends them
+        // is an explicit stop, their own exit, or this daemon's restart (the stray sweep).
+        var services = new ServiceSupervisor(
+            config.DeclaredServices, machineId, clock,
+            logs: new ServiceLogStore(Path.Combine(stateDir, ServiceLogStore.DirName)),
+            log: Console.WriteLine);
+
         var supervisor = new ProcessSupervisor(config.Machine, ring, clock, reaper, transcripts);
         var backPressure = new BackPressureMonitor(
             SystemLoadReader.ForCurrentPlatform(config.Machine.WorkRoot), config.Machine.BackPressure);
@@ -160,25 +168,14 @@ public static class Program
         // gate on who may read a transcript is the plane's (human operator, terminal task
         // only), not something docketd second-guesses; a machine that captured nothing
         // simply answers with an empty inventory.
-        // §10 operator-declared services: docketd's own children, so they outlive the
-        // tasks that use them without escaping supervision. Started AFTER the daemon's
-        // restart sweep, which reaps the previous generation by machine id — starting
-        // them first would have this generation kill what it just spawned.
-        ServiceSupervisor? services = null;
-        if (config.DeclaredServices.Count > 0)
-        {
-            services = new ServiceSupervisor(
-                config.DeclaredServices, machineId, clock,
-                logs: new ServiceLogStore(Path.Combine(stateDir, ServiceLogStore.DirName)),
-                log: Console.WriteLine);
-        }
-
         var daemon = new RunnerDaemon(
             machineId, config, supervisor, backPressure, channel, ring, reaper, clock,
             transcripts: new TranscriptReader(transcripts),
             services: services);
         await daemon.StartAsync();
-        services?.Start();
+        // Started AFTER the daemon's restart sweep, which reaps the previous generation by
+        // machine id — starting first would have this generation kill what it just spawned.
+        services.Start();
 
         // Outbound-only: the receive loop runs on the socket docketd dialed, not
         // a listener (§10). Commands arriving on it drive the daemon.
@@ -204,8 +201,7 @@ public static class Program
 
         Console.WriteLine("docketd shutting down; killing everything it started");
         await daemon.ShutdownAsync();
-        if (services is not null)
-            await services.DisposeAsync();
+        await services.DisposeAsync();
         if (wsChannel is not null)
             await wsChannel.DisposeAsync();
         if (refresher is not null)

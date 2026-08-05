@@ -164,7 +164,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         registry.TrackDispatch("m1", task); // stamped at t0
 
         clock.Advance(TimeSpan.FromSeconds(30));
-        var sink = new RunnerEventSink(ScopeFactory(clock), registry, new ForwardWaiters(), new TranscriptWaiters(), NullLogger<RunnerEventSink>.Instance);
+        var sink = new RunnerEventSink(ScopeFactory(clock), registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
         await sink.HandleAsync(new StartedEvent(task, clock.GetUtcNow()));
 
         // Activity advanced to t0+30 and the task stays tracked (started confirms
@@ -191,7 +191,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         registry.TrackDispatch("m1", taskId); // stamped at t0
         clock.Advance(TimeSpan.FromSeconds(30));
 
-        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), NullLogger<RunnerEventSink>.Instance);
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
         await sink.HandleAsync(new SessionStartedEvent(taskId, "sess-xyz", clock.GetUtcNow()));
 
         await using var db = pg.NewContext();
@@ -216,7 +216,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         registry.Register("m1", Set("default"), (_, _) => Task.CompletedTask);
         registry.TrackDispatch("m1", taskId);
 
-        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), NullLogger<RunnerEventSink>.Instance);
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
         await sink.HandleAsync(new ExitedEvent(taskId, ExitCode: 0, clock.GetUtcNow()));
 
         Assert.Equal(TaskState.Submitted, await StateAsync(clock, taskId));
@@ -238,7 +238,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         registry.TrackDispatch("m1", first);
         registry.TrackDispatch("m1", second);
 
-        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), NullLogger<RunnerEventSink>.Instance);
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
         await sink.HandleAsync(new RebootedEvent("m1", clock.GetUtcNow()));
 
         Assert.Equal(TaskState.Submitted, await StateAsync(clock, first));
@@ -267,7 +267,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         var registry = LiveMachine(clock, "m1", id);
 
         // Worker exits while blocked — expected, not a disconnect.
-        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), NullLogger<RunnerEventSink>.Instance);
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
         await sink.HandleAsync(new ExitedEvent(id, ExitCode: 0, clock.GetUtcNow()));
 
         // Still blocked, still tracked: the machine keeps the lease so the sweeper
@@ -303,7 +303,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         var (id, instance) = await SeedBlockedTaskAsync(clock, team, "m1");
         var registry = LiveMachine(clock, "m1", id);
 
-        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), NullLogger<RunnerEventSink>.Instance);
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
         await sink.HandleAsync(new ExitedEvent(id, ExitCode: 0, clock.GetUtcNow()));
         Assert.Equal("m1", registry.MachineFor(id));
 
@@ -342,7 +342,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         registry.Register("m1", Set("default"), (_, _) => Task.CompletedTask);
         registry.TrackDispatch("m1", id);
 
-        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), NullLogger<RunnerEventSink>.Instance);
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
         await sink.HandleAsync(new ExitedEvent(id, ExitCode: 0, clock.GetUtcNow()));
 
         Assert.Equal(TaskState.Verifying, await StateAsync(clock, id));
@@ -364,7 +364,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         var taskId = await SeedWorkingTaskAsync(clock, team, "m1");
         var registry = LiveMachine(clock, "m1", taskId);
 
-        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), NullLogger<RunnerEventSink>.Instance);
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
         await sink.HandleAsync(new AuthFailedEvent(
             taskId, Operation: "clone", Target: "github.com/acme/repo",
             ErrorCode: "insufficient_scope", MissingScope: "repo"));
@@ -402,7 +402,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         registry.TrackDispatch("m1", taskId); // stamped at t0
         clock.Advance(TimeSpan.FromSeconds(30));
 
-        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), NullLogger<RunnerEventSink>.Instance);
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
         await sink.HandleAsync(new SubagentSpawnedEvent(taskId, AgentId: "sub-1", ParentAgentId: "root", clock.GetUtcNow()));
 
         await using var db = pg.NewContext();

@@ -24,6 +24,9 @@ public static class RunnerWire
     public const string Kill = "kill";
     public const string OpenForward = "open-forward";
     public const string ReadTranscript = "read-transcript";
+    public const string StartProcess = "start-process";
+    public const string StopProcess = "stop-process";
+    public const string WriteProcess = "write-process";
 
     public const string Started = "started";
     public const string SessionStarted = "session-started";
@@ -36,6 +39,9 @@ public static class RunnerWire
     public const string ForwardClosed = "forward-closed";
     public const string Rebooted = "rebooted";
     public const string TranscriptChunk = "transcript-chunk";
+    public const string ProcessStarted = "process-started";
+    public const string ProcessStopped = "process-stopped";
+    public const string ProcessWritten = "process-written";
 
     /// <summary>The machine-heartbeat envelope discriminator (§10 — docketd's own timer).
     /// Not part of the frozen command/event enum; the heartbeat is the runner's
@@ -44,14 +50,14 @@ public static class RunnerWire
 
     /// <summary>The closed outbound (control plane → runner) vocabulary.</summary>
     public static IReadOnlySet<string> Commands { get; } =
-        new HashSet<string>(StringComparer.Ordinal) { Dispatch, Stop, Kill, OpenForward, ReadTranscript };
+        new HashSet<string>(StringComparer.Ordinal) { Dispatch, Stop, Kill, OpenForward, ReadTranscript, StartProcess, StopProcess, WriteProcess };
 
     /// <summary>The closed inbound (runner → control plane) vocabulary.</summary>
     public static IReadOnlySet<string> Events { get; } =
         new HashSet<string>(StringComparer.Ordinal)
         {
             Started, SessionStarted, Alive, ToolCall, SubagentSpawned, Exited, AuthFailed, ForwardOpened, ForwardClosed, Rebooted,
-            TranscriptChunk,
+            TranscriptChunk, ProcessStarted, ProcessStopped, ProcessWritten,
         };
 
     public static bool IsKnownCommand(string? type) => type is not null && Commands.Contains(type);
@@ -81,6 +87,9 @@ public static class RunnerWire
             KillCommand k => (ToObject(k, RunnerWireContext.Default.KillCommand), Kill),
             OpenForwardCommand o => (ToObject(o, RunnerWireContext.Default.OpenForwardCommand), OpenForward),
             ReadTranscriptCommand r => (ToObject(r, RunnerWireContext.Default.ReadTranscriptCommand), ReadTranscript),
+            StartProcessCommand sp => (ToObject(sp, RunnerWireContext.Default.StartProcessCommand), StartProcess),
+            StopProcessCommand tp => (ToObject(tp, RunnerWireContext.Default.StopProcessCommand), StopProcess),
+            WriteProcessCommand wp => (ToObject(wp, RunnerWireContext.Default.WriteProcessCommand), WriteProcess),
             // Unreachable: the hierarchy is closed (§10). Explicit so a future
             // member cannot silently serialize as a typeless envelope.
             _ => throw new ArgumentOutOfRangeException(
@@ -108,6 +117,9 @@ public static class RunnerWire
             ForwardClosedEvent e => (ToObject(e, RunnerWireContext.Default.ForwardClosedEvent), ForwardClosed),
             RebootedEvent e => (ToObject(e, RunnerWireContext.Default.RebootedEvent), Rebooted),
             TranscriptChunkEvent e => (ToObject(e, RunnerWireContext.Default.TranscriptChunkEvent), TranscriptChunk),
+            ProcessStartedEvent e => (ToObject(e, RunnerWireContext.Default.ProcessStartedEvent), ProcessStarted),
+            ProcessStoppedEvent e => (ToObject(e, RunnerWireContext.Default.ProcessStoppedEvent), ProcessStopped),
+            ProcessWrittenEvent e => (ToObject(e, RunnerWireContext.Default.ProcessWrittenEvent), ProcessWritten),
             _ => throw new ArgumentOutOfRangeException(
                 nameof(evt), evt.GetType().Name, "outside the runner event vocabulary"),
         };
@@ -156,6 +168,9 @@ public static class RunnerWire
                 Kill => doc.RootElement.Deserialize(RunnerWireContext.Default.KillCommand),
                 OpenForward => doc.RootElement.Deserialize(RunnerWireContext.Default.OpenForwardCommand),
                 ReadTranscript => doc.RootElement.Deserialize(RunnerWireContext.Default.ReadTranscriptCommand),
+                StartProcess => doc.RootElement.Deserialize(RunnerWireContext.Default.StartProcessCommand),
+                StopProcess => doc.RootElement.Deserialize(RunnerWireContext.Default.StopProcessCommand),
+                WriteProcess => doc.RootElement.Deserialize(RunnerWireContext.Default.WriteProcessCommand),
                 _ => null, // §10: reject anything outside the vocabulary.
             };
             if (command is not null && TryReadString(doc.RootElement, TraceParent, out var tp))
@@ -187,6 +202,9 @@ public static class RunnerWire
                 ForwardClosed => doc.RootElement.Deserialize(RunnerWireContext.Default.ForwardClosedEvent),
                 Rebooted => doc.RootElement.Deserialize(RunnerWireContext.Default.RebootedEvent),
                 TranscriptChunk => doc.RootElement.Deserialize(RunnerWireContext.Default.TranscriptChunkEvent),
+                ProcessStarted => doc.RootElement.Deserialize(RunnerWireContext.Default.ProcessStartedEvent),
+                ProcessStopped => doc.RootElement.Deserialize(RunnerWireContext.Default.ProcessStoppedEvent),
+                ProcessWritten => doc.RootElement.Deserialize(RunnerWireContext.Default.ProcessWrittenEvent),
                 _ => null,
             };
         }

@@ -65,6 +65,18 @@ The general rule: **each concurrent task gets its own mutable copy; anything sha
 
 If you assign ports, assign distinct ones. Two agents on one machine binding the same port produces a loud failure, which is recoverable but wastes a dispatch.
 
+## Cleaning up a machine before you close out
+
+A worker can start background processes that **outlive its task** — builds, dev servers, watchers (§10 `start_process`). Nothing reclaims them when the task finishes: not completion, not cancellation. They run until someone stops them or the machine's `docketd` restarts.
+
+That is deliberate, and it makes cleanup your job. **Before you close out work on a machine, send a continuation task to tidy up.** A continuation resumes the same session, so the agent still remembers what it started:
+
+> `create_task(continues: <the task that did the work>, description: "Stop the background processes you started (stop_process), remove the worktree you created, and report what you cleaned up.")`
+
+Two reasons a continuation is the right shape rather than a fresh task. The agent that started the processes knows their names without being told, and it knows what it left in the workspace. A cold worker would have to be handed both, and would get it wrong.
+
+Check the Machine Group view (`/dashboard/machines`) if you are unsure what is still running — it lists every process a machine holds and which task started it. A machine accumulating processes across closed-out work is the visible symptom of a cleanup continuation nobody sent.
+
 ## Choosing a profile
 
 Machines may declare more than one runner profile — a second harness, a restricted permission posture, a pinned version being canaried. Tasks carry an optional `profile` name, matched exactly.

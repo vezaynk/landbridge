@@ -165,6 +165,15 @@ public sealed class RunnerDaemon
             case ReadTranscriptCommand read:
                 return HandleReadTranscript(read);
 
+            case StartProcessCommand start:
+                return await HandleStartProcessAsync(start, ct);
+
+            case StopProcessCommand stop2:
+                return await HandleStopProcessAsync(stop2, ct);
+
+            case WriteProcessCommand write:
+                return await HandleWriteProcessAsync(write, ct);
+
             default:
                 // Unreachable: the hierarchy is closed (§10). Kept explicit so a
                 // future member can't be silently ignored.
@@ -189,6 +198,77 @@ public sealed class RunnerDaemon
             default:
                 return new CommandOutcome.Acknowledged($"open-forward {forward.ForwardId} (no role; ignored)");
         }
+    }
+
+    /// <summary>
+    /// §10 agent-started processes. The profile gate is enforced <b>here on the machine</b>,
+    /// not on the plane — a profile's meaning is machine-local data the control plane never
+    /// learns (§10), so the plane relays and the runner decides.
+    /// </summary>
+    private async Task<CommandOutcome> HandleStartProcessAsync(StartProcessCommand start, CancellationToken ct)
+    {
+        var profile = _supervisor.ProfileFor(start.Task) is { } declared ? _config.Resolve(declared) : null;
+
+        // No supervised task means no profile to consult, so no policy can be applied. Refuse
+        // rather than guess.
+        if (_services is null || profile is null)
+        {
+            _ring.Enqueue(new ProcessStartedEvent(
+                start.Task, start.RequestId, start.Name, Started: false,
+                Refusal: ProcessRefusals.ProfileNotPermitted));
+            return new CommandOutcome.Acknowledged(
+                $"start-process {start.Name} refused (no supervised task on this machine)");
+        }
+
+        var outcome = await _services.StartProcessAsync(start, profile, ct);
+        _ring.Enqueue(outcome switch
+        {
+            ProcessOutcome.StartedOk ok => new ProcessStartedEvent(
+                start.Task, start.RequestId, start.Name, true, null, ok.LogPath),
+            ProcessOutcome.RefusedOutcome no => new ProcessStartedEvent(
+                start.Task, start.RequestId, start.Name, false, no.Refusal),
+            _ => throw new ArgumentOutOfRangeException(nameof(outcome)),
+        });
+        return new CommandOutcome.Acknowledged($"start-process {start.Name}");
+    }
+
+    /// <summary>
+    /// §10: stop a process. Machine-scoped on purpose — the worker sent to clean up is a
+    /// continuation with a different task id, so a task-scoped stop would be unusable by the
+    /// very agent dispatched to tidy.
+    /// </summary>
+    private async Task<CommandOutcome> HandleStopProcessAsync(StopProcessCommand stop, CancellationToken ct)
+    {
+        var outcome = _services is null
+            ? ProcessOutcome.Refused(ProcessRefusals.NoSuchProcess, "this machine supervises no processes")
+            : await _services.StopProcessAsync(stop.Name, ct);
+        _ring.Enqueue(outcome switch
+        {
+            ProcessOutcome.StoppedOk ok => new ProcessStoppedEvent(
+                stop.Task, stop.RequestId, stop.Name, true, ok.ExitCode),
+            ProcessOutcome.RefusedOutcome no => new ProcessStoppedEvent(
+                stop.Task, stop.RequestId, stop.Name, false, null, no.Refusal),
+            _ => throw new ArgumentOutOfRangeException(nameof(outcome)),
+        });
+        return new CommandOutcome.Acknowledged($"stop-process {stop.Name}");
+    }
+
+    /// <summary>§10: write to a process's stdin — the same held-open pipe a message-mode worker
+    /// stop injects a turn into.</summary>
+    private async Task<CommandOutcome> HandleWriteProcessAsync(WriteProcessCommand write, CancellationToken ct)
+    {
+        var outcome = _services is null
+            ? ProcessOutcome.Refused(ProcessRefusals.NoSuchProcess, "this machine supervises no processes")
+            : await _services.WriteProcessAsync(write.Name, write.Data, write.AppendNewline, ct);
+        _ring.Enqueue(outcome switch
+        {
+            ProcessOutcome.WrittenOk ok => new ProcessWrittenEvent(
+                write.Task, write.RequestId, write.Name, true, ok.Bytes),
+            ProcessOutcome.RefusedOutcome no => new ProcessWrittenEvent(
+                write.Task, write.RequestId, write.Name, false, 0, no.Refusal),
+            _ => throw new ArgumentOutOfRangeException(nameof(outcome)),
+        });
+        return new CommandOutcome.Acknowledged($"write-process {write.Name}");
     }
 
     /// <summary>
@@ -280,7 +360,10 @@ public sealed class RunnerDaemon
             // §10/§12: the machine's own view of its declared services, reported for the
             // Machine Group view. Null when this machine declares none, which is a
             // different answer from an empty list.
-            Services: _services?.Report());
+            Services: _services?.Report(),
+            // §10/§12: agent-started processes ride a separate list from services, so a reader
+            // is never left working out which kind they are looking at.
+            Processes: _services?.ReportProcesses());
         // Best-effort, fire-and-forget: never queue a command against the runner (§10).
         _ = _channel.HeartbeatAsync(heartbeat, _cts.Token);
     }
@@ -297,8 +380,8 @@ public sealed class RunnerDaemon
     /// catches a wedged one.
     ///
     /// <para>Goes through the ring like any other event, so it is ordered with them,
-    /// subject to the same drop-oldest bound, and needs no new wire member:
-    /// <c>alive</c> has been in the frozen vocabulary all along with no producer.</para>
+    /// subject to the same drop-oldest bound, and needed no new wire member: <c>alive</c> sat
+    /// in the frozen vocabulary with no producer until this method became one.</para>
     /// </summary>
     private void EmitAliveEvents()
     {

@@ -42,13 +42,17 @@ public sealed record RunnerConfig(
     /// but are consumed nowhere, so they behave exactly as
     /// <see cref="EventsSource.None"/>.
     ///
-    /// <para>This is <b>not</b> cosmetic degradation. Plane-side per-task activity
-    /// is refreshed only by an inbound event, and a non-terminal profile emits one
-    /// event ever — <c>started</c>, at spawn. The plane requeues a working task
-    /// whose activity is older than its liveness window, so such a profile loses
-    /// and redispatches every task that outlives that window, without a cap. The
-    /// spec's "degrades to process-alive" fallback is not wired, so nothing catches
-    /// this — hence a loud startup line rather than silence.</para>
+    /// <para>What this costs, stated accurately: such a profile has <b>no progress
+    /// signal</b>. It still emits <c>started</c>, <c>exited</c>, and the periodic
+    /// <c>alive</c> — <c>EmitAliveEvents</c> is not gated on the events source — so the
+    /// short aliveness clock is satisfied and a task is not requeued merely for being
+    /// quiet. What it loses is <c>tool-call</c>, and therefore the progress clock: the
+    /// §10 no-progress ceiling (30 minutes by default) is the only thing governing such a
+    /// task, so work that legitimately runs longer than that without a tool call is
+    /// requeued, and a wedged agent cannot be told from a busy one in the meantime.
+    /// Worth a loud startup line, but not the catastrophe an earlier version of this
+    /// comment described — that text predated the <c>alive</c> emitter this repo now has
+    /// (see <c>DefaultNoProgressCeiling</c> and the process-alive half in §10).</para>
     ///
     /// <para>Returned rather than logged so it is testable; the daemon prints these
     /// alongside the <c>max_cpu_load is inert</c> notice.</para>
@@ -71,15 +75,16 @@ public sealed record RunnerConfig(
                 ? $"events.source '{declared}' is not implemented and behaves as 'none'"
                 : "events.source is 'none'";
             warnings.Add(
-                $"docketd: profile '{name}': {unimplemented} — no tool-call events, " +
-                "so per-task liveness refreshes only once at spawn.");
+                $"docketd: profile '{name}': {unimplemented} — no tool-call events, so this " +
+                "profile has no progress signal: a hung agent cannot be told from a busy one.");
         }
 
         warnings.Add(
-            "docketd: the control plane requeues a working task with no activity inside its " +
-            "per-task liveness window (60s), so the profiles above will lose and redispatch any " +
-            "task that runs longer than that, repeatedly. Use events.source 'terminal' if the " +
-            "harness can stream structured output on stdout (§10).");
+            "docketd: the periodic alive event still satisfies the short liveness clock, so such a " +
+            "task is not requeued merely for being quiet — but with no progress signal the " +
+            "no-progress ceiling (30 minutes by default) is the only clock governing it, so work " +
+            "that legitimately runs longer than that without a tool call is requeued. Use " +
+            "events.source 'terminal' if the harness can stream structured output on stdout (§10).");
         return warnings;
     }
 
@@ -399,7 +404,12 @@ public sealed record RunnerConfig(
             events,
             telemetry,
             logs,
-            dto.MaxConcurrent);
+            dto.MaxConcurrent,
+            dto.Processes is null
+                ? null
+                : new ProfileProcessesConfig(
+                    dto.Processes.AgentInitiated ?? false,
+                    dto.Processes.Max is { } cap and > 0 ? cap : 8));
     }
 
     private static TEnum ParseEnum<TEnum>(string? raw, TEnum fallback) where TEnum : struct, Enum =>
@@ -446,7 +456,12 @@ public sealed record ProfileConfig(
     EventsConfig Events,
     TelemetryConfig Telemetry,
     LogsConfig Logs,
-    int? MaxConcurrent);
+    int? MaxConcurrent,
+    ProfileProcessesConfig? Processes = null)
+{
+    /// <summary>This profile's agent-process policy; the closed default when unstated.</summary>
+    public ProfileProcessesConfig ProcessPolicy => Processes ?? new ProfileProcessesConfig();
+}
 
 /// <summary>How <c>stop</c> is delivered for this profile (§10). The frozen
 /// vocabulary names the command; the config names the transport.</summary>
@@ -541,6 +556,23 @@ public sealed record LogsConfig(
     long MaxBytes = TranscriptDefaults.MaxBytes,
     int PruneAfterDays = TranscriptDefaults.PruneAfterDays);
 
+/// <summary>
+/// §10 per-profile policy for agent-started processes. <b>Off by default</b>: a worker
+/// starting a background process is a machine capability the operator grants, not a
+/// default. Deliberately gated by profile rather than by an allowlist of permitted
+/// commands — a worker on an open profile can already run a dev server by hand, so
+/// restricting the sanctioned tool below its existing capability would only push agents
+/// back to the <c>setsid</c>/env-scrubbing route the worker skill forbids. A strict
+/// profile with no shell cannot start a service either way, and refuses honestly.
+/// </summary>
+/// <param name="Max">
+/// Resource bound, not an authority control: the gate answers <em>may this task start
+/// processes</em>, this answers <em>how many</em>. Services are already-running load that
+/// back-pressure cannot gate the way it gates dispatch, so an agent looping on
+/// <c>start_process</c> needs a ceiling.
+/// </param>
+public sealed record ProfileProcessesConfig(bool AgentInitiated = false, int Max = 8);
+
 /// <summary>Accepted <c>services[].backend</c> values (§10).</summary>
 public static class ServiceBackends
 {
@@ -559,6 +591,13 @@ public static class ServiceDefaults
 
     /// <summary>First restart delay; doubles up to <see cref="MaxBackoff"/>.</summary>
     public static readonly TimeSpan InitialBackoff = TimeSpan.FromSeconds(1);
+
+    /// <summary>
+    /// How long <c>stop_process</c> waits after closing stdin before taking the tree — the same
+    /// graceful-then-kill shape a message-mode worker stop uses (§10/§11). Long enough for a
+    /// build to flush, short enough that a wedged process cannot stall a cleanup task.
+    /// </summary>
+    public static readonly TimeSpan StopWindDown = TimeSpan.FromSeconds(10);
 }
 
 /// <summary>
@@ -569,9 +608,9 @@ public static class ServiceDefaults
 /// the kill guarantee inside Docket on every OS rather than depending on a system
 /// service manager that macOS and containers may not have.
 ///
-/// <para>Config-declared only in v1. An agent-initiated service would need a worker
-/// tool and a new wire command, plus an answer to who may declare a process that
-/// outlives the task requesting it (§13) — deliberately out of scope.</para>
+/// <para>This record is also reused for an agent-started <b>process</b> (§10
+/// <c>start_process</c>), which differs in policy rather than in shape: never restarted,
+/// declared over the wire, and machine-scoped. See <see cref="ServiceSupervisor"/>.</para>
 /// </summary>
 public sealed record ServiceConfig(
     string Name,

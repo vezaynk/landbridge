@@ -30,6 +30,9 @@ public static class ForwardingServiceCollectionExtensions
         // its rendezvous and relay register here too — the sink and the relay must share
         // exactly one TranscriptWaiters, for the same reason forwards do.
         services.TryAddSingleton<TranscriptWaiters>();
+        // §10 agent-started processes: the request/reply rendezvous for start/stop/write, and
+        // the only place a worker's declaration reaches its machine.
+        services.TryAddSingleton<ProcessControlRelay>();
         services.TryAddSingleton<TranscriptRelayService>();
         return services;
     }

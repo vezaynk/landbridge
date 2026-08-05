@@ -66,6 +66,9 @@ public interface IProcessSupervisor
     /// <summary>Supervised tasks whose process is still alive — the source of the
     /// periodic <c>alive</c> event that carries process-alive to the plane (§10).</summary>
     IReadOnlyCollection<TaskId> LiveTasks { get; }
+
+    /// <summary>The profile a supervised task runs under, or null if not held here (§10).</summary>
+    string? ProfileFor(TaskId task);
 }
 
 /// <summary>One supervised harness process and the per-task state around it.</summary>
@@ -172,6 +175,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
     private readonly OutboundEventRing _ring;
     private readonly TimeProvider _clock;
     private readonly StrayReaper? _taskReaper;
+
     private readonly TranscriptStore? _transcripts;
     private readonly ConcurrentDictionary<TaskId, SupervisedTask> _tasks = new();
     private readonly SpawnerThread _spawner = new();
@@ -218,6 +222,13 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         _tasks.Values.Count(t => string.Equals(t.Profile, profile, StringComparison.Ordinal));
 
     public bool TryGet(TaskId task, out SupervisedTask supervised) => _tasks.TryGetValue(task, out supervised!);
+
+    /// <summary>
+    /// The profile name a supervised task is running under, or null if this machine holds no
+    /// such task. §10 agent-started processes consult it: the policy for what a task may
+    /// start lives on its profile, and only the machine knows which profile that is.
+    /// </summary>
+    public string? ProfileFor(TaskId task) => _tasks.TryGetValue(task, out var t) ? t.Profile : null;
 
     /// <summary>Identity of the thread that executed a spawn's <c>Process.Start</c>.</summary>
     internal readonly record struct SpawnThreadObservation(int ManagedThreadId, bool IsThreadPoolThread);
