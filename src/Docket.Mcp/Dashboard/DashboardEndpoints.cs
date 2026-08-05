@@ -15,7 +15,7 @@ namespace Docket.Mcp.Dashboard;
 /// instead of tripping the MCP challenge. The one static asset (the stylesheet) and
 /// the login/logout endpoints are deliberately open.
 ///
-/// A thin transport shell, in the house style of <see cref="VerifierEndpoints"/>:
+/// A thin transport shell, in the house style of <see cref="EnrollmentEndpoints"/>:
 /// all reads live in <see cref="DashboardQueries"/>, all HTML in
 /// <see cref="DashboardRenderer"/>; the handlers only resolve the caller, negotiate
 /// the representation, and map to an <see cref="IResult"/>.

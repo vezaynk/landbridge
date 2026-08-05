@@ -24,9 +24,10 @@ namespace Docket.ControlPlane.Auth;
 /// <para>The mint is also where §9 check 10's <b>forward rate limit</b> is enforced, since a
 /// grant is the one thing no forward can happen without and the plane is the only place the
 /// limit holds without a live relay. Check 10's other half — a Team <em>byte</em> allowance —
-/// is not implemented: the relay moves opaque bytes and reports no counters to the plane, so
-/// there is no measured volume to enforce on (see §9.10 and the deferred seam in
-/// <c>ForwardEntry.PumpAsync</c>).</para>
+/// is measured but never enforced: the relay counts bytes per forward and reports them, and
+/// the plane attributes them per Team (<see cref="TeamForwardUsageService"/>, §9.10). Nothing
+/// is checked against that total, because §8.3 forbids severing an established splice
+/// mid-flight, which leaves what a reached ceiling should actually do unresolved.</para>
 /// </summary>
 public sealed class RelayGrantService(
     DocketDbContext db, TimeProvider clock, int? forwardsPerWindow = null, TimeSpan? forwardWindow = null)

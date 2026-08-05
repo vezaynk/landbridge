@@ -314,7 +314,10 @@ internal static class DashboardRenderer
         }
         sb.Append("</section>");
 
-        // Two §12 rows that have no source yet — shown honestly, never omitted.
+        // Two §12 rows this view does not fill — shown honestly, never omitted. Only
+        // permission requests genuinely have no source: auth failures are persisted as
+        // task event rows (#50) and render on the event log, so the copy below is stale
+        // and this panel is a rendering gap rather than a missing column.
         sb.Append("<section><h2>Auth failures</h2>");
         sb.Append(Empty("Not recorded: the runner reports auth failures but the control plane only logs them today (§11)."));
         sb.Append("</section>");
