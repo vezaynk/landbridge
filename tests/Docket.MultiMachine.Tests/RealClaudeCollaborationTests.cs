@@ -489,6 +489,13 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
             "the real claude producer never registered its service.\n"
             + await rig.RealWorkerDiagnosticsAsync(producer, ct));
 
+        // Pin the cross-machine claim HERE, while it is true, rather than at the end. A
+        // producer whose turn has ended requeues (§10) and the next steered dispatch pass can
+        // land it anywhere — so a late check can read "B" for a service that really was served
+        // from A, or worse pass while both ends quietly collapsed onto one machine.
+        Assert.Equal("A", rig.MachineRanOn(producer));
+        Assert.Equal(TaskState.Working, await rig.StateAsync(producer, ct));
+
         // Consumer on B: a different machine, a different agent, told only the service name.
         var consumer = await rig.CreateTaskAsync(FetchDescription(serviceName), ct);
         Assert.True(
@@ -499,7 +506,6 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
 
         // Only A's process could have produced this, and only the relay could have carried it.
         Assert.Contains(body, await rig.ResultReferenceAsync(consumer, ct));
-        Assert.Equal("A", rig.MachineRanOn(producer));
         Assert.Equal("B", rig.MachineRanOn(consumer));
     }
 
@@ -677,9 +683,11 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
 
           2. Call register_service exactly once with name {{serviceName}} and port {{port}}.
 
-          3. Run this shell command, which keeps your turn open while another task uses the
-             service:
-               sleep 100
+          3. Run this shell command:
+               sleep 60
+             Then run that same command again, and keep repeating it until you have run it
+             SIX times in total. This is not busywork: your turn staying open is what keeps
+             the service you just registered reachable by another task.
 
           Do NOT call report_result. Do not create or edit files.
           """;
