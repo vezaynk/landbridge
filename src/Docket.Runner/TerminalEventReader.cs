@@ -30,7 +30,7 @@ namespace Docket.Runner;
 ///   <item><c>block_type_key</c> (<c>type</c>) — discriminator on a content block.</item>
 ///   <item><c>tool_use_block_type</c> (<c>tool_use</c>) — block <c>type</c> value for a tool call.</item>
 ///   <item><c>tool_name_key</c> (<c>name</c>) — property on a tool_use block naming the tool.</item>
-/// </list>
+/// </list></para>
 ///
 /// <para><b>AOT (§10).</b> The stream is parsed with <see cref="JsonDocument"/>, not a
 /// source-gen'd <c>JsonSerializerContext</c> DTO: the mapping seam makes the

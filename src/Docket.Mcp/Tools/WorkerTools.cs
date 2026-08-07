@@ -323,13 +323,6 @@ public sealed record OpenForwardResult(
     [property: JsonPropertyName("forward_id")] string ForwardId,
     [property: JsonPropertyName("expires_at")] DateTimeOffset ExpiresAt);
 
-/// <summary>
-/// What <c>open_preview</c> hands back (spec §8.4): the shareable <see cref="Url"/>
-/// to put in a report, the <see cref="Auth"/> policy (<c>gated</c>|<c>public</c>)
-/// so the worker knows whether a viewer needs an operator session, and
-/// <see cref="ExpiresAt"/> when the preview stops admitting new connections.
-/// snake_case-pinned like <see cref="OpenForwardResult"/>.
-/// </summary>
 /// <summary>What a worker learns from <c>start_process</c> (§10). No port: this is a process
 /// manager, and reachability is §8.2's noun.</summary>
 /// <param name="LogPath">Where the machine captured this run's output. The agent is on that
@@ -344,6 +337,13 @@ public sealed record StartProcessResult(
 /// <see cref="Value"/> is the exit code for a stop, or the bytes accepted for a write.</summary>
 public sealed record ProcessActionResult(bool Ok, string? Refusal, int? Value);
 
+/// <summary>
+/// What <c>open_preview</c> hands back (spec §8.4): the shareable <see cref="Url"/>
+/// to put in a report, the <see cref="Auth"/> policy (<c>gated</c>|<c>public</c>)
+/// so the worker knows whether a viewer needs an operator session, and
+/// <see cref="ExpiresAt"/> when the preview stops admitting new connections.
+/// snake_case-pinned like <see cref="OpenForwardResult"/>.
+/// </summary>
 public sealed record OpenPreviewResult(
     [property: JsonPropertyName("url")] string Url,
     [property: JsonPropertyName("auth")] string Auth,

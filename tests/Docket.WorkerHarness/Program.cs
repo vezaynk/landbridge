@@ -19,7 +19,7 @@ namespace Docket.WorkerHarness;
 /// worker's opening moves are and nothing else.
 ///
 /// It reads the MCP client config <c>docketd</c> injected (§13) — the
-/// <c>--mcp-config</c> path <see cref="ProcessSupervisor"/> substituted into its
+/// <c>--mcp-config</c> path <c>ProcessSupervisor</c> substituted into its
 /// argv, pointing at <c>{work_dir}/mcp.json</c> — connects to the plane with the
 /// dispatched worker token as a bearer credential, and calls <c>get_task</c> to
 /// learn its assignment. The raw <c>get_task</c> response is written to
