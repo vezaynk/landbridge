@@ -169,11 +169,35 @@ public sealed class RunnerEventSink(
             registry.Untrack(e.Task);
     }
 
-    private async Task HandleRebootedAsync(RebootedEvent r, CancellationToken ct)
-    {
+    /// <summary>
+    /// §10 requeue-on-disconnect: the socket dropped, so the machine is gone and
+    /// everything it held requeues — the same fact, and the same reason, as a reboot.
+    ///
+    /// <para>The caller passes the tasks it held rather than letting this look them up,
+    /// because the connection is deliberately unregistered <em>first</em> (#87): the
+    /// requeue below commits a <c>pg_notify</c> that wakes the dispatch loop, and a
+    /// still-registered dying connection would take one of these tasks straight back onto
+    /// its dead socket and burn a second requeue as
+    /// <see cref="LivenessLossReason.AckTimeout"/>. Unregistering first closes that window,
+    /// and <see cref="RunnerConnectionRegistry.Unregister"/> hands back the held set so
+    /// nothing is lost by asking early.</para>
+    /// </summary>
+    public async Task HandleDisconnectAsync(
+        string machineId, IReadOnlyList<TaskId> held, CancellationToken ct = default) =>
+        await RequeueHeldAsync(machineId, held, ct);
+
+    private async Task HandleRebootedAsync(RebootedEvent r, CancellationToken ct) =>
         // §10 runner restart: the runner adopted nothing, so every task it held
-        // requeues against the infrastructure counter (§6).
-        var held = registry.TasksOn(r.MachineId);
+        // requeues against the infrastructure counter (§6). Unlike the disconnect path
+        // the connection is live here — docketd announced itself on a working socket —
+        // so the held set is read from the registry as before.
+        await RequeueHeldAsync(r.MachineId, registry.TasksOn(r.MachineId), ct);
+
+    private async Task RequeueHeldAsync(
+        string machineId, IReadOnlyList<TaskId> held, CancellationToken ct)
+    {
+        if (held.Count == 0)
+            return;
         await WithStoreAsync(async store =>
         {
             foreach (var task in held)
@@ -183,8 +207,12 @@ public sealed class RunnerEventSink(
                     await store.ApplyAsync(task, new LivenessLost(LivenessLossReason.MachineReboot), ct);
             }
         });
+        // A no-op for the disconnect path (the connection, and its tracking with it, is
+        // already gone); the reboot path needs it.
         foreach (var task in held)
             registry.Untrack(task);
+        logger.LogInformation(
+            "requeued {Count} task(s) held by machine {Machine}", held.Count, machineId);
     }
 
     private async Task WithStoreAsync(Func<TaskStore, Task> action)

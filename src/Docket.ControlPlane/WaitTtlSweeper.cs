@@ -142,11 +142,12 @@ public sealed class WaitTtlSweeper : IHostedService
             var task = new TaskId(b.TaskId);
             var machine = _registry.MachineFor(task);
             if (machine is null)
-                // Untracked: the plane no longer holds this task's machine
-                // assignment (e.g. after a control-plane restart drops the
-                // registry — §10 follow-up). Nothing to judge liveness against and
-                // no machine to record for affinity, so leave it for a live plane
-                // that still tracks it, or for the disconnect path to requeue.
+                // Untracked: the plane does not currently hold this task's machine
+                // assignment — the machine is disconnected, or has not reconnected yet
+                // since a plane restart (a reconnect re-adopts blocked tasks too,
+                // DispatchService.RehydrateMachineAsync, #86). Nothing to judge liveness
+                // against and no machine to record for affinity, so leave it for the
+                // sweep that follows re-adoption, or for the disconnect path to requeue.
                 continue;
 
             var lastHeartbeat = _registry.LastHeartbeatFor(machine);
