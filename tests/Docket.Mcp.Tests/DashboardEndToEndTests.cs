@@ -510,10 +510,10 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
     /// and JSON assertions are unambiguous.</summary>
     private const string BlockedQuestion = "I need a read-only credential for staging-pg; who provisions that?";
 
-    // ── (d) Human inbox: question + review appear; empty states render ─────────
+    // ── (d) Human inbox: question, review, park, auth failure; empty state ─────
 
     [SkippableFact]
-    public async Task Inbox_shows_a_question_and_a_review_task_and_renders_empty_states()
+    public async Task Inbox_shows_a_question_a_review_a_park_an_auth_failure_and_an_honest_empty_state()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
@@ -547,6 +547,30 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             await store.ApplyAsync(parkedId, new WaitTtlExpired(new ParkRecord("box-9", null, null, 1)), ct);
         });
 
+        // §11/§12 (#50): an auth failure on a live task is something only a person can
+        // clear — a scope is granted, never retried into existence — so the inbox joins it.
+        // Reported twice, because a retrying worker reports every attempt and the panel is
+        // supposed to collapse them into one entry instead of repeating itself.
+        var teamD = TeamId.New();
+        const string authTarget = "github.com/acme/private-infra";
+        var (authTaskId, authNs, _) = await SeedWorkingTaskWithCallerAsync(teamD, CompletionMode.Lead, ct);
+        await WithStoreAsync(async store =>
+        {
+            await store.RecordAuthFailureAsync(authTaskId, "clone", authTarget, "insufficient_scope", "repo", ct);
+            await store.RecordAuthFailureAsync(authTaskId, "clone", authTarget, "insufficient_scope", "repo", ct);
+        });
+
+        // The same failure on a task that has since gone terminal is history, not an inbox
+        // item: no scope a person grants changes a canceled task. The event log keeps it.
+        var teamE = TeamId.New();
+        const string staleTarget = "github.com/acme/abandoned";
+        var (staleTaskId, _, _) = await SeedWorkingTaskWithCallerAsync(teamE, CompletionMode.Lead, ct);
+        await WithStoreAsync(async store =>
+        {
+            await store.RecordAuthFailureAsync(staleTaskId, "push", staleTarget, "forbidden", null, ct);
+            await store.ApplyAsync(staleTaskId, new Cancel(new HumanSession(), CancelDisposition.Preserve), ct);
+        });
+
         var body = await GetAuthedAsync(app, "/dashboard/inbox", ct);
         Assert.Contains("Open questions", body, StringComparison.Ordinal);
         Assert.Contains(blockedNs, body, StringComparison.Ordinal);
@@ -558,9 +582,22 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         Assert.DoesNotContain("<script>alert(1)</script>", body, StringComparison.Ordinal);
         Assert.Contains(parkedNs, body, StringComparison.Ordinal);
         Assert.Contains(parkedQuestion, body, StringComparison.Ordinal);
-        // Honest empty states for the §12 rows with no data source yet.
+        // §11 auth failures are joined, not disclaimed (#80): the runner's own facts land on
+        // the page, and the "not recorded" copy they were hidden behind is gone.
         Assert.Contains("Auth failures", body, StringComparison.Ordinal);
-        Assert.Contains("Not recorded", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("Not recorded", body, StringComparison.Ordinal);
+        Assert.Contains(authNs, body, StringComparison.Ordinal);
+        Assert.Contains(authTarget, body, StringComparison.Ordinal);
+        Assert.Contains("insufficient_scope", body, StringComparison.Ordinal);
+        // As its own cell, not as a substring of the page's markup: "repo" hides inside
+        // class="report" on this very page, so the assertion has to name the rendered fact.
+        Assert.Contains("<code>repo</code>", body, StringComparison.Ordinal);     // the missing scope
+        // The scope rule: live tasks only. The canceled task's failure is absent from the
+        // inbox but still on the event log, which is the full history.
+        Assert.DoesNotContain(staleTarget, body, StringComparison.Ordinal);
+        var eventLog = await GetAuthedAsync(app, "/dashboard/events", ct);
+        Assert.Contains(staleTarget, eventLog, StringComparison.Ordinal);
+        // Permission requests have no source at all — still an honest empty state.
         Assert.Contains("Permission requests", body, StringComparison.Ordinal);
         Assert.Contains("Not built yet", body, StringComparison.Ordinal);
 
@@ -576,6 +613,21 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Contains(doc.RootElement.GetProperty("parked").EnumerateArray(),
             p => p.GetProperty("namespace").GetString() == parkedNs
                  && p.GetProperty("question").GetString() == parkedQuestion);
+
+        // The auth failure travels as structured fields, the two reports collapsed into the
+        // one problem they describe — and the canceled task's failure is not here either.
+        var failures = doc.RootElement.GetProperty("authFailures").EnumerateArray().ToList();
+        var authEntries = failures
+            .Where(f => f.GetProperty("namespace").GetString() == authNs)
+            .ToList();
+        var failure = Assert.Single(authEntries);        // both reports, collapsed into one entry
+        Assert.Equal("clone", failure.GetProperty("operation").GetString());
+        Assert.Equal(authTarget, failure.GetProperty("target").GetString());
+        Assert.Equal("insufficient_scope", failure.GetProperty("errorCode").GetString());
+        Assert.Equal("repo", failure.GetProperty("missingScope").GetString());
+        Assert.Equal(2, failure.GetProperty("occurrences").GetInt32());
+        Assert.Equal("Working", failure.GetProperty("state").GetString());
+        Assert.DoesNotContain(failures, f => f.GetProperty("target").GetString() == staleTarget);
 
         await app.StopAsync(ct);
     }

@@ -74,7 +74,7 @@ internal sealed class RelayTestHost : IAsyncDisposable
 
     /// <summary>
     /// Connect a tunnel with the given headers. When the server refuses before
-    /// the upgrade, <see cref="ClientWebSocket.ConnectAsync"/> throws a
+    /// the upgrade, <see cref="ClientWebSocket.ConnectAsync(Uri,CancellationToken)"/> throws a
     /// <see cref="WebSocketException"/>; with <c>CollectHttpResponseDetails</c>
     /// on, the caller can read the refused status off the socket.
     /// </summary>

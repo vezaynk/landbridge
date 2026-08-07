@@ -14,7 +14,7 @@ namespace Docket.Contracts;
 /// Whether this <c>docketd</c> can answer <see cref="ReadTranscriptCommand"/> (§12
 /// serving). Added because the alternative is a dashboard offering a transcript link
 /// that silently times out against an older runner: a runner predating the command
-/// rejects it at the wire boundary (<see cref="RunnerWire.DecodeCommand"/> returns
+/// rejects it at the wire boundary (<see cref="RunnerWire.DecodeCommand(string)"/> returns
 /// null) and simply never replies, which is indistinguishable from a slow machine.
 /// An older heartbeat omits it and decodes to <c>false</c> — no link offered.
 ///
@@ -52,7 +52,7 @@ public sealed record MachineHeartbeat(
 /// What a machine reports about one agent-started <b>process</b> (§10, §12) — deliberately a
 /// separate list from <see cref="ServiceStatus"/> rather than a flag on it, so a reader is
 /// never left working out which kind they are looking at. A service is operator-declared and
-/// restart-supervised; a process is agent-started and never restarted, so <see cref="Exited"/>
+/// restart-supervised; a process is agent-started and never restarted, so <see cref="ServiceState.Exited"/>
 /// is a resting state here rather than a transient one.
 /// </summary>
 /// <param name="DeclaredByTask">Provenance, not ownership: the task whose worker started it.

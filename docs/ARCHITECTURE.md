@@ -294,15 +294,17 @@ readiness/back-pressure, heartbeat age, running tasks with owning Team), the
 **Team view** (tasks by state, registered services, open input requests, parks per
 task, whether a Lead is attached — doubles as the §4 reattachment surface), and
 the **human inbox** (everything waiting on a person: open questions, tasks
-awaiting review, parked tasks). Lead takeovers, machine reboots, and evictions
-land in the event log.
+awaiting review, parked tasks, and the auth failures still blocking a live task).
+Lead takeovers, machine reboots, and evictions land in the event log.
 
 Views render as a plain server-rendered web dashboard (spec §12: "a plain web
 dashboard first"); MCP Apps are not built. Most of §12's data points now have a
 source: a Team's committed budget and its measured relay byte burn are both surfaced
 (§9.9/§9.10), and the derived-telemetry events — auth failures, subagent spawns, and
 the typed input-request kind — are persisted as task event rows and render structured
-in the event log. What genuinely has no source is **permission requests** and the
+in the event log, with the auth failures on live tasks also joined into the inbox
+(the log is history; the inbox is what needs a person). What genuinely has no source
+is **permission requests** and the
 **subagent tree nested under a machine**, which render as honest empty states rather
 than fabricated numbers. Cross-process tracing is real: the host exports
 OpenTelemetry (traces/metrics/logs via `Docket.ServiceDefaults`), and a stored

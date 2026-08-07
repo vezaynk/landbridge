@@ -476,7 +476,7 @@ public enum StopMode { Message, Signal }
 
 /// <summary>
 /// §11: how to resume a parked task's transcript (directory-scoped). When a
-/// dispatch carries a <see cref="DispatchCommand.ResumeSessionRef"/> and this
+/// dispatch carries a <see cref="Docket.Contracts.DispatchCommand.ResumeSessionRef"/> and this
 /// profile declares <see cref="Args"/>, the supervisor spawns
 /// <see cref="Args"/> instead of <see cref="ProfileConfig.Spawn"/>, substituting
 /// two placeholders (the same brace syntax as the spawn argv):
