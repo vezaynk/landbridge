@@ -84,7 +84,7 @@ record as plain columns the plane stores and returns but never dereferences:
 |---|---|---|
 | `CompletionCriteria` | the completion bar | the Lead or a human adjudicating (§7, §9 check 4) |
 | `Workspace` | where/how work is isolated, port assignments | the worker's skill (§7) |
-| `ResultReference` | where the finished work lives (a commit/URL) | the Lead reading it before adjudicating (§8.1) |
+| `ResultReference` | where the finished work lives (a commit/URL) | the Lead reading it before adjudicating, via `get_task_report`, and a human on the §12 dashboard (§8.1, §7) |
 | `CompletionProvenance` | who adjudicated a completed task (`lead-session` \| `human`) | the §12 dashboard (§9 check 4) |
 | `ParkRecord{Machine, Directory, HarnessSessionRef, Attempt}` | resume affinity | `docketd` on redispatch (§11) |
 | `TraceContext` | W3C `traceparent` for cross-process tracing | OpenTelemetry, not the domain |

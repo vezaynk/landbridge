@@ -171,7 +171,7 @@ The answer is your Lead's decision on your task, and it is the one input you sho
 
 ## Reporting a result
 
-`report_result` needs a reference to where the work actually is — in the workspace substrate, not pasted into the report.
+`report_result` needs a reference to where the work actually is — in the workspace substrate, not pasted into the report. Your Lead reads that reference when it adjudicates, and it is the one thing you are required to hand over, so make it something that actually resolves: a pushed branch, a commit sha, a PR URL. A reference to work you never committed is worse than useless — it reads as done and isn't.
 
 It also takes an optional `report`: a short in-band summary that flows straight to your Lead. Use it for what you did and verified, pointers to the evidence (which tests you ran and their outcome, a CI link, the files you touched), and any proposals — e.g. "this follow-up should run on profile Y", or "task Z is now unblocked". Keep it a summary: it is capped (16 KB) and **not a substitute for the artifact** — real detail belongs in the workspace behind the reference, and if you go over the cap the report is refused so you move detail there. The report is how your Lead decides whether to accept, so make the verification evidence easy to check.
 
