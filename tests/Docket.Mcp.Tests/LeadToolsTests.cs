@@ -470,6 +470,87 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task Get_task_report_carries_the_infrastructure_account_of_a_requeued_task()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        // Two requeues against a cap of five, then a worker that finally reported: the
+        // report is worth reading AND the task took three machines to get there (§9
+        // check 7), and #91 was that the second fact reached get_team_state but not here.
+        const string report = "ran the suite (green) on the third machine";
+        var taskId = await SeedRequeuedTask(
+            requeueLimit: 5, requeues: 2, LivenessLossReason.MachineReboot, report);
+        var tools = LeadFor(new Principal.Lead(Team));
+
+        var text = await tools.GetTaskReport(taskId.ToString(), CancellationToken.None);
+
+        Assert.Contains("2 of 5 infrastructure requeues", text, StringComparison.Ordinal);
+        Assert.Contains(nameof(LivenessLossReason.MachineReboot), text, StringComparison.Ordinal);
+        Assert.Contains(report, text, StringComparison.Ordinal); // still the report read it was
+        // The account is the plane's own structure, so it sits OUTSIDE the untrusted
+        // fences — a Lead that distrusted these numbers would have nothing left to trust.
+        Assert.EndsWith("instead of dispatching it again.", text, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task Get_task_report_says_the_cap_ended_a_task_it_abandoned()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        // A cap of one, so a single wedge abandons it: no result reference, no report, and
+        // before #91 nothing but two "there is nothing here" lines. The account is the
+        // ONLY answer to "what happened to this task" that exists for it.
+        var taskId = await SeedRequeuedTask(
+            requeueLimit: 1, requeues: 1, LivenessLossReason.NoProgress);
+        var tools = LeadFor(new Principal.Lead(Team));
+
+        var text = await tools.GetTaskReport(taskId.ToString(), CancellationToken.None);
+
+        Assert.Contains("1 of 1 infrastructure requeues", text, StringComparison.Ordinal);
+        Assert.Contains(nameof(LivenessLossReason.NoProgress), text, StringComparison.Ordinal);
+        // Legible as the cap rather than as a cancel someone asked for, and legible as
+        // NOT a verdict on the work (§6 two counters — canceled, never rejected).
+        Assert.Contains("ended by its requeue cap", text, StringComparison.Ordinal);
+        Assert.Contains("canceled and never rejected", text, StringComparison.Ordinal);
+        // And it does not read as a task still waiting to be adjudicated.
+        Assert.Contains("Recovery is a new task", text, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task Get_task_report_stays_silent_about_requeues_on_a_task_that_had_none()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        // The visibility choice (#91): the account appears only when there is one. A "0 of
+        // 5 requeues" line on every report read is noise on a surface §13 keeps
+        // deliberately narrow, and the §12 dashboard shows no badge on a clean task either.
+        var taskId = await SeedReportedTask(Team, "nothing went wrong");
+        var tools = LeadFor(new Principal.Lead(Team));
+
+        var text = await tools.GetTaskReport(taskId.ToString(), CancellationToken.None);
+
+        Assert.DoesNotContain("requeue", text, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("nothing went wrong", text, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task Get_task_report_is_honest_that_an_uncapped_task_has_no_cap()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        // Non-positive limit is the documented opt-out (uncapped, §9 check 7). "3 of 0"
+        // would be nonsense, so the count stands alone and the line says the cap is off —
+        // the same honesty as "reason not recorded" on a pre-column row. It must also not
+        // recite the cap's consequences at a task that has no cap to reach.
+        var taskId = await SeedRequeuedTask(
+            requeueLimit: 0, requeues: 3, LivenessLossReason.LivenessTimeout);
+        var tools = LeadFor(new Principal.Lead(Team));
+
+        var text = await tools.GetTaskReport(taskId.ToString(), CancellationToken.None);
+
+        Assert.Contains("3 infrastructure requeues", text, StringComparison.Ordinal);
+        Assert.Contains("requeue cap is configured off", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("of 0", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("ended by its requeue cap", text, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
     public async Task Get_task_question_returns_the_question_delimited_and_flags_it_unanswered()
     {
         // §11: the Lead's read half. The worker's ask comes back verbatim, delimited as
@@ -624,6 +705,42 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         var created = (StoreResult.Applied)await new TaskStore(db, _clock).CreateAsync(
             new CreateTask(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null, TeamBudgetRemains: true));
         return created.Task.Id;
+    }
+
+    /// <summary>
+    /// Drives a task through <paramref name="requeues"/> infrastructure requeues against a
+    /// cap of <paramref name="requeueLimit"/> (§9 check 7), each one a dispatch the plane
+    /// then declares dead for <paramref name="reason"/>, and optionally lets one more
+    /// worker report <paramref name="report"/> afterwards. The caller picks the count/cap
+    /// pair it wants — requeues past the cap are unreachable, since the requeue that
+    /// reaches it is the one that abandons the task.
+    /// </summary>
+    private async Task<TaskId> SeedRequeuedTask(
+        int requeueLimit, int requeues, LivenessLossReason reason, string? report = null)
+    {
+        await using var db = pg.NewContext();
+        // The cap is stamped onto the row at creation from this store's policy, so only the
+        // creating store needs to know it — nothing on the liveness path reads the config.
+        var store = new TaskStore(db, _clock, policy: new TaskStorePolicy(requeueLimit));
+        var created = (StoreResult.Applied)await store.CreateAsync(
+            new CreateTask(new LeadClaim(Team), Team, "criteria", CompletionMode.Lead, null, TeamBudgetRemains: true));
+        var id = created.Task.Id;
+
+        for (var i = 0; i < requeues; i++)
+        {
+            Assert.IsType<StoreResult.Applied>(
+                await store.DispatchNextAsync(Machine(), WorkerInstanceId.New()));
+            Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(id, new LivenessLost(reason)));
+        }
+
+        if (report is null)
+            return id;
+
+        var instance = WorkerInstanceId.New();
+        Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(Machine(), instance));
+        Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(
+            id, new ReportResult(new WorkerCaller(Team, id, instance), "git:ref", report)));
+        return id;
     }
 
     /// <summary>Drives a review-mode task all the way to verifying via the store.</summary>
