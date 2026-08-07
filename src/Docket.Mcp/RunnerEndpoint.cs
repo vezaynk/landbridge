@@ -70,9 +70,23 @@ public static class RunnerEndpoint
             }
         }
 
-        // Register not-ready with no profiles; the first heartbeat supplies both.
-        registry.Register(machineId, new HashSet<string>(StringComparer.Ordinal), Send);
-        logger.LogInformation("runner connected: machine={Machine}", machineId);
+        // Register not-ready with no profiles; the first heartbeat supplies both. The
+        // registration names THIS connection (#94) — every later call that is about this
+        // socket rather than about the machine presents it, so a connection that has been
+        // replaced cannot act on the registry in its successor's name.
+        var connection = registry.Register(machineId, new HashSet<string>(StringComparer.Ordinal), Send);
+        logger.LogInformation(
+            "runner connected: machine={Machine} connection={Generation}",
+            machineId, connection.Token.Generation);
+        if (connection.SupersededLiveConnection)
+            // Worth saying out loud: the machine held two accepted /runner connections at
+            // once. Benign now (the older one's teardown will touch nothing), but it means a
+            // socket the plane believed live had stopped carrying bytes without closing —
+            // the §17.8 closed-laptop case — and that is an operator fact, not an internal
+            // detail.
+            logger.LogWarning(
+                "runner {Machine} dialed in while an earlier connection was still registered; " +
+                "connection {Generation} supersedes it", machineId, connection.Token.Generation);
 
         try
         {
@@ -85,7 +99,8 @@ public static class RunnerEndpoint
             // reconnect backoff retries the whole handshake.
             await dispatch.RehydrateMachineAsync(machineId, context.RequestAborted);
 
-            await ReceiveLoopAsync(socket, machineId, registry, sink, dispatch, logger, context.RequestAborted);
+            await ReceiveLoopAsync(
+                socket, connection.Token, registry, sink, dispatch, logger, context.RequestAborted);
         }
         catch (OperationCanceledException) { }
         catch (WebSocketException e)
@@ -107,17 +122,35 @@ public static class RunnerEndpoint
             // dispatch here. Unregister returns what the connection held precisely so this
             // order does not lose it — asking the registry afterwards would yield nothing
             // and requeue nothing.
-            var held = registry.Unregister(machineId);
-            await sink.HandleDisconnectAsync(machineId, held, CancellationToken.None);
-            logger.LogInformation("runner disconnected: machine={Machine}", machineId);
+            //
+            // Unregistering by CONNECTION, not by machine (#94). If this socket was already
+            // superseded — a machine reattached while the plane still believed this one live
+            // — then the registry entry belongs to the newer connection, and dropping it
+            // here would requeue a machine's running tasks and leave its live socket
+            // registered nowhere: work abandoned mid-flight on a healthy machine, and a
+            // machine invisible to dispatch until it happened to reconnect again. So the
+            // teardown of a superseded connection touches the registry not at all. The
+            // socket itself is still this endpoint's to close, which the `using` above does.
+            var teardown = registry.Unregister(connection.Token);
+            await sink.HandleDisconnectAsync(machineId, teardown.Held, CancellationToken.None);
+            if (teardown.Unregistered)
+                logger.LogInformation(
+                    "runner disconnected: machine={Machine} connection={Generation}",
+                    machineId, connection.Token.Generation);
+            else
+                logger.LogInformation(
+                    "superseded runner connection closed: machine={Machine} connection={Generation} " +
+                    "(registry untouched; a newer connection holds this machine)",
+                    machineId, connection.Token.Generation);
         }
     }
 
     private static async Task ReceiveLoopAsync(
-        WebSocket socket, string machineId,
+        WebSocket socket, RunnerConnectionRegistry.ConnectionToken connection,
         RunnerConnectionRegistry registry, RunnerEventSink sink, DispatchService dispatch,
         ILogger logger, CancellationToken ct)
     {
+        var machineId = connection.MachineId;
         var buffer = new byte[16 * 1024];
         while (socket.State == WebSocketState.Open && !ct.IsCancellationRequested)
         {
@@ -128,8 +161,11 @@ public static class RunnerEndpoint
             // Heartbeat shares the channel but is not in the event enum (§10).
             if (RunnerWire.DecodeHeartbeat(message) is { } heartbeat)
             {
-                // Keyed by the authenticated machine id, not the self-reported one.
-                registry.ApplyHeartbeat(machineId, heartbeat);
+                // Keyed by the authenticated machine id, not the self-reported one — and by
+                // THIS connection (#94), so a heartbeat still arriving on a socket that has
+                // been superseded cannot steer the live connection's readiness or refresh
+                // its timestamp on behalf of a socket that is no longer carrying anything.
+                registry.ApplyHeartbeat(connection, heartbeat);
                 dispatch.Signal(); // a newly-ready machine can take work now
                 continue;
             }

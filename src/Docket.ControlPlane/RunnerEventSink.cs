@@ -8,8 +8,9 @@ namespace Docket.ControlPlane;
 /// <summary>
 /// Maps inbound runner events (§10) onto the task store and the connection
 /// registry. Liveness signals refresh per-task activity; an <c>exited</c> for a
-/// still-working task is a liveness loss and requeues it; a <c>rebooted</c>
-/// requeues everything that machine held. Authority stays with the state machine
+/// still-working task is a liveness loss and requeues it — unless it is the echo of a
+/// kill the plane itself ordered, which it has already accounted for (#84); a
+/// <c>rebooted</c> requeues everything that machine held. Authority stays with the state machine
 /// — the sink only expresses timer/liveness facts as <see cref="LivenessLost"/>
 /// commands, exactly as §6 says the control plane does.
 ///
@@ -134,6 +135,23 @@ public sealed class RunnerEventSink(
 
     private async Task HandleExitedAsync(ExitedEvent e, CancellationToken ct)
     {
+        // §10, #84: the plane kills the harness of a dispatch it has just requeued, and the
+        // runner reports that death like any other. This is that echo, so there is nothing
+        // to do — the requeue already happened, with the clock that fired as its reason, and
+        // it already untracked the attempt. Treating it as news would instead requeue
+        // whatever attempt is current by now (the wire names only the task, so the event
+        // cannot say which attempt died) and untrack a successor that is running fine —
+        // taking a second requeue off the §9 check 7 cap and leaving the successor with no
+        // clock over it. Consuming the expectation here is what makes the plane's own kill
+        // safe to send at all; see RunnerConnectionRegistry.SendKillAsync.
+        if (registry.ConsumeCommandedExit(e.Task))
+        {
+            logger.LogDebug(
+                "runner exited for task {Task} (code {Code}) is the plane's own kill echoing back",
+                e.Task, e.ExitCode);
+            return;
+        }
+
         TaskState? state = null;
         await WithStoreAsync(async store =>
         {

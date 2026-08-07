@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -63,6 +64,20 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
 
     public async Task StartAsync(CancellationToken ct)
     {
+        await StartPlaneOnlyAsync(ct);
+        await StartDocketdAsync(ct);
+        Note($"fleet up: plane={_planeUrl} machine={MachineId}");
+    }
+
+    /// <summary>
+    /// Everything except <c>docketd</c>: the credentials, the plane, and docketd's config
+    /// written and ready. For the one scenario that needs to hold a <c>/runner</c> connection
+    /// open BEFORE the daemon dials in, so the daemon's connection is the one that supersedes
+    /// (§17.8 "close a laptop and reattach", #94). Every other scenario wants
+    /// <see cref="StartAsync"/>.
+    /// </summary>
+    public async Task StartPlaneOnlyAsync(CancellationToken ct)
+    {
         _http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
         _workRoot = NewTempDir("work");
         // §13/§10: docketd's own state dir must be a temp path. On a box that has ever
@@ -95,8 +110,6 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
         await StartPlaneAsync(ct);
 
         _configPath = WriteDocketdConfig();
-        await StartDocketdAsync(ct);
-        Note($"fleet up: plane={_planeUrl} machine={MachineId}");
     }
 
     private async Task StartPlaneAsync(CancellationToken ct)
@@ -342,6 +355,53 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     /// </summary>
     public bool WorkerStarted(TaskId task) =>
         File.Exists(Path.Combine(_workRoot, task.ToString(), "started"));
+
+    /// <summary>
+    /// The OS pid of the worker process currently running <paramref name="task"/>, from the
+    /// marker the harness writes before its <c>started</c> one, or null until it exists.
+    ///
+    /// <para>The only handle a scenario has on "that process is gone" rather than merely "it
+    /// stopped saying anything": a killed process writes no marker on its way out, and the
+    /// task row records the plane's decision, not the machine's execution of it. Redispatch
+    /// overwrites the marker in place — the work dir is per task, not per attempt — so a
+    /// scenario that wants a particular attempt's pid reads it while that attempt is live.</para>
+    /// </summary>
+    public int? WorkerPid(TaskId task)
+    {
+        try
+        {
+            return int.TryParse(
+                File.ReadAllText(Path.Combine(_workRoot, task.ToString(), "pid")), out var pid)
+                ? pid
+                : null;
+        }
+        catch (Exception e) when (e is IOException or UnauthorizedAccessException)
+        {
+            return null; // not written yet, or caught mid-rename; the caller polls again
+        }
+    }
+
+    /// <summary>
+    /// Dials the plane's real <c>/runner</c> WebSocket with the machine's own credential and
+    /// hands back the socket, without sending anything on it (§10, §13: the token travels in
+    /// the header, as <c>docketd</c>'s own channel sends it).
+    ///
+    /// <para>This is the closest deterministic stand-in for the half-open socket §17.8's
+    /// closed-laptop case produces. A genuinely half-open TCP connection needs packets
+    /// dropped in the network — root-only and unportable — but what the PLANE sees is the
+    /// thing under test: an accepted <c>/runner</c> connection, authenticated as this machine,
+    /// that is registered and then never carries another byte. Sending no heartbeat is what
+    /// makes it faithful as well as convenient: a stale connection reports nothing, so it
+    /// never becomes ready and dispatch never considers it.</para>
+    /// </summary>
+    public async Task<ClientWebSocket> DialRunnerAsync(CancellationToken ct)
+    {
+        var socket = new ClientWebSocket();
+        socket.Options.SetRequestHeader("Authorization", $"Bearer {_machineToken}");
+        await socket.ConnectAsync(new Uri(WsRunnerUrl(_planeUrl)), ct);
+        Note("dialed a second /runner connection for the same machine");
+        return socket;
+    }
 
     /// <summary>
     /// The worker token docketd injected for the CURRENT dispatch of

@@ -128,13 +128,13 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         // Never dispatched: no lease.
         Assert.False(registry.IsLeaseHeld(task));
 
-        registry.Register("m1", Set("default"), (_, _) => Task.CompletedTask);
+        var connection = registry.Register("m1", Set("default"), (_, _) => Task.CompletedTask);
         registry.TrackDispatch("m1", task);
         Assert.True(registry.IsLeaseHeld(task));
 
         // Socket closed: the machine is gone, and its lease with it (§10) — an
         // answered input must not resume the task onto a dead machine.
-        registry.Unregister("m1");
+        registry.Unregister(connection.Token);
         Assert.False(registry.IsLeaseHeld(task));
     }
 
