@@ -111,6 +111,18 @@ public sealed class TaskRow
     public string Description { get; set; } = "";
 
     public string? Workspace { get; set; }
+
+    /// <summary>
+    /// The §8.1 artifact pointer the worker handed over on the working → verifying
+    /// transition — a commit, branch, or URL saying where the finished work lives.
+    /// Opaque: stored verbatim, never dereferenced, never entering <c>Docket.Core</c>
+    /// (§2 principle 1). §6 <b>requires</b> it for that transition while the
+    /// <see cref="WorkerReport"/> beside it stays optional, so it is the one thing every
+    /// task that reached verifying has said about its output. Read back by the Lead's
+    /// <c>get_task_report</c> fetch and the §12 dashboard — the §7 adjudication read
+    /// (#81) — as agent-authored CLAIMS to resolve against reality, never authority.
+    /// Null until the task reaches verifying.
+    /// </summary>
     public string? ResultReference { get; set; }
 
     /// <summary>

@@ -458,6 +458,11 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Contains(completedNs, html, StringComparison.Ordinal);
         Assert.Contains("accepted by lead session", html, StringComparison.Ordinal); // §9.4 provenance rendered
         Assert.Contains(workerReport, html, StringComparison.Ordinal);               // §10 in-band report rendered
+        // §8.1 (#81): the result reference the worker handed over — the artifact pointer a
+        // human adjudicating in review mode rules on — is rendered, as escaped text rather
+        // than a link (the plane never dereferences it).
+        Assert.Contains("git:done", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("href=\"git:done\"", html, StringComparison.Ordinal);
         // §11: the question itself, plus the typed kind that says who can answer it.
         // Both the task row's Q&A disclosure and the open-input-requests table show it.
         Assert.Contains(BlockedQuestion, html, StringComparison.Ordinal);
@@ -497,6 +502,15 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Contains(tasks.EnumerateArray(),
             t => t.GetProperty("namespace").GetString() == completedNs
                  && t.GetProperty("report").GetString() == workerReport);
+        // §8.1 (#81): so does the result reference — the JSON twin was one of the surfaces
+        // that read this column nowhere, so a tool reading it now sees what the page shows.
+        Assert.Contains(tasks.EnumerateArray(),
+            t => t.GetProperty("namespace").GetString() == completedNs
+                 && t.GetProperty("resultReference").GetString() == "git:done");
+        // A task no worker has reported on carries none, rather than an empty string.
+        Assert.Contains(tasks.EnumerateArray(),
+            t => t.GetProperty("namespace").GetString() == workingNs
+                 && t.GetProperty("resultReference").ValueKind == JsonValueKind.Null);
         // §11: so does the input exchange, unanswered here.
         Assert.Contains(tasks.EnumerateArray(),
             t => t.GetProperty("namespace").GetString() == blockedNs

@@ -144,8 +144,7 @@ public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifet
             }
 
             // The reference the harness reported (§10) — persisted by #23; a plain
-            // row read proves report_result's reference crossed real HTTP + MCP and
-            // landed where the Lead reads it before adjudicating.
+            // row read proves report_result's reference crossed real HTTP + MCP.
             const string reportedRef = "docket-worker-harness:done";
             await using (var v = pg.NewContext())
                 Assert.Equal(reportedRef,
@@ -157,6 +156,17 @@ public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifet
             // judgment over a schema-mandated non-agent verdict.
             await using (var lead = await ConnectAsync(new Uri(baseUrl + "/"), leadToken, ct))
             {
+                // #81: and it landed where the Lead actually reads it. The row assertion
+                // above only proves persistence; this is the §7 adjudication read over real
+                // MCP, and until now no tool returned this column at all.
+                var reportRead = await lead.CallToolAsync("get_task_report", new Dictionary<string, object?>
+                {
+                    ["taskId"] = taskId.ToString(),
+                }, cancellationToken: ct);
+                Assert.NotEqual(true, reportRead.IsError);
+                Assert.Contains(reportedRef,
+                    Assert.Single(reportRead.Content.OfType<TextContentBlock>()).Text, StringComparison.Ordinal);
+
                 var verdict = await lead.CallToolAsync("submit_review", new Dictionary<string, object?>
                 {
                     ["taskId"] = taskId.ToString(),

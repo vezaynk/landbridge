@@ -428,12 +428,17 @@ public sealed class TaskStore(
     public async Task<TaskReportView?> GetTaskReportAsync(TeamId team, TaskId task, CancellationToken ct = default) =>
         await db.Tasks.AsNoTracking()
             .Where(t => t.Id == task.Value && t.TeamId == team.Value)
+            // §8.1: the artifact pointer rides along with the prose because this is the
+            // adjudication read (§7) and the two are asymmetric — §6 REQUIRES the
+            // reference for working → verifying while the report is optional, so a task
+            // whose worker wrote no prose still has a reference, and it is then the only
+            // thing the worker said. Verbatim, never dereferenced (#81).
             // §6/§9 check 7: the infrastructure account rides the per-task fetch in full —
             // count, cap, and the last reason — because this is where a Lead asks "what
             // happened to this task", and for a task the cap abandoned it is the ONLY
             // answer: there is no worker report to read when nothing ever finished.
             .Select(t => new TaskReportView(
-                t.Id, t.Namespace, t.WorkerReport,
+                t.Id, t.Namespace, t.WorkerReport, t.ResultReference,
                 t.InfrastructureRequeues, t.InfrastructureRequeueLimit, t.LastRequeueReason))
             .FirstOrDefaultAsync(ct);
 
@@ -692,10 +697,10 @@ public sealed class TaskStore(
         // captures on the working → verifying transition. The engine and
         // TaskRecord stay content-free (the reference never lands on the pure
         // state), and CopyFrom deliberately does not carry it — so a succeeding
-        // ReportResult is the one place the row's ResultReference is written. The
-        // verifier read scope this was written for is gone (§7: completion is
-        // Lead-adjudicated), and no read surface exposes the column today; the
-        // worker's in-band report below is what a Lead actually reads.
+        // ReportResult is the one place the row's ResultReference is written. It is
+        // read back by the Lead's per-task get_task_report fetch and the §12
+        // dashboard (#81) — the §7 adjudication read — alongside the worker's
+        // optional in-band report below.
         if (command is ReportResult reported)
         {
             row.ResultReference = reported.ResultReference;

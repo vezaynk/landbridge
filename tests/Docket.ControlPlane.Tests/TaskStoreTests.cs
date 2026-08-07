@@ -136,6 +136,10 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         await using var v = pg.NewContext();
         Assert.Equal("git:branch/result-42",
             (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value)).ResultReference);
+        // #81: and the read surface actually returns it. Asserting only the raw row is what
+        // let this column go write-only — the Lead's per-task fetch is the §7 read.
+        Assert.Equal("git:branch/result-42",
+            (await NewStore(v).GetTaskReportAsync(Team, id))!.ResultReference);
     }
 
     [SkippableFact]
@@ -193,6 +197,10 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         var fetched = await vstore.GetTaskReportAsync(Team, id);
         Assert.NotNull(fetched);
         Assert.Null(fetched!.Report);
+        // #81, the asymmetry that makes the reference worth surfacing: §6 REQUIRED it for
+        // this transition while the report was optional, so on a task like this one it is
+        // the only thing the worker said — and the Lead still has to adjudicate.
+        Assert.Equal("git:ref", fetched.ResultReference);
     }
 
     [SkippableFact]
