@@ -16,7 +16,7 @@ namespace Docket.Chaos.Tests;
 /// <summary>
 /// The §17.8 chaos rig: a real control plane and a real <c>docketd</c> as separate
 /// OS processes over a real Postgres, with real worker binaries underneath. Nothing
-/// here is a seam — where <see cref="Docket.MultiMachine.Tests"/>' FleetRig stands in
+/// here is a seam — where <c>Docket.MultiMachine.Tests</c>' FleetRig stands in
 /// for the §10 socket with an in-process delegate, this dials the actual
 /// <c>/runner</c> WebSocket, so the processes can be SIGKILLed and restarted the way
 /// §17.8 asks ("kill a runner mid-task", "SIGKILL docketd and restart it").

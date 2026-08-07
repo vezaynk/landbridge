@@ -18,7 +18,7 @@ namespace Docket.ControlPlane;
 /// too — so the resume prompt stays generic config and the content comes over the
 /// authenticated MCP call.</para>
 ///
-/// The property names are pinned to snake_case with <see cref="JsonPropertyName"/>
+/// The property names are pinned to snake_case with <see cref="JsonPropertyNameAttribute"/>
 /// so the wire shape is stable regardless of the MCP serializer's naming policy —
 /// the shape a worker harness parses. This is content the worker consumes, never
 /// state the engine interprets.

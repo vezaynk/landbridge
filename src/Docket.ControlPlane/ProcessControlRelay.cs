@@ -199,8 +199,6 @@ public sealed class ProcessControlRelay(RunnerConnectionRegistry registry)
 /// </summary>
 public sealed record ProcessStartOutcome(bool Started, string? LogPath, string? Refusal);
 
-/// <summary>What a worker learns from <c>stop_process</c> or <c>write_process</c>.
-/// <see cref="Value"/> is the exit code for a stop, or the byte count for a write.</summary>
 /// <summary>
 /// One thing running on a machine (§10). <see cref="Kind"/> is <c>service</c> (operator-declared,
 /// restart-supervised, not an agent's to stop) or <c>process</c> (agent-started, never restarted).
@@ -212,4 +210,6 @@ public sealed record RunningThing(
     string Name, string Kind, string State, int? Port,
     DateTimeOffset? StartedAt, int? ExitCode, DateTimeOffset? EndedAt, bool StdinOpen);
 
+/// <summary>What a worker learns from <c>stop_process</c> or <c>write_process</c>.
+/// <see cref="Value"/> is the exit code for a stop, or the byte count for a write.</summary>
 public sealed record ProcessControlOutcome(bool Ok, string? Refusal, int? Value);

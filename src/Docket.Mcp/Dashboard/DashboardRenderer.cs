@@ -464,11 +464,6 @@ internal static class DashboardRenderer
         return Page("Sign in", "", sb.ToString(), autoRefresh: false);
     }
 
-    /// <summary>
-    /// The 'Create preview' control on the Team view's registered-services section
-    /// (§12 mint, §8.4). Posts to <c>/dashboard/preview</c>; the service option value
-    /// is <c>{taskId}:{name}</c> so the mapping binds the exact owning task.
-    /// </summary>
     // ── Budget (§9.9) ─────────────────────────────────────────────────────────
 
     /// <summary>A USD amount for display — trimmed of noise decimals, invariant so the
@@ -659,6 +654,11 @@ internal static class DashboardRenderer
             "through <code>get_team_state</code>.</p></section>",
             autoRefresh: false);
 
+    /// <summary>
+    /// The 'Create preview' control on the Team view's registered-services section
+    /// (§12 mint, §8.4). Posts to <c>/dashboard/preview</c>; the service option value
+    /// is <c>{taskId}:{name}</c> so the mapping binds the exact owning task.
+    /// </summary>
     private static string PreviewMintForm(TeamDetail team)
     {
         var sb = new StringBuilder();
@@ -682,7 +682,7 @@ internal static class DashboardRenderer
     /// <summary>
     /// The worker's in-band report (§10), rendered verbatim-escaped behind a
     /// disclosure so the task table stays compact. It is agent-authored text (§13):
-    /// escaped through <see cref="E"/> and never interpreted, only shown.
+    /// escaped through <see cref="E(string)"/> and never interpreted, only shown.
     /// </summary>
     /// <summary>
     /// The §12 transcript link, offered only for a terminal task. A task that can still run
@@ -703,7 +703,7 @@ internal static class DashboardRenderer
     /// <summary>
     /// A task's input exchange (§11) behind a disclosure: what the worker asked and what
     /// it was answered. Both are agent- and human-authored free text on a human page, so
-    /// both go through <see cref="E"/> verbatim — never rendered as markup (§12/§13).
+    /// both go through <see cref="E(string)"/> verbatim — never rendered as markup (§12/§13).
     /// An open question shows as unanswered, which is the actionable state.
     /// </summary>
     private static string ExchangeCell(TeamTaskView t)
@@ -864,7 +864,7 @@ internal static class DashboardRenderer
     /// The event's structured detail (§10/§12, #50). The derived-telemetry kinds
     /// render their own facts — the typed input-request kind, the auth-failure
     /// operation/target/code/scope, the subagent lineage — and a plain transition
-    /// falls back to its effect-name detail. All values pass through <see cref="E"/>.
+    /// falls back to its effect-name detail. All values pass through <see cref="E(string)"/>.
     /// </summary>
     private static string EventDetail(DashboardEvent e)
     {
