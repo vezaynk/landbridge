@@ -4,7 +4,7 @@ namespace Docket.Mcp.Dashboard;
 
 /// <summary>
 /// The dashboard's own caller-resolution step (§12 human surface), kept out of the
-/// <see cref="DocketAuthenticationHandler"/> so the browser path never trips the
+/// <see cref="Docket.Mcp.Auth.DocketAuthenticationHandler"/> so the browser path never trips the
 /// MCP RFC-9728 challenge. A dashboard request authenticates from <b>either</b> an
 /// <c>Authorization: Bearer</c> header (a Lead consuming the JSON twin with its
 /// token) <b>or</b> the <c>docket_session</c> HttpOnly cookie (a human in a
