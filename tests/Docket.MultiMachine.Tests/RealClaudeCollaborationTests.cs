@@ -1,5 +1,7 @@
+using Docket.Contracts;
 using Docket.ControlPlane.Tests;
 using Docket.Core;
+using Docket.Runner;
 
 namespace Docket.MultiMachine.Tests;
 
@@ -15,10 +17,12 @@ namespace Docket.MultiMachine.Tests;
 /// would (the recipe proven by the S2 operator spike, 2026-07-29).
 ///
 /// <para><b>Opt-in, token-spending, and deliberately kept out of the default suite.</b>
-/// The real-worker facts SKIP cleanly unless an Anthropic key is present in the
+/// The real-worker facts SKIP cleanly unless the run opted in — an Anthropic key in the
 /// environment (<c>ANTHROPIC_API_KEY</c>, or <c>ANTHROPIC_KEY</c> which the opt-in CI job
-/// maps to it) AND the <c>claude</c> CLI resolves — so a normal push/PR run, which never
-/// injects the secret, spends zero tokens. The dedicated CI job (see
+/// maps to it), or <c>DOCKET_REAL_CLAUDE=1</c> on a machine whose CLI is already logged in
+/// — AND the <c>claude</c> CLI resolves; so a normal push/PR run, which does neither,
+/// spends zero tokens. See <see cref="RequireRealClaude"/> for why the two paths are not
+/// interchangeable. The dedicated CI job (see
 /// <c>.github/workflows/ci.yml</c>) sets the key and runs <em>only</em> this trait. Kept
 /// tiny and turn-capped (<c>--model haiku</c>, small <c>--max-turns</c>) and tolerant of a
 /// single flaked worker turn (bounded redispatch) so a full run costs a few cents and a
@@ -55,6 +59,21 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         "to report. Your ONLY other action is to call the docket report_result tool once, with " +
         "that exact string as resultReference. Do not write files, do not explain, do not ask " +
         "questions. Two tool calls total: get_task, then report_result.";
+
+    /// <summary>
+    /// The prompt for scenarios whose description asks for more than an echo (§7: the
+    /// specifics belong in the description, and the profile prompt must not contradict them).
+    /// <see cref="WorkerPrompt"/> cannot be reused there — it pins the worker to
+    /// "two tool calls total: get_task, then report_result", and a worker that obeys the prompt
+    /// over its assignment skips the very tool the scenario is about, then cheerfully reports
+    /// success. That is not a hypothetical: it is what a real haiku worker did.
+    /// </summary>
+    private const string StepwiseWorkerPrompt =
+        "You are a Docket worker agent. Your FIRST action must be to call the docket get_task " +
+        "tool to read your assignment. Its description lists numbered steps: carry them out in " +
+        "order, exactly as written, using the tools it names. Do not add steps, do not skip " +
+        "steps, and do not substitute one tool for another. Do not write or edit files unless a " +
+        "step tells you to. Do not explain and do not ask questions.";
 
     public async Task InitializeAsync()
     {
@@ -176,6 +195,314 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         Assert.Contains("ring[A]", diagnostics);            // per-machine ring drop counters
     }
 
+    // ── §11 session continuity: park → resume, proven by a memory-only nonce ────
+
+    /// <summary>
+    /// The §11 resume crown at the real-harness tier: a REAL <c>claude -p</c> worker is told a
+    /// nonce <b>in its spawn prompt only</b>, blocks on a question and ends its turn; the Lead
+    /// answers; the task is redispatched with <c>--resume &lt;session id&gt;</c>; and the
+    /// resumed agent reports the nonce.
+    ///
+    /// <para><b>Why the nonce proves it.</b> The value never enters the task row — not the
+    /// description, not the completion criteria, not the answer — so <c>get_task</c> cannot
+    /// supply it. It exists in exactly one place, the harness's own transcript, so a worker that
+    /// reports it must have resumed that transcript. The corroborating assertion is the session
+    /// ref: claude keeps its session id across <c>--resume</c>, so a cold start would have
+    /// reported a <em>different</em> id on its <c>system/init</c> and the sink would have stamped
+    /// the new one over the row. An unchanged ref plus the nonce is resume, not re-briefing.</para>
+    ///
+    /// <para>Three profile facts are load-bearing and none of them is decoration:
+    /// <c>events.source: terminal</c> is the only way docketd ever learns a session ref (it is
+    /// read off the stdout <c>system/init</c> line); <c>--output-format stream-json --verbose</c>
+    /// is what makes claude emit that line under <c>-p</c>; and <c>resume.args</c> is what turns
+    /// a ref on the dispatch into an actual <c>--resume</c>. Drop any one and this silently
+    /// becomes a cold start (§11's documented fallback).</para>
+    /// </summary>
+    [SkippableFact]
+    public async Task Real_claude_resumes_its_transcript_after_a_park_and_reports_a_memory_only_nonce()
+    {
+        var claudeBin = RequireRealClaude();
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(15));
+        var ct = cts.Token;
+
+        // The nonce rides the spawn prompt, which the RESUME argv does not repeat — so the
+        // second turn can only get it from the conversation.
+        var nonce = "nonce-" + NewToken();
+        await using var rig = new FleetRig(
+            pg,
+            spawnArgv: StreamingSpawn(claudeBin, RememberThenAskPrompt(nonce), ParkTools),
+            resumeArgv: StreamingSpawn(claudeBin, ResumeAndReportPrompt, ParkTools, "--resume", "{session_id}"),
+            terminalEvents: true);
+        await rig.StartAsync(ct);
+        await rig.AddMachineAsync("A");
+
+        var task = await rig.CreateTaskAsync(AskThenStopDescription, ct);
+
+        // The cold worker asks and ends its turn. Its process exiting here is expected, not a
+        // failure: a headless worker that has asked a question has nothing left to do in
+        // process, and per-task liveness is suspended while blocked (§11).
+        Assert.True(
+            await rig.DispatchUntilAsync(
+                task, "A", async () => await rig.StateAsync(task, ct) == TaskState.BlockedOnInput,
+                MaxAttempts, PerLegBudget, ct),
+            "the real claude worker never blocked on input.\n" + await rig.RealWorkerDiagnosticsAsync(task, ct));
+
+        // The transcript is locatable: the harness reported its session ref and the plane
+        // stamped it verbatim. Without this there is nothing to resume and the rest is a
+        // cold start wearing a resume's clothes.
+        var sessionRef = await rig.HarnessSessionRefAsync(task, ct);
+        Assert.False(
+            string.IsNullOrWhiteSpace(sessionRef),
+            "no harness session ref was stamped, so the resume below could only cold-start.\n"
+            + await rig.RealWorkerDiagnosticsAsync(task, ct));
+        Assert.Contains("report the remembered value", await rig.QuestionAsync(task, ct), StringComparison.OrdinalIgnoreCase);
+
+        // The Lead answers; the task requeues for redispatch-with-resume and the park record
+        // captures the machine and the ref the resume will use.
+        await rig.AnswerAsync(task, "Yes — report the remembered value now.", ct);
+        var park = await rig.ParkAsync(task, ct);
+        Assert.Equal("A", park.Machine);
+        Assert.Equal(sessionRef, park.SessionRef);
+
+        Assert.True(
+            await rig.DispatchUntilVerifyingAsync(task, "A", MaxAttempts, PerLegBudget, ct),
+            "the resumed real claude worker never drove its task to verifying.\n"
+            + await rig.RealWorkerDiagnosticsAsync(task, ct));
+
+        // The proof: a value that lived only in the conversation came back through the plane.
+        var reference = await rig.ResultReferenceAsync(task, ct);
+        Assert.Contains(nonce, reference);
+        // And it came back from the SAME session, so this was a resume rather than a fresh
+        // agent that happened to be handed the nonce again.
+        Assert.Equal(sessionRef, await rig.HarnessSessionRefAsync(task, ct));
+        Assert.Equal("A", rig.MachineRanOn(task));
+    }
+
+    /// <summary>
+    /// What a graceful <c>stop</c> actually is against a real <c>claude -p</c> worker — and it
+    /// is <b>not</b> a turn the agent reads. This fact pins the observed behaviour rather than
+    /// the hoped-for one, because the gap between them is the finding.
+    ///
+    /// <para>docketd's message-mode stop writes the stop turn to the worker's held-open stdin
+    /// and acks <see cref="StopDelivery.Message"/>. The only precondition it can check is that
+    /// stdin was redirected — which is always true, because that same pipe is the dead-man's
+    /// switch (§10). So the ack says "injected" for <em>any</em> harness, including one that
+    /// never reads stdin. A <c>claude -p "&lt;prompt&gt;"</c> worker is exactly that: the
+    /// prompt arrives as argv (§13 — it must, and stdin must stay unread for the dead-man
+    /// pipe), so <c>--input-format text</c> is in force and the injected line is never read.
+    /// The bytes land in a pipe nobody is reading and the worker runs on until the wind-down
+    /// deadline kills it.</para>
+    ///
+    /// <para>So the assertions are: the ack claims a message was delivered, and the worker
+    /// nevertheless dies by the deadline with a non-zero (killed) exit rather than winding down
+    /// on its own. What makes <c>preserve</c> mean anything here is therefore the plane's
+    /// record, not the agent's cooperation — the harness session ref survives the kill, so the
+    /// transcript remains resumable, which the fact above proves end to end.</para>
+    /// </summary>
+    [SkippableFact]
+    public async Task A_stop_reaches_a_real_claude_worker_as_a_kill_deadline_not_as_a_turn_it_reads()
+    {
+        var claudeBin = RequireRealClaude();
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(10));
+        var ct = cts.Token;
+
+        await using var rig = new FleetRig(
+            pg,
+            spawnArgv: StreamingSpawn(claudeBin, WorkerPrompt, AllowedTools),
+            terminalEvents: true,
+            // The documented claude stop recipe, verbatim in shape: a stream-json user turn
+            // carrying the disposition. WindDown is short so the deadline, not the test's
+            // patience, is what ends the worker.
+            stop: new StopConfig(
+                StopMode.Message, Signal: null,
+                MessageTemplate: ClaudeStopTurnTemplate, WindDown: TimeSpan.FromSeconds(5)));
+        await rig.StartAsync(ct);
+        await rig.AddMachineAsync("A");
+
+        var task = await rig.CreateTaskAsync(EchoDescription("A", NewToken()), ct);
+
+        // Wait until the worker is demonstrably mid-turn — it has reported a session ref, so
+        // its harness is up and streaming — before stopping it. Stopping earlier would be a
+        // race with the spawn rather than a test of the stop.
+        Assert.True(
+            await rig.DispatchUntilAsync(
+                task, "A", async () => await rig.HarnessSessionRefAsync(task, ct) is { Length: > 0 },
+                MaxAttempts, PerLegBudget, ct),
+            "the real claude worker never reported a session ref, so it was never observably working.\n"
+            + await rig.RealWorkerDiagnosticsAsync(task, ct));
+
+        var sessionRef = await rig.HarnessSessionRefAsync(task, ct);
+        Assert.True(
+            await rig.SendStopAsync(
+                "A", task, TimeSpan.FromMinutes(1), StopDisposition.PreserveAndPark,
+                "characterizing real-harness stop delivery", ct),
+            "the stop was not delivered to the machine holding the task");
+
+        // docketd acks an injected turn — on the strength of a redirected stdin alone.
+        var ack = rig.StopAckFor(task);
+        Assert.NotNull(ack);
+        Assert.True(ack!.Value.Delivered);
+        Assert.Equal(StopDelivery.Message, ack.Value.Delivery);
+
+        // And yet the agent never acts on it: the worker is taken down at the wind-down
+        // deadline instead of winding down and exiting cleanly.
+        Assert.True(
+            await FleetRig.WaitUntilAsync(
+                () => Task.FromResult(rig.WorkerObserved(task) is { Exits: > 0 }),
+                TimeSpan.FromMinutes(2)),
+            "the worker never ended, so the wind-down deadline did not fire either.\n"
+            + await rig.RealWorkerDiagnosticsAsync(task, ct));
+
+        var observed = rig.WorkerObserved(task)!.Value;
+        Assert.NotEqual(0, observed.LastExitCode);   // killed at the deadline, not a clean wind-down
+        Assert.NotEqual(TaskState.Verifying, await rig.StateAsync(task, ct)); // it reported nothing
+
+        // Preservation is the plane's record, not the agent's cooperation: the ref outlives the
+        // kill, so the transcript stays resumable.
+        Assert.Equal(sessionRef, await rig.HarnessSessionRefAsync(task, ct));
+    }
+
+    // ── §10 agent-started processes, with a real agent on both halves ───────────
+
+    /// <summary>
+    /// The §10 process ruling with a real agent at both ends: one <c>claude -p</c> worker starts
+    /// a background process and finishes its task; the process outlives both the worker and the
+    /// <em>completed</em> task; and a second, later worker — dispatched to the same machine,
+    /// knowing nothing about it — discovers it with <c>list_processes</c> and stops it.
+    ///
+    /// <para>Everything here is real: the profile gate (<c>processes.agent_initiated</c>) is
+    /// applied on the machine by the real <see cref="Docket.Runner.RunnerDaemon"/>, the process
+    /// is a real supervised child of that machine's <c>ServiceSupervisor</c>, and the discovery
+    /// read answers off the machine's own heartbeat — the plane holds no process state of its
+    /// own. The cleanup worker is handed no name: it must find the survivor, which is the half
+    /// of the story a task-scoped lifetime would have made impossible.</para>
+    ///
+    /// <para>The exit code rides back in the cleanup worker's report because
+    /// <c>stop_process</c> removes the entry as it stops it — so "the exit was recorded" is
+    /// provable only from what the agent was told, which is also the only place an agent could
+    /// read it.</para>
+    /// </summary>
+    [SkippableFact]
+    public async Task A_real_claude_process_outlives_its_task_and_a_later_real_worker_finds_and_stops_it()
+    {
+        var claudeBin = RequireRealClaude();
+        FleetRig.PublishDotnetRootForSpawnedApphosts();
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(20));
+        var ct = cts.Token;
+
+        await using var rig = new FleetRig(
+            pg,
+            spawnArgv: StreamingSpawn(claudeBin, StepwiseWorkerPrompt, ProcessTools, "--max-turns", "14"),
+            agentProcesses: true);
+        await rig.StartAsync(ct);
+        await rig.AddMachineAsync("A");
+
+        var processName = "probe-" + NewToken();
+        var port = MultiMachineKit.ReserveLoopbackPort();
+        var body = "body-" + NewToken();
+
+        // Step 1: a real worker starts the process and completes its own task.
+        var starter = await rig.CreateTaskAsync(StartProcessDescription(processName, port, body), ct);
+        Assert.True(
+            await rig.DispatchUntilVerifyingAsync(starter, "A", MaxAttempts, PerLegBudget, ct),
+            "the real claude worker never started its process and reported.\n"
+            + await rig.RealWorkerDiagnosticsAsync(starter, ct));
+        Assert.Contains(processName, await rig.ResultReferenceAsync(starter, ct));
+
+        // It is really running, as the machine itself reports it.
+        Assert.True(
+            await FleetRig.WaitUntilAsync(
+                () => Task.FromResult(rig.ProcessesOn("A").Any(p => p.Name == processName && p.State == ServiceState.Running)),
+                TimeSpan.FromSeconds(30)),
+            "the machine never reported the agent-started process as running.\n"
+            + await rig.RealWorkerDiagnosticsAsync(starter, ct));
+
+        // The declaring task is now terminal — accepted and completed — and the process is
+        // untouched by that. This is the feature, stated as an assertion.
+        await rig.AcceptAsync(starter, ct);
+        Assert.Equal(TaskState.Completed, await rig.StateAsync(starter, ct));
+        Assert.Contains(
+            rig.ProcessesOn("A"),
+            p => p.Name == processName && p.State == ServiceState.Running);
+
+        // Step 2: the cleanup worker — a different task, told no names — finds it and stops it.
+        var cleaner = await rig.CreateTaskAsync(CleanupDescription, ct);
+        Assert.True(
+            await rig.DispatchUntilVerifyingAsync(cleaner, "A", MaxAttempts, PerLegBudget, ct),
+            "the real claude cleanup worker never reported.\n"
+            + await rig.RealWorkerDiagnosticsAsync(cleaner, ct));
+
+        var report = await rig.ResultReferenceAsync(cleaner, ct);
+        Assert.Contains(processName, report);  // it discovered the right survivor, unaided
+        Assert.Contains("exit=", report);      // and was told how it ended
+        Assert.DoesNotContain(processName, rig.ProcessesOn("A").Select(p => p.Name));
+    }
+
+    // ── §8.2/§8.3 a service one machine serves and another reaches ─────────────
+
+    /// <summary>
+    /// The cross-machine service round trip with a real agent at each end: a
+    /// <c>claude -p</c> worker on machine A starts a listener as an agent process, advertises it
+    /// with <c>register_service</c>, and holds its turn open; a <c>claude -p</c> worker on
+    /// machine B resolves it with <c>open_forward</c>, fetches over the loopback address the
+    /// forward handed back, and reports the body it read. B's result containing bytes only A's
+    /// process could produce is proof the round trip went through the real relay.
+    ///
+    /// <para><b>Why A must hold its turn, and why that is a finding rather than a fixture.</b>
+    /// A forward is only granted against a service registered by a <em>currently working</em>
+    /// task (§8.2 Team scoping). A headless agent's turn ends when it stops calling tools, its
+    /// process exits, and a still-<c>working</c> task requeues on that exit (§10) — taking the
+    /// registration out of forwardable state. So a real agent cannot advertise a service and
+    /// leave: something has to keep its turn alive, which here is a bounded sleep, and in a real
+    /// deployment is the "babysitting a registered endpoint is the job" shape §10 describes when
+    /// it exempts such a task from the progress ceiling. The listener itself is machine-scoped
+    /// and would outlive the worker; only the <em>advertisement</em> is tied to the turn.</para>
+    /// </summary>
+    [SkippableFact]
+    public async Task Real_claude_workers_reach_a_registered_service_across_two_machines()
+    {
+        var claudeBin = RequireRealClaude();
+        FleetRig.PublishDotnetRootForSpawnedApphosts();
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(20));
+        var ct = cts.Token;
+
+        await using var rig = new FleetRig(
+            pg,
+            spawnArgv: StreamingSpawn(claudeBin, StepwiseWorkerPrompt, ServiceTools, "--max-turns", "16"),
+            agentProcesses: true);
+        await rig.StartAsync(ct);
+        await rig.AddMachineAsync("A");
+        await rig.AddMachineAsync("B");
+
+        var serviceName = "svc" + NewToken();
+        var processName = "serve-" + NewToken();
+        var port = MultiMachineKit.ReserveLoopbackPort();
+        var body = "relayed-" + NewToken();
+
+        // Producer on A: start the listener, advertise it, then hold the turn open.
+        var producer = await rig.CreateTaskAsync(
+            ServeDescription(processName, serviceName, port, body), ct);
+        Assert.True(
+            await rig.DispatchUntilAsync(
+                producer, "A", () => rig.ServiceExistsAsync(serviceName, ct),
+                MaxAttempts, PerLegBudget, ct),
+            "the real claude producer never registered its service.\n"
+            + await rig.RealWorkerDiagnosticsAsync(producer, ct));
+
+        // Consumer on B: a different machine, a different agent, told only the service name.
+        var consumer = await rig.CreateTaskAsync(FetchDescription(serviceName), ct);
+        Assert.True(
+            await rig.DispatchUntilVerifyingAsync(consumer, "B", MaxAttempts, PerLegBudget, ct),
+            "the real claude consumer never fetched through the forward and reported.\n"
+            + await rig.RealWorkerDiagnosticsAsync(consumer, ct)
+            + await rig.RealWorkerDiagnosticsAsync(producer, ct));
+
+        // Only A's process could have produced this, and only the relay could have carried it.
+        Assert.Contains(body, await rig.ResultReferenceAsync(consumer, ct));
+        Assert.Equal("A", rig.MachineRanOn(producer));
+        Assert.Equal("B", rig.MachineRanOn(consumer));
+    }
+
     // ── Recipe + descriptions ───────────────────────────────────────────────────
 
     /// <summary>
@@ -211,15 +538,183 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
          That is the entire task. Do not create or edit files. Do not do anything else.
          """;
 
+    // ── Streaming recipe (session refs, resume, stop) ───────────────────────────
+
+    /// <summary>
+    /// The claude spawn argv for scenarios that need docketd to see the harness's own stream:
+    /// <c>--output-format stream-json</c> plus <c>--verbose</c> (which is what makes claude emit
+    /// that stream under <c>-p</c>) so an <c>events.source: terminal</c> profile can read the
+    /// <c>system/init</c> session ref (§11) and per-tool-call liveness (§10). Otherwise the
+    /// validated recipe unchanged: strict MCP config, a minimal allow-list, haiku, small turn cap.
+    /// </summary>
+    private static string[] StreamingSpawn(
+        string claudeBin, string prompt, string tools, params string[] extra) =>
+    [
+        claudeBin, "-p", prompt,
+        "--mcp-config", "{mcp_config}",
+        "--strict-mcp-config",
+        "--allowedTools", tools,
+        "--output-format", "stream-json",
+        "--verbose",
+        "--model", "haiku",
+        "--max-turns", "8",
+        .. extra,
+    ];
+
+    /// <summary>
+    /// The documented claude message-mode stop turn (a stream-json user message carrying the
+    /// disposition), used verbatim in shape by the stop characterization so the finding is about
+    /// the harness rather than about a template this test invented. docketd substitutes
+    /// <c>{disposition}</c>/<c>{ttl_seconds}</c>/<c>{reason}</c>.
+    /// </summary>
+    private const string ClaudeStopTurnTemplate =
+        """{"type":"user","message":{"role":"user","content":"Docket is winding this task down (disposition={disposition}, ~{ttl_seconds}s left; reason: {reason}). Immediately call report_result with a reference to your current progress, then stop."}}""";
+
+    // ── §11 park/resume prompts and description ────────────────────────────────
+
+    /// <summary>The docket tools the park/resume scenario's worker may call.</summary>
+    private const string ParkTools =
+        "mcp__docket__get_task,mcp__docket__report_result,mcp__docket__request_input";
+
+    /// <summary>
+    /// The cold spawn prompt, and the <b>only</b> place the nonce ever appears: not in the task
+    /// row, so <c>get_task</c> cannot supply it to a cold successor. Front-loaded as a memory
+    /// instruction so the value is in the conversation before the agent does anything else.
+    /// </summary>
+    private static string RememberThenAskPrompt(string nonce) =>
+        "You are a Docket worker agent. Remember this value for the rest of this conversation: " +
+        $"{nonce}. Do not write it to any file, and do not put it in any tool call yet. Now call " +
+        "the docket get_task tool and do exactly what its description tells you.";
+
+    /// <summary>
+    /// The profile's static <c>resume.args</c> prompt (§11) — generic config, carrying no task
+    /// content and, deliberately, not the nonce. The instruction to report the remembered value
+    /// is the whole point: the value has to come from the resumed conversation or not at all.
+    /// </summary>
+    private const string ResumeAndReportPrompt =
+        "Your task has resumed. FIRST call the docket get_task tool — it carries the answer you " +
+        "were waiting for. Then call the docket report_result tool exactly once, with " +
+        "resultReference set to the exact value you were asked to remember earlier in this " +
+        "conversation, and nothing else. Two tool calls total.";
+
+    /// <summary>Turn one: ask, then end the turn. The question text is asserted on, so it is
+    /// fixed prose rather than left to the model's phrasing.</summary>
+    private const string AskThenStopDescription =
+        """
+        Call request_input exactly once, with kind 'question' and question set to this exact
+        text (no quotes, no other text):
+
+        may I report the remembered value now?
+
+        Then stop and end your turn. Do NOT call report_result on this turn. Do not create or
+        edit files.
+        """;
+
+    // ── §10 process scenario prompts and descriptions ──────────────────────────
+
+    private const string ProcessTools =
+        "mcp__docket__get_task,mcp__docket__report_result,mcp__docket__start_process," +
+        "mcp__docket__list_processes,mcp__docket__stop_process";
+
+    /// <summary>Start a long-lived listener as an agent process and finish the task, leaving it
+    /// running — the shape §10 exists for. Absolute argv, no shell, stdin left closed (the
+    /// default), exactly as the worker skill describes.</summary>
+    private static string StartProcessDescription(string name, int port, string body) =>
+        $$"""
+          Two steps, in order.
+
+          1. Call start_process exactly once with:
+               name: {{name}}
+               spawn: ["{{FleetRig.TestHarnessPath()}}", "http-serve", "{{port}}", "{{body}}"]
+               env: {"DOTNET_ROOT": "{{FleetRig.DotnetRoot()}}"}
+
+          2. Call report_result exactly once, with resultReference set from what step 1
+             actually returned:
+               - if it started, use exactly: started:{{name}}
+               - if it was refused, use exactly: refused:<the refusal text you were given>
+             A refusal is a fact to report, never something to work around or paper over.
+
+          Leave the process running — do NOT stop it. Do not create or edit files.
+          """;
+
+    /// <summary>The cleanup continuation's work (§10): find what an earlier task left running
+    /// and stop it. Deliberately names nothing — discovery is the half being tested.</summary>
+    private const string CleanupDescription =
+        """
+        You have been sent to clean up after an earlier task on this machine.
+
+        1. Call list_processes. Exactly one entry has kind "process"; you did not start it.
+           (An entry with kind "service" belongs to the operator — never touch those.)
+        2. Call stop_process with that entry's name. It returns the exit code as "value".
+        3. Call report_result exactly once with resultReference set to this exact form,
+           substituting the name you stopped and the exit code you were given:
+             stopped:<name>:exit=<value>
+
+        Do not create or edit files.
+        """;
+
+    // ── §8.2/§8.3 cross-machine service prompts and descriptions ───────────────
+
+    /// <summary>Both ends of the service scenario share one profile, so the allow-list is the
+    /// union of what the producer and the consumer need. <c>Bash</c> is here for two reasons the
+    /// scenario cannot avoid: the producer has to hold its turn open while its registration is
+    /// forwardable, and the consumer has to actually speak to the forwarded port.</summary>
+    private const string ServiceTools =
+        "mcp__docket__get_task,mcp__docket__report_result,mcp__docket__start_process," +
+        "mcp__docket__register_service,mcp__docket__open_forward,Bash";
+
+    /// <summary>Producer: bind (via the process), advertise, then stay working. The register
+    /// step comes after the start so the port is answering before consumers are told about it —
+    /// the "bind first, then register" rule the worker skill leads with.</summary>
+    private static string ServeDescription(string processName, string serviceName, int port, string body) =>
+        $$"""
+          Three steps, in order.
+
+          1. Call start_process exactly once with:
+               name: {{processName}}
+               spawn: ["{{FleetRig.TestHarnessPath()}}", "http-serve", "{{port}}", "{{body}}"]
+               env: {"DOTNET_ROOT": "{{FleetRig.DotnetRoot()}}"}
+
+          2. Call register_service exactly once with name {{serviceName}} and port {{port}}.
+
+          3. Run this shell command, which keeps your turn open while another task uses the
+             service:
+               sleep 100
+
+          Do NOT call report_result. Do not create or edit files.
+          """;
+
+    /// <summary>Consumer: resolve the service to a loopback address and read from it. The body
+    /// is reported verbatim, so the assertion is on bytes only the producer's process makes.</summary>
+    private static string FetchDescription(string serviceName) =>
+        $"""
+         Two steps, in order.
+
+         1. Call open_forward with serviceName {serviceName}. It returns a host and a port.
+
+         2. Run this shell command, substituting the host and port it returned:
+              curl -sS --max-time 20 http://HOST:PORT/
+
+         Then call report_result exactly once with resultReference set to exactly the text that
+         command printed, and nothing else. Do not create or edit files.
+         """;
+
     // ── Gating ────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// Skip unless this run is a real, opted-in claude run: Postgres up, an Anthropic key
-    /// present, and the <c>claude</c> CLI resolvable. Returns the resolved claude binary
-    /// when everything is in place; otherwise throws the xUnit skip so a keyless push
-    /// spends nothing. As a side effect it publishes <c>ANTHROPIC_API_KEY</c> into this
-    /// process's environment (from <c>ANTHROPIC_KEY</c> if that is the only form present)
-    /// so the spawned claude — which inherits docketd's environment — can authenticate.
+    /// Skip unless this run is a real, opted-in claude run: Postgres up, an explicit opt-in,
+    /// and the <c>claude</c> CLI resolvable. Returns the resolved claude binary when everything
+    /// is in place; otherwise throws the xUnit skip, so an ordinary push spends nothing.
+    ///
+    /// <para>There are <b>two</b> ways to opt in, because there are two ways a machine
+    /// authenticates the CLI. An Anthropic key (<c>ANTHROPIC_API_KEY</c>, or
+    /// <c>ANTHROPIC_KEY</c> which the CI job maps to it) is the CI path, and it is published
+    /// into this process's environment so the spawned claude — which inherits docketd's
+    /// environment — can use it. <c>DOCKET_REAL_CLAUDE=1</c> is the path for a machine whose CLI
+    /// is already logged in: the worker then inherits that ambient login as a same-user child
+    /// and <b>no key is set</b>, which is required rather than merely tidy — a managed install
+    /// pinned to first-party login refuses to start at all when an Anthropic-issued credential
+    /// is present, so publishing a key there would break the very harness under test.</para>
     /// </summary>
     private string RequireRealClaude()
     {
@@ -228,17 +723,55 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         var key = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
         if (string.IsNullOrWhiteSpace(key))
             key = Environment.GetEnvironmentVariable("ANTHROPIC_KEY");
-        Skip.If(string.IsNullOrWhiteSpace(key),
-            "no ANTHROPIC_API_KEY/ANTHROPIC_KEY — the real claude -p E2E is opt-in (see the gated CI job)");
-        // The child inherits this process's environment (ProcessStartInfo does not clear
-        // it under UseShellExecute=false); make sure the canonical variable is set.
-        Environment.SetEnvironmentVariable("ANTHROPIC_API_KEY", key);
+        var optedIn = Environment.GetEnvironmentVariable("DOCKET_REAL_CLAUDE") is { Length: > 0 } o
+                      && !o.Equals("0", StringComparison.Ordinal)
+                      && !o.Equals("false", StringComparison.OrdinalIgnoreCase);
+
+        Skip.If(string.IsNullOrWhiteSpace(key) && !optedIn,
+            "no ANTHROPIC_API_KEY/ANTHROPIC_KEY and no DOCKET_REAL_CLAUDE — the real claude -p " +
+            "E2E is opt-in (see the gated CI job)");
+        // Only publish a key when one was supplied. On an already-logged-in machine the child
+        // must NOT see one (see the remarks above).
+        if (!string.IsNullOrWhiteSpace(key))
+            Environment.SetEnvironmentVariable("ANTHROPIC_API_KEY", key);
 
         var claudeBin = ResolveClaudeBin();
         Skip.If(claudeBin is null,
             "claude CLI not found (set DOCKET_CLAUDE_BIN or put claude on PATH)");
+        ScrubInheritedSessionMarkers();
         return claudeBin!;
     }
+
+    /// <summary>
+    /// Remove the "you are running inside a Claude Code session" markers from this process's
+    /// environment, because the worker inherits it (docketd's environment is the child's base,
+    /// §10) and in production docketd is a daemon rather than a child of somebody's editor.
+    ///
+    /// <para>This is test hygiene with teeth, not tidying. Run from inside a Claude Code
+    /// session — which is how anyone iterating on these scenarios runs them — the spawned worker
+    /// picked up the agent-teams markers, decided it had teammates, and spent its whole turn
+    /// budget calling <c>ToolSearch</c> and <c>SendMessage</c> instead of doing its assignment.
+    /// (<c>--allowedTools</c> does not prevent that: it pre-approves a subset, it does not hide
+    /// the rest.) Auth and routing variables are deliberately left alone — they are how an
+    /// already-logged-in CLI reaches a model at all.</para>
+    /// </summary>
+    private static void ScrubInheritedSessionMarkers()
+    {
+        foreach (var name in InheritedSessionMarkers)
+            Environment.SetEnvironmentVariable(name, null);
+    }
+
+    private static readonly string[] InheritedSessionMarkers =
+    [
+        "CLAUDECODE",
+        "CLAUDE_CODE_ENTRYPOINT",
+        "CLAUDE_CODE_SESSION_ID",
+        "CLAUDE_CODE_CHILD_SESSION",
+        "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS",
+        "CLAUDE_PID",
+        "CLAUDE_EFFORT",
+        "AI_AGENT",
+    ];
 
     /// <summary>Resolve the claude executable: an explicit <c>DOCKET_CLAUDE_BIN</c>, then
     /// PATH, then the common install location — or null when none exists.</summary>
