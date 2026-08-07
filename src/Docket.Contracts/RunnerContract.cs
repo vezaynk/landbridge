@@ -5,7 +5,7 @@ namespace Docket.Contracts;
 /// <summary>
 /// The control-plane ↔ runner contract, spec §10 — <b>the only frozen
 /// interface in the system</b>. It is a closed vocabulary: a runner rejects
-/// anything outside it (see <see cref="RunnerWire.DecodeCommand"/> for the
+/// anything outside it (see <see cref="RunnerWire.DecodeCommand(string)"/> for the
 /// wire-boundary rejection). The hierarchy is closed structurally too — the
 /// base constructors are <c>private protected</c>, so no message type can be
 /// added from outside this assembly.

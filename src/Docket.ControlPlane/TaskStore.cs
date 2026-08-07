@@ -479,6 +479,43 @@ public sealed class TaskStore(
             .ToListAsync(ct);
 
     /// <summary>
+    /// The dispatches a machine still holds according to committed state (§10, #86) —
+    /// what <see cref="DispatchService.RehydrateMachineAsync"/> re-adopts when that
+    /// machine reconnects, so a plane restart no longer strands in-flight work.
+    ///
+    /// <para>Both live states are included: <see cref="TaskState.Working"/>, and
+    /// <see cref="TaskState.BlockedOnInput"/> — a blocked task's harness process is
+    /// expected to be gone but the machine still holds its lease until the wait-TTL
+    /// sweeper parks it or the machine dies (§11), and the sweeper resolves that machine
+    /// through the registry, so it has to be re-adopted too or a blocked task outlives a
+    /// restart with nothing able to park or requeue it.</para>
+    ///
+    /// <para><b>Fenced on the current worker instance</b> (§9.14), which is what keeps
+    /// re-adoption from resurrecting the wrong dispatch. The row's
+    /// <see cref="TaskRow.CurrentInstanceId"/> names the one incumbent attempt, and the
+    /// instance row carries the machine it was minted for — so a task is re-adopted only
+    /// by the machine its live incumbent instance actually runs on. The two exclusions
+    /// that matters for: a requeue nulls <c>CurrentInstanceId</c> and revokes the
+    /// instance, so a task already freed by a disconnect is never re-adopted (which is
+    /// what makes a flapping machine cost exactly one requeue per disconnect, #87); and
+    /// a task whose incumbent runs on a different machine is never adopted by this one,
+    /// so a stale instance's events keep landing on an untracked task and are still
+    /// refused rather than reviving a dispatch that has moved on.</para>
+    /// </summary>
+    public async Task<IReadOnlyList<TaskId>> HeldDispatchesOnAsync(
+        string machineId, CancellationToken ct = default)
+    {
+        var ids = await db.Tasks.AsNoTracking()
+            .Where(t => (t.State == TaskState.Working || t.State == TaskState.BlockedOnInput)
+                && db.WorkerInstances.Any(w =>
+                    w.Id == t.CurrentInstanceId && !w.Revoked && w.MachineId == machineId))
+            .OrderBy(t => t.Id)
+            .Select(t => t.Id)
+            .ToListAsync(ct);
+        return ids.Select(id => new TaskId(id)).ToArray();
+    }
+
+    /// <summary>
     /// A pure read of a task's current state, or null if it does not exist. The
     /// dispatch loop and the runner event sink read state to decide whether an
     /// inbound runner event still bears on a working task — e.g. an

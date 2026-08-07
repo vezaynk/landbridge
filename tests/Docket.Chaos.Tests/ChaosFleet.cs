@@ -16,7 +16,7 @@ namespace Docket.Chaos.Tests;
 /// <summary>
 /// The §17.8 chaos rig: a real control plane and a real <c>docketd</c> as separate
 /// OS processes over a real Postgres, with real worker binaries underneath. Nothing
-/// here is a seam — where <see cref="Docket.MultiMachine.Tests"/>' FleetRig stands in
+/// here is a seam — where <c>Docket.MultiMachine.Tests</c>' FleetRig stands in
 /// for the §10 socket with an in-process delegate, this dials the actual
 /// <c>/runner</c> WebSocket, so the processes can be SIGKILLed and restarted the way
 /// §17.8 asks ("kill a runner mid-task", "SIGKILL docketd and restart it").
@@ -196,7 +196,12 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
         _docketd = null;
     }
 
-    /// <summary>SIGKILL the plane, then bring an identically-configured one back up.</summary>
+    /// <summary>
+    /// SIGKILL the plane, then bring an identically-configured one back up on the same
+    /// URL and the same database — a plane restart under live work, which is exactly what
+    /// leaves in-flight tasks with no in-memory tracking behind them (§17.8, #86).
+    /// docketd is left running and reconnects on its own backoff.
+    /// </summary>
     public async Task RestartPlaneAsync(CancellationToken ct)
     {
         var victim = _plane ?? throw new InvalidOperationException("the plane is not running");
@@ -208,6 +213,18 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
         await StartPlaneAsync(ct);
         Note("plane back up");
     }
+
+    /// <summary>
+    /// Waits for a line from the CURRENT plane process. After
+    /// <see cref="RestartPlaneAsync"/> that process is brand new and its retained output
+    /// starts empty, so a line matched here unambiguously came from the plane that came
+    /// back — which is what lets a scenario observe post-restart behaviour directly
+    /// instead of inferring it from committed state alone. Returns the line, or null at
+    /// the deadline.
+    /// </summary>
+    public Task<string?> WaitForPlaneLineAsync(Func<string, bool> match, TimeSpan timeout) =>
+        (_plane ?? throw new InvalidOperationException("the plane is not running"))
+            .WaitForLineAsync(match, timeout);
 
     /// <summary>
     /// Plants a tagged process tree that will OUTLIVE docketd, standing in for the
@@ -306,6 +323,25 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
         });
         return await McpClient.CreateAsync(transport, cancellationToken: ct);
     }
+
+    /// <summary>
+    /// Whether the worker process for <paramref name="task"/> has actually started on the
+    /// machine — the wedge/<c>run</c> harness writes an atomic <c>started</c> marker into
+    /// its working directory (<c>{work_root}/{task}</c>) as its first act, so this is the
+    /// process existing, not merely the plane having decided it should.
+    ///
+    /// <para>That is a strictly stronger fact than the task being committed <c>working</c>,
+    /// and a scenario that kills something "mid-task" needs the stronger one. The store
+    /// commits submitted→working and mints the worker instance <em>before</em> the
+    /// DispatchCommand is sent (deliberately — a failed send then requeues a now-working
+    /// task instead of losing it), so there is a real window in which the row says
+    /// <c>working</c> while the command is still in flight and no worker exists anywhere.
+    /// Killing a process inside that window tests a lost dispatch, which is a different
+    /// scenario with a different correct outcome: the task has no live process, so the
+    /// aliveness clock reclaims it as <c>LivenessTimeout</c> and it never was mid-task.</para>
+    /// </summary>
+    public bool WorkerStarted(TaskId task) =>
+        File.Exists(Path.Combine(_workRoot, task.ToString(), "started"));
 
     /// <summary>
     /// The worker token docketd injected for the CURRENT dispatch of

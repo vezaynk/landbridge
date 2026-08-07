@@ -45,7 +45,7 @@ public abstract record ProcessOutcome
 /// Windows has nothing user-level — so the only answer that is the same everywhere is
 /// for docketd to own the process itself. That places it outside every task's tree by
 /// construction, with no <c>setsid</c> and no environment scrubbing, and keeps the
-/// kill guarantee inside Docket.
+/// kill guarantee inside Docket.</para>
 ///
 /// <para><b>Restart equals reboot, here too.</b> Every service is tagged with
 /// <c>DOCKET_MACHINE_ID</c> and <em>not</em> <c>DOCKET_TASK_ID</c>. That combination is

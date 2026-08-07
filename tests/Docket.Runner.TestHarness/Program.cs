@@ -49,7 +49,7 @@ namespace Docket.Runner.TestHarness;
 ///                     `/bin/sh -c "exit 3"` is POSIX-only: on Windows it cannot start at
 ///                     all, so nothing runs and there is no exit code to observe — a
 ///                     failed spawn masquerading as a failed run.
-///   echo-stdin      — echo each stdin line to stdout as `got: <line>`, so a §10
+///   echo-stdin      — echo each stdin line to stdout as `got: &lt;line&gt;`, so a §10
 ///                     write_process test can prove the bytes arrived by reading the log.
 ///   echo-argv       — write the argv this process received (one token per line,
 ///                     including this mode word at [0]) to an atomic `argv` marker,
@@ -351,7 +351,7 @@ public static class Program
     /// Writes a marker atomically so the harnessing test — which polls
     /// <c>File.Exists</c> and then reads the content — sees either no file or the
     /// complete content, never the create-then-write gap.
-    /// <see cref="File.WriteAllTextAsync(string,string?)"/> truncates then streams,
+    /// <see cref="File.WriteAllTextAsync(string,string?,CancellationToken)"/> truncates then streams,
     /// so a concurrent reader can catch an empty or partial file; under heavy
     /// concurrent test load that raced the supervisor tests into an empty
     /// <c>child.pid</c> (FormatException) or a one-line <c>started</c>

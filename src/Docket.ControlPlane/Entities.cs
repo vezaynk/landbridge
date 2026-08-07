@@ -431,37 +431,6 @@ public sealed class TaskEventRow
 }
 
 /// <summary>
-/// A Team's spend ceiling and what has been authorized against it (spec §9 check 9,
-/// §9.9). One row per Team — the first thing in the schema that makes a Team an
-/// entity rather than just a <c>TeamId</c> on other rows.
-///
-/// <para><b>This is committed authorization, not measured spend.</b> Nothing in the
-/// system ingests token/cost telemetry today (§10 describes the intent; no OTLP
-/// receiver exists), so there is no consumption figure to accumulate. What is
-/// knowable is what Docket <em>authorized</em>: every dispatch hands its harness a
-/// hard per-dispatch cap, so committing that cap bounds exposure without measuring
-/// anything. §9.9 calls check 9 "containment, not metering" — a reservation is
-/// containment, and unlike metering it cannot be defeated by a signal that never
-/// arrives.</para>
-///
-/// <para><b><see cref="CommittedUsd"/> only ever increases.</b> It is
-/// authorized-spend-to-date for the Team's whole life, deliberately worst-case: a
-/// task that spent a penny of its cap still consumes the whole cap of ceiling. It is
-/// not released when a task finishes, because "unspent" is precisely the quantity
-/// that cannot be known — and releasing would turn a lifetime ceiling into a
-/// concurrency limiter, letting a $100 Team run ten thousand sequential $10 tasks
-/// (§4: a Team owns a budget and terminates). The one exception is a task cancelled
-/// before it was ever dispatched: no process ran, so no spend was possible, and
-/// holding that commitment would be a lie in the other direction. The escape valve
-/// is a human raising the ceiling, which is the control this is for.</para>
-///
-/// <para><b>Written only by a human.</b> A Lead that could raise its own ceiling is
-/// enforcement living exactly where a model can reason past it (§2 principle 3), so
-/// the write path is the §12 dashboard and there is deliberately no MCP tool. A Lead
-/// may <em>read</em> it (<c>get_team_state</c>) — seeing your own ceiling is how you
-/// plan, and how you explain why dispatch stopped.</para>
-/// </summary>
-/// <summary>
 /// Bytes a Team has moved through relay forwards, spec §9 check 10 / §9.10 — <b>accounting,
 /// not enforcement</b>.
 ///
@@ -496,6 +465,37 @@ public sealed class TeamForwardUsageRow
     public DateTimeOffset UpdatedAt { get; set; }
 }
 
+/// <summary>
+/// A Team's spend ceiling and what has been authorized against it (spec §9 check 9,
+/// §9.9). One row per Team — the first thing in the schema that makes a Team an
+/// entity rather than just a <c>TeamId</c> on other rows.
+///
+/// <para><b>This is committed authorization, not measured spend.</b> Nothing in the
+/// system ingests token/cost telemetry today (§10 describes the intent; no OTLP
+/// receiver exists), so there is no consumption figure to accumulate. What is
+/// knowable is what Docket <em>authorized</em>: every dispatch hands its harness a
+/// hard per-dispatch cap, so committing that cap bounds exposure without measuring
+/// anything. §9.9 calls check 9 "containment, not metering" — a reservation is
+/// containment, and unlike metering it cannot be defeated by a signal that never
+/// arrives.</para>
+///
+/// <para><b><see cref="CommittedUsd"/> only ever increases.</b> It is
+/// authorized-spend-to-date for the Team's whole life, deliberately worst-case: a
+/// task that spent a penny of its cap still consumes the whole cap of ceiling. It is
+/// not released when a task finishes, because "unspent" is precisely the quantity
+/// that cannot be known — and releasing would turn a lifetime ceiling into a
+/// concurrency limiter, letting a $100 Team run ten thousand sequential $10 tasks
+/// (§4: a Team owns a budget and terminates). The one exception is a task cancelled
+/// before it was ever dispatched: no process ran, so no spend was possible, and
+/// holding that commitment would be a lie in the other direction. The escape valve
+/// is a human raising the ceiling, which is the control this is for.</para>
+///
+/// <para><b>Written only by a human.</b> A Lead that could raise its own ceiling is
+/// enforcement living exactly where a model can reason past it (§2 principle 3), so
+/// the write path is the §12 dashboard and there is deliberately no MCP tool. A Lead
+/// may <em>read</em> it (<c>get_team_state</c>) — seeing your own ceiling is how you
+/// plan, and how you explain why dispatch stopped.</para>
+/// </summary>
 public sealed class TeamBudgetRow
 {
     /// <summary>The Team this ceiling governs; the primary key (one row per Team).</summary>

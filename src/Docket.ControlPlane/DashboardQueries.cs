@@ -38,6 +38,11 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
         TaskState.BlockedOnInput, TaskState.Parked,
     ];
 
+    // How many distinct auth failures the inbox carries (§12). Smaller than the event
+    // log's window on purpose: this panel answers "what needs a person now", and a
+    // hundredth-oldest failure on a live task is a history question the log answers.
+    private const int AuthFailureLimit = 50;
+
     // ── Machine Group view (§12) ──────────────────────────────────────────────
 
     /// <summary>
@@ -342,14 +347,12 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
     /// <summary>
     /// Everything waiting on a person across every Team (§12): open questions
     /// (blocked_on_input) with the typed kind and the worker's own question text,
-    /// tasks awaiting review (verifying + review mode, §7), and parked tasks awaiting
-    /// an answer (§11) with the same question. This is where a person answers, so it is
-    /// the one place the question's prose has to be legible verbatim — a §12 human
-    /// surface, not a §10 agent read. Two §12 rows remain structural empty states rather
-    /// than omissions, for different reasons: permission requests have no source at all,
-    /// while auth failures do have one — the sink persists them as task event rows (#50)
-    /// and the event log renders them — and this view simply does not join them yet,
-    /// which is a rendering gap rather than a missing column.
+    /// tasks awaiting review (verifying + review mode, §7), parked tasks awaiting
+    /// an answer (§11) with the same question, and the auth failures a person could
+    /// still act on (§11, #50). This is where a person answers, so it is the one place
+    /// the question's prose has to be legible verbatim — a §12 human surface, not a §10
+    /// agent read. Permission requests are the one §12 row left as a structural empty
+    /// state: unlike auth failures they have no source in the schema at all.
     /// </summary>
     public async Task<InboxView> GetInboxAsync(CancellationToken ct = default)
     {
@@ -373,7 +376,56 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
                 t.Id, t.Namespace, t.TeamId, t.ParkMachine, t.InputKind, t.InputQuestion))
             .ToListAsync(ct);
 
-        return new InboxView(questions, awaitingReview, parked);
+        // §11/§12 (#50): the auth failures a person could still act on. Nothing marks an
+        // individual failure resolved — the §11 remediation menu is not built — so a live
+        // task stands in for "unresolved": once a task is terminal, no scope a person
+        // grants changes its outcome, and the event log keeps every failure either way.
+        //
+        // Driven from the live tasks rather than from the event rows. task_events is the
+        // plane's busiest table and is indexed by task id, so asking it about a bounded set
+        // of live ids stays an index lookup, where filtering its whole history by kind would
+        // scan it — on a page that refreshes every 5s. It also means the namespace and state
+        // this view labels each failure with come from the same read that chose it.
+        var liveTasks = await db.Tasks.AsNoTracking()
+            .Where(t => ActiveStates.Contains(t.State))
+            .Select(t => new { t.Id, t.Namespace, t.State })
+            .ToDictionaryAsync(t => t.Id, t => (t.Namespace, t.State), ct);
+        var liveTaskIds = liveTasks.Keys.ToArray();
+
+        // Collapsed by the facts that identify the same problem: a retrying worker writes one
+        // row per attempt, and what that repetition is worth to a person is the count and the
+        // newest of them, not a wall of identical rows.
+        var failureGroups = await db.TaskEvents.AsNoTracking()
+            .Where(e => e.Kind == TaskEventRow.AuthFailedKind && liveTaskIds.Contains(e.TaskId))
+            .GroupBy(e => new
+            {
+                e.TaskId, e.TeamId, e.AuthOperation, e.AuthTarget, e.AuthErrorCode, e.AuthMissingScope,
+            })
+            .Select(g => new
+            {
+                g.Key,
+                Occurrences = g.Count(),
+                LastFailedAt = g.Max(e => e.OccurredAt),
+            })
+            .OrderByDescending(g => g.LastFailedAt)
+            .Take(AuthFailureLimit)
+            .ToListAsync(ct);
+
+        var authFailures = failureGroups
+            .Select(g => new AuthFailureItemView(
+                g.Key.TaskId,
+                liveTasks[g.Key.TaskId].Namespace,
+                g.Key.TeamId,
+                liveTasks[g.Key.TaskId].State,
+                g.Key.AuthOperation,
+                g.Key.AuthTarget,
+                g.Key.AuthErrorCode,
+                g.Key.AuthMissingScope,
+                g.LastFailedAt,
+                g.Occurrences))
+            .ToList();
+
+        return new InboxView(questions, awaitingReview, parked, authFailures);
     }
 
     // ── Event log (§12) ───────────────────────────────────────────────────────
@@ -575,11 +627,35 @@ public sealed record ParkedItemView(
     InputRequestKind? Kind,
     string? Question);
 
+/// <summary>
+/// An auth failure a person could still act on (§11, §12): the structured facts the
+/// runner reported (#50), collapsed across the repeat attempts that reported the same
+/// problem. <see cref="Occurrences"/> is how many rows collapsed into this one and
+/// <see cref="LastFailedAt"/> the newest of them, so a worker wedged in a retry loop
+/// reads as one entry getting worse rather than a wall of identical ones.
+/// <see cref="State"/> is the task's state right now — always non-terminal, since a
+/// finished task is not waiting on a credential. Every fact is nullable because the row
+/// stores what the runner sent, and a runner may name no scope (or, on rows written
+/// before the columns existed, nothing at all).
+/// </summary>
+public sealed record AuthFailureItemView(
+    Guid TaskId,
+    string Namespace,
+    Guid TeamId,
+    TaskState State,
+    string? Operation,
+    string? Target,
+    string? ErrorCode,
+    string? MissingScope,
+    DateTimeOffset LastFailedAt,
+    int Occurrences);
+
 /// <summary>The Human inbox across all Teams (§12).</summary>
 public sealed record InboxView(
     IReadOnlyList<InputRequestView> Questions,
     IReadOnlyList<ReviewItemView> AwaitingReview,
-    IReadOnlyList<ParkedItemView> Parked);
+    IReadOnlyList<ParkedItemView> Parked,
+    IReadOnlyList<AuthFailureItemView> AuthFailures);
 
 /// <summary>
 /// One dispatch of a task and the machine whose disk may hold its transcript (§12

@@ -5,5 +5,12 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
     <LangVersion>latest</LangVersion>
+    <!-- Doc generation is on solely to make the compiler resolve <see cref>s, so a deleted
+         or renamed symbol breaks the build instead of rotting in a comment (issue #82).
+         CS1591 (missing doc) and CS1573 (some params documented, not all) are off: this
+         codebase documents the interesting members and the interesting params only, and
+         demanding the rest would trade a real check for hundreds of empty tags. -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <NoWarn>$(NoWarn);CS1591;CS1573</NoWarn>
   </PropertyGroup>
 </Project>

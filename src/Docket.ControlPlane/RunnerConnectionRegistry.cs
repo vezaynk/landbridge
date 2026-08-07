@@ -14,9 +14,11 @@ namespace Docket.ControlPlane;
 /// last said the task's process was alive, and when the task last made progress.
 ///
 /// It is transport-agnostic — nothing here knows about WebSockets — so it is
-/// driven directly in tests. All state is process-local and evaporates on
-/// restart; machine-assignment persistence across a control-plane restart is a
-/// documented follow-up (§10 is single control plane for v1).
+/// driven directly in tests. All state is process-local and evaporates on restart,
+/// but it is no longer lost: a reconnecting machine's dispatches are re-adopted from
+/// committed state by <see cref="DispatchService.RehydrateMachineAsync"/> (§10, #86),
+/// which is what lets a task survive a plane restart instead of stranding in
+/// <c>working</c> with no clock over it.
 /// </summary>
 public sealed class RunnerConnectionRegistry(TimeProvider clock)
 {
@@ -33,9 +35,28 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
         };
     }
 
-    /// <summary>Drops a machine's connection (socket closed). Its tracked tasks are
-    /// returned by <see cref="TasksOn"/> first so the caller can requeue them.</summary>
-    public void Unregister(string machineId) => _connections.TryRemove(machineId, out _);
+    /// <summary>
+    /// Drops a machine's connection (socket closed) and returns the tasks it still
+    /// held, so the caller can requeue them <em>after</em> the connection is gone (#87).
+    ///
+    /// <para>Returning them is what makes that order possible: removal and the read are
+    /// one step, so there is no window in which the connection is unreachable but its
+    /// tasks are still unknown. A caller that unregistered first and then asked
+    /// <see cref="TasksOn"/> would get an empty list and requeue nothing — stranding
+    /// exactly the tasks the disconnect was supposed to free.</para>
+    ///
+    /// <para>Once the connection is out of the dictionary the machine is invisible to
+    /// <see cref="ReadyMachines"/>, <see cref="SnapshotFor"/> and <see cref="SendAsync"/>,
+    /// so the requeue's own <c>pg_notify</c> cannot wake a dispatch pass that claims a
+    /// task straight back onto the dead socket. Empty when the machine was already gone.</para>
+    /// </summary>
+    public IReadOnlyList<TaskId> Unregister(string machineId)
+    {
+        if (!_connections.TryRemove(machineId, out var conn))
+            return [];
+        lock (conn.Gate)
+            return conn.Dispatched.Keys.ToArray();
+    }
 
     /// <summary>
     /// Folds a heartbeat into connection state: readiness (ready unless under
@@ -62,7 +83,14 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
         }
     }
 
-    /// <summary>Records that a task was dispatched to a machine, stamping both clocks now.</summary>
+    /// <summary>
+    /// Records that a task was dispatched to a machine, stamping both clocks now. Also
+    /// the re-adoption path on reconnect (§10, #86): stamping <em>now</em> rather than
+    /// carrying a pre-restart timestamp is deliberate there — the clocks measure the
+    /// plane's own silence, so a rehydrated task gets a full window to prove itself
+    /// instead of being requeued the instant its machine comes back. No-ops when the
+    /// machine has no live connection.
+    /// </summary>
     public void TrackDispatch(string machineId, TaskId task)
     {
         if (!_connections.TryGetValue(machineId, out var conn))
@@ -123,10 +151,11 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// a blocked task's machine — to judge that machine's liveness and record it
     /// in the park record — and the forward orchestrator (§8.3) resolves the
     /// producer and consumer machines of a forward from their tasks. A task is
-    /// tracked on at most one machine (dispatch is single, §9 check 5). Null
-    /// means the plane no longer holds the assignment (e.g. after a control-plane
-    /// restart drops this in-memory registry — machine-assignment persistence is
-    /// a documented §10 follow-up); callers treat that conservatively.
+    /// tracked on at most one machine (dispatch is single, §9 check 5). Null means the
+    /// plane does not currently hold the assignment — the machine is disconnected, or it
+    /// has not reconnected yet since a plane restart (a reconnect re-adopts what it holds,
+    /// <see cref="DispatchService.RehydrateMachineAsync"/>); callers treat that
+    /// conservatively.
     /// </summary>
     public string? MachineFor(TaskId task)
     {

@@ -148,9 +148,12 @@ public sealed record ContinuationSource(
 /// workspace (§7), and <see cref="HarnessSessionRef"/> is the opaque session ref
 /// of the work session that then blocked — the sweeper copies it into the park
 /// record so redispatch can resume the transcript (§11 resume; null when no
-/// session-init was ever observed). No prose and no machine — the machine comes
-/// from the live connection registry, not the row (§10 single control plane;
-/// machine-assignment persistence across a restart is a documented follow-up).
+/// session-init was ever observed). No prose and no machine — the machine comes from
+/// the live connection registry, not the row (§10 single control plane). That survives
+/// a plane restart now: the registry is repopulated for a reconnecting machine from the
+/// durable instance record, blocked tasks included
+/// (<see cref="DispatchService.RehydrateMachineAsync"/>, #86), so the sweeper resolves a
+/// machine again once the machine is back rather than skipping the task forever.
 /// </summary>
 public sealed record BlockedTaskView(
     Guid TaskId,

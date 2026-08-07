@@ -180,7 +180,7 @@ public static class RunnerWire
     }
 
     /// <summary>Decodes one event, or <c>null</c> when the <c>type</c> is missing
-    /// or outside the vocabulary (§10 symmetry with <see cref="DecodeCommand"/>).</summary>
+    /// or outside the vocabulary (§10 symmetry with <see cref="DecodeCommand(string)"/>).</summary>
     public static RunnerEvent? DecodeEvent(string json)
     {
         if (!TryParse(json, out var doc))
