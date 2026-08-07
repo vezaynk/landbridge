@@ -364,14 +364,33 @@ internal static class DashboardRenderer
         }
         sb.Append("</section>");
 
-        // Two §12 rows this view does not fill — shown honestly, never omitted. Only
-        // permission requests genuinely have no source: auth failures are persisted as
-        // task event rows (#50) and render on the event log, so the copy below is stale
-        // and this panel is a rendering gap rather than a missing column.
+        // The runner's own auth-failure facts (§11, #50), for the tasks still live enough
+        // for a person to help: a missing scope is granted by a human, never by the worker
+        // retrying. Repeat attempts at the same thing arrive as one row each and are
+        // collapsed into one entry with a count, so a wedged worker reads as a single
+        // problem getting worse. The event log keeps the full history, failures on
+        // finished tasks included.
         sb.Append("<section><h2>Auth failures</h2>");
-        sb.Append(Empty("Not recorded: the runner reports auth failures but the control plane only logs them today (§11)."));
+        if (inbox.AuthFailures.Count == 0)
+            sb.Append(Empty("No auth failures on live tasks."));
+        else
+        {
+            sb.Append("<table><thead><tr><th>Namespace</th><th>Team</th><th>State</th>" +
+                      "<th>Operation</th><th>Target</th><th>Error code</th><th>Missing scope</th>" +
+                      "<th class=\"num\">Failures</th></tr></thead><tbody>");
+            foreach (var f in inbox.AuthFailures)
+                sb.Append($"<tr><td><code>{E(f.Namespace)}</code></td><td>{TeamLink(f.TeamId)}</td>" +
+                          $"<td>{StateBadge(f.State)}</td>" +
+                          $"<td>{AuthFactCell(f.Operation)}</td><td>{AuthFactCell(f.Target)}</td>" +
+                          $"<td>{AuthFactCell(f.ErrorCode)}</td><td>{AuthFactCell(f.MissingScope)}</td>" +
+                          $"<td class=\"num\">{f.Occurrences}" +
+                          $"<div class=\"nt\">last {E(Age(f.LastFailedAt, now))}</div></td></tr>");
+            sb.Append("</tbody></table>");
+        }
         sb.Append("</section>");
 
+        // The one §12 row still without a source of any kind: nothing records a permission
+        // request, so there is nothing to join and this stays an honest empty state.
         sb.Append("<section><h2>Permission requests</h2>");
         sb.Append(Empty("Not built yet."));
         sb.Append("</section>");
@@ -718,6 +737,17 @@ internal static class DashboardRenderer
         question is { Length: > 0 } q
             ? $"<pre class=\"report\">{E(q)}</pre>"
             : "<span class=\"nt\">none given</span>";
+
+    /// <summary>
+    /// One structured fact of an auth failure in the inbox (§11, #50) — the operation, its
+    /// target, the error code, the scope that was missing. A runner reports what it knows
+    /// and no more, so a fact it never sent says so instead of leaving a blank cell a
+    /// reader would take for a value.
+    /// </summary>
+    private static string AuthFactCell(string? value) =>
+        value is { Length: > 0 } v
+            ? $"<code>{E(v)}</code>"
+            : "<span class=\"nt\">not reported</span>";
 
     /// <summary>§9 check 4 completion provenance, humanized for the task view.</summary>
     private static string ProvenanceLabel(Docket.Core.VerdictProvenance p) => p switch
