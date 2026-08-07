@@ -76,6 +76,15 @@ public static class RunnerEndpoint
 
         try
         {
+            // §10/#86: dispatch tracking is plane memory, so a reconnecting machine may
+            // still be running work this process knows nothing about — after a plane
+            // restart, always. Re-adopt what it holds from committed state BEFORE the
+            // receive loop runs, so its very first `alive` lands on a tracked task
+            // instead of being dropped, and both liveness clocks resume from now.
+            // Inside the try: a failure here still unregisters below, and docketd's
+            // reconnect backoff retries the whole handshake.
+            await dispatch.RehydrateMachineAsync(machineId, context.RequestAborted);
+
             await ReceiveLoopAsync(socket, machineId, registry, sink, dispatch, logger, context.RequestAborted);
         }
         catch (OperationCanceledException) { }
@@ -86,10 +95,20 @@ public static class RunnerEndpoint
         finally
         {
             // §10 requeue-on-disconnect: a dropped connection is a machine gone —
-            // requeue everything it held (the reboot path does exactly this),
-            // then drop the registration.
-            await sink.HandleAsync(new RebootedEvent(machineId, DateTimeOffset.UtcNow), CancellationToken.None);
-            registry.Unregister(machineId);
+            // requeue everything it held (the reboot path does exactly this).
+            //
+            // Unregister FIRST (#87). The requeue commits a pg_notify that wakes the
+            // dispatch loop; while this dying connection is still registered and flagged
+            // ready, a pass claims one of these very tasks, fails to write to the dead
+            // socket, and requeues it a second time as AckTimeout — two requeues for one
+            // disconnect, which with the §9 check 7 cap of 5 abandons a flapping machine's
+            // task in as few as three disconnects. Dropping the registration first takes
+            // the machine out of ReadyMachines/SnapshotFor, so that wake finds nothing to
+            // dispatch here. Unregister returns what the connection held precisely so this
+            // order does not lose it — asking the registry afterwards would yield nothing
+            // and requeue nothing.
+            var held = registry.Unregister(machineId);
+            await sink.HandleDisconnectAsync(machineId, held, CancellationToken.None);
             logger.LogInformation("runner disconnected: machine={Machine}", machineId);
         }
     }

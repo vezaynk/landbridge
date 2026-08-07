@@ -22,6 +22,12 @@ namespace Docket.Chaos.Tests;
 ///   liveness half (the clocks that reclaim a task whose worker has stopped getting
 ///   anywhere). A true network partition, with the machine's socket held open, is not
 ///   covered here.</description></item>
+/// <item><term>Restart the plane mid-task</term><description>
+///   <see cref="A_task_in_flight_survives_a_plane_restart_and_stays_under_its_liveness_clocks"/> —
+///   the control plane is SIGKILLed under live work and replaced; the reconnecting machine's
+///   in-flight task is re-adopted and its liveness clocks resume. This one was unwritable as
+///   a passing test until #86 was fixed: dispatch tracking was memory-only and never
+///   rehydrated, so the task was stranded in <c>working</c> forever.</description></item>
 /// </list>
 ///
 /// <para>Not in this slice, and still open from §17.8: cancel with each disposition,
@@ -29,13 +35,16 @@ namespace Docket.Chaos.Tests;
 /// mid-decomposition, close a laptop and reattach, park a task and answer it after the
 /// machine is gone.</para>
 ///
-/// <para><b>Requeue counts are asserted tolerantly on purpose.</b> Infrastructure
-/// requeues are capped (#73, default 5 per task) and a task that reaches its cap is
-/// abandoned as <c>canceled</c>, so these scenarios assert "at least one requeue" and
-/// "eventually leaves the state it was stuck in" — never an exact count, and never
-/// retry-forever behaviour. Where a scenario could drift into the cap it says so and
-/// asserts it has not; the cap itself is covered by
-/// <c>Docket.Core.Tests.RequeueCapTests</c>.</para>
+/// <para><b>Requeue counts are asserted tolerantly except where a count is the point.</b>
+/// Infrastructure requeues are capped (#73, default 5 per task) and a task that reaches its
+/// cap is abandoned as <c>canceled</c>, so a scenario about some other mechanism asserts "at
+/// least one requeue" and "eventually leaves the state it was stuck in" rather than an exact
+/// count, and never asserts retry-forever behaviour. Where a scenario could drift into the
+/// cap it says so and asserts it has not; the cap itself is covered by
+/// <c>Docket.Core.Tests.RequeueCapTests</c>. The two disconnect/restart scenarios are the
+/// exception and assert the trail exactly, because "one requeue per disconnect" is the
+/// property under test (#87) — a doubled requeue is invisible to a tolerant assertion and
+/// costs a flapping machine its cap in three disconnects instead of five.</para>
 ///
 /// <para><b>Requeue reasons are read from committed state</b>
 /// (<c>tasks.last_requeue_reason</c> and <c>task_events.liveness_reason</c>, both added
@@ -151,8 +160,9 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
             await AssertReachesAsync(fleet, task, TaskState.Submitted,
                 "a sibling was not requeued after docketd was SIGKILLed", ct, siblings);
             var facts = (await fleet.FactsAsync(task, ct))!.Value;
-            Assert.True(facts.InfrastructureRequeues > beforeKill[task].InfrastructureRequeues,
-                $"task {task} did not count an infrastructure requeue " +
+            Assert.True(facts.InfrastructureRequeues == beforeKill[task].InfrastructureRequeues + 1,
+                $"task {task} counted {facts.InfrastructureRequeues - beforeKill[task].InfrastructureRequeues} " +
+                $"infrastructure requeue(s) for one disconnect, expected exactly 1 " +
                 $"({beforeKill[task].InfrastructureRequeues} → {facts.InfrastructureRequeues})\n" +
                 await fleet.DiagnoseAsync(siblings, ct));
             Assert.Null(facts.CurrentInstanceId);
@@ -163,21 +173,20 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
             // persisted (#73) the only way to keep them apart here was to push the
             // no-progress ceiling far out and trust it. Now it is assertable.
             //
-            // Asserted over the whole requeue trail rather than as the LAST reason,
-            // because the two siblings do not end up with the same trail. The disconnect
-            // requeues both with MachineReboot, and that commit's notify wakes the
-            // dispatch loop while the dying connection is still registered
-            // (RunnerEndpoint requeues in its `finally` BEFORE unregistering). A pass
-            // claims ONE task, cannot write to the dead socket, and requeues it again as
-            // AckTimeout; by the next pass the connection is gone, so the other sibling
-            // keeps the bare MachineReboot trail. Which of the two pays the extra requeue
-            // varies per run. Both reasons are the same underlying fact — the machine is
-            // gone — so what is worth asserting is that the trail says machine-gone and
-            // that NEITHER liveness clock fired.
-            var reasons = await fleet.RequeueReasonsAsync(task, ct);
-            Assert.Contains(LivenessLossReason.MachineReboot, reasons);
-            Assert.DoesNotContain(LivenessLossReason.NoProgress, reasons);
-            Assert.DoesNotContain(LivenessLossReason.LivenessTimeout, reasons);
+            // The whole trail, exactly: ONE requeue per task per disconnect, and it says
+            // machine-gone. This assertion used to tolerate a trailing AckTimeout because
+            // the endpoint requeued in its `finally` BEFORE unregistering, so the requeue's
+            // own notify woke a dispatch pass while the dying connection was still
+            // registered and ready — a pass claimed ONE of the two siblings onto the dead
+            // socket and burned a second requeue (which sibling varied per run, #87). The
+            // endpoint now unregisters first, so there is no window in which the corpse is
+            // dispatchable and the trail is deterministic for both siblings. Exact rather
+            // than tolerant on purpose: at #85's cap of 5 a doubled requeue means a
+            // flapping machine abandons a task in as few as three disconnects, and only an
+            // exact count can catch that coming back.
+            Assert.Equal(
+                [LivenessLossReason.MachineReboot],
+                await fleet.RequeueReasonsAsync(task, ct));
         }
 
         // ── 2. The restart sweep runs before the daemon accepts anything.
@@ -345,6 +354,109 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
             $"the wedge reached its requeue cap ({reclaimed.InfrastructureRequeues}/" +
             $"{reclaimed.InfrastructureRequeueLimit}) before this scenario could assert on it\n" +
             await fleet.DiagnoseAsync([task], ct));
+    }
+
+    /// <summary>
+    /// §17.8: "restart the plane mid-task" — the scenario that was unwritable as a passing
+    /// test until #86 was fixed, and is now its regression test.
+    ///
+    /// <para>A task is left <c>working</c> and the PLANE is SIGKILLed. Nothing plane-side
+    /// runs on the way out — no requeue, no unregister — so the replacement process comes
+    /// up with an empty <c>RunnerConnectionRegistry</c> over a database that still says the
+    /// task is working on this machine. docketd survives (it holds each worker's stdin, so
+    /// the dead-man's switch does not trip and the worker keeps running) and reconnects on
+    /// its own backoff, re-announcing nothing: <c>rebooted</c> is emitted once per daemon
+    /// PROCESS start, not per socket.</para>
+    ///
+    /// <para>That combination was a permanent strand. The reconnecting machine was
+    /// registered with no scan for what it held, so the task was tracked nowhere: its
+    /// <c>alive</c> events were dropped on the floor (<c>Refresh</c> returns for an
+    /// untracked task) and the liveness scan never saw it (it walks <c>AllTracked</c>).
+    /// No clock covered the task and no requeue could ever fire — it sat in <c>working</c>
+    /// forever.</para>
+    ///
+    /// <para>What is asserted, in the order the fix produces it:</para>
+    /// <list type="number">
+    /// <item>The restarted plane re-adopts the in-flight task from committed state, which
+    /// its own log states — the direct observation, and what bounds docketd's reconnect.</item>
+    /// <item>The task is genuinely back under both clocks: it is reclaimed, and the reason
+    /// is <c>NoProgress</c>. That single reason carries three facts at once. It fires at
+    /// all, so tracking resumed. It is not <c>LivenessTimeout</c>, so the re-adopted clocks
+    /// started at reconnect rather than carrying a pre-restart timestamp that would have
+    /// requeued healthy work for the plane's own downtime — and so the machine's
+    /// <c>alive</c> events are landing again, since only they hold that clock off. And it
+    /// is not <c>MachineReboot</c>, so this is the liveness path reclaiming a tracked task,
+    /// not a disconnect sweeping an untracked one.</item>
+    /// <item>Nothing was stranded and nothing was lost: the reclaimed task is requeued
+    /// exactly once and redispatched onto the reconnected machine.</item>
+    /// </list>
+    ///
+    /// <para>The wedge profile is what makes this deterministic: a worker that stays alive
+    /// and makes no progress leaves <c>NoProgress</c> as the only clock that can fire, and
+    /// leaves the task reliably <c>working</c> at the moment the plane is killed. The
+    /// ceiling is shrunk to seconds but kept comfortably longer than the restart itself, so
+    /// the requeue being asserted cannot be one the doomed plane had already started.</para>
+    /// </summary>
+    [SkippableFact]
+    public async Task A_task_in_flight_survives_a_plane_restart_and_stays_under_its_liveness_clocks()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        Skip.If(OperatingSystem.IsWindows(), WindowsSkip);
+
+        using var cts = new CancellationTokenSource(ScenarioBudget);
+        var ct = cts.Token;
+        await using var fleet = new ChaosFleet(pg, new ChaosFleetOptions
+        {
+            HeartbeatInterval = TimeSpan.FromSeconds(1),
+            PerTaskLivenessWindow = TimeSpan.FromSeconds(5),
+            // Long enough that the pre-restart plane cannot reach it before the kill, short
+            // enough to assert on: the post-restart reclaim lands within one ceiling plus
+            // one sweep period of the reconnect.
+            NoProgressCeiling = TimeSpan.FromSeconds(20),
+        });
+        await fleet.StartAsync(ct);
+
+        var task = await fleet.CreateTaskAsync("chaos plane restart", ChaosProfiles.Wedge, ct);
+        await AssertReachesAsync(fleet, task, TaskState.Working, "the wedged worker never started", ct);
+        var beforeRestart = (await fleet.FactsAsync(task, ct))!.Value;
+        Assert.Equal(0, beforeRestart.InfrastructureRequeues);
+
+        await fleet.RestartPlaneAsync(ct);
+
+        // ── 1. The new plane re-adopts what the machine still holds. This is also the
+        // bound on docketd's reconnect: its backoff starts at 200ms and doubles to a 10s
+        // ceiling, so a reconnect plus re-adoption well inside the transition budget is the
+        // observable fact, not an assumed one.
+        var readopted = await fleet.WaitForPlaneLineAsync(
+            l => l.Contains("re-adopted", StringComparison.Ordinal), TransitionBudget);
+        Assert.True(readopted is not null,
+            "the restarted plane never re-adopted the in-flight task, so docketd either did " +
+            "not reconnect within the budget or reconnected to a plane that scanned nothing\n" +
+            await fleet.DiagnoseAsync([task], ct));
+        Assert.Contains(task.ToString(), readopted!);
+
+        // ── 2. Back under both clocks — reclaimed, and by the progress clock.
+        Assert.True(
+            await ChaosFleet.WaitUntilAsync(
+                async () =>
+                {
+                    var facts = await fleet.FactsAsync(task, ct);
+                    return facts is { } f && f.InfrastructureRequeues > 0;
+                },
+                TransitionBudget, ct),
+            "the re-adopted task was never reclaimed, so it is stranded in working with no " +
+            "clock over it — the #86 symptom\n" + await fleet.DiagnoseAsync([task], ct));
+
+        var reasons = await fleet.RequeueReasonsAsync(task, ct);
+        Assert.Equal([LivenessLossReason.NoProgress], reasons);
+
+        // ── 3. Nothing lost: it goes back out to the machine that is still there.
+        await AssertReachesAsync(fleet, task, TaskState.Working,
+            "the reclaimed task was never redispatched after the plane restart", ct);
+        var afterRestart = (await fleet.FactsAsync(task, ct))!.Value;
+        Assert.Equal(1, afterRestart.InfrastructureRequeues);
+        Assert.Equal(1, afterRestart.LiveInstanceCount);
+        Assert.NotEqual(beforeRestart.CurrentInstanceId, afterRestart.CurrentInstanceId);
     }
 
     // ── Shared assertions ───────────────────────────────────────────────────────

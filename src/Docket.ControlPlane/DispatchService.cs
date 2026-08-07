@@ -25,6 +25,11 @@ namespace Docket.ControlPlane;
 /// <see cref="CheckLivenessAsync"/>) — and requeue-on-disconnect (the socket loop
 /// calling the event sink) covers a vanished machine. Fine-grained ack-vs-liveness
 /// split is deferred.
+///
+/// <para>Both clocks read the in-memory registry, so the other half of that story is
+/// <see cref="RehydrateMachineAsync"/>: a reconnecting machine's in-flight dispatches are
+/// re-adopted from committed state, which is what puts a task that outlived a plane
+/// restart back under a clock instead of leaving it stranded in <c>working</c> (§10, #86).</para>
 /// </summary>
 public sealed class DispatchService : IHostedService
 {
@@ -200,6 +205,50 @@ public sealed class DispatchService : IHostedService
             if (!progressed)
                 break;
         }
+    }
+
+    /// <summary>
+    /// Re-adopts the dispatches a reconnecting machine already holds (§10, #86), called
+    /// by the runner endpoint once the connection is registered and before its receive
+    /// loop starts. Returns how many tasks were re-tracked.
+    ///
+    /// <para><b>Why it exists.</b> Dispatch→machine tracking lives only in
+    /// <see cref="RunnerConnectionRegistry"/>, i.e. in this process's memory. A plane
+    /// restart therefore comes back with an empty registry while the machines it dispatched
+    /// to are still running that work — and nothing re-derived it: docketd announces
+    /// <c>rebooted</c> once per <em>process</em> start, so a socket reconnect re-announces
+    /// nothing; <see cref="RunnerConnectionRegistry.RecordAlive"/> silently drops signals
+    /// for a task it is not tracking; and <see cref="CheckLivenessAsync"/> only iterates
+    /// what is tracked. A task left <c>working</c> across the restart was covered by no
+    /// clock at all — stranded, with its own liveness signals discarded. Re-adopting on
+    /// connect fixes it plane-side, keeping the runner dumb (§10 the-runner-is-transport):
+    /// no new wire member, nothing for docketd to remember.</para>
+    ///
+    /// <para><b>Instance fencing</b> (§9.14) is the store query's, not this method's — see
+    /// <see cref="TaskStore.HeldDispatchesOnAsync"/>: only a task whose live incumbent
+    /// instance was minted for <paramref name="machineId"/> is re-adopted, so a requeued
+    /// task is never re-adopted and a stale instance's events are still refused.</para>
+    ///
+    /// <para><b>Clock initialization.</b> <see cref="RunnerConnectionRegistry.TrackDispatch"/>
+    /// stamps both clocks at connect time. That is the only defensible choice of the three
+    /// available: a pre-restart timestamp would make the aliveness clock fire on the first
+    /// scan and requeue healthy work for the plane's own downtime, and leaving the clocks
+    /// unset would restore tracking without restoring liveness. Starting at now costs at
+    /// most one window of delayed detection for a machine that died during the restart,
+    /// which the aliveness clock then catches normally.</para>
+    /// </summary>
+    public async Task<int> RehydrateMachineAsync(string machineId, CancellationToken ct)
+    {
+        using var scope = _scopes.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<TaskStore>();
+        var held = await store.HeldDispatchesOnAsync(machineId, ct);
+        foreach (var task in held)
+            _registry.TrackDispatch(machineId, task);
+        if (held.Count > 0)
+            _logger.LogInformation(
+                "re-adopted {Count} in-flight task(s) on reconnecting machine {Machine}: {Tasks}",
+                held.Count, machineId, string.Join(",", held));
+        return held.Count;
     }
 
     private enum DispatchOutcome { Dispatched, NothingEligible, SendFailed }

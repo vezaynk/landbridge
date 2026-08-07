@@ -196,7 +196,12 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
         _docketd = null;
     }
 
-    /// <summary>SIGKILL the plane, then bring an identically-configured one back up.</summary>
+    /// <summary>
+    /// SIGKILL the plane, then bring an identically-configured one back up on the same
+    /// URL and the same database — a plane restart under live work, which is exactly what
+    /// leaves in-flight tasks with no in-memory tracking behind them (§17.8, #86).
+    /// docketd is left running and reconnects on its own backoff.
+    /// </summary>
     public async Task RestartPlaneAsync(CancellationToken ct)
     {
         var victim = _plane ?? throw new InvalidOperationException("the plane is not running");
@@ -208,6 +213,18 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
         await StartPlaneAsync(ct);
         Note("plane back up");
     }
+
+    /// <summary>
+    /// Waits for a line from the CURRENT plane process. After
+    /// <see cref="RestartPlaneAsync"/> that process is brand new and its retained output
+    /// starts empty, so a line matched here unambiguously came from the plane that came
+    /// back — which is what lets a scenario observe post-restart behaviour directly
+    /// instead of inferring it from committed state alone. Returns the line, or null at
+    /// the deadline.
+    /// </summary>
+    public Task<string?> WaitForPlaneLineAsync(Func<string, bool> match, TimeSpan timeout) =>
+        (_plane ?? throw new InvalidOperationException("the plane is not running"))
+            .WaitForLineAsync(match, timeout);
 
     /// <summary>
     /// Plants a tagged process tree that will OUTLIVE docketd, standing in for the
