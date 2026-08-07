@@ -178,6 +178,20 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
                 $"infrastructure requeue(s) for one disconnect, expected exactly 1 " +
                 $"({beforeKill[task].InfrastructureRequeues} → {facts.InfrastructureRequeues})\n" +
                 await fleet.DiagnoseAsync(siblings, ct));
+            // Sampled the instant the task is observed submitted, deliberately, and NOT
+            // behind a settle-wait. This pair is what caught #87 in CI on master (run
+            // 31200118872): the requeue's notify woke a dispatch pass while the dead
+            // connection was still registered, the pass claimed the task and minted a fresh
+            // instance, and this Assert.Null sampled that transient and failed holding a live
+            // guid. Unregistering first removes the mechanism rather than the symptom — the
+            // SIGKILL leaves this single-machine fleet with nothing registered, so
+            // ReadyMachines is empty and no pass can claim the task until step 2 restarts
+            // docketd. There is no longer a window to sample, which is why this is now stable.
+            //
+            // Adding a settle-wait here would make the assertion vacuous: it would let a
+            // returning race finish its second requeue and then observe a null instance
+            // again, hiding exactly the transient this is positioned to catch. The exact
+            // trail below would still fail, but this is the cheaper, earlier signal.
             Assert.Null(facts.CurrentInstanceId);
             Assert.Equal(0, facts.LiveInstanceCount);
 
