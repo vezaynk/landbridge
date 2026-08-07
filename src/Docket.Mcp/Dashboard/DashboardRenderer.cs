@@ -253,8 +253,8 @@ internal static class DashboardRenderer
         {
             sb.Append("<table><thead><tr>");
             sb.Append("<th>Namespace</th><th>State</th><th>Mode</th>");
-            sb.Append("<th class=\"num\">Attempt</th><th class=\"num\">Parks</th><th>Detail</th><th>Report</th>");
-            sb.Append("<th>Q&amp;A</th><th>Transcript</th>");
+            sb.Append("<th class=\"num\">Attempt</th><th class=\"num\">Parks</th><th>Detail</th>");
+            sb.Append("<th>Result</th><th>Report</th><th>Q&amp;A</th><th>Transcript</th>");
             sb.Append("</tr></thead><tbody>");
             foreach (var t in team.Tasks)
             {
@@ -266,6 +266,7 @@ internal static class DashboardRenderer
                 var parks = t.Parks > 0 ? $"<span class=\"parks-hot\">{t.Parks}</span>" : "0";
                 sb.Append($"<td class=\"num\">{parks}</td>");
                 sb.Append($"<td>{TaskDetailCell(t, now)}</td>");
+                sb.Append($"<td>{ResultCell(t)}</td>");
                 sb.Append($"<td>{ReportCell(t)}</td>");
                 sb.Append($"<td>{ExchangeCell(t)}</td>");
                 sb.Append($"<td>{TranscriptCell(t)}</td>");
@@ -680,11 +681,6 @@ internal static class DashboardRenderer
     }
 
     /// <summary>
-    /// The worker's in-band report (§10), rendered verbatim-escaped behind a
-    /// disclosure so the task table stays compact. It is agent-authored text (§13):
-    /// escaped through <see cref="E(string)"/> and never interpreted, only shown.
-    /// </summary>
-    /// <summary>
     /// The §12 transcript link, offered only for a terminal task. A task that can still run
     /// is shown as not-yet-readable rather than linked-and-then-refused: the rule is a
     /// security one (a live worker credential may sit in an in-flight transcript, §13), so
@@ -695,9 +691,27 @@ internal static class DashboardRenderer
             ? $"<a href=\"/dashboard/tasks/{t.TaskId}/transcripts\">transcript</a>"
             : "<span class=\"nt\" title=\"readable once the task reaches a terminal state (§12)\">not yet</span>";
 
+    /// <summary>
+    /// The worker's in-band report (§10), rendered verbatim-escaped behind a
+    /// disclosure so the task table stays compact. It is agent-authored text (§13):
+    /// escaped through <see cref="E(string)"/> and never interpreted, only shown.
+    /// </summary>
     private static string ReportCell(TeamTaskView t) =>
         t.Report is { Length: > 0 } r
             ? $"<details><summary>report</summary><pre class=\"report\">{E(r)}</pre></details>"
+            : "<span class=\"nt\">—</span>";
+
+    /// <summary>
+    /// The §8.1 result reference a worker handed over on working → verifying (#81) — the
+    /// artifact pointer a human adjudicating in <c>review</c> mode rules on, and the one
+    /// thing a worker that left no report still said. Agent-authored, so escaped through
+    /// <see cref="E(string)"/> and shown as text, deliberately <b>not</b> as a link: the plane has
+    /// never dereferenced it (§8.1) and a clickable agent-controlled URL on an operator's
+    /// page is a §13 hazard, not a convenience. An em dash means nothing reported yet.
+    /// </summary>
+    private static string ResultCell(TeamTaskView t) =>
+        t.ResultReference is { Length: > 0 } r
+            ? $"<code>{E(r)}</code>"
             : "<span class=\"nt\">—</span>";
 
     /// <summary>

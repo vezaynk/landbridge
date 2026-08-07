@@ -217,6 +217,9 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
                 t.ContinuesTaskId,
                 t.CompletionProvenance,
                 t.WorkerReport,
+                // §8.1 (#81): the artifact pointer the worker handed over, so a human
+                // adjudicating in review mode sees the same thing the Lead rules on.
+                t.ResultReference,
                 t.InputKind,
                 t.InputQuestion,
                 t.InputAnswer,
@@ -275,6 +278,7 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
                 t.ContinuesTaskId,
                 t.State == TaskState.Completed ? t.CompletionProvenance : null,
                 t.WorkerReport,
+                t.ResultReference,
                 t.InputKind,
                 t.InputQuestion,
                 t.InputAnswer,
@@ -561,9 +565,13 @@ public sealed record TeamDetail(
 
 /// <summary>One task in a Team, with its park count (§12 "parks per task"); for a
 /// continuation task, the prior task it resumed (§6/§11 Y-continues-X lineage); and,
-/// for a completed task, who adjudicated it (§9 check 4 provenance). The last three
-/// carry this task's input exchange (§11): the typed <see cref="InputKind"/>, the
-/// worker's <see cref="Question"/>, and the <see cref="Answer"/> given. Unlike the
+/// for a completed task, who adjudicated it (§9 check 4 provenance).
+/// <see cref="ResultReference"/> is the §8.1 artifact pointer its worker handed over on
+/// working → verifying — where the finished work is said to live — shown here because a
+/// human adjudicating in <c>review</c> mode, or auditing a completed task afterwards,
+/// needs the same pointer the Lead rules on (§7, #81); null until the task reaches
+/// verifying. Then this task's input exchange (§11): the typed <see cref="InputKind"/>,
+/// the worker's <see cref="Question"/>, and the <see cref="Answer"/> given. Unlike the
 /// agent-facing views this is a human surface, so it carries the prose itself (§12) —
 /// a person cannot answer a question they cannot read.
 /// <para>The last three are §6's infrastructure counter, the cap it is judged against
@@ -582,6 +590,7 @@ public sealed record TeamTaskView(
     Guid? ContinuesTaskId,
     VerdictProvenance? CompletionProvenance,
     string? Report,
+    string? ResultReference,
     InputRequestKind? InputKind,
     string? Question,
     string? Answer,

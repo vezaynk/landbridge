@@ -407,6 +407,42 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
 
         Assert.Contains(report, text, StringComparison.Ordinal);       // the report itself
         Assert.Contains("Untrusted", text, StringComparison.Ordinal);  // §13 delimiting
+        // #81: the §8.1 artifact pointer rides the same fetch — this is the read surface the
+        // column had none of, and it is what §7 has the Lead adjudicating against.
+        Assert.Contains("git:ref", text, StringComparison.Ordinal);
+        Assert.Contains("RESULT_REFERENCE", text, StringComparison.Ordinal); // delimited, like the prose
+    }
+
+    [SkippableFact]
+    public async Task Get_task_report_surfaces_the_result_reference_when_there_is_no_report()
+    {
+        // #81, the case that makes the reference load-bearing rather than redundant: §6
+        // requires it to reach verifying while the report is optional, so a worker that
+        // left no prose still handed over an artifact — and a Lead told only "no report"
+        // would be adjudicating (§7) with nothing at all.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var taskId = await SeedReportedTask(Team, report: null);
+        var tools = LeadFor(new Principal.Lead(Team));
+
+        var text = await tools.GetTaskReport(taskId.ToString(), CancellationToken.None);
+
+        Assert.Contains("git:ref", text, StringComparison.Ordinal);
+        Assert.Contains("no worker report", text, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
+    public async Task Get_task_report_says_no_reference_before_the_task_reaches_verifying()
+    {
+        // A task nobody has reported on has no artifact to point at. Saying that is the
+        // honest answer; an empty delimited block would read as "the worker reported ''".
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var taskId = await SeedTask(Team);
+        var tools = LeadFor(new Principal.Lead(Team));
+
+        var text = await tools.GetTaskReport(taskId.ToString(), CancellationToken.None);
+
+        Assert.Contains("no result reference", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("RESULT_REFERENCE", text, StringComparison.Ordinal);
     }
 
     [SkippableFact]
@@ -577,6 +613,16 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         await store.DispatchNextAsync(Machine(), instance);
         await store.ApplyAsync(created.Task.Id,
             new ReportResult(new WorkerCaller(team, created.Task.Id, instance), "git:ref", report));
+        return created.Task.Id;
+    }
+
+    /// <summary>A freshly created task, never dispatched and never reported on — so it
+    /// carries neither a result reference nor a report.</summary>
+    private async Task<TaskId> SeedTask(TeamId team)
+    {
+        await using var db = pg.NewContext();
+        var created = (StoreResult.Applied)await new TaskStore(db, _clock).CreateAsync(
+            new CreateTask(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null, TeamBudgetRemains: true));
         return created.Task.Id;
     }
 

@@ -81,6 +81,15 @@ public sealed record TeamTaskSummary(
 /// null when the task has left none. Team-scoped at the store, so this is only ever
 /// built for a task in the caller's own Team.
 ///
+/// <para><see cref="ResultReference"/> is the §8.1 artifact pointer the worker handed
+/// over on working → verifying — a commit, branch, or URL, stored verbatim and never
+/// dereferenced. It rides this fetch because it is the half the Lead <em>must</em> be
+/// able to read: §6 requires it for the transition while the report beside it stays
+/// optional, so on a task whose worker reported no prose it is the only thing the
+/// worker said, and §7 has the Lead reading it before adjudicating. Non-null on any
+/// task that reached <c>verifying</c>; null before that, or on one the plane ended
+/// first.</para>
+///
 /// <para>The infrastructure account travels with it (§6/§9 check 7, #73):
 /// <see cref="InfrastructureRequeues"/> of <see cref="InfrastructureRequeueLimit"/>
 /// requeues, and <see cref="LastRequeueReason"/> for the signal behind the last one.
@@ -93,6 +102,7 @@ public sealed record TaskReportView(
     Guid TaskId,
     string Namespace,
     string? Report,
+    string? ResultReference,
     int InfrastructureRequeues = 0,
     int InfrastructureRequeueLimit = TaskRecord.DefaultInfrastructureRequeueLimit,
     LivenessLossReason? LastRequeueReason = null);
