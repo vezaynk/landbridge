@@ -694,7 +694,7 @@ internal static class DashboardRenderer
     /// <summary>
     /// The worker's in-band report (§10), rendered verbatim-escaped behind a
     /// disclosure so the task table stays compact. It is agent-authored text (§13):
-    /// escaped through <see cref="E"/> and never interpreted, only shown.
+    /// escaped through <see cref="E(string)"/> and never interpreted, only shown.
     /// </summary>
     private static string ReportCell(TeamTaskView t) =>
         t.Report is { Length: > 0 } r
@@ -705,7 +705,7 @@ internal static class DashboardRenderer
     /// The §8.1 result reference a worker handed over on working → verifying (#81) — the
     /// artifact pointer a human adjudicating in <c>review</c> mode rules on, and the one
     /// thing a worker that left no report still said. Agent-authored, so escaped through
-    /// <see cref="E"/> and shown as text, deliberately <b>not</b> as a link: the plane has
+    /// <see cref="E(string)"/> and shown as text, deliberately <b>not</b> as a link: the plane has
     /// never dereferenced it (§8.1) and a clickable agent-controlled URL on an operator's
     /// page is a §13 hazard, not a convenience. An em dash means nothing reported yet.
     /// </summary>
