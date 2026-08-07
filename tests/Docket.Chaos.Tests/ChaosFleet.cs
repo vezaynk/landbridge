@@ -325,6 +325,25 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     }
 
     /// <summary>
+    /// Whether the worker process for <paramref name="task"/> has actually started on the
+    /// machine — the wedge/<c>run</c> harness writes an atomic <c>started</c> marker into
+    /// its working directory (<c>{work_root}/{task}</c>) as its first act, so this is the
+    /// process existing, not merely the plane having decided it should.
+    ///
+    /// <para>That is a strictly stronger fact than the task being committed <c>working</c>,
+    /// and a scenario that kills something "mid-task" needs the stronger one. The store
+    /// commits submitted→working and mints the worker instance <em>before</em> the
+    /// DispatchCommand is sent (deliberately — a failed send then requeues a now-working
+    /// task instead of losing it), so there is a real window in which the row says
+    /// <c>working</c> while the command is still in flight and no worker exists anywhere.
+    /// Killing a process inside that window tests a lost dispatch, which is a different
+    /// scenario with a different correct outcome: the task has no live process, so the
+    /// aliveness clock reclaims it as <c>LivenessTimeout</c> and it never was mid-task.</para>
+    /// </summary>
+    public bool WorkerStarted(TaskId task) =>
+        File.Exists(Path.Combine(_workRoot, task.ToString(), "started"));
+
+    /// <summary>
     /// The worker token docketd injected for the CURRENT dispatch of
     /// <paramref name="task"/>, read out of the generated <c>mcp.json</c> in the task's
     /// work dir (§13) — the very token the live worker is authenticating with. Null

@@ -144,6 +144,19 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
         foreach (var task in siblings)
             await AssertReachesAsync(fleet, task, TaskState.Working, "a sibling never reached working", ct);
 
+        // Both workers must really be running before the kill. `working` is committed before
+        // the DispatchCommand is sent, so a task can be working with its command still in
+        // flight and no process behind it — and such a task reports no aliveness, so the
+        // aliveness clock would add a LivenessTimeout to the requeue trail asserted exactly
+        // below. Waiting for each worker's own start marker removes that window and makes
+        // "two tasks in flight" true rather than assumed.
+        foreach (var task in siblings)
+            Assert.True(
+                await ChaosFleet.WaitUntilAsync(
+                    () => Task.FromResult(fleet.WorkerStarted(task)), TransitionBudget, ct),
+                $"sibling {task} never wrote its start marker, so it was not actually in " +
+                $"flight when docketd was killed\n" + await fleet.DiagnoseAsync(siblings, ct));
+
         var beforeKill = new Dictionary<TaskId, TaskFacts>();
         foreach (var task in siblings)
             beforeKill[task] = (await fleet.FactsAsync(task, ct))!.Value;
@@ -417,7 +430,21 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
         await fleet.StartAsync(ct);
 
         var task = await fleet.CreateTaskAsync("chaos plane restart", ChaosProfiles.Wedge, ct);
-        await AssertReachesAsync(fleet, task, TaskState.Working, "the wedged worker never started", ct);
+        await AssertReachesAsync(fleet, task, TaskState.Working, "the task never reached working", ct);
+
+        // MID-TASK means the worker is really running, and `working` alone does not say
+        // that: the store commits submitted→working before the DispatchCommand is sent, so
+        // the row can say working while the command is still in flight. Killing the plane in
+        // that window destroys the dispatch instead of interrupting a task — the worker
+        // never spawns, so nothing reports it alive and the aliveness clock reclaims it as
+        // LivenessTimeout. That is correct behaviour for a lost dispatch and it is not this
+        // scenario, so wait for the worker's own start marker before killing anything.
+        Assert.True(
+            await ChaosFleet.WaitUntilAsync(
+                () => Task.FromResult(fleet.WorkerStarted(task)), TransitionBudget, ct),
+            "the wedged worker never wrote its start marker, so it never ran and there was " +
+            "no in-flight task for the restart to interrupt\n" + await fleet.DiagnoseAsync([task], ct));
+
         var beforeRestart = (await fleet.FactsAsync(task, ct))!.Value;
         Assert.Equal(0, beforeRestart.InfrastructureRequeues);
 
@@ -448,7 +475,11 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
             "clock over it — the #86 symptom\n" + await fleet.DiagnoseAsync([task], ct));
 
         var reasons = await fleet.RequeueReasonsAsync(task, ct);
-        Assert.Equal([LivenessLossReason.NoProgress], reasons);
+        Assert.True(
+            reasons is [LivenessLossReason.NoProgress],
+            $"expected exactly one NoProgress requeue after the restart, got " +
+            $"[{string.Join(",", reasons.Select(r => r?.ToString() ?? "(null)"))}]\n" +
+            await fleet.DiagnoseAsync([task], ct));
 
         // ── 3. Nothing lost: it goes back out to the machine that is still there.
         await AssertReachesAsync(fleet, task, TaskState.Working,
