@@ -66,6 +66,17 @@ public sealed class DispatchService : IHostedService
     internal static readonly TimeSpan BudgetStopTtl = TimeSpan.FromSeconds(30);
 
     /// <summary>
+    /// How long the plane keeps expecting the <c>exited</c> its own liveness-loss
+    /// <c>kill</c> will produce (§10, #84). The echo is one socket round trip plus a process
+    /// death away, so this is generous by orders of magnitude; what bounds it at the top is
+    /// that a stale expectation swallows one genuine exit of a <em>successor</em> attempt,
+    /// which then waits for <see cref="DefaultLivenessWindow"/> instead. Both errors are
+    /// self-healing, so the window sits well clear of the echo and well inside the aliveness
+    /// clock that backstops the other side.
+    /// </summary>
+    public static readonly TimeSpan CommandedExitEchoWindow = TimeSpan.FromSeconds(15);
+
+    /// <summary>
     /// The plane's tracing source (§1). The dispatch span opened here continues
     /// the Lead's create_task trace and its W3C id is what rides the wire to the
     /// runner. Register it with the host's TracerProvider (Docket.Mcp/Program.cs)
@@ -397,6 +408,15 @@ public sealed class DispatchService : IHostedService
     /// dispatch's authorization every half hour forever. This method neither counts nor
     /// decides — the count is on the record and the decision is the engine's; it supplies
     /// the fact of which signal fired.</para>
+    ///
+    /// <para><b>A requeue takes the process down too</b>, where the plane has a channel to
+    /// take it down with (<see cref="KillAbandonedDispatchAsync"/>, #84). Requeueing revoked
+    /// the attempt's authorization and freed the task, but on its own it said nothing to the
+    /// machine — so the wedged-but-alive harness this reclaims kept running and kept
+    /// spending model budget until its <c>docketd</c> restarted and the stray sweep reaped
+    /// it. It is a <c>kill</c> rather than the graceful <c>stop</c> of §11: stop's value is
+    /// its injected wind-down turn, and a harness that has just failed a liveness clock has
+    /// demonstrably stopped reading its input.</para>
     /// </summary>
     public async Task CheckLivenessAsync(CancellationToken ct)
     {
@@ -445,6 +465,11 @@ public sealed class DispatchService : IHostedService
                             tracked.Task, abandoned.Task.InfrastructureRequeues,
                             abandoned.Task.InfrastructureRequeueLimit, reason);
                     _registry.Untrack(tracked.Task);
+                    // Only once the plane has actually given up on this dispatch: a refused
+                    // transition means it has not, and killing a process the plane still
+                    // considers live would destroy work nothing requeued.
+                    if (requeue is StoreResult.Applied)
+                        await KillAbandonedDispatchAsync(tracked.Task, tracked.Machine, ct);
                     break;
                 case null:
                 case TaskState.Verifying:
@@ -458,6 +483,63 @@ public sealed class DispatchService : IHostedService
         }
 
         await SweepExhaustedBudgetsAsync(ct);
+    }
+
+    /// <summary>
+    /// Kills the harness of a dispatch the liveness scan has just requeued, where the
+    /// machine is still connected (§10, #84). Best-effort and consequence-free on failure:
+    /// the requeue has already committed, so a machine that cannot be reached simply keeps
+    /// whatever it is running until its own daemon restarts and the §10 stray sweep reaps
+    /// it — exactly the behaviour before this existed.
+    ///
+    /// <para><b>The kill goes out after the requeue commits, never before.</b> Ordering it
+    /// the other way loses either way round: the kill's <c>exited</c> can land while the task
+    /// is still <c>working</c> and requeue it as
+    /// <see cref="LivenessLossReason.ProcessExited"/>, so the reason on the trail becomes the
+    /// symptom instead of the clock that fired (#73 persisted that distinction precisely
+    /// because the remedies differ) — and if the plane's own <c>LivenessLost</c> then lands
+    /// after a redispatch, the task pays two requeues against its cap for one loss. Committing
+    /// first makes the plane's decision independent of whether the machine cooperates, which
+    /// is what §10 means by best-effort commands: the task is free the moment the transition
+    /// commits, and everything after is housekeeping that can fail.</para>
+    ///
+    /// <para><b>Nor can the kill reach the successor attempt.</b> The requeue's own
+    /// <c>pg_notify</c> may redispatch this task immediately, and <c>kill</c> names only a
+    /// task — so a kill overtaken by that redispatch would take down the replacement. It is
+    /// not: a redispatch onto a <em>different</em> machine cannot be touched by a kill sent to
+    /// this one (the runner kills out of its own supervised set), and onto this same machine
+    /// both commands travel the one socket under the endpoint's send lock, in the order they
+    /// were written. This write is issued in the same continuation as the commit, whereas the
+    /// redispatch cannot even have started — it needs the notify to arrive, a pass to claim
+    /// the row and a token to be minted — so the kill is already queued ahead of the
+    /// successor's <c>DispatchCommand</c>, and the runner therefore executes it while the
+    /// successor does not yet exist.</para>
+    ///
+    /// <para>Uniform across both clocks. An aliveness-loss requeue on a machine whose socket
+    /// is up is the case where <c>docketd</c> is reachable but has stopped reporting this
+    /// task — its supervisor may well still be holding a live process — so it has the same
+    /// stray to reap as the wedged-agent case. At the requeue cap the task is abandoned
+    /// rather than requeued and this matters most: nothing will ever come back for that
+    /// process.</para>
+    ///
+    /// <para>Deliberately not extended to the other requeue paths, which have no channel or
+    /// nothing to kill: a disconnect requeue has lost the socket (and the machine's own
+    /// dead-man switch and restart sweep cover it, §10); a <c>rebooted</c> requeue is on a
+    /// live socket, but the daemon announcing it has already swept the previous generation's
+    /// processes; a send-failure requeue never started anything; and a blocked task's harness
+    /// has already exited by definition (§11).</para>
+    /// </summary>
+    private async Task KillAbandonedDispatchAsync(TaskId task, string machineId, CancellationToken ct)
+    {
+        if (await _registry.SendKillAsync(machineId, task, CommandedExitEchoWindow, ct))
+        {
+            _logger.LogInformation(
+                "killed the requeued dispatch of task {Task} on {Machine}", task, machineId);
+            return;
+        }
+        _logger.LogInformation(
+            "no live channel to kill the requeued dispatch of task {Task} on {Machine}; " +
+            "the machine's own restart sweep reaps it", task, machineId);
     }
 
     /// <summary>

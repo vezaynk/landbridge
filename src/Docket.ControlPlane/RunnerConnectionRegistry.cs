@@ -19,25 +19,69 @@ namespace Docket.ControlPlane;
 /// committed state by <see cref="DispatchService.RehydrateMachineAsync"/> (§10, #86),
 /// which is what lets a task survive a plane restart instead of stranding in
 /// <c>working</c> with no clock over it.
+///
+/// <para><b>A machine is not a connection</b> (#94). One machine can briefly hold two
+/// accepted <c>/runner</c> connections — a half-open socket the plane has not noticed
+/// (a laptop closed and reattached, §17.8) plus the fresh one — so every operation here
+/// is deliberately keyed one way or the other:</para>
+/// <list type="bullet">
+/// <item><b>Machine-keyed</b> — dispatch, tracking, sends, and every view. These target
+/// the machine, and the newest connection is by definition the way to reach it, so
+/// resolving through the current entry is the correct behaviour.</item>
+/// <item><b>Connection-keyed</b>, on the <see cref="ConnectionToken"/> minted by
+/// <see cref="Register"/> — teardown (<see cref="Unregister"/>) and folding in what that
+/// socket reports about itself (<see cref="ApplyHeartbeat(ConnectionToken, MachineHeartbeat)"/>).
+/// Both were machine-keyed before, which is precisely how a superseded endpoint's cleanup
+/// unregistered the live connection that had replaced it — requeueing a running machine's
+/// tasks and leaving its socket registered nowhere.</item>
+/// </list>
 /// </summary>
 public sealed class RunnerConnectionRegistry(TimeProvider clock)
 {
     private readonly ConcurrentDictionary<string, RunnerConnection> _connections = new(StringComparer.Ordinal);
 
-    /// <summary>Registers a dialed-in machine. Starts not-ready with no profiles;
-    /// its first heartbeat supplies both (§10).</summary>
-    public void Register(string machineId, IReadOnlySet<string> profiles, Func<RunnerCommand, CancellationToken, Task> send)
+    /// <summary>Mints <see cref="ConnectionToken.Generation"/>. Process-wide rather than
+    /// per-machine so a token can never be mistaken for another machine's connection.</summary>
+    private long _generations;
+
+    /// <summary>
+    /// Registers a dialed-in machine. Starts not-ready with no profiles; its first
+    /// heartbeat supplies both (§10).
+    ///
+    /// <para>Latest connection wins: a machine that dials in while an earlier connection
+    /// is still registered replaces it, because the new socket is the only one known to
+    /// carry bytes. The returned <see cref="Registration"/> names this connection
+    /// (<see cref="ConnectionToken"/>), which its endpoint must present at teardown so a
+    /// superseded connection's cleanup cannot unregister its successor (#94).</para>
+    ///
+    /// <para><b>The replaced connection's tracked dispatches are dropped, not carried
+    /// over</b>, and the new connection re-derives them from committed state through
+    /// <see cref="DispatchService.RehydrateMachineAsync"/>. Committed state is the
+    /// authority and is instance-fenced (§9.14,
+    /// <see cref="TaskStore.HeldDispatchesOnAsync"/>): it re-adopts exactly the tasks whose
+    /// live incumbent instance was minted for this machine. Carrying the old map over would
+    /// instead preserve entries that fence rejects — a task requeued out from under this
+    /// machine while the stale socket still listed it — leaving a dead dispatch tracked and
+    /// under a liveness clock. There is no double-tracking either way: dispatches are keyed
+    /// by task, so re-adoption overwrites rather than accumulates.</para>
+    /// </summary>
+    public Registration Register(
+        string machineId, IReadOnlySet<string> profiles, Func<RunnerCommand, CancellationToken, Task> send)
     {
-        _connections[machineId] = new RunnerConnection(send)
+        var token = new ConnectionToken(machineId, Interlocked.Increment(ref _generations));
+        var superseded = _connections.ContainsKey(machineId);
+        _connections[machineId] = new RunnerConnection(send, token.Generation)
         {
             Profiles = profiles,
             LastHeartbeat = clock.GetUtcNow(),
         };
+        return new Registration(token, superseded);
     }
 
     /// <summary>
-    /// Drops a machine's connection (socket closed) and returns the tasks it still
-    /// held, so the caller can requeue them <em>after</em> the connection is gone (#87).
+    /// Drops the connection <paramref name="token"/> names (its socket closed) and returns
+    /// the tasks it still held, so the caller can requeue them <em>after</em> the connection
+    /// is gone (#87).
     ///
     /// <para>Returning them is what makes that order possible: removal and the read are
     /// one step, so there is no window in which the connection is unreachable but its
@@ -48,27 +92,67 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// <para>Once the connection is out of the dictionary the machine is invisible to
     /// <see cref="ReadyMachines"/>, <see cref="SnapshotFor"/> and <see cref="SendAsync"/>,
     /// so the requeue's own <c>pg_notify</c> cannot wake a dispatch pass that claims a
-    /// task straight back onto the dead socket. Empty when the machine was already gone.</para>
+    /// task straight back onto the dead socket.</para>
+    ///
+    /// <para><b>A superseded connection tears down to nothing</b> (#94):
+    /// <see cref="UnregisterOutcome.Unregistered"/> is false and the held set is empty, so
+    /// the caller requeues nothing. That is the whole point of the token — this connection's
+    /// tasks, if it had any, now belong to the connection that replaced it and are still
+    /// being worked, so requeueing them here would abandon live work and leave the live
+    /// socket registered nowhere. Also the answer for a machine that was already gone, and
+    /// for a second teardown of the same connection.</para>
     /// </summary>
-    public IReadOnlyList<TaskId> Unregister(string machineId)
+    public UnregisterOutcome Unregister(ConnectionToken token)
     {
-        if (!_connections.TryRemove(machineId, out var conn))
-            return [];
+        if (Current(token) is not { } conn)
+            return new UnregisterOutcome(false, []);
+        // Compare-and-remove: only drop the entry while it is still this generation, so a
+        // connection registered between the lookup above and here survives.
+        if (!_connections.TryRemove(new KeyValuePair<string, RunnerConnection>(token.MachineId, conn)))
+            return new UnregisterOutcome(false, []);
         lock (conn.Gate)
-            return conn.Dispatched.Keys.ToArray();
+            return new UnregisterOutcome(true, conn.Dispatched.Keys.ToArray());
     }
 
     /// <summary>
-    /// Folds a heartbeat into connection state: readiness (ready unless under
-    /// back-pressure), declared profiles, and the heartbeat timestamp (§10). Keyed
-    /// by the <b>authenticated</b> machine id (the caller's token identity), never
-    /// the heartbeat's self-reported <see cref="MachineHeartbeat.MachineId"/> — a
+    /// Folds a heartbeat into the state of the connection <paramref name="token"/> names;
+    /// see <see cref="ApplyHeartbeat(string, MachineHeartbeat)"/> for what it folds.
+    ///
+    /// <para>This is the overload the runner endpoint uses, and the reason is #94: a
+    /// superseded connection must not steer the live one. Readiness, declared profiles and
+    /// the heartbeat timestamp are all tracking state, and a heartbeat that was in flight
+    /// (or buffered) when a machine's new connection replaced the old one would otherwise
+    /// be applied to the successor — marking a ready machine back-pressured, or refreshing
+    /// a liveness timestamp on behalf of a socket that is no longer carrying anything. A
+    /// stale token is ignored outright.</para>
+    /// </summary>
+    public void ApplyHeartbeat(ConnectionToken token, MachineHeartbeat heartbeat)
+    {
+        if (Current(token) is { } conn)
+            Fold(conn, heartbeat);
+    }
+
+    /// <summary>
+    /// Folds a heartbeat into whichever connection a machine currently holds: readiness
+    /// (ready unless under back-pressure), declared profiles, and the heartbeat timestamp
+    /// (§10). Keyed by the <b>authenticated</b> machine id (the caller's token identity),
+    /// never the heartbeat's self-reported <see cref="MachineHeartbeat.MachineId"/> — a
     /// machine must not be able to steer another's connection state (§13).
+    ///
+    /// <para>For callers holding no <see cref="ConnectionToken"/>, which in practice means
+    /// tests driving a single connection per machine. Anything reading heartbeats off a
+    /// socket has a token and should present it —
+    /// <see cref="ApplyHeartbeat(ConnectionToken, MachineHeartbeat)"/> — so a superseded
+    /// connection cannot write over its successor's state (#94).</para>
     /// </summary>
     public void ApplyHeartbeat(string machineId, MachineHeartbeat heartbeat)
     {
-        if (!_connections.TryGetValue(machineId, out var conn))
-            return;
+        if (_connections.TryGetValue(machineId, out var conn))
+            Fold(conn, heartbeat);
+    }
+
+    private void Fold(RunnerConnection conn, MachineHeartbeat heartbeat)
+    {
         lock (conn.Gate)
         {
             conn.Ready = heartbeat.Ready && !heartbeat.UnderBackPressure;
@@ -82,6 +166,13 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
             conn.LastHeartbeat = clock.GetUtcNow();
         }
     }
+
+    /// <summary>The connection <paramref name="token"/> names, or null once it has been
+    /// superseded or torn down.</summary>
+    private RunnerConnection? Current(ConnectionToken token) =>
+        _connections.TryGetValue(token.MachineId, out var conn) && conn.Generation == token.Generation
+            ? conn
+            : null;
 
     /// <summary>
     /// Records that a task was dispatched to a machine, stamping both clocks now. Also
@@ -313,6 +404,99 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     }
 
     /// <summary>
+    /// Sends <c>kill</c> for a dispatch the plane has just abandoned, and records that the
+    /// machine's resulting <c>exited</c> is this kill echoing back rather than news about
+    /// the task (§10, #84). Returns false when the machine has no live channel or the write
+    /// failed — in which case nothing was sent and nothing is expected.
+    ///
+    /// <para><b>Why the expectation exists.</b> The runner reports every process death as
+    /// <c>exited</c>, including one the plane ordered, and the event names only the task —
+    /// there is no attempt or instance on it (§10 the-runner-is-transport; the wire is
+    /// frozen). By the time the echo arrives the plane may already have redispatched that
+    /// task, quite possibly to this same machine, so an unqualified <c>exited</c> would be
+    /// read as the <em>successor</em> attempt dying and requeue it: a second requeue against
+    /// the §9 check 7 cap for one liveness loss, and a live worker left running for a task
+    /// the plane has just put back in the queue. Recording the kill closes that, because the
+    /// plane knows something the event cannot carry — that it caused this death and has
+    /// already accounted for it.</para>
+    ///
+    /// <para>Recorded <em>before</em> the write, so the echo cannot beat its own
+    /// expectation; withdrawn again if the write fails, so a failed kill leaves nothing
+    /// behind to swallow a later genuine exit. The expectation lives on this connection, so
+    /// it evaporates with the socket — a machine that drops before echoing requeues
+    /// everything it held anyway.</para>
+    /// </summary>
+    public async Task<bool> SendKillAsync(
+        string machineId, TaskId task, TimeSpan expectExitWithin, CancellationToken ct)
+    {
+        if (!_connections.TryGetValue(machineId, out var conn))
+            return false;
+        var until = clock.GetUtcNow() + expectExitWithin;
+        lock (conn.Gate)
+            conn.CommandedExits[task] = until;
+
+        if (await SendAsync(machineId, new KillCommand(task), ct))
+            return true;
+
+        lock (conn.Gate)
+            conn.CommandedExits.Remove(task);
+        return false;
+    }
+
+    /// <summary>
+    /// Whether this <c>exited</c> is the echo of a kill the plane itself ordered for
+    /// <paramref name="task"/> — see <see cref="SendKillAsync"/>. Consumes the expectation,
+    /// so the next <c>exited</c> for the task is news again.
+    ///
+    /// <para>An expectation that has outlived its window is dropped and reported as not
+    /// matching: past that point the plane cannot tell a very late echo from the genuine
+    /// exit of a successor attempt, and treating a genuine exit as an echo would leave the
+    /// task in <c>working</c> until a liveness clock reclaims it. The window is chosen so
+    /// that swallowing is the safer error inside it and the wrong one outside
+    /// (<see cref="DispatchService.CommandedExitEchoWindow"/>).</para>
+    /// </summary>
+    public bool ConsumeCommandedExit(TaskId task)
+    {
+        var now = clock.GetUtcNow();
+        foreach (var conn in _connections.Values)
+        {
+            lock (conn.Gate)
+            {
+                if (!conn.CommandedExits.TryGetValue(task, out var until))
+                    continue;
+                conn.CommandedExits.Remove(task);
+                return now <= until;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
+    /// The identity of one accepted <c>/runner</c> connection (#94): the machine that
+    /// authenticated, plus the generation this registry minted for the connection itself.
+    /// Held by the endpoint serving that socket and presented at teardown, so cleanup can
+    /// tell "my connection" from "the connection that replaced mine".
+    /// </summary>
+    public readonly record struct ConnectionToken(string MachineId, long Generation);
+
+    /// <summary>
+    /// What <see cref="Register"/> hands back: this connection's
+    /// <see cref="ConnectionToken"/>, and whether registering it displaced a connection the
+    /// machine still had — the observable signal that a machine is holding overlapping
+    /// <c>/runner</c> connections (#94), which is worth a log line even though the registry
+    /// handles it.
+    /// </summary>
+    public readonly record struct Registration(ConnectionToken Token, bool SupersededLiveConnection);
+
+    /// <summary>
+    /// What <see cref="Unregister"/> hands back: whether this connection was still the
+    /// machine's registered one — so the registry actually changed and the caller owns the
+    /// requeue — and the tasks it held. Always <c>false</c> and empty for a superseded
+    /// connection (#94).
+    /// </summary>
+    public readonly record struct UnregisterOutcome(bool Unregistered, IReadOnlyList<TaskId> Held);
+
+    /// <summary>
     /// A tracked dispatch and its two liveness clocks (§10).
     /// <see cref="LastActivity"/> moves on any inbound signal including <c>alive</c>
     /// — "docketd still says this process exists". <see cref="LastProgress"/> moves
@@ -326,10 +510,18 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// <summary>The two clocks kept per dispatched task; see <see cref="TrackedTask"/>.</summary>
     private readonly record struct TaskActivity(DateTimeOffset LastActivity, DateTimeOffset LastProgress);
 
-    private sealed class RunnerConnection(Func<RunnerCommand, CancellationToken, Task> send)
+    private sealed class RunnerConnection(Func<RunnerCommand, CancellationToken, Task> send, long generation)
     {
         public object Gate { get; } = new();
         public Func<RunnerCommand, CancellationToken, Task> Send { get; } = send;
+
+        /// <summary>This connection's half of its <see cref="ConnectionToken"/>.</summary>
+        public long Generation { get; } = generation;
+
+        /// <summary>Kills the plane ordered on this connection, each with the instant its
+        /// echo stops being expected; see <see cref="SendKillAsync"/>.</summary>
+        public Dictionary<TaskId, DateTimeOffset> CommandedExits { get; } = new();
+
         public IReadOnlySet<string> Profiles { get; set; } = new HashSet<string>(StringComparer.Ordinal);
         public bool Ready { get; set; }
         public bool UnderBackPressure { get; set; }
