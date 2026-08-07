@@ -8,8 +8,8 @@ namespace Docket.Runner.TestHarness;
 /// spawn as a real process — no shell, argv only, matching docketd's own
 /// constraint (§10). It writes markers into its working directory (which the
 /// supervisor sets to <c>{work_root}/{task_id}</c>), so a test can observe env
-/// injection, working directory, stop delivery, process-tree membership, and the
-/// dead-man's switch without depending on any installed harness.
+/// injection, working directory, stop delivery, process-tree membership, its own OS
+/// pid, and the dead-man's switch without depending on any installed harness.
 ///
 /// <para><b>Dead-man's switch (§10).</b> Every long-running mode watches stdin.
 /// docketd holds the write end of that pipe for the worker's lifetime, so EOF
@@ -431,6 +431,14 @@ public static class Program
     {
         var taskId = Environment.GetEnvironmentVariable("DOCKET_TASK_ID") ?? "none";
         var machineId = Environment.GetEnvironmentVariable("DOCKET_MACHINE_ID") ?? "none";
+        // Our own OS pid, written BEFORE the `started` marker so a test that polls for
+        // `started` and then reads this can never miss it. The §17.8 chaos suite needs it to
+        // assert that a kill the plane ordered actually took this process down: every other
+        // marker records something the process CHOSE to write, and a killed process writes
+        // nothing, so the pid is the only handle on "it is gone" as opposed to "it stopped
+        // saying anything". Redispatch overwrites it, so a test wanting this generation's pid
+        // reads it before the requeue.
+        await WriteMarkerAtomicAsync(Path.Combine(cwd, "pid"), Environment.ProcessId.ToString());
         await WriteMarkerAtomicAsync(Path.Combine(cwd, "started"), $"{taskId}\n{machineId}");
     }
 

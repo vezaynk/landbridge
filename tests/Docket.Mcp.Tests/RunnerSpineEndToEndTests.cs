@@ -113,6 +113,126 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
         await app.StopAsync(ct);
     }
 
+    /// <summary>
+    /// #94 at the endpoint, over real sockets: one machine holding two <c>/runner</c>
+    /// connections, and the older one closing afterwards — §17.8's "close a laptop and
+    /// reattach", where the plane never noticed the first socket had stopped carrying bytes.
+    ///
+    /// <para>The endpoint is where this bug lived, and the ControlPlane unit tests cannot reach
+    /// it: they drive the registry directly, so they cannot show the endpoint presenting the
+    /// right connection at teardown. Here the real <c>MapRunnerEndpoint</c> serves two real
+    /// dialed channels for one machine token, and the first one's teardown must leave the
+    /// second — which by then holds the machine's tracked work — completely alone. Unregistering
+    /// by machine id, as it did, requeued the running task and left the live socket registered
+    /// nowhere, so the machine went silently undispatchable.</para>
+    ///
+    /// <para>Synchronization: nothing observable changes when a superseded teardown does
+    /// nothing, so the wait is on the fact that DOES change — a second task reaching the
+    /// surviving channel, which needs a full dispatch round trip and therefore cannot outrun
+    /// the teardown that the client's close triggers immediately. Under the old behaviour that
+    /// dispatch never arrives at all.</para>
+    /// </summary>
+    [SkippableFact]
+    public async Task A_second_connection_for_one_machine_survives_the_first_ones_teardown()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var ct = cts.Token;
+
+        await using var app = BuildServer();
+        await app.StartAsync(ct);
+        var baseUrl = app.Urls.First(u => u.StartsWith("http://"));
+        var wsUrl = new Uri(baseUrl.Replace("http://", "ws://") + "/runner");
+        var registry = app.Services.GetRequiredService<RunnerConnectionRegistry>();
+
+        var team = TeamId.New();
+        string machineToken;
+        string machineId;
+        await using (var db = pg.NewContext())
+        {
+            var tokens = new TokenService(db, TimeProvider.System);
+            var enrollment = await tokens.IssueEnrollmentTokenAsync(ct);
+            var creds = await tokens.ExchangeEnrollmentAsync(
+                enrollment.Token, new MachineDeclaration("box-1", "test", "macos", "standard"), ct);
+            machineToken = creds!.Access.Token;
+            // The registry keys on the AUTHENTICATED identity, never the name a heartbeat
+            // reports for itself (§13), so this — not "box-1" — is what it is filed under.
+            machineId = creds.MachineId.ToString();
+        }
+        var held = await SeedSubmittedAsync(team, "the first task", ct);
+
+        // ── The connection the laptop will leave behind, with real work on it ────────
+        var stale = new WebSocketControlPlaneChannel(wsUrl, machineToken, TimeProvider.System);
+        var staleDispatches = new TaskCompletionSource<DispatchCommand>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        stale.Start((command, _) =>
+        {
+            if (command is DispatchCommand d)
+                staleDispatches.TrySetResult(d);
+            return Task.CompletedTask;
+        });
+        Assert.True(await WaitUntilAsync(() => stale.IsConnected, TimeSpan.FromSeconds(15)),
+            "the first connection never dialed in");
+        Assert.True(await stale.HeartbeatAsync(Ready("box-1"), ct));
+        Assert.Equal(held, (await staleDispatches.Task.WaitAsync(TimeSpan.FromSeconds(30), ct)).Task);
+
+        // ── The reattach: a second connection for the same machine supersedes it ─────
+        await using var live = new WebSocketControlPlaneChannel(wsUrl, machineToken, TimeProvider.System);
+        var liveDispatches = new TaskCompletionSource<DispatchCommand>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        live.Start((command, _) =>
+        {
+            if (command is DispatchCommand d)
+                liveDispatches.TrySetResult(d);
+            return Task.CompletedTask;
+        });
+        Assert.True(await WaitUntilAsync(() => live.IsConnected, TimeSpan.FromSeconds(15)),
+            "the reattaching connection never dialed in");
+        Assert.True(await live.HeartbeatAsync(Ready("box-1"), ct));
+
+        // The reattached machine reports the work it is still running, as a real one would —
+        // which lands on the tracking the replacing connection re-derived, and holds the
+        // aliveness clock off the task so the requeue count asserted below can only have been
+        // moved by the teardown under test rather than by this host's default 60s window.
+        Assert.True(await live.PublishAsync(new AliveEvent(held, DateTimeOffset.UtcNow), gapBefore: 0, ct));
+
+        // ── The stale socket finally closes, running the teardown that used to take the
+        // live connection with it.
+        await stale.DisposeAsync();
+
+        // The machine is still there: a task submitted now reaches the surviving channel.
+        var next = await SeedSubmittedAsync(team, "the task that proves the machine is still there", ct);
+        var arrived = await liveDispatches.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
+        Assert.Equal(next, arrived.Task);
+
+        // And the work already in flight never noticed — same attempt, no requeue. It is also
+        // still TRACKED, which takes both halves of the fix: the replacing connection re-derived
+        // it from committed state, and the superseded teardown then left it alone.
+        await using (var db = pg.NewContext())
+        {
+            var row = await db.Tasks.AsNoTracking().SingleAsync(t => t.Id == held.Value, ct);
+            Assert.Equal(TaskState.Working, row.State);
+            Assert.Equal(0, row.InfrastructureRequeues);
+        }
+        Assert.Contains(held, registry.TasksOn(machineId));
+        Assert.NotNull(registry.SnapshotFor(machineId));
+
+        await app.StopAsync(ct);
+    }
+
+    private static MachineHeartbeat Ready(string machineId) =>
+        new(machineId, Ready: true, UnderBackPressure: false,
+            new SystemLoad(0, 0, 0), RunningTasks: 0, ["default"], DateTimeOffset.UtcNow);
+
+    private async Task<TaskId> SeedSubmittedAsync(TeamId team, string criteria, CancellationToken ct)
+    {
+        await using var db = pg.NewContext();
+        var created = (StoreResult.Applied)await new TaskStore(db, TimeProvider.System).CreateAsync(
+            new CreateTask(new LeadClaim(team), team, criteria, CompletionMode.Lead, null,
+                TeamBudgetRemains: true), ct);
+        return created.Task.Id;
+    }
+
     private WebApplication BuildServer()
     {
         var builder = WebApplication.CreateBuilder();

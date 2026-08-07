@@ -20,7 +20,10 @@ namespace Docket.Chaos.Tests;
 /// <item><term>Partition a machine</term><description>partially —
 ///   <see cref="A_wedged_worker_is_reclaimed_when_the_no_progress_ceiling_lapses"/> covers the
 ///   liveness half (the clocks that reclaim a task whose worker has stopped getting
-///   anywhere). A true network partition, with the machine's socket held open, is not
+///   anywhere), and
+///   <see cref="A_reclaimed_wedged_workers_process_is_killed_rather_than_left_running"/> the
+///   half after it: the reclaimed worker's process is taken down rather than left burning
+///   (#84). A true network partition, with the machine's socket held open, is not
 ///   covered here.</description></item>
 /// <item><term>Restart the plane mid-task</term><description>
 ///   <see cref="A_task_in_flight_survives_a_plane_restart_and_stays_under_its_liveness_clocks"/> —
@@ -28,12 +31,16 @@ namespace Docket.Chaos.Tests;
 ///   in-flight task is re-adopted and its liveness clocks resume. This one was unwritable as
 ///   a passing test until #86 was fixed: dispatch tracking was memory-only and never
 ///   rehydrated, so the task was stranded in <c>working</c> forever.</description></item>
+/// <item><term>Close a laptop and reattach</term><description>
+///   <see cref="A_superseded_connection_tearing_down_costs_the_reattached_machine_nothing"/> —
+///   one machine holds two <c>/runner</c> connections, and the older one's teardown must cost
+///   the reattached machine nothing (#94). The half-open socket is approximated by a second
+///   real connection that never sends; see that test for why that is the faithful part.</description></item>
 /// </list>
 ///
 /// <para>Not in this slice, and still open from §17.8: cancel with each disposition,
 /// fail verification three times, sever a forward mid-transfer, evict a Lead
-/// mid-decomposition, close a laptop and reattach, park a task and answer it after the
-/// machine is gone.</para>
+/// mid-decomposition, park a task and answer it after the machine is gone.</para>
 ///
 /// <para><b>Requeue counts are asserted tolerantly except where a count is the point.</b>
 /// Infrastructure requeues are capped (#73, default 5 per task) and a task that reaches its
@@ -502,6 +509,227 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(1, afterRestart.InfrastructureRequeues);
         Assert.Equal(1, afterRestart.LiveInstanceCount);
         Assert.NotEqual(beforeRestart.CurrentInstanceId, afterRestart.CurrentInstanceId);
+    }
+
+    /// <summary>
+    /// §17.8: "Partition a machine" — the other half of the wedged worker, and #84's
+    /// regression test. The scenario above asserts the plane reclaims the TASK; this one
+    /// asserts it also disposes of the PROCESS.
+    ///
+    /// <para>A requeue used to abandon the task without saying anything to the machine, so the
+    /// wedged harness the no-progress ceiling had just given up on kept running — and, for a
+    /// real agent, kept spending model budget — until its <c>docketd</c> restarted and the §10
+    /// stray sweep reaped it. Nothing in committed state can show that: the row records the
+    /// plane's decision, not whether anything acted on it. So this scenario reads the worker's
+    /// own OS pid off the marker it writes at startup and asserts the process is gone.</para>
+    ///
+    /// <para>The second assertion is the subtler half, and it is why the kill needs care
+    /// rather than just a send. The runner reports the plane's own kill as an ordinary
+    /// <c>exited</c> naming only the task, and by the time it arrives the requeue's
+    /// <c>pg_notify</c> has very likely redispatched that task onto this same machine — the
+    /// only one here. Read as news, that echo requeues the SUCCESSOR attempt as
+    /// <see cref="LivenessLossReason.ProcessExited"/>: two requeues off the §9 check 7 cap for
+    /// one liveness loss, and a healthy worker left running for a task put back in the queue.
+    /// The requeue trail staying purely <c>NoProgress</c> across several wedge cycles is what
+    /// says that did not happen — each cycle gives the race a fresh chance, since the kill and
+    /// the redispatch are genuinely concurrent here.</para>
+    ///
+    /// <para>Tolerant about how many times the wedge is retried, like its sibling: the wedge is
+    /// deterministic, so it re-wedges on every redispatch and would walk to its cap given long
+    /// enough. This asserts it stops short of it.</para>
+    /// </summary>
+    [SkippableFact]
+    public async Task A_reclaimed_wedged_workers_process_is_killed_rather_than_left_running()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        Skip.If(OperatingSystem.IsWindows(), WindowsSkip);
+
+        using var cts = new CancellationTokenSource(ScenarioBudget);
+        var ct = cts.Token;
+        await using var fleet = new ChaosFleet(pg, new ChaosFleetOptions
+        {
+            // As in the sibling scenario: the heartbeat keeps the aliveness clock fresh, so
+            // the no-progress ceiling is the only clock that can reclaim this task.
+            HeartbeatInterval = TimeSpan.FromSeconds(1),
+            PerTaskLivenessWindow = TimeSpan.FromSeconds(5),
+            NoProgressCeiling = TimeSpan.FromSeconds(6),
+        });
+        await fleet.StartAsync(ct);
+
+        var task = await fleet.CreateTaskAsync("chaos wedge kill", ChaosProfiles.Wedge, ct);
+        await AssertReachesAsync(fleet, task, TaskState.Working, "the wedged worker never started", ct);
+
+        // Read while this attempt is live: the work dir is per task, so redispatch overwrites
+        // the marker and the predecessor's pid is only readable before its requeue.
+        var wedged = 0;
+        Assert.True(
+            await ChaosFleet.WaitUntilAsync(
+                () => Task.FromResult(fleet.WorkerPid(task) is { } pid && (wedged = pid) > 0),
+                TransitionBudget, ct),
+            "the wedged worker never recorded its pid, so it never really ran\n" +
+            await fleet.DiagnoseAsync([task], ct));
+        Assert.True(ChaosProcess.PidAlive(wedged),
+            $"the wedged worker (pid {wedged}) was not running before the ceiling lapsed\n" +
+            await fleet.DiagnoseAsync([task], ct));
+
+        var working = (await fleet.FactsAsync(task, ct))!.Value;
+        Assert.True(
+            await ChaosFleet.WaitUntilAsync(
+                async () =>
+                {
+                    var facts = await fleet.FactsAsync(task, ct);
+                    return facts is { } f && f.InfrastructureRequeues > working.InfrastructureRequeues;
+                },
+                TransitionBudget, ct),
+            "the wedged worker's task was never reclaimed by the no-progress ceiling\n" +
+            await fleet.DiagnoseAsync([task], ct));
+
+        // ── 1. The process the plane gave up on is actually gone.
+        Assert.True(
+            await ChaosFleet.WaitUntilAsync(
+                () => Task.FromResult(!ChaosProcess.PidAlive(wedged)), TransitionBudget, ct),
+            $"the wedged worker (pid {wedged}) was still running after its task was requeued: " +
+            $"the requeue abandoned the task but not the process (#84)\n" +
+            await fleet.DiagnoseAsync([task], ct));
+
+        // ── 2. And the machine is still good for work — a kill takes down one dispatch, not
+        // the daemon's ability to accept the next one, which is the same task coming back.
+        await AssertReachesAsync(fleet, task, TaskState.Working,
+            "the reclaimed task was never redispatched after its worker was killed", ct);
+        Assert.True(
+            await ChaosFleet.WaitUntilAsync(
+                () => Task.FromResult(fleet.WorkerPid(task) is { } pid && ChaosProcess.PidAlive(pid)),
+                TransitionBudget, ct),
+            "no live worker process for the redispatched task\n" + await fleet.DiagnoseAsync([task], ct));
+
+        // ── 3. The trail is the clock's, not the kill's. Waiting for a second requeue gives
+        // the kill/redispatch race another run at producing a ProcessExited row.
+        Assert.True(
+            await ChaosFleet.WaitUntilAsync(
+                async () =>
+                {
+                    var facts = await fleet.FactsAsync(task, ct);
+                    return facts is { } f && f.InfrastructureRequeues >= working.InfrastructureRequeues + 2;
+                },
+                TransitionBudget, ct),
+            "the wedge did not re-wedge, so the echo race only got one run\n" +
+            await fleet.DiagnoseAsync([task], ct));
+
+        var reasons = await fleet.RequeueReasonsAsync(task, ct);
+        Assert.NotEmpty(reasons);
+        Assert.All(reasons, reason => Assert.Equal(LivenessLossReason.NoProgress, reason));
+
+        var reclaimed = (await fleet.FactsAsync(task, ct))!.Value;
+        Assert.Equal(LivenessLossReason.NoProgress, reclaimed.LastRequeueReason);
+        Assert.True(reclaimed.InfrastructureRequeues < reclaimed.InfrastructureRequeueLimit,
+            $"the wedge reached its requeue cap ({reclaimed.InfrastructureRequeues}/" +
+            $"{reclaimed.InfrastructureRequeueLimit}) before this scenario could assert on it\n" +
+            await fleet.DiagnoseAsync([task], ct));
+    }
+
+    /// <summary>
+    /// §17.8: "Close a laptop and reattach" — previously on the uncovered list, and #94's
+    /// regression test.
+    ///
+    /// <para>A suspended machine leaves an accepted <c>/runner</c> connection behind that the
+    /// plane still believes is live: nothing was closed, the socket simply stopped carrying
+    /// bytes. On wake the machine dials a fresh one, so for a while the plane holds TWO
+    /// connections for one machine — and then the stale one's endpoint eventually notices and
+    /// runs its teardown. That teardown used to unregister by machine id, which by then meant
+    /// the connection that had REPLACED it: the machine's running tasks requeued out from
+    /// under it, and its live socket left registered nowhere, invisible to dispatch until it
+    /// happened to reconnect again.</para>
+    ///
+    /// <para><b>How the overlap is produced.</b> A genuinely half-open TCP connection needs
+    /// packets dropped in the network — root-only and unportable — so the test dials the
+    /// second connection itself, with the machine's real credential over the real
+    /// <c>/runner</c> endpoint, and never sends on it. What the plane sees is what matters and
+    /// it is exactly right: two accepted, authenticated connections for one machine, the older
+    /// of which is silent. Sending nothing is faithful rather than merely convenient — a stale
+    /// connection reports no heartbeat, so it never becomes ready and dispatch never considers
+    /// it. The roles are the same shape as production with the parts swapped: here the
+    /// test holds the socket that will be superseded and the real <c>docketd</c> holds the one
+    /// that supersedes, which is what lets the assertions be about real running work.</para>
+    ///
+    /// <para>What must hold when the stale socket finally dies: <b>one requeue at most</b> —
+    /// in fact none, because nothing about the machine changed — the reattached connection is
+    /// still tracked, and no task is stranded. The last of those is asserted from the outside,
+    /// by running a fresh task end to end afterwards: that can only pass if the machine is
+    /// still registered, still ready, and still reachable.</para>
+    /// </summary>
+    [SkippableFact]
+    public async Task A_superseded_connection_tearing_down_costs_the_reattached_machine_nothing()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        Skip.If(OperatingSystem.IsWindows(), WindowsSkip);
+
+        using var cts = new CancellationTokenSource(ScenarioBudget);
+        var ct = cts.Token;
+        // A long ceiling keeps the liveness sweeper out: the requeue count asserted below has
+        // to be attributable to the teardown and nothing else.
+        await using var fleet = new ChaosFleet(pg, new ChaosFleetOptions
+        {
+            NoProgressCeiling = TimeSpan.FromMinutes(10),
+        });
+        await fleet.StartPlaneOnlyAsync(ct);
+
+        // The socket the closed laptop left behind, registered before docketd exists so that
+        // the daemon's connection is the one that supersedes.
+        using var stale = await fleet.DialRunnerAsync(ct);
+        Assert.True(
+            await fleet.WaitForPlaneLineAsync(
+                l => l.Contains("runner connected:", StringComparison.Ordinal), TransitionBudget) is not null,
+            "the plane never registered the stale connection, so there was no overlap to test\n" +
+            await fleet.DiagnoseAsync([], ct));
+
+        // The reattach.
+        await fleet.StartDocketdAsync(ct);
+        Assert.True(
+            await fleet.WaitForPlaneLineAsync(
+                l => l.Contains("while an earlier connection was still registered", StringComparison.Ordinal),
+                TransitionBudget) is not null,
+            "the plane never saw two connections for this machine, so the overlap this scenario " +
+            "is about never existed\n" + await fleet.DiagnoseAsync([], ct));
+
+        var held = await fleet.CreateTaskAsync("chaos reattach", ChaosProfiles.Wedge, ct);
+        await AssertReachesAsync(fleet, held, TaskState.Working, "the task never reached working", ct);
+        Assert.True(
+            await ChaosFleet.WaitUntilAsync(
+                () => Task.FromResult(fleet.WorkerStarted(held)), TransitionBudget, ct),
+            "the worker never started, so the machine was not really holding live work\n" +
+            await fleet.DiagnoseAsync([held], ct));
+        var beforeTeardown = (await fleet.FactsAsync(held, ct))!.Value;
+        Assert.Equal(0, beforeTeardown.InfrastructureRequeues);
+
+        // The half-open socket finally errors out, and its endpoint runs the teardown that
+        // used to take the live connection down with it.
+        stale.Abort();
+        Assert.True(
+            await fleet.WaitForPlaneLineAsync(
+                l => l.Contains("superseded runner connection closed", StringComparison.Ordinal),
+                TransitionBudget) is not null,
+            "the stale connection's teardown never ran, or ran as an ordinary disconnect — " +
+            "either way this scenario asserted nothing\n" + await fleet.DiagnoseAsync([held], ct));
+
+        // ── The machine is still there: a fresh task runs the whole loop. Pre-fix the
+        // teardown left docketd registered nowhere, so nothing could be dispatched at all.
+        var after = await fleet.CreateTaskAsync("chaos post-reattach", profile: null, ct);
+        await AssertReachesAsync(fleet, after, TaskState.Verifying,
+            "a task created after the superseded teardown never reached verifying, so the live " +
+            "connection was unregistered with it", ct, [held, after]);
+        await fleet.AcceptAsync(after, ct);
+        await AssertReachesAsync(fleet, after, TaskState.Completed,
+            "a task created after the superseded teardown never completed", ct, [held, after]);
+
+        // ── And the work that was already in flight never noticed: same attempt, same
+        // incumbent instance, no requeue at all — not the "one at most" a real disconnect
+        // costs, because nothing about this machine actually went away.
+        var facts = (await fleet.FactsAsync(held, ct))!.Value;
+        Assert.Equal(TaskState.Working, facts.State);
+        Assert.Equal(0, facts.InfrastructureRequeues);
+        Assert.Empty(await fleet.RequeueReasonsAsync(held, ct));
+        Assert.Equal(beforeTeardown.CurrentInstanceId, facts.CurrentInstanceId);
+        Assert.Equal(1, facts.LiveInstanceCount);
     }
 
     // ── Shared assertions ───────────────────────────────────────────────────────

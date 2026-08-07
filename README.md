@@ -140,7 +140,10 @@ Metadata Documents; machine enrollment and refresh; `docketd` supervision,
 stop/kill with graceful wind-down, heartbeats, terminal-source tool-call events,
 real per-OS CPU-load back-pressure, and stray cleanup; **two-clock per-task
 liveness** (aliveness vs no-progress, so a ten-minute build is no longer mistaken
-for a hang); §11 park → resume; **continuation tasks** (`continues:`) that resume a
+for a hang), capped requeues, and **a requeue that takes the process down with it** —
+the plane kills the dispatch it gave up on where the machine is still connected, so a
+wedged harness stops spending instead of running until its `docketd` restarts; §11
+park → resume; **continuation tasks** (`continues:`) that resume a
 prior task's transcript under a fresh token; **in-band worker reports** and the
 **question/answer exchange** that makes blocking on a human actually carry words;
 Lead-adjudicated completion (`lead`/`review` modes); **budget accounting** as a
@@ -164,10 +167,6 @@ Deliberately deferred — do not assume these work:
 - **Event sources beyond `terminal`.** `hooks` and `otel` parse but are wired to
   nothing, so they behave as `none`; `docketd` warns loudly at startup for any
   profile declaring one. The subagent tree and `auth-failed` have no producer.
-- **A requeue does not stop the process it gave up on.** Infrastructure requeues are
-  now capped (5 by default, then the task is `canceled` with the reason recorded), but
-  the plane only revokes the predecessor's token — a wedged harness keeps running, and
-  burning model tokens, until its `docketd` restarts and sweeps strays.
 - **SIGTERM does not wind workers down — by design, not deferral (settled in #71).**
   A killed `docketd` is the same event as a dead machine, and the plane keeps exactly
   one reconciliation for both: disconnect → requeue → redispatch. Only a `stop` *from
