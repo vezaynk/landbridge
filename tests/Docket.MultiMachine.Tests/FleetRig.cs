@@ -323,6 +323,72 @@ internal sealed class FleetRig(
         return (await db.Tasks.AsNoTracking().SingleAsync(t => t.Id == task.Value, ct)).HarnessSessionRef;
     }
 
+    /// <summary>
+    /// The harness session id each captured instance of <paramref name="task"/> reported on its
+    /// own <c>system/init</c> line (§12 capture, one file per instance, §11's session ref).
+    /// Ordered by instance.
+    ///
+    /// <para>This is the direct, harness-side proof of a resume, and it is worth having
+    /// separately from the task row: the row holds one ref and cannot distinguish "the second
+    /// instance resumed the first" from "the second instance cold-started and stamped its own".
+    /// Two instances reporting the <em>same</em> id can only happen if the second really resumed
+    /// the first's transcript — a cold start mints a new one.</para>
+    /// </summary>
+    public IReadOnlyList<string> InstanceSessionIdsOn(string machineId, TaskId task)
+    {
+        var dir = System.IO.Path.Combine(
+            _machines[machineId].WorkRoot, TranscriptDefaults.DirName, task.ToString());
+        if (!System.IO.Directory.Exists(dir))
+            return [];
+
+        var ids = new List<string>();
+        foreach (var file in System.IO.Directory.EnumerateFiles(dir, "*.ndjson")
+                     .OrderBy(f => f, StringComparer.Ordinal))
+        {
+            foreach (var line in ReadLinesOrEmpty(file))
+            {
+                if (SessionIdOfInitLine(line) is not { Length: > 0 } id)
+                    continue;
+                ids.Add(id);
+                break; // the init line is the first one that carries it; the id is stable per run
+            }
+        }
+        return ids;
+    }
+
+    private static string[] ReadLinesOrEmpty(string file)
+    {
+        try { return System.IO.File.ReadAllLines(file); }
+        catch (IOException) { return []; } // mid-write; the caller polls again
+    }
+
+    /// <summary>The <c>session_id</c> of a claude <c>system</c>/<c>init</c> stream line, or null
+    /// for any other line. Same shape the runner's own Terminal reader keys off.</summary>
+    private static string? SessionIdOfInitLine(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line))
+            return null;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(line);
+            var root = doc.RootElement;
+            if (root.ValueKind != System.Text.Json.JsonValueKind.Object)
+                return null;
+            if (Text(root, "type") != "system" || Text(root, "subtype") != "init")
+                return null;
+            return Text(root, "session_id");
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return null; // stray non-JSON harness output, exactly as the reader tolerates
+        }
+
+        static string? Text(System.Text.Json.JsonElement o, string key) =>
+            o.TryGetProperty(key, out var v) && v.ValueKind == System.Text.Json.JsonValueKind.String
+                ? v.GetString()
+                : null;
+    }
+
     /// <summary>The park record's session ref and machine (§11), or nulls when unparked.</summary>
     public async Task<(string? Machine, string? SessionRef)> ParkAsync(TaskId task, CancellationToken ct)
     {
