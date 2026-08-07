@@ -168,8 +168,11 @@ Deliberately deferred — do not assume these work:
   now capped (5 by default, then the task is `canceled` with the reason recorded), but
   the plane only revokes the predecessor's token — a wedged harness keeps running, and
   burning model tokens, until its `docketd` restarts and sweeps strays.
-- **SIGTERM does not wind workers down.** A signal hard-kills them; only a `stop`
-  *from the plane* is graceful — so **drain a machine before restarting its service**.
+- **SIGTERM does not wind workers down — by design, not deferral (settled in #71).**
+  A killed `docketd` is the same event as a dead machine, and the plane keeps exactly
+  one reconciliation for both: disconnect → requeue → redispatch. Only a `stop` *from
+  the plane* is graceful — so **drain a machine before restarting its service**,
+  especially since each undrained restart spends one of a task's capped requeues.
 - The enrollment **conformance run** and `/docket-enroll` wizard do not exist; the
   enroll skill carries a manual smoke test instead. Per-task OS isolation is
   deferred (§13): co-tenant tasks on a machine can reach each other's loopback.
