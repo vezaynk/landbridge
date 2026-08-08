@@ -211,18 +211,23 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// a ref on the dispatch into an actual <c>--resume</c>. Drop any one and this silently
     /// becomes a cold start (§11's documented fallback).</para>
     ///
-    /// <para><b>What this deliberately stops short of asserting, and why.</b> The spawn prompt
-    /// tells the worker a nonce that is <em>only</em> in the conversation — never the task row,
-    /// so <c>get_task</c> cannot supply it — and the resume prompt asks for it back. A resumed
-    /// worker reporting that nonce would be the end-to-end proof. It does not currently get that
-    /// far: the resumed instance reports the injected <c>docket</c> MCP server as needing
-    /// re-authorization / disconnected, ends its turn in a couple of seconds having called no
-    /// docket tool, and every retry resumes the same session and fails identically. So §11's
-    /// "docketd re-injects fresh MCP config, which resume does not restore" is necessary but not
-    /// sufficient for this harness — the re-injected server is not what the resumed session
-    /// uses. The transcript half of resume is real and asserted here; the nonce is left in the
-    /// prompts so that closing that gap turns this fact into the stronger assertion rather than
-    /// needing a new one.</para>
+    /// <para><b>And proven agent-side too, by a value only the conversation holds.</b> The spawn
+    /// prompt tells the worker a nonce that is <em>nowhere else</em> — not the task row, so
+    /// <c>get_task</c> cannot supply it, and not the resume argv, which is static profile config
+    /// — and the resume prompt asks for it back. The resumed worker reporting that nonce through
+    /// a real <c>report_result</c> call is the end-to-end proof: it had to read the restored
+    /// transcript AND reach the freshly injected docket MCP server to do it.</para>
+    ///
+    /// <para>This is what #102 blocked, and the cause was neither the transcript nor the
+    /// injected config. A worker instance is identified to the plane by task id alone, so the
+    /// predecessor's ordinary exit — a headless worker that asked a question ends its turn on
+    /// its own schedule, milliseconds after the Lead's answer has already redispatched the task
+    /// — landed on its successor: docketd reaped the successor's process tree by
+    /// <c>DOCKET_TASK_ID</c>, reported its death to the plane (which requeued the task and
+    /// revoked the successor's token, whence the "MCP server needs re-authorization" symptom),
+    /// and dropped it out of supervision. The predecessor is now superseded in place instead,
+    /// which is also what §11 asks for — the zombie is gone before the resume, so two writers
+    /// never share one session file.</para>
     /// </summary>
     [SkippableFact]
     public async Task Real_claude_resumes_its_transcript_after_a_park_and_reports_a_memory_only_nonce()
@@ -272,13 +277,18 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
 
         // Redispatch: the plane hands the ref back and the supervisor rebuilds the argv from
         // resume.args with --resume <that id>, in the same task directory (Claude Code resumes a
-        // session only from the directory that created it, §11).
+        // session only from the directory that created it, §11). The resumed worker reads its
+        // answer off get_task and reports the remembered nonce — driving the task to verifying,
+        // which is the whole assertion: a cold successor could reach verifying too, but only
+        // with the wrong reference, because the nonce exists nowhere it could read.
         Assert.True(
-            await rig.DispatchUntilAsync(
-                task, "A", () => Task.FromResult(rig.InstanceSessionIdsOn("A", task).Count >= 2),
-                MaxAttempts, PerLegBudget, ct),
-            "a second worker instance never ran, so no resume was attempted.\n"
+            await rig.DispatchUntilVerifyingAsync(task, "A", MaxAttempts, PerLegBudget, ct),
+            "the resumed worker never drove its task to verifying.\n"
             + await rig.RealWorkerDiagnosticsAsync(task, ct));
+
+        // The value only the restored conversation held, committed on the row by a real
+        // report_result call.
+        Assert.Contains(nonce, await rig.ResultReferenceAsync(task, ct));
 
         // Harness-side proof that the second instance resumed the first, independent of anything
         // the agent said: both captured instances report the SAME session id on their own
