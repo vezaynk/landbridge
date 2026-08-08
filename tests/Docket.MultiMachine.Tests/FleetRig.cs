@@ -48,6 +48,12 @@ namespace Docket.MultiMachine.Tests;
 /// chooses how <c>stop</c> is delivered, and <paramref name="agentProcesses"/> is the
 /// per-profile gate the machine applies to <c>start_process</c>. All default to the
 /// scripted tier's existing values, so that suite's behaviour is unchanged.</para>
+///
+/// <para><paramref name="eventMapping"/> is <c>events.mapping</c> (§10) — the property-name
+/// overrides the terminal reader keys off. Empty (every tier but the real-Codex one) means
+/// the built-in claude <c>stream-json</c> defaults, so nothing changes for the suites that
+/// predate it; a harness whose stdout names things differently supplies it instead of
+/// needing parser code, which is the seam §10 exists to provide.</para>
 /// </summary>
 internal sealed class FleetRig(
     PostgresFixture pg,
@@ -55,7 +61,8 @@ internal sealed class FleetRig(
     IReadOnlyList<string>? resumeArgv = null,
     bool terminalEvents = false,
     bool agentProcesses = false,
-    StopConfig? stop = null) : IAsyncDisposable
+    StopConfig? stop = null,
+    IReadOnlyDictionary<string, string>? eventMapping = null) : IAsyncDisposable
 {
     private const string RelayBearer = "multimachine-relay-shared-secret-under-test";
 
@@ -130,7 +137,7 @@ internal sealed class FleetRig(
             resumeArgv is null ? null : new ResumeConfig(resumeArgv),
             new EventsConfig(
                 terminalEvents ? EventsSource.Terminal : EventsSource.None,
-                new Dictionary<string, string>()),
+                eventMapping ?? new Dictionary<string, string>()),
             new TelemetryConfig(Otel: false, Endpoint: null),
             // §12: capture on, so the fleet exercises the real capture → serve path end to
             // end. Pruning disabled (0) — a rig lives seconds and a sweep would only add
@@ -146,9 +153,18 @@ internal sealed class FleetRig(
     }
 
     /// <summary>Enroll a machine: its own worker supervisor, its own relay data-plane
-    /// daemon, and the registry send delegate that routes commands to the right one.</summary>
-    public async Task AddMachineAsync(string machineId)
+    /// daemon, and the registry send delegate that routes commands to the right one.
+    ///
+    /// <para><paramref name="spawnArgv"/> overrides <em>this machine's</em> <c>default</c>
+    /// profile spawn, leaving the rest of the profile (stop, resume, events, capture, the
+    /// process gate) as the rig was constructed with. Null — every caller but the
+    /// cross-harness scenario — keeps the fleet-wide profile, so nothing changes for the
+    /// suites that predate it. It exists because §10's promise is that a <em>fleet</em> is
+    /// heterogeneous: two machines can run two different harnesses under one plane, and
+    /// only a per-machine spawn can express that.</para></summary>
+    public async Task AddMachineAsync(string machineId, IReadOnlyList<string>? spawnArgv = null)
     {
+        var profile = spawnArgv is null ? _profile : _profile with { Spawn = spawnArgv };
         var workRoot = NewWorkRoot();
         var ring = new OutboundEventRing(capacity: 256);
         // §12: a real transcript store per machine, so capture writes real files and the
@@ -169,12 +185,12 @@ internal sealed class FleetRig(
                 workerSupervisor: supervisor,
                 workerConfig: new RunnerConfig(
                     machineConfig,
-                    new Dictionary<string, ProfileConfig>(StringComparer.Ordinal) { ["default"] = _profile }),
+                    new Dictionary<string, ProfileConfig>(StringComparer.Ordinal) { ["default"] = profile }),
                 log: line => _machineLog.Enqueue($"[{machineId}] {line}"))
             : new DaemonHarness(machineId, new SinkForwardingChannel(_sink));
         await daemon.StartAsync();
 
-        var machine = new MachineRig(machineId, supervisor, workRoot, daemon, ring);
+        var machine = new MachineRig(machineId, supervisor, workRoot, daemon, ring, profile);
         _machines[machineId] = machine;
 
         // Real-worker mode: drain this machine's worker-supervisor ring (started/exited)
@@ -237,13 +253,25 @@ internal sealed class FleetRig(
     private Task Spawn(MachineRig machine, DispatchCommand dispatch)
     {
         _ranOn[dispatch.Task] = machine.Id; // sticky: survives the worker's own exit/untrack
-        machine.Supervisor.Spawn(dispatch, _profile, machine.Id);
+        machine.Supervisor.Spawn(dispatch, machine.Profile, machine.Id);
         return Task.CompletedTask;
     }
 
     /// <summary>The plane's services — for the §12 transcript read path, which is plane-side
     /// (the relay service and the dashboard queries) rather than an MCP tool.</summary>
     public IServiceProvider PlaneServices => _plane.Services;
+
+    /// <summary>
+    /// This fleet's public MCP endpoint — the same URL <see cref="DispatchService"/> embeds in
+    /// every generated <c>{mcp_config}</c>. Bound to a loopback port at
+    /// <see cref="StartAsync"/>, so it is only known after the rig starts.
+    ///
+    /// <para>Exposed for a harness that cannot be handed an MCP config as an argv path and
+    /// needs the URL written into a config file of its own shape instead — Codex CLI, whose
+    /// only client-config surface is a <c>config.toml</c> under <c>CODEX_HOME</c>. A claude
+    /// profile never needs this: <c>--mcp-config {mcp_config}</c> carries the URL for it.</para>
+    /// </summary>
+    public string McpUrl => _baseUrl;
 
     /// <summary>
     /// Accept a verifying task over the real Lead MCP surface, driving it to <c>completed</c>
@@ -839,5 +867,6 @@ internal sealed class FleetRig(
     }
 
     private sealed record MachineRig(
-        string Id, ProcessSupervisor Supervisor, string WorkRoot, DaemonHarness Daemon, OutboundEventRing Ring);
+        string Id, ProcessSupervisor Supervisor, string WorkRoot, DaemonHarness Daemon, OutboundEventRing Ring,
+        ProfileConfig Profile);
 }

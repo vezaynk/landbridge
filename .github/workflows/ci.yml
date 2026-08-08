@@ -210,3 +210,68 @@ jobs:
         env:
           DOCKET_TEST_PG: Host=localhost;Port=5432;Username=docket;Password=docket;Database=docket_realclaude
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_KEY }}
+
+  # The §10 BYO-harness tier: the same fleet driven by OpenAI's Codex CLI instead of
+  # claude. Gated exactly like real-claude-e2e and for the same reasons — it spends
+  # tokens, so it runs ONLY on a manual workflow_dispatch and ONLY the RealCodex trait.
+  #
+  # NOTE FOR WHOEVER RUNS THIS FIRST: the `OPENAI_KEY` repo secret does not exist yet and
+  # must be added before this job can do anything. Without it the tests SKIP cleanly
+  # (SkippableFact) and the job still passes — deliberately, so a dispatch of the whole
+  # workflow is never red merely because this secret is absent. The gate maps the secret to
+  # CODEX_API_KEY, which is the variable the Codex docs name for `codex exec` (OPENAI_API_KEY
+  # is NOT documented as one Codex itself reads).
+  #
+  # Also unverified as of this job's authoring: no real `codex exec` run has been executed
+  # against Docket at all. Expect the first dispatch to be a characterization run rather than
+  # a regression check — see RealCodexCollaborationTests' class remarks for the two
+  # unverified claims that can invalidate the whole tier (stdin/dead-man pipe, MCP wiring).
+  real-codex-e2e:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: 1
+      DOTNET_NOLOGO: 1
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: docket
+          POSTGRES_PASSWORD: docket
+          POSTGRES_DB: docket
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U docket"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # The worker binary docketd spawns. Installed to PATH as `codex`; the test resolves it
+      # via PATH (or DOCKET_CODEX_BIN) and skips if it is missing.
+      - name: Install codex CLI
+        run: npm install -g @openai/codex
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build (Release)
+        run: dotnet build tests/Docket.MultiMachine.Tests --no-restore -c Release
+
+      # Only the real-codex trait. Its own database, so a dispatch that runs both real tiers
+      # cannot have one tier's reset truncate the other's fleet mid-run.
+      - name: Test - real codex exec multi-machine E2E
+        run: dotnet test tests/Docket.MultiMachine.Tests --no-build -c Release --filter "Category=RealCodex"
+        env:
+          DOCKET_TEST_PG: Host=localhost;Port=5432;Username=docket;Password=docket;Database=docket_realcodex
+          CODEX_API_KEY: ${{ secrets.OPENAI_KEY }}
