@@ -113,6 +113,12 @@ public static class DashboardEndpoints
         // §9.9 budget ceiling: human-only, and the ONLY write path — there is no MCP tool.
         app.MapPost("/dashboard/budget", HandleSetBudgetAsync);
 
+        // §11 permission bridge: the human's answer to a pending permission request, from
+        // the inbox. Unlike the budget write this has an MCP twin (the Lead's
+        // answer_permission_request) — the point of the bridge is that both answerers reach
+        // the same request, with the human able to answer any of them.
+        app.MapPost("/dashboard/permission", HandleDecidePermissionAsync);
+
         return app;
     }
 
@@ -320,6 +326,86 @@ public static class DashboardEndpoints
         return WantsJson(http)
             ? Results.Json(view, Json)
             : Html(DashboardRenderer.BudgetUpdated(teamId, view));
+    }
+
+    /// <summary>
+    /// POST /dashboard/permission — a human decides a pending permission request (§11/§12).
+    ///
+    /// <para>Human-only, like every other §12 write, and for the plainer of the two reasons
+    /// this time: the Lead already has its own tool for this, so the form exists precisely
+    /// for the answerer the Lead can hand a request to. A human may decide <em>any</em>
+    /// pending request, escalated or not — escalation removes the Lead's authority, it does
+    /// not create the human's — so this handler does not check the escalation state at all.
+    /// The engine does the rest, including refusing a Lead who reached this path with a
+    /// pasted token.</para>
+    ///
+    /// <para>The refusals here are the ordinary ones for a form on an auto-refreshing page:
+    /// between the render and the submit the worker may have given up, the wait-TTL sweeper
+    /// may have parked the task, or another answerer may have decided it. Each surfaces the
+    /// engine's own reason rather than a generic failure, because "someone else already
+    /// allowed this" and "this one expired" call for different next moves.</para>
+    /// </summary>
+    private static async Task<IResult> HandleDecidePermissionAsync(
+        HttpContext http, TokenService tokens,
+        [Microsoft.AspNetCore.Mvc.FromServices] TaskStore store,
+        CancellationToken ct)
+    {
+        var principal = await DashboardAuth.ResolveAsync(http, tokens, ct);
+        switch (principal)
+        {
+            case Principal.Human:
+                break;
+            case Principal.Lead:
+                return WantsJson(http)
+                    ? Results.Json(
+                        new { error = "answering from the dashboard is human-only; a Lead uses answer_permission_request" },
+                        Json, statusCode: StatusCodes.Status403Forbidden)
+                    : Results.Content(
+                        DashboardRenderer.PermissionRefused(
+                            "Answering from the dashboard is human-only. A Lead answers with "
+                            + "answer_permission_request, and cannot answer a request it escalated."),
+                        "text/html; charset=utf-8",
+                        statusCode: StatusCodes.Status403Forbidden);
+            default:
+                return WantsJson(http)
+                    ? Results.Json(new { error = "unauthorized" }, Json, statusCode: 401)
+                    : Results.Redirect("/dashboard/login");
+        }
+
+        var form = await http.Request.ReadFormAsync(ct);
+        if (!Guid.TryParse(form["taskId"].ToString(), out var taskId))
+            return Results.BadRequest(new { error = "invalid task id" });
+        if (!Enum.TryParse<Docket.Core.PermissionVerdict>(
+                form["verdict"].ToString(), ignoreCase: true, out var verdict))
+            return Results.BadRequest(new { error = "verdict must be 'allow' or 'deny'" });
+
+        var message = form["message"].ToString();
+        var id = new Docket.Core.TaskId(taskId);
+        var result = await store.AnswerPermissionAsync(
+            new Docket.Core.HumanSession(), id, verdict,
+            string.IsNullOrWhiteSpace(message) ? null : message, ct);
+
+        if (result is not StoreResult.Applied)
+        {
+            var reason = result switch
+            {
+                StoreResult.Rejected r => $"{r.Reason} ({r.Rule})",
+                StoreResult.NotFound n => n.Reason,
+                StoreResult.Conflict c => c.Reason,
+                _ => "unknown store result",
+            };
+            return WantsJson(http)
+                ? Results.Json(new { error = reason }, Json, statusCode: StatusCodes.Status409Conflict)
+                : Results.Content(
+                    DashboardRenderer.PermissionRefused(reason), "text/html; charset=utf-8",
+                    statusCode: StatusCodes.Status409Conflict);
+        }
+
+        // Re-read so the confirmation reports what actually landed, not what was posted.
+        var decided = await store.GetPermissionRequestAsync(id, ct);
+        return decided is null
+            ? Results.NotFound(new { error = "task disappeared" })
+            : Negotiated(http, decided, () => DashboardRenderer.PermissionDecided(decided));
     }
 
     /// <summary>

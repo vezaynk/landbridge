@@ -221,6 +221,11 @@ The load-bearing arguments:
 - **`--permission-mode bypassPermissions`** is the headless prerequisite: a worker
   must run to completion without prompting (spec §10). Managed settings on a
   corporate machine can forbid bypass outright — confirm it is permitted first.
+  Where it is not permitted, replace this flag with
+  `--permission-prompt-tool mcp__docket__request_permission` and approvals route to
+  the Lead instead (spec §11's permission bridge; the runner-config reference has
+  the worked profile and its caveats). Keep `--allowedTools` as the routine
+  baseline either way, or the machine will ask about every call it makes.
 - **`--verbose`** is what makes `--output-format stream-json` actually stream under
   `-p`. Without it an `events.source: terminal` profile reads nothing, and the task
   loses both its session ref and its per-task liveness.

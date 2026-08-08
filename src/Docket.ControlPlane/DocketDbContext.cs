@@ -67,6 +67,11 @@ public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) :
             // §6/§9 check 7: why the task was last requeued, same enum-name storage as
             // the event row's copy. Null until the first infrastructure requeue.
             e.Property(t => t.LastRequeueReason).HasConversion<string>();
+            // §11 permission bridge: the live verdict on a pending permission request,
+            // same enum-name storage as every other enum column here. Null while the
+            // request is undecided, which is exactly what the relaying worker tool polls
+            // for.
+            e.Property(t => t.PermissionVerdict).HasConversion<string>();
             e.Property(t => t.Version).IsRowVersion(); // maps to Postgres xmin
         });
 
@@ -99,6 +104,10 @@ public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) :
             e.Property(ev => ev.InputKind).HasConversion<string>();
             // The requeue's reason, same enum-name storage (§6/§9 check 7, #73).
             e.Property(ev => ev.LivenessReason).HasConversion<string>();
+            // §11 permission bridge audit trail: the verdict and who had authority to
+            // give it, same enum-name storage as the two above.
+            e.Property(ev => ev.PermissionVerdict).HasConversion<string>();
+            e.Property(ev => ev.PermissionAnswerer).HasConversion<string>();
         });
 
         b.Entity<CredentialRow>(e =>

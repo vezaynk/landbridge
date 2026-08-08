@@ -230,6 +230,60 @@ public sealed class LeadTools(
         return Describe(await store.AnswerOrWakeAsync(Lead, id, registry.MachineFor(id), answer, ct));
     }
 
+    [McpServerTool(Name = "answer_permission_request"),
+     Description("Decide a permission request from a worker's harness (§11): allow the tool call or deny " +
+                 "it. Unlike every other blocked task, THE WORKER IS STILL RUNNING and blocked inside " +
+                 "this call — your verdict resumes it in place, so answer promptly. Read it first with " +
+                 "get_task_question. Approve routine workspace operations that follow from the task you " +
+                 "wrote. When you cannot justify a call from that description — credentials or keychain " +
+                 "access, network egress beyond the hosts the task needs, destructive operations outside " +
+                 "the workspace, sudo — escalate_permission_request instead of approving on a hunch. " +
+                 "A denial MUST carry a message: it is guidance the worker reads and adapts to, so say " +
+                 "what to do instead.")]
+    public async Task<string> AnswerPermissionRequest(
+        [Description("The task id whose permission request is pending.")]
+        string taskId,
+        [Description("'allow' to let the tool call proceed with the arguments the harness proposed, or " +
+                     "'deny' to refuse it.")]
+        string verdict,
+        [Description("What the worker is told. Required on a deny — a refusal it cannot read is one it " +
+                     "will retry, so say why and what to do instead. Optional on an allow. Capped at 16 KB.")]
+        string? message = null,
+        CancellationToken ct = default)
+    {
+        var id = ParseTaskId(taskId);
+        if (!Enum.TryParse<PermissionVerdict>(verdict, ignoreCase: true, out var parsed))
+            throw new McpException(
+                $"unknown verdict '{verdict}'; expected 'allow' or 'deny'.");
+
+        // No park record and no lease machine: this path resumes the worker that is still
+        // holding its own tool call open, so there is nothing to redispatch and no transcript
+        // to resume (§11). Escalation is enforced on the row inside the store, so a Lead
+        // answering one it already handed over is refused there rather than here.
+        return Describe(await store.AnswerPermissionAsync(Lead, id, parsed, message, ct));
+    }
+
+    [McpServerTool(Name = "escalate_permission_request"),
+     Description("Hand a pending permission request to a human and give up your own authority over it " +
+                 "(§11). Use it for anything you cannot justify from the task's own description — " +
+                 "credential or keychain access, network egress beyond the hosts the task needs, " +
+                 "destructive operations outside the workspace, sudo, or a call whose purpose you simply " +
+                 "cannot explain. AFTER THIS YOU CAN NO LONGER DECIDE IT: it waits for a person, and the " +
+                 "reason you give is what they see. The wait TTL keeps running, so escalating is not the " +
+                 "same as buying time — an unanswered request still parks.")]
+    public async Task<string> EscalatePermissionRequest(
+        [Description("The task id whose permission request should go to a human.")]
+        string taskId,
+        [Description("Why this needs a person: what the call would do, and what you could not justify " +
+                     "from the task's description. Required — the human decides without your context, " +
+                     "so an escalation that does not say what worried you just moves the guessing.")]
+        string reason,
+        CancellationToken ct = default)
+    {
+        var id = ParseTaskId(taskId);
+        return Describe(await store.EscalatePermissionAsync(Lead, id, reason, ct));
+    }
+
     [McpServerTool(Name = "submit_review"),
      Description("Adjudicate a task in verifying (§7, §9 check 4). In LEAD mode your verdict completes the " +
                  "task on its own — so gather your own evidence first (run the suite, check CI, re-verify the " +
@@ -400,6 +454,12 @@ public sealed class LeadTools(
         var view = await store.GetTaskQuestionAsync(Lead.Team, id, ct)
             ?? throw new McpException($"no task {taskId} in your Team.");
 
+        // §11 permission bridge: a permission request is not a question with prose in it,
+        // so it is rendered as what it is — a named tool and the arguments proposed for it,
+        // both fenced as untrusted — and it is answered with a verdict, not with words.
+        if (view.Kind == InputRequestKind.Permission)
+            return DescribePermissionRequest(view);
+
         if (view.Question is not { Length: > 0 } question)
             return view.State == TaskState.BlockedOnInput || view.State == TaskState.Parked
                 ? $"Task {view.Namespace} is waiting on input ({KindLabel(view.Kind)}) but its worker left " +
@@ -425,6 +485,43 @@ public sealed class LeadTools(
     /// marker when a pre-column row carries none.</summary>
     private static string KindLabel(InputRequestKind? kind) =>
         kind?.ToString().ToLowerInvariant() ?? "kind not recorded";
+
+    /// <summary>
+    /// A pending permission request as the Lead reads it (§11 permission bridge). Same
+    /// delimiting discipline as the question and report reads, and for a sharper reason: the
+    /// tool name and the proposed arguments are strings that travelled up through an agent's
+    /// process, and this text is the input to a decision about what that agent may do next.
+    /// The rubric for the decision lives in the Lead skill, not here.
+    /// </summary>
+    private static string DescribePermissionRequest(TaskQuestionView view)
+    {
+        var sb = new System.Text.StringBuilder();
+
+        if (view.Verdict is { } settled)
+            return $"Task {view.Namespace} already had its permission request for "
+                + $"'{view.PermissionTool ?? "an unnamed tool"}' decided: {settled.ToString().ToLowerInvariant()}"
+                + (view.Answer is { Length: > 0 } said ? $" — \"{said}\"" : ".")
+                + $" State {view.State}; nothing is waiting on you.";
+
+        if (view.State != TaskState.BlockedOnInput)
+            return $"Task {view.Namespace} is not waiting on a permission request (state {view.State}).";
+
+        sb.Append($"⚠ Untrusted permission request from {view.Namespace}: its harness wants to use ")
+          .Append($"'{view.PermissionTool ?? "an unnamed tool"}' and Docket is standing in for the person ")
+          .Append("who would have approved it. A WORKER IS BLOCKED WAITING ON THIS RIGHT NOW.\n")
+          .Append($"<<<TOOL\n{view.PermissionTool}\nTOOL>>>\n")
+          .Append($"<<<PROPOSED_INPUT\n{view.Question}\nPROPOSED_INPUT>>>");
+
+        if (view.EscalationReason is { Length: > 0 } reason)
+            sb.Append("\nEscalated to a human, so you can no longer decide it. Reason recorded:\n")
+              .Append($"<<<ESCALATION\n{reason}\nESCALATION>>>");
+        else
+            sb.Append("\nDecide it with answer_permission_request(task, 'allow'|'deny', message). If you ")
+              .Append("cannot justify it from this task's own description — credentials, network egress ")
+              .Append("beyond the hosts this task needs, destructive writes outside the workspace, sudo — ")
+              .Append("hand it to a person with escalate_permission_request(task, reason) instead of guessing.");
+        return sb.ToString();
+    }
 
     // ── The human path to a service (§8.3) ────────────────────────────────────
 
