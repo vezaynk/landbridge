@@ -56,6 +56,13 @@ namespace Docket.Runner.TestHarness;
 ///                     then watch stdin like `run`. Lets the §11 resume tests assert
 ///                     the supervisor built the spawn argv from resume.args with the
 ///                     {session_id}/{mcp_config} placeholders substituted.
+///   http-serve p t  — bind loopback port p and answer every request with body t
+///                     (HTTP/1.1, Connection: close), until killed. Does NOT watch
+///                     stdin, because an agent-started process (§10 `start_process`)
+///                     gets a closed stdin by default and would otherwise see EOF and
+///                     exit at once. The §8.2/§8.3 scenarios spawn this as the thing a
+///                     worker registers and a consumer on another machine fetches
+///                     through the relay, so it has to speak enough HTTP for `curl`.
 /// </summary>
 public static class Program
 {
@@ -229,9 +236,89 @@ public static class Program
                 await WriteMarkerAtomicAsync(Path.Combine(cwd, "argv"), string.Join('\n', args));
                 return await WatchStdinAsync(cwd, grandchildren: [], onLine: null);
 
+            case "http-serve":
+                // A long-lived listener an agent starts through §10 `start_process`. Stdin is
+                // closed for such a process by default, so this mode deliberately does not
+                // watch it — PDEATHSIG (armed above) plus docketd's stop/stray paths are what
+                // end it. Serves until killed; a dead port would make the consumer's forward
+                // indistinguishable from a crashed service, so it never exits on its own.
+                return await ServeHttpAsync(
+                    port: int.Parse(args[1], System.Globalization.CultureInfo.InvariantCulture),
+                    body: args[2]);
+
             default: // "run"
                 await WriteStartedAsync(cwd);
                 return await WatchStdinAsync(cwd, grandchildren: [], onLine: null);
+        }
+    }
+
+    /// <summary>
+    /// Answers every accepted connection with <paramref name="body"/> over minimal
+    /// HTTP/1.1 and never returns. Enough of the protocol for <c>curl</c> — request line
+    /// and headers drained to the blank line, then a fixed-length response with
+    /// <c>Connection: close</c> — and nothing more: this stands in for "the dev server a
+    /// worker started", so what matters is that the bytes are reachable through a §8.3
+    /// forward, not that it is a web server.
+    /// </summary>
+    private static async Task<int> ServeHttpAsync(int port, string body)
+    {
+        var payload = System.Text.Encoding.UTF8.GetBytes(body);
+        var response = System.Text.Encoding.ASCII.GetBytes(
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\n" +
+            $"Content-Length: {payload.Length}\r\nConnection: close\r\n\r\n");
+
+        // Loopback only (§8.2: a registered endpoint is reached through the relay, never
+        // by exposing a port to the network).
+        var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, port);
+        listener.Start();
+        while (true)
+        {
+            var client = await listener.AcceptTcpClientAsync();
+            // One connection at a time is plenty for a probe-and-fetch consumer, and it
+            // keeps the failure mode legible: a hang means nothing answered, never that a
+            // pool was exhausted.
+            _ = Task.Run(async () =>
+            {
+                using (client)
+                {
+                    try
+                    {
+                        var stream = client.GetStream();
+                        await DrainRequestHeadAsync(stream);
+                        await stream.WriteAsync(response);
+                        await stream.WriteAsync(payload);
+                        await stream.FlushAsync();
+                    }
+                    catch (IOException) { /* the client hung up; the next one is unaffected */ }
+                    catch (System.Net.Sockets.SocketException) { /* likewise */ }
+                }
+            });
+        }
+    }
+
+    /// <summary>
+    /// Reads request bytes until the blank line that ends the head (or EOF), so the
+    /// response is written to a client that has finished asking. Bounded — a peer that
+    /// never sends the terminator must not wedge the connection task forever.
+    /// </summary>
+    private static async Task DrainRequestHeadAsync(Stream stream)
+    {
+        var buffer = new byte[1024];
+        var seen = 0;
+        var terminator = 0; // how much of "\r\n\r\n" has matched so far
+        while (seen < 16 * 1024)
+        {
+            var read = await stream.ReadAsync(buffer);
+            if (read == 0)
+                return;
+            seen += read;
+            for (var i = 0; i < read; i++)
+            {
+                var expected = (terminator % 2 == 0) ? (byte)'\r' : (byte)'\n';
+                terminator = buffer[i] == expected ? terminator + 1 : (buffer[i] == '\r' ? 1 : 0);
+                if (terminator == 4)
+                    return;
+            }
         }
     }
 

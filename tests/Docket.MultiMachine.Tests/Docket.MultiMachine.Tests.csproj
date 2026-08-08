@@ -47,6 +47,12 @@
          scenario spawns it as a real MCP-speaking child process (§10 conventions —
          a real spawnable child, no shell), one instance per enrolled machine. -->
     <ProjectReference Include="..\Docket.CollabHarness\Docket.CollabHarness.csproj" />
+    <!-- Referenced for its `http-serve` mode: the §8.2/§8.3 real-claude scenario needs a
+         long-lived listener a worker can start through `start_process` and a consumer on
+         another machine can fetch through the relay. It must be a real binary at a real
+         absolute path on every platform CI runs, which is exactly this harness's job — an
+         interpreter that happens to be installed is not a guarantee. -->
+    <ProjectReference Include="..\Docket.Runner.TestHarness\Docket.Runner.TestHarness.csproj" />
   </ItemGroup>
 
 </Project>

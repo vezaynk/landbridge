@@ -39,8 +39,23 @@ namespace Docket.MultiMachine.Tests;
 /// <c>Docket.CollabHarness</c>; the key-gated real-<c>claude -p</c> tier passes the
 /// validated claude recipe instead (§10 config-only harness seam), so the very same
 /// fleet drives a real agent with no code change on any surface below this line.</para>
+///
+/// <para>The remaining parameters shape the rest of that one profile, and each exists
+/// because a §10/§11 seam is <em>only</em> reachable when the profile declares it:
+/// <paramref name="resumeArgv"/> is <c>resume.args</c> (without it a session ref is
+/// ignored and the task cold-starts), <paramref name="terminalEvents"/> turns on the
+/// stdout drain that captures the harness session ref at all, <paramref name="stop"/>
+/// chooses how <c>stop</c> is delivered, and <paramref name="agentProcesses"/> is the
+/// per-profile gate the machine applies to <c>start_process</c>. All default to the
+/// scripted tier's existing values, so that suite's behaviour is unchanged.</para>
 /// </summary>
-internal sealed class FleetRig(PostgresFixture pg, IReadOnlyList<string>? spawnArgv = null) : IAsyncDisposable
+internal sealed class FleetRig(
+    PostgresFixture pg,
+    IReadOnlyList<string>? spawnArgv = null,
+    IReadOnlyList<string>? resumeArgv = null,
+    bool terminalEvents = false,
+    bool agentProcesses = false,
+    StopConfig? stop = null) : IAsyncDisposable
 {
     private const string RelayBearer = "multimachine-relay-shared-secret-under-test";
 
@@ -78,6 +93,15 @@ internal sealed class FleetRig(PostgresFixture pg, IReadOnlyList<string>? spawnA
     /// never reported".</summary>
     private readonly ConcurrentDictionary<TaskId, WorkerObservation> _observations = new();
 
+    /// <summary>How each task's last <c>stop</c> was delivered (§10) — message-injected or
+    /// signal/kill. The distinction is the whole content of a graceful-stop assertion.</summary>
+    private readonly ConcurrentDictionary<TaskId, StopAck> _stopAcks = new();
+
+    /// <summary>Each machine's own process-supervision log. The <em>reason</em> a spawn failed
+    /// lives only here — the agent is told a bare <c>spawn_failed</c> — so a process scenario's
+    /// diagnostic is close to useless without it.</summary>
+    private readonly ConcurrentQueue<string> _machineLog = new();
+
     public TeamId Team { get; private set; }
     private string _leadToken = null!;
 
@@ -102,15 +126,20 @@ internal sealed class FleetRig(PostgresFixture pg, IReadOnlyList<string>? spawnA
         _profile = new ProfileConfig(
             "default",
             spawnArgv ?? [CollabHarnessPath(), "--mcp-config", "{mcp_config}"],
-            new StopConfig(StopMode.Signal, Signal: null, MessageTemplate: null, WindDown: TimeSpan.FromSeconds(30)),
-            Resume: null,
-            new EventsConfig(EventsSource.None, new Dictionary<string, string>()),
+            stop ?? new StopConfig(StopMode.Signal, Signal: null, MessageTemplate: null, WindDown: TimeSpan.FromSeconds(30)),
+            resumeArgv is null ? null : new ResumeConfig(resumeArgv),
+            new EventsConfig(
+                terminalEvents ? EventsSource.Terminal : EventsSource.None,
+                new Dictionary<string, string>()),
             new TelemetryConfig(Otel: false, Endpoint: null),
             // §12: capture on, so the fleet exercises the real capture → serve path end to
             // end. Pruning disabled (0) — a rig lives seconds and a sweep would only add
             // nondeterminism.
             new LogsConfig(Path: null, Format: null, Capture: true, PruneAfterDays: 0),
-            MaxConcurrent: null);
+            MaxConcurrent: null,
+            // §10: the machine owner's decision, enforced machine-side. Off unless a
+            // scenario is about agent-started processes.
+            Processes: agentProcesses ? new ProfileProcessesConfig(AgentInitiated: true) : null);
 
         Team = TeamId.New();
         _leadToken = await MultiMachineKit.LeadTokenAsync(pg, Team, ct);
@@ -126,10 +155,23 @@ internal sealed class FleetRig(PostgresFixture pg, IReadOnlyList<string>? spawnA
         // read path answers from them — the same store on both halves, as in production.
         var transcripts = new TranscriptStore(
             Path.Combine(workRoot, TranscriptDefaults.DirName), TimeSpan.Zero, TimeProvider.System);
+        var machineConfig = new MachineConfig(workRoot, TimeSpan.FromSeconds(15), BackPressureThresholds.Default);
         var supervisor = new ProcessSupervisor(
-            new MachineConfig(workRoot, TimeSpan.FromSeconds(15), BackPressureThresholds.Default),
-            ring, TimeProvider.System, taskReaper: null, transcripts);
-        var daemon = new DaemonHarness(machineId, new SinkForwardingChannel(_sink));
+            machineConfig, ring, TimeProvider.System, taskReaper: null, transcripts);
+        // Real-worker mode hands the daemon this machine's REAL worker supervisor and its
+        // profile, so the §10 process commands can resolve the calling task's profile and
+        // apply the gate on the machine. The daemon keeps its own ring (see DaemonHarness) and
+        // its replies reach the plane through the channel. The scripted tier keeps the
+        // forward-only daemon it always had.
+        var daemon = RealWorkerMode
+            ? new DaemonHarness(
+                machineId, new SinkForwardingChannel(_sink),
+                workerSupervisor: supervisor,
+                workerConfig: new RunnerConfig(
+                    machineConfig,
+                    new Dictionary<string, ProfileConfig>(StringComparer.Ordinal) { ["default"] = _profile }),
+                log: line => _machineLog.Enqueue($"[{machineId}] {line}"))
+            : new DaemonHarness(machineId, new SinkForwardingChannel(_sink));
         await daemon.StartAsync();
 
         var machine = new MachineRig(machineId, supervisor, workRoot, daemon, ring);
@@ -140,7 +182,11 @@ internal sealed class FleetRig(PostgresFixture pg, IReadOnlyList<string>? spawnA
         // still-working task and a retry can redispatch it. The scripted tier leaves the
         // ring undrained (its exits carry no signal) — nothing here changes for it.
         if (RealWorkerMode)
+        {
             _pumps.Add(Task.Run(() => PumpSupervisorRingAsync(ring, _pumpCts.Token)));
+            if (_pumps.Count == 1) // one heartbeat pump for the whole fleet, on the first machine
+                _pumps.Add(Task.Run(() => PumpHeartbeatsAsync(_pumpCts.Token)));
+        }
 
         // The §10 socket seam: dispatch → the real spawn, open-forward → the real
         // daemon standing up the relay data plane. Nothing else is exercised here.
@@ -152,9 +198,41 @@ internal sealed class FleetRig(PostgresFixture pg, IReadOnlyList<string>? spawnA
             // §12: the real reader answering off the real captured files, replying through
             // the plane's real sink — the same two hops production makes.
             ReadTranscriptCommand read => _sink.HandleAsync(reader.Read(read), sendCt),
+            // §10/§11 stop: the real supervisor's delivery path — an injected turn on the
+            // held-open stdin where the profile declares a message seam, otherwise the
+            // bounded TTL kill. The ack is kept for the scenario that measures it.
+            StopCommand s => StopOnMachineAsync(machine, s, sendCt),
+            // §10 process commands go to the real daemon, which applies the profile gate on
+            // the machine and replies on the shared ring.
+            StartProcessCommand or StopProcessCommand or WriteProcessCommand =>
+                machine.Daemon.Send(command, sendCt),
             _ => Task.CompletedTask,
         });
     }
+
+    /// <summary>Deliver a <c>stop</c> through the machine's real supervisor, recording the
+    /// delivery mode it acked so a scenario can assert on (and a diagnostic can report)
+    /// whether the agent was handed an injected turn or merely a kill deadline.</summary>
+    private async Task StopOnMachineAsync(MachineRig machine, StopCommand stop, CancellationToken ct)
+    {
+        var ack = await machine.Supervisor.StopAsync(stop.Task, stop.Ttl, stop.Disposition, stop.Reason, ct);
+        _stopAcks[stop.Task] = ack;
+    }
+
+    /// <summary>
+    /// Send a real <see cref="StopCommand"/> to the machine holding <paramref name="task"/>,
+    /// through the same registry send the plane's budget sweep uses (§9.9) — there is no Lead
+    /// MCP tool for a graceful stop, so this is the plane-side path a scenario drives.
+    /// Returns false when the machine is unreachable.
+    /// </summary>
+    public Task<bool> SendStopAsync(
+        string machineId, TaskId task, TimeSpan ttl, StopDisposition disposition, string? reason,
+        CancellationToken ct) =>
+        _registry.SendAsync(machineId, new StopCommand(task, ttl, disposition, reason), ct);
+
+    /// <summary>How the machine acked the last <c>stop</c> for this task (§10) — the honest
+    /// answer to "was the agent told, or just killed".</summary>
+    public StopAck? StopAckFor(TaskId task) => _stopAcks.TryGetValue(task, out var ack) ? ack : null;
 
     private Task Spawn(MachineRig machine, DispatchCommand dispatch)
     {
@@ -183,7 +261,12 @@ internal sealed class FleetRig(PostgresFixture pg, IReadOnlyList<string>? spawnA
     }
 
     /// <summary>Create a task for this fleet's Team via the real Lead MCP surface.</summary>
-    public async Task<TaskId> CreateTaskAsync(string description, CancellationToken ct)
+    /// <param name="continues">
+    /// §11 continuation: the prior task whose agent session this new task resumes — "talk to
+    /// the agent that has the context". Seeds the new row's session ref and preferred machine
+    /// from that task, so its first dispatch prefers the machine holding the transcript.
+    /// </param>
+    public async Task<TaskId> CreateTaskAsync(string description, CancellationToken ct, TaskId? continues = null)
     {
         await using var lead = await MultiMachineKit.ConnectMcpAsync(new Uri(_baseUrl + "/"), _leadToken, ct);
         var created = await lead.CallToolAsync("create_task", new Dictionary<string, object?>
@@ -193,9 +276,125 @@ internal sealed class FleetRig(PostgresFixture pg, IReadOnlyList<string>? spawnA
             ["mode"] = "lead",
             ["profile"] = null,
             ["workspace"] = $"multimachine-{Guid.NewGuid():N}",
+            ["continues"] = continues?.Value.ToString(),
         }, cancellationToken: ct);
         Assert.NotEqual(true, created.IsError);
         return new TaskId(Guid.Parse(Assert.Single(created.Content.OfType<TextContentBlock>()).Text));
+    }
+
+    /// <summary>
+    /// The question a worker asked with <c>request_input</c>, read over the real Lead MCP
+    /// surface (<c>get_task_question</c>) — proof the ask crossed the wire, and the thing a
+    /// Lead reads before answering.
+    /// </summary>
+    public async Task<string> QuestionAsync(TaskId task, CancellationToken ct)
+    {
+        await using var lead = await MultiMachineKit.ConnectMcpAsync(new Uri(_baseUrl + "/"), _leadToken, ct);
+        var read = await lead.CallToolAsync("get_task_question", new Dictionary<string, object?>
+        {
+            ["taskId"] = task.Value.ToString(),
+        }, cancellationToken: ct);
+        Assert.NotEqual(true, read.IsError);
+        return string.Concat(read.Content.OfType<TextContentBlock>().Select(b => b.Text));
+    }
+
+    /// <summary>
+    /// Answer a blocked task over the real Lead MCP surface (§11), which requeues it for
+    /// redispatch <em>with its transcript resumed</em> and writes the park record carrying
+    /// the harness session ref. The answer itself reaches the worker on its next
+    /// <c>get_task</c> and never through the resume argv (§13).
+    /// </summary>
+    public async Task AnswerAsync(TaskId task, string answer, CancellationToken ct)
+    {
+        await using var lead = await MultiMachineKit.ConnectMcpAsync(new Uri(_baseUrl + "/"), _leadToken, ct);
+        var answered = await lead.CallToolAsync("answer_input_request", new Dictionary<string, object?>
+        {
+            ["taskId"] = task.Value.ToString(),
+            ["answer"] = answer,
+        }, cancellationToken: ct);
+        Assert.NotEqual(true, answered.IsError);
+    }
+
+    /// <summary>The opaque harness session ref stamped from the worker's own
+    /// <c>session-started</c> (§11) — null until the harness reports one.</summary>
+    public async Task<string?> HarnessSessionRefAsync(TaskId task, CancellationToken ct)
+    {
+        await using var db = pg.NewContext();
+        return (await db.Tasks.AsNoTracking().SingleAsync(t => t.Id == task.Value, ct)).HarnessSessionRef;
+    }
+
+    /// <summary>
+    /// The harness session id each captured instance of <paramref name="task"/> reported on its
+    /// own <c>system/init</c> line (§12 capture, one file per instance, §11's session ref).
+    /// Ordered by instance.
+    ///
+    /// <para>This is the direct, harness-side proof of a resume, and it is worth having
+    /// separately from the task row: the row holds one ref and cannot distinguish "the second
+    /// instance resumed the first" from "the second instance cold-started and stamped its own".
+    /// Two instances reporting the <em>same</em> id can only happen if the second really resumed
+    /// the first's transcript — a cold start mints a new one.</para>
+    /// </summary>
+    public IReadOnlyList<string> InstanceSessionIdsOn(string machineId, TaskId task)
+    {
+        var dir = System.IO.Path.Combine(
+            _machines[machineId].WorkRoot, TranscriptDefaults.DirName, task.ToString());
+        if (!System.IO.Directory.Exists(dir))
+            return [];
+
+        var ids = new List<string>();
+        foreach (var file in System.IO.Directory.EnumerateFiles(dir, "*.ndjson")
+                     .OrderBy(f => f, StringComparer.Ordinal))
+        {
+            foreach (var line in ReadLinesOrEmpty(file))
+            {
+                if (SessionIdOfInitLine(line) is not { Length: > 0 } id)
+                    continue;
+                ids.Add(id);
+                break; // the init line is the first one that carries it; the id is stable per run
+            }
+        }
+        return ids;
+    }
+
+    private static string[] ReadLinesOrEmpty(string file)
+    {
+        try { return System.IO.File.ReadAllLines(file); }
+        catch (IOException) { return []; } // mid-write; the caller polls again
+    }
+
+    /// <summary>The <c>session_id</c> of a claude <c>system</c>/<c>init</c> stream line, or null
+    /// for any other line. Same shape the runner's own Terminal reader keys off.</summary>
+    private static string? SessionIdOfInitLine(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line))
+            return null;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(line);
+            var root = doc.RootElement;
+            if (root.ValueKind != System.Text.Json.JsonValueKind.Object)
+                return null;
+            if (Text(root, "type") != "system" || Text(root, "subtype") != "init")
+                return null;
+            return Text(root, "session_id");
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return null; // stray non-JSON harness output, exactly as the reader tolerates
+        }
+
+        static string? Text(System.Text.Json.JsonElement o, string key) =>
+            o.TryGetProperty(key, out var v) && v.ValueKind == System.Text.Json.JsonValueKind.String
+                ? v.GetString()
+                : null;
+    }
+
+    /// <summary>The park record's session ref and machine (§11), or nulls when unparked.</summary>
+    public async Task<(string? Machine, string? SessionRef)> ParkAsync(TaskId task, CancellationToken ct)
+    {
+        await using var db = pg.NewContext();
+        var row = await db.Tasks.AsNoTracking().SingleAsync(t => t.Id == task.Value, ct);
+        return (row.ParkMachine, row.ParkSessionRef);
     }
 
     /// <summary>
@@ -210,10 +409,59 @@ internal sealed class FleetRig(PostgresFixture pg, IReadOnlyList<string>? spawnA
         await _dispatch.RunDispatchPassAsync(ct);
     }
 
-    private void SetReady(string machineId, bool ready) =>
+    /// <summary>Which machines the last <see cref="DispatchToAsync"/> left ready, so a
+    /// re-beat carries the same readiness and never disturbs dispatch steering.</summary>
+    private readonly ConcurrentDictionary<string, bool> _ready = new(StringComparer.Ordinal);
+
+    private void SetReady(string machineId, bool ready)
+    {
+        _ready[machineId] = ready;
+        Beat(machineId);
+    }
+
+    /// <summary>
+    /// One machine heartbeat, carrying what that machine is currently running (§10, §12).
+    /// The process list matters: <c>list_processes</c> answers from what a machine last
+    /// <em>reported</em> — the plane holds no process state of its own — so without a beat
+    /// after a start, a cleanup agent cannot discover the survivor it was sent to stop.
+    /// </summary>
+    private void Beat(string machineId)
+    {
+        var machine = _machines[machineId];
         _registry.ApplyHeartbeat(machineId, new MachineHeartbeat(
-            machineId, Ready: ready, UnderBackPressure: false,
-            new SystemLoad(0, 0, 0), RunningTasks: 0, ["default"], DateTimeOffset.UtcNow));
+            machineId, Ready: _ready.GetValueOrDefault(machineId), UnderBackPressure: false,
+            new SystemLoad(0, 0, 0), RunningTasks: machine.Supervisor.RunningTotal, ["default"],
+            DateTimeOffset.UtcNow,
+            Processes: machine.Daemon.ReportProcesses()));
+    }
+
+    /// <summary>What the machine reports it is running (§10) — the rig-side read behind
+    /// <c>list_processes</c>, for assertions and diagnostics.</summary>
+    public IReadOnlyList<ProcessStatus> ProcessesOn(string machineId) =>
+        _machines[machineId].Daemon.ReportProcesses();
+
+    /// <summary>
+    /// Beats every machine on a fixed cadence, as a real docketd's heartbeat timer does.
+    /// Real-worker mode only, and the reason it exists is <c>list_processes</c>: an agent
+    /// that starts a process and then looks for it must see a heartbeat newer than the
+    /// start, and no test should have to know that.
+    /// </summary>
+    private async Task PumpHeartbeatsAsync(CancellationToken ct)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                foreach (var id in _machines.Keys.ToArray())
+                {
+                    try { Beat(id); }
+                    catch (KeyNotFoundException) { /* machine removed mid-sweep */ }
+                }
+                await Task.Delay(TimeSpan.FromMilliseconds(500), ct);
+            }
+        }
+        catch (OperationCanceledException) { /* disposing */ }
+    }
 
     // ── Bounded reads of committed control-plane state ──────────────────────────
 
@@ -248,17 +496,36 @@ internal sealed class FleetRig(PostgresFixture pg, IReadOnlyList<string>? spawnA
     /// loop, which would redispatch a requeued task on its own; a real haiku worker that
     /// flakes one turn no longer reds the whole opt-in job.
     /// </summary>
-    public async Task<bool> DispatchUntilVerifyingAsync(
-        TaskId task, string machineId, int maxAttempts, TimeSpan budget, CancellationToken ct)
+    public Task<bool> DispatchUntilVerifyingAsync(
+        TaskId task, string machineId, int maxAttempts, TimeSpan budget, CancellationToken ct) =>
+        DispatchUntilAsync(
+            task, machineId, async () => await StateAsync(task, ct) == TaskState.Verifying,
+            maxAttempts, budget, ct);
+
+    /// <summary>
+    /// The general form: drive <paramref name="task"/> on <paramref name="machineId"/> until
+    /// <paramref name="done"/> holds, respawning a fresh worker each time the task is claimable
+    /// again — the initial submit, and every requeue-on-exit — up to
+    /// <paramref name="maxAttempts"/> within <paramref name="budget"/>.
+    ///
+    /// <para>Every scenario needs this rather than a plain poll, because "the worker ended its
+    /// turn without doing the thing" is a real (if uncommon) haiku outcome, and the requeue that
+    /// follows is only useful if something redispatches — which in production is the background
+    /// dispatch loop and here is this method. A scenario whose goal is not <c>verifying</c> —
+    /// blocking on a question, registering a service — needs the same tolerance, so the
+    /// completion test is a predicate rather than a fixed state.</para>
+    /// </summary>
+    public async Task<bool> DispatchUntilAsync(
+        TaskId task, string machineId, Func<Task<bool>> done, int maxAttempts, TimeSpan budget,
+        CancellationToken ct)
     {
         var deadline = DateTime.UtcNow + budget;
         var attempts = 0;
         while (DateTime.UtcNow < deadline && !ct.IsCancellationRequested)
         {
-            var state = await StateAsync(task, ct);
-            if (state == TaskState.Verifying)
+            if (await done())
                 return true;
-            if (state == TaskState.Submitted && attempts < maxAttempts)
+            if (await StateAsync(task, ct) == TaskState.Submitted && attempts < maxAttempts)
             {
                 await DispatchToAsync(machineId, ct);
                 attempts++;
@@ -266,7 +533,7 @@ internal sealed class FleetRig(PostgresFixture pg, IReadOnlyList<string>? spawnA
             try { await Task.Delay(TimeSpan.FromMilliseconds(500), ct); }
             catch (OperationCanceledException) { break; }
         }
-        return await StateAsync(task, ct) == TaskState.Verifying;
+        return await done();
     }
 
     /// <summary>
@@ -317,13 +584,65 @@ internal sealed class FleetRig(PostgresFixture pg, IReadOnlyList<string>? spawnA
         else
             sb.AppendLine("  worker: no spawn/exit observed on the ring (ring draining is real-worker-mode only)");
 
-        foreach (var (id, m) in _machines)
-            sb.AppendLine($"  ring[{id}] droppedEvents={m.Ring.DroppedCount}");
+        // How the last stop was delivered, when one was sent: an injected turn the agent
+        // could act on, or only a kill deadline. Without this a stop timeout cannot be told
+        // apart from a stop the harness never read.
+        sb.AppendLine(_stopAcks.TryGetValue(task, out var ack)
+            ? $"  stop: delivered={ack.Delivered} as {ack.Delivery}"
+            : "  stop: none sent for this task");
 
-        sb.AppendLine(
-            "  note: the claude worker's stdout/stderr (stream-json) is inherited to the test/CI job " +
-            "console (EventsSource.None leaves it unredirected), not captured per task here.");
+        foreach (var (id, m) in _machines)
+        {
+            sb.AppendLine($"  ring[{id}] droppedEvents={m.Ring.DroppedCount}");
+            // §10 processes: what the machine reports it is running. The cleanup scenarios
+            // fail on the absence or the survival of an entry here, so a timeout must show it.
+            var processes = m.Daemon.ReportProcesses();
+            sb.AppendLine(processes.Count == 0
+                ? $"  processes[{id}] (none)"
+                : $"  processes[{id}] " + string.Join(", ", processes.Select(p =>
+                    $"{p.Name}={p.State.ToString().ToLowerInvariant()}" +
+                    $"(exit={p.ExitCode?.ToString() ?? "-"},stdin={p.StdinOpen})")));
+        }
+
+        if (!_machineLog.IsEmpty)
+        {
+            sb.AppendLine("  machine process log:");
+            foreach (var line in _machineLog)
+                sb.AppendLine($"    {line}");
+        }
+
+        // §12 capture is on for every rig profile, so the worker's own stdout (stream-json) and
+        // stderr are on disk per task — the only place the harness's side of the story lives.
+        // A tail of it is what distinguishes "the agent refused", "the agent never started a
+        // turn", and "the process was killed mid-turn", none of which the plane's event log can
+        // tell apart on its own.
+        foreach (var (id, m) in _machines)
+            AppendTranscriptTail(sb, id, m.WorkRoot, task);
         return sb.ToString();
+    }
+
+    /// <summary>Tail of a task's captured harness output on one machine (§12), bounded so a
+    /// failure message stays readable — a stream-json line can be kilobytes.</summary>
+    private static void AppendTranscriptTail(StringBuilder sb, string machineId, string workRoot, TaskId task)
+    {
+        var dir = System.IO.Path.Combine(workRoot, TranscriptDefaults.DirName, task.ToString());
+        if (!System.IO.Directory.Exists(dir))
+        {
+            sb.AppendLine($"  transcript[{machineId}] (nothing captured)");
+            return;
+        }
+
+        foreach (var file in System.IO.Directory.EnumerateFiles(dir).OrderBy(f => f, StringComparer.Ordinal))
+        {
+            string[] lines;
+            try { lines = System.IO.File.ReadAllLines(file); }
+            catch (IOException) { continue; } // being written; the rest of the dump still stands
+            var tail = lines.Reverse().Take(4).Reverse()
+                .Select(l => l.Length > 240 ? l[..240] + "…" : l);
+            sb.AppendLine($"  transcript[{machineId}] {System.IO.Path.GetFileName(file)} ({lines.Length} lines, last 4):");
+            foreach (var line in tail)
+                sb.AppendLine($"    {line}");
+        }
     }
 
     /// <summary>Drains a machine's worker-supervisor ring into the plane sink (real-worker
@@ -365,6 +684,15 @@ internal sealed class FleetRig(PostgresFixture pg, IReadOnlyList<string>? spawnA
         public int Exits;
         public int? LastExitCode;
     }
+
+    /// <summary>
+    /// What the ring saw of this task's worker process (real-worker mode): how many times it
+    /// spawned, how many times it ended, and how it ended last. The exit <em>code</em> is the
+    /// fact a stop scenario turns on — a voluntary wind-down exits 0, a wind-down deadline kill
+    /// does not — so it is read here rather than inferred from the task's state.
+    /// </summary>
+    public (int Starts, int Exits, int? LastExitCode)? WorkerObserved(TaskId task) =>
+        _observations.TryGetValue(task, out var o) ? (o.Starts, o.Exits, o.LastExitCode) : null;
 
     public async Task<string?> ResultReferenceAsync(TaskId id, CancellationToken ct)
     {
@@ -436,9 +764,54 @@ internal sealed class FleetRig(PostgresFixture pg, IReadOnlyList<string>? spawnA
     /// (not the copy beside this test) — its MCP-client closure is copied local only
     /// there, so the copy beside the test cannot start.
     /// </summary>
-    private static string CollabHarnessPath()
+    private static string CollabHarnessPath() => SiblingApphostPath("Docket.CollabHarness");
+
+    /// <summary>
+    /// The built <see cref="Docket.Runner.TestHarness"/> apphost — an absolute path to a real
+    /// binary on every platform, which is what a worker's <c>start_process</c> argv needs
+    /// (§10: argv, never a shell, and the process gets docketd's environment rather than a
+    /// shell's PATH). Its <c>http-serve</c> mode is the listener the §8.3 scenario forwards to.
+    /// </summary>
+    public static string TestHarnessPath() => SiblingApphostPath("Docket.Runner.TestHarness");
+
+    /// <summary>
+    /// The <c>DOTNET_ROOT</c> a spawned .NET apphost needs, derived from the runtime this test
+    /// is itself running on. An agent-started process gets docketd's environment rather than a
+    /// shell's (§10), and an apphost that cannot find a runtime fails at launch with no output —
+    /// so a scenario that spawns one has to pass this explicitly through <c>start_process</c>'s
+    /// <c>env</c>, which is the same thing the worker skill tells agents to do for <c>PATH</c>.
+    /// It matters locally more than in CI: a side-by-side install (<c>~/.dotnet</c>) is in none
+    /// of the default search locations.
+    /// </summary>
+    public static string DotnetRoot()
     {
-        const string stem = "Docket.CollabHarness";
+        // The runtime directory is {root}/shared/Microsoft.NETCore.App/{version}/.
+        var runtime = System.Runtime.InteropServices.RuntimeEnvironment.GetRuntimeDirectory();
+        var root = new System.IO.DirectoryInfo(runtime).Parent?.Parent?.Parent?.FullName;
+        return root ?? runtime;
+    }
+
+    /// <summary>
+    /// Put <see cref="DotnetRoot"/> on this process's environment, which an agent-started
+    /// process inherits (docketd's environment is the child's base, §10). Belt and braces
+    /// alongside telling the agent to pass it in <c>env</c>: the <c>env</c> argument is what the
+    /// worker skill documents and is worth exercising, but a scenario should not go red because
+    /// a model dropped one optional argument — the interesting failure is a refusal or a missing
+    /// process, not a runtime the harness could not locate.
+    /// </summary>
+    public static void PublishDotnetRootForSpawnedApphosts()
+    {
+        if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("DOTNET_ROOT")))
+            Environment.SetEnvironmentVariable("DOTNET_ROOT", DotnetRoot());
+    }
+
+    /// <summary>
+    /// Resolve a sibling harness apphost from <em>its own</em> bin (not the copy beside this
+    /// test): an MCP-client closure is copied local only there, so the copy beside the test
+    /// cannot start.
+    /// </summary>
+    private static string SiblingApphostPath(string stem)
+    {
         var testDir = System.IO.Path.GetDirectoryName(typeof(FleetRig).Assembly.Location)!;
         var harnessDir = testDir.Replace(
             System.IO.Path.Combine("Docket.MultiMachine.Tests", "bin"),
@@ -448,7 +821,7 @@ internal sealed class FleetRig(PostgresFixture pg, IReadOnlyList<string>? spawnA
         return System.IO.File.Exists(apphost)
             ? apphost
             : throw new System.IO.FileNotFoundException(
-                $"collaborator apphost not found at {apphost}; is Docket.CollabHarness built?");
+                $"{stem} apphost not found at {apphost}; is {stem} built?");
     }
 
     private static string NewWorkRoot()

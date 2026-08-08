@@ -134,44 +134,106 @@ internal static class MultiMachineKit
     /// the plane can be configured and the relay bound to the same address without a
     /// build-order race (§8.3).
     /// </summary>
-    public static string ReserveLoopbackUrl()
+    public static string ReserveLoopbackUrl() => $"http://127.0.0.1:{ReserveLoopbackPort()}";
+
+    /// <summary>
+    /// A free loopback port, found by binding an ephemeral port and releasing it. Used where a
+    /// port has to be known <em>before</em> the thing that binds it exists — a §10 process
+    /// declares no port, so an agent told to start a listener has to be told which one, and the
+    /// test cannot ask the process afterwards.
+    /// </summary>
+    public static int ReserveLoopbackPort()
     {
         var listener = new TcpListener(IPAddress.Loopback, 0);
         listener.Start();
         var port = ((IPEndPoint)listener.LocalEndpoint).Port;
         listener.Stop();
-        return $"http://127.0.0.1:{port}";
+        return port;
     }
 }
 
 /// <summary>
 /// A real <see cref="RunnerDaemon"/> standing up a machine's relay data planes (§8.3),
-/// re-created here (additive) from the increment-3 crown's harness. No worker ever
-/// spawns through <em>this</em> supervisor — only open-forward commands are driven —
-/// so the daemon's forwarder is the real one splicing bytes to the relay while a
-/// separate <see cref="ProcessSupervisor"/> spawns the scripted collaborator.
+/// re-created here (additive) from the increment-3 crown's harness. By default no worker
+/// spawns through <em>this</em> supervisor — only open-forward commands are driven — so
+/// the daemon's forwarder is the real one splicing bytes to the relay while a separate
+/// <see cref="ProcessSupervisor"/> spawns the scripted collaborator.
+///
+/// <para>The §10 <b>process</b> commands are the exception, and they are why the
+/// <c>workerSupervisor</c> parameter exists. <c>start_process</c> is gated on the
+/// machine, not the plane: <see cref="RunnerDaemon"/> resolves the profile of the task
+/// that asked by calling <see cref="ProcessSupervisor.ProfileFor"/> on <em>its own</em>
+/// supervisor, so a daemon holding a private supervisor refuses every start with
+/// "no supervised task on this machine". Handing it the supervisor that really spawned
+/// the worker — together with a <see cref="RunnerConfig"/> carrying that worker's
+/// profile and a real <see cref="ServiceSupervisor"/> — is what makes the process tools
+/// reachable end to end, with the gate decided by the profile exactly as in production.</para>
 /// </summary>
 internal sealed class DaemonHarness : IAsyncDisposable
 {
     private readonly RunnerDaemon _daemon;
     private readonly string _workRoot;
+    private readonly ServiceSupervisor? _services;
     private bool _stopped;
 
-    public DaemonHarness(string machineId, IControlPlaneChannel channel)
+    /// <param name="workerSupervisor">
+    /// The supervisor that spawns this machine's workers, shared so the daemon can resolve
+    /// the profile of a task calling <c>start_process</c>. Null keeps the original
+    /// forward-only harness: a private supervisor, and process commands that refuse.
+    /// </param>
+    /// <param name="workerConfig">
+    /// The config the daemon resolves profiles from — must declare the profile the worker
+    /// supervisor spawns under, or the process gate has nothing to consult. Required with
+    /// <paramref name="workerSupervisor"/>.
+    /// </param>
+    /// <remarks>
+    /// The daemon keeps its <b>own</b> ring, deliberately, and must never be handed the worker
+    /// supervisor's: a ring is a channel with single-take semantics, so two pumps reading one
+    /// ring split its events between them at random — the daemon's own pump would swallow the
+    /// <c>started</c>/<c>exited</c> events the rig's pump needs, leaving a killed worker's task
+    /// stuck in <c>working</c>. The daemon's replies reach the plane through
+    /// <paramref name="channel"/> instead, which is the production path anyway.
+    /// </remarks>
+    /// <param name="log">
+    /// Where the machine's own process-supervision log lines go. Worth wiring rather than
+    /// dropping: a spawn that fails to start is reported to the agent as a bare
+    /// <c>spawn_failed</c> refusal, and the underlying reason (a bad path, a missing runtime, a
+    /// permission) exists only in this log.
+    /// </param>
+    public DaemonHarness(
+        string machineId,
+        IControlPlaneChannel channel,
+        ProcessSupervisor? workerSupervisor = null,
+        RunnerConfig? workerConfig = null,
+        Action<string>? log = null)
     {
         _workRoot = Path.Combine(Path.GetTempPath(), "docket-multimachine-daemon", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_workRoot);
-        var config = RunnerConfig.Load($$"""
+        var config = workerConfig ?? RunnerConfig.Load($$"""
             { "machine": { "work_root": {{JsonSerializer.Serialize(_workRoot)}} },
               "profiles": [ { "name": "default", "spawn": ["noop"] } ] }
             """);
         var ring = new OutboundEventRing(256);
-        var supervisor = new ProcessSupervisor(config.Machine, ring, TimeProvider.System);
+        var supervisor = workerSupervisor ?? new ProcessSupervisor(config.Machine, ring, TimeProvider.System);
         var backPressure = new BackPressureMonitor(
             new PortableSystemLoadReader(config.Machine.WorkRoot), config.Machine.BackPressure);
+        // §10: agent-started processes live under the machine's ServiceSupervisor, alongside
+        // the operator's declared services (one namespace). Only stood up for a rig that
+        // shares its worker supervisor — without one the daemon could not resolve a profile
+        // to gate on anyway. No declared services: this fleet's operator declares none.
+        _services = workerSupervisor is null
+            ? null
+            : new ServiceSupervisor([], machineId, TimeProvider.System,
+                logs: new ServiceLogStore(Path.Combine(_workRoot, "processes")),
+                log: log);
         _daemon = new RunnerDaemon(
-            machineId, config, supervisor, backPressure, channel, ring, new NoOpReaper(), TimeProvider.System);
+            machineId, config, supervisor, backPressure, channel, ring, new NoOpReaper(), TimeProvider.System,
+            services: _services);
     }
+
+    /// <summary>What this machine is running, as the heartbeat would report it (§10, §12) —
+    /// the read <c>list_processes</c> answers from. Empty for a forward-only harness.</summary>
+    public IReadOnlyList<ProcessStatus> ReportProcesses() => _services?.ReportProcesses() ?? [];
 
     public Task Send(RunnerCommand command, CancellationToken ct) => _daemon.HandleAsync(command, ct);
 
@@ -182,6 +244,14 @@ internal sealed class DaemonHarness : IAsyncDisposable
         if (_stopped) return;
         _stopped = true;
         await _daemon.ShutdownAsync();
+        // Agent-started processes are machine-scoped and outlive every task (§10), so
+        // nothing else takes them down — the rig going away is this fleet's "machine
+        // restart", and the sweep is what keeps a leaked listener out of the next test.
+        if (_services is not null)
+        {
+            _services.KillAll();
+            await _services.DisposeAsync();
+        }
     }
 
     public async ValueTask DisposeAsync()
@@ -202,8 +272,15 @@ internal sealed class SinkForwardingChannel(RunnerEventSink sink) : IControlPlan
 {
     public async Task<bool> PublishAsync(RunnerEvent evt, long gapBefore, CancellationToken ct)
     {
-        if (evt is ForwardOpenedEvent or ForwardClosedEvent)
+        // Forward lifecycle, plus the §10 process request/reply events: both are answers a
+        // plane-side call is parked on (ForwardWaiters / ProcessControlRelay), so dropping
+        // either would hang the tool call rather than fail it. Everything else a daemon emits
+        // here is liveness the rig drives deterministically on the registry instead.
+        if (evt is ForwardOpenedEvent or ForwardClosedEvent
+            or ProcessStartedEvent or ProcessStoppedEvent or ProcessWrittenEvent)
+        {
             await sink.HandleAsync(evt, ct);
+        }
         return true;
     }
 
