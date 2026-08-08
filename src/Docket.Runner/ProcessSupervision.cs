@@ -129,6 +129,16 @@ public sealed class SupervisedTask
     public string? SessionId { get; set; }
 
     public bool StopRequested { get; set; }
+
+    /// <summary>
+    /// §11 resume (#102): this instance has been replaced by a later dispatch of the
+    /// same task on this machine, so it is no longer the task's worker. Set before the
+    /// successor is registered, and it is what keeps a predecessor's death from acting
+    /// on its successor — see <see cref="ProcessSupervisor.Spawn"/> for why the two
+    /// overlap at all, and <c>OnExited</c> for the three things this suppresses.
+    /// </summary>
+    internal bool Superseded { get; set; }
+
     internal ITimer? TtlTimer { get; set; }
 
     /// <summary>
@@ -216,6 +226,15 @@ public sealed class ProcessSupervisor : IProcessSupervisor
 
     /// <summary>Profiles already warned about §10 telemetry with no destination — once each, not once per spawn.</summary>
     private readonly ConcurrentDictionary<string, bool> _telemetryWarnedProfileNames = new(StringComparer.Ordinal);
+
+    private int _supersededExits;
+
+    /// <summary>
+    /// Test/observability seam (§11 resume, #102): how many superseded instances have died
+    /// here without their exit being reported as the task's. A park-resume that overlaps
+    /// its predecessor increments this by one; a machine that never overlaps stays at zero.
+    /// </summary>
+    internal int SupersededExits => Volatile.Read(ref _supersededExits);
 
     /// <param name="transcripts">
     /// §12 machine-local transcript capture. When supplied, a profile with
@@ -402,6 +421,26 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             LastActivityAt = _clock.GetUtcNow(),
         };
         process.Exited += (_, _) => OnExited(supervised, machineId);
+
+        // §11 resume (#102): a dispatch can arrive for a task this machine is STILL
+        // running. The plane has finished with the previous instance by then — the
+        // transition that redispatches revokes that instance's token (§5) — but revoking
+        // a token does not end a process: a headless worker that asked a question ends
+        // its turn and exits on its own schedule, and the Lead's answer redispatches
+        // within milliseconds of it. So the predecessor is superseded in place, and
+        // taken down before the successor starts, which is what §11 already asks for
+        // ("resuming a transcript a zombie process still holds interleaves two writers
+        // into one session file and corrupts the recovery substrate itself"). The flag
+        // is what makes its imminent death harmless: a worker instance is identified
+        // here by task id alone, so without it the predecessor's exit reaps its
+        // successor's process tree by DOCKET_TASK_ID, reports the successor's death to
+        // the plane (which requeues the task and revokes the successor's token), and
+        // drops the successor out of supervision entirely.
+        if (_tasks.TryGetValue(dispatch.Task, out var predecessor))
+        {
+            predecessor.Superseded = true;
+            KillTree(predecessor);
+        }
         _tasks[dispatch.Task] = supervised;
 
         try
@@ -628,7 +667,13 @@ public sealed class ProcessSupervisor : IProcessSupervisor
 
     private void OnExited(SupervisedTask supervised, string machineId)
     {
-        _tasks.TryRemove(supervised.Task, out _);
+        // §11 resume (#102): remove only if this instance is still the task's — a
+        // compare-and-remove, so a superseded predecessor dying mid-resume cannot
+        // evict the successor that replaced it in the map. Losing that entry would
+        // leave the successor unsupervised: no liveness bumps, no stop delivery, no
+        // kill, and a stray at teardown.
+        ((ICollection<KeyValuePair<TaskId, SupervisedTask>>)_tasks)
+            .Remove(new KeyValuePair<TaskId, SupervisedTask>(supervised.Task, supervised));
         supervised.TtlTimer?.Dispose();
 
         // §10 Terminal events source: the worker is gone, so its stdout is at (or
@@ -667,9 +712,26 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         try { exitCode = supervised.Process.ExitCode; }
         catch (InvalidOperationException) { exitCode = -1; }
 
+        // §11 resume (#102): a superseded instance's death is not the task's. The wire
+        // names only the task (§10, frozen), so an exit reported for one is read as the
+        // death of whatever instance is current — and after a park the current instance
+        // is the freshly resumed successor, which the plane would then requeue and whose
+        // token it would revoke, leaving a live worker holding a 401'd bearer. Nothing is
+        // lost by staying quiet: this instance's own §12 transcript ends where it died,
+        // the plane's event log already holds the park and the redispatch that replaced
+        // it, and the successor's exit is reported normally when it comes.
+        if (supervised.Superseded)
+        {
+            Interlocked.Increment(ref _supersededExits);
+            return;
+        }
+
         _ring.Enqueue(new ExitedEvent(supervised.Task, exitCode, _clock.GetUtcNow()));
 
-        // §10: task-exit stray cleanup keyed by DOCKET_TASK_ID, best-effort.
+        // §10: task-exit stray cleanup keyed by DOCKET_TASK_ID, best-effort. Every
+        // instance of a task carries the same DOCKET_TASK_ID, so this is reachable only
+        // for the current one — a superseded predecessor returned above rather than
+        // reaping the successor it was replaced by (#102).
         try { _taskReaper?.ReapTask(machineId, supervised.Task.ToString()); }
         catch { /* best effort */ }
     }
