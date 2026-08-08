@@ -203,7 +203,7 @@ runner-config reference):
   "claude", "-p", "<bootstrap prompt: read get_task, do the work, report_result>",
   "--mcp-config", "{mcp_config}",
   "--output-format", "stream-json",
-  "--input-format", "stream-json",
+  "--verbose",
   "--permission-mode", "bypassPermissions",
   "--strict-mcp-config",
   "--allowedTools", "Bash,Edit,Write,Read,Glob,Grep,mcp__docket__get_task,mcp__docket__report_result,mcp__docket__request_input,mcp__docket__register_service"
@@ -226,8 +226,15 @@ The load-bearing arguments:
   the Lead instead (spec §11's permission bridge; the runner-config reference has
   the worked profile and its caveats). Keep `--allowedTools` as the routine
   baseline either way, or the machine will ask about every call it makes.
-- **`--input-format stream-json`** is what lets a graceful `stop` reach the agent
-  as an injected turn (`stop.mode: "message"`) rather than a signal.
+- **`--verbose`** is what makes `--output-format stream-json` actually stream under
+  `-p`. Without it an `events.source: terminal` profile reads nothing, and the task
+  loses both its session ref and its per-task liveness.
+- **No `--input-format stream-json`.** It looks like the flag that would let a graceful
+  `stop` arrive as a turn, and it is the opposite: paired with a prompt in argv it makes
+  claude ignore the prompt and block on stdin forever, so the worker never runs at all.
+  A `claude -p` worker cannot receive a mid-task turn in any configuration, so its
+  profile takes `stop.mode: "signal"` and a stop means the granted TTL and then a
+  tree-kill — see [Stopping a `claude -p` worker](../ideas/skills/references/runner-config.md#stopping-a-claude--p-worker-10-11).
 
 ### Event sources — what works today
 
@@ -455,8 +462,12 @@ control plane, never to daemon shutdown. `TimeoutStopSec=45` / `ExitTimeOut=45`
 covers the teardown itself, not an agent's last turn.
 
 So for a planned restart — a config change, an upgrade, a reboot — **drain the
-machine from the control plane first**, let the running tasks wind down and
-report, and only then stop the service.
+machine from the control plane first**, let the running tasks reach their own end,
+and only then stop the service. Note what "let them finish" can and cannot mean on a
+`claude -p` profile: the worker is never handed a wind-down turn, so a plane-side
+`stop` buys it the granted TTL to finish and exit on its own, not a request to
+report. Give a real TTL and wait it out rather than expecting a closing
+`report_result` that will not come.
 
 ## Configuration reference
 

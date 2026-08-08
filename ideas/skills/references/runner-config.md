@@ -14,7 +14,7 @@ argv a worker is launched with.
 | `machine` | `back_pressure` | `max_cpu_load` / `max_memory_load` / `max_disk_usage` in [0,1]; defaults `0.90` / `0.90` / `0.95`, tune per box (§10). CPU is not yet observed cross-platform, so `max_cpu_load` is currently inert — memory and disk carry the signal (§10). |
 | `profiles[]` | `name` | Profile identifier. `profiles` is a JSON **array**; exactly one entry MUST be named `default` (§10). |
 | `profiles[]` | `spawn` | argv passed to `execve` — **never a shell** (§10). Substitutions below. |
-| `profiles[]` | `stop` | `mode` (`message` \| `signal`), `signal`, `message`, `wind_down_seconds` (default `30`). Message delivery lets the agent honour the disposition; docketd injects the turn, then waits `min(ttl, wind_down_seconds)` for a voluntary exit before a hard tree-kill backstops it. A `signal` profile injects nothing, but the worker still gets the full `ttl` the plane granted to exit on its own before the kill (`wind_down_seconds` does not apply). Only `ttl=0` is killed immediately (§10, §11). |
+| `profiles[]` | `stop` | `mode` (`message` \| `signal`), `message`, `wind_down_seconds` (default `30`). **`mode: message` is a declaration about your harness** — that a running session reads turns off stdin — and docketd takes it at its word: it writes the turn, then waits `min(ttl, wind_down_seconds)` for a voluntary exit before a hard tree-kill backstops it. It cannot check the claim, so declaring it for a harness that does not read stdin buys nothing and makes `preserve` a promise the machine will break. **`claude -p` is such a harness — use `signal` there** ([Stopping a `claude -p` worker](#stopping-a-claude--p-worker-10-11)). A `signal` profile writes nothing, and the worker gets the full `ttl` the plane granted to exit on its own before the kill (`wind_down_seconds` does not apply). Only `ttl=0` is killed immediately (§10, §11). The `signal` **key** parses but is not acted on: the deadline's kill is always the tree-kill. |
 | `profiles[]` | `resume` | `args`: argv to resume a parked task's transcript, directory-scoped (§11). |
 | `profiles[]` | `events` | `source` (`hooks` \| `otel` \| `terminal` \| `none`) + `mapping`, which overrides the **stdout stream's property names** — not harness event names. **Only `terminal` is implemented**; `hooks` and `otel` parse but are wired to nothing, so all three non-`terminal` values behave as `none`. See [Event relay](#event-relay-10) below before choosing — a non-`terminal` profile requeues any task that runs longer than about a minute. |
 | `profiles[]` | `telemetry` | `otel` bool (opt-in, default **false**), `endpoint` (OTLP destination; falls back to the one docketd inherited), and `env` (a string map of harness-specific variables, applied verbatim). When on, docketd sets the vendor-neutral `OTEL_*` exporter variables and appends `docket.task_id`/`docket.machine_id` to `OTEL_RESOURCE_ATTRIBUTES`, so the harness's own token/cost telemetry is attributable per task (§10). `otel: true` with **no endpoint configured and none inherited sets nothing at all** and warns once — telemetry is never enabled without a destination. Claude Code additionally needs `"env": { "CLAUDE_CODE_ENABLE_TELEMETRY": "1" }` (its own flag is data, since docketd holds no harness knowledge). **Visibility only**: Docket ingests none of it and enforces no ceiling — see [docs/TELEMETRY.md](../../../docs/TELEMETRY.md). |
@@ -171,20 +171,23 @@ dispatched instance, and its token dies with the instance (§9 check 14).
         "-p",
         "You are a Docket worker running headless under docketd. You have been dispatched exactly one task. First call the docket MCP tool get_task to read your assignment (namespace, description, completion_criteria, workspace, attempt). Read the docket-worker skill. Do the work inside the assigned workspace. When done, call report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call request_input instead of guessing. You do not verify or complete the task yourself.",
         "--mcp-config", "{mcp_config}",
+        // stream-json OUT only. Do not add `--input-format stream-json` here: with a
+        // prompt in argv it makes claude ignore the prompt and block on stdin forever
+        // (see Stopping a claude -p worker below). `--verbose` is what makes claude
+        // actually emit the stream under -p, and the terminal event source needs it.
         "--output-format", "stream-json",
-        "--input-format", "stream-json",
+        "--verbose",
         "--permission-mode", "bypassPermissions",
         "--allowedTools", "Bash,Edit,Write,Read,Glob,Grep,mcp__docket__get_task,mcp__docket__report_result,mcp__docket__request_input,mcp__docket__register_service"
       ],
       "stop": {
-        // Injected as a claude stream-json user turn so the agent reads the
-        // disposition and winds down (§10/§11): it reports current progress via
-        // report_result, then stops. docketd substitutes {disposition}/{ttl_seconds}/
-        // {reason} and writes it as one line to the harness's held-open stdin, then
-        // waits min(ttl, wind_down_seconds) for the agent to exit before hard-killing.
-        "mode": "message",
-        "message": "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Docket is winding this task down (disposition={disposition}, ~{ttl_seconds}s left; reason: {reason}). Immediately call report_result with a reference to your current progress, then stop — do not begin new work.\"}}",
-        "wind_down_seconds": 30
+        // `signal`, not `message`, and this is not a limitation of Docket: a `claude -p`
+        // worker cannot be handed a mid-task turn at all (below). So a stop here is the
+        // TTL the Lead granted, then a tree-kill — no wind-down turn, no final
+        // report_result. `preserve` still holds, via the plane's session ref rather than
+        // the agent's cooperation. Declaring `message` would only make docketd write a
+        // line nobody reads while reporting that it had.
+        "mode": "signal"
       },
       "resume": { "args": ["claude", "-p", "Resume your task.", "--resume", "{session_id}", "--mcp-config", "{mcp_config}"] },
       // `terminal` reads this worker's stdout stream — the only implemented event
@@ -225,18 +228,54 @@ dispatched instance, and its token dies with the instance (§9 check 14).
   which replaces this flag with `--permission-prompt-tool` and routes approvals
   through Docket instead of skipping them. One or the other: this is the single
   most important line in `spawn`.
-- **`--input-format stream-json`** is what lets a graceful `stop` reach the agent
-  as an injected turn rather than a signal (§10) — required for the `message`
-  stop mode above. docketd writes one turn to stdin and waits
-  `min(ttl, wind_down_seconds)` for the agent to persist and exit; if it does not,
-  the process tree is hard-killed at that deadline. A `signal`-mode profile injects
-  no turn, but the worker still gets the full `ttl` the plane granted to exit on its
-  own before the kill (`wind_down_seconds` does not apply — it is the message-path
-  budget); only `ttl=0` skips the wait and is killed outright. The `message`
-  template may reference `{disposition}`, `{ttl_seconds}`, and `{reason}`, which
-  docketd substitutes per stop.
+- **Do not add `--input-format stream-json`.** With a prompt in argv, claude ignores
+  the prompt and blocks on stdin instead — the worker never runs a turn and the task
+  dies of the liveness window. It is the one flag here that turns a working profile
+  into a machine that accepts dispatches and does nothing with them. See below.
+- **`--output-format stream-json` needs `--verbose`** to actually produce the stream
+  under `-p`. Without it the `events.source: terminal` profile above reads nothing,
+  which costs you the session ref (§11 resume) and per-task liveness (§10) — the
+  same forever-requeue failure as declaring a non-`terminal` source.
 - **`{mcp_config}`** is the injected path; the worker reads the plane URL and its
   bearer token from that file. Nothing else carries the token to the harness.
+
+### Stopping a `claude -p` worker (§10, §11)
+
+**A `claude -p` worker cannot be handed a mid-task turn, so its `stop` is a TTL'd
+kill.** Two CLI facts, each established by an isolation spike against the real
+binary (#103):
+
+1. `claude -p "<prompt>" --input-format stream-json` never runs a turn at all. The
+   argv prompt is ignored and the process waits on stdin indefinitely.
+2. Without that flag, claude reads stdin **once** at startup — a ~3s window, after
+   which it logs `no stdin data received in 3s, proceeding without it` — and never
+   looks again. A turn written mid-task has nowhere to land.
+
+There is therefore no configuration of the current CLI in `-p` mode where an injected
+stop turn is consumed. And the prompt has to be argv: stdin is docketd's dead-man's
+switch, held open for the whole task so a runner death is visible to the worker (§10).
+
+So set **`mode: signal`** and read a stop as: the worker gets the full `ttl` the Lead
+granted to reach its own exit, then the process tree is killed. There is no final
+`report_result` — a stopped worker's progress is whatever it had already reported.
+What survives is the **transcript**, via the session ref the plane recorded from the
+worker's own stream: `preserve` and `preserve_and_park` mean the task can be resumed
+from that ref later (§11), which is delivered by the plane's record, not by the
+agent's cooperation. `Docket.MultiMachine.Tests`'
+`A_stop_reaches_a_real_claude_worker_as_a_kill_deadline_not_as_a_turn_it_reads`
+asserts exactly this against the real CLI, including the non-zero (killed) exit.
+
+**What docketd reports.** On `mode: message` it acks that the turn was *written*, never
+that it was read — it cannot observe consumption without harness-specific knowledge
+§10 keeps out of its code. The line on this machine's stdout says so in as many words
+(`written, not confirmed read`), and the `mode` you declare here is the only claim in
+the system that the harness consumes stdin turns. Declare it only for a harness you
+have watched honour one; the kill-path check below is how you watch.
+
+**The mechanism is not dead.** `mode: message` remains correct for any harness that
+reads turns off a held-open stdin — an interactive-mode or SDK-hosted session, or a
+custom harness — and is the delivery §10 prefers, because a signal cannot carry a
+disposition. It is `claude -p` specifically that has no seam for it.
 
 ## Profile archetypes — open vs. strict
 
@@ -259,7 +298,7 @@ Docket:
 "spawn": [
   "claude", "-p", "<worker prompt>",
   "--mcp-config", "{mcp_config}",
-  "--output-format", "stream-json", "--input-format", "stream-json",
+  "--output-format", "stream-json", "--verbose",
   "--permission-mode", "bypassPermissions"
 ],
 // §10: let a worker start its own background processes. On an open profile this grants
@@ -281,11 +320,14 @@ config the *only* MCP config loaded — local servers are excluded:
 "spawn": [
   "claude", "-p", "<worker prompt>",
   "--mcp-config", "{mcp_config}", "--strict-mcp-config",
-  "--output-format", "stream-json", "--input-format", "stream-json",
+  "--output-format", "stream-json", "--verbose",
   "--permission-mode", "bypassPermissions",
   "--allowedTools", "Read,Glob,Grep,mcp__docket__get_task,mcp__docket__report_result,mcp__docket__request_input"
 ]
 ```
+
+Both archetypes take `stop.mode: signal` for the same reason the default profile does —
+they are both `claude -p`, and neither can be handed a wind-down turn.
 
 The trade is blast radius: on an open profile, a prompt-injected worker can do
 anything the machine account can, including using every local MCP server's
@@ -535,7 +577,16 @@ The automated walking-skeleton test
 (`Docket.Mcp.Tests/WalkingSkeletonEndToEndTests`) proves the dispatch → spawn →
 authenticate → `get_task` → `report_result` loop with a **scripted** MCP worker
 (`Docket.WorkerHarness`), no LLM. Running the argv above against **real**
-`claude -p` — confirming the bootstrap prompt, permission posture, hooks, and
-stop delivery actually behave — is the operator-run validation and belongs to
+`claude -p` — confirming the bootstrap prompt, permission posture, and hooks
+actually behave on *your* machine — is the operator-run validation and belongs to
 the §17.0 feasibility spikes and the §11 conformance run, deliberately out of
 scope for CI.
+
+Stop delivery is the exception: it is no longer yours to characterize, because
+`Docket.MultiMachine.Tests/RealClaudeCollaborationTests` now runs the real binary in
+an opt-in tier and pins what a stop does to a `claude -p` worker — a kill at the
+deadline, with the transcript preserved via the session ref. What is still worth
+checking on your own machine is the *kill* (that the tree is really gone) and, if you
+declared `mode: message` for a non-`claude -p` harness, that a written turn is actually
+honoured there. Nothing but a real run can tell you the latter, which is why docketd
+does not claim it.

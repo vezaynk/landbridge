@@ -168,7 +168,9 @@ The same rules as any forward apply: only services registered by a currently-wor
 - **`discard`** — stop and remove the task's workspace. Only for work you know is wrong, and only safe because isolation is task-scoped.
 - **`preserve_and_park`** — persist and park. The task lands in `parked` and is redispatched when you wake it. Resume prefers the machine and directory that held it, where the harness transcript survives; if that machine is gone, the successor cold-starts from whatever was persisted — the disposition is only as good as the worker's last persist.
 
-The TTL is how long the worker gets to wind down gracefully. Set it to the situation: a worker mid-push needs more than one mid-thought. `TTL=0` kills immediately without waiting, and **the kill path is lossy** — uncommitted work dies. Use it when an agent has stopped being trustworthy, not as a fast default.
+The TTL is how long the worker gets before it is killed. Set it to the situation: a worker mid-push needs more than one mid-thought. `TTL=0` kills immediately without waiting, and **the kill path is lossy** — uncommitted work dies. Use it when an agent has stopped being trustworthy, not as a fast default.
+
+**Do not count on the worker being told.** On the reference `claude -p` profiles the TTL is a kill deadline, not a wind-down window the agent participates in: it is never handed the stop turn, so it will not persist on request or file a closing report. What you get back is whatever it had already reported, plus — for `preserve` and `preserve_and_park` — a resumable transcript, because the plane recorded the session before the kill. So a generous TTL buys the chance that the worker finishes and exits on its own, which is worth buying; it does not buy a graceful handover. If you need to know where a long task stands before you stop it, ask while it is still working (`request_input` answers, its reported progress) rather than expecting the stop to elicit it.
 
 ## Closing out
 

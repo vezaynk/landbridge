@@ -137,7 +137,9 @@ split — a Lead or human adjudicates, never the task's own worker); Postgres st
 with `SKIP LOCKED` dispatch and `LISTEN/NOTIFY` push; opaque-token auth across the
 four credential classes; OAuth 2.1 authorization-code + PKCE (S256) + Client ID
 Metadata Documents; machine enrollment and refresh; `docketd` supervision,
-stop/kill with graceful wind-down, heartbeats, terminal-source tool-call events,
+stop/kill with a bounded wind-down deadline (an injected turn where the harness reads
+one, a TTL'd kill for `claude -p`, which cannot be handed one), heartbeats,
+terminal-source tool-call events,
 real per-OS CPU-load back-pressure, and stray cleanup; **two-clock per-task
 liveness** (aliveness vs no-progress, so a ten-minute build is no longer mistaken
 for a hang), capped requeues, and **a requeue that takes the process down with it** —

@@ -20,7 +20,7 @@ The config must cover:
 | Section | What it answers |
 |---|---|
 | Harness invocation | How to start the harness headlessly with a task (`spawn`), and where it reads its MCP config |
-| Process control | How `stop` is delivered (`mode: message` where the harness accepts an injected turn, `signal` otherwise), which signal, the message template, and how long wind-down gets before the hard tree-kill |
+| Process control | How `stop` is delivered (`mode: message` only where the harness demonstrably reads mid-task stdin turns — **not `claude -p`**, which takes `signal`), the message template, and how long wind-down gets before the hard tree-kill |
 | Resume | The argv that reattaches to a parked task's transcript (`resume.args`), which is how a parked task comes back with its context |
 | Event relay | Whether the harness streams structured output docketd can read (`events.source`), and the property names it is keyed by (`events.mapping`) |
 | Transcript capture | Whether to record this worker's output locally (`logs.capture`) and the caps on it |
@@ -52,7 +52,7 @@ Do not assume the harness or its version. Find out:
 4. The property names inside that stream: the top-level discriminator, the value marking an assistant turn, how a tool call appears within a turn, and where the session id is. Those are what `events.mapping` overrides; its defaults are Claude Code's `stream-json` shape.
 5. Whether the session id appears early in the stream rather than at exit, since that is the ref a parked task resumes from.
 6. Whether it can resume a prior session, and how — including whether resume is scoped to the directory that created the session, since parked-task resume depends on returning to it.
-7. Whether a running session accepts injected input — a stdin message stream or equivalent — because that is how a graceful `stop` reaches the agent as a turn rather than a signal.
+7. Whether a **running** session accepts injected input — a stdin message stream or equivalent, read continuously rather than once at startup — because that is how a graceful `stop` reaches the agent as a turn rather than as a kill deadline. Answer this from an observed run, not from the flag list: `docketd` cannot verify the answer, so declaring `stop.mode: message` on a harness that ignores mid-task stdin makes `preserve` a promise this machine will break. For `claude -p` the answer is already known and it is **no** — declare `signal` (see the runner-config reference).
 
 Version matters more than you'd expect. Output shapes and key names change between releases, and `events.mapping` silently falls back to its default for any key it does not recognise — so a config written against last quarter's names produces a machine that looks alive and reports nothing, with no complaint at load time.
 
@@ -122,7 +122,9 @@ The failures worth naming, and what each really looks like:
 - **The worker cannot authenticate to the plane.** Do not wait for an `auth-failed` event. The plane can record one, but `docketd` never emits one, so none will arrive. A rejected worker token appears as a 401 inside the harness's own output and `report_result` simply never lands — the transcript again.
 - **`Attempt` climbing on its own.** The task is being dispatched, failing, and redispatched. Nothing caps that loop, so an unattended misconfiguration retries forever.
 
-**Then test the kill path, and do not skip it because dispatch worked.** Have the human cancel the task mid-flight (`cancel_task`, disposition `preserve`) and confirm the process is actually gone. On a `stop.mode: message` profile the injected turn should produce a final `report_result` before exit; on a `signal` profile it will not, and a profile that claims message delivery it cannot honour makes `preserve` a promise it will break. A machine that dispatches but cannot be stopped looks fine right up until someone needs to stop a runaway agent — the worst possible moment to find out.
+**Then test the kill path, and do not skip it because dispatch worked.** Have the human cancel the task mid-flight (`cancel_task`, disposition `preserve`) and confirm the process is actually gone — that is the assertion that matters, and it holds on every profile. A machine that dispatches but cannot be stopped looks fine right up until someone needs to stop a runaway agent — the worst possible moment to find out.
+
+**What to expect depends on the stop mode, and one of the two expectations is a trap.** On a `signal` profile — which is what `claude -p` gets — the worker is killed at the TTL with no closing `report_result`, and that is correct behaviour, not a failure. Only on a `stop.mode: message` profile should you expect the injected turn to produce a final report before a voluntary exit. `docketd` cannot tell the difference: it reports that it *wrote* the turn, never that the harness read it (the line on its stdout says `written, not confirmed read`). So this run is the only check that a `message` declaration is true, and if you declared `message` and the worker still had to be killed at the deadline, the declaration is wrong — change it to `signal` rather than leaving a profile that promises `preserve` and delivers a kill.
 
 Two things you cannot verify by hand, so do not claim them either way: whether the runner refused a dispatch (it computes `BackPressure` / `UnknownProfile` / `MaxConcurrent` refusals and then discards them — never sent upstream, never logged), and whether events were dropped under load (the outbound ring counts the gap, but the wire has no field to carry it).
 

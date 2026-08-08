@@ -212,18 +212,23 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// a ref on the dispatch into an actual <c>--resume</c>. Drop any one and this silently
     /// becomes a cold start (§11's documented fallback).</para>
     ///
-    /// <para><b>What this deliberately stops short of asserting, and why.</b> The spawn prompt
-    /// tells the worker a nonce that is <em>only</em> in the conversation — never the task row,
-    /// so <c>get_task</c> cannot supply it — and the resume prompt asks for it back. A resumed
-    /// worker reporting that nonce would be the end-to-end proof. It does not currently get that
-    /// far: the resumed instance reports the injected <c>docket</c> MCP server as needing
-    /// re-authorization / disconnected, ends its turn in a couple of seconds having called no
-    /// docket tool, and every retry resumes the same session and fails identically. So §11's
-    /// "docketd re-injects fresh MCP config, which resume does not restore" is necessary but not
-    /// sufficient for this harness — the re-injected server is not what the resumed session
-    /// uses. The transcript half of resume is real and asserted here; the nonce is left in the
-    /// prompts so that closing that gap turns this fact into the stronger assertion rather than
-    /// needing a new one.</para>
+    /// <para><b>And proven agent-side too, by a value only the conversation holds.</b> The spawn
+    /// prompt tells the worker a nonce that is <em>nowhere else</em> — not the task row, so
+    /// <c>get_task</c> cannot supply it, and not the resume argv, which is static profile config
+    /// — and the resume prompt asks for it back. The resumed worker reporting that nonce through
+    /// a real <c>report_result</c> call is the end-to-end proof: it had to read the restored
+    /// transcript AND reach the freshly injected docket MCP server to do it.</para>
+    ///
+    /// <para>This is what #102 blocked, and the cause was neither the transcript nor the
+    /// injected config. A worker instance is identified to the plane by task id alone, so the
+    /// predecessor's ordinary exit — a headless worker that asked a question ends its turn on
+    /// its own schedule, milliseconds after the Lead's answer has already redispatched the task
+    /// — landed on its successor: docketd reaped the successor's process tree by
+    /// <c>DOCKET_TASK_ID</c>, reported its death to the plane (which requeued the task and
+    /// revoked the successor's token, whence the "MCP server needs re-authorization" symptom),
+    /// and dropped it out of supervision. The predecessor is now superseded in place instead,
+    /// which is also what §11 asks for — the zombie is gone before the resume, so two writers
+    /// never share one session file.</para>
     /// </summary>
     [SkippableFact]
     public async Task Real_claude_resumes_its_transcript_after_a_park_and_reports_a_memory_only_nonce()
@@ -237,8 +242,18 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         var nonce = "nonce-" + NewToken();
         await using var rig = new FleetRig(
             pg,
-            spawnArgv: StreamingSpawn(claudeBin, RememberThenAskPrompt(nonce), ParkTools),
-            resumeArgv: StreamingSpawn(claudeBin, ResumeAndReportPrompt, ParkTools, "--resume", "{session_id}"),
+            // Both legs get headroom over the shared default, for the same reason the process
+            // and service scenarios do: this worker has to remember a value, read its
+            // assignment, and make a specific call, and a haiku that narrates its way there
+            // can spend eight turns without reaching the one call the leg turns on. Running out
+            // mid-way does not merely retry — the redispatch RESUMES, so the successor arrives
+            // already knowing the assignment and may satisfy it directly, skipping the park this
+            // fact is about. Cost stays bounded by the cap; correctness does not depend on it.
+            spawnArgv: StreamingSpawn(
+                claudeBin, RememberThenAskPrompt(nonce), ParkTools, "--max-turns", "14"),
+            resumeArgv: StreamingSpawn(
+                claudeBin, ResumeAndReportPrompt, ParkTools, "--resume", "{session_id}",
+                "--max-turns", "14"),
             terminalEvents: true);
         await rig.StartAsync(ct);
         await rig.AddMachineAsync("A");
@@ -247,12 +262,26 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
 
         // The cold worker asks and ends its turn. Its process exiting here is expected, not a
         // failure: a headless worker that has asked a question has nothing left to do in
-        // process, and per-task liveness is suspended while blocked (§11).
+        // process, and per-task liveness is suspended while blocked (§11). The wait also ends on
+        // a task that finished instead of asking — there is nothing left to wait for once it has,
+        // and polling the budget out would report a settled task as a timeout. Which of the two
+        // happened is the assertion below, not this predicate.
         Assert.True(
             await rig.DispatchUntilAsync(
-                task, "A", async () => await rig.StateAsync(task, ct) == TaskState.BlockedOnInput,
+                task, "A",
+                async () => await rig.StateAsync(task, ct)
+                    is TaskState.BlockedOnInput or TaskState.Verifying or TaskState.Completed,
                 MaxAttempts, PerLegBudget, ct),
-            "the real claude worker never blocked on input.\n" + await rig.RealWorkerDiagnosticsAsync(task, ct));
+            "the real claude worker neither blocked on input nor finished.\n"
+            + await rig.RealWorkerDiagnosticsAsync(task, ct));
+        var blockedState = await rig.StateAsync(task, ct);
+        Assert.True(
+            blockedState == TaskState.BlockedOnInput,
+            $"the worker reached {blockedState} without ever asking, so there is no park to resume. "
+            + "The usual cause is a first turn that spent its turn cap before calling "
+            + "request_input, whose requeue then resumes rather than re-briefs — check the "
+            + "captured stream below for a max-turns end.\n"
+            + await rig.RealWorkerDiagnosticsAsync(task, ct));
 
         // The transcript is locatable: the harness reported its session ref and the plane
         // stamped it verbatim. Without this there is nothing to resume and the rest is a
@@ -273,13 +302,18 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
 
         // Redispatch: the plane hands the ref back and the supervisor rebuilds the argv from
         // resume.args with --resume <that id>, in the same task directory (Claude Code resumes a
-        // session only from the directory that created it, §11).
+        // session only from the directory that created it, §11). The resumed worker reads its
+        // answer off get_task and reports the remembered nonce — driving the task to verifying,
+        // which is the whole assertion: a cold successor could reach verifying too, but only
+        // with the wrong reference, because the nonce exists nowhere it could read.
         Assert.True(
-            await rig.DispatchUntilAsync(
-                task, "A", () => Task.FromResult(rig.InstanceSessionIdsOn("A", task).Count >= 2),
-                MaxAttempts, PerLegBudget, ct),
-            "a second worker instance never ran, so no resume was attempted.\n"
+            await rig.DispatchUntilVerifyingAsync(task, "A", MaxAttempts, PerLegBudget, ct),
+            "the resumed worker never drove its task to verifying.\n"
             + await rig.RealWorkerDiagnosticsAsync(task, ct));
+
+        // The value only the restored conversation held, committed on the row by a real
+        // report_result call.
+        Assert.Contains(nonce, await rig.ResultReferenceAsync(task, ct));
 
         // Harness-side proof that the second instance resumed the first, independent of anything
         // the agent said: both captured instances report the SAME session id on their own
@@ -299,19 +333,25 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// the hoped-for one, because the gap between them is the finding.
     ///
     /// <para>docketd's message-mode stop writes the stop turn to the worker's held-open stdin
-    /// and acks <see cref="StopDelivery.Message"/>. The only precondition it can check is that
-    /// stdin was redirected — which is always true, because that same pipe is the dead-man's
-    /// switch (§10). So the ack says "injected" for <em>any</em> harness, including one that
-    /// never reads stdin. A <c>claude -p "&lt;prompt&gt;"</c> worker is exactly that: the
+    /// and acks <see cref="StopDelivery.MessageWritten"/>. The only precondition it can check
+    /// is that stdin was redirected — which is always true, because that same pipe is the
+    /// dead-man's switch (§10). So the write happens for <em>any</em> harness, including one
+    /// that never reads stdin. A <c>claude -p "&lt;prompt&gt;"</c> worker is exactly that: the
     /// prompt arrives as argv (§13 — it must, and stdin must stay unread for the dead-man
-    /// pipe), so <c>--input-format text</c> is in force and the injected line is never read.
+    /// pipe), so <c>--input-format text</c> is in force and the written line is never read.
     /// The bytes land in a pipe nobody is reading and the worker runs on until the wind-down
     /// deadline kills it.</para>
     ///
-    /// <para>So the assertions are: the ack claims a message was delivered, and the worker
+    /// <para>So the assertions are: the ack reports a turn was <em>written</em>, and the worker
     /// nevertheless dies by the deadline with a non-zero (killed) exit rather than winding down
-    /// on its own. What makes <c>preserve</c> mean anything here is therefore the plane's
-    /// record, not the agent's cooperation — the harness session ref survives the kill, so the
+    /// on its own. Those two coexisting is the point — it is why the ack is worded as an
+    /// action docketd took and not as an effect on the agent, a distinction the enum name now
+    /// carries. Before #103 this same run acked <c>Message</c>, which read as "the agent was
+    /// told to wind down" and was false here; this fact is what keeps that reading from
+    /// growing back.</para>
+    ///
+    /// <para>What makes <c>preserve</c> mean anything here is therefore the plane's record,
+    /// not the agent's cooperation — the harness session ref survives the kill, so the
     /// transcript remains resumable, which the fact above proves end to end.</para>
     /// </summary>
     [SkippableFact]
@@ -325,9 +365,11 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
             pg,
             spawnArgv: StreamingSpawn(claudeBin, WorkerPrompt, AllowedTools),
             terminalEvents: true,
-            // The documented claude stop recipe, verbatim in shape: a stream-json user turn
-            // carrying the disposition. WindDown is short so the deadline, not the test's
-            // patience, is what ends the worker.
+            // Deliberately the configuration the reference docs used to recommend and no longer
+            // do (#103): mode message, with a stream-json user turn carrying the disposition.
+            // Keeping it here is the point — this profile makes the claim, and the run below is
+            // what shows claude -p cannot honour it. WindDown is short so the deadline, not the
+            // test's patience, is what ends the worker.
             stop: new StopConfig(
                 StopMode.Message, Signal: null,
                 MessageTemplate: ClaudeStopTurnTemplate, WindDown: TimeSpan.FromSeconds(5)));
@@ -353,11 +395,12 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
                 "characterizing real-harness stop delivery", ct),
             "the stop was not delivered to the machine holding the task");
 
-        // docketd acks an injected turn — on the strength of a redirected stdin alone.
+        // docketd reports what it did: the turn was written to stdin. It claims nothing about
+        // the harness having read it, and the rest of this fact is why it must not.
         var ack = rig.StopAckFor(task);
         Assert.NotNull(ack);
-        Assert.True(ack!.Value.Delivered);
-        Assert.Equal(StopDelivery.Message, ack.Value.Delivery);
+        Assert.True(ack!.Value.Actioned);
+        Assert.Equal(StopDelivery.MessageWritten, ack.Value.Delivery);
 
         // And yet the agent never acts on it: the worker is taken down at the wind-down
         // deadline instead of winding down and exiting cleanly.
@@ -674,9 +717,10 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     ];
 
     /// <summary>
-    /// The documented claude message-mode stop turn (a stream-json user message carrying the
-    /// disposition), used verbatim in shape by the stop characterization so the finding is about
-    /// the harness rather than about a template this test invented. docketd substitutes
+    /// The message-mode stop turn the runner-config reference carried for <c>claude -p</c>
+    /// before #103 (a stream-json user message carrying the disposition), kept verbatim in shape
+    /// so the stop characterization's finding is about the harness rather than about a template
+    /// this test invented. docketd substitutes
     /// <c>{disposition}</c>/<c>{ttl_seconds}</c>/<c>{reason}</c>.
     /// </summary>
     private const string ClaudeStopTurnTemplate =

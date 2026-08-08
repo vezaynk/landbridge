@@ -6,34 +6,64 @@ using Docket.Core;
 
 namespace Docket.Runner;
 
-/// <summary>How a <c>stop</c> was delivered (§10). Reported back so an operator
-/// can confirm message-delivery actually reached the agent — the enroll skill's
-/// smoke test checks exactly this, and the §11 conformance run would automate it
-/// if it were built.</summary>
+/// <summary>
+/// What <c>docketd</c> <em>did</em> when it handled a <c>stop</c> (§10) — never what the
+/// agent did about it. §10 makes the runner transport: it can report the bytes it wrote
+/// and the deadline it armed, and it cannot report consumption, because reading a
+/// harness's mind about a line on its stdin takes exactly the harness-specific knowledge
+/// §10 keeps out of the runner's code. So every member below names a runner-side action
+/// with an observable outcome.
+/// <para>The claim "this harness reads stdin turns" lives in the profile's
+/// <c>stop.mode</c> instead, where it belongs: it is the machine operator's declaration
+/// about their own harness, validated by running the stop once (the enroll skill's smoke
+/// test), and the §11 conformance run would automate that. This ack does not corroborate
+/// it and must not be read as if it did — that reading is what made
+/// <c>Delivery == Message</c> a false positive for every <c>claude -p</c> worker, which
+/// never reads stdin at all.</para>
+/// </summary>
 public enum StopDelivery
 {
-    /// <summary>Injected as a turn the agent reads and honours (§10). A bounded
-    /// wind-down window then backs it with a hard kill on expiry (§11).</summary>
-    Message,
+    /// <summary>
+    /// A wind-down turn was written to the harness's held-open stdin and flushed, and the
+    /// hard kill armed at <c>min(ttl, wind_down)</c> behind it (§10, §11).
+    /// <para><b>Written, not read.</b> A harness that never reads stdin produces this same
+    /// ack with the bytes sitting unread in the pipe — <c>claude -p "&lt;argv prompt&gt;"</c>
+    /// is precisely that harness, so this is the ack a stopped Claude Code worker yields
+    /// today while dying at the deadline
+    /// (<c>Docket.MultiMachine.Tests</c>' <c>A_stop_reaches_a_real_claude_worker_as_a_kill_deadline_not_as_a_turn_it_reads</c>
+    /// asserts it against the real CLI). Read it as "the turn was offered and the deadline
+    /// backs it either way", not as "the agent was told to wind down".</para>
+    /// </summary>
+    MessageWritten,
 
     /// <summary>
-    /// No wind-down turn could be delivered — the profile has no message seam
-    /// (<see cref="StopMode.Signal"/>) or the stdin pipe was already gone — so nothing
-    /// was injected. A signal cannot carry the disposition, but the plane's TTL grace
-    /// still governs: the worker gets the full TTL to exit on its own before the hard
-    /// kill backs it (§10).
+    /// No wind-down turn was delivered — the profile declares no message seam
+    /// (<see cref="StopMode.Signal"/>) or the stdin pipe was already gone — and the hard
+    /// kill armed at the plane's full <c>ttl</c> (§10).
+    /// <para>Nothing is signalled at this point either, despite the config mode's name: a
+    /// signal cannot carry the disposition, so signals stay reserved for the deadline's own
+    /// kill. What the worker gets is the whole TTL the Lead granted to notice its own exit
+    /// conditions and leave cleanly first; <c>wind_down</c> is the message-path budget and
+    /// does not apply here.</para>
     /// </summary>
-    Signal,
+    DeadlineArmed,
 
-    /// <summary><c>ttl == 0</c>: killed immediately without waiting for ack (§9 check 12).</summary>
+    /// <summary><c>ttl == 0</c>: the process tree was killed outright — nothing written,
+    /// no deadline, no waiting for an ack (§9 check 12).</summary>
     ImmediateKill,
 
-    /// <summary>No such task here; the command is moot (§10 buffering — commands are best-effort).</summary>
+    /// <summary>No such task here, so nothing was done (§10 buffering — commands are
+    /// best-effort).</summary>
     NotRunning,
 }
 
-/// <summary>The runner's acknowledgement of a <c>stop</c>.</summary>
-public readonly record struct StopAck(bool Delivered, StopDelivery Delivery);
+/// <summary>
+/// The runner's acknowledgement of a <c>stop</c>. <paramref name="Actioned"/> says the
+/// runner held the task and acted on the command — <em>not</em> that anything reached the
+/// agent; <paramref name="Delivery"/> names which action it took. The two are deliberately
+/// named for runner-side facts (see <see cref="StopDelivery"/>).
+/// </summary>
+public readonly record struct StopAck(bool Actioned, StopDelivery Delivery);
 
 /// <summary>Process supervision, spec §10 runner capabilities.</summary>
 public interface IProcessSupervisor
@@ -42,14 +72,18 @@ public interface IProcessSupervisor
     TaskId Spawn(DispatchCommand dispatch, ProfileConfig profile, string machineId);
 
     /// <summary>
-    /// Graceful stop (§10, §11). A profile whose harness reads stream-json turns on
-    /// the held-open stdin (<see cref="StopMode.Message"/>) is sent a wind-down turn
-    /// carrying the disposition, then given <c>min(ttl, wind_down)</c> to persist and
-    /// exit on its own before a hard tree-kill backstops it. A profile with no such
-    /// seam injects nothing, but the plane's TTL grace still stands: the worker gets
-    /// the full <c>ttl</c> to exit on its own before the kill (<c>wind_down</c> is the
-    /// message-path budget and does not apply). <c>ttl == 0</c> kills immediately
-    /// without injecting anything (§9 check 12).
+    /// Graceful stop (§10, §11). A profile that <em>declares</em> its harness reads
+    /// stream-json turns on the held-open stdin (<see cref="StopMode.Message"/>) has a
+    /// wind-down turn carrying the disposition written to that stdin, and is then given
+    /// <c>min(ttl, wind_down)</c> to persist and exit on its own before a hard tree-kill
+    /// backstops it. A profile with no such seam has nothing written, but the plane's TTL
+    /// grace still stands: the worker gets the full <c>ttl</c> to exit on its own before
+    /// the kill (<c>wind_down</c> is the message-path budget and does not apply).
+    /// <c>ttl == 0</c> kills immediately, writing nothing (§9 check 12).
+    /// <para>The returned <see cref="StopAck"/> reports the runner's own action and
+    /// nothing more — whether the harness actually consumed a written turn is not
+    /// observable here, and the ack does not pretend otherwise. See
+    /// <see cref="StopDelivery"/>.</para>
     /// </summary>
     Task<StopAck> StopAsync(TaskId task, TimeSpan ttl, StopDisposition disposition, string? reason, CancellationToken ct);
 
@@ -95,6 +129,16 @@ public sealed class SupervisedTask
     public string? SessionId { get; set; }
 
     public bool StopRequested { get; set; }
+
+    /// <summary>
+    /// §11 resume (#102): this instance has been replaced by a later dispatch of the
+    /// same task on this machine, so it is no longer the task's worker. Set before the
+    /// successor is registered, and it is what keeps a predecessor's death from acting
+    /// on its successor — see <see cref="ProcessSupervisor.Spawn"/> for why the two
+    /// overlap at all, and <c>OnExited</c> for the three things this suppresses.
+    /// </summary>
+    internal bool Superseded { get; set; }
+
     internal ITimer? TtlTimer { get; set; }
 
     /// <summary>
@@ -182,6 +226,15 @@ public sealed class ProcessSupervisor : IProcessSupervisor
 
     /// <summary>Profiles already warned about §10 telemetry with no destination — once each, not once per spawn.</summary>
     private readonly ConcurrentDictionary<string, bool> _telemetryWarnedProfileNames = new(StringComparer.Ordinal);
+
+    private int _supersededExits;
+
+    /// <summary>
+    /// Test/observability seam (§11 resume, #102): how many superseded instances have died
+    /// here without their exit being reported as the task's. A park-resume that overlaps
+    /// its predecessor increments this by one; a machine that never overlaps stays at zero.
+    /// </summary>
+    internal int SupersededExits => Volatile.Read(ref _supersededExits);
 
     /// <param name="transcripts">
     /// §12 machine-local transcript capture. When supplied, a profile with
@@ -368,6 +421,26 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             LastActivityAt = _clock.GetUtcNow(),
         };
         process.Exited += (_, _) => OnExited(supervised, machineId);
+
+        // §11 resume (#102): a dispatch can arrive for a task this machine is STILL
+        // running. The plane has finished with the previous instance by then — the
+        // transition that redispatches revokes that instance's token (§5) — but revoking
+        // a token does not end a process: a headless worker that asked a question ends
+        // its turn and exits on its own schedule, and the Lead's answer redispatches
+        // within milliseconds of it. So the predecessor is superseded in place, and
+        // taken down before the successor starts, which is what §11 already asks for
+        // ("resuming a transcript a zombie process still holds interleaves two writers
+        // into one session file and corrupts the recovery substrate itself"). The flag
+        // is what makes its imminent death harmless: a worker instance is identified
+        // here by task id alone, so without it the predecessor's exit reaps its
+        // successor's process tree by DOCKET_TASK_ID, reports the successor's death to
+        // the plane (which requeues the task and revokes the successor's token), and
+        // drops the successor out of supervision entirely.
+        if (_tasks.TryGetValue(dispatch.Task, out var predecessor))
+        {
+            predecessor.Superseded = true;
+            KillTree(predecessor);
+        }
         _tasks[dispatch.Task] = supervised;
 
         try
@@ -526,20 +599,26 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         supervised.StopRequested = true;
 
         // §9 check 12 / §11: TTL=0 kills immediately without waiting for ack — no
-        // wind-down turn is injected, even for a message-mode profile.
+        // wind-down turn is written, even for a message-mode profile.
         if (ttl <= TimeSpan.Zero)
         {
             KillTree(supervised);
             return new StopAck(true, StopDelivery.ImmediateKill);
         }
 
-        // §10, §11 graceful wind-down: only a profile whose harness reads stream-json
-        // turns on the held-open stdin (StopMode.Message + the redirected-stdin seam,
-        // config-driven, never harness-specific in code) can be told to wind down. On
-        // a successful inject, give the agent a bounded window — min(ttl, wind_down) —
-        // to persist and exit on its own before the hard kill backstops it. A
+        // §10, §11 graceful wind-down. The gate is the profile's declaration
+        // (StopMode.Message) plus a stdin to write to. Note what the second half is and
+        // is not: stdin is redirected for every supervised harness — that pipe is the
+        // dead-man's switch — so it is a write precondition, not evidence the harness
+        // reads. Nothing here can be evidence of that; a runner that inferred it would
+        // be reasoning about a specific harness, which §10 forbids in code. Hence the
+        // ack below says only "written" (see StopDelivery.MessageWritten), and the
+        // deadline is armed unconditionally so the stop lands either way.
+        //
+        // On a successful write, the bounded window — min(ttl, wind_down) — is what the
+        // agent gets to persist and exit on its own before the hard kill backstops it. A
         // voluntary exit before then disposes the timer in OnExited, so the kill never
-        // fires.
+        // fires; that voluntary exit is also the only real-world sign the turn was read.
         if (supervised.Stop.Mode == StopMode.Message && supervised.Process.StartInfo.RedirectStandardInput)
         {
             var message = BuildStopMessage(supervised.Stop, disposition, ttl, reason);
@@ -552,7 +631,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
                 // FakeTimeProvider drives this deterministically in tests.
                 supervised.TtlTimer = _clock.CreateTimer(
                     _ => KillTree(supervised), null, windDown, Timeout.InfiniteTimeSpan);
-                return new StopAck(true, StopDelivery.Message);
+                return new StopAck(true, StopDelivery.MessageWritten);
             }
             catch (Exception e) when (e is IOException or ObjectDisposedException)
             {
@@ -561,15 +640,15 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             }
         }
 
-        // §10, §11: no message seam to honour (a signal-mode profile, or the inject
-        // just failed). Nothing is injected, but the plane granted a TTL>0 grace on
-        // the wire — an explicit window the Lead chose (only ttl=0 is immediate, §9
-        // check 12) — so a nearly-done worker still gets the full TTL to finish and
-        // exit on its own before the hard kill. wind_down is the message-path budget
-        // and does not apply here; the plane's ttl alone governs this grace. Signals
-        // are reserved for exactly this: TTL expiry and kill.
+        // §10, §11: no message seam declared (a signal-mode profile), or the write just
+        // failed. Nothing was written, but the plane granted a TTL>0 grace on the wire —
+        // an explicit window the Lead chose (only ttl=0 is immediate, §9 check 12) — so a
+        // nearly-done worker still gets the full TTL to finish and exit on its own before
+        // the hard kill. wind_down is the message-path budget and does not apply here; the
+        // plane's ttl alone governs this grace. Signals are reserved for exactly this:
+        // TTL expiry and kill.
         supervised.TtlTimer = _clock.CreateTimer(_ => KillTree(supervised), null, ttl, Timeout.InfiniteTimeSpan);
-        return new StopAck(true, StopDelivery.Signal);
+        return new StopAck(true, StopDelivery.DeadlineArmed);
     }
 
     public bool Kill(TaskId task)
@@ -588,7 +667,13 @@ public sealed class ProcessSupervisor : IProcessSupervisor
 
     private void OnExited(SupervisedTask supervised, string machineId)
     {
-        _tasks.TryRemove(supervised.Task, out _);
+        // §11 resume (#102): remove only if this instance is still the task's — a
+        // compare-and-remove, so a superseded predecessor dying mid-resume cannot
+        // evict the successor that replaced it in the map. Losing that entry would
+        // leave the successor unsupervised: no liveness bumps, no stop delivery, no
+        // kill, and a stray at teardown.
+        ((ICollection<KeyValuePair<TaskId, SupervisedTask>>)_tasks)
+            .Remove(new KeyValuePair<TaskId, SupervisedTask>(supervised.Task, supervised));
         supervised.TtlTimer?.Dispose();
 
         // §10 Terminal events source: the worker is gone, so its stdout is at (or
@@ -627,9 +712,26 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         try { exitCode = supervised.Process.ExitCode; }
         catch (InvalidOperationException) { exitCode = -1; }
 
+        // §11 resume (#102): a superseded instance's death is not the task's. The wire
+        // names only the task (§10, frozen), so an exit reported for one is read as the
+        // death of whatever instance is current — and after a park the current instance
+        // is the freshly resumed successor, which the plane would then requeue and whose
+        // token it would revoke, leaving a live worker holding a 401'd bearer. Nothing is
+        // lost by staying quiet: this instance's own §12 transcript ends where it died,
+        // the plane's event log already holds the park and the redispatch that replaced
+        // it, and the successor's exit is reported normally when it comes.
+        if (supervised.Superseded)
+        {
+            Interlocked.Increment(ref _supersededExits);
+            return;
+        }
+
         _ring.Enqueue(new ExitedEvent(supervised.Task, exitCode, _clock.GetUtcNow()));
 
-        // §10: task-exit stray cleanup keyed by DOCKET_TASK_ID, best-effort.
+        // §10: task-exit stray cleanup keyed by DOCKET_TASK_ID, best-effort. Every
+        // instance of a task carries the same DOCKET_TASK_ID, so this is reachable only
+        // for the current one — a superseded predecessor returned above rather than
+        // reaping the successor it was replaced by (#102).
         try { _taskReaper?.ReapTask(machineId, supervised.Task.ToString()); }
         catch { /* best effort */ }
     }
