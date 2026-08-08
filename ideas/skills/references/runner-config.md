@@ -277,17 +277,24 @@ disposition. It is `claude -p` specifically that has no seam for it.
 
 ## Worked example — Codex CLI (`codex exec`), and what it costs
 
-> ⚠️ **Status: doc-derived, not yet run.** Every Codex-specific detail below is quoted from
-> OpenAI's published documentation (`developers.openai.com/codex/*`). Unlike the Claude Code
-> example above, **no part of it has been executed against the real `codex` binary.** Treat it
-> as the best available starting point and expect to correct it on first contact. The opt-in
-> `Docket.MultiMachine.Tests/RealCodexCollaborationTests` tier exists to do exactly that; the
-> parts that could be verified without the binary — how Codex's event stream maps onto §10 —
-> are pinned by `Docket.Runner.Tests/CodexStreamMappingTests`.
+> 🛑 **A Codex worker cannot run under `docketd` today.** `codex exec` blocks forever reading
+> the dead-man stdin pipe `docketd` holds open, before it takes its first turn. The profile
+> below is otherwise correct and complete, and becomes usable the moment `docketd` grows a way
+> to spawn without that pipe — but do not deploy it expecting work to happen. Details and the
+> source trace are in [The blocker](#the-blocker-codex-exec-hangs-on-the-dead-mans-stdin) below.
+>
+> **Status of everything else here: verified by reading the Codex CLI source** at tag
+> `rust-v0.147.0` (what `npm install -g @openai/codex` currently resolves to), with file:line
+> citations — **not** by running it. No `codex` binary was available. Claims about `docketd`'s
+> own behaviour are verified by tests: `Docket.Runner.Tests/CodexStreamMappingTests` pins how
+> Codex's event stream maps onto §10, and
+> `Docket.MultiMachine.Tests/RealCodexCollaborationTests` holds the opt-in end-to-end tier
+> (three facts gated off behind the blocker, one that characterizes the blocker itself).
 
 Codex is the second harness anyone reaches for, and it is a genuine test of §10's claim that
-`docketd` holds no harness knowledge. Three of Docket's seams do not fit it as-is, and each
-has a workaround here rather than a code change — which is the promise holding, but only just.
+`docketd` holds no harness knowledge. The verdict is mixed and worth stating plainly: the
+config-only promise holds for authentication, tool naming, and the resume ref — and breaks for
+stdin, where no amount of configuration helps.
 
 ```jsonc
 {
@@ -300,7 +307,13 @@ has a workaround here rather than a code change — which is the promise holding
         // NOTE: no MCP flag. Codex has no `--mcp-config`; see below.
         "--json",                                        // the NDJSON stream `terminal` reads
         "--skip-git-repo-check",                         // work_dir is scratch, not a repo
-        "--dangerously-bypass-approvals-and-sandbox"     // the bypassPermissions equivalent
+        "--dangerously-bypass-approvals-and-sandbox",    // the bypassPermissions equivalent
+        // Pin the model. There is no --max-turns for `codex exec`, so the model choice is one
+        // of the few cost levers you have; gpt-5.1-codex-mini is the cheapest codex-family
+        // slug the CLI knows ("Cheaper, faster, but less capable" —
+        // codex-rs/tui/src/model_migration.rs:520). The catalog is server-side, so a slug can
+        // be retired: confirm against `codex --help`/your account rather than trusting this.
+        "--model", "gpt-5.1-codex-mini"
       ],
       "stop": { "mode": "signal" },
       "resume": { "args": ["codex", "exec", "resume", "{session_id}", "Your task has resumed. Call get_task for the answer you were waiting for, then continue.", "--json", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox"] },
@@ -319,6 +332,39 @@ has a workaround here rather than a code change — which is the promise holding
   ]
 }
 ```
+
+### The blocker: `codex exec` hangs on the dead-man's stdin
+
+`docketd` redirects stdin on every spawn and never closes the write end — that held pipe *is*
+the §10 dead-man's switch, so a runner death is visible to the worker as EOF.
+
+Codex's cold-start path cannot tolerate it. `resolve_root_prompt`
+(`codex-rs/exec/src/lib.rs:1961`) handles the case where a prompt *was* given as argv, and it
+still calls `read_prompt_from_stdin(OptionalAppend)` to see whether piped bytes should be
+appended as extra context. That function (`lib.rs:1888`) short-circuits **only** when
+`std::io::stdin().is_terminal()`:
+
+```rust
+StdinPromptBehavior::OptionalAppend if stdin_is_terminal => return None,
+StdinPromptBehavior::OptionalAppend => {
+    eprintln!("Reading additional input from stdin...");
+}
+```
+
+A pipe is not a terminal, so it falls through to `std::io::stdin().read_to_end(&mut bytes)`
+(`lib.rs:1909`) and blocks until EOF. `docketd` never sends EOF, so the worker sits there
+having never begun. The give-away in a transcript is a lone stderr line
+`Reading additional input from stdin...` and then silence.
+
+**There is no configuration that avoids this.** No flag suppresses the append-read, and
+`codex exec -` forces stdin *as* the prompt, which blocks identically. `claude -p` survives the
+same pipe only because it gives up after about three seconds; Codex waits forever.
+
+Two things soften it. First, **the resume path is exempt**: `codex exec resume <id> "<prompt>"`
+resolves through `resolve_prompt` (`lib.rs:1944`), whose first arm returns a non-`-` argv prompt
+immediately without touching stdin — so `resume.args` would work today. Second, the fix is
+small and lives in `docketd`, not in Codex: a per-profile stdin policy that lets a profile trade
+the dead-man pipe (falling back to the StrayReaper's restart-time sweep) for a closed stdin.
 
 ### The three seams that do not fit, and what to do about each
 
@@ -340,13 +386,27 @@ startup_timeout_sec = 30.0
 tool_timeout_sec = 120.0
 ```
 
-Three things worth knowing about that file. `enabled_tools` is Codex's `--allowedTools`
-equivalent and takes **bare** tool names, not the `mcp__docket__*` spelling — but the names the
-*model* sees are `mcp__docket__<tool>`, which is the one part of Codex's MCP surface identical
-to Claude Code's, so worker prompts and skills need no rewording. `required = true` is what
-turns a broken wiring into an error instead of an agent that runs happily with no docket tools
-and reports nothing. And because the token is resolved from the environment, it never lands on
-disk — strictly better than the 0600 JSON file the claude path needs.
+Every key above is a field on `RawMcpServerConfig` (`codex-rs/config/src/mcp_types.rs:272`),
+which carries `#[schemars(deny_unknown_fields)]` — so a misspelled key is rejected rather than
+silently ignored, unlike `events.mapping` below. A `command` and a `url` are mutually exclusive
+transports and the HTTP-only keys are refused on a stdio server (`mcp_types.rs:381-416`).
+
+Four things worth knowing. **The per-instance token really does work this way**:
+`resolve_bearer_token` (`codex-rs/codex-mcp/src/rmcp_client.rs:822`) calls `env::var` on the
+named variable *at connect time*, against the live process environment — which is where
+`docketd` put the fresh token — and errors loudly if it is unset or empty. So one static file is
+correct for every dispatch and the token never lands on disk, strictly better than the 0600 JSON
+file the claude path needs. Note `bearer_token` (a literal token in the file) exists as a field
+but is deliberately rejected: *"uses unsupported `bearer_token`; set `bearer_token_env_var`"*
+(`config/src/mcp_edit.rs:43`).
+
+**`enabled_tools` takes bare tool names**, not the `mcp__docket__*` spelling — but the names the
+*model* sees are `mcp__docket__<tool>`, built as `mcp__{namespace}__{name}`
+(`codex-rs/core/src/tools/handlers/mcp.rs:87-97`), which is identical to Claude Code's, so
+worker prompts, skills, and allow-list vocabulary need no rewording. **`required = true`** turns
+a broken wiring into an error instead of an agent that runs happily with no docket tools and
+reports nothing. And **the server name must match `^[a-zA-Z0-9_-]+$`**
+(`codex-mcp/src/rmcp_client.rs:849`) — `docket` is fine; anything with a dot or slash is refused.
 
 The cost is that this server is now declared for **every** `codex` invocation on the machine,
 including the operator's own interactive ones, where `DOCKET_WORKER_TOKEN` is unset and the
@@ -356,13 +416,18 @@ server will simply fail to authenticate. If that matters, the alternative is a p
 placeholder-substituted), and there is no `{codex_home}` token. That is a real gap, not a
 matter of taste.
 
-**2. `stop.mode` must be `signal`, for the same reason it must be for `claude -p`.**
-`codex exec` takes its prompt as an argv positional and its docs describe no mid-run stdin
-read, so there is no seam for a wind-down turn. Per the honesty rule above, declaring `message`
-would only make `docketd` write a line nobody reads while reporting that it had. So a stop is
-the TTL the Lead granted, then a tree-kill — no final `report_result`. `preserve` still holds
-via the plane's session ref: the `thread_id` `docketd` recorded is exactly what
-`codex exec resume <SESSION_ID>` takes.
+**2. `stop.mode` must be `signal`, for the same reason it must be for `claude -p`** — and the
+source makes this sharper than a docs reading could. `codex exec` reads stdin exactly once, at
+prompt-resolution time, before the turn starts (`exec/src/lib.rs:1888`); there is no reader
+afterwards, so a turn written mid-task has nowhere to land. Its only signal handler is
+`tokio::signal::ctrl_c()` (`exec/src/lib.rs:852`) — SIGINT; there is no SIGTERM handler, so
+`docketd`'s tree-kill arrives unhandled with no flush.
+
+Per the honesty rule above, declaring `message` would only make `docketd` write a line nobody
+reads while reporting that it had. So a stop is the TTL the Lead granted, then a tree-kill — no
+final `report_result`. `preserve` still holds via the plane's record rather than the agent's
+cooperation: the `thread_id` `docketd` captured is exactly what `codex exec resume <SESSION_ID>`
+takes, and it survives the kill.
 
 **3. `events.mapping` is mandatory, and it still cannot give you `tool-call`.**
 The built-in defaults describe claude's `stream-json`; against a Codex stream they match
@@ -374,7 +439,12 @@ then read the one property Codex does emit.
 
 What no mapping can recover is `tool-call`. The reader wants `message` → `content` to be an
 **array** of blocks and reads the tool name off a block; Codex puts exactly one tool call in
-`item`, an object. `mapping` renames properties — it cannot change nesting or arity. The
+`item`, an object — `ThreadItem { id, #[serde(flatten)] details }` where the payload for a tool
+call is `McpToolCallItem { server, tool, arguments, result, error, status }`
+(`codex-rs/exec/src/exec_events.rs:98`, `:286`). So the tool name is at `item.tool` and the
+server at `item.server`, both one level down and never in a list. `mapping` renames properties —
+it cannot change nesting or arity. (Source also settles something the docs left open: the event
+enum includes `item.updated` alongside `item.started`/`item.completed`, `exec_events.rs:29`.) The
 consequence is bounded but real: the short aliveness clock is fine (the periodic `alive` is not
 gated on the events source, and every well-formed Codex line also bumps local activity), so
 tasks are not requeued for silence. What you lose is the **progress** clock — the §10
@@ -384,10 +454,15 @@ empty.
 
 ### Two more differences worth budgeting for
 
-**No turn cap.** The claude recipe bounds a runaway with `--max-turns`; the Codex docs list no
-equivalent for `codex exec`, so `{budget}` has nothing to bind to either. Cost control is the
-Team budget (§9) and the no-progress ceiling, not a harness-local cap — plan accordingly on an
-open profile.
+**No turn cap, and `CODEX_API_KEY` is the auth variable.** The claude recipe bounds a runaway
+with `--max-turns`; `codex exec` has no equivalent, so `{budget}` has nothing to bind to either.
+Cost control is the pinned model, the Team budget (§9) and the no-progress ceiling, not a
+harness-local cap — plan accordingly on an open profile. For auth in an unattended profile, note
+that **`OPENAI_API_KEY` is not read by `codex exec`**: the exec path enables `CODEX_API_KEY`
+specifically (`exec/src/lib.rs:541` sets `enable_codex_api_key_env: true`;
+`login/src/auth/manager.rs:841` defines the variable), while `OPENAI_API_KEY` is consulted only
+by the TUI onboarding prefill and the realtime-conversation path. Otherwise `codex exec` reuses
+the cached login under `CODEX_HOME`.
 
 **The sandbox is a network decision, not just a filesystem one.** `codex exec` defaults to a
 read-only sandbox, and per the docs "By default, the agent runs with network access turned

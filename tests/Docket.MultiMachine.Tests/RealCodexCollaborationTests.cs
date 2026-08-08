@@ -21,39 +21,51 @@ namespace Docket.MultiMachine.Tests;
 /// dedicated CI job (<c>.github/workflows/ci.yml</c>, <c>real-codex-e2e</c>) sets the key
 /// and runs only this trait.</para>
 ///
-/// <para><b>Read this before trusting the recipe below.</b> Unlike the claude tier — whose
-/// argv was proven by an operator spike against the real binary — <em>every Codex-specific
-/// detail here is derived from OpenAI's published documentation and has not been executed
-/// against the real CLI</em>, because <c>codex</c> was not installed on the machine where
-/// this tier was written. Each such claim is annotated with the doc it came from and marked
-/// UNVERIFIED. Two of them can invalidate the whole tier, and the first one is the reason to
-/// run this before believing anything else in it:</para>
+/// <para><b>Nothing here has ever been executed.</b> <c>codex</c> is not installed on the
+/// machine where this tier was written and will not be. Every Codex claim below was instead
+/// verified by reading the CLI's own source at tag <c>rust-v0.147.0</c> — the version
+/// <c>npm install -g @openai/codex</c> resolves to, and the one the CI job installs — with
+/// file:line citations. Source reading settles far more than the docs did, including the one
+/// thing that decides whether this tier can pass at all:</para>
 ///
-/// <para><b>UNVERIFIED, blocking (1) — stdin.</b> docketd redirects stdin on every spawn and
-/// holds the write end open for the worker's whole life: that pipe is the dead-man's switch
-/// (§10, <c>ProcessSupervision</c>). Codex's docs say "If stdin is piped and you also provide
-/// a prompt argument, Codex treats the prompt as the instruction and the piped content as
-/// additional context" (<c>developers.openai.com/codex/noninteractive.md</c>), and say
-/// <em>nothing</em> about a pipe that stays open and sends no bytes. If <c>codex exec</c>
-/// reads stdin to EOF before starting its turn it will block forever on that pipe and every
-/// fact below times out having produced no events at all. <c>claude -p</c> survives this only
-/// because it gives up after ~3s ("no stdin data received in 3s, proceeding without it").
-/// A Codex worker that blocks is not a test bug — it is a finding that says docketd needs a
-/// per-profile way to close or omit the dead-man pipe.</para>
+/// <para><b>CONFIRMED BLOCKER — <c>codex exec</c> hangs on docketd's dead-man stdin.</b>
+/// docketd redirects stdin on every spawn and holds the write end open for the worker's whole
+/// life; that pipe <em>is</em> the §10 dead-man's switch. Codex's cold-start path is
+/// <c>resolve_root_prompt</c> (<c>codex-rs/exec/src/lib.rs:1961</c>), which — even when a
+/// prompt was supplied as argv — calls <c>read_prompt_from_stdin(OptionalAppend)</c>. That
+/// function (<c>lib.rs:1888</c>) returns early <em>only</em> when
+/// <c>std::io::stdin().is_terminal()</c>; a pipe is not a terminal, so it falls through to
+/// <c>std::io::stdin().read_to_end(&amp;mut bytes)</c> at <c>lib.rs:1909</c> and blocks until
+/// EOF. docketd never sends EOF, so the worker never starts a turn. <c>claude -p</c> survives
+/// the same pipe only because it gives up after ~3s.</para>
 ///
-/// <para><b>UNVERIFIED, blocking (2) — MCP reachability.</b> Codex has no
-/// <c>--mcp-config &lt;file&gt;</c>; its only client-config surface is a <c>config.toml</c>
-/// under <c>CODEX_HOME</c>. So the injected <c>{mcp_config}</c> is unusable here and
-/// <see cref="CodexHome"/> writes a TOML table instead, carrying the per-instance bearer
-/// <em>indirectly</em>: <c>bearer_token_env_var = "DOCKET_WORKER_TOKEN"</c>, resolved against
-/// the fresh token docketd already injects as environment on every spawn. That indirection is
-/// what makes one static config file correct for every dispatch, and it is the single most
-/// load-bearing guess in this file.</para>
+/// <para>There is no argv-only escape: no flag suppresses the append-read, and
+/// <c>codex exec -</c> forces stdin as the prompt, which blocks identically. So
+/// <b>a Codex worker cannot run under docketd today</b> — it needs the per-profile stdin
+/// policy the gaps report proposes. <see cref="A_cold_codex_worker_hangs_on_docketds_dead_man_stdin_and_never_takes_a_turn"/>
+/// pins that against the real binary and costs nothing, because Codex never reaches the model.
+/// The three end-to-end facts are written, gated off behind
+/// <c>DOCKET_CODEX_STDIN_FIXED=1</c>, and become live the moment that gap closes — they are
+/// not deleted, because everything in them below the stdin seam is expected to work.</para>
+///
+/// <para><b>The resume path is exempt</b>, which is a genuinely useful asymmetry:
+/// <c>codex exec resume &lt;id&gt; "&lt;prompt&gt;"</c> resolves through <c>resolve_prompt</c>
+/// (<c>lib.rs:1944</c>), whose first arm returns a non-<c>-</c> argv prompt immediately and
+/// never touches stdin. So resume-with-argv-prompt would work under docketd unchanged.</para>
+///
+/// <para><b>MCP reachability — confirmed workable.</b> Codex has no
+/// <c>--mcp-config &lt;file&gt;</c>; its only client surface is a <c>config.toml</c> under
+/// <c>CODEX_HOME</c>, so the injected <c>{mcp_config}</c> is unusable and
+/// <see cref="CodexHome"/> writes a TOML table instead. The per-instance bearer rides
+/// <c>bearer_token_env_var = "DOCKET_WORKER_TOKEN"</c>, and
+/// <c>resolve_bearer_token</c> (<c>codex-rs/codex-mcp/src/rmcp_client.rs:822</c>) reads that
+/// variable from the <em>live process environment</em> at connect time — which is exactly
+/// where docketd injects the fresh per-spawn token. One static file is therefore correct for
+/// every dispatch, and the token never touches disk.</para>
 ///
 /// <para><b>No turn cap.</b> The claude recipe bounds cost with <c>--max-turns</c>; the Codex
-/// docs list no equivalent for <c>codex exec</c>. Cost is bounded here only by trivial tasks,
-/// the per-leg budget, and the outer deadline — treat a red run as potentially having spent
-/// more than a claude one would.</para>
+/// CLI has no equivalent for <c>exec</c>. Cost is bounded here only by the pinned mini model,
+/// trivial tasks, the per-leg budget, and the outer deadline.</para>
 /// </summary>
 [Trait("Category", RealCodex)]
 [Collection(PostgresCollection.Name)]
@@ -95,6 +107,72 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
     public Task DisposeAsync() => Task.CompletedTask;
 
     /// <summary>
+    /// The finding, asserted against the real binary: a cold <c>codex exec</c> worker spawned
+    /// by docketd <b>never takes a turn</b>, because it blocks reading the dead-man stdin pipe
+    /// that docketd holds open for the task's whole life (see the class remarks for the source
+    /// trace, <c>exec/src/lib.rs:1961 → 1888 → 1909</c>).
+    ///
+    /// <para>This is the same discipline as the claude tier's stop characterization: pin the
+    /// observed behaviour rather than the hoped-for one, because the gap between them <em>is</em>
+    /// the finding. And it is the cheap fact in this tier — Codex hangs before it ever contacts
+    /// a model, so this spends no tokens at all.</para>
+    ///
+    /// <para>The assertions are deliberately about absence, and each rules out a different
+    /// innocent explanation: the process really did start (so this is not a spawn failure); it
+    /// produced no session ref within a window many times longer than a Codex startup (so it is
+    /// not merely slow); and the task never reached <see cref="TaskState.Verifying"/>. Together
+    /// that is "the worker is alive and idle, holding a turn it will never begin".</para>
+    ///
+    /// <para><b>When docketd grows a per-profile stdin policy this fact should FAIL</b>, and
+    /// that failure is the signal to delete it and drop <c>DOCKET_CODEX_STDIN_FIXED</c> from
+    /// the three facts below. It is written to be falsified.</para>
+    /// </summary>
+    [SkippableFact]
+    public async Task A_cold_codex_worker_hangs_on_docketds_dead_man_stdin_and_never_takes_a_turn()
+    {
+        var codexBin = RequireRealCodex();
+        Skip.If(StdinFixDeclared,
+            "DOCKET_CODEX_STDIN_FIXED is set, so this characterization no longer applies — "
+            + "the end-to-end facts cover the fixed behaviour instead");
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(6));
+        var ct = cts.Token;
+
+        await using var rig = new FleetRig(
+            pg,
+            spawnArgv: CodexWorkerSpawn(codexBin, WorkerPrompt),
+            terminalEvents: true,
+            eventMapping: CodexEventMapping);
+        await rig.StartAsync(ct);
+        using var home = CodexHome.Create(rig.McpUrl, AllowedDocketTools);
+        await rig.AddMachineAsync("A");
+
+        var task = await rig.CreateTaskAsync(EchoDescription("A", NewToken()), ct);
+        await rig.DispatchToAsync("A", ct);
+
+        // It really launched: docketd observed a start. Without this the rest would also be
+        // true of a binary that does not exist.
+        Assert.True(
+            await FleetRig.WaitUntilAsync(
+                () => Task.FromResult(rig.WorkerObserved(task) is { Starts: > 0 }),
+                TimeSpan.FromMinutes(1)),
+            "the codex worker never even started, so this run says nothing about stdin.\n"
+            + await rig.RealWorkerDiagnosticsAsync(task, ct));
+
+        // And then nothing happens. A Codex startup that is going to emit `thread.started`
+        // does so in seconds; two minutes of silence is the hang, not slowness.
+        Assert.False(
+            await FleetRig.WaitUntilAsync(
+                async () => await rig.HarnessSessionRefAsync(task, ct) is { Length: > 0 },
+                TimeSpan.FromMinutes(2)),
+            "a cold codex worker DID report a session ref — the dead-man-stdin blocker this "
+            + "tier is built around no longer reproduces. Delete this fact and drop the "
+            + "DOCKET_CODEX_STDIN_FIXED gate from the end-to-end facts.\n"
+            + await rig.RealWorkerDiagnosticsAsync(task, ct));
+
+        Assert.NotEqual(TaskState.Verifying, await rig.StateAsync(task, ct));
+    }
+
+    /// <summary>
     /// The minimum bar, and the fact that decides whether the rest of this tier means
     /// anything: a REAL <c>codex exec</c> worker, spawned by a real docketd on a two-machine
     /// fleet, reads its assignment off the wire and drives its task to
@@ -114,6 +192,7 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
     public async Task Real_codex_worker_drives_a_task_to_verifying_on_the_fleet()
     {
         var codexBin = RequireRealCodex();
+        RequireStdinFix();
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(15));
         var ct = cts.Token;
 
@@ -173,6 +252,7 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
     public async Task A_stop_reaches_a_real_codex_worker_as_a_kill_deadline_with_its_thread_ref_preserved()
     {
         var codexBin = RequireRealCodex();
+        RequireStdinFix();
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(12));
         var ct = cts.Token;
 
@@ -247,6 +327,7 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
     public async Task A_claude_worker_and_a_codex_worker_hand_off_a_token_across_one_fleet()
     {
         var codexBin = RequireRealCodex();
+        RequireStdinFix();
         var claudeBin = RequireRealClaudeForMixedFleet();
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(25));
         var ct = cts.Token;
@@ -329,14 +410,29 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
             "--skip-git-repo-check",
             "--dangerously-bypass-approvals-and-sandbox",
         };
-        if (Environment.GetEnvironmentVariable("DOCKET_CODEX_MODEL") is { Length: > 0 } model)
-        {
-            argv.Add("--model");
-            argv.Add(model);
-        }
+        argv.Add("--model");
+        argv.Add(CodexModel);
         argv.AddRange(extra);
         return [.. argv];
     }
+
+    /// <summary>
+    /// The model every fact in this tier pins, and it is pinned rather than left to the
+    /// machine's default deliberately: the default is whatever the operator or the server-side
+    /// catalog says, which for a token-spending CI job is an open cheque.
+    ///
+    /// <para><c>gpt-5.1-codex-mini</c> is the cheapest codex-family model the pinned CLI knows
+    /// about — the source describes it as "Optimized for codex. Cheaper, faster, but less
+    /// capable." (<c>codex-rs/tui/src/model_migration.rs:520-525</c>), where it is also the
+    /// <em>migration target</em> for the retired <c>gpt-5-codex-mini</c>, so it is the current
+    /// slug and not a legacy alias. Note the model catalog is fetched server-side rather than
+    /// hard-coded in the CLI, so a slug can be retired out from under this constant —
+    /// <c>DOCKET_CODEX_MODEL</c> overrides it without a code change when that happens.</para>
+    /// </summary>
+    private static string CodexModel =>
+        Environment.GetEnvironmentVariable("DOCKET_CODEX_MODEL") is { Length: > 0 } m
+            ? m
+            : "gpt-5.1-codex-mini";
 
     /// <summary>
     /// The <c>events.mapping</c> that lets the terminal reader find Codex's session ref, and
@@ -509,6 +605,31 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
         ScrubInheritedSessionMarkers();
         return codexBin!;
     }
+
+    /// <summary>
+    /// Whether this run claims docketd can spawn a worker without an open-forever stdin pipe.
+    /// Purely a declaration by whoever set it — nothing here can verify it, exactly as
+    /// <c>stop.mode</c> is a declaration docketd cannot verify.
+    /// </summary>
+    private static bool StdinFixDeclared =>
+        Environment.GetEnvironmentVariable("DOCKET_CODEX_STDIN_FIXED") is { Length: > 0 } v
+        && !v.Equals("0", StringComparison.Ordinal)
+        && !v.Equals("false", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Skip the end-to-end facts while the confirmed dead-man-stdin blocker stands (see the
+    /// class remarks). These are <b>not</b> skipped because they are unfinished — they are
+    /// skipped because the harness provably cannot reach the first turn, so running them would
+    /// burn eight minutes per leg to observe a hang the cheap characterization fact already
+    /// pins. Set <c>DOCKET_CODEX_STDIN_FIXED=1</c> once docketd can spawn without holding
+    /// stdin open, and these become the real coverage with no other change.
+    /// </summary>
+    private static void RequireStdinFix() =>
+        Skip.IfNot(StdinFixDeclared,
+            "codex exec blocks forever on docketd's held-open dead-man stdin pipe "
+            + "(exec/src/lib.rs:1961 -> 1888 -> 1909 at rust-v0.147.0), so a Codex worker "
+            + "cannot reach its first turn. Set DOCKET_CODEX_STDIN_FIXED=1 when docketd grows "
+            + "a per-profile stdin policy.");
 
     /// <summary>The mixed-fleet fact needs a real claude too; skip rather than half-test.
     /// Deliberately does not re-check the Anthropic opt-in: on a logged-in machine the CLI
