@@ -49,6 +49,21 @@ public abstract record RunnerCommand : RunnerMessage
 /// declares how (<c>resume.args</c>) — otherwise it cold-starts (documented
 /// fallback). Opaque transport metadata: the runner substitutes it into
 /// <c>resume.args</c> and never interprets it (§11 resume seam).</para>
+///
+/// <para><see cref="ResumeFromTask"/> is additive and wire-compatible in exactly the
+/// same way, and exists because a harness session is <b>directory</b>-local as well as
+/// machine-local: Claude Code resumes a session only from the directory that created
+/// it. A same-task park-resume reuses that task's own work dir and needs nothing, but a
+/// <c>continues:</c> continuation runs under a NEW task id — so without this it would
+/// look for the session in a directory that never held one. It names the task whose work
+/// dir the resumed harness must run in, and it is null whenever that is the dispatched
+/// task itself.</para>
+///
+/// <para><b>A task, not a path.</b> The plane does not know — and must not choose — a
+/// machine's filesystem layout: <c>work_root</c> is machine-local runner config, and the
+/// runner is what maps a task id to a directory under it. Naming a task keeps that
+/// mapping in one place and keeps this record free of machine-specific paths, which is
+/// also why <c>ParkRecord.Directory</c> never got a producer.</para>
 /// </summary>
 public sealed record DispatchCommand(
     TaskId Task,
@@ -57,7 +72,8 @@ public sealed record DispatchCommand(
     string? McpConfigJson = null,
     decimal? BudgetUsd = null,
     Dictionary<string, string>? SpawnSubstitutions = null,
-    string? ResumeSessionRef = null) : RunnerCommand;
+    string? ResumeSessionRef = null,
+    TaskId? ResumeFromTask = null) : RunnerCommand;
 
 /// <summary>
 /// <c>stop(ttl, disposition)</c> — graceful wind-down (§10, §11). Delivered as

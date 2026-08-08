@@ -302,6 +302,11 @@ public sealed class DispatchService : IHostedService
             // transcript. Opaque metadata surfaced by the store; docketd resumes
             // only if the resolved profile declares resume.args, else cold-starts.
             ResumeSessionRef: applied.HarnessSessionRef,
+            // §11 resume, directory half: a continuation resumes under a NEW task id, so the
+            // runner is told whose work dir the session lives in — Claude Code resumes a
+            // session only from the directory that created it. Null for a same-task
+            // park-resume, where that dir is already the one the runner would pick.
+            ResumeFromTask: applied.ResumeDirTask,
             // §9.9/§9 check 9: the per-dispatch cap committed against the Team's ceiling,
             // enforced by the harness itself (the profile's {budget} substitution). This is
             // the backstop that holds even when spend telemetry is absent — which today it

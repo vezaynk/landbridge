@@ -193,4 +193,115 @@ public sealed class ContinuationDispatchTests(PostgresFixture pg) : IAsyncLifeti
         var summary = view.Tasks.Single(t => t.TaskId == task.Value);
         Assert.Equal(continued.Value, summary.ContinuesTaskId);
     }
+
+    // ── §11 resume, directory half: which task's work dir the harness runs in ────
+
+    /// <summary>
+    /// A continuation's dispatch names the continued task's work dir, because that is where
+    /// the session it is resuming lives and Claude Code resumes only from the creating
+    /// directory. Without this the runner would look under the continuation's own — new, and
+    /// empty — task dir and the resume would fail outright rather than cold-start.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_continuations_dispatch_carries_the_continued_tasks_directory()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var (_, continued) = await CreateContinuation(db, "m1", "sess-1", MachineGonePolicy.Degrade);
+
+        var applied = Assert.IsType<StoreResult.Applied>(
+            await NewStore(db).DispatchNextAsync(Machine("m1"), WorkerInstanceId.New(), default, ["m1"]));
+
+        Assert.Equal("sess-1", applied.HarnessSessionRef);
+        Assert.Equal(continued, applied.ResumeDirTask);
+    }
+
+    /// <summary>
+    /// A chain names the ROOT task's dir, not the immediate predecessor's — the fact that
+    /// makes chains (§11 calls them natural) work at all. Resuming does not create a session
+    /// per link: B continuing A resumes A's session in A's dir, so B never has a dir of its
+    /// own, and C continuing B must still be sent to A's. Lineage alone cannot say that,
+    /// which is why the directory affinity is its own transitively-seeded fact.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_chain_of_continuations_all_name_the_root_tasks_directory()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+
+        // A is an ordinary task; B continues A; C continues B.
+        var a = ((StoreResult.Applied)await NewStore(db).CreateAsync(new CreateTask(
+            Lead, Team, "criteria", CompletionMode.Lead, null, TeamBudgetRemains: true))).Task.Id;
+        var b = ((StoreResult.Applied)await NewStore(db).CreateAsync(new CreateTask(
+            Lead, Team, "criteria", CompletionMode.Lead, null, TeamBudgetRemains: true,
+            Continues: new Continuation(a, Team, "m1", "sess-1", MachineGonePolicy.Degrade, null)))).Task.Id;
+        var c = ((StoreResult.Applied)await NewStore(db).CreateAsync(new CreateTask(
+            Lead, Team, "criteria", CompletionMode.Lead, null, TeamBudgetRemains: true,
+            Continues: new Continuation(b, Team, "m1", "sess-1", MachineGonePolicy.Degrade, null)))).Task.Id;
+
+        await using var v = pg.NewContext();
+        // B points at A because A is where the session was made; C points at A too, THROUGH
+        // B, not at B — B is only its lineage.
+        Assert.Equal(a.Value, (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == b.Value)).ResumeDirTaskId);
+        var rowC = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == c.Value);
+        Assert.Equal(a.Value, rowC.ResumeDirTaskId);
+        Assert.Equal(b.Value, rowC.ContinuesTaskId);
+        // …and A itself, an ordinary task, claims nobody's directory.
+        Assert.Null((await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == a.Value)).ResumeDirTaskId);
+    }
+
+    /// <summary>
+    /// An ordinary task's dispatch names no directory — including its redispatch after a
+    /// park, which is the §11 same-task resume: that transcript is already in this task's own
+    /// dir, so the runner's default is right and the field stays null.
+    /// </summary>
+    [SkippableFact]
+    public async Task An_ordinary_tasks_dispatch_names_no_directory_even_when_resuming_its_own_park()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var created = (StoreResult.Applied)await NewStore(db).CreateAsync(new CreateTask(
+            Lead, Team, "criteria", CompletionMode.Lead, null, TeamBudgetRemains: true));
+        var task = created.Task.Id;
+
+        var first = Assert.IsType<StoreResult.Applied>(
+            await NewStore(db).DispatchNextAsync(Machine("m1"), WorkerInstanceId.New(), default, ["m1"]));
+        Assert.Null(first.ResumeDirTask);
+
+        // Give it a session ref and requeue it, exactly as a park-then-answer would, so the
+        // redispatch really is a resume — and still names no directory. Fresh contexts: the
+        // dispatch above left this task tracked as working in `db`.
+        await using (var stamp = pg.NewContext())
+            await NewStore(stamp).StampHarnessSessionRefAsync(task, "sess-park");
+        await using (var requeue = pg.NewContext())
+            Assert.IsType<StoreResult.Applied>(
+                await NewStore(requeue).ApplyAsync(task, new LivenessLost(LivenessLossReason.ProcessExited)));
+
+        await using var redispatch = pg.NewContext();
+        var second = Assert.IsType<StoreResult.Applied>(
+            await NewStore(redispatch).DispatchNextAsync(Machine("m1"), WorkerInstanceId.New(), default, ["m1"]));
+        Assert.Equal("sess-park", second.HarnessSessionRef);
+        Assert.Null(second.ResumeDirTask);
+    }
+
+    /// <summary>
+    /// A degrade cold-start suppresses the directory along with the session ref, and clears
+    /// it from the row. There is nothing to resume from here — the predecessor's dir is on
+    /// the machine that went away — so this dispatch's new session belongs in its own dir.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_degrade_cold_start_suppresses_and_clears_the_directory_too()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var (task, _) = await CreateContinuation(db, "m1", "sess-1", MachineGonePolicy.Degrade);
+
+        var applied = Assert.IsType<StoreResult.Applied>(
+            await NewStore(db).DispatchNextAsync(Machine("m2"), WorkerInstanceId.New(), default, ["m2"]));
+
+        Assert.Null(applied.HarnessSessionRef);
+        Assert.Null(applied.ResumeDirTask);
+        await using var v = pg.NewContext();
+        Assert.Null((await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == task.Value)).ResumeDirTaskId);
+    }
 }

@@ -36,6 +36,23 @@ public sealed class TaskStore(
             InfrastructureRequeueLimit =
                 policy?.InfrastructureRequeueLimit ?? TaskRecord.DefaultInfrastructureRequeueLimit,
         };
+        // §11 continuation, directory half: resolve which task's work dir holds the session
+        // this one will resume, transitively — the source's own answer if it had one (a
+        // chain: the session has lived in the root task's dir all along and B never had a
+        // dir), else the source itself. Read here rather than carried on the engine's
+        // Continuation command for the same reason TraceContext is: it is storage
+        // bookkeeping the engine never sees (§7 content-free). One extra read, on the
+        // create path only, and only for a continuation.
+        Guid? resumeDirTask = null;
+        if (command.Continues is { } continues)
+        {
+            var source = continues.ContinuedTask.Value;
+            resumeDirTask = await db.Tasks.AsNoTracking()
+                .Where(t => t.Id == source)
+                .Select(t => t.ResumeDirTaskId)
+                .FirstOrDefaultAsync(ct) ?? source;
+        }
+
         db.Tasks.Add(new TaskRow
         {
             Id = id.Value,
@@ -65,6 +82,7 @@ public sealed class TaskStore(
             // Continues leaves every field default, i.e. an ordinary profile-targeted
             // task.
             ContinuesTaskId = command.Continues?.ContinuedTask.Value,
+            ResumeDirTaskId = resumeDirTask,
             PreferredMachine = command.Continues?.PreferredMachine,
             OnMachineGone = command.Continues?.OnMachineGone,
             HarnessSessionRef = command.Continues?.InheritedSessionRef,
@@ -381,6 +399,10 @@ public sealed class TaskStore(
                 claimed.HarnessSessionRef = null;
                 claimed.PreferredMachine = null;
                 claimed.OnMachineGone = null;
+                // §11: and the directory affinity with it. There is no session to find in
+                // the predecessor's dir from here — that dir is on the machine that went
+                // away — so this cold start belongs in this task's own dir.
+                claimed.ResumeDirTaskId = null;
                 db.TaskEvents.Add(new TaskEventRow
                 {
                     TaskId = claimed.Id,
@@ -407,6 +429,12 @@ public sealed class TaskStore(
             {
                 TraceContext = claimed.TraceContext,
                 HarnessSessionRef = degradeColdStart ? null : claimed.HarnessSessionRef,
+                // §11: which task's work dir the resumed harness must run in. Suppressed on
+                // the same condition as the session ref — nothing is being resumed, so
+                // there is no foreign directory to run in.
+                ResumeDirTask = degradeColdStart || claimed.ResumeDirTaskId is not { } dir
+                    ? null
+                    : new TaskId(dir),
                 // §9.9: the committed cap rides back so DispatchService can hand it to the
                 // harness as its own hard limit.
                 BudgetCapUsd = budgetCap,
