@@ -241,8 +241,18 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         var nonce = "nonce-" + NewToken();
         await using var rig = new FleetRig(
             pg,
-            spawnArgv: StreamingSpawn(claudeBin, RememberThenAskPrompt(nonce), ParkTools),
-            resumeArgv: StreamingSpawn(claudeBin, ResumeAndReportPrompt, ParkTools, "--resume", "{session_id}"),
+            // Both legs get headroom over the shared default, for the same reason the process
+            // and service scenarios do: this worker has to remember a value, read its
+            // assignment, and make a specific call, and a haiku that narrates its way there
+            // can spend eight turns without reaching the one call the leg turns on. Running out
+            // mid-way does not merely retry — the redispatch RESUMES, so the successor arrives
+            // already knowing the assignment and may satisfy it directly, skipping the park this
+            // fact is about. Cost stays bounded by the cap; correctness does not depend on it.
+            spawnArgv: StreamingSpawn(
+                claudeBin, RememberThenAskPrompt(nonce), ParkTools, "--max-turns", "14"),
+            resumeArgv: StreamingSpawn(
+                claudeBin, ResumeAndReportPrompt, ParkTools, "--resume", "{session_id}",
+                "--max-turns", "14"),
             terminalEvents: true);
         await rig.StartAsync(ct);
         await rig.AddMachineAsync("A");
@@ -251,12 +261,26 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
 
         // The cold worker asks and ends its turn. Its process exiting here is expected, not a
         // failure: a headless worker that has asked a question has nothing left to do in
-        // process, and per-task liveness is suspended while blocked (§11).
+        // process, and per-task liveness is suspended while blocked (§11). The wait also ends on
+        // a task that finished instead of asking — there is nothing left to wait for once it has,
+        // and polling the budget out would report a settled task as a timeout. Which of the two
+        // happened is the assertion below, not this predicate.
         Assert.True(
             await rig.DispatchUntilAsync(
-                task, "A", async () => await rig.StateAsync(task, ct) == TaskState.BlockedOnInput,
+                task, "A",
+                async () => await rig.StateAsync(task, ct)
+                    is TaskState.BlockedOnInput or TaskState.Verifying or TaskState.Completed,
                 MaxAttempts, PerLegBudget, ct),
-            "the real claude worker never blocked on input.\n" + await rig.RealWorkerDiagnosticsAsync(task, ct));
+            "the real claude worker neither blocked on input nor finished.\n"
+            + await rig.RealWorkerDiagnosticsAsync(task, ct));
+        var blockedState = await rig.StateAsync(task, ct);
+        Assert.True(
+            blockedState == TaskState.BlockedOnInput,
+            $"the worker reached {blockedState} without ever asking, so there is no park to resume. "
+            + "The usual cause is a first turn that spent its turn cap before calling "
+            + "request_input, whose requeue then resumes rather than re-briefs — check the "
+            + "captured stream below for a max-turns end.\n"
+            + await rig.RealWorkerDiagnosticsAsync(task, ct));
 
         // The transcript is locatable: the harness reported its session ref and the plane
         // stamped it verbatim. Without this there is nothing to resume and the rest is a
