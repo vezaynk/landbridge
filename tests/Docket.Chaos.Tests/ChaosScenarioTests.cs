@@ -343,9 +343,14 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
         await using var fleet = new ChaosFleet(pg, new ChaosFleetOptions
         {
             // Heartbeat ≪ aliveness window, so the wedged worker keeps looking alive and
-            // the ONLY clock that can fire is the no-progress ceiling.
+            // the ONLY clock that can fire is the no-progress ceiling. The window is
+            // deliberately WIDE (15 heartbeats), not merely wider than the ceiling: a loaded
+            // CI runner can stall docketd's heartbeat pump for several seconds, and a 5s
+            // window let the aliveness clock win that race once (reason LivenessTimeout
+            // instead of NoProgress, dispatch run 31240309899). The ceiling still fires
+            // first by construction; detection just waits for the next sweep.
             HeartbeatInterval = TimeSpan.FromSeconds(1),
-            PerTaskLivenessWindow = TimeSpan.FromSeconds(5),
+            PerTaskLivenessWindow = TimeSpan.FromSeconds(15),
             NoProgressCeiling = TimeSpan.FromSeconds(6),
         });
         await fleet.StartAsync(ct);
