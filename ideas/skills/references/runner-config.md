@@ -275,6 +275,128 @@ reads turns off a held-open stdin — an interactive-mode or SDK-hosted session,
 custom harness — and is the delivery §10 prefers, because a signal cannot carry a
 disposition. It is `claude -p` specifically that has no seam for it.
 
+## Worked example — Codex CLI (`codex exec`), and what it costs
+
+> ⚠️ **Status: doc-derived, not yet run.** Every Codex-specific detail below is quoted from
+> OpenAI's published documentation (`developers.openai.com/codex/*`). Unlike the Claude Code
+> example above, **no part of it has been executed against the real `codex` binary.** Treat it
+> as the best available starting point and expect to correct it on first contact. The opt-in
+> `Docket.MultiMachine.Tests/RealCodexCollaborationTests` tier exists to do exactly that; the
+> parts that could be verified without the binary — how Codex's event stream maps onto §10 —
+> are pinned by `Docket.Runner.Tests/CodexStreamMappingTests`.
+
+Codex is the second harness anyone reaches for, and it is a genuine test of §10's claim that
+`docketd` holds no harness knowledge. Three of Docket's seams do not fit it as-is, and each
+has a workaround here rather than a code change — which is the promise holding, but only just.
+
+```jsonc
+{
+  "profiles": [
+    {
+      "name": "default",
+      "spawn": [
+        "codex", "exec",
+        "You are a Docket worker running headless under docketd. You have been dispatched exactly one task. First call the docket MCP tool get_task to read your assignment. Do the work inside the assigned workspace. When done, call report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call request_input instead of guessing.",
+        // NOTE: no MCP flag. Codex has no `--mcp-config`; see below.
+        "--json",                                        // the NDJSON stream `terminal` reads
+        "--skip-git-repo-check",                         // work_dir is scratch, not a repo
+        "--dangerously-bypass-approvals-and-sandbox"     // the bypassPermissions equivalent
+      ],
+      "stop": { "mode": "signal" },
+      "resume": { "args": ["codex", "exec", "resume", "{session_id}", "Your task has resumed. Call get_task for the answer you were waiting for, then continue.", "--json", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox"] },
+      // REQUIRED for Codex — without this mapping the profile reads nothing at all.
+      "events": {
+        "source": "terminal",
+        "mapping": {
+          "system_type": "thread.started",
+          "subtype_key": "type",
+          "init_subtype": "thread.started",
+          "session_id_key": "thread_id"
+        }
+      },
+      "logs": { "capture": true }
+    }
+  ]
+}
+```
+
+### The three seams that do not fit, and what to do about each
+
+**1. `{mcp_config}` is unusable — wire the MCP server through `CODEX_HOME` instead.**
+Codex has no `--mcp-config <file>` flag; its only MCP client surface is a `[mcp_servers.<name>]`
+table in `config.toml` under `CODEX_HOME` (default `~/.codex`). So the JSON config `docketd`
+generates per dispatch is written, and then ignored. What replaces it is one **static** file —
+and it can be static, because Codex resolves the bearer from an environment variable and
+`docketd` already injects a fresh per-instance token as `DOCKET_WORKER_TOKEN` on every spawn:
+
+```toml
+# ~/.codex/config.toml — written once by the operator, correct for every dispatch
+[mcp_servers.docket]
+url = "https://plane.example/mcp"          # Docket:PublicMcpUrl / DOCKET_PUBLIC_MCP_URL
+bearer_token_env_var = "DOCKET_WORKER_TOKEN"   # → Authorization: Bearer <that spawn's token>
+enabled_tools = ["get_task", "report_result", "request_input", "register_service"]
+required = true                            # fail the run loudly, not as a toolless agent
+startup_timeout_sec = 30.0
+tool_timeout_sec = 120.0
+```
+
+Three things worth knowing about that file. `enabled_tools` is Codex's `--allowedTools`
+equivalent and takes **bare** tool names, not the `mcp__docket__*` spelling — but the names the
+*model* sees are `mcp__docket__<tool>`, which is the one part of Codex's MCP surface identical
+to Claude Code's, so worker prompts and skills need no rewording. `required = true` is what
+turns a broken wiring into an error instead of an agent that runs happily with no docket tools
+and reports nothing. And because the token is resolved from the environment, it never lands on
+disk — strictly better than the 0600 JSON file the claude path needs.
+
+The cost is that this server is now declared for **every** `codex` invocation on the machine,
+including the operator's own interactive ones, where `DOCKET_WORKER_TOKEN` is unset and the
+server will simply fail to authenticate. If that matters, the alternative is a per-spawn
+`CODEX_HOME` — which `docketd` **cannot currently express**: profiles have no environment seam
+(`telemetry.env` is gated on `telemetry.otel` plus a resolved endpoint, and its values are not
+placeholder-substituted), and there is no `{codex_home}` token. That is a real gap, not a
+matter of taste.
+
+**2. `stop.mode` must be `signal`, for the same reason it must be for `claude -p`.**
+`codex exec` takes its prompt as an argv positional and its docs describe no mid-run stdin
+read, so there is no seam for a wind-down turn. Per the honesty rule above, declaring `message`
+would only make `docketd` write a line nobody reads while reporting that it had. So a stop is
+the TTL the Lead granted, then a tree-kill — no final `report_result`. `preserve` still holds
+via the plane's session ref: the `thread_id` `docketd` recorded is exactly what
+`codex exec resume <SESSION_ID>` takes.
+
+**3. `events.mapping` is mandatory, and it still cannot give you `tool-call`.**
+The built-in defaults describe claude's `stream-json`; against a Codex stream they match
+nothing, so a Codex profile that omits `mapping` silently loses its session ref (§11 resume
+becomes a permanent cold start). The four keys above fix that: Codex emits
+`{"type":"thread.started","thread_id":"…"}` with **no** `subtype` property, so the
+sub-discriminator is pointed back at `type` and matched against the same value — both checks
+then read the one property Codex does emit.
+
+What no mapping can recover is `tool-call`. The reader wants `message` → `content` to be an
+**array** of blocks and reads the tool name off a block; Codex puts exactly one tool call in
+`item`, an object. `mapping` renames properties — it cannot change nesting or arity. The
+consequence is bounded but real: the short aliveness clock is fine (the periodic `alive` is not
+gated on the events source, and every well-formed Codex line also bumps local activity), so
+tasks are not requeued for silence. What you lose is the **progress** clock — the §10
+no-progress ceiling (30 minutes) becomes the only thing governing a Codex worker, a wedged one
+cannot be told from a busy one before it fires, and the dashboard's per-task tool-call feed is
+empty.
+
+### Two more differences worth budgeting for
+
+**No turn cap.** The claude recipe bounds a runaway with `--max-turns`; the Codex docs list no
+equivalent for `codex exec`, so `{budget}` has nothing to bind to either. Cost control is the
+Team budget (§9) and the no-progress ceiling, not a harness-local cap — plan accordingly on an
+open profile.
+
+**The sandbox is a network decision, not just a filesystem one.** `codex exec` defaults to a
+read-only sandbox, and per the docs "By default, the agent runs with network access turned
+off" — which a worker that must reach forwarded services cannot live with.
+`--dangerously-bypass-approvals-and-sandbox` removes both boundaries; the narrower alternative
+is `--sandbox workspace-write` plus `-c sandbox_workspace_write.network_access=true`. Note this
+governs commands the **model** runs; Codex's own MCP client connection to the plane is made by
+the `codex` process itself and is not subject to it.
+
 ## Profile archetypes — open vs. strict
 
 Two flags decide how much of the machine a worker can use, and the choice is
