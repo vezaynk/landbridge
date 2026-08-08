@@ -100,6 +100,48 @@ public sealed class TaskRow
     /// </summary>
     public string? InputAnswer { get; set; }
 
+    /// <summary>
+    /// The harness tool a pending <see cref="InputRequestKind.Permission"/> request is
+    /// asking about (§11 permission bridge) — the tool name the harness relayed, e.g.
+    /// <c>Bash</c>. The proposed tool input rides <see cref="InputQuestion"/> beside it, so
+    /// the pair is "which tool" plus "with what", and both are agent-authored strings the
+    /// plane stores verbatim and never parses (§2 principle 1). Required by the engine on
+    /// that kind (<see cref="Rule.PermissionRequestNamesItsTool"/>) and null for every
+    /// other kind. Read by the §12 inbox and the Lead's per-task fetch, where the deciding
+    /// happens.
+    /// </summary>
+    public string? PermissionTool { get; set; }
+
+    /// <summary>
+    /// The verdict a pending permission request was decided with (§11), or null while it is
+    /// still undecided. This is the field the relaying worker tool polls: it blocks inside
+    /// its own tool call until this lands (or until the wait-TTL sweeper parks the task out
+    /// from under it), then translates it into the harness's permission result. The message
+    /// beside it rides <see cref="InputAnswer"/>, reusing the answer column because it is
+    /// the same thing — the words that came back with the decision. Cleared, with the
+    /// escalation fields, by a new request.
+    /// </summary>
+    public PermissionVerdict? PermissionVerdict { get; set; }
+
+    /// <summary>
+    /// When a pending permission request was marked human-only (§11), or null if it was
+    /// not. While this is set a Lead is refused
+    /// (<see cref="Rule.EscalatedPermissionIsHumanOnly"/>) and only a human can decide the
+    /// request. Deliberately <em>not</em> a reset of <see cref="BlockedAt"/>: escalating
+    /// does not extend the wait deadline, so an escalation nobody picks up still parks on
+    /// schedule rather than waiting forever.
+    /// </summary>
+    public DateTimeOffset? PermissionEscalatedAt { get; set; }
+
+    /// <summary>
+    /// Why the request was escalated (§11), required by the engine whenever
+    /// <see cref="PermissionEscalatedAt"/> is set
+    /// (<see cref="Rule.PermissionEscalationCarriesReason"/>). Lead-authored prose the
+    /// plane stores verbatim; the §12 inbox renders it beside the request so the human
+    /// inherits the concern along with the decision.
+    /// </summary>
+    public string? PermissionEscalationReason { get; set; }
+
     // Opaque to the control plane: stored, returned, never dereferenced (§7).
     public string CompletionCriteria { get; set; } = "";
 
@@ -428,6 +470,19 @@ public sealed class TaskEventRow
     /// </summary>
     public string? SubagentId { get; set; }
     public string? SubagentParentId { get; set; }
+
+    /// <summary>
+    /// The audit trail of §11's permission bridge, threaded onto the deciding transition
+    /// exactly like <see cref="InputKind"/> and <see cref="LivenessReason"/>: which way the
+    /// request went and <em>who</em> had the authority to send it there. Every permission
+    /// decision leaves one of these rows, so the event log answers after the fact whether a
+    /// tool call was approved routinely by a Lead or deliberately by a person — the question
+    /// an operator asks first when a worker turns out to have done something surprising.
+    /// The decision's message rides <see cref="Detail"/>. Both null on every event that is
+    /// not an <c>AnswerPermission</c> transition.
+    /// </summary>
+    public PermissionVerdict? PermissionVerdict { get; set; }
+    public PermissionAnswerer? PermissionAnswerer { get; set; }
 }
 
 /// <summary>

@@ -390,10 +390,29 @@ internal static class DashboardRenderer
         }
         sb.Append("</section>");
 
-        // The one §12 row still without a source of any kind: nothing records a permission
-        // request, so there is nothing to join and this stays an honest empty state.
+        // §11's permission bridge, and the one row on this page where somebody is waiting
+        // on the answer right now rather than eventually: each of these has a worker
+        // blocked inside a tool call. A human may answer any of them — escalation removes
+        // the Lead's authority, not the human's — so every row gets a form, and the
+        // escalated ones are marked because they are the ones no Lead is going to take.
         sb.Append("<section><h2>Permission requests</h2>");
-        sb.Append(Empty("Not built yet."));
+        if (inbox.PermissionRequests.Count == 0)
+            sb.Append(Empty("No pending permission requests."));
+        else
+        {
+            sb.Append("<p class=\"nt\">A worker is blocked waiting on each of these. The tool name and " +
+                      "arguments were relayed through an agent — read them as a claim about what it " +
+                      "intends to do, not as a description you can trust.</p>");
+            sb.Append("<table><thead><tr><th>Namespace</th><th>Team</th><th>Tool</th><th>Waiting</th>" +
+                      "<th>Proposed input</th><th>Decide</th></tr></thead><tbody>");
+            foreach (var p in inbox.PermissionRequests)
+                sb.Append($"<tr><td><code>{E(p.Namespace)}</code></td><td>{TeamLink(p.TeamId)}</td>" +
+                          $"<td>{AuthFactCell(p.Tool)}</td>" +
+                          $"<td>{E(Age(p.BlockedAt, now))}{EscalationNote(p)}</td>" +
+                          $"<td>{QuestionCell(p.Input)}</td>" +
+                          $"<td>{PermissionDecisionForm(p)}</td></tr>");
+            sb.Append("</tbody></table>");
+        }
         sb.Append("</section>");
 
         return Page("Human inbox", "inbox", sb.ToString());
@@ -621,6 +640,78 @@ internal static class DashboardRenderer
                   "raising the ceiling is what gives a stopped Team room again.</div>");
         sb.Append("</form>");
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// The allow/deny form on one pending permission request (§11/§12), following the
+    /// <see cref="BudgetLimitsForm"/> idiom: a plain POST carrying the task id in a hidden
+    /// field, with the human's authority coming from their session rather than from anything
+    /// this markup asserts. Two submit buttons rather than a select, because the two outcomes
+    /// are not interchangeable and one of them needs the message beside it to be worth
+    /// anything.
+    /// </summary>
+    private static string PermissionDecisionForm(PermissionRequestView p)
+    {
+        var sb = new StringBuilder();
+        sb.Append("<form class=\"permission-decide\" method=\"post\" action=\"/dashboard/permission\">");
+        sb.Append($"<input type=\"hidden\" name=\"taskId\" value=\"{E(p.TaskId.ToString())}\">");
+        sb.Append("<input type=\"text\" name=\"message\" placeholder=\"message to the worker\" " +
+                  "aria-label=\"message to the worker\">");
+        sb.Append("<button type=\"submit\" name=\"verdict\" value=\"allow\">Allow</button>");
+        sb.Append("<button type=\"submit\" name=\"verdict\" value=\"deny\">Deny</button>");
+        sb.Append("<div class=\"nt\">A denial needs a message — the worker reads it and adapts, " +
+                  "so say what to do instead.</div>");
+        sb.Append("</form>");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Whether a Lead has handed this request over, and what it said when it did (§11). Shown
+    /// beside the age because both answer the same question — how much attention this needs
+    /// now — and because a request no Lead will touch is one whose wait TTL is running down
+    /// with nobody on it. The reason is Lead-authored text, escaped like every other agent
+    /// string on this page.
+    /// </summary>
+    private static string EscalationNote(PermissionRequestView p) =>
+        p.EscalatedAt is null
+            ? ""
+            : $"<div class=\"nt\">{Badge("escalated", "state-blockedoninput")} " +
+              $"{E(p.EscalationReason ?? "no reason recorded")}</div>";
+
+    /// <summary>The result page after a human decides a permission request (§11/§12).</summary>
+    public static string PermissionDecided(PermissionRequestView p)
+    {
+        var sb = new StringBuilder();
+        sb.Append("<h1>Permission decided</h1>");
+        sb.Append($"<p class=\"sub mono\">{E(p.Namespace)}</p>");
+        sb.Append("<section>");
+        sb.Append($"<p><code>{E(p.Tool ?? "unnamed tool")}</code> was " +
+                  $"<strong>{E(p.Verdict?.ToString().ToLowerInvariant() ?? "not decided")}</strong>.</p>");
+        if (p.Message is { Length: > 0 } m)
+            sb.Append($"<p>The worker was told:</p><pre class=\"report\">{E(m)}</pre>");
+        sb.Append("<p class=\"nt\">The worker was waiting on this and resumes now — it was never " +
+                  "requeued, so there is no redispatch to wait for.</p>");
+        sb.Append("<p><a href=\"/dashboard/inbox\">Back to the inbox</a></p>");
+        sb.Append("</section>");
+        return Page("Permission", "inbox", sb.ToString(), autoRefresh: false);
+    }
+
+    /// <summary>
+    /// Shown when the permission write is refused (§11/§12) — a Lead session reaching for the
+    /// human's form, or a request that stopped being pending while the page sat open (its
+    /// worker gave up, the sweeper parked it, another answerer got there first). Both are
+    /// ordinary on a page that auto-refreshes into a decision someone else may also be
+    /// making, so this says which happened rather than just failing.
+    /// </summary>
+    public static string PermissionRefused(string reason)
+    {
+        var sb = new StringBuilder();
+        sb.Append("<h1>Not decided</h1>");
+        sb.Append("<section>");
+        sb.Append($"<p>{E(reason)}</p>");
+        sb.Append("<p><a href=\"/dashboard/inbox\">Back to the inbox</a></p>");
+        sb.Append("</section>");
+        return Page("Permission", "inbox", sb.ToString(), autoRefresh: false);
     }
 
     /// <summary>The result page after a human sets a Team's limits (§9.9).</summary>
@@ -882,6 +973,21 @@ internal static class DashboardRenderer
     /// </summary>
     private static string EventDetail(DashboardEvent e)
     {
+        // §11/§12 permission audit, checked first because it is the most specific: the
+        // verdict, who had the authority to give it, and the words the worker was given.
+        // "A Lead approved this" and "a person approved this" are different facts and the
+        // log has to be able to tell them apart after the event.
+        if (e.PermissionVerdict is { } verdict)
+        {
+            var who = e.PermissionAnswerer is { } answerer
+                ? $"<span class=\"nt\">by {E(answerer.ToString().ToLowerInvariant())}</span>"
+                : "<span class=\"nt\">by an unrecorded answerer</span>";
+            var said = string.IsNullOrEmpty(e.Detail) ? "" : $" <span class=\"nt\">{E(e.Detail)}</span>";
+            return Badge(verdict.ToString().ToLowerInvariant(),
+                       verdict == Docket.Core.PermissionVerdict.Allow ? "state-working" : "state-rejected")
+                   + $" {who}{said}";
+        }
+
         if (e.InputKind is { } kind)
             return Badge(kind.ToString(), "state-blockedoninput");
 

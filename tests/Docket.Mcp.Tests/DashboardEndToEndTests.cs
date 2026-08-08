@@ -611,9 +611,12 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         Assert.DoesNotContain(staleTarget, body, StringComparison.Ordinal);
         var eventLog = await GetAuthedAsync(app, "/dashboard/events", ct);
         Assert.Contains(staleTarget, eventLog, StringComparison.Ordinal);
-        // Permission requests have no source at all — still an honest empty state.
+        // §11's permission bridge gave this section a source, so its empty state is now the
+        // ordinary kind — "nothing pending" rather than "not implemented". The populated
+        // section and its answer form are covered by PermissionBridgeDashboardTests.
         Assert.Contains("Permission requests", body, StringComparison.Ordinal);
-        Assert.Contains("Not built yet", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("Not built yet", body, StringComparison.Ordinal);
+        Assert.Contains("No pending permission requests", body, StringComparison.Ordinal);
 
         // JSON twin carries the same items, question text included.
         var json = await GetAuthedAsync(app, "/dashboard/inbox?format=json", ct);

@@ -2,6 +2,7 @@ using Docket.Contracts;
 using Docket.ControlPlane.Tests;
 using Docket.Core;
 using Docket.Runner;
+using Microsoft.EntityFrameworkCore;
 
 namespace Docket.MultiMachine.Tests;
 
@@ -566,6 +567,97 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         Assert.Equal("B", rig.MachineRanOn(consumer));
     }
 
+    /// <summary>
+    /// §11's permission bridge against a real <c>claude -p</c> worker running <b>without</b>
+    /// <c>bypassPermissions</c> — the fact the whole feature exists for, and the only one that
+    /// can prove it, because the request shape and the response shape are the harness's rather
+    /// than ours.
+    ///
+    /// <para>The worker is given a task it cannot finish with the tools it was allowed. Claude
+    /// Code's own permission machinery therefore calls <c>request_permission</c>, which blocks
+    /// the task <c>blocked_on_input</c> with the tool name and proposed arguments on the row —
+    /// while the asking process stays alive inside that call, which is what distinguishes this
+    /// wait from every other one in Docket. A Lead verdict then resumes it in place and the
+    /// worker finishes. Nothing here asserts on the model's prose: the assertions are the row's
+    /// recorded tool name, the state transitions, and the fact that the command's output could
+    /// only have been produced by actually running it.</para>
+    /// </summary>
+    [SkippableFact]
+    public async Task Real_claude_without_bypass_routes_its_permission_prompt_through_docket_and_finishes()
+    {
+        var claudeBin = RequireRealClaude();
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(15));
+        var ct = cts.Token;
+
+        var token = NewToken();
+        await using var rig = new FleetRig(
+            pg, spawnArgv: PermissionBridgeSpawn(claudeBin), terminalEvents: true);
+        await rig.StartAsync(ct);
+        await rig.AddMachineAsync("A");
+
+        var task = await rig.CreateTaskAsync(ShellThenReportDescription(token), ct);
+        await rig.DispatchToAsync("A", ct);
+
+        // The bridge fires: the harness could not run Bash on its own, so it asked. This is
+        // Claude Code calling our MCP tool, with the tool name and arguments it chose.
+        (string? Tool, string? Input)? request = null;
+        Assert.True(
+            await rig.DispatchUntilAsync(
+                task, "A",
+                async () => (request = await rig.PendingPermissionAsync(task, ct)) is not null,
+                MaxAttempts, PerLegBudget, ct),
+            "the real claude worker never routed a permission prompt through Docket.\n"
+            + await rig.RealWorkerDiagnosticsAsync(task, ct));
+
+        Assert.Equal("Bash", request!.Value.Tool);
+        // The proposed arguments are relayed verbatim, which is what makes them worth showing a
+        // person: the command an approver would be approving is right there.
+        Assert.Contains(token, request.Value.Input ?? "");
+        // Still the incumbent: a permission wait does not requeue, so there is no successor and
+        // no park record.
+        Assert.Equal(TaskState.BlockedOnInput, await rig.StateAsync(task, ct));
+        Assert.Null((await rig.ParkAsync(task, ct)).Machine);
+
+        // The Lead's verdict, and then the worker carries on inside the very tool call it
+        // blocked in. Allowing in a loop because a haiku worker may need more than one tool it
+        // was not pre-approved for; every one of them is a real trip through the bridge.
+        var allowed = 0;
+        var finished = await rig.DispatchUntilAsync(
+            task, "A",
+            async () =>
+            {
+                if (await rig.StateAsync(task, ct) == TaskState.Verifying) return true;
+                if (await rig.PendingPermissionAsync(task, ct) is not null)
+                {
+                    await rig.AnswerPermissionAsync(task, "allow", null, ct);
+                    allowed++;
+                }
+                return await rig.StateAsync(task, ct) == TaskState.Verifying;
+            },
+            MaxAttempts, PerLegBudget, ct);
+
+        Assert.True(
+            finished,
+            $"the worker never completed after {allowed} permission approval(s).\n"
+            + await rig.RealWorkerDiagnosticsAsync(task, ct));
+        Assert.True(allowed >= 1, "no permission request was ever approved");
+
+        // The output could only exist if the approved command actually ran — the approval is
+        // load-bearing, not decorative.
+        Assert.Contains(token, await rig.ResultReferenceAsync(task, ct) ?? "");
+        Assert.Equal("A", rig.MachineRanOn(task));
+
+        // The audit trail a person would read afterwards: the ask, and the Lead's own approval.
+        await using var db = pg.NewContext();
+        var events = await db.TaskEvents.AsNoTracking()
+            .Where(e => e.TaskId == task.Value).OrderBy(e => e.Seq).ToListAsync(ct);
+        Assert.Contains(events, e => e.Kind == nameof(RequestInput)
+                                     && e.InputKind == InputRequestKind.Permission);
+        Assert.Contains(events, e => e.Kind == nameof(AnswerPermission)
+                                     && e.PermissionVerdict == PermissionVerdict.Allow
+                                     && e.PermissionAnswerer == PermissionAnswerer.Lead);
+    }
+
     // ── Recipe + descriptions ───────────────────────────────────────────────────
 
     /// <summary>
@@ -673,6 +765,68 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         Then stop and end your turn. Do NOT call report_result on this turn. Do not create or
         edit files.
         """;
+
+    // ── §11 permission-bridge prompt and description ───────────────────────────
+
+    /// <summary>
+    /// The docket tools a permission-bridge worker may call. Deliberately <b>no</b>
+    /// <c>Bash</c> and no <c>request_permission</c>: Bash's absence is what makes the harness
+    /// prompt, and the relaying tool is Claude Code's to call, never the agent's.
+    /// </summary>
+    private const string PermissionTools =
+        "mcp__docket__get_task,mcp__docket__report_result";
+
+    /// <summary>
+    /// The permission-bridge worker prompt. Front-loads <c>get_task</c> like every other
+    /// profile here; the shell step it will be stopped on lives in the description.
+    /// </summary>
+    private const string PermissionWorkerPrompt =
+        "You are a Docket worker agent. Your FIRST action must be to call the docket get_task " +
+        "tool to read your assignment, then do exactly what its description says. If a tool call " +
+        "is refused, read the refusal and follow it — do not retry the same call.";
+
+    /// <summary>
+    /// A task that cannot be finished without a tool the allow-list withholds, so the harness
+    /// must prompt. Reporting the command's own output is what makes the approval load-bearing:
+    /// a worker that was never allowed to run it has nothing to report.
+    /// </summary>
+    private static string ShellThenReportDescription(string token) =>
+        $"""
+         Do these two steps in order:
+
+         1. Use the Bash tool to run exactly: /bin/echo {token}
+         2. Call report_result exactly once, with resultReference set to the exact text the
+            command printed.
+
+         Do not create or edit files. Do not do anything else.
+         """;
+
+    /// <summary>
+    /// The permission-bridge spawn argv (§11). Two differences from every other recipe here,
+    /// and they are the whole point:
+    /// <list type="bullet">
+    /// <item><c>--permission-prompt-tool mcp__docket__request_permission</c> <b>instead of</b>
+    /// <c>--permission-mode bypassPermissions</c> — the approval dialog routes to Docket rather
+    /// than being skipped.</item>
+    /// <item><c>--setting-sources ''</c>, so the run does not inherit the operator's own
+    /// <c>settings.json</c> allow rules. Without it this fact is machine-dependent: on a
+    /// developer box that has already allowed <c>Bash(/bin/echo:*)</c> nothing ever prompts and
+    /// the bridge is never exercised.</item>
+    /// </list>
+    /// </summary>
+    private static string[] PermissionBridgeSpawn(string claudeBin) =>
+    [
+        claudeBin, "-p", PermissionWorkerPrompt,
+        "--mcp-config", "{mcp_config}",
+        "--strict-mcp-config",
+        "--allowedTools", PermissionTools,
+        "--permission-prompt-tool", "mcp__docket__request_permission",
+        "--setting-sources", "",
+        "--output-format", "stream-json",
+        "--verbose",
+        "--model", "haiku",
+        "--max-turns", "10",
+    ];
 
     // ── §10 process scenario prompts and descriptions ──────────────────────────
 
