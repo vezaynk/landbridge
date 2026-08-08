@@ -217,13 +217,22 @@ declared profiles and load). Nothing in the vocabulary is domain-specific.
 
 A signal cannot carry a disposition. Claude Code's SIGTERM behavior is
 abort-and-exit, which would silently turn `preserve` into `kill`. So where the
-harness supports stdin message injection (`--input-format stream-json`),
-`docketd` delivers `stop` as an *injected turn* — the agent reads the disposition,
-winds down, persists, and exits — and reserves signals for TTL expiry and `kill`.
-A profile's `stop.mode` (`message` | `signal`) declares which delivery it
-supports; a signal-only profile cannot honour `preserve`, and the enrollment
-conformance run is meant to make that visible before it matters. `ttl == 0` means
-kill immediately.
+harness reads turns off a held-open stdin, `docketd` delivers `stop` as an
+*injected turn* — the agent reads the disposition, winds down, persists, and exits
+— and reserves signals for TTL expiry and `kill`. A profile's `stop.mode`
+(`message` | `signal`) declares which delivery it supports. `ttl == 0` means kill
+immediately.
+
+**`claude -p` is not one of those harnesses, as built.** It never reads stdin after
+startup, and the flag that looks like it would enable this (`--input-format
+stream-json`) makes it ignore its argv prompt and hang instead. So the reference
+profiles declare `signal`, and a stop there is the granted TTL then a tree-kill.
+`preserve` still holds — the recorded session ref outlives the kill, so the
+transcript is resumable — but by the plane's record rather than the agent's
+cooperation. Correspondingly, `docketd`'s ack reports only what it did (a turn was
+*written*; a deadline was *armed*): whether a harness consumed a written line is
+not observable without harness-specific knowledge, which the runner does not carry.
+Spec §10's as-built note has the two CLI facts.
 
 ## Restart equals reboot
 

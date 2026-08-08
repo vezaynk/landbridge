@@ -171,7 +171,8 @@ public static class Program
         var daemon = new RunnerDaemon(
             machineId, config, supervisor, backPressure, channel, ring, reaper, clock,
             transcripts: new TranscriptReader(transcripts),
-            services: services);
+            services: services,
+            log: Console.WriteLine);
         await daemon.StartAsync();
         // Started AFTER the daemon's restart sweep, which reaps the previous generation by
         // machine id — starting first would have this generation kill what it just spawned.

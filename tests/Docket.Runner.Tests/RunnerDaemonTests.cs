@@ -32,6 +32,10 @@ public class RunnerDaemonTests
         public required FakeLoadReader Load { get; init; }
         public required FakeTimeProvider Clock { get; init; }
 
+        /// <summary>What the daemon wrote to this machine's stdout — where an operator reads
+        /// what a <c>stop</c> actually did, since no event carries that (§10).</summary>
+        public required List<string> Logged { get; init; }
+
         /// <summary>The channel as the in-memory recorder (every test but the gated-send one).</summary>
         public InMemoryControlPlaneChannel Recorded => (InMemoryControlPlaneChannel)Channel;
     }
@@ -48,14 +52,16 @@ public class RunnerDaemonTests
         var load = new FakeLoadReader();
         var clock = new FakeTimeProvider();
         var cfg = config ?? Config();
+        var logged = new List<string>();
         var daemon = new RunnerDaemon(
             "machine-1", cfg, supervisor,
             new BackPressureMonitor(load, cfg.Machine.BackPressure),
-            channel, ring, reaper, clock, transcripts: transcripts, services: services);
+            channel, ring, reaper, clock, transcripts: transcripts, services: services,
+            log: logged.Add);
         return new Harness
         {
             Daemon = daemon, Supervisor = supervisor, Reaper = reaper,
-            Channel = channel, Ring = ring, Load = load, Clock = clock,
+            Channel = channel, Ring = ring, Load = load, Clock = clock, Logged = logged,
         };
     }
 
@@ -335,6 +341,48 @@ public class RunnerDaemonTests
         await h.Daemon.ShutdownAsync();
     }
 
+    /// <summary>
+    /// What an operator is told a <c>stop</c> did (#103). This machine's stdout is the only place
+    /// the delivery detail surfaces at all — the frozen event vocabulary has no field for it, and
+    /// the <see cref="CommandOutcome"/> is dropped by the receive loop — so the wording is the
+    /// whole operator-visible contract, and it must not overclaim. The written-turn line says
+    /// outright that consumption was not confirmed; the deadline line does not mention a message
+    /// at all. Previously both paths printed <c>"stop delivered as …"</c>, which read as delivery
+    /// to the agent on either.
+    /// </summary>
+    [Fact]
+    public async Task The_stop_the_operator_reads_names_what_this_machine_did_and_never_claims_the_agent_read_it()
+    {
+        var h = Build();
+        var task = TaskId.New();
+        var ttl = TimeSpan.FromSeconds(45);
+
+        h.Supervisor.StopAckOverride = new StopAck(true, StopDelivery.MessageWritten);
+        var written = Assert.IsType<CommandOutcome.Acknowledged>(
+            await h.Daemon.HandleAsync(new StopCommand(task, ttl, StopDisposition.Preserve)));
+        Assert.Contains("written", written.Detail, StringComparison.Ordinal);
+        Assert.Contains("not confirmed read", written.Detail, StringComparison.Ordinal);
+        Assert.Contains("ttl=45s", written.Detail, StringComparison.Ordinal);
+
+        h.Supervisor.StopAckOverride = new StopAck(true, StopDelivery.DeadlineArmed);
+        var armed = Assert.IsType<CommandOutcome.Acknowledged>(
+            await h.Daemon.HandleAsync(new StopCommand(task, ttl, StopDisposition.Preserve)));
+        Assert.Contains("no wind-down turn written", armed.Detail, StringComparison.Ordinal);
+        Assert.Contains("hard kill armed at ttl=45s", armed.Detail, StringComparison.Ordinal);
+
+        // A moot stop is said to be moot rather than acknowledged as if it landed.
+        h.Supervisor.StopAckOverride = new StopAck(false, StopDelivery.NotRunning);
+        var moot = Assert.IsType<CommandOutcome.Acknowledged>(
+            await h.Daemon.HandleAsync(new StopCommand(task, ttl, StopDisposition.Preserve)));
+        Assert.Contains("not held by this machine", moot.Detail, StringComparison.Ordinal);
+
+        // Every one of them reached the operator's stdout, keyed by task.
+        Assert.Equal(3, h.Logged.Count(l => l.Contains($"stop {task}", StringComparison.Ordinal)));
+        Assert.DoesNotContain(h.Logged, l => l.Contains("delivered as", StringComparison.Ordinal));
+
+        await h.Daemon.ShutdownAsync();
+    }
+
     [Fact]
     public async Task Shutdown_kills_everything_it_started()
     {
@@ -500,10 +548,15 @@ internal sealed class FakeProcessSupervisor : IProcessSupervisor
         return dispatch.Task;
     }
 
+    /// <summary>Forces the ack a stop returns, so a test can drive the daemon's
+    /// operator-facing wording down each path. Null keeps the default below.</summary>
+    public StopAck? StopAckOverride { get; set; }
+
     public Task<StopAck> StopAsync(TaskId task, TimeSpan ttl, StopDisposition disposition, string? reason, CancellationToken ct)
     {
         Stopped.Add(task);
-        return Task.FromResult(new StopAck(true, ttl <= TimeSpan.Zero ? StopDelivery.ImmediateKill : StopDelivery.Message));
+        return Task.FromResult(StopAckOverride
+            ?? new StopAck(true, ttl <= TimeSpan.Zero ? StopDelivery.ImmediateKill : StopDelivery.MessageWritten));
     }
 
     public bool Kill(TaskId task)
