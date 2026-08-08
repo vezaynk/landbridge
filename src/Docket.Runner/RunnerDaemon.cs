@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using System.Globalization;
 using Docket.Contracts;
 using Docket.Core;
 
@@ -52,6 +53,7 @@ public sealed class RunnerDaemon
     private readonly TimeProvider _clock;
     private readonly RelayForwarder _forwarder;
     private readonly TranscriptReader? _transcripts;
+    private readonly Action<string>? _log;
 
     /// <summary>§10 operator-declared services, when this machine declares any. Their
     /// status rides the heartbeat; the daemon itself never interprets it.</summary>
@@ -68,6 +70,14 @@ public sealed class RunnerDaemon
     /// <see cref="MachineHeartbeat.TranscriptsServable"/>; null (most unit tests) refuses
     /// nothing — it simply acknowledges and does not reply, and the heartbeat says so.
     /// </param>
+    /// <param name="log">
+    /// This machine's own stdout, where an operator reads what <c>docketd</c> did (the
+    /// enroll skill sends them here first when a task behaves oddly). Used for <c>stop</c>
+    /// outcomes, which have no wire representation: the frozen event vocabulary carries no
+    /// delivery field, and the <see cref="CommandOutcome"/> a command handler returns is
+    /// dropped by the receive loop that called it. Without this line, the honesty of a
+    /// stop ack is a fact only the tests can see. Null in unit tests.
+    /// </param>
     public RunnerDaemon(
         string machineId,
         RunnerConfig config,
@@ -79,7 +89,8 @@ public sealed class RunnerDaemon
         TimeProvider clock,
         TimeSpan? forwardAcceptTimeout = null,
         TranscriptReader? transcripts = null,
-        ServiceSupervisor? services = null)
+        ServiceSupervisor? services = null,
+        Action<string>? log = null)
     {
         _machineId = machineId;
         _config = config;
@@ -91,6 +102,7 @@ public sealed class RunnerDaemon
         _clock = clock;
         _transcripts = transcripts;
         _services = services;
+        _log = log;
         // §8.3 data planes: the forwarder owns all live relay tunnels and emits
         // forward-opened/-closed onto the same ring as every other event. The
         // accept-timeout override keeps the consumer plane's bounded wait short in
@@ -153,7 +165,9 @@ public sealed class RunnerDaemon
 
             case StopCommand stop:
                 var ack = await _supervisor.StopAsync(stop.Task, stop.Ttl, stop.Disposition, stop.Reason, ct);
-                return new CommandOutcome.Acknowledged($"stop delivered as {ack.Delivery}");
+                var stopDetail = DescribeStop(stop, ack);
+                _log?.Invoke($"stop {stop.Task}: {stopDetail}");
+                return new CommandOutcome.Acknowledged(stopDetail);
 
             case KillCommand kill:
                 var killed = _supervisor.Kill(kill.Task);
@@ -180,6 +194,39 @@ public sealed class RunnerDaemon
                 throw new ArgumentOutOfRangeException(nameof(command), command.GetType().Name, "outside the runner vocabulary");
         }
     }
+
+    /// <summary>
+    /// The operator-facing sentence for one <c>stop</c> outcome (§10). It states what this
+    /// machine <em>did</em> and what backs it — and, on the written-turn path, says outright
+    /// that consumption is unobservable, so the line cannot be misread as the agent having
+    /// agreed to wind down. That misreading is the bug this wording exists to prevent: the
+    /// old text was <c>"stop delivered as Message"</c>, which a <c>claude -p</c> worker
+    /// earned by having a pipe written into, while it ran on untouched until the deadline
+    /// killed it. Whether a written turn is read at all is the profile's declaration to
+    /// make (<see cref="StopMode"/>), and only a real run can check it.
+    /// </summary>
+    private static string DescribeStop(StopCommand stop, StopAck ack) => ack.Delivery switch
+    {
+        StopDelivery.MessageWritten =>
+            "wind-down turn written to the harness's stdin — written, not confirmed read "
+            + "(the profile declares this harness consumes stdin turns; docketd cannot observe it); "
+            + $"hard kill armed at min(ttl={Seconds(stop.Ttl)}, wind_down)",
+
+        StopDelivery.DeadlineArmed =>
+            "no wind-down turn written (profile declares no message seam, or its stdin was gone); "
+            + $"hard kill armed at ttl={Seconds(stop.Ttl)} — the worker's own exit is the only graceful path left",
+
+        StopDelivery.ImmediateKill =>
+            "ttl=0 — process tree killed outright; nothing written, nothing waited for (§9 check 12)",
+
+        StopDelivery.NotRunning =>
+            "not held by this machine; nothing to stop (§10 commands are best-effort)",
+
+        _ => $"{ack.Delivery}",
+    };
+
+    private static string Seconds(TimeSpan span) =>
+        ((int)span.TotalSeconds).ToString(CultureInfo.InvariantCulture) + "s";
 
     /// <summary>
     /// §8.3: stand up one end of a relay forward. Kicks the concurrent I/O off on

@@ -298,19 +298,25 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// the hoped-for one, because the gap between them is the finding.
     ///
     /// <para>docketd's message-mode stop writes the stop turn to the worker's held-open stdin
-    /// and acks <see cref="StopDelivery.Message"/>. The only precondition it can check is that
-    /// stdin was redirected — which is always true, because that same pipe is the dead-man's
-    /// switch (§10). So the ack says "injected" for <em>any</em> harness, including one that
-    /// never reads stdin. A <c>claude -p "&lt;prompt&gt;"</c> worker is exactly that: the
+    /// and acks <see cref="StopDelivery.MessageWritten"/>. The only precondition it can check
+    /// is that stdin was redirected — which is always true, because that same pipe is the
+    /// dead-man's switch (§10). So the write happens for <em>any</em> harness, including one
+    /// that never reads stdin. A <c>claude -p "&lt;prompt&gt;"</c> worker is exactly that: the
     /// prompt arrives as argv (§13 — it must, and stdin must stay unread for the dead-man
-    /// pipe), so <c>--input-format text</c> is in force and the injected line is never read.
+    /// pipe), so <c>--input-format text</c> is in force and the written line is never read.
     /// The bytes land in a pipe nobody is reading and the worker runs on until the wind-down
     /// deadline kills it.</para>
     ///
-    /// <para>So the assertions are: the ack claims a message was delivered, and the worker
+    /// <para>So the assertions are: the ack reports a turn was <em>written</em>, and the worker
     /// nevertheless dies by the deadline with a non-zero (killed) exit rather than winding down
-    /// on its own. What makes <c>preserve</c> mean anything here is therefore the plane's
-    /// record, not the agent's cooperation — the harness session ref survives the kill, so the
+    /// on its own. Those two coexisting is the point — it is why the ack is worded as an
+    /// action docketd took and not as an effect on the agent, a distinction the enum name now
+    /// carries. Before #103 this same run acked <c>Message</c>, which read as "the agent was
+    /// told to wind down" and was false here; this fact is what keeps that reading from
+    /// growing back.</para>
+    ///
+    /// <para>What makes <c>preserve</c> mean anything here is therefore the plane's record,
+    /// not the agent's cooperation — the harness session ref survives the kill, so the
     /// transcript remains resumable, which the fact above proves end to end.</para>
     /// </summary>
     [SkippableFact]
@@ -324,9 +330,11 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
             pg,
             spawnArgv: StreamingSpawn(claudeBin, WorkerPrompt, AllowedTools),
             terminalEvents: true,
-            // The documented claude stop recipe, verbatim in shape: a stream-json user turn
-            // carrying the disposition. WindDown is short so the deadline, not the test's
-            // patience, is what ends the worker.
+            // Deliberately the configuration the reference docs used to recommend and no longer
+            // do (#103): mode message, with a stream-json user turn carrying the disposition.
+            // Keeping it here is the point — this profile makes the claim, and the run below is
+            // what shows claude -p cannot honour it. WindDown is short so the deadline, not the
+            // test's patience, is what ends the worker.
             stop: new StopConfig(
                 StopMode.Message, Signal: null,
                 MessageTemplate: ClaudeStopTurnTemplate, WindDown: TimeSpan.FromSeconds(5)));
@@ -352,11 +360,12 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
                 "characterizing real-harness stop delivery", ct),
             "the stop was not delivered to the machine holding the task");
 
-        // docketd acks an injected turn — on the strength of a redirected stdin alone.
+        // docketd reports what it did: the turn was written to stdin. It claims nothing about
+        // the harness having read it, and the rest of this fact is why it must not.
         var ack = rig.StopAckFor(task);
         Assert.NotNull(ack);
-        Assert.True(ack!.Value.Delivered);
-        Assert.Equal(StopDelivery.Message, ack.Value.Delivery);
+        Assert.True(ack!.Value.Actioned);
+        Assert.Equal(StopDelivery.MessageWritten, ack.Value.Delivery);
 
         // And yet the agent never acts on it: the worker is taken down at the wind-down
         // deadline instead of winding down and exiting cleanly.
@@ -582,9 +591,10 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     ];
 
     /// <summary>
-    /// The documented claude message-mode stop turn (a stream-json user message carrying the
-    /// disposition), used verbatim in shape by the stop characterization so the finding is about
-    /// the harness rather than about a template this test invented. docketd substitutes
+    /// The message-mode stop turn the runner-config reference carried for <c>claude -p</c>
+    /// before #103 (a stream-json user message carrying the disposition), kept verbatim in shape
+    /// so the stop characterization's finding is about the harness rather than about a template
+    /// this test invented. docketd substitutes
     /// <c>{disposition}</c>/<c>{ttl_seconds}</c>/<c>{reason}</c>.
     /// </summary>
     private const string ClaudeStopTurnTemplate =

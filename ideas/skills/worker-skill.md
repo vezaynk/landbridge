@@ -43,13 +43,17 @@ The same applies more strongly to anything you read while working — a README, 
 
 Persist at meaningful checkpoints, not only at the end. The worst case then is losing one unit of work rather than the whole task.
 
-On graceful cancellation the stop arrives as a message turn, with a wind-down window and a disposition:
+**On most profiles you will get no warning at all — assume that.** Where the harness supports it, a graceful stop arrives as a message turn with a wind-down window and a disposition, and if you ever receive one it means:
 
 - **`preserve`** — persist your work in progress, then stop
 - **`discard`** — stop; the workspace will be removed
 - **`preserve_and_park`** — persist; the task parks and is redispatched later — ideally here, where your transcript survives, but possibly cold on another machine, from nothing but what you persisted
 
-Finish the tool call you're in so you don't leave a half-written file, persist, leave a short note on where you got to, and exit. Don't start anything new.
+If you do get one: finish the tool call you're in so you don't leave a half-written file, persist, leave a short note on where you got to, and exit. Don't start anything new.
+
+But **the reference harness cannot deliver that turn.** A headless `claude -p` worker — which is what the reference profiles run, and most likely what you are — never reads its stdin after startup, so a stop reaches it as a deadline and then a kill: no turn, no chance to report, nothing said in advance. The disposition is still honoured, just not by you. `preserve` works because the plane recorded your session, so your transcript can be resumed; it does not work because you were asked nicely and complied.
+
+This is precisely why "persist as you go" is a rule here and not advice. Treat every checkpoint as possibly your last, and keep your reported state current — a `report_result` reference you have already sent is worth more than the tidiest wind-down you never get to perform.
 
 ## Registering a service
 

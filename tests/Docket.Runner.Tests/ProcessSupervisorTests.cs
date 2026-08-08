@@ -61,6 +61,15 @@ public sealed class ProcessSupervisorTests : IDisposable
         Assert.Contains(events, e => e is StartedEvent s && s.Task == task);
     }
 
+    /// <summary>
+    /// The message seam itself still works, end to end, against a harness that genuinely reads
+    /// stdin turns: the written turn is consumed, the agent winds down, and it exits on its own
+    /// before any deadline. This is the fact that keeps #103's honesty work from being mistaken
+    /// for "message delivery is broken" — it is not; what was broken was docketd claiming the
+    /// agent read the turn when only the write is observable. Here consumption <em>is</em>
+    /// observable, but note where from: the harness's own marker file and its clean exit code,
+    /// never the ack.
+    /// </summary>
     [Fact]
     public async Task Stop_message_mode_reaches_the_agent_as_a_turn_and_it_winds_down_without_being_killed()
     {
@@ -77,9 +86,10 @@ public sealed class ProcessSupervisorTests : IDisposable
 
         var ack = await supervisor.StopAsync(task, TimeSpan.FromSeconds(30), StopDisposition.Preserve, "wind down", CancellationToken.None);
 
-        // §10: stop was delivered as an injected message turn, not a signal.
-        Assert.True(ack.Delivered);
-        Assert.Equal(StopDelivery.Message, ack.Delivery);
+        // §10: docketd wrote the wind-down turn to the harness's stdin. Written is all the ack
+        // asserts — the wind-down below is what shows this harness also read it.
+        Assert.True(ack.Actioned);
+        Assert.Equal(StopDelivery.MessageWritten, ack.Delivery);
 
         var stopped = Path.Combine(_workRoot, task.ToString(), "stopped");
         Assert.True(await TestKit.WaitUntilAsync(() => File.Exists(stopped), TimeSpan.FromSeconds(15)),
@@ -110,7 +120,7 @@ public sealed class ProcessSupervisorTests : IDisposable
         Assert.True(await TestKit.WaitUntilAsync(() => supervised.ProcessAlive, TimeSpan.FromSeconds(5)));
 
         var ack = await supervisor.StopAsync(task, TimeSpan.FromSeconds(120), StopDisposition.Preserve, null, CancellationToken.None);
-        Assert.Equal(StopDelivery.Message, ack.Delivery);
+        Assert.Equal(StopDelivery.MessageWritten, ack.Delivery);
         Assert.True(supervised.ProcessAlive); // inside the wind-down window, not yet killed
 
         _clock.Advance(TimeSpan.FromSeconds(30)); // wind-down deadline (< TTL) → hard kill
@@ -158,7 +168,7 @@ public sealed class ProcessSupervisorTests : IDisposable
         Assert.True(await TestKit.WaitUntilAsync(() => supervised.ProcessAlive, TimeSpan.FromSeconds(5)));
 
         var ack = await supervisor.StopAsync(task, TimeSpan.FromSeconds(30), StopDisposition.Preserve, null, CancellationToken.None);
-        Assert.Equal(StopDelivery.Signal, ack.Delivery);
+        Assert.Equal(StopDelivery.DeadlineArmed, ack.Delivery);
         Assert.True(supervised.ProcessAlive); // not killed immediately — the ttl grace holds
 
         _clock.Advance(TimeSpan.FromSeconds(10)); // wind_down would fire here, but must NOT apply
@@ -166,6 +176,93 @@ public sealed class ProcessSupervisorTests : IDisposable
 
         _clock.Advance(TimeSpan.FromSeconds(20)); // reaches the ttl deadline → hard kill
         Assert.True(await TestKit.WaitUntilAsync(() => !supervised.ProcessAlive, TimeSpan.FromSeconds(10)));
+    }
+
+    /// <summary>
+    /// The honesty property behind #103, stated as an equality: two message-mode profiles that
+    /// differ only in whether their harness reads stdin produce the <b>same</b> ack, while their
+    /// real outcomes diverge completely — one winds down and exits 0, the other has to be killed
+    /// at the deadline. So the ack cannot mean "the agent was told to wind down"; it can only
+    /// mean what it now says, that a turn was written. An ack that claimed consumption would
+    /// have to tell these two apart, and nothing available to docketd can.
+    /// <para>This is the unit-scale twin of the real-<c>claude</c> fact in
+    /// <c>Docket.MultiMachine.Tests</c>, which is the same shape with the ignoring harness being
+    /// the actual CLI.</para>
+    /// </summary>
+    [Fact]
+    public async Task The_same_ack_covers_a_harness_that_reads_the_turn_and_one_that_never_will()
+    {
+        var reader = TaskId.New();
+        var deaf = TaskId.New();
+        var supervisor = Supervisor();
+
+        // "stdin-stop" reads stdin and winds down on a stop line; "run" holds stdin open and
+        // never reads it — the dead-man pipe only. Both profiles declare mode: message.
+        supervisor.Spawn(TestKit.Dispatch(reader), TestKit.Profile("stdin-stop", StopMode.Message, name: "reads"), "m");
+        supervisor.Spawn(TestKit.Dispatch(deaf), TestKit.Profile("run", StopMode.Message, name: "deaf"), "m");
+        supervisor.TryGet(reader, out var readerTask);
+        supervisor.TryGet(deaf, out var deafTask);
+
+        Assert.True(await TestKit.WaitUntilAsync(
+            () => File.Exists(Path.Combine(_workRoot, reader.ToString(), "started"))
+                && File.Exists(Path.Combine(_workRoot, deaf.ToString(), "started")),
+            TimeSpan.FromSeconds(15)));
+
+        var ttl = TimeSpan.FromSeconds(120);
+        var readerAck = await supervisor.StopAsync(reader, ttl, StopDisposition.Preserve, "wind down", CancellationToken.None);
+        var deafAck = await supervisor.StopAsync(deaf, ttl, StopDisposition.Preserve, "wind down", CancellationToken.None);
+
+        // Indistinguishable — which is the whole finding.
+        Assert.Equal(StopDelivery.MessageWritten, readerAck.Delivery);
+        Assert.Equal(readerAck, deafAck);
+
+        // And yet: one honoured the turn on its own, the other is still running and will only
+        // stop because the wind-down deadline kills it.
+        Assert.True(await TestKit.WaitUntilAsync(
+            () => File.Exists(Path.Combine(_workRoot, reader.ToString(), "stopped")), TimeSpan.FromSeconds(15)),
+            "the stdin-reading harness did not wind down from the written turn");
+        Assert.True(await TestKit.WaitUntilAsync(() => !readerTask.ProcessAlive, TimeSpan.FromSeconds(15)));
+        Assert.Equal(0, readerTask.Process.ExitCode); // voluntary, never killed
+
+        Assert.True(deafTask.ProcessAlive);
+        _clock.Advance(TimeSpan.FromSeconds(30)); // wind_down (< ttl) → the backstop kill
+        Assert.True(await TestKit.WaitUntilAsync(() => !deafTask.ProcessAlive, TimeSpan.FromSeconds(10)));
+        Assert.False(File.Exists(Path.Combine(_workRoot, deaf.ToString(), "stopped")),
+            "the harness that never reads stdin cannot have wound down");
+    }
+
+    /// <summary>
+    /// The other half of the gate: a profile that does <em>not</em> declare a message seam has
+    /// nothing written to it, and the ack says so — even though this particular harness would
+    /// have honoured a turn had it received one. The declaration, not the harness's actual
+    /// appetite for stdin, is what docketd acts on, because the declaration is the only thing
+    /// it can read (§10 — everything harness-specific is data). That is also why a reference
+    /// profile declaring <c>message</c> for a harness that cannot honour it was a real bug and
+    /// not a cosmetic one.
+    /// </summary>
+    [Fact]
+    public async Task A_profile_declaring_no_message_seam_has_nothing_written_even_to_a_harness_that_would_read_it()
+    {
+        var task = TaskId.New();
+        var supervisor = Supervisor();
+        supervisor.Spawn(TestKit.Dispatch(task), TestKit.Profile("stdin-stop", StopMode.Signal), "m");
+        supervisor.TryGet(task, out var supervised);
+
+        var marker = Path.Combine(_workRoot, task.ToString(), "started");
+        Assert.True(await TestKit.WaitUntilAsync(() => File.Exists(marker), TimeSpan.FromSeconds(15)));
+
+        var ack = await supervisor.StopAsync(task, TimeSpan.FromSeconds(30), StopDisposition.Preserve, null, CancellationToken.None);
+
+        Assert.True(ack.Actioned);
+        Assert.Equal(StopDelivery.DeadlineArmed, ack.Delivery);
+
+        // Nothing was written, so the harness — which reads stdin and would have wound down —
+        // stays mid-task until the ttl deadline takes it.
+        Assert.True(supervised.ProcessAlive);
+        _clock.Advance(TimeSpan.FromSeconds(30));
+        Assert.True(await TestKit.WaitUntilAsync(() => !supervised.ProcessAlive, TimeSpan.FromSeconds(10)));
+        Assert.False(File.Exists(Path.Combine(_workRoot, task.ToString(), "stopped")),
+            "a signal-mode profile must have no turn written for its harness to read");
     }
 
     [Fact]

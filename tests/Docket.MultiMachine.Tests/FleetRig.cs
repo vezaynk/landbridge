@@ -584,11 +584,12 @@ internal sealed class FleetRig(
         else
             sb.AppendLine("  worker: no spawn/exit observed on the ring (ring draining is real-worker-mode only)");
 
-        // How the last stop was delivered, when one was sent: an injected turn the agent
-        // could act on, or only a kill deadline. Without this a stop timeout cannot be told
-        // apart from a stop the harness never read.
+        // What the machine did with the last stop, when one was sent: wrote a wind-down turn
+        // to the harness's stdin, or only armed a deadline. Neither says the harness read
+        // anything — that is unobservable (see StopDelivery) — but knowing which action was
+        // taken is what tells a stop timeout apart from a turn nobody consumed.
         sb.AppendLine(_stopAcks.TryGetValue(task, out var ack)
-            ? $"  stop: delivered={ack.Delivered} as {ack.Delivery}"
+            ? $"  stop: actioned={ack.Actioned} as {ack.Delivery}"
             : "  stop: none sent for this task");
 
         foreach (var (id, m) in _machines)
