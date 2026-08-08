@@ -315,6 +315,40 @@ internal sealed class FleetRig(
         Assert.NotEqual(true, answered.IsError);
     }
 
+    /// <summary>
+    /// The pending permission request on <paramref name="task"/> (§11 permission bridge), or
+    /// null when nothing is waiting on a verdict. Read off the row rather than over MCP so a
+    /// polling loop can tell "blocked on a permission request" from "blocked on a question"
+    /// without spending a Lead round trip per tick.
+    /// </summary>
+    public async Task<(string? Tool, string? Input)?> PendingPermissionAsync(TaskId task, CancellationToken ct)
+    {
+        await using var db = pg.NewContext();
+        var row = await db.Tasks.AsNoTracking().SingleOrDefaultAsync(t => t.Id == task.Value, ct);
+        return row is { State: TaskState.BlockedOnInput, InputKind: InputRequestKind.Permission }
+            ? (row.PermissionTool, row.InputQuestion)
+            : null;
+    }
+
+    /// <summary>
+    /// Decide a pending permission request over the real Lead MCP surface (§11 permission
+    /// bridge). Unlike <see cref="AnswerAsync"/> this does not requeue anything: the worker is
+    /// still running, blocked inside the tool call the harness relayed, and the verdict resumes
+    /// it in place.
+    /// </summary>
+    public async Task AnswerPermissionAsync(
+        TaskId task, string verdict, string? message, CancellationToken ct)
+    {
+        await using var lead = await MultiMachineKit.ConnectMcpAsync(new Uri(_baseUrl + "/"), _leadToken, ct);
+        var answered = await lead.CallToolAsync("answer_permission_request", new Dictionary<string, object?>
+        {
+            ["taskId"] = task.Value.ToString(),
+            ["verdict"] = verdict,
+            ["message"] = message,
+        }, cancellationToken: ct);
+        Assert.NotEqual(true, answered.IsError);
+    }
+
     /// <summary>The opaque harness session ref stamped from the worker's own
     /// <c>session-started</c> (§11) — null until the harness reports one.</summary>
     public async Task<string?> HarnessSessionRefAsync(TaskId task, CancellationToken ct)

@@ -303,9 +303,10 @@ source: a Team's committed budget and its measured relay byte burn are both surf
 (§9.9/§9.10), and the derived-telemetry events — auth failures, subagent spawns, and
 the typed input-request kind — are persisted as task event rows and render structured
 in the event log, with the auth failures on live tasks also joined into the inbox
-(the log is history; the inbox is what needs a person). What genuinely has no source
-is **permission requests** and the
-**subagent tree nested under a machine**, which render as honest empty states rather
+(the log is history; the inbox is what needs a person). **Permission requests** now have
+a source too — §11's permission bridge records them on the task row, and the inbox
+section renders them with an allow/deny form. What genuinely has no source is the
+**subagent tree nested under a machine**, which renders as an honest empty state rather
 than fabricated numbers. Cross-process tracing is real: the host exports
 OpenTelemetry (traces/metrics/logs via `Docket.ServiceDefaults`), and a stored
 `traceparent` lets one trace span `create_task → dispatch → runner → worker`.

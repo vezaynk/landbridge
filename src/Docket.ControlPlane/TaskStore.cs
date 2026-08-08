@@ -149,8 +149,129 @@ public sealed class TaskStore(
         var park = leaseMachine is { } machine
             ? new ParkRecord(machine, Directory: null, HarnessSessionRef: row.HarnessSessionRef, row.Attempt)
             : null;
-        return await RunTransition(row, new AnswerInput(lead, park, answer), ct);
+        // §11: the live request kind rides along so the engine can refuse this path on a
+        // permission request, whose worker is still alive and waiting on a verdict rather
+        // than gone and waiting to be redispatched.
+        return await RunTransition(row, new AnswerInput(lead, park, answer, row.InputKind), ct);
     }
+
+    /// <summary>
+    /// Decide a pending permission request (§11 permission bridge): blocked_on_input →
+    /// working, with the still-live worker's own instance carried through, so the harness
+    /// resumes inside the tool call it blocked in. The counterpart to
+    /// <see cref="AnswerOrWakeAsync"/> for the one input kind that is answered by a verdict
+    /// rather than by prose, and the reason the two are separate methods rather than one:
+    /// they lead to opposite outcomes (resume in place vs. requeue for redispatch), so
+    /// picking the wrong one is a bug the engine refuses (§11) instead of a difference the
+    /// caller has to know about.
+    ///
+    /// <para>The escalation state and the request's kind are read off the row here and
+    /// handed to the engine as facts, which is what makes escalation enforceable: a Lead
+    /// answering an escalated request is refused by
+    /// <see cref="Rule.EscalatedPermissionIsHumanOnly"/> on the row's own record of the
+    /// escalation, not on anything the caller says about itself. A human is admitted either
+    /// way. The Team check for a Lead is the engine's (<c>IsLeadOrHuman</c>); a human is
+    /// unscoped, exactly as on every other §12 write.</para>
+    /// </summary>
+    public async Task<StoreResult> AnswerPermissionAsync(
+        Actor actor, TaskId id, PermissionVerdict verdict, string? message = null,
+        CancellationToken ct = default)
+    {
+        var row = await db.Tasks.FirstOrDefaultAsync(t => t.Id == id.Value, ct);
+        if (row is null)
+            return new StoreResult.NotFound($"no task {id}");
+
+        return await RunTransition(
+            row,
+            new AnswerPermission(
+                actor, row.InputKind, row.PermissionEscalatedAt is not null, verdict, message),
+            ct);
+    }
+
+    /// <summary>
+    /// Mark a pending permission request human-only (§11 permission bridge). Not a state
+    /// change — the worker is still blocked on the same request — but from here a Lead is
+    /// refused and the request waits for a person, with <paramref name="reason"/> rendered
+    /// beside it on the §12 inbox so the human inherits the concern along with the
+    /// decision. The wait deadline is deliberately not reset (see
+    /// <see cref="TaskRow.PermissionEscalatedAt"/>): an escalation nobody picks up parks on
+    /// the same schedule the Lead's own wait would have.
+    /// </summary>
+    public async Task<StoreResult> EscalatePermissionAsync(
+        Actor actor, TaskId id, string reason, CancellationToken ct = default)
+    {
+        var row = await db.Tasks.FirstOrDefaultAsync(t => t.Id == id.Value, ct);
+        if (row is null)
+            return new StoreResult.NotFound($"no task {id}");
+
+        return await RunTransition(row, new EscalatePermission(actor, row.InputKind, reason), ct);
+    }
+
+    /// <summary>
+    /// The relaying worker tool's wait (§11 permission bridge): block until this task's
+    /// pending permission request is decided, then hand back the verdict and its message.
+    /// The one live wait in Docket, and the harness contract is why — a permission prompt
+    /// has nowhere to deliver an answer to a process that has exited, so the asking process
+    /// stays up inside its tool call and this method is what holds it there.
+    ///
+    /// <para>Returns null when the wait ended without a verdict: the wait-TTL sweeper parked
+    /// the task, a requeue took it, or the caller stopped being the incumbent. The caller
+    /// turns that into a denial with an explanation rather than hanging, because the harness
+    /// side never times out on its own (a permission prompt waits forever), so an
+    /// unanswered request would otherwise wedge the process until something killed it.</para>
+    ///
+    /// <para>Polling, not listening: the row is the authority on the verdict and on whether
+    /// this caller is still the incumbent, and both have to be re-read anyway to answer
+    /// honestly. <paramref name="pollInterval"/> is a parameter so tests run this at
+    /// millisecond granularity against a real clock instead of advancing a fake one through
+    /// a delay.</para>
+    /// </summary>
+    public async Task<PermissionOutcome?> AwaitPermissionVerdictAsync(
+        WorkerCaller caller, TimeSpan pollInterval, TimeProvider clock, CancellationToken ct = default)
+    {
+        while (true)
+        {
+            var seen = await db.Tasks.AsNoTracking()
+                .Where(t => t.Id == caller.Task.Value)
+                .Select(t => new
+                {
+                    t.State,
+                    t.CurrentInstanceId,
+                    t.InputKind,
+                    t.PermissionVerdict,
+                    t.InputAnswer,
+                })
+                .FirstOrDefaultAsync(ct);
+
+            // Gone, requeued out from under this worker, or handed to a successor: this
+            // caller is no longer the one whose tool call is owed an answer.
+            if (seen is null || seen.CurrentInstanceId != caller.Instance.Value)
+                return null;
+
+            if (seen.PermissionVerdict is { } verdict && seen.InputKind == InputRequestKind.Permission)
+                return new PermissionOutcome(verdict, seen.InputAnswer);
+
+            // Parked by the sweeper, or moved on for any other reason, with no verdict.
+            if (seen.State != TaskState.BlockedOnInput)
+                return null;
+
+            await Task.Delay(pollInterval, clock, ct);
+        }
+    }
+
+    /// <summary>
+    /// One pending permission request as an answerer reads it (§11/§12) — the Lead through
+    /// its per-task fetch, a human through the inbox. Team-scoped for a Lead by the caller.
+    /// </summary>
+    public async Task<PermissionRequestView?> GetPermissionRequestAsync(
+        TaskId task, CancellationToken ct = default) =>
+        await db.Tasks.AsNoTracking()
+            .Where(t => t.Id == task.Value)
+            .Select(t => new PermissionRequestView(
+                t.Id, t.Namespace, t.TeamId, t.State, t.BlockedAt, t.PermissionTool,
+                t.InputQuestion, t.PermissionVerdict, t.InputAnswer,
+                t.PermissionEscalatedAt, t.PermissionEscalationReason))
+            .FirstOrDefaultAsync(ct);
 
     /// <summary>
     /// The dispatch transaction and the one raw-SQL path (§3.1). Selects a
@@ -458,7 +579,9 @@ public sealed class TaskStore(
     public async Task<TaskQuestionView?> GetTaskQuestionAsync(TeamId team, TaskId task, CancellationToken ct = default) =>
         await db.Tasks.AsNoTracking()
             .Where(t => t.Id == task.Value && t.TeamId == team.Value)
-            .Select(t => new TaskQuestionView(t.Id, t.Namespace, t.State, t.InputKind, t.InputQuestion, t.InputAnswer))
+            .Select(t => new TaskQuestionView(
+                t.Id, t.Namespace, t.State, t.InputKind, t.InputQuestion, t.InputAnswer,
+                t.PermissionTool, t.PermissionVerdict, t.PermissionEscalationReason))
             .FirstOrDefaultAsync(ct);
 
     /// <summary>
@@ -730,9 +853,35 @@ public sealed class TaskStore(
             row.InputKind = ri.Kind;
             row.InputQuestion = ri.Question;
             row.InputAnswer = null;
+            // §11 permission bridge: the tool this request is about, and a clean slate for
+            // the decision. Retiring the previous verdict and escalation matters more here
+            // than retiring an answer does: a stale verdict is what the relaying worker tool
+            // polls for, so leaving one behind would let a second request read the first
+            // request's answer and return it as this call's.
+            row.PermissionTool = ri.PermissionTool;
+            row.PermissionVerdict = null;
+            row.PermissionEscalatedAt = null;
+            row.PermissionEscalationReason = null;
         }
         else if (before == TaskState.BlockedOnInput && row.State != TaskState.BlockedOnInput)
             row.BlockedAt = null;
+
+        // §11 permission bridge, the two transitions that decide and re-route a permission
+        // request. Captured here beside BlockedAt for the same reason: opaque content and
+        // plane plumbing the engine gated (kind, authority, length) but never landed on the
+        // pure record. The verdict is what the still-blocked worker's tool call is polling
+        // for, so it and its message commit in the same transaction as the transition —
+        // there is no window where the task is working but the verdict has not landed.
+        if (command is AnswerPermission decided)
+        {
+            row.PermissionVerdict = decided.Verdict;
+            row.InputAnswer = decided.Message;
+        }
+        else if (command is EscalatePermission escalated)
+        {
+            row.PermissionEscalatedAt = clock.GetUtcNow();
+            row.PermissionEscalationReason = escalated.Reason;
+        }
 
         // §11: the answer's text, on whichever half of the one-call answer path ran —
         // AnswerInput for a still-blocked task, WakeParked for one the sweeper parked
@@ -755,9 +904,23 @@ public sealed class TaskStore(
         // the input-request kind rides its transition. The row's from/to states already
         // say which outcome the requeue took, so reason + to-state is the whole story an
         // operator needs — where before every requeue row was identical.
+        // §11/§12 permission audit: a permission decision's own row carries the verdict and
+        // the answerer's class, and its Detail is the message rather than the (empty) effect
+        // list — for these two transitions the words ARE what happened, where for every
+        // other transition the effects are. An escalation's Detail is its required reason,
+        // so the trail says who narrowed the request and why even though the state did not
+        // move.
+        var detail = command switch
+        {
+            AnswerPermission decision => decision.Message,
+            EscalatePermission escalation => $"escalated to human: {escalation.Reason}",
+            _ => DescribeEffects(ok.Effects),
+        };
         AppendEvent(row.Id, row.TeamId, command.GetType().Name, before, row.State,
-            detail: DescribeEffects(ok.Effects), inputKind: inputKind,
-            livenessReason: (command as LivenessLost)?.Reason);
+            detail: detail, inputKind: inputKind,
+            livenessReason: (command as LivenessLost)?.Reason,
+            permissionVerdict: (command as AnswerPermission)?.Verdict,
+            permissionAnswerer: command is AnswerPermission byWhom ? AnswererOf(byWhom.Actor) : null);
 
         try
         {
@@ -824,7 +987,8 @@ public sealed class TaskStore(
 
     private void AppendEvent(
         Guid taskId, Guid teamId, string kind, TaskState? from, TaskState to, string? detail,
-        InputRequestKind? inputKind = null, LivenessLossReason? livenessReason = null)
+        InputRequestKind? inputKind = null, LivenessLossReason? livenessReason = null,
+        PermissionVerdict? permissionVerdict = null, PermissionAnswerer? permissionAnswerer = null)
         => db.TaskEvents.Add(new TaskEventRow
         {
             TaskId = taskId,
@@ -835,8 +999,21 @@ public sealed class TaskStore(
             Detail = detail,
             InputKind = inputKind,
             LivenessReason = livenessReason,
+            PermissionVerdict = permissionVerdict,
+            PermissionAnswerer = permissionAnswerer,
             OccurredAt = clock.GetUtcNow(),
         });
+
+    /// <summary>
+    /// Which class of answerer a permission decision came from (§11/§12), derived from the
+    /// deciding actor rather than supplied — the same discipline as §9 check 4's verdict
+    /// provenance, so a caller cannot claim to be a human. A <see cref="HumanSession"/> is
+    /// the only thing that reads as <see cref="PermissionAnswerer.Human"/>; the engine has
+    /// already refused anything that is neither a human nor the owning Team's Lead by the
+    /// time this runs.
+    /// </summary>
+    private static PermissionAnswerer AnswererOf(Actor actor) =>
+        actor is HumanSession ? PermissionAnswerer.Human : PermissionAnswerer.Lead;
 
     private async Task CommitAsync(
         Guid taskId, CancellationToken ct,

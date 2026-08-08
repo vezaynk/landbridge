@@ -50,6 +50,19 @@ public enum Rule
     // report, on the two halves of the human-in-the-loop exchange.
     QuestionWithinSizeCap = 109,
     AnswerWithinSizeCap = 110,
+
+    // §11 permission bridge. The permission flavor of blocked_on_input is answered by a
+    // verdict rather than by prose, so it needs its own gates: the two answer paths must
+    // not be usable on each other's requests (111, 112), a refusal must be legible to the
+    // agent it refuses (113), an escalation must say why (114), escalation must actually
+    // remove the Lead's authority (115), and a verdict must have a live worker to return
+    // to (116).
+    PermissionRequestNamesItsTool = 111,
+    PermissionVerdictAnswersPermissionRequests = 112,
+    PermissionDenialCarriesMessage = 113,
+    PermissionEscalationCarriesReason = 114,
+    EscalatedPermissionIsHumanOnly = 115,
+    PermissionWaiterStillIncumbent = 116,
 }
 
 public abstract record TransitionResult

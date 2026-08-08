@@ -56,6 +56,51 @@ public enum InputRequestKind
     AuthHelp,
     EndpointWait,
     Unreachable,
+
+    /// <summary>
+    /// A harness permission prompt relayed into the plane (§11 permission bridge): the
+    /// worker's harness wants to use a tool its allowlist does not cover, and Docket is
+    /// standing in for the human who would have answered the dialog. The one kind whose
+    /// wait is <em>live</em> — the asking process stays up inside its tool call, because
+    /// the harness contract has nowhere to put a resumed answer — so it is answered with
+    /// a <see cref="PermissionVerdict"/> back into <c>working</c> rather than through the
+    /// park→redispatch path every other kind takes.
+    /// </summary>
+    Permission,
+}
+
+/// <summary>
+/// The answer to an <see cref="InputRequestKind.Permission"/> request (§11): whether the
+/// harness may make the tool call it asked about. Maps 1:1 onto the two arms of the
+/// harness's own permission result, so the bridge translates rather than interprets.
+/// </summary>
+public enum PermissionVerdict
+{
+    /// <summary>The tool call proceeds, with the input the harness proposed.</summary>
+    Allow,
+
+    /// <summary>
+    /// The tool call is refused. Always carries a message
+    /// (<see cref="Rule.PermissionDenialCarriesMessage"/>): a denial the agent cannot
+    /// read is a wall it will walk into again, so the message is the guidance that makes
+    /// it adapt instead of retry.
+    /// </summary>
+    Deny,
+}
+
+/// <summary>
+/// Who decided a permission request (§11/§12), recorded on the deciding event so the
+/// audit trail distinguishes a Lead's routine approval from a human's. Derived from the
+/// answering actor, never supplied by a caller — the same shape as
+/// <see cref="VerdictProvenance"/>.
+/// </summary>
+public enum PermissionAnswerer
+{
+    /// <summary>A Lead session triaged it (the routine case).</summary>
+    Lead,
+
+    /// <summary>A human answered from the §12 dashboard.</summary>
+    Human,
 }
 
 /// <summary>

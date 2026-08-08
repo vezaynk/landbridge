@@ -348,19 +348,40 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
     /// Everything waiting on a person across every Team (§12): open questions
     /// (blocked_on_input) with the typed kind and the worker's own question text,
     /// tasks awaiting review (verifying + review mode, §7), parked tasks awaiting
-    /// an answer (§11) with the same question, and the auth failures a person could
-    /// still act on (§11, #50). This is where a person answers, so it is the one place
-    /// the question's prose has to be legible verbatim — a §12 human surface, not a §10
-    /// agent read. Permission requests are the one §12 row left as a structural empty
-    /// state: unlike auth failures they have no source in the schema at all.
+    /// an answer (§11) with the same question, the pending permission requests of §11's
+    /// permission bridge, and the auth failures a person could still act on (§11, #50).
+    /// This is where a person answers, so it is the one place the question's prose has to be
+    /// legible verbatim — a §12 human surface, not a §10 agent read.
+    ///
+    /// <para>Permission requests are their own section rather than more question rows,
+    /// because they are answered by a different act: a verdict on a named tool call, on a
+    /// worker that is still running and waiting, where every other blocked task is answered
+    /// with prose and redispatched. They are excluded from <see cref="InboxView.Questions"/>
+    /// for that reason — one request, one row, in the section whose form can actually decide
+    /// it. A human may answer any of them; escalation only removes the <em>Lead's</em>
+    /// authority, so this read does not filter on it and instead reports it, which is what
+    /// lets the page mark the ones a Lead has handed over.</para>
     /// </summary>
     public async Task<InboxView> GetInboxAsync(CancellationToken ct = default)
     {
         var questions = await db.Tasks.AsNoTracking()
-            .Where(t => t.State == TaskState.BlockedOnInput)
+            .Where(t => t.State == TaskState.BlockedOnInput
+                        && t.InputKind != InputRequestKind.Permission)
             .OrderBy(t => t.BlockedAt)
             .Select(t => new InputRequestView(
                 t.Id, t.Namespace, t.TeamId, t.BlockedAt, t.InputKind, t.InputQuestion))
+            .ToListAsync(ct);
+
+        // Oldest first, like the questions above: age is what matters on a queue whose items
+        // each have a worker blocked behind them and a wait TTL running down.
+        var permissionRequests = await db.Tasks.AsNoTracking()
+            .Where(t => t.State == TaskState.BlockedOnInput
+                        && t.InputKind == InputRequestKind.Permission)
+            .OrderBy(t => t.BlockedAt)
+            .Select(t => new PermissionRequestView(
+                t.Id, t.Namespace, t.TeamId, t.State, t.BlockedAt, t.PermissionTool,
+                t.InputQuestion, t.PermissionVerdict, t.InputAnswer,
+                t.PermissionEscalatedAt, t.PermissionEscalationReason))
             .ToListAsync(ct);
 
         var awaitingReview = await db.Tasks.AsNoTracking()
@@ -425,7 +446,7 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
                 g.Occurrences))
             .ToList();
 
-        return new InboxView(questions, awaitingReview, parked, authFailures);
+        return new InboxView(questions, awaitingReview, parked, authFailures, permissionRequests);
     }
 
     // ── Event log (§12) ───────────────────────────────────────────────────────
@@ -453,6 +474,10 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
                 // §6/§9 check 7 (#73): why a requeue happened. Without it a requeue loop
                 // is N identical rows in this log, which is the state issue #73 describes.
                 e.LivenessReason,
+                // §11/§12 permission audit: which way a permission decision went and whether
+                // a Lead or a person had the authority to send it there.
+                e.PermissionVerdict,
+                e.PermissionAnswerer,
             })
             .ToListAsync(ct);
 
@@ -485,7 +510,9 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
             e.AuthMissingScope,
             e.SubagentId,
             e.SubagentParentId,
-            e.LivenessReason));
+            e.LivenessReason,
+            e.PermissionVerdict,
+            e.PermissionAnswerer));
 
         var leadEvents = await db.LeadEvents.AsNoTracking()
             .OrderByDescending(e => e.Seq)
@@ -651,11 +678,17 @@ public sealed record AuthFailureItemView(
     int Occurrences);
 
 /// <summary>The Human inbox across all Teams (§12).</summary>
+/// <param name="PermissionRequests">Pending permission requests (§11 permission bridge),
+/// oldest first — the section that replaced the inbox's last structural empty state. Each
+/// one has a worker blocked behind it right now, so unlike every other row here these are
+/// answered <em>while</em> someone is waiting. Disjoint from
+/// <paramref name="Questions"/>.</param>
 public sealed record InboxView(
     IReadOnlyList<InputRequestView> Questions,
     IReadOnlyList<ReviewItemView> AwaitingReview,
     IReadOnlyList<ParkedItemView> Parked,
-    IReadOnlyList<AuthFailureItemView> AuthFailures);
+    IReadOnlyList<AuthFailureItemView> AuthFailures,
+    IReadOnlyList<PermissionRequestView> PermissionRequests);
 
 /// <summary>
 /// One dispatch of a task and the machine whose disk may hold its transcript (§12
@@ -695,4 +728,6 @@ public sealed record DashboardEvent(
     string? AuthMissingScope = null,
     string? SubagentId = null,
     string? SubagentParentId = null,
-    LivenessLossReason? LivenessReason = null);
+    LivenessLossReason? LivenessReason = null,
+    PermissionVerdict? PermissionVerdict = null,
+    PermissionAnswerer? PermissionAnswerer = null);

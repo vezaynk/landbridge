@@ -78,6 +78,8 @@ public static class TaskStateMachine
             VerdictFail c => ApplyVerdict(task, c.Actor, c.HumanConfirmed, accepted: false),
             RequestInput c => ApplyRequestInput(task, c),
             AnswerInput c => ApplyAnswerInput(task, c),
+            AnswerPermission c => ApplyAnswerPermission(task, c),
+            EscalatePermission c => ApplyEscalatePermission(task, c),
             WaitTtlExpired c => ApplyWaitTtlExpired(task, c),
             WakeParked c => ApplyWakeParked(task, c),
             StopPreserveAndPark c => ApplyStopPreserveAndPark(task, c),
@@ -263,9 +265,25 @@ public static class TaskStateMachine
             is { } tooLong)
             return tooLong;
 
-        return TransitionResult.Ok(
-            task with { State = TaskState.BlockedOnInput },
-            new ClearServicesAndForwards());
+        // §11 permission bridge: the tool awaiting approval must be named. A
+        // non-emptiness check in the same class as CompletionCriteria — the engine does
+        // not recognize tool names and never will, it only refuses a permission request
+        // that gives its answerer nothing to decide about.
+        if (c.Kind == InputRequestKind.Permission && string.IsNullOrWhiteSpace(c.PermissionTool))
+            return TransitionResult.Reject(Rule.PermissionRequestNamesItsTool,
+                "a permission request must name the tool it is asking about");
+
+        // A permission request is the one blocked_on_input flavor the asking process
+        // survives (§11): it is parked inside a live tool call, not gone. So it keeps its
+        // registered services and relay forwards — tearing them down here would break a
+        // worker mid-turn for asking a question, and it is about to return to working with
+        // the same instance. Every other kind ends the turn, so leaving working releases
+        // them as it always has.
+        return c.Kind == InputRequestKind.Permission
+            ? TransitionResult.Ok(task with { State = TaskState.BlockedOnInput })
+            : TransitionResult.Ok(
+                task with { State = TaskState.BlockedOnInput },
+                new ClearServicesAndForwards());
     }
 
     private static TransitionResult ApplyAnswerInput(TaskRecord task, AnswerInput c)
@@ -276,6 +294,14 @@ public static class TaskStateMachine
         if (!IsLeadOrHuman(task, c.Actor))
             return TransitionResult.Reject(Rule.ActorLacksAuthority,
                 "input requests are answered by the Lead or a human");
+
+        // §11 permission bridge: prose is not a verdict. This path revokes the incumbent's
+        // token and requeues for redispatch, which is right for every kind whose worker has
+        // already exited — and stranding for the one whose worker is still alive inside a
+        // tool call waiting for allow or deny. Refused rather than approximated.
+        if (c.PendingKind == InputRequestKind.Permission)
+            return TransitionResult.Reject(Rule.PermissionVerdictAnswersPermissionRequests,
+                "this task is waiting on a permission verdict, not prose; answer it with allow or deny");
 
         // §10/§11: the answer's text is bounded like the question it answers. Refused
         // over-cap, which leaves the task blocked_on_input — better a still-waiting
@@ -309,6 +335,92 @@ public static class TaskStateMachine
                 Park = c.Park ?? task.Park,
             },
             effects.ToArray());
+    }
+
+    /// <summary>
+    /// blocked_on_input → working, §11's permission bridge. The only transition back into
+    /// <c>working</c> that is not a dispatch, and deliberately so: the asking process never
+    /// left, so there is nothing to dispatch to — the incumbent instance and its token are
+    /// carried through untouched and the worker resumes inside the tool call it blocked in.
+    /// </summary>
+    private static TransitionResult ApplyAnswerPermission(TaskRecord task, AnswerPermission c)
+    {
+        if (task.State != TaskState.BlockedOnInput)
+            return WrongState(task, TaskState.BlockedOnInput);
+
+        if (c.PendingKind != InputRequestKind.Permission)
+            return TransitionResult.Reject(Rule.PermissionVerdictAnswersPermissionRequests,
+                "a permission verdict answers a permission request; this task is waiting on "
+                + (c.PendingKind is { } kind ? $"{kind} input" : "input of no recorded kind"));
+
+        if (!IsLeadOrHuman(task, c.Actor))
+            return TransitionResult.Reject(Rule.ActorLacksAuthority,
+                "permission requests are decided by the Lead or a human");
+
+        // Escalation's whole content: the Lead gave up its authority over this one request
+        // and said why. A human is unaffected — the dashboard answers escalated and
+        // unescalated requests alike, because a human never needed the Lead's permission.
+        if (c.EscalatedToHuman && c.Actor is LeadClaim)
+            return TransitionResult.Reject(Rule.EscalatedPermissionIsHumanOnly,
+                "this permission request was escalated to a human; a lead claim can no longer decide it");
+
+        // Returning to working means returning to a worker. Without an incumbent there is
+        // no one holding the tool call open, so the verdict has nowhere to land and the task
+        // would go working with nothing running it — refused instead, leaving the request
+        // pending for the sweeper to park.
+        if (task.CurrentInstance is null)
+            return TransitionResult.Reject(Rule.PermissionWaiterStillIncumbent,
+                "the worker that asked for permission is no longer the incumbent; nothing is waiting for a verdict");
+
+        // §11: a denial the agent cannot read is a wall it walks into again. The message is
+        // the difference between "no" and "no, and here is what to do instead", so deny
+        // carries one by rule rather than by convention.
+        if (c.Verdict == PermissionVerdict.Deny && string.IsNullOrWhiteSpace(c.Message))
+            return TransitionResult.Reject(Rule.PermissionDenialCarriesMessage,
+                "a denial must carry a message: say why, and what the worker should do instead");
+
+        if (OverCap(c.Message, AnswerPermission.MaxMessageBytes, Rule.AnswerWithinSizeCap,
+                "message",
+                "state the decision and what to do instead, and point at a reference for the detail")
+            is { } tooLong)
+            return tooLong;
+
+        return TransitionResult.Ok(task with { State = TaskState.Working });
+    }
+
+    /// <summary>
+    /// blocked_on_input → blocked_on_input, §11's permission bridge. An authority change
+    /// rather than a state change: the task is still waiting on exactly the same request,
+    /// but from here only a human may decide it.
+    /// </summary>
+    private static TransitionResult ApplyEscalatePermission(TaskRecord task, EscalatePermission c)
+    {
+        if (task.State != TaskState.BlockedOnInput)
+            return WrongState(task, TaskState.BlockedOnInput);
+
+        if (c.PendingKind != InputRequestKind.Permission)
+            return TransitionResult.Reject(Rule.PermissionVerdictAnswersPermissionRequests,
+                "only a permission request is escalated to a human this way");
+
+        if (!IsLeadOrHuman(task, c.Actor))
+            return TransitionResult.Reject(Rule.ActorLacksAuthority,
+                "permission requests are escalated by the Lead or a human");
+
+        if (string.IsNullOrWhiteSpace(c.Reason))
+            return TransitionResult.Reject(Rule.PermissionEscalationCarriesReason,
+                "escalation requires a reason: the human decides without your context");
+
+        if (OverCap(c.Reason, AnswerPermission.MaxMessageBytes, Rule.AnswerWithinSizeCap,
+                "reason",
+                "say what you could not justify from the task, and point at a reference for the detail")
+            is { } tooLong)
+            return tooLong;
+
+        // The record is unchanged on purpose: state, incumbent, and park all still describe
+        // a task blocked on the same request. What changed is stored beside the request by
+        // the control plane, which is also where the wait deadline it does not reset lives —
+        // escalating does not buy the human more time than the Lead had.
+        return TransitionResult.Ok(task);
     }
 
     private static TransitionResult ApplyWaitTtlExpired(TaskRecord task, WaitTtlExpired c)

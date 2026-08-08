@@ -119,13 +119,59 @@ public sealed record TaskReportView(
 /// question a Lead asks in the same breath — a task that has moved back to
 /// <c>submitted</c> has been answered. Team-scoped at the store.
 /// </summary>
+/// <param name="PermissionTool">On an <see cref="InputRequestKind.Permission"/> request
+/// (§11 permission bridge), the harness tool awaiting approval — with
+/// <paramref name="Question"/> carrying the proposed tool input verbatim beside it. Null on
+/// every other kind, which is also how a reader tells the two apart without switching on
+/// <paramref name="Kind"/>.</param>
+/// <param name="Verdict">How a permission request was decided, null while it is still
+/// pending. <paramref name="Answer"/> carries the decision's message, so the
+/// question/answer pair reads the same way for a permission request as for a prose one.</param>
+/// <param name="EscalationReason">Why a pending permission request was marked human-only,
+/// null if it was not — and, for a Lead reading this, the signal that it can no longer
+/// decide this one itself.</param>
 public sealed record TaskQuestionView(
     Guid TaskId,
     string Namespace,
     TaskState State,
     InputRequestKind? Kind,
     string? Question,
-    string? Answer);
+    string? Answer,
+    string? PermissionTool = null,
+    PermissionVerdict? Verdict = null,
+    string? EscalationReason = null);
+
+/// <summary>
+/// One permission request as an answerer reads it (§11/§12 permission bridge): everything
+/// needed to decide, and nothing that pretends to be more trustworthy than it is.
+/// <see cref="Tool"/> and <see cref="Input"/> are the harness's own strings, relayed through
+/// an agent's process — untrusted text every surface renders escaped and fenced, never
+/// interpreted (§2 principle 1, §13). <see cref="BlockedAt"/> gives the age, which is what
+/// tells a human whether a request is about to hit its wait TTL.
+/// <see cref="EscalatedAt"/>/<see cref="EscalationReason"/> are set once a Lead has handed
+/// it over.
+/// </summary>
+public sealed record PermissionRequestView(
+    Guid TaskId,
+    string Namespace,
+    Guid TeamId,
+    TaskState State,
+    DateTimeOffset? BlockedAt,
+    string? Tool,
+    string? Input,
+    PermissionVerdict? Verdict,
+    string? Message,
+    DateTimeOffset? EscalatedAt,
+    string? EscalationReason);
+
+/// <summary>
+/// What a decided permission request hands back to the worker tool that has been blocking
+/// on it (§11 permission bridge): the verdict and the answerer's words. Translated at the
+/// tool boundary into the harness's permission result — allow passes the proposed input
+/// through unchanged, deny carries <see cref="Message"/> so the refusal teaches the agent
+/// something instead of just stopping it.
+/// </summary>
+public sealed record PermissionOutcome(PermissionVerdict Verdict, string? Message);
 
 /// <summary>
 /// The seed facts a <c>create_task(continues:)</c> reads off the continued task's

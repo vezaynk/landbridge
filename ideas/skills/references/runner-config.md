@@ -220,8 +220,10 @@ dispatched instance, and its token dies with the instance (§9 check 14).
 - **`--permission-mode bypassPermissions`** is the headless prerequisite (§10):
   a worker must run to completion without prompting. Managed settings on a
   corporate machine can forbid bypass outright — confirm it is permitted before
-  writing it, and prefer a permission-prompt tool (approvals become
-  `request_input` escalations) where the posture allows one. This is the single
+  writing it. The alternative when the posture will not allow bypass is
+  [the permission bridge](#permission-bridge--approvals-through-docket-instead-of-bypass-11),
+  which replaces this flag with `--permission-prompt-tool` and routes approvals
+  through Docket instead of skipping them. One or the other: this is the single
   most important line in `spawn`.
 - **`--input-format stream-json`** is what lets a graceful `stop` reach the agent
   as an injected turn rather than a signal (§10) — required for the `message`
@@ -316,6 +318,69 @@ not `docketd`'s: a `docketd` restart or a task kill will not take it down. The
 worker skill forbids the other way of achieving the same escape — scrubbing
 `DOCKET_*` off a spawned process — precisely because that one defeats the kill
 guarantee for everything else too.
+
+## Permission bridge — approvals through Docket instead of bypass (§11)
+
+**Opt-in.** `bypassPermissions` stays the right answer for a machine you fully
+trust, and it is the default in the worked example above. This section is the
+other option: instead of skipping the approval dialog, route it to Docket, where
+the Lead answers routine requests and hands the rest to a human.
+
+Swap one flag. `--permission-prompt-tool` **replaces**
+`--permission-mode bypassPermissions` — they are alternatives, not a pair:
+
+```jsonc
+"spawn": [
+  "claude", "-p", "<worker prompt>",
+  "--mcp-config", "{mcp_config}", "--strict-mcp-config",
+  "--output-format", "stream-json", "--input-format", "stream-json",
+  // Instead of --permission-mode bypassPermissions: Claude Code asks Docket
+  // whenever a tool call is not covered by --allowedTools below.
+  "--permission-prompt-tool", "mcp__docket__request_permission",
+  // Still the routine baseline. THIS is the volume control: everything listed
+  // here runs without asking anyone, so the bridge only fires for exceptions.
+  "--allowedTools", "Bash,Edit,Write,Read,Glob,Grep,mcp__docket__get_task,mcp__docket__report_result,mcp__docket__request_input"
+]
+```
+
+Keep `--allowedTools` carrying the routine baseline. Per-call human approval as a
+*default* is unusably slow — a worker doing an hour of ordinary edits would
+generate hundreds of prompts and finish nothing — so the allowlist is what makes
+this posture workable at all: it decides what is routine, and the bridge only
+sees what falls outside it. A profile with no `--allowedTools` and a prompt tool
+asks about everything, which is a way to stall a fleet rather than to secure one.
+
+Do **not** put `mcp__docket__request_permission` in `--allowedTools`. Claude Code
+calls it itself when a dialog would have opened; it is not a tool for the agent,
+and the agent calling it does nothing useful.
+
+What the operator should know about the resulting behaviour:
+
+- **The worker stays alive while it waits.** Every other `blocked_on_input` kind
+  ends the worker's turn and parks (§11); a permission request cannot, because the
+  harness has nowhere to deliver an answer to a process that exited. So the process
+  sits inside the tool call, holding its workspace and its registered services,
+  until someone answers. Per-task liveness is suspended while it waits, so the
+  no-progress clock does not kill it for being blocked on a person.
+- **An unanswered request still parks.** The wait TTL (`Docket:WaitTtl`, 30 min by
+  default) applies unchanged. When it expires the task parks and the worker is told
+  to stop — Claude Code never times out a permission prompt on its own, so without
+  this a forgotten request would hold a process open indefinitely.
+- **A denial is delivered as guidance.** The answerer's message reaches the agent
+  verbatim as the refusal reason, which is why the plane requires one on a deny.
+- **One at a time per task.** A task already blocked on a permission request
+  refuses a second one, which serializes concurrent prompts rather than letting the
+  second overwrite the first.
+- **`--setting-sources` matters more than it looks.** The spawned worker otherwise
+  inherits the machine account's own `settings.json` allow rules, so a tool you
+  expected the bridge to catch may already be approved locally. Pass
+  `--setting-sources ""` if you want the profile's `--allowedTools` to be the whole
+  story.
+
+Every decision lands on the §12 event log with its verdict and whether a Lead or a
+person made it, and pending requests appear in the §12 inbox with the tool name and
+proposed arguments. The Lead's triage rubric — what to approve and what to escalate
+— is in the Lead skill, not here: this file is only the wiring.
 
 ## Event relay (§10)
 

@@ -97,6 +97,17 @@ internal static class DashboardCss
       background: var(--accent); color: var(--accent-ink); font: inherit; font-weight: 600; cursor: pointer;
     }
     .budget-limits .nt { margin-top: 6px; }
+    /* Permission allow/deny form (§11 permission bridge, human-only) */
+    .permission-decide input[type=text] {
+      width: 200px; padding: 6px 8px; border: 1px solid var(--line);
+      border-radius: 6px; background: var(--bg); color: var(--ink); font: inherit;
+    }
+    .permission-decide button {
+      padding: 6px 12px; margin-left: 6px; border: none; border-radius: 6px;
+      background: var(--accent); color: var(--accent-ink); font: inherit; font-weight: 600; cursor: pointer;
+    }
+    .permission-decide button[value=deny] { background: var(--bad); }
+    .permission-decide .nt { margin-top: 6px; }
     /* Login */
     .login-wrap { max-width: 420px; margin: 8vh auto; }
     .login-wrap input[type=text], .login-wrap input[type=password] {
