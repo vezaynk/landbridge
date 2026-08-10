@@ -208,7 +208,7 @@ public sealed class StdinPolicyTests : IDisposable
         supervisor.Spawn(
             new DispatchCommand(
                 continuation, "default", McpConfigJson: """{"mcpServers":{}}""",
-                ResumeSessionRef: "sess-abc", ResumeFromTask: predecessor),
+                ResumeSessionRef: "sess-abc", WorkDirTask: predecessor),
             TestKit.ResumeProfile(stdin: StdinPolicy.Closed),
             "m");
         Assert.True(supervisor.TryGet(continuation, out var supervised));
