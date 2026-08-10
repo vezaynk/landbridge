@@ -388,6 +388,12 @@ public sealed record RunnerConfig(
             if (dto.Logs?.PruneAfterDays is { } pd && pd < 0)
                 problems.Add($"profile '{name}' logs.prune_after_days must be >= 0 when set; 0 disables pruning (§12)");
 
+            // §10 events seam: an events.mapping that cannot do anything is the failure mode
+            // this whole area is trying to stamp out, so a half-declared or unwalkable flat
+            // tool-call mapping fails the load instead of going quietly inert.
+            foreach (var problem in EventsMappingProblems(dto.Events?.Mapping))
+                problems.Add($"profile '{name}' {problem}");
+
             // §10 stdin policy. Parsed STRICTLY, unlike stop.mode and events.source: a
             // typo in those degrades to a documented default, but a typo here silently
             // restores the very pipe the profile was written to escape — and for a harness
@@ -427,6 +433,85 @@ public sealed record RunnerConfig(
             problems.Add("more than one 'default' profile declared — exactly one is required (§10)");
 
         return problems.Count == 0 ? built : null;
+    }
+
+    /// <summary>
+    /// §10 validation for the flat tool-call mapping mode (issue #111). The reader ignores
+    /// unknown mapping keys by design — the seam is a bag of optional overrides — but these
+    /// three mistakes are worth failing the load for, because every one of them produces a
+    /// profile that looks configured and emits nothing:
+    /// <list type="number">
+    ///   <item><c>tool_event_type</c> without <c>tool_name_path</c> or the reverse: neither key
+    ///     does anything alone.</item>
+    ///   <item>a <c>tool_name_path</c> that is not a walkable dotted path of property names —
+    ///     an empty segment (<c>item..tool</c>), or a padded one (<c>item . tool</c>), which
+    ///     would look up a property whose name has a space in it.</item>
+    ///   <item>a <c>tool_event_type</c> equal to the effective <c>system_type</c> or
+    ///     <c>assistant_type</c>: one line cannot be both the session-init line and a tool
+    ///     call, and the reader's dispatch is first-match, so the collision would silently
+    ///     shadow one of them.</item>
+    /// </list>
+    /// Wildcards and array indexes are not rejected specially: they are simply property names
+    /// that no harness emits, so they resolve to nothing and the silent-stream warning reports
+    /// it against the real stream, which is more honest than pretending to validate a syntax
+    /// this resolver does not have.
+    /// </summary>
+    private static IReadOnlyList<string> EventsMappingProblems(IReadOnlyDictionary<string, string>? mapping)
+    {
+        if (mapping is null || mapping.Count == 0)
+            return [];
+
+        var problems = new List<string>();
+        var hasEventType = mapping.TryGetValue("tool_event_type", out var toolEventType)
+            && !string.IsNullOrWhiteSpace(toolEventType);
+        var hasNamePath = mapping.TryGetValue("tool_name_path", out var toolNamePath)
+            && !string.IsNullOrWhiteSpace(toolNamePath);
+
+        if (hasEventType != hasNamePath)
+        {
+            var declared = hasEventType ? "tool_event_type" : "tool_name_path";
+            var missing = hasEventType ? "tool_name_path" : "tool_event_type";
+            problems.Add(
+                $"declares events.mapping {declared} without {missing} — the flat tool-call mode needs both keys, " +
+                $"and {declared} alone emits no tool-call at all (§10)");
+        }
+
+        if (hasNamePath)
+        {
+            foreach (var raw in toolNamePath!.Split(','))
+            {
+                var alternative = raw.Trim();
+                if (alternative.Length == 0)
+                {
+                    problems.Add(
+                        $"has an empty alternative in events.mapping tool_name_path '{toolNamePath}' — each " +
+                        "comma-separated entry must be a dotted property path (§10)");
+                    continue;
+                }
+
+                if (Array.Exists(alternative.Split('.'), s => s.Length == 0 || s.Trim() != s))
+                    problems.Add(
+                        $"has an unwalkable events.mapping tool_name_path '{alternative}' — segments are object " +
+                        "property names separated by '.', each non-empty and unpadded; there are no wildcards or " +
+                        "array indexes (§10)");
+            }
+        }
+
+        if (hasEventType)
+        {
+            var collision = toolEventType == TerminalStreamMapping.Pick(mapping, "system_type", "system")
+                ? "system_type"
+                : toolEventType == TerminalStreamMapping.Pick(mapping, "assistant_type", "assistant")
+                    ? "assistant_type"
+                    : null;
+            if (collision is not null)
+                problems.Add(
+                    $"sets events.mapping tool_event_type '{toolEventType}', which is also the effective " +
+                    $"{collision} — one stream line cannot be both, so the flat tool-call mode needs its own " +
+                    "type value (§10)");
+        }
+
+        return problems;
     }
 
     private static ProfileConfig BuildProfile(ProfileDto dto)

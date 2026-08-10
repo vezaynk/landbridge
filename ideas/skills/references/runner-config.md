@@ -17,7 +17,7 @@ argv a worker is launched with.
 | `profiles[]` | `stop` | `mode` (`message` \| `signal`), `message`, `wind_down_seconds` (default `30`). **`mode: message` is a declaration about your harness** — that a running session reads turns off stdin — and docketd takes it at its word: it writes the turn, then waits `min(ttl, wind_down_seconds)` for a voluntary exit before a hard tree-kill backstops it. It cannot check the claim, so declaring it for a harness that does not read stdin buys nothing and makes `preserve` a promise the machine will break. **`claude -p` is such a harness — use `signal` there** ([Stopping a `claude -p` worker](#stopping-a-claude--p-worker-10-11)). A `signal` profile writes nothing, and the worker gets the full `ttl` the plane granted to exit on its own before the kill (`wind_down_seconds` does not apply). Only `ttl=0` is killed immediately (§10, §11). The `signal` **key** parses but is not acted on: the deadline's kill is always the tree-kill. |
 | `profiles[]` | `stdin` | `deadman` (default) \| `closed` — what the worker's stdin is. `deadman` holds the pipe's write end open for the worker's whole life; that pipe **is** the §10 dead-man's switch. `closed` sends EOF right after the spawn, for a harness that blocks reading piped stdin — **`codex exec` requires it**, and gives up nothing, because it never reaches the read that would observe EOF-as-death. Two things behave unlike the other enums here: a **typo is refused** rather than defaulted (defaulting would silently restore the pipe a profile was written to escape), and `closed` is **refused together with `stop.mode: message`**, whose wind-down turn would have nowhere to land. See [Closing the worker's stdin](#closing-the-workers-stdin-10). |
 | `profiles[]` | `resume` | `args`: argv to resume a parked task's transcript, directory-scoped (§11). |
-| `profiles[]` | `events` | `source` (`hooks` \| `otel` \| `terminal` \| `none`) + `mapping`, which overrides the **stdout stream's property names** — not harness event names. **Only `terminal` is implemented**; `hooks` and `otel` parse but are wired to nothing, so all three non-`terminal` values behave as `none`. See [Event relay](#event-relay-10) below before choosing — a non-`terminal` profile requeues any task that runs longer than about a minute. |
+| `profiles[]` | `events` | `source` (`hooks` \| `otel` \| `terminal` \| `none`) + `mapping`, which overrides the **stdout stream's property names** — not harness event names — and, via `tool_event_type` + `tool_name_path`, describes a harness that emits one flat event object per tool call. **Only `terminal` is implemented**; `hooks` and `otel` parse but are wired to nothing, so all three non-`terminal` values behave as `none`. See [Event relay](#event-relay-10) below before choosing — a non-`terminal` profile requeues any task that runs longer than about a minute. |
 | `profiles[]` | `telemetry` | `otel` bool (opt-in, default **false**), `endpoint` (OTLP destination; falls back to the one docketd inherited), and `env` (a string map of harness-specific variables, applied verbatim). When on, docketd sets the vendor-neutral `OTEL_*` exporter variables and appends `docket.task_id`/`docket.machine_id` to `OTEL_RESOURCE_ATTRIBUTES`, so the harness's own token/cost telemetry is attributable per task (§10). `otel: true` with **no endpoint configured and none inherited sets nothing at all** and warns once — telemetry is never enabled without a destination. Claude Code additionally needs `"env": { "CLAUDE_CODE_ENABLE_TELEMETRY": "1" }` (its own flag is data, since docketd holds no harness knowledge). **Visibility only**: Docket ingests none of it and enforces no ceiling — see [docs/TELEMETRY.md](../../../docs/TELEMETRY.md). |
 | `profiles[]` | `logs` | §12 machine-local transcript capture: `capture` (bool, default **false**), `max_bytes` (per-stream cap, default 50 MiB), `prune_after_days` (local hygiene, default 7, `0` disables). Legacy `format`/`path` are advisory/reserved — see [Transcript capture](#transcript-capture-12) below. |
 | `profiles[]` | `max_concurrent` | Optional hard cap for a licence/rate/posture reason, unrelated to load (§10). |
@@ -401,10 +401,19 @@ rather than breaking: what it took was one profile field, not harness knowledge 
       "events": {
         "source": "terminal",
         "mapping": {
+          // The §11 resume ref. Codex has no sub-discriminator, so the sub-check is
+          // pointed back at `type` and matched against the same value the outer check
+          // already matched; the id key does the real work.
           "system_type": "thread.started",
           "subtype_key": "type",
           "init_subtype": "thread.started",
-          "session_id_key": "thread_id"
+          "session_id_key": "thread_id",
+          // The progress clock, via flat mode: one Codex event object IS one tool call.
+          // `item.started` rather than `item.completed` so a long command reports at
+          // minute zero. Two name paths because Codex names a shell call in `command`
+          // and an MCP call in `tool`, both under this same event type.
+          "tool_event_type": "item.started",
+          "tool_name_path": "item.command, item.tool"
         }
       },
       "logs": { "capture": true }
@@ -515,28 +524,41 @@ final `report_result`. `preserve` still holds via the plane's record rather than
 cooperation: the `thread_id` `docketd` captured is exactly what `codex exec resume <SESSION_ID>`
 takes, and it survives the kill.
 
-**3. `events.mapping` is mandatory, and it still cannot give you `tool-call`.**
+**3. `events.mapping` is mandatory — and with flat mode it now reaches `tool-call` too.**
 The built-in defaults describe claude's `stream-json`; against a Codex stream they match
-nothing, so a Codex profile that omits `mapping` silently loses its session ref (§11 resume
-becomes a permanent cold start). The four keys above fix that: Codex emits
-`{"type":"thread.started","thread_id":"…"}` with **no** `subtype` property, so the
+nothing, so a Codex profile that omits `mapping` loses its session ref (§11 resume becomes a
+permanent cold start) and every tool call with it. The first four keys above fix the ref: Codex
+emits `{"type":"thread.started","thread_id":"…"}` with **no** `subtype` property, so the
 sub-discriminator is pointed back at `type` and matched against the same value — both checks
 then read the one property Codex does emit.
 
-What no mapping can recover is `tool-call`. The reader wants `message` → `content` to be an
-**array** of blocks and reads the tool name off a block; Codex puts exactly one tool call in
-`item`, an object — `ThreadItem { id, #[serde(flatten)] details }` where the payload for a tool
-call is `McpToolCallItem { server, tool, arguments, result, error, status }`
-(`codex-rs/exec/src/exec_events.rs:98`, `:286`). So the tool name is at `item.tool` and the
-server at `item.server`, both one level down and never in a list. `mapping` renames properties —
-it cannot change nesting or arity. (Source also settles something the docs left open: the event
-enum includes `item.updated` alongside `item.started`/`item.completed`, `exec_events.rs:29`.) The
-consequence is bounded but real: the short aliveness clock is fine (the periodic `alive` is not
-gated on the events source, and every well-formed Codex line also bumps local activity), so
-tasks are not requeued for silence. What you lose is the **progress** clock — the §10
-no-progress ceiling (30 minutes) becomes the only thing governing a Codex worker, a wedged one
-cannot be told from a busy one before it fires, and the dashboard's per-task tool-call feed is
-empty.
+`tool-call` used to be unreachable at any price, and the reason is worth keeping: the reader
+wanted `message` → `content` to be an **array** of blocks and read the tool name off a block,
+while Codex puts exactly one tool call in `item`, an object — `ThreadItem { id,
+#[serde(flatten)] details }` where the payload for an MCP call is `McpToolCallItem { server,
+tool, arguments, result, error, status }` (`codex-rs/exec/src/exec_events.rs:98`, `:286`). So the
+tool name is at `item.tool` (a shell call names it `command` instead) and the server at
+`item.server`, both one level down and never in a list — and renaming properties cannot change
+nesting or arity.
+
+What changed (issue #111) is that the seam now also carries a *shape*: `tool_event_type` names
+the `type` value that **is** a tool call and `tool_name_path` the dotted path to its name, so the
+last two keys above give a Codex worker its progress clock back with no code in `docketd` and no
+Codex knowledge in it either. Two details the source settles: the event enum includes
+`item.updated` alongside `item.started`/`item.completed` (`exec_events.rs:29`) — map only
+`item.started`, or one call reports two or three times — and non-tool items (`agent_message`,
+`reasoning`) share that same `item.started` type, so they are filtered by carrying neither
+`command` nor `tool`. `docketd`'s side of this is pinned by
+`Docket.Runner.Tests/CodexStreamMappingTests`; against the real binary it is still unrun, like
+everything else in this section.
+
+Omit the mapping and the cost is bounded but real: the short aliveness clock is fine (the
+periodic `alive` is not gated on the events source, and every well-formed Codex line also bumps
+local activity), so tasks are not requeued for silence. What you lose is the **progress** clock —
+the §10 no-progress ceiling (30 minutes) becomes the only thing governing a Codex worker, and a
+wedged one cannot be told from a busy one before it fires. That is no longer a silent loss:
+`docketd` writes one line per task when a `terminal` profile reads event lines and extracts
+nothing from them (see [Event relay](#event-relay-10)).
 
 ### Two more differences worth budgeting for
 
@@ -757,10 +779,60 @@ why the worked example above declares `"events": { "source": "terminal" }` with 
 `mapping` at all. Supply keys only for a harness whose stream uses different names
 — that is a config change, not a code change, which is the point of the seam.
 
+**Flat tool-call mode — for a harness that emits one event object per tool call.** The eleven
+keys above all rename *within* claude's nesting: an assistant turn wrapping an **array** of
+content blocks, one of which is the tool call. A harness that emits one object per tool call
+instead — Codex's `{"type":"item.started","item":{…}}` — cannot be reached by renaming, because
+a rename cannot change nesting or arity. Two more keys describe that shape directly:
+
+| key | default | meaning |
+|---|---|---|
+| `tool_event_type` | unset | the `type_key` value of a line that **is** one tool call |
+| `tool_name_path` | unset | dotted path from the line root to the string naming the tool (`item.tool`) |
+
+Declare **both** or neither — either alone is inert, and `docketd` fails the config load rather
+than accept the half. The emitted event is the same `tool-call` the block-array mode produces;
+nothing about the wire contract changes. Rules worth knowing before you write a path:
+
+- **Segments are object property names, split on `.`, and the walk must end on a JSON string.**
+  There are no wildcards, no array indexes, no filters, and no escape for a property name that
+  itself contains a dot. `items.0.tool` reads a property literally named `0`, finds none, and
+  emits nothing. An empty or space-padded segment (`item..tool`, `item . tool`) is a config-load
+  error, not a silent miss.
+- **Comma-separated alternatives are tried in declaration order; the first that resolves to a
+  non-empty string wins.** One harness commonly spells the name differently per tool kind —
+  Codex uses `item.command` for a shell call and `item.tool` for an MCP call — and a single path
+  would silently drop the other half.
+- **At most one `tool-call` per line.** That is what "flat" means; a line where no path resolves
+  emits nothing.
+- **That absence is the item-kind filter.** Codex's non-tool items (`agent_message`,
+  `reasoning`) arrive under the same `item.started` type and carry neither `command` nor `tool`,
+  so they are excluded by not matching. There is deliberately no extra "which item kind is a
+  tool" key.
+- **`tool_event_type` must differ from the effective `system_type` and `assistant_type`.** One
+  line cannot be both the session-init line and a tool call; the collision is a load error.
+- **The two modes coexist.** They key off different `type` values, so a profile may declare both.
+
+Pick the event that fires when a tool call *starts*, not when it completes, if the harness
+offers both. `tool-call` drives the progress clock, so `item.started` reports a 25-minute build
+at minute zero where `item.completed` reports it 25 minutes late — which is most of the
+no-progress ceiling spent looking wedged.
+
 **Unrecognized keys are silently ignored.** Each key falls back to its default
 independently, with no error at load, so a typo or a leftover hook-name mapping
 produces a profile that parses cleanly and reports nothing. If you write a
 `mapping`, verify against a real run rather than against the config.
+
+**A `terminal` profile that reads its stream to no effect now says so.** If a worker's stdout
+parsed as one or more JSON event lines but the mapping extracted neither a session ref nor a
+tool-call over the whole task, `docketd` writes one line per task to its log at that worker's
+exit, naming the task, how many lines it read, whether a `mapping` was declared at all, and what
+the silence cost (no ref to resume from, no progress signal). It is the only signal that
+distinguishes "this harness needs a `mapping`" from "this harness is quiet" — a stream that
+carried no parseable event line at all is *not* reported, since that is a harness not streaming
+JSON or a worker that died early, which its exit code and transcript already show. A profile
+with `source: none` never reads a stream and is never warned about one; it gets the separate
+startup warning above instead.
 
 **`subagent-spawned` has no producer.** It is in the wire vocabulary and the
 plane persists and renders it, but `docketd` never emits one, so no `mapping`
