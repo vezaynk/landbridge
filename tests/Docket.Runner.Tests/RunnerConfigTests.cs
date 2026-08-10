@@ -102,6 +102,96 @@ public class RunnerConfigTests
         Assert.Contains(ex.Errors, e => e.Contains("prune_after_days"));
     }
 
+    // ── Flat tool-call mapping validation (§10, issue #111) ────────────────────
+
+    private static string WithMapping(string mappingJson) => $$"""
+        { "machine": { "work_root": "/w" },
+          "profiles": [ { "name": "default", "spawn": ["codex", "exec"],
+            "events": { "source": "terminal", "mapping": {{mappingJson}} } } ] }
+        """;
+
+    /// <summary>
+    /// The flat mode's two keys are only meaningful together, so a half-declared pair fails
+    /// the load. Left inert it would be the exact failure #111 exists to remove: a profile
+    /// that looks like it maps tool calls and emits none.
+    /// </summary>
+    [Theory]
+    [InlineData("""{ "tool_event_type": "item.started" }""", "without tool_name_path")]
+    [InlineData("""{ "tool_name_path": "item.tool" }""", "without tool_event_type")]
+    public void Rejects_a_half_declared_flat_tool_call_mapping(string mapping, string expected)
+    {
+        var ex = Assert.Throws<RunnerConfigException>(() => RunnerConfig.Load(WithMapping(mapping)));
+
+        Assert.Contains(ex.Errors, e => e.Contains(expected, StringComparison.Ordinal));
+        Assert.Contains(ex.Errors, e => e.Contains("profile 'default'", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// A <c>tool_name_path</c> must be a walkable list of property names. The resolver has no
+    /// wildcards or indexes, so the shapes rejected here are the ones an author would write
+    /// expecting a query language — better a load error than a profile that reads nothing.
+    /// </summary>
+    [Theory]
+    [InlineData("item..tool")]      // empty middle segment
+    [InlineData(".item.tool")]      // empty leading segment
+    [InlineData("item.tool.")]      // empty trailing segment
+    [InlineData("item . tool")]     // padded segments — would look up "item " and " tool"
+    [InlineData("item.tool,,item.command")]  // an empty alternative
+    public void Rejects_an_unwalkable_tool_name_path(string path)
+    {
+        var json = WithMapping($$"""{ "tool_event_type": "item.started", "tool_name_path": "{{path}}" }""");
+
+        var ex = Assert.Throws<RunnerConfigException>(() => RunnerConfig.Load(json));
+
+        Assert.Contains(ex.Errors, e =>
+            e.Contains("tool_name_path", StringComparison.Ordinal)
+            && (e.Contains("unwalkable", StringComparison.Ordinal) || e.Contains("empty alternative", StringComparison.Ordinal)));
+    }
+
+    /// <summary>
+    /// A <c>tool_event_type</c> that collides with the effective <c>system_type</c> or
+    /// <c>assistant_type</c> is rejected: the reader dispatches on the first match, so one of
+    /// the two meanings would be silently shadowed. The Codex mapping is the live example of
+    /// why this is easy to hit — it deliberately points several keys at the one <c>type</c>
+    /// property Codex emits, so the values must still be distinct.
+    /// </summary>
+    [Theory]
+    // Collides with the claude default assistant_type…
+    [InlineData("""{ "tool_event_type": "assistant", "tool_name_path": "item.tool" }""", "assistant_type")]
+    // …with an explicitly remapped system_type (the Codex session-ref trick)…
+    [InlineData("""{ "system_type": "thread.started", "tool_event_type": "thread.started", "tool_name_path": "item.tool" }""", "system_type")]
+    // …and with an explicitly remapped assistant_type.
+    [InlineData("""{ "assistant_type": "item.started", "tool_event_type": "item.started", "tool_name_path": "item.tool" }""", "assistant_type")]
+    public void Rejects_a_tool_event_type_that_collides_with_another_discriminator(string mapping, string expected)
+    {
+        var ex = Assert.Throws<RunnerConfigException>(() => RunnerConfig.Load(WithMapping(mapping)));
+
+        Assert.Contains(ex.Errors, e =>
+            e.Contains("tool_event_type", StringComparison.Ordinal) && e.Contains(expected, StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// The worked Codex mapping loads clean, flat keys and all — the config half of the
+    /// recoverability that <c>CodexStreamMappingTests</c> proves against the stream. Unknown
+    /// keys stay tolerated (the seam is a bag of optional overrides, and
+    /// <see cref="ValidJson"/> above carries a leftover hook-name mapping), so validation
+    /// covers only mistakes that make a declared flat mode inert.
+    /// </summary>
+    [Fact]
+    public void Accepts_the_worked_codex_flat_mapping_including_alternatives_and_unknown_keys()
+    {
+        var json = WithMapping("""
+            { "system_type": "thread.started", "subtype_key": "type", "init_subtype": "thread.started",
+              "session_id_key": "thread_id", "tool_event_type": "item.started",
+              "tool_name_path": "item.command, item.tool", "some_future_key": "ignored" }
+            """);
+
+        var mapping = RunnerConfig.Load(json).Default.Events.Mapping;
+
+        Assert.Equal("item.started", mapping["tool_event_type"]);
+        Assert.Equal("item.command, item.tool", mapping["tool_name_path"]);
+    }
+
     [Fact]
     public void Rejects_a_config_with_no_default_profile()
     {

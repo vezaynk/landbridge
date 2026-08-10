@@ -32,6 +32,49 @@ namespace Docket.Runner;
 ///   <item><c>tool_name_key</c> (<c>name</c>) — property on a tool_use block naming the tool.</item>
 /// </list></para>
 ///
+/// <para><b>Flat tool-call mode (§10, issue #111).</b> The eleven keys above all assume
+/// claude's nesting: an assistant turn wrapping an <em>array</em> of content blocks, one of
+/// which is the tool call. A harness that emits one event object <em>per</em> tool call —
+/// Codex's <c>{"type":"item.started","item":{…}}</c> — cannot be described by renaming
+/// alone, because renames never change nesting or arity. Two more keys describe that shape
+/// directly, and declaring both switches the mode on for the lines they match:
+/// <list type="bullet">
+///   <item><c>tool_event_type</c> (unset) — the <c>type_key</c> value of a line that <em>is</em>
+///     one tool call.</item>
+///   <item><c>tool_name_path</c> (unset) — a dotted path from the line root to the string
+///     naming the tool (<c>item.tool</c>). Comma-separated alternatives are tried in order
+///     and the first that resolves to a non-empty string wins, because one harness commonly
+///     spells the name differently per tool kind (Codex: <c>item.command</c> for a shell
+///     call, <c>item.tool</c> for an MCP call). At most one <see cref="ToolCallEvent"/> per
+///     line either way — that is what "flat" means.</item>
+/// </list>
+/// A line whose <c>type</c> matches but where no path resolves emits nothing, and that
+/// absence is the discriminator: Codex's non-tool items (<c>agent_message</c>,
+/// <c>reasoning</c>) arrive under the same <c>item.started</c> type and are filtered
+/// precisely by not carrying the named property, so no extra "which item kind is a tool"
+/// key is needed. The two modes coexist — flat mode keys off its own <c>type</c> value, so a
+/// profile may declare both — and the emitted event is the same frozen
+/// <see cref="ToolCallEvent"/> wire member; nothing about the contract widens.</para>
+///
+/// <para><b>What the path resolver deliberately does not do.</b> Segments are object
+/// property names, split on <c>.</c>, and the walk must end on a JSON string: no wildcards,
+/// no array indexing, no filters, no escaping for property names that themselves contain a
+/// dot. Every shape this exists to read (one tool call, one level down, named by a string
+/// property) is reachable without them, and each addition would be a step from "declarative
+/// path" toward a query language embedded in config — which §10's config-only onboarding
+/// promise does not need and could not validate. A malformed path (empty or
+/// whitespace-padded segment) is rejected by
+/// <see cref="RunnerConfig.TryLoad"/> at load, so it can never be a silent no-op here.</para>
+///
+/// <para><b>Silent-stream warning (§11, issue #111).</b> A <c>terminal</c> profile whose
+/// mapping matches nothing parses every line and extracts nothing — resume degrades to a
+/// permanent cold start and the task's progress clock never advances, with no signal anywhere
+/// that it happened. So this reader reports exactly one line per task, at the end of the
+/// drain, when it saw well-formed event lines and got neither a session ref nor a tool-call.
+/// Nothing to report is the common case and stays silent, and a profile with
+/// <c>events.source: none</c> never constructs a reader at all, so it cannot be warned about
+/// something it never claimed.</para>
+///
 /// <para><b>AOT (§10).</b> The stream is parsed with <see cref="JsonDocument"/>, not a
 /// source-gen'd <c>JsonSerializerContext</c> DTO: the mapping seam makes the
 /// property <em>names</em> a runtime value, which a compile-time DTO cannot
@@ -50,11 +93,23 @@ public sealed class TerminalEventReader
     private readonly Action<TaskId> _recordActivity;
     private readonly Action<string>? _onSessionId;
     private readonly Action<string>? _rawLineSink;
+    private readonly Action<string> _warn;
+    private readonly bool _mappingDeclared;
     private readonly TimeProvider _clock;
     private readonly TerminalStreamMapping _map;
 
     /// <summary>Set once, from the first <c>system/init</c>: the id is stable for the run.</summary>
     private string? _sessionId;
+
+    /// <summary>Well-formed JSON object lines seen — the denominator of the silent-stream warning.</summary>
+    private int _eventLines;
+
+    /// <summary>Set the moment this reader gets anything out of the stream (session ref or
+    /// tool-call): the one condition that makes the mapping demonstrably right for this harness.</summary>
+    private bool _extractedSomething;
+
+    /// <summary>Guards the one-per-task warning against a second <see cref="ReadToEndAsync"/>.</summary>
+    private bool _warned;
 
     /// <param name="recordActivity">
     /// The per-task liveness signal (<see cref="ProcessSupervisor.RecordActivity"/>):
@@ -75,6 +130,12 @@ public sealed class TerminalEventReader
     /// exactly the pre-capture event-only reader. Teeing, not diverting: the sink never
     /// sees event mapping and mapping never sees the sink.
     /// </param>
+    /// <param name="warn">
+    /// Where the once-per-task silent-stream line goes. Defaults to docketd's log sink
+    /// (stderr), which is where every other operator-facing degradation notice in the
+    /// supervisor is written, so the production call site needs no wiring; tests inject a
+    /// collector instead of redirecting the process's console.
+    /// </param>
     public TerminalEventReader(
         TaskId task,
         OutboundEventRing ring,
@@ -82,13 +143,16 @@ public sealed class TerminalEventReader
         IReadOnlyDictionary<string, string> mapping,
         TimeProvider clock,
         Action<string>? onSessionId = null,
-        Action<string>? rawLineSink = null)
+        Action<string>? rawLineSink = null,
+        Action<string>? warn = null)
     {
         _task = task;
         _ring = ring;
         _recordActivity = recordActivity;
         _onSessionId = onSessionId;
         _rawLineSink = rawLineSink;
+        _warn = warn ?? Console.Error.WriteLine;
+        _mappingDeclared = mapping.Count > 0;
         _clock = clock;
         _map = TerminalStreamMapping.From(mapping);
     }
@@ -122,6 +186,41 @@ public sealed class TerminalEventReader
             // Cancelled on teardown, or the worker's stdout pipe was closed by a
             // kill mid-read — either way the stream is over; end the drain quietly.
         }
+
+        // The stream is over one way or another, which for this reader is the worker's
+        // exit: last chance to say that a whole task's worth of output yielded nothing.
+        // Deliberately outside the try — an unexpected throw is a louder signal than
+        // this line and should not be dressed up as a mapping problem.
+        ReportSilentStream();
+    }
+
+    /// <summary>
+    /// §11 resume honesty (issue #111): one line per task when this <c>terminal</c> profile
+    /// read well-formed event lines and extracted neither a session ref nor a tool-call.
+    ///
+    /// <para>The guard is deliberately "saw event lines but got nothing", not "got nothing":
+    /// a worker whose stdout carried no parseable event line at all has a different diagnosis
+    /// — the harness is not streaming JSON, or it died before its first line — which its exit
+    /// code and transcript already show, and warning there would fire on every fast failure.
+    /// The case that hides is the stream that parses perfectly and yields nothing, which is
+    /// always a mapping that does not match the harness.</para>
+    /// </summary>
+    private void ReportSilentStream()
+    {
+        if (_warned || _extractedSomething || _eventLines == 0)
+            return;
+
+        _warned = true;
+        var cause = _mappingDeclared
+            ? "the profile's events.mapping matched none of them"
+            : "the profile declares no events.mapping and the built-in claude stream-json defaults matched none of them";
+        _warn(
+            $"docketd: task {_task.Value}: events.source is 'terminal' and the worker's stdout parsed as " +
+            $"{_eventLines} JSON event line(s), but {cause} — no session ref and no tool-call came out of the " +
+            "whole task. So §11 resume has no ref to resume from (every redispatch of this task is a cold " +
+            "start) and the task had no progress signal: the no-progress ceiling was the only clock governing " +
+            "it, and a wedged agent could not have been told from a busy one. Check events.mapping against a " +
+            "real run of this harness (§10).");
     }
 
     private void ProcessLine(string line)
@@ -147,6 +246,7 @@ public sealed class TerminalEventReader
 
             // A well-formed object line is forward progress: bump per-task liveness.
             _recordActivity(_task);
+            _eventLines++;
 
             var type = GetString(root, _map.TypeKey);
 
@@ -158,6 +258,8 @@ public sealed class TerminalEventReader
 
             if (type == _map.AssistantType)
                 EmitToolCalls(root);
+            else if (_map.FlatToolCalls && type == _map.ToolEventType)
+                EmitFlatToolCall(root);
 
             // SubagentSpawnedEvent (§10 telemetry ingest) is intentionally NOT
             // emitted here. The claude stream-json shape has no first-class
@@ -181,6 +283,7 @@ public sealed class TerminalEventReader
             return;
 
         _sessionId = sid;
+        _extractedSomething = true;
         _onSessionId?.Invoke(sid);
     }
 
@@ -202,7 +305,48 @@ public sealed class TerminalEventReader
                 continue; // a tool_use with no name is not an actionable progress signal.
 
             _ring.Enqueue(new ToolCallEvent(_task, tool, _clock.GetUtcNow()));
+            _extractedSomething = true;
         }
+    }
+
+    /// <summary>
+    /// Flat mode: this whole line <em>is</em> one tool call, so emit at most one
+    /// <see cref="ToolCallEvent"/> from it — the first declared
+    /// <c>tool_name_path</c> alternative that resolves to a non-empty string. A line where
+    /// none resolves is not a tool call (Codex's <c>agent_message</c> items ride the same
+    /// <c>type</c>), and silence is the right answer for it.
+    /// </summary>
+    private void EmitFlatToolCall(JsonElement root)
+    {
+        foreach (var path in _map.ToolNamePaths)
+        {
+            if (ResolvePath(root, path) is not { Length: > 0 } tool)
+                continue;
+
+            _ring.Enqueue(new ToolCallEvent(_task, tool, _clock.GetUtcNow()));
+            _extractedSomething = true;
+            return;
+        }
+    }
+
+    /// <summary>
+    /// Walks a pre-split dotted path of object property names and returns the string it lands
+    /// on, or null if any segment is missing, any intermediate value is not an object, or the
+    /// destination is not a string. Strict by construction: there is no wildcard, no index, and
+    /// no coercion of a number or bool into a tool name, so a path either describes the
+    /// harness's shape exactly or reads nothing.
+    /// </summary>
+    private static string? ResolvePath(JsonElement root, string[] segments)
+    {
+        var current = root;
+        foreach (var segment in segments)
+        {
+            if (current.ValueKind != JsonValueKind.Object || !current.TryGetProperty(segment, out var next))
+                return null;
+            current = next;
+        }
+
+        return current.ValueKind == JsonValueKind.String ? current.GetString() : null;
     }
 
     private static string? GetString(JsonElement obj, string key) =>
@@ -226,8 +370,18 @@ internal readonly record struct TerminalStreamMapping(
     string ContentKey,
     string BlockTypeKey,
     string ToolUseBlockType,
-    string ToolNameKey)
+    string ToolNameKey,
+    string? ToolEventType,
+    string[][] ToolNamePaths)
 {
+    /// <summary>
+    /// True when the profile declared the flat tool-call mode (issue #111). Both keys are
+    /// required: <c>tool_event_type</c> alone would match lines it cannot name a tool from,
+    /// and <c>tool_name_path</c> alone would never be consulted. <c>RunnerConfig</c> rejects a
+    /// half-declared pair at load, so this only ever reads false because nothing was asked for.
+    /// </summary>
+    public bool FlatToolCalls => ToolEventType is { Length: > 0 } && ToolNamePaths.Length > 0;
+
     public static TerminalStreamMapping From(IReadOnlyDictionary<string, string> mapping) => new(
         Pick(mapping, "type_key", "type"),
         Pick(mapping, "system_type", "system"),
@@ -239,8 +393,43 @@ internal readonly record struct TerminalStreamMapping(
         Pick(mapping, "content_key", "content"),
         Pick(mapping, "block_type_key", "type"),
         Pick(mapping, "tool_use_block_type", "tool_use"),
-        Pick(mapping, "tool_name_key", "name"));
+        Pick(mapping, "tool_name_key", "name"),
+        PickOrNull(mapping, "tool_event_type"),
+        ParseToolNamePaths(PickOrNull(mapping, "tool_name_path")));
 
-    private static string Pick(IReadOnlyDictionary<string, string> mapping, string key, string fallback) =>
+    /// <summary>
+    /// Resolves a mapping key against the claude default. Shared with
+    /// <see cref="RunnerConfig"/> so load-time validation reasons about the same effective
+    /// values the reader will use, rather than a second copy of the defaults.
+    /// </summary>
+    internal static string Pick(IReadOnlyDictionary<string, string> mapping, string key, string fallback) =>
         mapping.TryGetValue(key, out var v) && !string.IsNullOrEmpty(v) ? v : fallback;
+
+    private static string? PickOrNull(IReadOnlyDictionary<string, string> mapping, string key) =>
+        mapping.TryGetValue(key, out var v) && !string.IsNullOrWhiteSpace(v) ? v : null;
+
+    /// <summary>
+    /// Splits <c>tool_name_path</c> once, at construction: commas separate alternatives (tried
+    /// in declaration order), dots separate object property names. Whitespace around an
+    /// alternative is tolerated so a config author can breathe; whitespace <em>inside</em> a
+    /// segment is not, because a property name is exact. A malformed alternative is dropped
+    /// here and reported as a config error by <see cref="RunnerConfig.TryLoad"/> — the load
+    /// error is the operator-facing half, this is just the reader refusing to guess.
+    /// </summary>
+    internal static string[][] ParseToolNamePaths(string? raw)
+    {
+        if (string.IsNullOrWhiteSpace(raw))
+            return [];
+
+        var paths = new List<string[]>();
+        foreach (var alternative in raw.Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries))
+        {
+            var segments = alternative.Split('.');
+            if (Array.Exists(segments, s => s.Length == 0 || s.Trim() != s))
+                continue;
+            paths.Add(segments);
+        }
+
+        return [.. paths];
+    }
 }
