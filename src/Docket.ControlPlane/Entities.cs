@@ -212,24 +212,27 @@ public sealed class TaskRow
     public Guid? ContinuesTaskId { get; set; }
 
     /// <summary>
-    /// Continuation dispatch affinity, directory half (§11): the task whose machine-local
-    /// work dir holds the harness session this task resumes, or null when that is this
-    /// task's own dir. Rides the dispatch as
-    /// <see cref="Docket.Contracts.DispatchCommand.ResumeFromTask"/>, because Claude Code
-    /// resumes a session only from the directory that created it.
+    /// The task whose machine-local work dir this task's harness runs in (§7, §11), or null
+    /// when that is this task's own. Set for a continuation and nothing else; rides every
+    /// dispatch as <see cref="Docket.Contracts.DispatchCommand.WorkDirTask"/>.
     ///
-    /// <para>Distinct from <see cref="ContinuesTaskId"/>, which is <em>lineage</em>, and
-    /// it has to be: lineage names the immediate predecessor, and a chain (a continuation
-    /// of a continuation — §11 calls chains natural) does not create a new session per
-    /// link. B continuing A resumes A's session <em>in A's dir</em>; C continuing B
-    /// resumes that same session, which is still in A's dir and never in B's — B has no
-    /// dir of its own. So this is seeded transitively at creation (the source's own value,
-    /// else the source itself), which also makes it O(1) at dispatch rather than a walk up
-    /// the lineage. Cleared when a degrade cold-start abandons the session, exactly like
-    /// <see cref="PreferredMachine"/>: that dispatch starts a genuinely new session, and it
-    /// belongs in the cold-started task's own dir.</para>
+    /// <para><b>A property of continuation itself, not of resume.</b> A continuation works
+    /// where its predecessor worked whether or not it resumes that transcript, because the
+    /// workspace is the work: a cold-started continuation still needs the worktree and
+    /// artifacts the predecessor left. So this is <em>not</em> suppressed or cleared when a
+    /// session is not being resumed — including a degrade cold-start, which keeps it so the
+    /// task's directory stays the same across every attempt. Transcript resume additionally
+    /// requires it (a session is directory-local), but does not define it.</para>
+    ///
+    /// <para>Distinct from <see cref="ContinuesTaskId"/>, which is <em>lineage</em>, and it
+    /// has to be: lineage names the immediate predecessor, while a chain (a continuation of
+    /// a continuation — §11 calls chains natural) does not create a directory per link. B
+    /// continuing A works in A's dir, so B has no dir of its own, and C continuing B works
+    /// in A's too though its lineage names B. Seeded transitively at creation (the source's
+    /// own value, else the source itself), which also makes it O(1) at dispatch rather than
+    /// a walk up the lineage.</para>
     /// </summary>
-    public Guid? ResumeDirTaskId { get; set; }
+    public Guid? WorkDirTaskId { get; set; }
 
     /// <summary>
     /// Continuation dispatch affinity (§6/§11): the machine that last held/ran the

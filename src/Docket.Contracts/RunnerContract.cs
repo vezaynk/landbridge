@@ -50,14 +50,21 @@ public abstract record RunnerCommand : RunnerMessage
 /// fallback). Opaque transport metadata: the runner substitutes it into
 /// <c>resume.args</c> and never interprets it (§11 resume seam).</para>
 ///
-/// <para><see cref="ResumeFromTask"/> is additive and wire-compatible in exactly the
-/// same way, and exists because a harness session is <b>directory</b>-local as well as
-/// machine-local: Claude Code resumes a session only from the directory that created
-/// it. A same-task park-resume reuses that task's own work dir and needs nothing, but a
-/// <c>continues:</c> continuation runs under a NEW task id — so without this it would
-/// look for the session in a directory that never held one. It names the task whose work
-/// dir the resumed harness must run in, and it is null whenever that is the dispatched
-/// task itself.</para>
+/// <para><see cref="WorkDirTask"/> is additive and wire-compatible in the same way, and
+/// names the task whose working directory this dispatch runs in. It is <b>not</b> about
+/// resume: a <c>continues:</c> continuation runs where its predecessor worked whether or
+/// not it resumes that transcript, because the workspace <em>is</em> the work (§7, §11) —
+/// a cold-started continuation still needs the worktree and artifacts the predecessor
+/// left. Transcript resume is the additional bonus when the machine and session survive,
+/// and it needs this too, since a harness session is directory-local as well as
+/// machine-local (Claude Code resumes only from the directory that created it) and a
+/// continuation runs under a NEW task id. Null whenever the directory is the dispatched
+/// task's own — every ordinary task, and every park-resume of one.</para>
+///
+/// <para><b>Not the same value as continuation lineage</b>, which is why it is its own
+/// field rather than something the runner could derive: the plane resolves it
+/// transitively. Resuming does not create a directory per link, so B continuing A works
+/// in A's directory and C continuing B works in A's too, though C's lineage names B.</para>
 ///
 /// <para><b>A task, not a path.</b> The plane does not know — and must not choose — a
 /// machine's filesystem layout: <c>work_root</c> is machine-local runner config, and the
@@ -73,7 +80,7 @@ public sealed record DispatchCommand(
     decimal? BudgetUsd = null,
     Dictionary<string, string>? SpawnSubstitutions = null,
     string? ResumeSessionRef = null,
-    TaskId? ResumeFromTask = null) : RunnerCommand;
+    TaskId? WorkDirTask = null) : RunnerCommand;
 
 /// <summary>
 /// <c>stop(ttl, disposition)</c> — graceful wind-down (§10, §11). Delivered as

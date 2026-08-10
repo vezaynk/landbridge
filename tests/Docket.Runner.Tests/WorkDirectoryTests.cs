@@ -5,19 +5,24 @@ using Microsoft.Extensions.Time.Testing;
 namespace Docket.Runner.Tests;
 
 /// <summary>
-/// §11 resume, directory half: a harness session is directory-local as well as machine-local
-/// — Claude Code resumes a session only from the directory that created it. A same-task
-/// park-resume reuses that task's own dir, but a <c>continues:</c> continuation runs under a
-/// NEW task id, so the plane names the task whose dir holds the session
-/// (<see cref="DispatchCommand.ResumeFromTask"/>) and the harness runs there.
+/// Which directory a task's harness runs in (§7, §11). Ordinarily its own; for a
+/// <c>continues:</c> continuation, its predecessor's — named by the plane as
+/// <see cref="DispatchCommand.WorkDirTask"/>, because a continuation runs under a NEW task id
+/// and the runner's own directory for it would be empty.
+///
+/// <para>Inheritance is a property of <b>continuation</b>, not of resume, and one of these
+/// facts exists to pin exactly that: a cold start with no session ref still runs there,
+/// because the worktree and artifacts the predecessor left are what the successor needs — the
+/// workspace is the work. Transcript resume additionally requires it (a harness session is
+/// directory-local, so Claude Code resumes only from the creating directory) but does not
+/// define it.</para>
 ///
 /// <para>That deliberately puts two task ids in one directory, which §7 accepts for
-/// continuations — the workspace <em>is</em> the work, and a continuation inheriting it is the
-/// point. These facts pin the consequences: the dispatched task keeps its own identity for
-/// everything the runner keys on (supervision, reaping, the injected credential), so sharing a
-/// dir is not sharing a task.</para>
+/// continuations. These facts pin the consequences: the dispatched task keeps its own identity
+/// for everything the runner keys on (supervision, reaping, the injected credential), so
+/// sharing a dir is not sharing a task.</para>
 /// </summary>
-public sealed class ResumeDirectoryTests : IDisposable
+public sealed class WorkDirectoryTests : IDisposable
 {
     private readonly string _workRoot = TestKit.NewWorkRoot();
     private readonly FakeTimeProvider _clock = new();
@@ -49,7 +54,7 @@ public sealed class ResumeDirectoryTests : IDisposable
         supervisor.Spawn(
             new DispatchCommand(
                 continuation, "default", McpConfigJson: """{"mcpServers":{}}""",
-                ResumeSessionRef: "sess-abc", ResumeFromTask: predecessor),
+                ResumeSessionRef: "sess-abc", WorkDirTask: predecessor),
             TestKit.ResumeProfile(), "m");
 
         // The harness ran in the PREDECESSOR's dir — it wrote its argv marker there…
@@ -75,28 +80,39 @@ public sealed class ResumeDirectoryTests : IDisposable
     }
 
     /// <summary>
-    /// A cold start ignores the field entirely. It is honoured only while actually resuming,
-    /// so a profile with no <c>resume.args</c> — or a dispatch whose resume ref was suppressed
-    /// (a degrade cold-start) — always gets its own dir, whatever else the dispatch carries.
+    /// A <b>cold start</b> honours the named directory too, and this is the fact that says
+    /// directory inheritance belongs to continuation rather than to resume: no session ref,
+    /// no <c>--resume</c>, and the harness still runs where its predecessor worked — because
+    /// the worktree and artifacts it needs are there, whether or not the conversation
+    /// survived. A degrade cold-start is exactly this shape.
     /// </summary>
     [Fact]
-    public async Task A_cold_start_ignores_the_named_directory_and_uses_its_own()
+    public async Task A_cold_start_still_runs_in_the_named_directory()
     {
         var predecessor = TaskId.New();
         var task = TaskId.New();
         var supervisor = NewSupervisor();
 
-        // No resume ref → cold start, even though a directory is named.
+        // Something the predecessor left behind — the reason to be in its directory at all.
+        var predecessorDir = Directory.CreateDirectory(
+            Path.Combine(_workRoot, predecessor.ToString())).FullName;
+        await File.WriteAllTextAsync(Path.Combine(predecessorDir, "artifact.txt"), "left behind");
+
+        // No resume ref → cold start, and a directory is named.
         supervisor.Spawn(
             new DispatchCommand(
                 task, "default", McpConfigJson: """{"mcpServers":{}}""",
-                ResumeFromTask: predecessor),
+                WorkDirTask: predecessor),
             TestKit.ResumeProfile(), "m");
 
-        var argv = await ArgvIn(task);
-        Assert.DoesNotContain("--resume", argv);
-        Assert.False(Directory.Exists(Path.Combine(_workRoot, predecessor.ToString())));
-        Assert.True(File.Exists(Path.Combine(_workRoot, task.ToString(), "mcp.json")));
+        var argv = await ArgvIn(predecessor);          // it ran in the predecessor's dir…
+        Assert.DoesNotContain("--resume", argv);        // …on the cold argv, with no resume
+        // The predecessor's work is what it can see from there.
+        Assert.True(File.Exists(Path.Combine(predecessorDir, "artifact.txt")));
+        // Its own dir was never used, and the borrowed dir's own config name is untouched.
+        Assert.False(Directory.Exists(Path.Combine(_workRoot, task.ToString())));
+        Assert.True(File.Exists(Path.Combine(predecessorDir, $"mcp-{task}.json")));
+        Assert.False(File.Exists(Path.Combine(predecessorDir, "mcp.json")));
 
         supervisor.Kill(task);
     }
@@ -144,7 +160,7 @@ public sealed class ResumeDirectoryTests : IDisposable
 
         supervisor.Spawn(
             new DispatchCommand(
-                continuation, "default", ResumeSessionRef: "sess-abc", ResumeFromTask: predecessor),
+                continuation, "default", ResumeSessionRef: "sess-abc", WorkDirTask: predecessor),
             TestKit.ResumeProfile("sleeper"), "m");
         Assert.True(supervisor.TryGet(continuation, out var guest));
 
