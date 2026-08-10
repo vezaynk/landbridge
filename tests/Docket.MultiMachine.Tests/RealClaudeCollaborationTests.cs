@@ -333,13 +333,15 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// continuation worker reports a value that only that conversation holds.
     ///
     /// <para>This is the second half of what #102 blocked, and it needed one thing park-resume
-    /// did not. A harness session is <b>directory</b>-local as well as machine-local — Claude
-    /// Code resumes only from the directory that created it — and a continuation runs under a
-    /// NEW task id, so the runner's own <c>work_root/task_id</c> would be an empty directory
-    /// that never held a session. The dispatch therefore names the task whose dir does
-    /// (<c>DispatchCommand.ResumeFromTask</c>, seeded from the row and resolved transitively so
-    /// chains land on the root), and the harness runs there. A task, never a path: work_root is
-    /// machine-local runner config, so the plane names a task and the runner maps it.</para>
+    /// did not: the harness has to run in the continued task's directory
+    /// (<c>DispatchCommand.WorkDirTask</c>, seeded from the row and resolved transitively so
+    /// chains land on the root). A continuation runs there whether or not it resumes — the
+    /// workspace is the work (§7) — and resuming additionally <em>requires</em> it, which is
+    /// what this fact turns on: a harness session is <b>directory</b>-local as well as
+    /// machine-local, so a resume aimed at the continuation's own new, never-used directory
+    /// fails outright. A task, never a path: work_root is machine-local runner config, so the
+    /// plane names a task and the runner maps it. The cold-start half of the same rule is
+    /// scripted and token-free, in <c>MultiMachineCollaborationTests</c>.</para>
     ///
     /// <para>The nonce is the proof, and it is airtight for the same reason as above: it appears
     /// only in the FIRST task's spawn prompt. The continuation's row is new — its description

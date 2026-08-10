@@ -306,7 +306,7 @@ public sealed class DispatchService : IHostedService
             // runner is told whose work dir the session lives in — Claude Code resumes a
             // session only from the directory that created it. Null for a same-task
             // park-resume, where that dir is already the one the runner would pick.
-            ResumeFromTask: applied.ResumeDirTask,
+            WorkDirTask: applied.WorkDirTask,
             // §9.9/§9 check 9: the per-dispatch cap committed against the Team's ceiling,
             // enforced by the harness itself (the profile's {budget} substitution). This is
             // the backstop that holds even when spend telemetry is absent — which today it

@@ -213,7 +213,7 @@ public sealed class ContinuationDispatchTests(PostgresFixture pg) : IAsyncLifeti
             await NewStore(db).DispatchNextAsync(Machine("m1"), WorkerInstanceId.New(), default, ["m1"]));
 
         Assert.Equal("sess-1", applied.HarnessSessionRef);
-        Assert.Equal(continued, applied.ResumeDirTask);
+        Assert.Equal(continued, applied.WorkDirTask);
     }
 
     /// <summary>
@@ -242,12 +242,12 @@ public sealed class ContinuationDispatchTests(PostgresFixture pg) : IAsyncLifeti
         await using var v = pg.NewContext();
         // B points at A because A is where the session was made; C points at A too, THROUGH
         // B, not at B — B is only its lineage.
-        Assert.Equal(a.Value, (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == b.Value)).ResumeDirTaskId);
+        Assert.Equal(a.Value, (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == b.Value)).WorkDirTaskId);
         var rowC = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == c.Value);
-        Assert.Equal(a.Value, rowC.ResumeDirTaskId);
+        Assert.Equal(a.Value, rowC.WorkDirTaskId);
         Assert.Equal(b.Value, rowC.ContinuesTaskId);
         // …and A itself, an ordinary task, claims nobody's directory.
-        Assert.Null((await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == a.Value)).ResumeDirTaskId);
+        Assert.Null((await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == a.Value)).WorkDirTaskId);
     }
 
     /// <summary>
@@ -266,7 +266,7 @@ public sealed class ContinuationDispatchTests(PostgresFixture pg) : IAsyncLifeti
 
         var first = Assert.IsType<StoreResult.Applied>(
             await NewStore(db).DispatchNextAsync(Machine("m1"), WorkerInstanceId.New(), default, ["m1"]));
-        Assert.Null(first.ResumeDirTask);
+        Assert.Null(first.WorkDirTask);
 
         // Give it a session ref and requeue it, exactly as a park-then-answer would, so the
         // redispatch really is a resume — and still names no directory. Fresh contexts: the
@@ -281,27 +281,33 @@ public sealed class ContinuationDispatchTests(PostgresFixture pg) : IAsyncLifeti
         var second = Assert.IsType<StoreResult.Applied>(
             await NewStore(redispatch).DispatchNextAsync(Machine("m1"), WorkerInstanceId.New(), default, ["m1"]));
         Assert.Equal("sess-park", second.HarnessSessionRef);
-        Assert.Null(second.ResumeDirTask);
+        Assert.Null(second.WorkDirTask);
     }
 
     /// <summary>
-    /// A degrade cold-start suppresses the directory along with the session ref, and clears
-    /// it from the row. There is nothing to resume from here — the predecessor's dir is on
-    /// the machine that went away — so this dispatch's new session belongs in its own dir.
+    /// A degrade cold-start drops the <em>session</em> but keeps the <em>directory</em>. The
+    /// two are not the same guard: the conversation is gone with the machine, but a
+    /// continuation still works where its predecessor worked (§7 — the workspace is the work),
+    /// and keeping it means the task's directory is the same on every attempt rather than
+    /// moving the moment a session is abandoned. On this machine that directory starts empty,
+    /// which is precisely what the memory-lost event records.
     /// </summary>
     [SkippableFact]
-    public async Task A_degrade_cold_start_suppresses_and_clears_the_directory_too()
+    public async Task A_degrade_cold_start_drops_the_session_but_keeps_the_directory()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         await using var db = pg.NewContext();
-        var (task, _) = await CreateContinuation(db, "m1", "sess-1", MachineGonePolicy.Degrade);
+        var (task, continued) = await CreateContinuation(db, "m1", "sess-1", MachineGonePolicy.Degrade);
 
         var applied = Assert.IsType<StoreResult.Applied>(
             await NewStore(db).DispatchNextAsync(Machine("m2"), WorkerInstanceId.New(), default, ["m2"]));
 
-        Assert.Null(applied.HarnessSessionRef);
-        Assert.Null(applied.ResumeDirTask);
+        Assert.Null(applied.HarnessSessionRef);          // no transcript to resume
+        Assert.Equal(continued, applied.WorkDirTask);     // but still the predecessor's dir
         await using var v = pg.NewContext();
-        Assert.Null((await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == task.Value)).ResumeDirTaskId);
+        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == task.Value);
+        Assert.Equal(continued.Value, row.WorkDirTaskId);
+        Assert.Null(row.HarnessSessionRef);               // cleared with the rest of the affinity
+        Assert.Null(row.PreferredMachine);
     }
 }

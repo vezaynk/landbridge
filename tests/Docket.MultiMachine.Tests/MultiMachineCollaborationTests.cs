@@ -187,4 +187,54 @@ public sealed class MultiMachineCollaborationTests(PostgresFixture pg) : IAsyncL
         Assert.Equal("A", rig.MachineOf(serve));
         Assert.Equal("B", rig.MachineOf(query));
     }
+
+    /// <summary>
+    /// §7/§11: a <c>continues:</c> continuation works in its predecessor's directory even
+    /// when there is no transcript to resume. This tier has no session refs at all — the
+    /// scripted harness emits none, so nothing is ever stamped to inherit — which makes it
+    /// the honest place to pin that directory inheritance belongs to <b>continuation</b>
+    /// rather than to resume. The successor needs the worktree and artifacts its predecessor
+    /// left whether or not the conversation survived; the workspace is the work.
+    ///
+    /// <para>The proof is filesystem-level and needs no cooperation from the harness beyond
+    /// what every role already does: each writes its own assignment to <c>get_task.json</c>
+    /// in its working directory, so finding the <em>continuation's</em> task id in a file
+    /// under the <em>predecessor's</em> directory can only mean it ran there. Its own
+    /// directory is never created.</para>
+    /// </summary>
+    [SkippableFact]
+    public async Task A_continuation_works_in_its_predecessors_directory_with_no_session_to_resume()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(3));
+        var ct = cts.Token;
+
+        await using var rig = new FleetRig(pg);
+        await rig.StartAsync(ct);
+        await rig.AddMachineAsync("A");
+
+        var first = await rig.CreateTaskAsync("echo:predecessor-was-here", ct);
+        await rig.DispatchToAsync("A", ct);
+        Assert.True(
+            await FleetRig.WaitUntilAsync(async () => await rig.StateAsync(first, ct) == TaskState.Verifying, Bound),
+            "the predecessor never reached verifying. " + await rig.DiagnoseAsync(first, ct));
+        Assert.Equal("echo:predecessor-was-here", await rig.ResultReferenceAsync(first, ct));
+
+        // Nothing to inherit: this tier stamps no harness session ref, so the continuation
+        // cold-starts. The directory must follow it anyway.
+        Assert.Null(await rig.HarnessSessionRefAsync(first, ct));
+
+        var second = await rig.CreateTaskAsync("echo:successor-ran", ct, continues: first);
+        await rig.DispatchToAsync("A", ct);
+        Assert.True(
+            await FleetRig.WaitUntilAsync(async () => await rig.StateAsync(second, ct) == TaskState.Verifying, Bound),
+            "the continuation never reached verifying. " + await rig.DiagnoseAsync(second, ct));
+
+        // The continuation's OWN assignment, sitting in the PREDECESSOR's directory.
+        var inherited = await rig.ReadMarkerAsync("A", first, "get_task.json", ct);
+        Assert.NotNull(inherited);
+        Assert.Contains(second.ToString(), inherited);
+        // And it never got a directory of its own.
+        Assert.Null(await rig.ReadMarkerAsync("A", second, "get_task.json", ct));
+    }
 }

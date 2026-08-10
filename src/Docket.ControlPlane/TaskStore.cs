@@ -43,13 +43,13 @@ public sealed class TaskStore(
         // Continuation command for the same reason TraceContext is: it is storage
         // bookkeeping the engine never sees (§7 content-free). One extra read, on the
         // create path only, and only for a continuation.
-        Guid? resumeDirTask = null;
+        Guid? workDirTask = null;
         if (command.Continues is { } continues)
         {
             var source = continues.ContinuedTask.Value;
-            resumeDirTask = await db.Tasks.AsNoTracking()
+            workDirTask = await db.Tasks.AsNoTracking()
                 .Where(t => t.Id == source)
-                .Select(t => t.ResumeDirTaskId)
+                .Select(t => t.WorkDirTaskId)
                 .FirstOrDefaultAsync(ct) ?? source;
         }
 
@@ -82,7 +82,7 @@ public sealed class TaskStore(
             // Continues leaves every field default, i.e. an ordinary profile-targeted
             // task.
             ContinuesTaskId = command.Continues?.ContinuedTask.Value,
-            ResumeDirTaskId = resumeDirTask,
+            WorkDirTaskId = workDirTask,
             PreferredMachine = command.Continues?.PreferredMachine,
             OnMachineGone = command.Continues?.OnMachineGone,
             HarnessSessionRef = command.Continues?.InheritedSessionRef,
@@ -399,10 +399,13 @@ public sealed class TaskStore(
                 claimed.HarnessSessionRef = null;
                 claimed.PreferredMachine = null;
                 claimed.OnMachineGone = null;
-                // §11: and the directory affinity with it. There is no session to find in
-                // the predecessor's dir from here — that dir is on the machine that went
-                // away — so this cold start belongs in this task's own dir.
-                claimed.ResumeDirTaskId = null;
+                // WorkDirTaskId is deliberately NOT cleared. Directory inheritance is a
+                // property of continuation, not of resume (§7, §11): this task still works
+                // where its predecessor worked, and keeping it means the task's directory is
+                // the same on every attempt instead of moving when a session is abandoned.
+                // On this machine that directory starts empty — the predecessor's artifacts
+                // went with the machine that vanished — which is what the memory-lost event
+                // below is telling the Lead.
                 db.TaskEvents.Add(new TaskEventRow
                 {
                     TaskId = claimed.Id,
@@ -429,12 +432,11 @@ public sealed class TaskStore(
             {
                 TraceContext = claimed.TraceContext,
                 HarnessSessionRef = degradeColdStart ? null : claimed.HarnessSessionRef,
-                // §11: which task's work dir the resumed harness must run in. Suppressed on
-                // the same condition as the session ref — nothing is being resumed, so
-                // there is no foreign directory to run in.
-                ResumeDirTask = degradeColdStart || claimed.ResumeDirTaskId is not { } dir
-                    ? null
-                    : new TaskId(dir),
+                // §7/§11: which task's work dir the harness runs in. Deliberately NOT
+                // suppressed with the session ref — a continuation works where its
+                // predecessor worked whether or not it resumes the transcript, so this rides
+                // every dispatch of a continuation, cold starts included.
+                WorkDirTask = claimed.WorkDirTaskId is { } dir ? new TaskId(dir) : null,
                 // §9.9: the committed cap rides back so DispatchService can hand it to the
                 // harness as its own hard limit.
                 BudgetCapUsd = budgetCap,
