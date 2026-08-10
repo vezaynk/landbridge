@@ -180,6 +180,22 @@ description.
 reason). Both variables can go in `telemetry.env`, or on docketd for the whole
 machine.
 
+### Other harnesses may emit none of this
+
+Everything in this section is Claude Code's. The names are `claude_code.*`, and all of
+them are gated on `CLAUDE_CODE_ENABLE_TELEMETRY=1` — which docketd carries as
+`telemetry.env` data precisely because it holds no harness knowledge (§10). A second
+harness has its own metric names, its own opt-in variable, or no OTLP export at all, and
+none of that is something a profile can configure into existence.
+
+Codex is the worked case: its published documentation describes no OTLP telemetry and no
+equivalent enable flag, so `telemetry: { "otel": true }` on a Codex profile sets the
+vendor-neutral `OTEL_*` variables and appends `docket.task_id`, on a process that may
+ignore all of it. That is the "a harness that exports nothing is normal, not broken" case
+in [Caveats](#caveats) rather than a wiring bug — so before reading an empty dashboard as
+one, check what your harness documents it emits, and under which variable. The table
+above is not a contract any harness signed.
+
 ## How attribution works
 
 §10: *"Token attribution must carry a task id, or budget enforcement cannot tell

@@ -237,7 +237,21 @@ dispatched instance, and its token dies with the instance (§9 check 14).
   which costs you the session ref (§11 resume) and per-task liveness (§10) — the
   same forever-requeue failure as declaring a non-`terminal` source.
 - **`{mcp_config}`** is the injected path; the worker reads the plane URL and its
-  bearer token from that file. Nothing else carries the token to the harness.
+  bearer token from that file. It is not the only carrier — the same token is stamped on
+  every spawn's environment as `DOCKET_WORKER_TOKEN` ([Spawn
+  substitutions](#spawn-substitutions)), and which of the two matters is the harness's
+  business, not `docketd`'s. Claude Code takes the file; a harness with no
+  `--mcp-config` equivalent has to read the environment variable instead, which for
+  `codex exec` is the only route that works at all — see the Codex example below, where
+  the generated file is written and then ignored.
+- **Nothing here caps spend, and the local cost bounds are not symmetric across
+  harnesses.** `claude -p` is where one is even available: `{budget}` exists to fill
+  Claude Code's `--max-budget-usd` (§9 check 9), and `--max-turns` bounds a runaway by
+  turn count instead (what the real-harness E2E tier pins its own workers with).
+  `codex exec` has neither, so on a Codex profile cost control is the pinned model, the
+  Team budget (§9), and the §10 no-progress ceiling — plan for that before opening a
+  profile up, because it is the difference between a bounded runaway and an unbounded
+  one.
 
 ### Stopping a `claude -p` worker (§10, §11)
 

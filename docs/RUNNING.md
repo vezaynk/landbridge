@@ -212,10 +212,15 @@ runner-config reference):
 
 The load-bearing arguments:
 
-- **`{mcp_config}`** is the only thing that carries the worker's identity to the
-  harness. `docketd` writes an HTTP MCP config pointing at the plane's public URL
+- **`{mcp_config}`** carries the worker's identity to any harness that takes an MCP
+  config file. `docketd` writes an HTTP MCP config pointing at the plane's public URL
   with the minted worker-instance bearer token (`Authorization: Bearer dkt_w_…`).
-  Pass **`--strict-mcp-config`** so the harness uses *only* that file and ignores
+  It is not the only carrier: the same token also reaches the child as
+  `DOCKET_WORKER_TOKEN` (above), and that is the one that matters on a harness with no
+  `--mcp-config` equivalent. `codex exec` is such a harness — it resolves its bearer
+  from an environment variable named in `config.toml` (`bearer_token_env_var`), so
+  there the env var is the only working route and the generated file is written and
+  ignored. Pass **`--strict-mcp-config`** so the harness uses *only* that file and ignores
   any ambient user/project MCP config — the worker must be exactly the dispatched
   instance and nothing more.
 - **`--permission-mode bypassPermissions`** is the headless prerequisite: a worker
