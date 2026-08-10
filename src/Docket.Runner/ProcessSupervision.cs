@@ -114,6 +114,16 @@ public sealed class SupervisedTask
     public required string WorkDir { get; init; }
     public required StopConfig Stop { get; init; }
 
+    /// <summary>
+    /// §10: the stdin policy this instance was spawned under. <see cref="StdinPolicy.Closed"/>
+    /// means the write end was closed right after spawn, so there is no pipe left to write a
+    /// message-mode stop turn to — which is why <see cref="ProcessSupervisor.StopAsync"/>
+    /// gates on this. Config validation refuses the pairing, so a closed-stdin profile
+    /// declaring <see cref="StopMode.Message"/> never loads; this keeps the supervisor
+    /// correct on its own terms regardless (it can be handed a profile directly).
+    /// </summary>
+    public StdinPolicy Stdin { get; init; } = StdinPolicy.Deadman;
+
     /// <summary>Last per-task liveness signal (started/tool-call), §10.</summary>
     public DateTimeOffset LastActivityAt { get; set; }
 
@@ -315,13 +325,14 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             throw new InvalidOperationException(
                 $"profile '{profile.Name}' has an empty {(resuming ? "resume" : "spawn")} argv");
 
-        // §11 resume is DIRECTORY-scoped as well as machine-scoped: Claude Code resumes a
-        // session only from the directory that created it. A same-task park-resume reuses
-        // this task's own dir and needs nothing; a continuation runs under a new task id, so
-        // the plane names the task whose dir holds the session (ResumeFromTask) and the
-        // harness runs there instead. Only ever honoured while actually resuming — a cold
-        // start always gets its own dir, whatever the dispatch carries.
-        var dirTask = resuming && dispatch.ResumeFromTask is { } from ? from : dispatch.Task;
+        // §7/§11: the harness runs in the dispatch's named work dir task when there is one,
+        // which is how a continuation works where its predecessor worked. Unconditional —
+        // NOT gated on resuming — because directory inheritance is a property of
+        // continuation itself: a cold-started continuation still needs the worktree and
+        // artifacts the predecessor left, and the workspace is the work. Transcript resume
+        // additionally needs it (a harness session is directory-local, so Claude Code
+        // resumes only from the directory that created the session), but does not define it.
+        var dirTask = dispatch.WorkDirTask ?? dispatch.Task;
         var inheritedDir = dirTask != dispatch.Task;
         var workDir = Path.Combine(_machine.WorkRoot, dirTask.ToString());
         Directory.CreateDirectory(workDir);
@@ -383,14 +394,17 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         {
             WorkingDirectory = workDir,
             UseShellExecute = false,
-            // stdin is redirected for EVERY spawn and its write end is held open for
-            // the child's lifetime (we never close StandardInput here). That held
-            // pipe IS the dead-man's signal: if docketd dies — even under SIGKILL —
-            // the OS closes the write end and a well-behaved harness sees EOF on
-            // stdin and kills its own process tree. This is the cooperative first
-            // line of defence the StrayReaper only backstops on restart (§10).
-            // Message-mode stop reuses the SAME pipe to inject a stop turn (see
-            // StopAsync), so the two uses are compatible.
+            // stdin is redirected for EVERY spawn — including a `stdin: closed` profile,
+            // which is redirected precisely so there is a pipe to close (below) rather
+            // than docketd's own inherited stdin, whatever that happens to be.
+            //
+            // Under the default `deadman` policy the write end is then held open for the
+            // child's lifetime (we never close StandardInput). That held pipe IS the
+            // dead-man's signal: if docketd dies — even under SIGKILL — the OS closes the
+            // write end and a well-behaved harness sees EOF on stdin and kills its own
+            // process tree. This is the cooperative first line of defence the StrayReaper
+            // only backstops on restart (§10). Message-mode stop reuses the SAME pipe to
+            // inject a stop turn (see StopAsync), so the two uses are compatible.
             RedirectStandardInput = true,
 
             // Redirect stdout when the Terminal reader needs it and/or §12 capture is
@@ -432,6 +446,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             Process = process,
             WorkDir = workDir,
             Stop = profile.Stop,
+            Stdin = profile.Stdin,
             LastActivityAt = _clock.GetUtcNow(),
         };
         process.Exited += (_, _) => OnExited(supervised, machineId);
@@ -488,6 +503,26 @@ public sealed class ProcessSupervisor : IProcessSupervisor
                 supervised.Job?.Close();
             process.Dispose();
             throw;
+        }
+
+        // §10 `stdin: closed` — close the write end at once so the child's first read is a
+        // deterministic EOF rather than a wait for input nobody will ever send. The same
+        // idiom, for the same reason, as an agent-started process with `open_stdin: false`
+        // (ServiceSupervisor.TryStartAsync, #89): it fixes BLOCKING, not detection — isatty
+        // is false either way, so a harness that branches on being a terminal still takes
+        // its non-terminal path.
+        //
+        // The cost is stated where an operator reads it (RunnerConfig.StdinPolicyWarnings,
+        // printed at startup): this worker no longer dies with docketd, and the StrayReaper's
+        // next-start sweep is the only thing that will collect it.
+        if (profile.Stdin == StdinPolicy.Closed)
+        {
+            try { process.StandardInput.Close(); }
+            catch (Exception e) when (e is IOException or ObjectDisposedException or InvalidOperationException)
+            {
+                // Already gone — the child exited instantly, or never had a writable pipe.
+                // Either way its stdin is at EOF, which is the whole objective.
+            }
         }
 
         // §12 capture: open the per-instance writer now that the worker is up (files
@@ -622,18 +657,25 @@ public sealed class ProcessSupervisor : IProcessSupervisor
 
         // §10, §11 graceful wind-down. The gate is the profile's declaration
         // (StopMode.Message) plus a stdin to write to. Note what the second half is and
-        // is not: stdin is redirected for every supervised harness — that pipe is the
-        // dead-man's switch — so it is a write precondition, not evidence the harness
+        // is not: a `deadman` profile's stdin is a pipe docketd still holds — that pipe is
+        // the dead-man's switch — so it is a write precondition, not evidence the harness
         // reads. Nothing here can be evidence of that; a runner that inferred it would
         // be reasoning about a specific harness, which §10 forbids in code. Hence the
         // ack below says only "written" (see StopDelivery.MessageWritten), and the
         // deadline is armed unconditionally so the stop lands either way.
         //
+        // A `stdin: closed` profile has no pipe at all: docketd closed the write end at
+        // spawn, so there is nothing to write and this falls straight through to the
+        // deadline. Config validation refuses that pairing outright (a message-mode stop
+        // with nowhere to land is a contradiction, not a degradation), so in practice this
+        // arm is unreachable from a loaded config — the check is here because the
+        // supervisor is also driven directly.
+        //
         // On a successful write, the bounded window — min(ttl, wind_down) — is what the
         // agent gets to persist and exit on its own before the hard kill backstops it. A
         // voluntary exit before then disposes the timer in OnExited, so the kill never
         // fires; that voluntary exit is also the only real-world sign the turn was read.
-        if (supervised.Stop.Mode == StopMode.Message && supervised.Process.StartInfo.RedirectStandardInput)
+        if (supervised.Stop.Mode == StopMode.Message && supervised.Stdin == StdinPolicy.Deadman)
         {
             var message = BuildStopMessage(supervised.Stop, disposition, ttl, reason);
             try

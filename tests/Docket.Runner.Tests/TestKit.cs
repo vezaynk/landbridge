@@ -95,7 +95,11 @@ internal static class TestKit
     /// <paramref name="maxBytes"/> cap) — the supervisor still needs a
     /// <see cref="TranscriptStore"/> for anything to be written. Pass
     /// <paramref name="telemetry"/> to opt the profile into §10 harness telemetry;
-    /// the default is the off-by-default block every other fixture wants.</summary>
+    /// the default is the off-by-default block every other fixture wants. Pass
+    /// <paramref name="stdin"/> to spawn without the held-open dead-man pipe (§10) — the
+    /// default is <see cref="StdinPolicy.Deadman"/>, which every fixture but the
+    /// stdin-policy tests wants, since the harness modes watch stdin for their
+    /// lifetime.</summary>
     public static ProfileConfig Profile(
         string harnessMode,
         StopMode stopMode = StopMode.Signal,
@@ -106,7 +110,8 @@ internal static class TestKit
         bool capture = false,
         long? maxBytes = null,
         int pruneAfterDays = TranscriptDefaults.PruneAfterDays,
-        TelemetryConfig? telemetry = null) =>
+        TelemetryConfig? telemetry = null,
+        StdinPolicy stdin = StdinPolicy.Deadman) =>
         new(
             name,
             [HarnessPath(), harnessMode],
@@ -116,7 +121,9 @@ internal static class TestKit
             telemetry ?? new TelemetryConfig(Otel: false, Endpoint: null),
             new LogsConfig(Path: null, Format: null, Capture: capture,
                 MaxBytes: maxBytes ?? TranscriptDefaults.MaxBytes, PruneAfterDays: pruneAfterDays),
-            MaxConcurrent: null);
+            MaxConcurrent: null,
+            Processes: null,
+            Stdin: stdin);
 
     /// <summary>
     /// A §11 resume profile: a cold <c>Spawn</c> (the given <paramref name="coldMode"/>)
