@@ -182,6 +182,51 @@ public sealed class StdinPolicyTests : IDisposable
         supervisor.Kill(task);
     }
 
+    /// <summary>
+    /// The two spawn-path features that landed together compose: a §11 continuation borrowing
+    /// its predecessor's working directory (#117) still gets its EOF when the profile declares
+    /// <c>stdin: closed</c> (#110).
+    ///
+    /// <para>Worth one fact because the two touch the same method from opposite ends — the
+    /// directory is resolved before <c>Process.Start</c>, the stdin close happens after it —
+    /// and because the combination is not hypothetical: <c>codex exec resume</c> is the one
+    /// Codex path that never needed the fix (it takes its prompt from argv without reading
+    /// stdin), so a real Codex continuation is exactly a borrowed directory under a
+    /// closed-stdin profile.</para>
+    ///
+    /// <para>The <c>deadman</c> marker landing in the <em>borrowed</em> directory is what makes
+    /// this one assertion cover both: the harness only writes it on EOF, and it writes it in
+    /// its own working directory.</para>
+    /// </summary>
+    [Fact]
+    public async Task A_continuation_borrowing_another_tasks_directory_still_gets_its_eof()
+    {
+        var predecessor = TaskId.New();
+        var continuation = TaskId.New();
+        var supervisor = Supervisor();
+
+        supervisor.Spawn(
+            new DispatchCommand(
+                continuation, "default", McpConfigJson: """{"mcpServers":{}}""",
+                ResumeSessionRef: "sess-abc", WorkDirTask: predecessor),
+            TestKit.ResumeProfile(stdin: StdinPolicy.Closed),
+            "m");
+        Assert.True(supervisor.TryGet(continuation, out var supervised));
+
+        var deadman = Path.Combine(_workRoot, predecessor.ToString(), "deadman");
+        Assert.True(
+            await TestKit.WaitUntilAsync(() => File.Exists(deadman), TimeSpan.FromSeconds(20)),
+            "a closed-stdin continuation never saw EOF in the directory it borrowed — the "
+            + "stdin policy and the inherited work dir are not composing");
+        Assert.True(
+            await TestKit.WaitUntilAsync(() => !supervised!.ProcessAlive, TimeSpan.FromSeconds(20)));
+        Assert.Equal(TestHarness.Program.DeadManExitCode, supervised!.Process.ExitCode);
+
+        // The continuation still never got a directory of its own, exactly as #117 requires —
+        // closing stdin changed nothing about where the harness ran.
+        Assert.False(Directory.Exists(Path.Combine(_workRoot, continuation.ToString())));
+    }
+
     public void Dispose()
     {
         _supervisor?.KillAll();

@@ -132,7 +132,10 @@ internal static class TestKit
     /// substitutes when a dispatch carries a resume session ref. Both modes write the
     /// argv they received, so a test can read the marker either way.
     /// </summary>
-    public static ProfileConfig ResumeProfile(string coldMode = "echo-argv", string name = "default") =>
+    public static ProfileConfig ResumeProfile(
+        string coldMode = "echo-argv",
+        string name = "default",
+        StdinPolicy stdin = StdinPolicy.Deadman) =>
         new(
             name,
             [HarnessPath(), coldMode],
@@ -141,7 +144,9 @@ internal static class TestKit
             new EventsConfig(EventsSource.None, new Dictionary<string, string>()),
             new TelemetryConfig(Otel: false, Endpoint: null),
             new LogsConfig(Path: null, Format: null),
-            MaxConcurrent: null);
+            MaxConcurrent: null,
+            Processes: null,
+            Stdin: stdin);
 }
 
 /// <summary>A back-pressure reader the tests flip to simulate load (§10 concurrency).</summary>
