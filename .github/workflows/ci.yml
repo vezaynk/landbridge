@@ -222,20 +222,29 @@ jobs:
   # onboarding prefill and the realtime-conversation path — NOT by exec. The job still skips
   # cleanly and passes when the secret is absent (fork PRs), by design.
   #
-  # WHAT TO EXPECT ON THE FIRST DISPATCH: three of the four facts SKIP, and that is correct.
-  # Reading the Codex CLI source at rust-v0.147.0 established that `codex exec` blocks forever
-  # reading docketd's held-open dead-man stdin pipe before it takes its first turn
-  # (exec/src/lib.rs:1961 -> 1888 -> 1909), so a Codex worker cannot currently run under
-  # docketd at all. The end-to-end facts are gated behind DOCKET_CODEX_STDIN_FIXED=1 until
-  # that gap closes. The one fact that DOES run characterizes the hang against the real binary
-  # and spends no tokens, because Codex never reaches a model.
+  # WHAT TO EXPECT ON THE FIRST DISPATCH AFTER #110: all four facts RUN, and three of them
+  # spend tokens for the first time. Reading the Codex CLI source at rust-v0.147.0 established
+  # that `codex exec` blocks forever reading a held-open stdin pipe before it takes its first
+  # turn (exec/src/lib.rs:1961 -> 1888 -> 1909); docketd's dead-man pipe used to be
+  # unconditional, so a Codex worker could not run here at all. #110 made it the per-profile
+  # `stdin` policy, the end-to-end facts declare `stdin: closed`, and the
+  # DOCKET_CODEX_STDIN_FIXED gate that held them back is gone. The fourth fact keeps
+  # characterizing the hang under an explicit `stdin: deadman` and still spends nothing.
+  #
+  # None of the three has ever executed against the real binary, so treat a red first run as
+  # information rather than a regression: each failure message leads with a hypothesis chosen
+  # from what the ring observed (never spawned / spawned and still running / spawned and exited
+  # non-zero / exited cleanly without reporting), and the likeliest first-run causes are auth
+  # (CODEX_API_KEY, below), the `required = true` MCP table in the generated CODEX_HOME, and a
+  # server-side-retired model slug — DOCKET_CODEX_MODEL overrides that last one with no code
+  # change.
   #
   # `npm install -g @openai/codex` deliberately takes the latest version rather than pinning
   # 0.147.0: if upstream changes the stdin behaviour, the characterization fact FAILS, which is
   # exactly the notification we want. Source citations above are against 0.147.0.
   #
   # Cost: the tests pin gpt-5.1-codex-mini (the cheapest codex-family model) and the tasks are
-  # single-echo, so a fully-unblocked run is a few cents. Today it is zero.
+  # single-echo, so a full run is a few cents.
   real-codex-e2e:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest

@@ -70,6 +70,13 @@ internal sealed class ProfileDto
     public LogsDto? Logs { get; set; }
     public int? MaxConcurrent { get; set; }
 
+    // §10 dead-man switch: `deadman` (hold the stdin pipe open for the worker's whole
+    // life — the default and every profile's behaviour before this key existed) or
+    // `closed` (EOF right after spawn) for a harness that blocks reading piped stdin.
+    // A bare string rather than a block: there is one decision here and no room for a
+    // second, and a `stdin: closed` line is what a human types.
+    public string? Stdin { get; set; }
+
     // §10 agent-started processes: whether a task on this profile may call start_process, and
     // how many the machine may hold. Off by default — enabling it is the machine owner's
     // deliberate choice, the same shape as the open/strict archetypes. Named `processes`, not

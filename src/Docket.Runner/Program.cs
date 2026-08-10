@@ -105,6 +105,14 @@ public static class Program
         foreach (var warning in config.EventRelayWarnings())
             Console.WriteLine(warning);
 
+        // §10 dead-man's switch: a profile declaring `stdin: closed` has traded the
+        // cooperative kill for the restart-time sweep alone. A deliberate trade (a harness
+        // that blocks on the pipe cannot work any other way), but it weakens containment,
+        // and an operator who does not know it is off will misread a surviving worker after
+        // a docketd crash as a reaper bug. Same posture as the two notices above.
+        foreach (var warning in config.StdinPolicyWarnings())
+            Console.WriteLine(warning);
+
         // §10 + §5: dial the control plane outbound. Credential source, in
         // priority order:
         //   1. DOCKET_MACHINE_TOKEN env — the Aspire dev loop's fixed token, NEVER
