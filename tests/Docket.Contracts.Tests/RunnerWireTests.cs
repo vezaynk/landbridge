@@ -84,6 +84,41 @@ public class RunnerWireTests
     }
 
     [Fact]
+    public void Dispatch_command_round_trips_with_a_resume_directory_task()
+    {
+        // §11 resume is directory-scoped too: a continuation runs under a new task id, so the
+        // dispatch names the task whose work dir holds the session (a task, never a path —
+        // work_root is machine-local runner config).
+        var from = TaskId.New();
+        var original = new DispatchCommand(
+            TaskId.New(), "default", WorkerToken: "dkt_w_abc",
+            ResumeSessionRef: "sess-a4bbb0fd", ResumeFromTask: from);
+
+        var decoded = Assert.IsType<DispatchCommand>(RunnerWire.DecodeCommand(RunnerWire.EncodeCommand(original)));
+
+        Assert.Equal(original, decoded);
+        Assert.Equal(from, decoded.ResumeFromTask);
+    }
+
+    [Fact]
+    public void Dispatch_envelope_without_a_resume_directory_task_decodes_back_compatibly()
+    {
+        // A sender that predates the field — and every same-task park-resume, which needs
+        // none — carries no resume_from_task; it must decode to null, never crash.
+        var task = TaskId.New();
+        var legacy = $$"""
+            { "type": "dispatch", "task": { "value": "{{task.Value}}" }, "profile": "default",
+              "resume_session_ref": "sess-1" }
+            """;
+
+        var decoded = Assert.IsType<DispatchCommand>(RunnerWire.DecodeCommand(legacy));
+
+        Assert.Equal(task, decoded.Task);
+        Assert.Equal("sess-1", decoded.ResumeSessionRef);
+        Assert.Null(decoded.ResumeFromTask);
+    }
+
+    [Fact]
     public void Stop_command_round_trips_including_ttl_and_disposition()
     {
         var original = new StopCommand(TaskId.New(), TimeSpan.FromSeconds(30), StopDisposition.PreserveAndPark, "lead asked");

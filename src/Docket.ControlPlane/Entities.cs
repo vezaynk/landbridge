@@ -212,6 +212,26 @@ public sealed class TaskRow
     public Guid? ContinuesTaskId { get; set; }
 
     /// <summary>
+    /// Continuation dispatch affinity, directory half (§11): the task whose machine-local
+    /// work dir holds the harness session this task resumes, or null when that is this
+    /// task's own dir. Rides the dispatch as
+    /// <see cref="Docket.Contracts.DispatchCommand.ResumeFromTask"/>, because Claude Code
+    /// resumes a session only from the directory that created it.
+    ///
+    /// <para>Distinct from <see cref="ContinuesTaskId"/>, which is <em>lineage</em>, and
+    /// it has to be: lineage names the immediate predecessor, and a chain (a continuation
+    /// of a continuation — §11 calls chains natural) does not create a new session per
+    /// link. B continuing A resumes A's session <em>in A's dir</em>; C continuing B
+    /// resumes that same session, which is still in A's dir and never in B's — B has no
+    /// dir of its own. So this is seeded transitively at creation (the source's own value,
+    /// else the source itself), which also makes it O(1) at dispatch rather than a walk up
+    /// the lineage. Cleared when a degrade cold-start abandons the session, exactly like
+    /// <see cref="PreferredMachine"/>: that dispatch starts a genuinely new session, and it
+    /// belongs in the cold-started task's own dir.</para>
+    /// </summary>
+    public Guid? ResumeDirTaskId { get; set; }
+
+    /// <summary>
     /// Continuation dispatch affinity (§6/§11): the machine that last held/ran the
     /// continued task. Distinct from <see cref="ParkMachine"/> — a submitted
     /// continuation is not parked — so it does not perturb park semantics or the

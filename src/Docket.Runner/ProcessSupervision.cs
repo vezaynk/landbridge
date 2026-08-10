@@ -315,7 +315,15 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             throw new InvalidOperationException(
                 $"profile '{profile.Name}' has an empty {(resuming ? "resume" : "spawn")} argv");
 
-        var workDir = Path.Combine(_machine.WorkRoot, dispatch.Task.ToString());
+        // §11 resume is DIRECTORY-scoped as well as machine-scoped: Claude Code resumes a
+        // session only from the directory that created it. A same-task park-resume reuses
+        // this task's own dir and needs nothing; a continuation runs under a new task id, so
+        // the plane names the task whose dir holds the session (ResumeFromTask) and the
+        // harness runs there instead. Only ever honoured while actually resuming — a cold
+        // start always gets its own dir, whatever the dispatch carries.
+        var dirTask = resuming && dispatch.ResumeFromTask is { } from ? from : dispatch.Task;
+        var inheritedDir = dirTask != dispatch.Task;
+        var workDir = Path.Combine(_machine.WorkRoot, dirTask.ToString());
         Directory.CreateDirectory(workDir);
 
         var substitutions = new Dictionary<string, string>(StringComparer.Ordinal)
@@ -339,7 +347,13 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         // the env below), so {mcp_config} substitutes on the resume path too.
         if (dispatch.McpConfigJson is not null)
         {
-            var mcpPath = Path.Combine(workDir, "mcp.json");
+            // In an inherited dir the plain name is already taken by the task that owns the
+            // dir, and that task's own worker may still be running (a continuation of a task
+            // that has not finished is allowed — §11 forks and chains). Overwriting its
+            // config would hand it this task's credential, so a borrowed dir gets a
+            // task-scoped name. The task's own dir keeps the documented mcp.json.
+            var mcpPath = Path.Combine(
+                workDir, inheritedDir ? $"mcp-{dispatch.Task}.json" : "mcp.json");
             File.WriteAllText(mcpPath, dispatch.McpConfigJson);
             SetOwnerOnly(mcpPath);
             substitutions["mcp_config"] = mcpPath;

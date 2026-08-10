@@ -328,6 +328,99 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     }
 
     /// <summary>
+    /// §11 <b>continuation</b> — "talk to the agent that has the context" — end to end against
+    /// the real CLI: a completed task's transcript is carried into a <em>new</em> task, and the
+    /// continuation worker reports a value that only that conversation holds.
+    ///
+    /// <para>This is the second half of what #102 blocked, and it needed one thing park-resume
+    /// did not. A harness session is <b>directory</b>-local as well as machine-local — Claude
+    /// Code resumes only from the directory that created it — and a continuation runs under a
+    /// NEW task id, so the runner's own <c>work_root/task_id</c> would be an empty directory
+    /// that never held a session. The dispatch therefore names the task whose dir does
+    /// (<c>DispatchCommand.ResumeFromTask</c>, seeded from the row and resolved transitively so
+    /// chains land on the root), and the harness runs there. A task, never a path: work_root is
+    /// machine-local runner config, so the plane names a task and the runner maps it.</para>
+    ///
+    /// <para>The nonce is the proof, and it is airtight for the same reason as above: it appears
+    /// only in the FIRST task's spawn prompt. The continuation's row is new — its description
+    /// never carries it, so <c>get_task</c> cannot supply it — and the resume argv is static
+    /// profile config. A cold-started continuation reaches verifying too; only a resumed one
+    /// reaches it with this value.</para>
+    /// </summary>
+    [SkippableFact]
+    public async Task Real_claude_continues_a_finished_tasks_conversation_from_that_tasks_directory()
+    {
+        var claudeBin = RequireRealClaude();
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(20));
+        var ct = cts.Token;
+
+        var nonce = "nonce-" + NewToken();
+        await using var rig = new FleetRig(
+            pg,
+            // The first task's worker is told the nonce and reports something else; the
+            // continuation's is asked for the nonce back. Same turn headroom as the park fact,
+            // for the same reason.
+            spawnArgv: StreamingSpawn(
+                claudeBin, RememberThenWorkPrompt(nonce), ParkTools, "--max-turns", "14"),
+            resumeArgv: StreamingSpawn(
+                claudeBin, ContinuationReportPrompt, ParkTools, "--resume", "{session_id}",
+                "--max-turns", "14"),
+            terminalEvents: true);
+        await rig.StartAsync(ct);
+        await rig.AddMachineAsync("A");
+
+        // Task one: an ordinary task that finishes. Its worker holds the nonce in conversation.
+        var first = await rig.CreateTaskAsync(EchoDescription("A", "first-done"), ct);
+        Assert.True(
+            await rig.DispatchUntilVerifyingAsync(first, "A", MaxAttempts, PerLegBudget, ct),
+            "the first real claude worker never drove its task to verifying.\n"
+            + await rig.RealWorkerDiagnosticsAsync(first, ct));
+        var firstSession = await rig.HarnessSessionRefAsync(first, ct);
+        Assert.False(
+            string.IsNullOrWhiteSpace(firstSession),
+            "no harness session ref was stamped on the first task, so there is nothing to continue.\n"
+            + await rig.RealWorkerDiagnosticsAsync(first, ct));
+
+        // Accept it, so the continuation really is of a FINISHED task — the ordinary shape of
+        // "talk to the agent that has the context", and the one where the predecessor's process
+        // is long gone rather than merely superseded.
+        await rig.AcceptAsync(first, ct);
+        Assert.Equal(TaskState.Completed, await rig.StateAsync(first, ct));
+
+        // Task two continues it: a new task id, seeded with the inherited session ref and the
+        // machine that ran it, and asking for the remembered value.
+        var second = await rig.CreateTaskAsync(ContinuationDescription, ct, continues: first);
+        Assert.Equal(firstSession, await rig.HarnessSessionRefAsync(second, ct));
+
+        Assert.True(
+            await rig.DispatchUntilVerifyingAsync(second, "A", MaxAttempts, PerLegBudget, ct),
+            "the continuation worker never drove its task to verifying.\n"
+            + await rig.RealWorkerDiagnosticsAsync(second, ct));
+
+        // The value only the inherited conversation held.
+        Assert.Contains(nonce, await rig.ResultReferenceAsync(second, ct));
+
+        // Harness-side proof, independent of anything the agent said: two DIFFERENT tasks'
+        // captured instances report the SAME session id on their own system/init. A cold start
+        // mints a new one, so only a real resume produces this — and the resume could only have
+        // happened from the first task's directory, since that is the only one holding a
+        // session. Transcripts stay keyed by the dispatched task even though the work dir is
+        // shared, which is what keeps the two legible apart here.
+        //
+        // Counted as "every instance, whichever leg it belonged to", not as one apiece: either
+        // leg is allowed its bounded retry (a haiku that ends a turn without the tool call), and
+        // a retry resumes rather than re-briefs, so an extra instance carries the same id and is
+        // not a different outcome. Zero instances would be, hence the non-empty check.
+        var firstInstances = rig.InstanceSessionIdsOn("A", first);
+        var continuationInstances = rig.InstanceSessionIdsOn("A", second);
+        Assert.NotEmpty(firstInstances);
+        Assert.NotEmpty(continuationInstances);
+        Assert.All(firstInstances, id => Assert.Equal(firstSession, id));
+        Assert.All(continuationInstances, id => Assert.Equal(firstSession, id));
+        Assert.Equal("A", rig.MachineRanOn(second));
+    }
+
+    /// <summary>
     /// What a graceful <c>stop</c> actually is against a real <c>claude -p</c> worker — and it
     /// is <b>not</b> a turn the agent reads. This fact pins the observed behaviour rather than
     /// the hoped-for one, because the gap between them is the finding.
@@ -827,6 +920,39 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         "--model", "haiku",
         "--max-turns", "10",
     ];
+
+    // ── §11 continuation prompts and description ───────────────────────────────
+
+    /// <summary>
+    /// The first task's spawn prompt, and the only place its nonce ever appears: the task it
+    /// then does is an ordinary echo, so the nonce goes nowhere near the row, the result, or
+    /// any file — only the conversation a later continuation inherits.
+    /// </summary>
+    private static string RememberThenWorkPrompt(string nonce) =>
+        "You are a Docket worker agent. Remember this value for the rest of this conversation: " +
+        $"{nonce}. Do not write it to any file, and do not put it in any tool call. Now call the " +
+        "docket get_task tool and do exactly what its description tells you.";
+
+    /// <summary>
+    /// The profile's static <c>resume.args</c> prompt for the continuation leg (§11) — generic
+    /// config carrying no task content, and deliberately not the nonce. Worded for a worker
+    /// whose assignment is new but whose conversation is not.
+    /// </summary>
+    private const string ContinuationReportPrompt =
+        "This conversation continues under a new task. FIRST call the docket get_task tool to " +
+        "read that new assignment, then do exactly what its description says. The value it asks " +
+        "for is one you were told earlier in this conversation.";
+
+    /// <summary>The continuation task's own description: it names no value, because the whole
+    /// point is that the value comes from the inherited conversation and from nowhere the new
+    /// task row could supply it.</summary>
+    private const string ContinuationDescription =
+        """
+        Call report_result exactly once, with resultReference set to the exact value you were
+        asked to remember earlier in this conversation, and nothing else.
+
+        That is the entire task. Do not create or edit files. Do not do anything else.
+        """;
 
     // ── §10 process scenario prompts and descriptions ──────────────────────────
 
