@@ -18,6 +18,11 @@ on:
   # job-level `if:`, so gating the job on workflow_dispatch (rather than the secret)
   # is what keeps every ordinary push from ever spending API tokens.
   workflow_dispatch:
+    inputs:
+      codex_model:
+        description: "Codex model slug for the real-codex tier (DOCKET_CODEX_MODEL)"
+        required: false
+        default: "gpt-5.1-codex"
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -281,6 +286,12 @@ jobs:
       - name: Install codex CLI
         run: npm install -g @openai/codex
 
+      # The claude CLI too: the mixed claude+codex fleet fact needs BOTH binaries and
+      # skips when either is missing. First dispatch proved everything else; this
+      # un-skips the fact that is the whole BYO-harness pitch.
+      - name: Install claude CLI
+        run: npm install -g @anthropic-ai/claude-code
+
       - name: Restore
         run: dotnet restore
 
@@ -294,3 +305,9 @@ jobs:
         env:
           DOCKET_TEST_PG: Host=localhost;Port=5432;Username=docket;Password=docket;Database=docket_realcodex
           CODEX_API_KEY: ${{ secrets.OPENAI_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_KEY }}
+          # First dispatch: the pinned gpt-5.1-codex-mini 404'd on the API-key path
+          # (Responses API, "Model not found"), while auth, MCP init and the closed-stdin
+          # spawn all worked. The tier reads DOCKET_CODEX_MODEL precisely for
+          # server-side catalog drift, so the slug is a dispatch input, not a PR.
+          DOCKET_CODEX_MODEL: ${{ inputs.codex_model || 'gpt-5.1-codex' }}
