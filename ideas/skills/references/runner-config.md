@@ -15,6 +15,7 @@ argv a worker is launched with.
 | `profiles[]` | `name` | Profile identifier. `profiles` is a JSON **array**; exactly one entry MUST be named `default` (§10). |
 | `profiles[]` | `spawn` | argv passed to `execve` — **never a shell** (§10). Substitutions below. |
 | `profiles[]` | `stop` | `mode` (`message` \| `signal`), `message`, `wind_down_seconds` (default `30`). **`mode: message` is a declaration about your harness** — that a running session reads turns off stdin — and docketd takes it at its word: it writes the turn, then waits `min(ttl, wind_down_seconds)` for a voluntary exit before a hard tree-kill backstops it. It cannot check the claim, so declaring it for a harness that does not read stdin buys nothing and makes `preserve` a promise the machine will break. **`claude -p` is such a harness — use `signal` there** ([Stopping a `claude -p` worker](#stopping-a-claude--p-worker-10-11)). A `signal` profile writes nothing, and the worker gets the full `ttl` the plane granted to exit on its own before the kill (`wind_down_seconds` does not apply). Only `ttl=0` is killed immediately (§10, §11). The `signal` **key** parses but is not acted on: the deadline's kill is always the tree-kill. |
+| `profiles[]` | `stdin` | `deadman` (default) \| `closed` — what the worker's stdin is. `deadman` holds the pipe's write end open for the worker's whole life; that pipe **is** the §10 dead-man's switch. `closed` sends EOF right after the spawn, for a harness that blocks reading piped stdin — **`codex exec` requires it**, and gives up nothing, because it never reaches the read that would observe EOF-as-death. Two things behave unlike the other enums here: a **typo is refused** rather than defaulted (defaulting would silently restore the pipe a profile was written to escape), and `closed` is **refused together with `stop.mode: message`**, whose wind-down turn would have nowhere to land. See [Closing the worker's stdin](#closing-the-workers-stdin-10). |
 | `profiles[]` | `resume` | `args`: argv to resume a parked task's transcript, directory-scoped (§11). |
 | `profiles[]` | `events` | `source` (`hooks` \| `otel` \| `terminal` \| `none`) + `mapping`, which overrides the **stdout stream's property names** — not harness event names. **Only `terminal` is implemented**; `hooks` and `otel` parse but are wired to nothing, so all three non-`terminal` values behave as `none`. See [Event relay](#event-relay-10) below before choosing — a non-`terminal` profile requeues any task that runs longer than about a minute. |
 | `profiles[]` | `telemetry` | `otel` bool (opt-in, default **false**), `endpoint` (OTLP destination; falls back to the one docketd inherited), and `env` (a string map of harness-specific variables, applied verbatim). When on, docketd sets the vendor-neutral `OTEL_*` exporter variables and appends `docket.task_id`/`docket.machine_id` to `OTEL_RESOURCE_ATTRIBUTES`, so the harness's own token/cost telemetry is attributable per task (§10). `otel: true` with **no endpoint configured and none inherited sets nothing at all** and warns once — telemetry is never enabled without a destination. Claude Code additionally needs `"env": { "CLAUDE_CODE_ENABLE_TELEMETRY": "1" }` (its own flag is data, since docketd holds no harness knowledge). **Visibility only**: Docket ingests none of it and enforces no ceiling — see [docs/TELEMETRY.md](../../../docs/TELEMETRY.md). |
@@ -237,7 +238,21 @@ dispatched instance, and its token dies with the instance (§9 check 14).
   which costs you the session ref (§11 resume) and per-task liveness (§10) — the
   same forever-requeue failure as declaring a non-`terminal` source.
 - **`{mcp_config}`** is the injected path; the worker reads the plane URL and its
-  bearer token from that file. Nothing else carries the token to the harness.
+  bearer token from that file. It is not the only carrier — the same token is stamped on
+  every spawn's environment as `DOCKET_WORKER_TOKEN` ([Spawn
+  substitutions](#spawn-substitutions)), and which of the two matters is the harness's
+  business, not `docketd`'s. Claude Code takes the file; a harness with no
+  `--mcp-config` equivalent has to read the environment variable instead, which for
+  `codex exec` is the only route that works at all — see the Codex example below, where
+  the generated file is written and then ignored.
+- **Nothing here caps spend, and the local cost bounds are not symmetric across
+  harnesses.** `claude -p` is where one is even available: `{budget}` exists to fill
+  Claude Code's `--max-budget-usd` (§9 check 9), and `--max-turns` bounds a runaway by
+  turn count instead (what the real-harness E2E tier pins its own workers with).
+  `codex exec` has neither, so on a Codex profile cost control is the pinned model, the
+  Team budget (§9), and the §10 no-progress ceiling — plan for that before opening a
+  profile up, because it is the difference between a bounded runaway and an unbounded
+  one.
 
 ### Stopping a `claude -p` worker (§10, §11)
 
@@ -277,26 +292,84 @@ reads turns off a held-open stdin — an interactive-mode or SDK-hosted session,
 custom harness — and is the delivery §10 prefers, because a signal cannot carry a
 disposition. It is `claude -p` specifically that has no seam for it.
 
+## Closing the worker's stdin (§10)
+
+`docketd` redirects **every** worker's stdin to a pipe. What a profile chooses is whether
+`docketd` keeps *holding the write end*:
+
+- **`deadman` (the default)** — held open for the worker's whole life. EOF therefore means
+  `docketd` is gone (crashed, or `SIGKILL`ed), and a well-behaved harness kills its own
+  process tree when it sees one. This is the cooperative, immediate half of §10's kill
+  guarantee; the stray reaper's restart-time sweep is the non-cooperative backstop.
+- **`closed`** — the write end is closed immediately after the spawn, so the worker's first
+  read is a deterministic EOF. The same thing an agent-started process gets from
+  `open_stdin: false`, for the same reason.
+
+**When to close: a harness that blocks reading piped stdin, and nothing else.** `codex exec`
+is the known case and it is not a matter of taste. Its prompt resolution
+(`codex-rs/exec/src/lib.rs:1961`) calls `read_prompt_from_stdin(OptionalAppend)` *even when the
+prompt arrived as argv*, and that function short-circuits only when stdin is a **terminal** — a
+pipe is not — so it reaches `read_to_end` (`lib.rs:1909`) and waits for an EOF that a `deadman`
+profile never sends. The worker sits there having never contacted a model; the give-away in a
+transcript is a lone `Reading additional input from stdin...` on stderr and then silence. No
+flag escapes it. `claude -p` survives the same pipe only because it abandons the read after
+about three seconds, so **a claude profile should stay `deadman`** — it can honour the switch,
+and closing stdin would only throw that away.
+
+**What you give up: the dead-man kill, and only that.** `docketd`'s own death stops taking such
+a worker down with it. Everything else is untouched — the restart-time stray sweep still
+collects it (keyed on `DOCKET_MACHINE_ID`), Windows Job Objects still contain the whole tree,
+Linux `PDEATHSIG` still fires if the harness arms it, and per-task exit cleanup and `stop` work
+exactly as before. The window that opens is *"`docketd` is dead and has not restarted yet"*, and
+what happens in it is a worker spending tokens on a task the plane has already requeued. Note
+what that costs for Codex specifically: **nothing it ever had**, since it never reaches the read
+that would observe the EOF. That asymmetry is why this is a per-profile declaration rather than
+a machine-wide switch — one box can run a claude profile that keeps the switch and a codex
+profile that cannot use it.
+
+`docketd` says so on startup, once per declaring profile, alongside the `max_cpu_load is inert`
+and event-relay notices:
+
+```
+docketd: profile 'codex': stdin is 'closed', so the worker sees EOF at once and this profile
+has NO dead-man's switch — if docketd dies, its workers keep running on already-requeued tasks
+until the next docketd start sweeps them. That is the declared trade for a harness that blocks
+reading a held-open stdin (§10).
+```
+
+**Two things the config refuses rather than tolerates.**
+
+1. **An unrecognized value.** `"stdin": "close"` is an error, not a fall back to `deadman`.
+   Every other enum here degrades to a documented default on a typo; this one cannot, because
+   the default *is* the pipe the profile was written to escape, and the symptom is a worker that
+   hangs before its first turn with nothing logged anywhere.
+2. **`stop.mode: message` together with `stdin: closed`.** A message-mode stop delivers its
+   wind-down turn by writing to the worker's stdin
+   ([Stopping a `claude -p` worker](#stopping-a-claude--p-worker-10-11)), and a closed stdin
+   gives that write nowhere to land — so the declaration would promise a graceful wind-down the
+   machine can never deliver. Declare `signal`, which is the honest choice for such a harness
+   anyway: one that does not read stdin cannot honour a turn.
+
 ## Worked example — Codex CLI (`codex exec`), and what it costs
 
-> 🛑 **A Codex worker cannot run under `docketd` today.** `codex exec` blocks forever reading
-> the dead-man stdin pipe `docketd` holds open, before it takes its first turn. The profile
-> below is otherwise correct and complete, and becomes usable the moment `docketd` grows a way
-> to spawn without that pipe — but do not deploy it expecting work to happen. Details and the
-> source trace are in [The blocker](#the-blocker-codex-exec-hangs-on-the-dead-mans-stdin) below.
+> ⚠️ **A Codex profile MUST declare `stdin: closed`** (see the section above). Without it
+> `codex exec` blocks forever on the dead-man pipe and never takes a turn — the profile below
+> declares it, and this is the one line that makes the rest of the example work at all.
 >
 > **Status of everything else here: verified by reading the Codex CLI source** at tag
 > `rust-v0.147.0` (what `npm install -g @openai/codex` currently resolves to), with file:line
 > citations — **not** by running it. No `codex` binary was available. Claims about `docketd`'s
 > own behaviour are verified by tests: `Docket.Runner.Tests/CodexStreamMappingTests` pins how
 > Codex's event stream maps onto §10, and
-> `Docket.MultiMachine.Tests/RealCodexCollaborationTests` holds the opt-in end-to-end tier
-> (three facts gated off behind the blocker, one that characterizes the blocker itself).
+> `Docket.MultiMachine.Tests/RealCodexCollaborationTests` holds the opt-in end-to-end tier —
+> three token-spending facts, live as of #110, plus one that keeps characterizing the hang
+> under an explicit `stdin: deadman` for $0.
 
 Codex is the second harness anyone reaches for, and it is a genuine test of §10's claim that
-`docketd` holds no harness knowledge. The verdict is mixed and worth stating plainly: the
-config-only promise holds for authentication, tool naming, and the resume ref — and breaks for
-stdin, where no amount of configuration helps.
+`docketd` holds no harness knowledge. The verdict is worth stating plainly: the config-only
+promise holds for authentication, tool naming, the resume ref, and — since #110 — for stdin
+too, but only because a knob was added to `docketd` for it. Read that as the promise bending
+rather than breaking: what it took was one profile field, not harness knowledge in the daemon.
 
 ```jsonc
 {
@@ -317,6 +390,11 @@ stdin, where no amount of configuration helps.
         // be retired: confirm against `codex --help`/your account rather than trusting this.
         "--model", "gpt-5.1-codex-mini"
       ],
+      // NOT OPTIONAL for this harness. Without it codex exec blocks reading the dead-man
+      // pipe and never takes a turn; see "Closing the worker's stdin" above for the trade.
+      "stdin": "closed",
+      // Forced by `stdin: closed` (a message-mode turn would have nowhere to land) and the
+      // honest declaration for this harness regardless — see seam 2 below.
       "stop": { "mode": "signal" },
       "resume": { "args": ["codex", "exec", "resume", "{session_id}", "Your task has resumed. Call get_task for the answer you were waiting for, then continue.", "--json", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox"] },
       // REQUIRED for Codex — without this mapping the profile reads nothing at all.
@@ -335,10 +413,11 @@ stdin, where no amount of configuration helps.
 }
 ```
 
-### The blocker: `codex exec` hangs on the dead-man's stdin
+### Why `stdin: closed` is mandatory here — the source trace
 
-`docketd` redirects stdin on every spawn and never closes the write end — that held pipe *is*
-the §10 dead-man's switch, so a runner death is visible to the worker as EOF.
+This is the detail behind the one non-obvious line in the profile above. Under
+`stdin: deadman` (the default), `docketd` holds the write end of the worker's stdin pipe for
+the task's whole life, so a runner death is visible to the worker as EOF.
 
 Codex's cold-start path cannot tolerate it. `resolve_root_prompt`
 (`codex-rs/exec/src/lib.rs:1961`) handles the case where a prompt *was* given as argv, and it
@@ -354,19 +433,24 @@ StdinPromptBehavior::OptionalAppend => {
 ```
 
 A pipe is not a terminal, so it falls through to `std::io::stdin().read_to_end(&mut bytes)`
-(`lib.rs:1909`) and blocks until EOF. `docketd` never sends EOF, so the worker sits there
-having never begun. The give-away in a transcript is a lone stderr line
+(`lib.rs:1909`) and blocks until EOF. A `deadman` profile never sends one, so the worker sits
+there having never begun. The give-away in a transcript is a lone stderr line
 `Reading additional input from stdin...` and then silence.
 
-**There is no configuration that avoids this.** No flag suppresses the append-read, and
+**No amount of Codex-side configuration avoids it.** No flag suppresses the append-read, and
 `codex exec -` forces stdin *as* the prompt, which blocks identically. `claude -p` survives the
-same pipe only because it gives up after about three seconds; Codex waits forever.
+same pipe only because it gives up after about three seconds; Codex waits forever. So the fix
+had to be on `docketd`'s side, and it is `stdin: closed`: the write end is closed right after
+the spawn, that `read_to_end` returns immediately, and the turn begins.
 
-Two things soften it. First, **the resume path is exempt**: `codex exec resume <id> "<prompt>"`
-resolves through `resolve_prompt` (`lib.rs:1944`), whose first arm returns a non-`-` argv prompt
-immediately without touching stdin — so `resume.args` would work today. Second, the fix is
-small and lives in `docketd`, not in Codex: a per-profile stdin policy that lets a profile trade
-the dead-man pipe (falling back to the StrayReaper's restart-time sweep) for a closed stdin.
+Two notes on what that did and did not cost. **The resume path was never affected**:
+`codex exec resume <id> "<prompt>"` resolves through `resolve_prompt` (`lib.rs:1944`), whose
+first arm returns a non-`-` argv prompt immediately without touching stdin — so `resume.args`
+worked even before #110. And the dead-man switch this profile gives up is one Codex could never
+have used: it does not reach the read that would observe the EOF, so what is actually traded
+away is `docketd`'s ability to end a worker by dying, in exchange for the worker being able to
+start at all. `Docket.MultiMachine.Tests/RealCodexCollaborationTests` keeps a `stdin: deadman`
+fact pinned against the real binary so that reasoning stays checkable rather than remembered.
 
 ### The three seams that do not fit, and what to do about each
 

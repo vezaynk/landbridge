@@ -54,6 +54,12 @@ namespace Docket.MultiMachine.Tests;
 /// the built-in claude <c>stream-json</c> defaults, so nothing changes for the suites that
 /// predate it; a harness whose stdout names things differently supplies it instead of
 /// needing parser code, which is the seam §10 exists to provide.</para>
+///
+/// <para><paramref name="stdin"/> is <c>profiles[].stdin</c> (§10, #110): whether docketd
+/// holds the dead-man pipe open for the worker's life. Defaults to
+/// <see cref="StdinPolicy.Deadman"/> — every tier but the real-Codex one, whose harness
+/// blocks reading a held-open stdin and needs <see cref="StdinPolicy.Closed"/> to reach its
+/// first turn at all.</para>
 /// </summary>
 internal sealed class FleetRig(
     PostgresFixture pg,
@@ -62,7 +68,8 @@ internal sealed class FleetRig(
     bool terminalEvents = false,
     bool agentProcesses = false,
     StopConfig? stop = null,
-    IReadOnlyDictionary<string, string>? eventMapping = null) : IAsyncDisposable
+    IReadOnlyDictionary<string, string>? eventMapping = null,
+    StdinPolicy stdin = StdinPolicy.Deadman) : IAsyncDisposable
 {
     private const string RelayBearer = "multimachine-relay-shared-secret-under-test";
 
@@ -146,7 +153,9 @@ internal sealed class FleetRig(
             MaxConcurrent: null,
             // §10: the machine owner's decision, enforced machine-side. Off unless a
             // scenario is about agent-started processes.
-            Processes: agentProcesses ? new ProfileProcessesConfig(AgentInitiated: true) : null);
+            Processes: agentProcesses ? new ProfileProcessesConfig(AgentInitiated: true) : null,
+            // §10 (#110): the dead-man pipe, unless a scenario's harness cannot survive it.
+            Stdin: stdin);
 
         Team = TeamId.New();
         _leadToken = await MultiMachineKit.LeadTokenAsync(pg, Team, ct);
