@@ -89,6 +89,37 @@ public sealed record RunnerConfig(
     }
 
     /// <summary>
+    /// §10 dead-man's switch: warnings for profiles that declared
+    /// <see cref="StdinPolicy.Closed"/> and have therefore given it up. Not a
+    /// misconfiguration — it is the documented trade a harness like <c>codex exec</c>
+    /// requires (it blocks reading a held-open stdin and never reaches its first turn) —
+    /// but it is a real reduction in containment, so the machine says it out loud at
+    /// startup rather than letting an operator believe the cooperative kill is still
+    /// there.
+    ///
+    /// <para>What is actually lost: docketd's own death no longer takes such a worker
+    /// down. Nothing else changes — <see cref="StrayReaper"/> still sweeps it on the next
+    /// docketd start, Windows Job Objects still contain it, and Linux PDEATHSIG still
+    /// fires if the harness arms it. So the window is "docketd is dead and has not
+    /// restarted yet", during which a worker keeps burning tokens on a task the plane has
+    /// already requeued.</para>
+    ///
+    /// <para>Returned rather than logged so it is testable; the daemon prints these
+    /// alongside <see cref="EventRelayWarnings"/> and the <c>max_cpu_load is inert</c>
+    /// notice.</para>
+    /// </summary>
+    public IReadOnlyList<string> StdinPolicyWarnings() =>
+        Profiles
+            .Where(p => p.Value.Stdin == StdinPolicy.Closed)
+            .OrderBy(p => p.Key, StringComparer.Ordinal)
+            .Select(p =>
+                $"docketd: profile '{p.Key}': stdin is 'closed', so the worker sees EOF at once and " +
+                "this profile has NO dead-man's switch — if docketd dies, its workers keep running " +
+                "on already-requeued tasks until the next docketd start sweeps them. That is the " +
+                "declared trade for a harness that blocks reading a held-open stdin (§10).")
+            .ToArray();
+
+    /// <summary>
     /// Parses and validates a config document. Throws
     /// <see cref="RunnerConfigException"/> listing every problem — a config
     /// with zero or multiple <c>default</c> profiles, an empty spawn argv, a
@@ -357,6 +388,35 @@ public sealed record RunnerConfig(
             if (dto.Logs?.PruneAfterDays is { } pd && pd < 0)
                 problems.Add($"profile '{name}' logs.prune_after_days must be >= 0 when set; 0 disables pruning (§12)");
 
+            // §10 stdin policy. Parsed STRICTLY, unlike stop.mode and events.source: a
+            // typo in those degrades to a documented default, but a typo here silently
+            // restores the very pipe the profile was written to escape — and for a harness
+            // that blocks reading it (codex exec) that is a worker which hangs forever
+            // before its first turn, with nothing said anywhere. Name the two values
+            // instead of guessing.
+            if (!TryParseStdin(dto.Stdin, out var stdin))
+            {
+                problems.Add(
+                    $"profile '{name}' declares stdin '{dto.Stdin}', which is not a policy — use " +
+                    "'deadman' (hold the pipe open for the worker's life; the §10 dead-man's switch, " +
+                    "and the default) or 'closed' (EOF immediately after spawn, for a harness that " +
+                    "blocks reading piped stdin)");
+            }
+            // A message-mode stop writes its wind-down turn to the worker's stdin, so
+            // declaring it on a closed-stdin profile asks docketd to deliver a turn to a
+            // pipe it closed at spawn. Refused here rather than degrading at stop time: the
+            // stop path would silently fall through to the deadline kill, which is exactly
+            // the "declared one thing, did another" failure §10's stop honesty rules out.
+            else if (stdin == StdinPolicy.Closed && ParseEnum(dto.Stop?.Mode, StopMode.Signal) == StopMode.Message)
+            {
+                problems.Add(
+                    $"profile '{name}' declares stop.mode 'message' with stdin 'closed' — the " +
+                    "wind-down turn is written to the worker's stdin, and a closed stdin gives it " +
+                    "nowhere to land. Declare stop.mode 'signal' (the honest choice for a harness " +
+                    "that does not read stdin turns, and what a closed-stdin harness is by " +
+                    "definition) or stdin 'deadman' (§10)");
+            }
+
             built[name] = BuildProfile(dto);
         }
 
@@ -371,6 +431,10 @@ public sealed record RunnerConfig(
 
     private static ProfileConfig BuildProfile(ProfileDto dto)
     {
+        // Validation refused every value this cannot parse, so the out is the declared
+        // policy or — for an absent key — the Deadman default it initialises to.
+        TryParseStdin(dto.Stdin, out var stdin);
+
         var stopMode = ParseEnum(dto.Stop?.Mode, StopMode.Signal);
         var windDown = dto.Stop?.WindDownSeconds is { } w and > 0
             ? TimeSpan.FromSeconds(w)
@@ -409,7 +473,27 @@ public sealed record RunnerConfig(
                 ? null
                 : new ProfileProcessesConfig(
                     dto.Processes.AgentInitiated ?? false,
-                    dto.Processes.Max is { } cap and > 0 ? cap : 8));
+                    dto.Processes.Max is { } cap and > 0 ? cap : 8),
+            stdin);
+    }
+
+    /// <summary>
+    /// The two <c>stdin</c> spellings, matched by name only. Deliberately not
+    /// <see cref="Enum.TryParse{TEnum}(string,bool,out TEnum)"/>, which also accepts the
+    /// underlying numbers — <c>"stdin": "0"</c> quietly meaning <c>deadman</c> is not a
+    /// config surface worth having.
+    /// </summary>
+    private static bool TryParseStdin(string? raw, out StdinPolicy policy)
+    {
+        policy = StdinPolicy.Deadman;
+        if (string.IsNullOrWhiteSpace(raw))
+            return true; // absent: the pre-existing behaviour, and the default
+        switch (raw.Trim().ToLowerInvariant())
+        {
+            case "deadman": policy = StdinPolicy.Deadman; return true;
+            case "closed": policy = StdinPolicy.Closed; return true;
+            default: return false;
+        }
     }
 
     private static TEnum ParseEnum<TEnum>(string? raw, TEnum fallback) where TEnum : struct, Enum =>
@@ -439,15 +523,27 @@ public sealed record BackPressureThresholds(double MaxCpuLoad, double MaxMemoryL
 /// never <b>what</b> work it does — profiles are identifiers a human chose, not
 /// a capability manifest (§10, §15).
 ///
-/// <para><b>Dead-man's switch convention (§10).</b> docketd redirects a worker's
-/// stdin to a pipe and holds the write end for the worker's whole lifetime (see
+/// <para><b>Dead-man's switch convention (§10), and the per-profile opt-out.</b> Under
+/// the default <see cref="StdinPolicy.Deadman"/>, docketd redirects a worker's stdin to
+/// a pipe and holds the write end for the worker's whole lifetime (see
 /// <see cref="ProcessSupervisor.Spawn"/>). A well-behaved harness must therefore
 /// exit — killing anything it spawned — when it observes EOF on stdin: EOF means
 /// docketd is gone (crashed or SIGKILLed), and the worker is burning tokens
 /// against a task the control plane has already requeued. This is cooperative and
 /// immediate; <see cref="StrayReaper"/> is the non-cooperative backstop that runs
-/// on the next docketd start.</para>
+/// on the next docketd start. <see cref="StdinPolicy.Closed"/> keeps only the
+/// backstop — see <see cref="Stdin"/>.</para>
 /// </summary>
+/// <param name="Stdin">
+/// §10: what the worker's stdin is for this profile. The default
+/// <see cref="StdinPolicy.Deadman"/> is the switch above.
+/// <see cref="StdinPolicy.Closed"/> exists because the switch is not universally
+/// survivable: a harness that blocks reading piped stdin never reaches its first turn
+/// under it (<c>codex exec</c> reads stdin to EOF while resolving its prompt, even with
+/// an argv prompt, and no flag escapes it — issue #110). Such a profile trades the
+/// cooperative kill for the <see cref="StrayReaper"/>'s restart-time sweep alone, and
+/// says so on docketd's startup line (<see cref="RunnerConfig.StdinPolicyWarnings"/>).
+/// </param>
 public sealed record ProfileConfig(
     string Name,
     IReadOnlyList<string> Spawn,
@@ -457,10 +553,32 @@ public sealed record ProfileConfig(
     TelemetryConfig Telemetry,
     LogsConfig Logs,
     int? MaxConcurrent,
-    ProfileProcessesConfig? Processes = null)
+    ProfileProcessesConfig? Processes = null,
+    StdinPolicy Stdin = StdinPolicy.Deadman)
 {
     /// <summary>This profile's agent-process policy; the closed default when unstated.</summary>
     public ProfileProcessesConfig ProcessPolicy => Processes ?? new ProfileProcessesConfig();
+}
+
+/// <summary>
+/// §10 <c>profiles[].stdin</c>: whether the dead-man's pipe is held open for this
+/// profile's workers. A <b>per-profile</b> decision rather than a machine-wide one
+/// because a fleet is heterogeneous by design — one machine can run a claude profile
+/// that survives the pipe and a codex profile that cannot, and only the profile knows
+/// which harness it spawns.
+/// </summary>
+public enum StdinPolicy
+{
+    /// <summary>Hold the write end open for the worker's whole life: EOF means docketd
+    /// died, and a cooperating harness kills its own tree (§10). The default, and the
+    /// only behaviour before <c>stdin</c> existed.</summary>
+    Deadman,
+
+    /// <summary>Close the write end immediately after spawn, so the worker's first read
+    /// is a deterministic EOF. For a harness that blocks on piped stdin — the same choice
+    /// an agent-started process makes with <c>open_stdin: false</c> (#89). Gives up the
+    /// cooperative kill; keeps the restart-time sweep.</summary>
+    Closed,
 }
 
 /// <summary>How <c>stop</c> is delivered for this profile (§10). The frozen

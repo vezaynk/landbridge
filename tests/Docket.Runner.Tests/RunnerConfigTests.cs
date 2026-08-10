@@ -274,4 +274,149 @@ public class RunnerConfigTests
         Assert.Equal(2, warnings.Count);
         Assert.Contains("events.source is 'none'", warnings[0], StringComparison.Ordinal);
     }
+
+    // §10 stdin policy (#110). `deadman` holds the pipe open for the worker's life — the
+    // dead-man's switch, and the only behaviour there used to be. `closed` sends EOF right
+    // after spawn, which is the difference between a working Codex worker and one that
+    // blocks forever inside prompt resolution. These pin the parse, the strictness, and the
+    // one pairing that cannot mean anything.
+
+    [Fact]
+    public void Stdin_defaults_to_deadman_when_the_key_is_absent()
+    {
+        var json = """
+        { "machine": { "work_root": "/w" },
+          "profiles": [ { "name": "default", "spawn": ["claude", "-p"] } ] }
+        """;
+
+        // The pre-#110 behaviour is what an untouched config must still get: every existing
+        // profile in the wild omits this key.
+        Assert.Equal(StdinPolicy.Deadman, RunnerConfig.Load(json).Default.Stdin);
+        Assert.Empty(RunnerConfig.Load(json).StdinPolicyWarnings());
+    }
+
+    [Fact]
+    public void Stdin_closed_parses_and_is_per_profile()
+    {
+        var json = """
+        { "machine": { "work_root": "/w" },
+          "profiles": [
+            { "name": "default", "spawn": ["claude", "-p"] },
+            { "name": "codex", "spawn": ["codex", "exec", "p"], "stdin": "closed" }
+          ] }
+        """;
+
+        var config = RunnerConfig.Load(json);
+
+        // The point of putting this on the profile rather than the machine: one box can run
+        // both a harness that survives the pipe and one that cannot.
+        Assert.Equal(StdinPolicy.Deadman, config.Default.Stdin);
+        Assert.Equal(StdinPolicy.Closed, config.Resolve("codex")!.Stdin);
+    }
+
+    [Theory]
+    [InlineData("deadman", StdinPolicy.Deadman)]
+    [InlineData("DEADMAN", StdinPolicy.Deadman)]
+    [InlineData("closed", StdinPolicy.Closed)]
+    [InlineData("Closed", StdinPolicy.Closed)]
+    [InlineData("  closed  ", StdinPolicy.Closed)]
+    public void Stdin_accepts_either_spelling_case_insensitively(string declared, StdinPolicy expected)
+    {
+        var json = $$"""
+        { "machine": { "work_root": "/w" },
+          "profiles": [ { "name": "default", "spawn": ["x"], "stdin": "{{declared}}" } ] }
+        """;
+
+        Assert.Equal(expected, RunnerConfig.Load(json).Default.Stdin);
+    }
+
+    [Theory]
+    [InlineData("close")]     // the plausible typo
+    [InlineData("dead-man")]  // the plausible other typo
+    [InlineData("open")]
+    [InlineData("0")]         // an enum ordinal is not a config surface
+    [InlineData("true")]
+    public void An_unrecognized_stdin_value_is_refused_rather_than_silently_defaulted(string declared)
+    {
+        var json = $$"""
+        { "machine": { "work_root": "/w" },
+          "profiles": [ { "name": "default", "spawn": ["x"], "stdin": "{{declared}}" } ] }
+        """;
+
+        // Deliberately unlike stop.mode/events.source, which fall back to a documented
+        // default on a typo. Falling back HERE restores the pipe the profile was written to
+        // escape, and the symptom is a worker that hangs before its first turn with nothing
+        // logged anywhere — the exact failure #110 exists to end. So it must be loud, and
+        // the message has to name what to type instead.
+        var ex = Assert.Throws<RunnerConfigException>(() => RunnerConfig.Load(json));
+        var problem = Assert.Single(ex.Errors, e => e.Contains("stdin", StringComparison.Ordinal));
+        Assert.Contains(declared, problem, StringComparison.Ordinal);
+        Assert.Contains("'deadman'", problem, StringComparison.Ordinal);
+        Assert.Contains("'closed'", problem, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_message_mode_stop_on_a_closed_stdin_profile_is_refused_as_a_contradiction()
+    {
+        var json = """
+        { "machine": { "work_root": "/w" },
+          "profiles": [ { "name": "codexish", "spawn": ["x"], "stdin": "closed",
+                          "stop": { "mode": "message", "message": "{disposition}" } },
+                        { "name": "default", "spawn": ["y"] } ] }
+        """;
+
+        // A message-mode stop IS a write to the worker's stdin. On a closed-stdin profile
+        // that write has nowhere to land, so the declaration promises a graceful wind-down
+        // the machine can never deliver — and it would degrade silently into the deadline
+        // kill, which is precisely the "declared one thing, did another" shape §10's stop
+        // honesty forbids. Refused at load, where both halves can be named.
+        var ex = Assert.Throws<RunnerConfigException>(() => RunnerConfig.Load(json));
+        var problem = Assert.Single(ex.Errors, e => e.Contains("codexish", StringComparison.Ordinal));
+        Assert.Contains("stop.mode 'message'", problem, StringComparison.Ordinal);
+        Assert.Contains("stdin 'closed'", problem, StringComparison.Ordinal);
+        // Actionable: it must say which way out to take, not merely that this is wrong.
+        Assert.Contains("stop.mode 'signal'", problem, StringComparison.Ordinal);
+        Assert.Contains("stdin 'deadman'", problem, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void A_signal_mode_stop_on_a_closed_stdin_profile_is_the_supported_pairing()
+    {
+        var json = """
+        { "machine": { "work_root": "/w" },
+          "profiles": [ { "name": "default", "spawn": ["codex", "exec", "p"], "stdin": "closed",
+                          "stop": { "mode": "signal" } } ] }
+        """;
+
+        // The Codex shape, and the only one that is honest: no stdin, so no turn, so the
+        // stop is the granted TTL and then the tree-kill.
+        var config = RunnerConfig.Load(json);
+        Assert.Equal(StdinPolicy.Closed, config.Default.Stdin);
+        Assert.Equal(StopMode.Signal, config.Default.Stop.Mode);
+    }
+
+    [Fact]
+    public void Closing_stdin_is_warned_at_startup_with_the_containment_it_gives_up()
+    {
+        var json = """
+        { "machine": { "work_root": "/w" },
+          "profiles": [
+            { "name": "default", "spawn": ["claude", "-p"] },
+            { "name": "codex", "spawn": ["codex", "exec", "p"], "stdin": "closed" }
+          ] }
+        """;
+
+        var warnings = RunnerConfig.Load(json).StdinPolicyWarnings();
+
+        // Only the profile that opted out is named, and the line states the actual loss —
+        // docketd's own death no longer takes the worker down — rather than just repeating
+        // the setting back. An operator who reads only this line has to come away knowing
+        // that a worker surviving a docketd crash is now expected, not a reaper bug.
+        var warning = Assert.Single(warnings);
+        Assert.Contains("profile 'codex'", warning, StringComparison.Ordinal);
+        Assert.Contains("NO dead-man's switch", warning, StringComparison.Ordinal);
+        Assert.Contains("if docketd dies", warning, StringComparison.Ordinal);
+        Assert.Contains("next docketd start", warning, StringComparison.Ordinal);
+        Assert.DoesNotContain("'default'", warning, StringComparison.Ordinal);
+    }
 }
