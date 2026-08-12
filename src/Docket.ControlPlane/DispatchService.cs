@@ -352,12 +352,20 @@ public sealed class DispatchService : IHostedService
     }
 
     /// <summary>
-    /// The MCP client config a worker uses to reach the plane (§13): Claude Code's
-    /// <c>--mcp-config</c> HTTP shape, with the freshly-minted worker token as a
+    /// One of the two carriers a worker's identity reaches the harness by (§13): Claude
+    /// Code's <c>--mcp-config</c> HTTP shape, with the freshly-minted worker token as a
     /// bearer header. docketd writes it to <c>{work_dir}/mcp.json</c> (0600) and
     /// substitutes the path into the profile's spawn argv — the runner never
     /// interprets it, it is transport (§10). Built with the DOM so the token is
     /// escaped correctly and no serializer reflection is needed.
+    ///
+    /// <para>The other carrier is <c>DOCKET_WORKER_TOKEN</c>, stamped on every spawn, and it
+    /// is the one that matters on a harness with no <c>--mcp-config</c> equivalent:
+    /// <c>codex exec</c> takes its MCP servers only from a <c>config.toml</c> under
+    /// <c>CODEX_HOME</c> and resolves the bearer from an environment variable that file
+    /// names, so for such a profile this file is written and ignored. Writing it
+    /// unconditionally is deliberate — the plane holds no harness knowledge to branch on
+    /// (§10), and an unread 0600 file costs nothing.</para>
     /// </summary>
     private string BuildWorkerMcpConfig(string workerToken) =>
         new JsonObject

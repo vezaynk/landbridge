@@ -223,6 +223,10 @@ harness reads turns off a held-open stdin, `docketd` delivers `stop` as an
 (`message` | `signal`) declares which delivery it supports. `ttl == 0` means kill
 immediately.
 
+The message path needs a pipe to arrive on, so it is coupled to the profile's `stdin`
+policy: `stop.mode: message` together with `stdin: closed` is refused at config load
+rather than accepted as a promise the machine cannot keep.
+
 **`claude -p` is not one of those harnesses, as built.** It never reads stdin after
 startup, and the flag that looks like it would enable this (`--input-format
 stream-json`) makes it ignore its argv prompt and hang instead. So the reference
@@ -257,6 +261,15 @@ per worker (so the kernel does the cleanup and there is nothing to discover). Th
 primary dead-man's switch is simpler still: `docketd` holds each worker's stdin
 pipe open, and if `docketd` dies the OS closes the write end, so a well-behaved
 harness sees EOF and tears down its own tree.
+
+That switch is a per-profile declaration (`stdin`), not a universal property, because
+it is not universally survivable. `deadman` is the default and holds the pipe; `closed`
+gives the worker a deterministic EOF right after spawn, for a harness that would
+otherwise block on the pipe forever instead of taking its first turn — `codex exec`
+reads stdin during prompt resolution and does exactly that. A `closed` worker gives up
+the switch: it no longer dies with `docketd`, and the next start's stray sweep is the
+only thing that collects it. `docketd` states that cost on its startup line rather than
+leaving it implicit.
 
 ## The relay (§8.3)
 
@@ -310,9 +323,12 @@ Views render as a plain server-rendered web dashboard (spec §12: "a plain web
 dashboard first"); MCP Apps are not built. Most of §12's data points now have a
 source: a Team's committed budget and its measured relay byte burn are both surfaced
 (§9.9/§9.10), and the derived-telemetry events — auth failures, subagent spawns, and
-the typed input-request kind — are persisted as task event rows and render structured
-in the event log, with the auth failures on live tasks also joined into the inbox
-(the log is history; the inbox is what needs a person). **Permission requests** now have
+the typed input-request kind — have a **plane-side path end to end**: each is persisted
+as a task event row and renders structured in the event log, with the auth failures on
+live tasks also joined into the inbox (the log is history; the inbox is what needs a
+person). Two of those three are waiting on a producer rather than on a read model:
+`docketd` emits neither `auth-failed` nor `subagent-spawned` (above), so in practice no
+such row arrives today — the plane can record one, and nothing sends it. **Permission requests** now have
 a source too — §11's permission bridge records them on the task row, and the inbox
 section renders them with an allow/deny form. What genuinely has no source is the
 **subagent tree nested under a machine**, which renders as an honest empty state rather

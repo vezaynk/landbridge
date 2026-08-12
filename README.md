@@ -104,9 +104,16 @@ CI runs in **three workflows** because they have different needs:
   (`docket_cp`, `docket_mcp`, `docket_meta`, `docket_multimachine`). GitHub-hosted
   service containers are Linux-only. `Meta`'s Docker-gated E2E genuinely runs here:
   it publishes both images, provisions a real Instance, hits its health endpoint,
-  and destroys it. This workflow also carries the **opt-in `real-claude-e2e` job**,
-  gated to `workflow_dispatch` so a real `claude -p` fleet run (own database,
-  `ANTHROPIC_KEY` → `ANTHROPIC_API_KEY`) never spends tokens on an ordinary push.
+  and destroys it. Three more jobs live in this workflow. The **`chaos` job** runs the
+  §17.8 suite on every push, isolated from the matrix above because it is the one suite
+  that SIGKILLs real processes — it spawns the real plane, the real `docketd` and real
+  worker binaries and kills them mid-task; ubuntu-only, because stray discovery is a
+  documented deferral on Windows and the scenarios would assert nothing there. The
+  **`real-claude-e2e`** and **`real-codex-e2e`** jobs are the token-spending real-harness
+  tiers, both gated to `workflow_dispatch` so an ordinary push can never spend: each
+  takes its own database and runs only its own trait (`Category=RealClaude` /
+  `Category=RealCodex`), and each skips cleanly when its key is absent. `real-codex-e2e`
+  installs **both** CLIs, because the mixed claude+codex fleet fact needs both.
 - **`.github/workflows/os-matrix.yml`** runs the platform-sensitive suites — Core,
   Contracts, Runner, Relay, Preview — on **ubuntu, macOS, and Windows**. The point
   is machinery whose behavior is genuinely per-OS: process supervision and stray
@@ -128,9 +135,14 @@ whether a *fresh* run on a *new* runner reproduces before treating it as a defec
 
 ## Status
 
-**The core loop is proven with real agents, not only scripted ones.** A CI job
-dispatches two actual `claude -p` workers to two machines and has them complete a
-task and hand a result between them, through real dispatch, MCP, and the relay.
+**The core loop is proven with real agents, not only scripted ones — and with two
+different harnesses.** One opt-in CI job dispatches actual `claude -p` workers to
+two machines and has them complete a task and hand a result between them, through
+real dispatch, MCP, and the relay. A second job does the same with OpenAI's
+**Codex CLI** (`codex exec`), including the fact the whole BYO-harness claim rests
+on: **a claude worker and a codex worker handing a token to each other across one
+fleet**, with no code below the spawn seam knowing the difference — a profile, not
+a code change. Both tiers are `workflow_dispatch`-only because they spend tokens.
 
 Implemented: the task state machine and the §9 checks (check 4 is the doer/judge
 split — a Lead or human adjudicates, never the task's own worker); Postgres store
@@ -139,14 +151,25 @@ four credential classes; OAuth 2.1 authorization-code + PKCE (S256) + Client ID
 Metadata Documents; machine enrollment and refresh; `docketd` supervision,
 stop/kill with a bounded wind-down deadline (an injected turn where the harness reads
 one, a TTL'd kill for `claude -p`, which cannot be handed one), heartbeats,
-terminal-source tool-call events,
+terminal-source tool-call events — in either of two stream shapes, claude's nested
+assistant turns or one flat event object per call, so a second harness's stream is a
+`mapping` rather than a code change — a **per-profile `stdin` policy** (the §10
+dead-man pipe by default, `closed` for a harness like `codex exec` that would block
+on it forever),
 real per-OS CPU-load back-pressure, and stray cleanup; **two-clock per-task
 liveness** (aliveness vs no-progress, so a ten-minute build is no longer mistaken
 for a hang), capped requeues, and **a requeue that takes the process down with it** —
 the plane kills the dispatch it gave up on where the machine is still connected, so a
 wedged harness stops spending instead of running until its `docketd` restarts; §11
 park → resume; **continuation tasks** (`continues:`) that resume a
-prior task's transcript under a fresh token; **in-band worker reports** and the
+prior task's transcript under a fresh token; **agent-started background processes**
+(`start_process` / `write_process` / `stop_process` / `list_processes` — supervised by
+`docketd` as its own children, so they outlive the task that started them, machine-scoped
+for any later task to find and stop, never restarted, with an optional stdin pipe);
+the **§11 permission bridge**, which lets a headless worker run *without*
+`bypassPermissions` — a tool call its profile does not pre-approve becomes an approval
+request the Lead answers with a verdict, or hands to a human on the dashboard;
+**in-band worker reports** and the
 **question/answer exchange** that makes blocking on a human actually carry words;
 Lead-adjudicated completion (`lead`/`review` modes); **budget accounting** as a
 ceiling on committed authorization plus an enforced forward rate limit; the relay
@@ -169,20 +192,17 @@ Deliberately deferred — do not assume these work:
 - **Event sources beyond `terminal`.** `hooks` and `otel` parse but are wired to
   nothing, so they behave as `none`; `docketd` warns loudly at startup for any
   profile declaring one. The subagent tree and `auth-failed` have no producer.
-- **SIGTERM does not wind workers down — by design, not deferral (settled in #71).**
-  A killed `docketd` is the same event as a dead machine, and the plane keeps exactly
-  one reconciliation for both: disconnect → requeue → redispatch. Only a `stop` *from
-  the plane* is graceful — so **drain a machine before restarting its service**,
-  especially since each undrained restart spends one of a task's capped requeues.
 - The enrollment **conformance run** and `/docket-enroll` wizard do not exist; the
   enroll skill carries a manual smoke test instead. Per-task OS isolation is
   deferred (§13): co-tenant tasks on a machine can reach each other's loopback.
+
+Settled, and deliberately *not* on that list: **SIGTERM does not wind workers down
+(#71).** A killed `docketd` is the same event as a dead machine, and the plane keeps
+exactly one reconciliation for both: disconnect → requeue → redispatch. Only a `stop`
+*from the plane* is graceful — so **drain a machine before restarting its service**,
+especially since each undrained restart spends one of a task's capped requeues.
 
 Open decisions live in `ideas/spec.md` §16 and in the issue tracker.
 `ideas/spec.md` remains authoritative for design; where it and the code disagree,
 the code is what runs today — and the spec's "as-built reconciliation" notes record
 where a claim was corrected rather than quietly left standing.
-
-`ideas/spec.md` remains the authoritative design. Where this README or the code
-and the spec disagree, the code is what runs today and the spec is where it is
-going.

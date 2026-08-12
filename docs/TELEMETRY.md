@@ -6,13 +6,17 @@ activity telemetry to **your** OTLP collector, with the Docket task that caused
 the spend stamped on every metric and event.
 
 > **Visibility, not enforcement.** Nothing in Docket ingests, meters, or caps any
-> of this. There is no ceiling, no accounting, and no budget UI — the control
-> plane never sees a token count. Docket does not sit between the harness and the
-> model provider (§10), and the machine is the customer's, so these are the
-> harness's own self-reported numbers going to your own collector: useful,
+> of this: **the control plane never sees a token count.** Docket does not sit between
+> the harness and the model provider (§10), and the machine is the customer's, so these
+> are the harness's own self-reported numbers going to your own collector: useful,
 > attributable, and best-effort by construction. §10 keeps budget as
 > *containment* built on the harness-local hard cap (`--max-budget-usd`), not on
 > anything below.
+>
+> There *is* a Team budget ceiling, accounting, and a dashboard for it (§9.9) — but it
+> is a ceiling on **authorized** spend, committed at dispatch from the per-dispatch cap,
+> and it is fed by nothing on this page. Measured spend and authorized spend never meet:
+> a task that burns ten times its cap still only ever charged the cap.
 
 ## Turning it on
 
@@ -127,7 +131,8 @@ destination that every profile can then opt into with `otel` alone.
 Docket receives none of it and needs no
 network path to it: the worker talks to your collector directly, and nothing
 about that traffic passes through the control plane. There is no OTLP receiver in
-Docket, no token or cost field in its schema, and no dashboard that shows spend.
+Docket, no token or cost field in its schema, and no dashboard that shows *measured*
+spend — the §12 budget view reports committed authorization, a different number.
 
 A `docker run` collector with a `debug` exporter is enough to see what a worker
 emits before you wire it anywhere permanent.

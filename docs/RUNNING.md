@@ -160,8 +160,11 @@ machine id, so a copied credential file fails on another host.
 ## The runner config
 
 `docketd` contains no harness knowledge — everything specific is data (spec §10).
-`--config <path>` points at a JSON file with a `machine` section and one or more
-`profiles` (exactly one must be named `default`). The full schema and a worked
+`--config <path>` points at a JSON file with a `machine` section, one or more
+`profiles` (exactly one must be named `default`), and an optional `services` array —
+the operator's own long-lived processes (§8.2), which `docketd` supervises as its own
+children, keeps up, and verifies at dial. Those are the operator's, not an agent's: a
+worker can see them in `list_processes` but cannot stop them. The full schema and a worked
 Claude Code profile live in
 [`ideas/skills/references/runner-config.md`](../ideas/skills/references/runner-config.md).
 The dev-loop template is
@@ -173,7 +176,23 @@ The dev-loop template is
 / `max_disk_usage` in `[0,1]`).
 
 Each `profile` carries `spawn` (argv), `stop`, `resume`, `events`, `telemetry`,
-`logs`, and an optional `max_concurrent`. `docketd` substitutes `{...}` tokens
+`logs`, an optional `max_concurrent`, a `stdin` policy, and an optional
+`processes` block:
+
+- **`stdin`** — `deadman` (the default: `docketd` holds the worker's stdin pipe open
+  for the task's whole life, so the OS closes it and a well-behaved harness tears
+  itself down if `docketd` dies — the §10 dead-man's switch) or `closed` (the pipe
+  gets a deterministic EOF right after spawn). `closed` exists because the switch is
+  not universally survivable: `codex exec` blocks forever reading a held-open pipe and
+  never takes its first turn. The trade is real and `docketd` says so on its startup
+  line — such a worker no longer dies with `docketd`, and the next start's stray sweep
+  is the only thing that collects it. `stdin: closed` with `stop.mode: message` is
+  refused at config load, because a stop turn needs a pipe to arrive on.
+- **`processes`** — `agent_initiated` (default `false`) is the gate deciding whether
+  tasks on this profile may call `start_process` at all, and `max` (default `8`) caps
+  how many they may hold at once.
+
+`docketd` substitutes `{...}` tokens
 into each `spawn` arg at dispatch: `{task_id}`, `{machine_id}`, `{work_dir}`
 (`= {work_root}/{task_id}`, the cwd), `{budget}` (the harness-local hard cap in
 USD, if any), and `{mcp_config}` (the path to the worker MCP config `docketd`
@@ -244,12 +263,26 @@ The load-bearing arguments:
 ### Event sources — what works today
 
 `events.source` selects how harness activity maps to the frozen runner events.
-On this branch only **`terminal`** (parse Claude Code stream-json stdout →
-`tool-call`, capture the session id) and **`none`** (honest degradation: liveness
-falls back to process-alive, progress renders as "not reported") are implemented.
-The `hooks` and `otel` sources are valid config values but **not yet wired** —
-the worked example in the runner-config reference uses `hooks`, which is the
-intended shape, not what runs today. Of the frozen event vocabulary, only
+On this branch only **`terminal`** (drain the harness's NDJSON stdout → `tool-call`,
+capture the session id) and **`none`** (honest degradation: aliveness rides the `alive`
+event `docketd` emits for every live process regardless of source, and progress renders
+as "not reported") are implemented.
+
+`terminal` is not claude-only. `events.mapping` renames the properties it keys off —
+its defaults are Claude Code's `stream-json` names — and it also handles a second
+*shape*: a harness that emits one flat event object per tool call rather than an
+assistant turn wrapping content blocks. That is `tool_event_type` (the `type` value
+that *is* a tool call) plus `tool_name_path` (a dotted path to the string naming it,
+comma-separated alternatives tried in order). It is how a Codex worker reports
+progress at all. Nothing beyond those two shapes is expressible: no wildcards,
+indexes, or filters, so a stream that hides its tool calls anywhere else is a code
+change rather than a config one. A `terminal` profile that parses well-formed lines
+and extracts *neither* a session ref nor a tool call no longer fails silently —
+`docketd` writes one line per task at worker exit naming what the silence cost.
+
+The `hooks` and `otel` sources are valid config values but **not yet wired**, so
+all three non-`terminal` values behave as `none` and `docketd` warns at startup for
+every profile declaring one. Of the frozen event vocabulary, only
 `subagent-spawned` and `auth-failed` still have no producer; `alive` is emitted by
 `docketd`'s own heartbeat loop regardless of the events source, which is what keeps a
 long-running task on a `terminal` profile from being requeued while it is quiet.
@@ -490,7 +523,13 @@ this branch.
 | `Docket:WaitTtl` | `00:30:00` | How long a `blocked_on_input` task waits before parking (spec §11). |
 | `Docket:MachineLivenessTtl` | `00:01:30` | Heartbeat-age window past which a machine is treated as rebooted and its waiting tasks requeue (≈ six missed 15s heartbeats). |
 | `Docket:WaitTtlSweepInterval` | `00:01:00` | How often the `WaitTtlSweeper` background loop runs. |
-| `Docket:RelayUrl` | *(unset)* | The `docket-relay` URL the plane hands `docketd` per `open_forward`. |
+| `Docket:PerTaskLivenessWindow` | `00:01:00` | §10 clock one (**aliveness**): how long `docketd` may go without asserting a task's harness process is alive before the task is requeued. `docketd` asserts every heartbeat, so this is not gated on `events.source`. |
+| `Docket:NoProgressCeiling` | `00:30:00` | §10 clock two (**progress**): how long an alive process may report no `tool-call` before it is treated as wedged. A task bearing a registered service (§8.2) is exempt from this one, never from the first. |
+| `Docket:InfrastructureRequeueLimit` | `5` | §9 check 7: the infrastructure requeue cap stamped onto new tasks. Reaching it abandons the task as `canceled` (never `rejected`) with the workspace preserved. Non-positive means uncapped. |
+| `Docket:PermissionPollIntervalMs` | `500` | How often `request_permission` re-reads the task row while a worker blocks on a §11 approval. One indexed primary-key read per tick, and only while a worker is genuinely blocked. |
+| `Docket:RelayUrl` (or env `DOCKET_RELAY_URL`) | `http://127.0.0.1:5100` | The `docket-relay` URL the plane hands `docketd` per `open_forward`, and the preview frontend per connect. Config wins, then the env var, then this default. |
+| `Docket:PreviewUrlBase` | `http://preview.localhost` | The wildcard base §8.4 preview URLs are built from — the opaque label becomes its leftmost subdomain. Set to your real wildcard host (`https://preview.example.com`) in production. |
+| `Docket:PreviewConnect:Bearer` | *(unset → 503)* | Shared bearer the preview frontend must present to `POST /preview/connect`. Fail-closed when unset, like `Docket:RelayValidation:Bearer`. |
 | `Docket:RelayValidation:Bearer` | *(unset → 503)* | Shared bearer the relay must present to `POST /relay/validate`. Fail-closed when unset. |
 | `Docket:Oauth:AllowInsecureClientMetadata` | `false` | DEV/TEST ONLY. Disables the CIMD SSRF address fence (accepts http / loopback `client_id` hosts). Never enable in production. |
 | `Docket:MigrateOnStartup` | `false` | Apply the checked-in EF migration on boot. Set by the dev loop; production migrates out of band. |
@@ -540,8 +579,10 @@ never complete it.
 
 See the [Tests section of the README](../README.md#tests). In short: `dotnet
 build -c Release` gates on warnings (`TreatWarningsAsErrors`), then run each
-suite with `dotnet test … --no-build -c Release`. The two Postgres-backed suites
-(`Docket.ControlPlane.Tests`, `Docket.Mcp.Tests`) honor `DOCKET_TEST_PG`; when it
-is set they use that server (each with its own database) instead of spinning a
-local cluster. CI splits into `ci.yml` (ubuntu + Postgres) and `os-matrix.yml`
-(the platform-sensitive suites on ubuntu/macOS/Windows).
+suite with `dotnet test … --no-build -c Release`. The Postgres-backed suites
+(`ControlPlane`, `Mcp`, `Meta`, `MultiMachine`, `Chaos`) honor `DOCKET_TEST_PG`; when
+it is set they use that server instead of spinning a local cluster, and each gets its
+**own database** on it so no suite's reset truncates another's fixtures. CI splits into
+`ci.yml` (ubuntu + Postgres: the build-and-test matrix, the chaos job, and the two
+opt-in real-harness tiers), `os-matrix.yml` (the platform-sensitive suites on
+ubuntu/macOS/Windows), and `publish-images.yml` (GHCR runtime images on a `v*` tag).
