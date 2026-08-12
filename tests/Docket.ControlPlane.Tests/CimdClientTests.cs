@@ -275,6 +275,56 @@ public class CimdClientTests
             Assert.IsType<CimdResult.Failed>(await Fetch(server)).Reason);
     }
 
+    // ── The body cap (draft §6.6) ─────────────────────────────────────────────
+
+    [Theory]
+    [InlineData(5 * 1024 + 1, "one byte over")]
+    [InlineData(6 * 1024, "6 KB")]
+    [InlineData(64 * 1024, "64 KB")]
+    [InlineData(1024 * 1024, "1 MB")]
+    public async Task A_body_over_the_size_cap_is_refused_however_far_over_it_goes(
+        int bytes, string how)
+    {
+        // The endpoint fetches an attacker-supplied URL, so the response size is the
+        // attacker's choice: without a cap, exposure is whatever can be streamed
+        // inside the 5s timeout. Each of these documents is otherwise perfectly valid
+        // and complete — only its length is the problem, so this is a statement about
+        // the cap and not about a malformed body being rejected on other grounds.
+        using var server = CimdServer.Raw(clientId => Padded(clientId, bytes));
+
+        var failed = Assert.IsType<CimdResult.Failed>(await Fetch(server));
+
+        Assert.True(
+            failed.Reason.Contains("exceeds the 5 KB cap", StringComparison.Ordinal),
+            $"a {how} body must be refused by the size cap, but was: {failed.Reason}");
+    }
+
+    [Fact]
+    public async Task A_body_exactly_at_the_size_cap_is_still_accepted()
+    {
+        // The other half of the pair: a cap that refused legal documents would pass
+        // the theory above and break every real client. 5120 bytes is the largest
+        // body the draft's recommended maximum permits, so it has to be read whole.
+        using var server = CimdServer.Raw(clientId => Padded(clientId, 5 * 1024));
+
+        var ok = Assert.IsType<CimdResult.Ok>(await Fetch(server));
+
+        Assert.Equal("Test Client", ok.Document.ClientName);
+    }
+
+    /// <summary>
+    /// A valid document padded out with an ignored member to exactly
+    /// <paramref name="bytes"/> bytes, so a test can sit on the cap or step over it
+    /// by a single byte. ASCII throughout, so the byte count is the character count.
+    /// </summary>
+    private static string Padded(string clientId, int bytes)
+    {
+        var document = $$"""
+            {"client_id":"{{clientId}}","client_name":"Test Client","redirect_uris":["http://127.0.0.1/callback"],"padding":"@@"}
+            """;
+        return document.Replace("@@", new string('x', bytes - document.Length + 2));
+    }
+
     private static Task<CimdResult> Fetch(CimdServer server) =>
         // Insecure is on because the test document is served from loopback http; the
         // address fence itself is what the theory at the top of the file covers.
@@ -331,18 +381,26 @@ public class CimdClientTests
                     return;
                 }
 
-                var (status, body, location) = respond(ClientId);
-                context.Response.StatusCode = (int)status;
-                if (location is not null)
-                    context.Response.Headers["Location"] = location;
-                if (body is not null)
+                try
                 {
-                    var bytes = Encoding.UTF8.GetBytes(body);
-                    context.Response.ContentType = "application/json";
-                    context.Response.ContentLength64 = bytes.Length;
-                    await context.Response.OutputStream.WriteAsync(bytes);
+                    var (status, body, location) = respond(ClientId);
+                    context.Response.StatusCode = (int)status;
+                    if (location is not null)
+                        context.Response.Headers["Location"] = location;
+                    if (body is not null)
+                    {
+                        var bytes = Encoding.UTF8.GetBytes(body);
+                        context.Response.ContentType = "application/json";
+                        context.Response.ContentLength64 = bytes.Length;
+                        await context.Response.OutputStream.WriteAsync(bytes);
+                    }
+                    context.Response.Close();
                 }
-                context.Response.Close();
+                catch (Exception e) when (e is IOException or HttpListenerException)
+                {
+                    // The over-cap cases stop reading one byte past the cap and hang up,
+                    // so writing out the rest of a large body legitimately fails here.
+                }
             }
         }
 
