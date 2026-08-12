@@ -69,8 +69,10 @@ public abstract record RunnerCommand : RunnerMessage
 /// <para><b>A task, not a path.</b> The plane does not know — and must not choose — a
 /// machine's filesystem layout: <c>work_root</c> is machine-local runner config, and the
 /// runner is what maps a task id to a directory under it. Naming a task keeps that
-/// mapping in one place and keeps this record free of machine-specific paths, which is
-/// also why <c>ParkRecord.Directory</c> never got a producer.</para>
+/// mapping in one place and keeps this record free of machine-specific paths. The park
+/// record learned the same thing the hard way: it carried a working-directory field for
+/// months and nothing plane-side could ever fill it in, so every caller passed null and
+/// the field was eventually dropped.</para>
 ///
 /// <para><b><see cref="SpawnSubstitutions"/> is a reserved slot with no producer today.</b>
 /// The runner consumes it — extra <c>{key}</c> placeholders it substitutes into the spawn
@@ -78,10 +80,14 @@ public abstract record RunnerCommand : RunnerMessage
 /// <c>budget</c> / <c>session_id</c> / <c>mcp_config</c> set — but nothing on the plane
 /// populates it: <c>DispatchService</c> is the only place a dispatch is constructed and it
 /// passes none, so the field arrives <c>null</c> on every real dispatch and only the wire
-/// round-trip tests exercise it. Recorded rather than removed, on the same terms as
-/// <c>ParkRecord.Directory</c> above: §10 is frozen, and dropping an optional field is the
-/// one change an older plane would notice. Read this as "the seam exists and is unused",
-/// not as a capability an operator can rely on.</para>
+/// round-trip tests exercise it. <b>Recorded rather than removed, and the reason is the
+/// wire.</b> §10 is frozen: this record is what a <c>docketd</c> that may go a year without
+/// being touched deserializes, so dropping even an optional field is the one change an
+/// older runner would notice. That is a different situation from an unused field on a
+/// plane-internal type, which can simply go — the park record's directory did, once it was
+/// clear nothing could produce it — because no deployed peer has an opinion about it. Read
+/// this as "the seam exists and is unused", not as a capability an operator can rely
+/// on.</para>
 /// </summary>
 public sealed record DispatchCommand(
     TaskId Task,
