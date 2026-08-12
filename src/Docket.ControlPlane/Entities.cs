@@ -571,9 +571,9 @@ public sealed class TeamForwardUsageRow
 /// not released when a task finishes, because "unspent" is precisely the quantity
 /// that cannot be known — and releasing would turn a lifetime ceiling into a
 /// concurrency limiter, letting a $100 Team run ten thousand sequential $10 tasks
-/// (§4: a Team owns a budget and terminates). The one exception is a task cancelled
-/// before it was ever dispatched: no process ran, so no spend was possible, and
-/// holding that commitment would be a lie in the other direction. The escape valve
+/// (§4: a Team owns a budget and terminates). There is no release path at all, and
+/// none is needed: the commitment is made inside the dispatch transaction, so a task
+/// cancelled before it ever dispatched never charged this column. The escape valve
 /// is a human raising the ceiling, which is the control this is for.</para>
 ///
 /// <para><b>Written only by a human.</b> A Lead that could raise its own ceiling is

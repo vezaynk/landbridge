@@ -118,24 +118,27 @@ public sealed class TeamBudgetTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task Only_a_never_dispatched_commitment_is_released()
+    public async Task A_task_cancelled_before_it_dispatched_never_committed_anything_to_release()
     {
-        // The one exception: no process ever ran, so no spend was possible, and holding the
-        // commitment would overstate authorization as badly as releasing a finished task's
-        // would understate it.
+        // Why there is no release path (§9.9): the commitment is made inside the dispatch
+        // transaction, so a task that never dispatched never charged the ceiling. Creation
+        // only asks whether headroom exists. This is the invariant that makes "committed
+        // only rises" complete rather than approximate — nothing has to give anything back.
         Skip.IfNot(pg.Available, pg.SkipReason);
         await using var db = pg.NewContext();
         var budgets = new TeamBudgetService(db, TimeProvider.System);
+        var store = new TaskStore(db, TimeProvider.System, budgets);
         var team = TeamId.New();
         await budgets.SetLimitsAsync(team, ceilingUsd: 20m, perTaskUsd: 5m);
-        await DispatchOneAsync(db, team);
 
-        await budgets.ReleaseUndispatchedAsync(team, 5m);
-
+        var created = Assert.IsType<StoreResult.Applied>(await store.CreateAsync(new CreateTask(
+            new LeadClaim(team), team, "criteria", CompletionMode.Lead, Profile: null,
+            TeamBudgetRemains: true)));
         Assert.Equal(0m, (await budgets.ReadAsync(team)).CommittedUsd);
 
-        // And a release can never manufacture headroom that was never committed.
-        await budgets.ReleaseUndispatchedAsync(team, 999m);
+        Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(
+            created.Task.Id, new Cancel(new LeadClaim(team), CancelDisposition.Preserve)));
+
         Assert.Equal(0m, (await budgets.ReadAsync(team)).CommittedUsd);
     }
 

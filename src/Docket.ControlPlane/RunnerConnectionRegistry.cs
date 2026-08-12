@@ -155,6 +155,13 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     {
         lock (conn.Gate)
         {
+            // The single derivation point for dispatch eligibility. Back-pressure is folded
+            // into Ready here and nowhere else, so every downstream reader — ReadyMachines,
+            // TryPickMachine, SnapshotFor, the store's pre-check — gets one already-decided
+            // boolean instead of re-deriving the rule. UnderBackPressure is kept verbatim
+            // beside it for the §12 view, which distinguishes "back-pressured" from "not
+            // ready"; it is a rendering fact, not a second eligibility input. The engine's
+            // Dispatch transition re-checks both anyway as §9 check 5's enforcement point.
             conn.Ready = heartbeat.Ready && !heartbeat.UnderBackPressure;
             conn.UnderBackPressure = heartbeat.UnderBackPressure;
             conn.Profiles = new HashSet<string>(heartbeat.Profiles, StringComparer.Ordinal);

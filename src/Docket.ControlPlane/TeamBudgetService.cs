@@ -20,11 +20,15 @@ namespace Docket.ControlPlane;
 /// that can burn the whole cap, so a task on its third attempt has committed three
 /// caps. Conservative and true — and it makes requeue amplification visibly expensive,
 /// which bounds the infrastructure-requeue loop instead of hiding it.</item>
-/// <item><b>Committed only rises.</b> It is authorized-spend-to-date for the Team's
-/// life, never released on completion, because "unspent" is the one quantity that
-/// cannot be known and because releasing would turn a lifetime ceiling into a
-/// concurrency limiter (§4: a Team owns a budget and terminates). The single exception
-/// is <see cref="ReleaseUndispatchedAsync"/>.</item>
+/// <item><b>Committed only rises, with no exceptions.</b> It is authorized-spend-to-date
+/// for the Team's life, never released on completion, because "unspent" is the one
+/// quantity that cannot be known and because releasing would turn a lifetime ceiling into
+/// a concurrency limiter (§4: a Team owns a budget and terminates). Nor is there anything
+/// to release earlier: the commitment is made <em>inside the dispatch transaction</em>
+/// (<see cref="TryCommitDispatchAsync"/>), so a task cancelled before it ever dispatched
+/// never charged the ceiling in the first place — creation only asks whether headroom
+/// exists (<see cref="HasHeadroomAsync"/>) and commits nothing. The escape valve is a
+/// human raising the ceiling, which is the control this exists to give them.</item>
 /// </list></para>
 ///
 /// <para>Scoped alongside <see cref="TaskStore"/>, same clock/db injection style.</para>
@@ -116,25 +120,6 @@ public sealed class TeamBudgetService(DocketDbContext db, TimeProvider clock)
         // commitment — the dispatch path has no later SaveChanges to ride on.)
         await db.SaveChangesAsync(ct);
         return new BudgetCommit.Allowed(row.PerTaskUsd);
-    }
-
-    /// <summary>
-    /// The one release: a task cancelled before it was ever dispatched. No process ran, so
-    /// no spend was possible, and holding the commitment would overstate authorization as
-    /// badly as releasing a finished task's would understate it. Anything that was
-    /// dispatched at all keeps its commitment (see the type remarks).
-    /// </summary>
-    public async Task ReleaseUndispatchedAsync(TeamId team, decimal amount, CancellationToken ct = default)
-    {
-        if (amount <= 0m)
-            return;
-        var row = await db.TeamBudgets.FirstOrDefaultAsync(t => t.TeamId == team.Value, ct);
-        if (row is null)
-            return;
-        // Floor at zero: a release can never manufacture headroom that was never committed.
-        row.CommittedUsd = Math.Max(0m, row.CommittedUsd - amount);
-        row.UpdatedAt = clock.GetUtcNow();
-        await db.SaveChangesAsync(ct);
     }
 
     /// <summary>Every Team currently over its ceiling, for the containment sweep that
