@@ -29,6 +29,7 @@ namespace Docket.Contracts;
 [JsonSerializable(typeof(SessionStartedEvent))]
 [JsonSerializable(typeof(AliveEvent))]
 [JsonSerializable(typeof(ToolCallEvent))]
+[JsonSerializable(typeof(UsageReportedEvent))]
 [JsonSerializable(typeof(SubagentSpawnedEvent))]
 [JsonSerializable(typeof(ExitedEvent))]
 [JsonSerializable(typeof(AuthFailedEvent))]

@@ -401,6 +401,68 @@ public sealed record AliveEvent(TaskId Task, DateTimeOffset At) : RunnerEvent;
 /// per-task no-progress clock keys off it (§2.2, §10). Carries no token counts.</summary>
 public sealed record ToolCallEvent(TaskId Task, string Tool, DateTimeOffset At) : RunnerEvent;
 
+/// <summary>
+/// <c>usage-reported</c> — <b>the harness's own account of what a dispatch consumed</b>
+/// (§10 telemetry ingest, §12 measured view). One event per model per report, carrying that
+/// model's token counts and, where the harness states one, its cost in USD.
+///
+/// <para><b>This is a claim, not a derivation (§2 principle 2).</b> Every number here was
+/// computed by the harness and relayed verbatim; docketd does no arithmetic on it beyond the
+/// normalization below, and the plane none at all. A harness can under-report, mis-report, or
+/// report nothing — which is why nothing is enforced on it and why the §12 section that
+/// renders it is visually separated from everything the plane derives itself.</para>
+///
+/// <para><b>Additive and optional, like every field added to this frozen contract since.</b>
+/// A <c>docketd</c> that predates it simply never sends one, and the plane's measured view
+/// then shows the honest empty state rather than a zero — an absence of measurement is not a
+/// measurement of nothing (the same distinction §9.10's relay bytes draw).</para>
+///
+/// <para><b>The four token buckets are DISJOINT, and that took normalizing</b> because the two
+/// harnesses do not agree on what "input" means. Claude counts uncached prompt tokens in
+/// <c>input_tokens</c> and its cache hits separately, so its buckets are already disjoint.
+/// Codex counts the WHOLE prompt in <c>input_tokens</c> with <c>cached_input_tokens</c> as a
+/// subset of it — its own <c>non_cached_input()</c> subtracts one from the other for display.
+/// Summing the four as reported would therefore double-count a Codex worker's cache hits, so
+/// docketd subtracts where a profile declares the subset relationship
+/// (<c>usage_cached_is_subset</c>) and what arrives here is always four buckets that add up.
+/// The normalization is declared per profile as data, never inferred from a harness name.</para>
+///
+/// <para><see cref="CostUsd"/> is null where the harness reports no cost at all — Codex has no
+/// cost figure anywhere, on its stream or in its metrics. The plane does not multiply tokens
+/// into dollars to fill the gap; a derived figure and a reported one are different kinds of
+/// claim and §12 keeps them apart (see <c>ModelPricing</c>).</para>
+///
+/// <para><b><see cref="Model"/> is the harness's own name for the model, or null when it names
+/// none.</b> Nothing else may fill it: a model the PLANE asserted — from a profile's declaration
+/// or a spawn argv — rendered inside a section labelled "reported by the harness" would be the
+/// plane's claim wearing the harness's label, which is precisely the confusion §2 principle 2 and
+/// the §12 visual separation exist to prevent. Claude names its models per model and a single
+/// dispatch legitimately reports several; Codex names none on any stream event, so a Codex report
+/// arrives unattributed and §12 renders "not reported" against real token counts. That empty state
+/// is the honest answer, not a gap to be filled.</para>
+///
+/// <para><see cref="ReasoningOutputTokens"/> is a <b>subset of</b>
+/// <see cref="OutputTokens"/>, not an addition to it — Codex breaks out the reasoning portion
+/// of its output and Claude's stream does not expose one. Null where unreported. Anyone
+/// tempted to add it into a total should read that sentence twice.</para>
+///
+/// <para><b>Cumulative-to-date for the dispatch, not a delta.</b> Each report supersedes the
+/// last for its (task, model) pair, so the plane keeps the high-water mark and a report lost
+/// to §10's best-effort ring costs nothing but freshness. A delta would silently undercount
+/// on exactly that drop, and an undercount in a spend figure is the failure this shape
+/// exists to avoid.</para>
+/// </summary>
+public sealed record UsageReportedEvent(
+    TaskId Task,
+    string? Model,
+    long InputTokens,
+    long OutputTokens,
+    long CacheReadTokens,
+    long CacheWriteTokens,
+    long? ReasoningOutputTokens,
+    decimal? CostUsd,
+    DateTimeOffset At) : RunnerEvent;
+
 /// <summary><c>subagent-spawned</c> — subagent lineage where the harness emits
 /// it; progressive enhancement, not a given (§10 telemetry ingest).</summary>
 public sealed record SubagentSpawnedEvent(

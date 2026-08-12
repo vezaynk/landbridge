@@ -130,12 +130,13 @@ which already names this variable as typical contents) or the
 `EnvironmentVariables` dict in `deploy/com.docket.docketd.plist` — a machine-wide
 destination that every profile can then opt into with `otel` alone.
 
-Docket receives none of it and needs no
-network path to it: the worker talks to your collector directly, and nothing
-about that traffic passes through the control plane. There is no OTLP receiver in
-Docket and no token or cost field in its schema, so a §12 dashboard that shows what
-work cost is still ahead of this document (§10's telemetry-ingest section states the
-two candidate shapes and that the choice is open).
+Docket receives none of it and needs no network path to it: the worker talks to your
+collector directly, and nothing about that traffic passes through the control plane.
+There is still no OTLP receiver in Docket.
+
+What Docket *does* now ingest arrives by a different route entirely — see
+[What the dashboard shows](#what-the-dashboard-shows-and-what-it-still-does-not)
+below.
 
 A `docker run` collector with a `debug` exporter is enough to see what a worker
 emits before you wire it anywhere permanent.
@@ -226,6 +227,70 @@ there is nothing built that would read it yet.
 The task id also reaches a worker as `DOCKET_TASK_ID` (§10, on every spawn,
 telemetry or not). Same id, different consumers: the environment variable is for
 hooks and stray-process cleanup, the resource attribute is for your collector.
+
+## What the dashboard shows, and what it still does not
+
+Since 2026-08-12 the §12 Team view has a **measured usage** section, and it is fed by
+`docketd` reading the harness's own **stdout stream** — not by this OTLP path. The two
+are independent: turning `telemetry.otel` off does not empty the dashboard, and turning
+it on does not fill it.
+
+**What lands there**, for both harnesses, as a new optional `usage-reported` event on the
+§10 runner wire:
+
+| | Claude Code | `codex exec` |
+|---|---|---|
+| tokens: input / output / cache-read / cache-write | yes | yes |
+| by model | yes — from `modelUsage`, so subagents on another model are counted separately | **no** — Codex names none on its stream, so its rows read "not reported" |
+| cost in USD | **reported** — `total_cost_usd` and per-model `costUSD` | none exists; renders "not reported" |
+| reasoning-token breakdown | not exposed | carried (a portion *of* output) |
+
+**The two harnesses disagree about "input", and `docketd` normalizes.** Claude's
+`input_tokens` excludes cache; Codex's *includes* its `cached_input_tokens` as a subset.
+A profile declares which by setting `usage_cached_is_subset`, and `docketd` subtracts so
+the four buckets are disjoint and their sum counts the prompt once. Get this wrong and a
+cache-heavy worker's total roughly doubles.
+
+**What is deliberately not built** (each is a "could, here's what it'd take"):
+
+- **Cost for a harness that reports none.** Deriving dollars from Codex's tokens needs a
+  rate per model *and per bucket* — the four are priced differently — plus operator-owned
+  rate config and an effective date, since re-pricing an old task at today's rate rewrites
+  history. `ModelPricing` is the stub where that would live; it returns nothing, so the
+  cell reads "not reported" rather than `$0.00`. Zero would claim the work was free.
+- **A model for a harness that names none.** Codex reports tokens without a model, and Docket
+  does not supply one. It could — a profile could declare the model it pins — but a model the
+  *plane* asserted, rendered in a section that says "reported by the harness", would misattribute
+  the claim. So a Codex row shows real token counts with "not reported" where the model goes.
+- **Tool accept/reject counts, lines-of-code, commits, pull requests, active time, and
+  subagent lineage.** These exist only as `claude_code.*` OTel metrics (lineage only in the
+  trace beta), so surfacing them needs Docket to host an OTLP receiver. That path was
+  considered and rejected — see below.
+
+### Why Docket does not host an OTLP receiver
+
+It would deliver strictly more data. It was rejected because it does not work on the
+machines Docket runs on:
+
+- **`codex exec` ignores `OTEL_EXPORTER_OTLP_ENDPOINT`.** Its exporter comes from its own
+  `config.toml` `[otel]` block; the only `OTEL_*` variables it reads are the OTLP crate's
+  timeout constants. Since `docketd` configures telemetry purely through spawn environment
+  variables, it cannot point Codex at anything — that needs a per-machine Codex config edit.
+- **Managed settings win.** On a machine whose MDM sets `OTEL_EXPORTER_OTLP_*`, Claude Code
+  drops the conflicting developer values, so a plane-hosted receiver would sit empty while
+  the config looked right. A managed `OTEL_RESOURCE_ATTRIBUTES` also threatens the
+  `docket.task_id` attribution the whole scheme depends on.
+- **Release-build Codex exports to OpenAI by default.** Its built-in metrics exporter is
+  Statsig (`ab.chatgpt.com`) unless its `config.toml` disables it. Nothing Docket sets
+  changes that; if you do not want it, configure Codex.
+
+### Never turn on the content log opt-ins
+
+`OTEL_LOG_USER_PROMPTS`, `OTEL_LOG_ASSISTANT_RESPONSES`, `OTEL_LOG_TOOL_DETAILS`,
+`OTEL_LOG_TOOL_CONTENT` and `OTEL_LOG_RAW_API_BODIES` un-redact content that is redacted by
+default. **A worker's prompt is the task description**, so setting any of them in a
+profile's `telemetry.env` puts task content into a metrics pipeline that was never scoped
+to hold it. Docket does not set them and a profile should not either.
 
 ## Caveats
 

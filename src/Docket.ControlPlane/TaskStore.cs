@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using Docket.Contracts;
 using Docket.Core;
 using Microsoft.EntityFrameworkCore;
 
@@ -770,6 +771,65 @@ public sealed class TaskStore(
             OccurredAt = clock.GetUtcNow(),
         });
         await CommitAsync(task.Value, ct);
+    }
+
+    /// <summary>
+    /// Records a harness's own usage report for one (task, model) pair (§10 telemetry ingest,
+    /// §12 measured view). Out-of-band like <see cref="RecordAuthFailureAsync"/>: no transition,
+    /// no xmin token, one NOTIFY so a listening dashboard wakes on it.
+    ///
+    /// <para><b>Upsert taking the high-water mark, because reports are cumulative.</b> Each
+    /// report restates the dispatch's totals rather than adding to them, so keeping the larger
+    /// value per counter makes this idempotent AND order-independent: §10's outbound ring is
+    /// best-effort and may drop or reorder reports, and neither can make a total go backwards.
+    /// A blind overwrite would regress on a reordered pair; a sum would multiply on a redelivered
+    /// one. The cost of this shape is only staleness, never a wrong direction.</para>
+    ///
+    /// <para><b>Cost takes the newest non-null, not the maximum.</b> A cost is the harness's
+    /// arithmetic over the same tokens rather than an independent counter, so a lower figure from
+    /// a later report is a correction to honour, not a regression to clamp. It is left alone when
+    /// a report carries none, so a harness that stops reporting cost mid-dispatch does not erase
+    /// what it already stated.</para>
+    ///
+    /// <para>A no-op when the task is gone: the event carries only a task id (§10) and the Team
+    /// is resolved from the row, and these rows exist solely to be read by the dashboard.</para>
+    /// </summary>
+    public async Task RecordUsageAsync(UsageReportedEvent report, CancellationToken ct = default)
+    {
+        var teamId = await db.Tasks.AsNoTracking()
+            .Where(t => t.Id == report.Task.Value)
+            .Select(t => (Guid?)t.TeamId)
+            .FirstOrDefaultAsync(ct);
+        if (teamId is null)
+            return;
+
+        // The empty string IS the unnamed model in storage: a composite primary key cannot
+        // contain a NULL (DocketDbContext explains the trade), and the view maps it back.
+        var model = report.Model ?? "";
+        var row = await db.TaskUsage
+            .FirstOrDefaultAsync(u => u.TaskId == report.Task.Value && u.Model == model, ct);
+        if (row is null)
+        {
+            row = new TaskUsageRow
+            {
+                TaskId = report.Task.Value,
+                Model = model,
+                TeamId = teamId.Value,
+            };
+            db.TaskUsage.Add(row);
+        }
+
+        row.InputTokens = Math.Max(row.InputTokens, report.InputTokens);
+        row.OutputTokens = Math.Max(row.OutputTokens, report.OutputTokens);
+        row.CacheReadTokens = Math.Max(row.CacheReadTokens, report.CacheReadTokens);
+        row.CacheWriteTokens = Math.Max(row.CacheWriteTokens, report.CacheWriteTokens);
+        if (report.ReasoningOutputTokens is { } reasoning)
+            row.ReasoningOutputTokens = Math.Max(row.ReasoningOutputTokens ?? 0, reasoning);
+        if (report.CostUsd is { } cost)
+            row.CostUsd = cost;
+        row.ReportedAt = clock.GetUtcNow();
+
+        await CommitAsync(report.Task.Value, ct);
     }
 
     private async Task<StoreResult> RunTransition(

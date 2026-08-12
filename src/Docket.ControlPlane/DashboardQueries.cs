@@ -251,6 +251,14 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
             .Where(e => e.TeamId == teamId)
             .MaxAsync(e => (DateTimeOffset?)e.OccurredAt, ct);
 
+        // §10/§12 measured view: what this Team's harnesses said they consumed, rolled up per
+        // model across every task. Read straight off the denormalized team_id rather than
+        // joining through tasks, which is what that index is for.
+        var usageRows = await db.TaskUsage.AsNoTracking()
+            .Where(u => u.TeamId == teamId)
+            .ToListAsync(ct);
+        var usage = TeamUsageView.From(usageRows);
+
         // §9.10. Measured — and best-effort, which is why the view carries the report
         // timestamp rather than presenting the total as current.
         var forwardUsage = TeamForwardUsageView.From(
@@ -295,7 +303,8 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
             lead is null ? null : lead.HumanId,
             lead?.CreatedAt,
             lastActivity,
-            forwardUsage);
+            forwardUsage,
+            usage);
     }
 
     // ── Human inbox (§12) ─────────────────────────────────────────────────────
@@ -573,7 +582,8 @@ public sealed record TeamDetail(
     Guid? LeadHumanId,
     DateTimeOffset? LeadSince,
     DateTimeOffset? LastActivity,
-    TeamForwardUsageView? ForwardUsage = null);
+    TeamForwardUsageView? ForwardUsage = null,
+    TeamUsageView? Usage = null);
 
 /// <summary>One task in a Team, with its park count (§12 "parks per task"); for a
 /// continuation task, the prior task it resumed (§6/§11 Y-continues-X lineage); and,
@@ -716,3 +726,106 @@ public sealed record DashboardEvent(
     LivenessLossReason? LivenessReason = null,
     PermissionVerdict? PermissionVerdict = null,
     PermissionAnswerer? PermissionAnswerer = null);
+
+/// <summary>
+/// One (task, model) usage report as a reader sees it (§10 telemetry ingest, §12 measured
+/// view). Every number here is <b>the harness's own claim</b>, relayed verbatim — the plane
+/// sums these rows and does nothing else to them.
+/// </summary>
+/// <param name="Model">
+/// The model the harness named, or null when it named none. Null is a real state rather than a
+/// missing value, and only the harness may fill it — a plane-asserted model in a section labelled
+/// "reported by the harness" would be the mislabelling §2 principle 2 forbids.
+/// </param>
+/// <param name="ReasoningOutputTokens">
+/// A portion OF <paramref name="OutputTokens"/> where the harness breaks one out, null
+/// otherwise. Never added to a total — see <see cref="TotalTokens"/>.
+/// </param>
+public sealed record TaskUsageView(
+    Guid TaskId,
+    string? Model,
+    long InputTokens,
+    long OutputTokens,
+    long CacheReadTokens,
+    long CacheWriteTokens,
+    long? ReasoningOutputTokens,
+    decimal? CostUsd,
+    DateTimeOffset ReportedAt)
+{
+    /// <summary>
+    /// The four buckets summed. Sound to add because they are disjoint by the time they are
+    /// stored — docketd normalizes a harness that counts cache hits inside its input total
+    /// before reporting. <see cref="ReasoningOutputTokens"/> is deliberately absent: it is part
+    /// of <see cref="OutputTokens"/> already, and adding it would count those tokens twice.
+    /// </summary>
+    public long TotalTokens => InputTokens + OutputTokens + CacheReadTokens + CacheWriteTokens;
+
+    /// <summary>Where the dollar figure came from, or that there is none (§12 renders the
+    /// three differently — a derived number must never look like a reported one).</summary>
+    public UsageCostProvenance CostProvenance =>
+        CostUsd is null ? UsageCostProvenance.None : UsageCostProvenance.Reported;
+
+    /// <summary>The one row→view mapping, so the empty-string-is-the-unnamed-model convention
+    /// (see <c>DocketDbContext</c>) is undone in exactly one place.</summary>
+    public static TaskUsageView From(TaskUsageRow row) => new(
+        row.TaskId,
+        string.IsNullOrEmpty(row.Model) ? null : row.Model,
+        row.InputTokens,
+        row.OutputTokens,
+        row.CacheReadTokens,
+        row.CacheWriteTokens,
+        row.ReasoningOutputTokens,
+        row.CostUsd,
+        row.ReportedAt);
+}
+
+/// <summary>
+/// A Team's measured usage (§12), rolled up per model across its tasks — plus
+/// <see cref="Measured"/>, which distinguishes a Team no harness has reported for from one
+/// measured at zero. The same distinction §9.10 draws for relay bytes, and for the same reason:
+/// an absence of measurement is not a measurement of nothing.
+/// </summary>
+public sealed record TeamUsageView(
+    IReadOnlyList<TaskUsageView> ByModel,
+    long InputTokens,
+    long OutputTokens,
+    long CacheReadTokens,
+    long CacheWriteTokens,
+    decimal? ReportedCostUsd,
+    DateTimeOffset? ReportedAt)
+{
+    /// <summary>Whether any harness has reported for this Team at all.</summary>
+    public bool Measured => ByModel.Count > 0;
+
+    public long TotalTokens => InputTokens + OutputTokens + CacheReadTokens + CacheWriteTokens;
+
+    /// <summary>
+    /// Whether the Team's cost total is complete. False when at least one model reported tokens
+    /// but no cost — the sum is then a floor rather than a total, and §12 must not present a
+    /// partial figure as if it covered everything. This is the Codex case: its tokens are real
+    /// and its dollars do not exist.
+    /// </summary>
+    public bool CostIsPartial => ByModel.Any(m => m.CostUsd is null);
+
+    /// <summary>
+    /// Rolls rows up per model, newest report first. Summing costs across models is sound
+    /// because each is the harness's own figure for its own tokens; a model that reported none
+    /// contributes nothing and flips <see cref="CostIsPartial"/> instead of being guessed at.
+    /// </summary>
+    public static TeamUsageView From(IReadOnlyList<TaskUsageRow> rows)
+    {
+        var byModel = rows
+            .Select(TaskUsageView.From)
+            .OrderByDescending(u => u.TotalTokens)
+            .ToList();
+        var costs = byModel.Where(m => m.CostUsd is not null).Select(m => m.CostUsd!.Value).ToList();
+        return new TeamUsageView(
+            byModel,
+            byModel.Sum(m => m.InputTokens),
+            byModel.Sum(m => m.OutputTokens),
+            byModel.Sum(m => m.CacheReadTokens),
+            byModel.Sum(m => m.CacheWriteTokens),
+            costs.Count > 0 ? costs.Sum() : null,
+            byModel.Count > 0 ? byModel.Max(m => m.ReportedAt) : null);
+    }
+}

@@ -76,6 +76,15 @@ public sealed class RunnerEventSink(
                 await HandleRebootedAsync(r, ct);
                 break;
 
+            case UsageReportedEvent u:
+                // §10 telemetry ingest / §12 measured view: the harness's own account of what
+                // this dispatch consumed. Deliberately NOT a liveness or progress signal — a
+                // usage report says what has already been spent, and a worker wedged mid-turn
+                // can still emit one, so refreshing either clock here would let an accounting
+                // line keep a hung task alive. Persisted only.
+                await WithStoreAsync(store => store.RecordUsageAsync(u, ct));
+                break;
+
             case AuthFailedEvent af:
                 // §11/§12, #50: persist the structured facts as a task event row so
                 // the dashboard can surface them (the remediation menu itself is a

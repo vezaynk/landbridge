@@ -559,6 +559,64 @@ wedged one cannot be told from a busy one before it fires. That is no longer a s
 `docketd` writes one line per task when a `terminal` profile reads event lines and extracts
 nothing from them (see [Event relay](#event-relay-10)).
 
+### Usage reporting: the mapping keys, and the one with teeth
+
+`events.mapping` also describes where the harness states what it **consumed** (§10 measured
+view). The built-in defaults describe claude's `stream-json` `result` line, so a claude
+profile needs none of these:
+
+| key | default | what it is |
+|---|---|---|
+| `usage_type` | `result` | the `type` value of a usage-bearing line (Codex: `turn.completed`) |
+| `usage_key` | `usage` | the object holding the aggregate counters |
+| `usage_input_key` | `input_tokens` | |
+| `usage_output_key` | `output_tokens` | |
+| `usage_cache_read_key` | `cache_read_input_tokens` | Codex: `cached_input_tokens` |
+| `usage_cache_write_key` | `cache_creation_input_tokens` | Codex: `cache_write_input_tokens` |
+| `usage_reasoning_key` | unset | a reasoning portion **of** output, where a harness breaks one out (Codex: `reasoning_output_tokens`) |
+| `usage_cost_key` | `total_cost_usd` | a cost the **harness** computed. Set empty for a harness that computes none — nothing derives one from tokens |
+| `usage_models_key` | `modelUsage` | an object keyed **by model name**, each value holding that model's own counters. Set empty for a harness that reports no model |
+| `model_input_key` … `model_cost_key` | `inputTokens`, `outputTokens`, `cacheReadInputTokens`, `cacheCreationInputTokens`, `costUSD` | field names *inside* each per-model entry |
+| `usage_cached_is_subset` | `false` | **read this one twice — see below** |
+| `usage_is_cumulative` | `true` | `false` for a harness reporting per-turn deltas; docketd then accumulates |
+
+Note the two casings in one claude payload — snake_case in the aggregate `usage` object,
+camelCase inside `modelUsage`. That is why every key is separately overridable rather than
+one naming convention applied twice.
+
+**`usage_cached_is_subset` is the one that changes numbers.** The two harnesses do not mean
+the same thing by "input":
+
+- **claude** counts uncached prompt tokens in `input_tokens` and its cache hits separately.
+  Its buckets are already disjoint. Leave this `false`.
+- **`codex exec`** counts the **whole prompt** in `input_tokens`, with `cached_input_tokens`
+  a *subset* of it — Codex's own `non_cached_input()` subtracts one from the other for its
+  own display. Set this `true` and docketd subtracts, so the four buckets stay disjoint.
+
+Get it wrong on a Codex profile and every cached token is counted twice the moment the
+buckets are summed — on a cache-heavy worker that roughly doubles the reported total. It is
+declared per profile as data because it is a fact about the harness, and docketd holds no
+harness knowledge in code (§10).
+
+A worked Codex `events.mapping` for usage:
+
+```jsonc
+"usage_type": "turn.completed",
+"usage_cache_read_key": "cached_input_tokens",
+"usage_cache_write_key": "cache_write_input_tokens",
+"usage_reasoning_key": "reasoning_output_tokens",
+"usage_cost_key": "",             // Codex reports no cost, anywhere
+"usage_models_key": "",           // and names no model on its stream
+"usage_cached_is_subset": "true", // cached_input_tokens ⊂ input_tokens
+"usage_is_cumulative": "false"    // per-turn, so docketd accumulates
+```
+
+A Codex row's model therefore reads **"not reported"** in the §12 view, with real token counts
+beside it. That is deliberate and there is no profile key to change it: a model the *plane*
+declared, shown in a section labelled "reported by the harness", would misattribute the claim
+(§2 principle 2). Where a harness does name its models — claude does, per model — those names
+are carried exactly as reported.
+
 ### Two more differences worth budgeting for
 
 **No turn cap, and `CODEX_API_KEY` is the auth variable.** The claude recipe bounds a runaway

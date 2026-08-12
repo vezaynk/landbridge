@@ -18,6 +18,7 @@ public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) :
     public DbSet<PreviewMappingRow> PreviewMappings => Set<PreviewMappingRow>();
     public DbSet<OAuthAuthorizationCodeRow> OAuthAuthorizationCodes => Set<OAuthAuthorizationCodeRow>();
     public DbSet<TeamForwardUsageRow> TeamForwardUsage => Set<TeamForwardUsageRow>();
+    public DbSet<TaskUsageRow> TaskUsage => Set<TaskUsageRow>();
 
     /// <summary>The channel dispatch/transition NOTIFYs land on (§3.1 LISTEN/NOTIFY).</summary>
     public const string EventChannel = "docket_task_events";
@@ -190,6 +191,22 @@ public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) :
             // its uniqueness is the invariant (one row per issued code), not a
             // read's — exactly like every other opaque credential's hash (§5).
             e.HasIndex(c => c.CodeHash).IsUnique();
+        });
+
+        b.Entity<TaskUsageRow>(e =>
+        {
+            e.ToTable("task_usage");
+            // (task, model) is the key: one dispatch may report several models, and a report
+            // for a model already seen must update that row rather than add another — the
+            // counters are cumulative, so a second row would double the total (§10).
+            // Postgres treats NULLs as distinct in a unique index but a composite PRIMARY KEY
+            // cannot contain one at all, so the unnamed model is stored as the empty string and
+            // mapped back to null on read (TaskUsageView) — the alternative, a surrogate key
+            // plus a partial index, buys nothing here and hides the invariant.
+            e.HasKey(u => new { u.TaskId, u.Model });
+            e.Property(u => u.Model).HasDefaultValue("");
+            // The Team roll-up (§12) filters on this, and it is the only non-key predicate.
+            e.HasIndex(u => u.TeamId);
         });
 
         b.Entity<TeamForwardUsageRow>(e =>
