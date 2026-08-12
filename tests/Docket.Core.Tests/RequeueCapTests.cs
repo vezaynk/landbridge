@@ -7,7 +7,7 @@ namespace Docket.Core.Tests;
 /// <see cref="The_requeue_that_reaches_the_cap_abandons_the_task"/>: a task has to
 /// survive an ordinary bad patch — a reboot, a flaky dispatch — while a task that wedges
 /// every machine it touches has to stop. Get only the first and a wedged task loops
-/// forever, burning a per-dispatch budget commitment (§9.9) every no-progress ceiling;
+/// forever, burning a whole no-progress ceiling of model time on every attempt;
 /// get only the second and one bad machine ends work that was fine.
 ///
 /// The other invariant under test is §6's two counters: reaching this cap never
@@ -81,7 +81,7 @@ public class RequeueCapTests
     {
         // §6's two counters, at the one place they could be conflated. `rejected` means
         // the work failed its criteria; infrastructure exhaustion means the plane gave up
-        // on placing it, which is not the same judgement and must not consume the budget
+        // on placing it, which is not the same judgement and must not consume the retries
         // the task has for actually failing.
         var next = Expect.Transitioned(
             TaskStateMachine.Apply(

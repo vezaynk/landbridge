@@ -9,14 +9,16 @@ the spend stamped on every metric and event.
 > of this: **the control plane never sees a token count.** Docket does not sit between
 > the harness and the model provider (§10), and the machine is the customer's, so these
 > are the harness's own self-reported numbers going to your own collector: useful,
-> attributable, and best-effort by construction. §10 keeps budget as
-> *containment* built on the harness-local hard cap (`--max-budget-usd`), not on
-> anything below.
+> attributable, and best-effort by construction.
 >
-> There *is* a Team budget ceiling, accounting, and a dashboard for it (§9.9) — but it
-> is a ceiling on **authorized** spend, committed at dispatch from the per-dispatch cap,
-> and it is fed by nothing on this page. Measured spend and authorized spend never meet:
-> a task that burns ten times its cap still only ever charged the cap.
+> **There is no spend limit anywhere in Docket.** A Team dollar ceiling existed until
+> 2026-08-12 and was removed (spec §9's note keeps its design); the `{budget}`
+> substitution and the `--max-budget-usd` it filled went with it, because their value
+> came from that ceiling. What bounds a runaway now is time (the §10 no-progress
+> ceiling), attempts (the §9 check 7 requeue cap), whatever caps you write into a
+> profile's own argv, and an operator reading numbers like these. Nothing on this page
+> is enforced on — by design, since a figure a harness self-reports can be switched off
+> or reported wrong.
 
 ## Turning it on
 
@@ -131,8 +133,9 @@ destination that every profile can then opt into with `otel` alone.
 Docket receives none of it and needs no
 network path to it: the worker talks to your collector directly, and nothing
 about that traffic passes through the control plane. There is no OTLP receiver in
-Docket, no token or cost field in its schema, and no dashboard that shows *measured*
-spend — the §12 budget view reports committed authorization, a different number.
+Docket and no token or cost field in its schema, so a §12 dashboard that shows what
+work cost is still ahead of this document (§10's telemetry-ingest section states the
+two candidate shapes and that the choice is open).
 
 A `docker run` collector with a `debug` exporter is enough to see what a worker
 emits before you wire it anywhere permanent.
@@ -203,8 +206,8 @@ above is not a contract any harness signed.
 
 ## How attribution works
 
-§10: *"Token attribution must carry a task id, or budget enforcement cannot tell
-which Team's ceiling a shared machine's spend counts against."*
+§10: *"Token attribution must carry a task id"* — otherwise a machine running
+several tasks at once produces one undifferentiated pile of spend.
 
 `docket.task_id` is that id. It rides `OTEL_RESOURCE_ATTRIBUTES`, so it lands on
 every metric datapoint and every event the harness emits, and grouping by it in
@@ -249,5 +252,5 @@ hooks and stray-process cleanup, the resource attribute is for your collector.
   not pass its `OTEL_*` variables down to the subprocesses it spawns (Bash tool,
   hooks, MCP servers), so their activity is not separately attributed.
 - **Self-reported and machine-local.** A harness could report nothing, or report
-  wrong. §10 is explicit that this is why budget is containment rather than
-  metering.
+  wrong. That is the standing reason nothing in Docket is enforced on these
+  numbers, and it did not change when the dollar ceiling was removed.

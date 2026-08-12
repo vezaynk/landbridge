@@ -247,8 +247,7 @@ public sealed class PermissionBridgeDashboardTests(PostgresFixture pg) : IAsyncL
         await using var db = pg.NewContext();
         var store = new TaskStore(db, TimeProvider.System);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(new LeadClaim(team), team, "needs permission", CompletionMode.Lead, null,
-                TeamBudgetRemains: true), ct);
+            new CreateTask(new LeadClaim(team), team, "needs permission", CompletionMode.Lead, null), ct);
         var instance = WorkerInstanceId.New();
         Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(AnyMachine, instance, ct));
         var caller = new WorkerCaller(team, created.Task.Id, instance);

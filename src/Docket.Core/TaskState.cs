@@ -106,14 +106,17 @@ public enum PermissionAnswerer
 /// <summary>
 /// Cancellation dispositions, spec §11. preserve_and_park is not here: it is
 /// the stop path into <see cref="TaskState.Parked"/>, not a terminal cancel.
-/// Budget is reserved to the control plane (§6: it may cancel only on Team
-/// budget exhaustion).
+///
+/// <para><c>Budget</c> was a third value, reserved to the control plane for the dollar
+/// ceiling's exhaustion cancel; both went with the budget subsystem (2026-08-12, §9's
+/// note). Nothing in the plane ever sent it — the ceiling's containment sweep chose
+/// <c>stop(preserve)</c> over cancelling, exactly so a raised ceiling could resume the
+/// task — so its removal takes no path with it.</para>
 /// </summary>
 public enum CancelDisposition
 {
     Preserve,
     Discard,
-    Budget,
 }
 
 /// <summary>

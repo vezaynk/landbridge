@@ -13,9 +13,9 @@ namespace Docket.Runner;
 /// harness's own numbers going to the operator's own collector — best-effort by
 /// construction. What docketd contributes is the one thing the harness cannot
 /// know on its own: which task the spend belongs to. §10: "Token attribution must
-/// carry a task id, or budget enforcement cannot tell which Team's ceiling a
-/// shared machine's spend counts against." That id rides
-/// <c>OTEL_RESOURCE_ATTRIBUTES</c> as <c>docket.task_id</c>.</para>
+/// carry a task id" — a shared machine's spend is otherwise unattributable to the
+/// work that caused it. That id rides <c>OTEL_RESOURCE_ATTRIBUTES</c> as
+/// <c>docket.task_id</c>.</para>
 ///
 /// <para><b>No harness knowledge (§10).</b> docketd sets only vendor-neutral
 /// OTel SDK variables — the ones any OTel-emitting harness reads. A harness's own

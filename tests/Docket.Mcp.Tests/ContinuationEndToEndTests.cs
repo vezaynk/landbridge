@@ -58,7 +58,7 @@ public sealed class ContinuationEndToEndTests(PostgresFixture pg) : IAsyncLifeti
         {
             var store = new TaskStore(db, _clock);
             var created = (StoreResult.Applied)await store.CreateAsync(new CreateTask(
-                new LeadClaim(team), team, "criteria", CompletionMode.Lead, profile, TeamBudgetRemains: true));
+                new LeadClaim(team), team, "criteria", CompletionMode.Lead, profile));
             id = created.Task.Id;
             if (sessionRef is not null)
                 await store.StampHarnessSessionRefAsync(id, sessionRef);
@@ -95,8 +95,7 @@ public sealed class ContinuationEndToEndTests(PostgresFixture pg) : IAsyncLifeti
         {
             var store = new TaskStore(db, _clock);
             var created = (StoreResult.Applied)await store.CreateAsync(new CreateTask(
-                new LeadClaim(team), team, "criteria", CompletionMode.Lead, Profile: null,
-                TeamBudgetRemains: true));
+                new LeadClaim(team), team, "criteria", CompletionMode.Lead, Profile: null));
             id = created.Task.Id;
 
             var dispatched = Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(
@@ -260,7 +259,7 @@ public sealed class ContinuationEndToEndTests(PostgresFixture pg) : IAsyncLifeti
                 // inherited session ref. No real continued row needed — the seeding is
                 // what drives resume (the engine only validated Team + profile).
                 var created = (StoreResult.Applied)await store.CreateAsync(new CreateTask(
-                    new LeadClaim(team), team, "criteria", CompletionMode.Lead, null, TeamBudgetRemains: true,
+                    new LeadClaim(team), team, "criteria", CompletionMode.Lead, null,
                     Continues: new Continuation(TaskId.New(), team, "m1", inherited, MachineGonePolicy.Degrade, null)));
                 taskId = created.Task.Id;
 

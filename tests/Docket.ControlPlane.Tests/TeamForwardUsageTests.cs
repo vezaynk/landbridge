@@ -7,7 +7,7 @@ namespace Docket.ControlPlane.Tests;
 
 /// <summary>
 /// §9 check 10 / §9.10 relay byte accounting — <b>measurement without enforcement</b>, and the
-/// one number in §9's budget story that is genuinely measured rather than authorized.
+/// one per-Team quantity §9 counts that a component actually measured.
 ///
 /// <para>These tests pin what makes it honest: attribution comes from the forward id the plane
 /// itself minted (the relay never learns whose bytes it moves), the total only rises, a report
@@ -180,7 +180,7 @@ public sealed class TeamForwardUsageTests(PostgresFixture pg) : IAsyncLifetime
     {
         var store = new TaskStore(db, clock);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null, true));
+            new CreateTask(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null));
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(Machine(), instance);
         var caller = new WorkerCaller(team, created.Task.Id, instance);

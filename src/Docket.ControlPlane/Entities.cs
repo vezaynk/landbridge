@@ -435,18 +435,6 @@ public sealed class TaskEventRow
     /// </summary>
     public const string ContinuationMemoryLostKind = "continuation-memory-lost";
 
-    /// <summary>
-    /// The <see cref="Kind"/> of a <c>budget-exhausted-stop</c> telemetry row (§9.9):
-    /// the containment sweep found this task's Team over its ceiling and sent the
-    /// runner a <c>stop</c>. Carries no state transition — the stop's own wind-down
-    /// produces whatever transition follows — so the row exists to answer the question
-    /// the dashboard otherwise cannot: <em>why</em> a Team stopped making progress when
-    /// nothing failed. Written only once delivery to the machine succeeded, so it is
-    /// also the sweep's idempotency record: a task that already has one is not swept
-    /// again.
-    /// </summary>
-    public const string BudgetExhaustedStopKind = "budget-exhausted-stop";
-
     public long Seq { get; set; }
     public Guid TaskId { get; set; }
     public Guid TeamId { get; set; }
@@ -516,11 +504,11 @@ public sealed class TaskEventRow
 /// Bytes a Team has moved through relay forwards, spec §9 check 10 / §9.10 — <b>accounting,
 /// not enforcement</b>.
 ///
-/// <para>Deliberately its own table rather than columns on <see cref="TeamBudgetRow"/>: the
-/// budget row is about authorization Docket <em>granted</em>, and byte volume is the one
-/// quantity here that is actually <em>measured</em>. Mixing them would put a measured number
-/// next to the committed ceiling and invite exactly the confusion §9's as-built note exists to
-/// prevent — and would mean a Team acquired a "budget" merely because bytes flowed.</para>
+/// <para>Its own table, one row per Team, and it stays that way now that the dollar-ceiling
+/// row it once sat beside is gone (2026-08-12, §9's note): what is counted here is bytes a
+/// relay actually moved, which is a different kind of number from anything a Team is
+/// <em>granted</em>, and a Team should not acquire a spend record merely because bytes
+/// flowed.</para>
 ///
 /// <para><b>Nothing is enforced on this.</b> No ceiling is checked against it, because §8.3
 /// forbids severing an established splice mid-flight, so what a reached byte ceiling should
@@ -529,9 +517,8 @@ public sealed class TaskEventRow
 /// asynchronously, so a relay that dies loses its unreported tail. A containment signal, never
 /// an invoice.</para>
 ///
-/// <para><see cref="ForwardedBytes"/> only ever increases, like
-/// <see cref="TeamBudgetRow.CommittedUsd"/> and for a simpler reason: bytes already moved
-/// cannot un-move.</para>
+/// <para><see cref="ForwardedBytes"/> only ever increases, for the plainest of reasons:
+/// bytes already moved cannot un-move.</para>
 /// </summary>
 public sealed class TeamForwardUsageRow
 {
@@ -544,58 +531,5 @@ public sealed class TeamForwardUsageRow
 
     /// <summary>When the last report landed — the honesty marker on a best-effort figure, so a
     /// reader can see how stale it is rather than trusting it as current.</summary>
-    public DateTimeOffset UpdatedAt { get; set; }
-}
-
-/// <summary>
-/// A Team's spend ceiling and what has been authorized against it (spec §9 check 9,
-/// §9.9). One row per Team — the first thing in the schema that makes a Team an
-/// entity rather than just a <c>TeamId</c> on other rows.
-///
-/// <para><b>This is committed authorization, not measured spend.</b> Nothing in the
-/// system ingests token/cost telemetry today (§10 describes the intent; no OTLP
-/// receiver exists), so there is no consumption figure to accumulate. What is
-/// knowable is what Docket <em>authorized</em>: every dispatch hands its harness a
-/// hard per-dispatch cap, so committing that cap bounds exposure without measuring
-/// anything. §9.9 calls check 9 "containment, not metering" — a reservation is
-/// containment, and unlike metering it cannot be defeated by a signal that never
-/// arrives.</para>
-///
-/// <para><b><see cref="CommittedUsd"/> only ever increases.</b> It is
-/// authorized-spend-to-date for the Team's whole life, deliberately worst-case: a
-/// task that spent a penny of its cap still consumes the whole cap of ceiling. It is
-/// not released when a task finishes, because "unspent" is precisely the quantity
-/// that cannot be known — and releasing would turn a lifetime ceiling into a
-/// concurrency limiter, letting a $100 Team run ten thousand sequential $10 tasks
-/// (§4: a Team owns a budget and terminates). There is no release path at all, and
-/// none is needed: the commitment is made inside the dispatch transaction, so a task
-/// cancelled before it ever dispatched never charged this column. The escape valve
-/// is a human raising the ceiling, which is the control this is for.</para>
-///
-/// <para><b>Written only by a human.</b> A Lead that could raise its own ceiling is
-/// enforcement living exactly where a model can reason past it (§2 principle 3), so
-/// the write path is the §12 dashboard and there is deliberately no MCP tool. A Lead
-/// may <em>read</em> it (<c>get_team_state</c>) — seeing your own ceiling is how you
-/// plan, and how you explain why dispatch stopped.</para>
-/// </summary>
-public sealed class TeamBudgetRow
-{
-    /// <summary>The Team this ceiling governs; the primary key (one row per Team).</summary>
-    public Guid TeamId { get; set; }
-
-    /// <summary>The Team's lifetime ceiling in USD. Null means no ceiling is set, which
-    /// is the unconfigured default and admits work — a Docket with no budgets
-    /// configured behaves exactly as it did before this existed.</summary>
-    public decimal? CeilingUsd { get; set; }
-
-    /// <summary>The hard cap handed to each dispatch's harness (<c>{budget}</c> in the
-    /// profile's spawn argv, §10). Also the unit committed per dispatch. Null means no
-    /// per-dispatch cap is passed, and the ceiling then has no backstop (§9.9).</summary>
-    public decimal? PerTaskUsd { get; set; }
-
-    /// <summary>Authorized-spend-to-date: the sum of every per-dispatch cap this Team
-    /// has ever been granted. Monotonic (see the type remarks).</summary>
-    public decimal CommittedUsd { get; set; }
-
     public DateTimeOffset UpdatedAt { get; set; }
 }

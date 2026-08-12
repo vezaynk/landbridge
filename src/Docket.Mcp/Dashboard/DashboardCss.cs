@@ -86,17 +86,6 @@ internal static class DashboardCss
     .machine-tasks li { padding: 3px 0; border-top: 1px dashed var(--line); }
     .subtree { color: var(--muted); font-size: 12px; margin-top: 6px; }
     .parks-hot { color: var(--bad); font-weight: 700; }
-    /* Budget set-limits form (§9.9, human-only) */
-    .budget-limits { margin-top: 12px; }
-    .budget-limits input[type=number] {
-      width: 140px; padding: 6px 8px; border: 1px solid var(--line);
-      border-radius: 6px; background: var(--bg); color: var(--ink); font: inherit;
-    }
-    .budget-limits button {
-      padding: 6px 12px; border: none; border-radius: 6px;
-      background: var(--accent); color: var(--accent-ink); font: inherit; font-weight: 600; cursor: pointer;
-    }
-    .budget-limits .nt { margin-top: 6px; }
     /* Permission allow/deny form (§11 permission bridge, human-only) */
     .permission-decide input[type=text] {
       width: 200px; padding: 6px 8px; border: 1px solid var(--line);

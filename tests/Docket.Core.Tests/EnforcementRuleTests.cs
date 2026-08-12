@@ -10,7 +10,7 @@ public class EnforcementRuleTests
     public void Creation_requires_non_empty_completion_criteria(string criteria)
     {
         var result = TaskStateMachine.Create(
-            new CreateTask(Given.Lead, Given.Team, criteria, CompletionMode.Lead, null, true),
+            new CreateTask(Given.Lead, Given.Team, criteria, CompletionMode.Lead, null),
             Given.Id, "ns");
         Expect.Rejected(result, Rule.CompletionCriteriaNonEmpty);
     }
@@ -20,7 +20,7 @@ public class EnforcementRuleTests
     public void Creation_requires_a_server_assigned_namespace()
     {
         var result = TaskStateMachine.Create(
-            new CreateTask(Given.Lead, Given.Team, "criteria", CompletionMode.Lead, null, true),
+            new CreateTask(Given.Lead, Given.Team, "criteria", CompletionMode.Lead, null),
             Given.Id, "");
         Expect.Rejected(result, Rule.NamespaceServerAssigned);
     }
@@ -38,20 +38,9 @@ public class EnforcementRuleTests
     public void Only_a_lead_claim_for_the_team_creates_tasks(Actor actor)
     {
         var result = TaskStateMachine.Create(
-            new CreateTask(actor, Given.Team, "criteria", CompletionMode.Lead, null, true),
+            new CreateTask(actor, Given.Team, "criteria", CompletionMode.Lead, null),
             Given.Id, "ns");
         Expect.Rejected(result, Rule.OnlyLeadCreatesTasks);
-    }
-
-    // §9 check 9 (creation gate)
-    [Fact]
-    public void Creation_is_refused_when_the_team_budget_is_exhausted()
-    {
-        var result = TaskStateMachine.Create(
-            new CreateTask(Given.Lead, Given.Team, "criteria", CompletionMode.Lead, null,
-                TeamBudgetRemains: false),
-            Given.Id, "ns");
-        Expect.Rejected(result, Rule.TeamBudgetCeiling);
     }
 
     // §9 check 5 (machine-eligibility half)
@@ -152,27 +141,18 @@ public class EnforcementRuleTests
         Expect.Rejected(result, Rule.CancellationCarriesDisposition);
     }
 
-    // §6 — the control plane cancels only on budget exhaustion, and budget is only its to invoke
-    [Fact]
-    public void The_control_plane_cancels_only_on_budget_exhaustion()
+    // §6 — the control plane cannot cancel, on any disposition. It had exactly one
+    // disposition it was allowed (budget exhaustion) and that went with the budget
+    // subsystem; the plane's own giving-up path is the check 7 requeue cap inside
+    // LivenessLost, which reaches `canceled` without a Cancel command.
+    [Theory]
+    [InlineData(CancelDisposition.Preserve)]
+    [InlineData(CancelDisposition.Discard)]
+    public void The_control_plane_cannot_cancel(CancelDisposition disposition)
     {
         Expect.Rejected(
             TaskStateMachine.Apply(Given.Task(TaskState.Working),
-                new Cancel(ControlPlaneActor.Instance, CancelDisposition.Preserve)),
-            Rule.ActorLacksAuthority);
-
-        Expect.Transitioned(
-            TaskStateMachine.Apply(Given.Task(TaskState.Working),
-                new Cancel(ControlPlaneActor.Instance, CancelDisposition.Budget)),
-            TaskState.Canceled);
-    }
-
-    [Fact]
-    public void A_lead_cannot_invoke_the_budget_disposition()
-    {
-        Expect.Rejected(
-            TaskStateMachine.Apply(Given.Task(TaskState.Working),
-                new Cancel(Given.Lead, CancelDisposition.Budget)),
+                new Cancel(ControlPlaneActor.Instance, disposition)),
             Rule.ActorLacksAuthority);
     }
 

@@ -192,7 +192,7 @@ internal static class DashboardRenderer
         sb.Append("<section><table><thead><tr>");
         sb.Append("<th>Team</th><th>States</th><th>Lead</th>");
         sb.Append("<th class=\"num\">Parks</th><th class=\"num\">Services</th><th class=\"num\">Open</th>");
-        sb.Append("<th>Budget</th><th>Byte burn</th><th>Last activity</th>");
+        sb.Append("<th>Byte burn</th><th>Last activity</th>");
         sb.Append("</tr></thead><tbody>");
 
         foreach (var t in teams)
@@ -204,9 +204,8 @@ internal static class DashboardRenderer
             sb.Append($"<td class=\"num\">{t.TotalParks}</td>");
             sb.Append($"<td class=\"num\">{t.ServiceCount}</td>");
             sb.Append($"<td class=\"num\">{t.OpenInputRequests}</td>");
-            // Two different kinds of number: budget is committed authorization (§9.9),
-            // byte burn is measured but best-effort (§9.10).
-            sb.Append($"<td>{BudgetCell(t.Budget)}</td><td>{ByteBurnCell(t.ForwardUsage)}</td>");
+            // Measured, but best-effort (§9.10) — the cell says so when nothing has reported.
+            sb.Append($"<td>{ByteBurnCell(t.ForwardUsage)}</td>");
             sb.Append($"<td>{E(Age(t.LastActivity, now))}</td>");
             sb.Append("</tr>");
         }
@@ -216,12 +215,8 @@ internal static class DashboardRenderer
 
     // ── Team view (detail) — §4 reattachment surface ──────────────────────────
 
-    /// <summary>
-    /// One Team in full. <paramref name="isHuman"/> decides whether the budget's set-limits
-    /// form is drawn (§9.9) — a Lead sees the numbers and an explanation instead of a control
-    /// it would be refused for using.
-    /// </summary>
-    public static string TeamDetail(TeamDetail team, DateTimeOffset now, bool isHuman)
+    /// <summary>One Team in full.</summary>
+    public static string TeamDetail(TeamDetail team, DateTimeOffset now)
     {
         var sb = new StringBuilder();
         sb.Append($"<h1>Team <code>{E(ShortId(team.TeamId))}</code></h1>");
@@ -233,11 +228,10 @@ internal static class DashboardRenderer
         sb.Append(Metric(team.Tasks.Sum(t => t.Parks).ToString(), "parks total"));
         sb.Append(Metric(team.Services.Count.ToString(), "services"));
         sb.Append(Metric(team.OpenInputRequests.Count.ToString(), "open requests"));
-        sb.Append(BudgetMetric(team.Budget));
         sb.Append(ByteBurnMetric(team.ForwardUsage));
         sb.Append("</section>");
 
-        sb.Append(BudgetSection(team, isHuman));
+        sb.Append(RelayBytesSection(team));
 
         // Lead attached and who (§12) + last activity.
         sb.Append("<section>");
@@ -484,26 +478,7 @@ internal static class DashboardRenderer
         return Page("Sign in", "", sb.ToString(), autoRefresh: false);
     }
 
-    // ── Budget (§9.9) ─────────────────────────────────────────────────────────
-
-    /// <summary>A USD amount for display — trimmed of noise decimals, invariant so the
-    /// rendered number never depends on the server's locale.</summary>
-    private static string Usd(decimal amount) => amount.ToString("0.##", CultureInfo.InvariantCulture);
-
-    /// <summary>
-    /// A Team's budget in a dense table cell (§9.9): committed against the ceiling, badged
-    /// when exhausted. A Team with no ceiling reads "unbounded" rather than a zero — the
-    /// unconfigured default is unlimited, and rendering it as 0 would invert the meaning.
-    /// </summary>
-    private static string BudgetCell(TeamBudgetView? budget)
-    {
-        if (budget?.CeilingUsd is not { } ceiling)
-            return "<span class=\"nt\">unbounded</span>";
-        var amounts = $"{Usd(budget.CommittedUsd)} / {Usd(ceiling)}";
-        return budget.Exhausted
-            ? $"{Badge("exhausted", "state-rejected")} <span class=\"nt\">{E(amounts)}</span>"
-            : E(amounts);
-    }
+    // ── Relay bytes (§9.10) ───────────────────────────────────────────────────
 
     /// <summary>
     /// A byte count in the largest unit that keeps it readable. Binary units, because these are
@@ -536,19 +511,18 @@ internal static class DashboardRenderer
             : "<span class=\"nt\" title=\"no relay has reported\">not reported</span>";
 
     /// <summary>
-    /// The relay-bytes line in the Team's budget section (§9.10). Says three things an operator
-    /// must not confuse with the ceiling above it: this one is <em>measured</em>, it is
-    /// best-effort so it trails live traffic and loses a dead relay's tail, and <em>nothing is
-    /// enforced on it</em> — §8.3 forbids cutting an established splice, so there is no byte
-    /// ceiling to reach. The report age is shown rather than implied.
+    /// The relay-bytes line (§9.10). Says two things an operator has to read off it: this
+    /// figure is best-effort, so it trails live traffic and loses a dead relay's tail, and
+    /// <em>nothing is enforced on it</em> — §8.3 forbids cutting an established splice, so
+    /// there is no byte ceiling to reach. The report age is shown rather than implied.
     /// </summary>
     private static string RelayBytesNote(TeamForwardUsageView? usage) =>
         usage is { Measured: true }
             ? $"<p class=\"nt\">Relay bytes forwarded: <strong>{E(Bytes(usage.ForwardedBytes))}</strong>, " +
               $"last reported {E(usage.ReportedAt?.ToString("u", CultureInfo.InvariantCulture) ?? "—")}. " +
-              "Measured — unlike the ceiling above — but best-effort: the relay reports periodically, so this " +
-              "trails live traffic and a relay that dies loses its unsent tail. Nothing is enforced on it; " +
-              "an established splice is never cut mid-flight (§8.3, §9 check 10).</p>"
+              "Best-effort: the relay reports periodically, so this trails live traffic and a relay that " +
+              "dies loses its unsent tail. Nothing is enforced on it; an established splice is never cut " +
+              "mid-flight (§8.3, §9 check 10).</p>"
             : "<p class=\"nt\">Relay bytes forwarded: not reported — no relay has sent a count for this Team. " +
               "An absence of measurement, not a measurement of zero (§9 check 10).</p>";
 
@@ -559,96 +533,26 @@ internal static class DashboardRenderer
               "<div class=\"l\">byte burn</div></div>"
             : "<div class=\"metric\"><div class=\"n nt\">n/a</div><div class=\"l\">byte burn</div></div>";
 
-    /// <summary>The budget slot in the Team detail metrics strip: what is left to authorize.</summary>
-    private static string BudgetMetric(TeamBudgetView? budget) =>
-        budget?.Remaining is { } remaining
-            ? $"<div class=\"metric\"><div class=\"n\">{E(Usd(remaining))}</div>" +
-              "<div class=\"l\">budget left</div></div>"
-            : "<div class=\"metric\"><div class=\"n nt\">none</div><div class=\"l\">budget ceiling</div></div>";
-
     /// <summary>
-    /// The Team's budget section (§9.9) — the numbers, and for a human operator the form that
-    /// sets them. The prose is deliberate: this dashboard is where a person decides whether to
-    /// raise a ceiling, and deciding that on a number they believe is measured spend would be
-    /// deciding on a fiction. Docket ingests no token telemetry, so what is shown is
-    /// authorization committed at dispatch.
-    ///
-    /// <para><paramref name="isHuman"/> only governs whether the form is <em>drawn</em>. The
-    /// refusal that matters is server-side in the POST handler — a Lead that forged the form
-    /// is refused there, so this is an affordance, never the control.</para>
+    /// The Team's relay-byte section (§9.10). Its own section rather than a line under the
+    /// metrics strip, because the tile can show the number but not the two things that make
+    /// it readable: how stale it is, and that nothing is enforced on it.
     /// </summary>
-    private static string BudgetSection(TeamDetail team, bool isHuman)
+    private static string RelayBytesSection(TeamDetail team)
     {
-        var budget = team.Budget ?? TeamBudgetView.From(null);
         var sb = new StringBuilder();
-        sb.Append("<section><h2>Budget</h2>");
-        sb.Append("<p class=\"sub\">Committed <em>authorization</em>, not measured spend — Docket ingests no " +
-                  "token telemetry (§9.9). This is the sum of the per-dispatch caps handed to harnesses, one " +
-                  "per dispatch, and it only ever rises: a requeued task is charged twice, and a task that " +
-                  "used a fraction of its cap still consumed all of it. Reaching the ceiling refuses new " +
-                  "dispatch and stops working tasks.</p>");
-
-        if (budget.CeilingUsd is not { } ceiling)
-            sb.Append(Empty("No ceiling set — this Team is unbounded, and every dispatch is handed no cap."));
-        else
-        {
-            sb.Append("<table><thead><tr>");
-            sb.Append("<th class=\"num\">Ceiling</th><th class=\"num\">Per dispatch</th>");
-            sb.Append("<th class=\"num\">Committed</th><th class=\"num\">Remaining</th><th>Status</th><th>Updated</th>");
-            sb.Append("</tr></thead><tbody><tr>");
-            sb.Append($"<td class=\"num\">{E(Usd(ceiling))}</td>");
-            sb.Append(budget.PerTaskUsd is { } cap
-                ? $"<td class=\"num\">{E(Usd(cap))}</td>"
-                : "<td class=\"num nt\" title=\"no per-dispatch cap: nothing to commit, no harness backstop\">none</td>");
-            sb.Append($"<td class=\"num\">{E(Usd(budget.CommittedUsd))}</td>");
-            sb.Append($"<td class=\"num\">{E(Usd(budget.Remaining ?? 0m))}</td>");
-            sb.Append($"<td>{(budget.Exhausted ? Badge("exhausted", "state-rejected") : Badge("ok", "state-working"))}</td>");
-            sb.Append($"<td class=\"nt\">{E(budget.UpdatedAt?.ToString("u", CultureInfo.InvariantCulture) ?? "—")}</td>");
-            sb.Append("</tr></tbody></table>");
-            if (budget.PerTaskUsd is null)
-                sb.Append("<p class=\"nt\">A ceiling with no per-dispatch cap admits work but commits nothing, " +
-                          "so it can never be reached — set a per-dispatch amount for the ceiling to bite.</p>");
-        }
-
-        sb.Append(isHuman
-            ? BudgetLimitsForm(team)
-            : "<p class=\"nt\">Read-only for this session. Only a human operator can change a ceiling — a Lead " +
-              "that could raise its own limit is enforcement where a model can reason past it (§2 principle 3).</p>");
+        sb.Append("<section><h2>Relay bytes</h2>");
         sb.Append(RelayBytesNote(team.ForwardUsage));
         sb.Append("</section>");
         return sb.ToString();
     }
 
     /// <summary>
-    /// The human-only set-limits form (§9.9). Blank clears a limit rather than meaning zero,
-    /// because zero is not a coherent ceiling and a cleared one means "unbounded".
-    /// Committed-to-date is never an input: raising a ceiling is how a human unblocks a Team,
-    /// and it must not double as erasing the record of what was already authorized.
-    /// </summary>
-    private static string BudgetLimitsForm(TeamDetail team)
-    {
-        var sb = new StringBuilder();
-        sb.Append("<form class=\"budget-limits\" method=\"post\" action=\"/dashboard/budget\">");
-        sb.Append($"<input type=\"hidden\" name=\"teamId\" value=\"{E(team.TeamId.ToString())}\">");
-        sb.Append("<strong>Set limits</strong> ");
-        sb.Append("<input type=\"number\" name=\"ceilingUsd\" step=\"0.01\" min=\"0\" " +
-                  "placeholder=\"ceiling USD\" aria-label=\"ceiling in USD\"> ");
-        sb.Append("<input type=\"number\" name=\"perTaskUsd\" step=\"0.01\" min=\"0\" " +
-                  "placeholder=\"per-dispatch USD\" aria-label=\"per-dispatch cap in USD\"> ");
-        sb.Append("<button type=\"submit\">Save</button>");
-        sb.Append("<div class=\"nt\">Leave a field blank to clear that limit. Committed-to-date is never reset — " +
-                  "raising the ceiling is what gives a stopped Team room again.</div>");
-        sb.Append("</form>");
-        return sb.ToString();
-    }
-
-    /// <summary>
-    /// The allow/deny form on one pending permission request (§11/§12), following the
-    /// <see cref="BudgetLimitsForm"/> idiom: a plain POST carrying the task id in a hidden
-    /// field, with the human's authority coming from their session rather than from anything
-    /// this markup asserts. Two submit buttons rather than a select, because the two outcomes
-    /// are not interchangeable and one of them needs the message beside it to be worth
-    /// anything.
+    /// The allow/deny form on one pending permission request (§11/§12): a plain POST carrying
+    /// the task id in a hidden field, with the human's authority coming from their session
+    /// rather than from anything this markup asserts. Two submit buttons rather than a select,
+    /// because the two outcomes are not interchangeable and one of them needs the message
+    /// beside it to be worth anything.
     /// </summary>
     private static string PermissionDecisionForm(PermissionRequestView p)
     {
@@ -713,38 +617,6 @@ internal static class DashboardRenderer
         sb.Append("</section>");
         return Page("Permission", "inbox", sb.ToString(), autoRefresh: false);
     }
-
-    /// <summary>The result page after a human sets a Team's limits (§9.9).</summary>
-    public static string BudgetUpdated(Guid teamId, TeamBudgetView budget)
-    {
-        var sb = new StringBuilder();
-        sb.Append("<h1>Budget updated</h1>");
-        sb.Append($"<p class=\"sub mono\">{E(teamId)}</p>");
-        sb.Append("<section>");
-        sb.Append(budget.CeilingUsd is { } ceiling
-            ? $"<p>Ceiling <strong>{E(Usd(ceiling))} USD</strong>, per dispatch " +
-              (budget.PerTaskUsd is { } cap ? $"<strong>{E(Usd(cap))} USD</strong>" : "<em>none</em>") +
-              $", committed {E(Usd(budget.CommittedUsd))} USD.</p>"
-            : "<p>Ceiling cleared — this Team is unbounded again.</p>");
-        sb.Append($"<p><a href=\"/dashboard/teams/{E(teamId)}\">Back to the Team</a></p>");
-        sb.Append("</section>");
-        return Page("Budget", "teams", sb.ToString(), autoRefresh: false);
-    }
-
-    /// <summary>
-    /// Shown when a Lead session tries the budget write (§9.9). Mirrors the transcript
-    /// endpoints' <c>LeadRefused</c>: the refusal explains itself, because a Lead reading this
-    /// page is exactly the audience that needs to know the limit is not theirs to move.
-    /// </summary>
-    public static string BudgetLeadRefused() =>
-        Page("Refused", "teams",
-            "<h1>Refused</h1>" +
-            "<section><p>Setting a Team budget is a <strong>human-only</strong> action. This session is a " +
-            "Lead, and a Lead that can raise its own ceiling is enforcement living exactly where a model " +
-            "can reason past it (§2 principle 3, §9.9).</p>" +
-            "<p class=\"nt\">Sign in as an operator to change a ceiling. A Lead may read its Team's budget " +
-            "through <code>get_team_state</code>.</p></section>",
-            autoRefresh: false);
 
     /// <summary>
     /// The 'Create preview' control on the Team view's registered-services section

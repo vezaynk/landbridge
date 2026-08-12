@@ -26,13 +26,10 @@ public sealed record TaskStorePolicy(
 /// DI wiring for the task store and the accounting that is part of it, in the style of
 /// <see cref="ForwardingServiceCollectionExtensions.AddDocketForwarding"/>.
 ///
-/// <para>These two are one registration because <see cref="TaskStore"/> takes
-/// <see cref="TeamBudgetService"/> as an <em>optional</em> constructor dependency (§9.9): the
-/// dispatch path commits a Team's per-dispatch cap through it, and a host that registered the
-/// store alone would get a store that silently commits nothing and hands every harness a null
-/// cap — a budget ceiling that looks configured and enforces nothing. That failure is invisible
-/// at startup and invisible in every test that does not assert on committed amounts, which is
-/// exactly the kind of mistake a host should not be able to make one line at a time.</para>
+/// <para>One registration rather than two lines a host could get half-right: the write path
+/// and the per-Team accounting §9.10 attributes through it belong to the same feature, and a
+/// host that took the store alone would resolve fine and then fail only where a relay reported
+/// bytes.</para>
 ///
 /// <para><c>TryAdd</c> throughout, so a host or test that registered its own implementation
 /// first still wins.</para>
@@ -40,11 +37,10 @@ public sealed record TaskStorePolicy(
 public static class StoreServiceCollectionExtensions
 {
     /// <summary>
-    /// Registers the §15 write path (<see cref="TaskStore"/>) together with the accounting it
-    /// commits through: §9.9's budget ceiling (<see cref="TeamBudgetService"/>) and §9.10's
-    /// per-Team relay byte attribution (<see cref="TeamForwardUsageService"/>, which the
-    /// relay's plane-facing usage report resolves). Scoped, matching the DbContext lifetime
-    /// they all resolve against.
+    /// Registers the §15 write path (<see cref="TaskStore"/>) together with §9.10's per-Team
+    /// relay byte attribution (<see cref="TeamForwardUsageService"/>, which the relay's
+    /// plane-facing usage report resolves). Scoped, matching the DbContext lifetime they both
+    /// resolve against.
     /// </summary>
     /// <param name="infrastructureRequeueLimit">
     /// §9 check 7: the infrastructure requeue cap stamped onto new tasks, or null for
@@ -58,7 +54,6 @@ public static class StoreServiceCollectionExtensions
         services.TryAddSingleton(new TaskStorePolicy(
             infrastructureRequeueLimit ?? TaskRecord.DefaultInfrastructureRequeueLimit));
         services.TryAddScoped<TaskStore>();
-        services.TryAddScoped<TeamBudgetService>();
         services.TryAddScoped<TeamForwardUsageService>();
         return services;
     }

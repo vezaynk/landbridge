@@ -15,7 +15,6 @@ namespace Docket.ControlPlane;
 public sealed class TaskStore(
     DocketDbContext db,
     TimeProvider clock,
-    TeamBudgetService? budgets = null,
     TaskStorePolicy? policy = null)
 {
     public async Task<StoreResult> CreateAsync(CreateTask command, CancellationToken ct = default)
@@ -370,27 +369,6 @@ public sealed class TaskStore(
         var result = await RunTransition(claimed, new Dispatch(machine, newInstance), ct, tx);
         if (result is StoreResult.Applied applied)
         {
-            // §9.9: pay for this dispatch inside the same transaction as the transition, so a
-            // dispatch that happens is always committed against the Team's ceiling and one
-            // that is refused commits nothing. Per DISPATCH, not per task — each attempt is a
-            // fresh process that can burn the whole cap, so a requeued task commits twice.
-            // An exhausted ceiling rolls the whole claim back: the task stays submitted and
-            // is picked up again only once a human raises the ceiling.
-            decimal? budgetCap = null;
-            if (budgets is not null)
-            {
-                var commit = await budgets.TryCommitDispatchAsync(new TeamId(claimed.TeamId), ct);
-                if (commit is BudgetCommit.Exhausted exhausted)
-                {
-                    await tx.RollbackAsync(ct);
-                    return new StoreResult.Rejected(
-                        Rule.TeamBudgetCeiling,
-                        $"Team budget ceiling reached (committed ${exhausted.CommittedUsd:N2} of " +
-                        $"${exhausted.CeilingUsd:N2}); a human must raise it before more work is dispatched");
-                }
-                budgetCap = ((BudgetCommit.Allowed)commit).CapUsd;
-            }
-
             if (degradeColdStart)
             {
                 // Abandon the transcript: suppress the resume ref for this dispatch,
@@ -441,9 +419,6 @@ public sealed class TaskStore(
                 // predecessor worked whether or not it resumes the transcript, so this rides
                 // every dispatch of a continuation, cold starts included.
                 WorkDirTask = claimed.WorkDirTaskId is { } dir ? new TaskId(dir) : null,
-                // §9.9: the committed cap rides back so DispatchService can hand it to the
-                // harness as its own hard limit.
-                BudgetCapUsd = budgetCap,
             };
         }
         return result;
@@ -792,65 +767,6 @@ public sealed class TaskStore(
             Kind = TaskEventRow.SubagentSpawnedKind,
             SubagentId = agentId,
             SubagentParentId = parentAgentId,
-            OccurredAt = clock.GetUtcNow(),
-        });
-        await CommitAsync(task.Value, ct);
-    }
-
-    /// <summary>
-    /// The working tasks the §9.9 containment sweep still owes a <c>stop</c>: those in
-    /// <paramref name="teams"/> (the Teams over their ceiling) that are working right now
-    /// and do not already carry a <see cref="TaskEventRow.BudgetExhaustedStopKind"/> row.
-    ///
-    /// <para>The event row is the idempotency record, which is why the exclusion is part of
-    /// this query rather than sweeper state: the sweep runs on the liveness timer, and a
-    /// stopped task stays <c>working</c> for its whole wind-down window — comfortably longer
-    /// than one tick — so without it every pass would re-stop the same task and write another
-    /// row. Durable across a plane restart for free, unlike an in-memory set.</para>
-    ///
-    /// <para>Empty when <paramref name="teams"/> is, so the sweep costs one cheap query on
-    /// the overwhelmingly common no-Team-exhausted tick.</para>
-    /// </summary>
-    public async Task<IReadOnlyList<BudgetStopCandidate>> WorkingTasksAwaitingBudgetStopAsync(
-        IReadOnlyList<TeamId> teams, CancellationToken ct = default)
-    {
-        if (teams.Count == 0)
-            return [];
-
-        var teamIds = teams.Select(t => t.Value).ToList();
-        var rows = await db.Tasks.AsNoTracking()
-            .Where(t => teamIds.Contains(t.TeamId)
-                        && t.State == TaskState.Working
-                        && !db.TaskEvents.Any(e =>
-                            e.TaskId == t.Id && e.Kind == TaskEventRow.BudgetExhaustedStopKind))
-            .Select(t => new { t.Id, t.TeamId })
-            .ToListAsync(ct);
-
-        return rows
-            .Select(r => new BudgetStopCandidate(new TaskId(r.Id), new TeamId(r.TeamId)))
-            .ToList();
-    }
-
-    /// <summary>
-    /// Records the §9.9 containment sweep's <c>stop</c> against a task — same out-of-band
-    /// shape as <see cref="RecordAuthFailureAsync"/>: no transition, no xmin token, one
-    /// NOTIFY so a listening dashboard wakes on it. <paramref name="detail"/> carries the
-    /// ceiling facts as prose for the operator, because this row's whole job is to explain a
-    /// silence.
-    ///
-    /// <para>Called only after the stop was actually delivered to the machine, so the row
-    /// never claims a stop that was not sent — and an undelivered one is left for the next
-    /// sweep to retry rather than papered over.</para>
-    /// </summary>
-    public async Task RecordBudgetExhaustedStopAsync(
-        TaskId task, TeamId team, string detail, CancellationToken ct = default)
-    {
-        db.TaskEvents.Add(new TaskEventRow
-        {
-            TaskId = task.Value,
-            TeamId = team.Value,
-            Kind = TaskEventRow.BudgetExhaustedStopKind,
-            Detail = detail,
             OccurredAt = clock.GetUtcNow(),
         });
         await CommitAsync(task.Value, ct);

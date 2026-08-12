@@ -26,10 +26,6 @@ public static class TaskStateMachine
             return TransitionResult.Reject(Rule.NamespaceServerAssigned,
                 "namespace must be server-assigned before creation completes");
 
-        if (!command.TeamBudgetRemains)
-            return TransitionResult.Reject(Rule.TeamBudgetCeiling,
-                "Team budget ceiling reached; no new tasks");
-
         // §6/§11 continuation targeting: the resolved facts ride the command as
         // opaque plane metadata (the store seeds them onto the row, never onto the
         // pure record below). Only two of them are the engine's to gate — the rest
@@ -491,16 +487,17 @@ public static class TaskStateMachine
 
         var authorized = c.Actor switch
         {
-            // §6: the control plane may cancel only on budget exhaustion,
-            // and budget exhaustion is only the control plane's to invoke.
-            ControlPlaneActor => c.Disposition == CancelDisposition.Budget,
-            HumanSession => c.Disposition != CancelDisposition.Budget,
-            LeadClaim lead => lead.Team == task.Team && c.Disposition != CancelDisposition.Budget,
+            // §6: cancelling is a judgement that the work should not continue, which is the
+            // Lead's or a human's alone. The plane holds no such opinion — the one thing it
+            // gives up on is placing the work, and that lands as `canceled` from inside the
+            // check 7 requeue cap (ApplyLivenessLost), never as a command.
+            HumanSession => true,
+            LeadClaim lead => lead.Team == task.Team,
             _ => false,
         };
         if (!authorized)
             return TransitionResult.Reject(Rule.ActorLacksAuthority,
-                "cancellation is for the Lead, a human, or the control plane on budget exhaustion");
+                "cancellation is for the Lead of this Team or a human");
 
         var effects = new List<Effect>();
         if (task.CurrentInstance is { } instance)

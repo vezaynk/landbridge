@@ -36,9 +36,20 @@ public abstract record RunnerCommand : RunnerMessage
 /// <summary>
 /// <c>dispatch</c> — run one task under the named profile. Carries the minted
 /// worker token and generated MCP config the runner injects into the harness
-/// (§5, §13), the harness-local budget cap (§10, §9 check 9), and opaque
-/// substitutions for the profile's spawn argv. The runner never interprets any
-/// of it — it is transport.
+/// (§5, §13), and opaque substitutions for the profile's spawn argv. The runner
+/// never interprets any of it — it is transport.
+///
+/// <para><b><c>budget_usd</c> was <em>removed</em> here (2026-08-12), which is the one
+/// subtraction §10's freeze allows.</b> It carried the per-dispatch dollar cap to the
+/// harness (<c>{budget}</c> → Claude Code's <c>--max-budget-usd</c>); the Team-level
+/// ceiling that was its only value source is gone (§9's note), so nothing can populate it
+/// and no cap it once expressed is being silently dropped. Both decode directions stay
+/// clean: an older <c>docketd</c> receiving an envelope without the field reads
+/// <c>null</c>, which is exactly what a Team configuring no cap already sent, and a newer
+/// one receiving a stale envelope <em>with</em> it ignores the unmapped property. Contrast
+/// <see cref="SpawnSubstitutions"/> below, which stays precisely because it still has a
+/// live consumer — an unpopulated field a peer can still act on is a seam; one neither
+/// side can do anything with is a fiction.</para>
 ///
 /// <para><see cref="ResumeSessionRef"/> was <b>added</b> for §11 resume — an
 /// additive, wire-compatible field exactly like the relay fields on
@@ -77,7 +88,7 @@ public abstract record RunnerCommand : RunnerMessage
 /// <para><b><see cref="SpawnSubstitutions"/> is a reserved slot with no producer today.</b>
 /// The runner consumes it — extra <c>{key}</c> placeholders it substitutes into the spawn
 /// argv alongside the built-in <c>task_id</c> / <c>machine_id</c> / <c>work_dir</c> /
-/// <c>budget</c> / <c>session_id</c> / <c>mcp_config</c> set — but nothing on the plane
+/// <c>session_id</c> / <c>mcp_config</c> set — but nothing on the plane
 /// populates it: <c>DispatchService</c> is the only place a dispatch is constructed and it
 /// passes none, so the field arrives <c>null</c> on every real dispatch and only the wire
 /// round-trip tests exercise it. <b>Recorded rather than removed, and the reason is the
@@ -94,7 +105,6 @@ public sealed record DispatchCommand(
     string Profile,
     string WorkerToken = "",
     string? McpConfigJson = null,
-    decimal? BudgetUsd = null,
     Dictionary<string, string>? SpawnSubstitutions = null,
     string? ResumeSessionRef = null,
     TaskId? WorkDirTask = null) : RunnerCommand;
@@ -387,8 +397,8 @@ public sealed record SessionStartedEvent(TaskId Task, string SessionRef, DateTim
 /// <summary><c>alive</c> — per-task liveness signal (§10 concurrency).</summary>
 public sealed record AliveEvent(TaskId Task, DateTimeOffset At) : RunnerEvent;
 
-/// <summary><c>tool-call</c> — a progress signal derived from harness hooks;
-/// per-task liveness and budget attribution key off it (§2.2, §10).</summary>
+/// <summary><c>tool-call</c> — a progress signal derived from harness hooks; the
+/// per-task no-progress clock keys off it (§2.2, §10). Carries no token counts.</summary>
 public sealed record ToolCallEvent(TaskId Task, string Tool, DateTimeOffset At) : RunnerEvent;
 
 /// <summary><c>subagent-spawned</c> — subagent lineage where the harness emits

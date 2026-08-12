@@ -62,7 +62,7 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
 
             var store = new TaskStore(db, TimeProvider.System);
             var created = (StoreResult.Applied)await store.CreateAsync(
-                new CreateTask(new LeadClaim(team), team, "the suite is green", CompletionMode.Lead, null, TeamBudgetRemains: true), ct);
+                new CreateTask(new LeadClaim(team), team, "the suite is green", CompletionMode.Lead, null), ct);
             taskId = created.Task.Id;
         }
 
@@ -228,8 +228,7 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
     {
         await using var db = pg.NewContext();
         var created = (StoreResult.Applied)await new TaskStore(db, TimeProvider.System).CreateAsync(
-            new CreateTask(new LeadClaim(team), team, criteria, CompletionMode.Lead, null,
-                TeamBudgetRemains: true), ct);
+            new CreateTask(new LeadClaim(team), team, criteria, CompletionMode.Lead, null), ct);
         return created.Task.Id;
     }
 

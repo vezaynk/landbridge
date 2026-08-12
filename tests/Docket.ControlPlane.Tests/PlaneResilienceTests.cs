@@ -35,7 +35,7 @@ namespace Docket.ControlPlane.Tests;
 /// <para><b>#84 — a requeue abandoned the task but not the process.</b> A liveness-loss
 /// requeue revoked the attempt's authorization and freed the task but said nothing to the
 /// machine, so the wedged-but-alive harness it was reclaiming kept running and kept spending
-/// model budget. The scan now follows the requeue with a <c>kill</c> where the machine is
+/// model tokens. The scan now follows the requeue with a <c>kill</c> where the machine is
 /// still connected. Covered here as an ordering property — the kill is issued only after the
 /// requeue has committed, asserted by reading committed state from inside the send itself —
 /// plus the consequence-free failure path, and the reason that ordering needs a plane-side
@@ -661,8 +661,7 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         var store = new TaskStore(db, clock);
         var team = TeamId.New();
         await store.CreateAsync(new CreateTask(
-            new LeadClaim(team), team, "completion criteria", CompletionMode.Lead, null,
-            TeamBudgetRemains: true));
+            new LeadClaim(team), team, "completion criteria", CompletionMode.Lead, null));
         var instance = WorkerInstanceId.New();
         var applied = (StoreResult.Applied)await store.DispatchNextAsync(
             new MachineSnapshot(machineId, Ready: true, UnderBackPressure: false, Set("default")), instance);

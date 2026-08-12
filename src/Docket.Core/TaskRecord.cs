@@ -43,10 +43,9 @@ public sealed record TaskRecord
     /// <summary>
     /// The default infrastructure requeue cap (§9 check 7). Five is enough that a task
     /// survives an ordinary bad patch — a machine rebooting, a redeploy, one flaky
-    /// dispatch — and small enough that a genuinely wedged task stops burning
-    /// authorization inside an hour rather than forever: each attempt now costs a
-    /// no-progress ceiling (30 min by default) and commits a fresh per-dispatch budget
-    /// cap (§9.9).
+    /// dispatch — and small enough that a genuinely wedged task stops spending inside an
+    /// hour rather than forever: each attempt costs a whole no-progress ceiling (30 min by
+    /// default) of a model's time before the plane reclaims it.
     /// </summary>
     public const int DefaultInfrastructureRequeueLimit = 5;
 
@@ -81,8 +80,7 @@ public sealed record TaskRecord
     ///
     /// <para><b>Non-positive means uncapped</b> — the behaviour before the cap existed,
     /// and the deliberate opt-out for an operator who would rather a task retry forever
-    /// than go terminal, in the same spirit as an unconfigured Team budget being
-    /// unbounded (§9.9).</para>
+    /// than go terminal.</para>
     /// </summary>
     public int InfrastructureRequeueLimit { get; init; } = DefaultInfrastructureRequeueLimit;
 

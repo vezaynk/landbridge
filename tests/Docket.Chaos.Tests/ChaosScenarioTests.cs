@@ -523,7 +523,7 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
     ///
     /// <para>A requeue used to abandon the task without saying anything to the machine, so the
     /// wedged harness the no-progress ceiling had just given up on kept running — and, for a
-    /// real agent, kept spending model budget — until its <c>docketd</c> restarted and the §10
+    /// real agent, kept spending model tokens — until its <c>docketd</c> restarted and the §10
     /// stray sweep reaped it. Nothing in committed state can show that: the row records the
     /// plane's decision, not whether anything acted on it. So this scenario reads the worker's
     /// own OS pid off the marker it writes at startup and asserts the process is gone.</para>

@@ -340,7 +340,6 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             ["task_id"] = dispatch.Task.ToString(),
             ["machine_id"] = machineId,
             ["work_dir"] = workDir,
-            ["budget"] = dispatch.BudgetUsd?.ToString(CultureInfo.InvariantCulture) ?? "",
         };
         // §11 resume: the opaque session ref fills the {session_id} placeholder in
         // resume.args (e.g. `--resume {session_id}`). Only present when resuming;

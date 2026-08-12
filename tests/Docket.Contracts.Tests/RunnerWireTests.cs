@@ -20,7 +20,6 @@ public class RunnerWireTests
             "restricted",
             WorkerToken: "dkt_w_abc",
             McpConfigJson: """{"mcpServers":{}}""",
-            BudgetUsd: 12.50m,
             SpawnSubstitutions: new Dictionary<string, string> { ["seed"] = "42", ["mode"] = "headless" });
 
         var decoded = Assert.IsType<DispatchCommand>(RunnerWire.DecodeCommand(RunnerWire.EncodeCommand(original)));
@@ -31,7 +30,6 @@ public class RunnerWireTests
         Assert.Equal(original.Profile, decoded.Profile);
         Assert.Equal(original.WorkerToken, decoded.WorkerToken);
         Assert.Equal(original.McpConfigJson, decoded.McpConfigJson);
-        Assert.Equal(original.BudgetUsd, decoded.BudgetUsd);
         Assert.Equal(original.SpawnSubstitutions, decoded.SpawnSubstitutions);
     }
 
@@ -45,7 +43,6 @@ public class RunnerWireTests
         Assert.Equal(original, decoded);
         Assert.Equal("", decoded.WorkerToken);
         Assert.Null(decoded.McpConfigJson);
-        Assert.Null(decoded.BudgetUsd);
         Assert.Null(decoded.SpawnSubstitutions);
         Assert.Null(decoded.ResumeSessionRef);
     }
@@ -226,7 +223,7 @@ public class RunnerWireTests
     {
         const string traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
         var original = new DispatchCommand(
-            TaskId.New(), "restricted", WorkerToken: "dkt_w_x", BudgetUsd: 5m);
+            TaskId.New(), "restricted", WorkerToken: "dkt_w_x");
 
         var withTp = Assert.IsType<DispatchCommand>(
             RunnerWire.DecodeCommand(RunnerWire.EncodeCommand(original, traceparent)));
@@ -463,6 +460,29 @@ public class RunnerWireTests
     }
 
     // ── Rejection: anything outside the vocabulary (§10) ──────────────────────
+
+    [Fact]
+    public void A_dispatch_carrying_the_removed_budget_field_still_decodes()
+    {
+        // budget_usd left the contract with the dollar budget (2026-08-12). §10 is frozen, so
+        // the removal is only safe if a peer still sending it is tolerated: an unmapped
+        // property is ignored, not a decode failure that would strand every dispatch from an
+        // older plane. This is the direction the round-trip tests cannot cover, since nothing
+        // in the type can produce the field any more.
+        var decoded = Assert.IsType<DispatchCommand>(RunnerWire.DecodeCommand(
+            """
+            {
+              "type": "dispatch",
+              "task": { "value": "3f2504e0-4f89-11d3-9a0c-0305e82c3301" },
+              "profile": "default",
+              "worker_token": "dkt_w_x",
+              "budget_usd": 12.50
+            }
+            """));
+
+        Assert.Equal("default", decoded.Profile);
+        Assert.Equal("dkt_w_x", decoded.WorkerToken);
+    }
 
     [Fact]
     public void Decode_command_rejects_unknown_type_and_malformed_json()

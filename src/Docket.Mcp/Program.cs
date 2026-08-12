@@ -37,8 +37,8 @@ var connectionString = builder.Configuration.GetConnectionString("Docket")
 // write path (spec §15).
 builder.Services.AddDbContext<DocketDbContext>(o =>
     o.UseNpgsql(connectionString).UseSnakeCaseNamingConvention());
-// The §15 write path plus the §9.9 budget accounting it commits through at dispatch — one
-// registration, because a store without the accounting silently commits nothing.
+// The §15 write path plus the §9.10 per-Team byte accounting it resolves through — one
+// registration, because the two are halves of the same feature.
 // InfrastructureRequeueLimit is §9 check 7's cap, stamped onto each new task: how many
 // times a task may be requeued for infrastructure reasons (ack timeout, either liveness
 // clock, process exit, reboot) before it is abandoned rather than redispatched. Unset

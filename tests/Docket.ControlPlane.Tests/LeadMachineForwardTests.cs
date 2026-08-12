@@ -47,7 +47,7 @@ public sealed class LeadMachineForwardTests(PostgresFixture pg) : IAsyncLifetime
     {
         var store = new TaskStore(db, clock);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null, true));
+            new CreateTask(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null));
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(DispatchTarget(), instance);
         Assert.IsType<StoreResult.Applied>(

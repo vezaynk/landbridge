@@ -247,7 +247,7 @@ internal sealed class FleetRig(
 
     /// <summary>
     /// Send a real <see cref="StopCommand"/> to the machine holding <paramref name="task"/>,
-    /// through the same registry send the plane's budget sweep uses (§9.9) — there is no Lead
+    /// through the registry send directly — there is no Lead
     /// MCP tool for a graceful stop, so this is the plane-side path a scenario drives.
     /// Returns false when the machine is unreachable.
     /// </summary>

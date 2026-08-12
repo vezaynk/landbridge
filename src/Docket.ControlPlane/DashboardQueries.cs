@@ -21,12 +21,10 @@ namespace Docket.ControlPlane;
 /// inbox section (§11 permission bridge, #108) — and neither are subagent spawns, which are
 /// persisted as task event rows and surface in the event log; what is missing there is only
 /// the per-machine nesting, not the data.
-/// A Team's budget and its relay byte burn are no longer among them,
-/// but the two numbers mean very different things and the views say so: the budget is
-/// authorization COMMITTED at dispatch, never measured spend, which Docket does not
-/// ingest (§9.9); the byte figure IS measured, but best-effort, reported
-/// asynchronously by a relay that may die holding an unsent tail (§9.10) — which is
-/// why it travels with the timestamp of its last report. The derived-telemetry events — auth
+/// A Team's relay byte burn is no longer among them either: it IS measured, but
+/// best-effort, reported asynchronously by a relay that may die holding an unsent tail
+/// (§9.10) — which is why it travels with the timestamp of its last report. The
+/// derived-telemetry events — auth
 /// failures, subagent spawns, and the typed input-request kind — are persisted as
 /// task event rows (#50) and surface structured in the event log; a view that still
 /// renders one as an empty slot is a rendering gap that view owns, not a missing
@@ -118,10 +116,8 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
 
     /// <summary>
     /// Every Team as a one-line overview, sorted so idle Teams drift to the bottom
-    /// (§12). A Team exists if it owns any task, holds a live Lead claim, or has a
-    /// budget configured — a ceiling set before the Lead is provisioned is the intended
-    /// order. Carries the Team's budget (§9.9, committed authorization) and its reported
-    /// relay bytes (§9.10, measured but best-effort).
+    /// (§12). A Team exists if it owns any task or holds a live Lead claim. Carries its
+    /// reported relay bytes (§9.10, measured but best-effort).
     /// </summary>
     public async Task<IReadOnlyList<TeamOverview>> GetTeamsAsync(CancellationToken ct = default)
     {
@@ -152,17 +148,11 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
             .ToListAsync(ct);
         var leadByTeam = leads.ToDictionary(l => l.TeamId, l => (l.HumanId, l.CreatedAt));
 
-        var budgets = await db.TeamBudgets.AsNoTracking().ToDictionaryAsync(t => t.TeamId, ct);
         var forwardUsage = await db.TeamForwardUsage.AsNoTracking().ToDictionaryAsync(u => u.TeamId, ct);
 
         var teamIds = new HashSet<Guid>(stateCounts.Select(s => s.TeamId));
         foreach (var l in leads)
             teamIds.Add(l.TeamId);
-        // A Team can exist as a budget alone — a human setting a ceiling before the Lead is
-        // provisioned is the intended order, so it must appear in the list rather than only
-        // once it has tasks.
-        foreach (var teamId in budgets.Keys)
-            teamIds.Add(teamId);
 
         var overviews = new List<TeamOverview>();
         foreach (var teamId in teamIds)
@@ -185,7 +175,6 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
                 leadByTeam.ContainsKey(teamId) ? lead.CreatedAt : null,
                 lastActivity.GetValueOrDefault(teamId) is var la && la == default ? null : la,
                 isIdle,
-                TeamBudgetView.From(budgets.GetValueOrDefault(teamId)),
                 TeamForwardUsageView.From(forwardUsage.GetValueOrDefault(teamId))));
         }
 
@@ -262,15 +251,8 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
             .Where(e => e.TeamId == teamId)
             .MaxAsync(e => (DateTimeOffset?)e.OccurredAt, ct);
 
-        // §9.9. Read here rather than through TeamBudgetService so this class keeps its one
-        // dependency shape (db + registry) and cannot be handed a null service that silently
-        // renders an unconfigured budget for a Team that has one; the row→view mapping is
-        // shared with the service so the two readings cannot disagree.
-        var budget = TeamBudgetView.From(
-            await db.TeamBudgets.AsNoTracking().FirstOrDefaultAsync(t => t.TeamId == teamId, ct));
-
-        // §9.10. Measured, unlike the budget beside it — and best-effort, which is why the view
-        // carries the report timestamp rather than presenting the total as current.
+        // §9.10. Measured — and best-effort, which is why the view carries the report
+        // timestamp rather than presenting the total as current.
         var forwardUsage = TeamForwardUsageView.From(
             await db.TeamForwardUsage.AsNoTracking().FirstOrDefaultAsync(u => u.TeamId == teamId, ct));
 
@@ -313,7 +295,6 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
             lead is null ? null : lead.HumanId,
             lead?.CreatedAt,
             lastActivity,
-            budget,
             forwardUsage);
     }
 
@@ -579,7 +560,6 @@ public sealed record TeamOverview(
     DateTimeOffset? LeadSince,
     DateTimeOffset? LastActivity,
     bool IsIdle,
-    TeamBudgetView? Budget = null,
     TeamForwardUsageView? ForwardUsage = null);
 
 /// <summary>One Team in full — the §4 reattachment surface as structured data (§12).</summary>
@@ -593,7 +573,6 @@ public sealed record TeamDetail(
     Guid? LeadHumanId,
     DateTimeOffset? LeadSince,
     DateTimeOffset? LastActivity,
-    TeamBudgetView? Budget = null,
     TeamForwardUsageView? ForwardUsage = null);
 
 /// <summary>One task in a Team, with its park count (§12 "parks per task"); for a
