@@ -45,14 +45,12 @@ public sealed class CodexStreamMappingTests
         string ndjson, TaskId task, IReadOnlyDictionary<string, string>? mapping = null)
     {
         var ring = new OutboundEventRing(capacity: 256);
-        var recordCount = 0;
         string? capturedSession = null;
         var warnings = new List<string>();
 
         var reader = new TerminalEventReader(
             task,
             ring,
-            recordActivity: _ => Interlocked.Increment(ref recordCount),
             mapping ?? new Dictionary<string, string>(),
             new FakeTimeProvider(),
             onSessionId: id => capturedSession = id,
@@ -66,11 +64,11 @@ public sealed class CodexStreamMappingTests
         await foreach (var item in ring.ReadAllAsync(CancellationToken.None))
             events.Add(item.Event);
 
-        return new Result(events, recordCount, capturedSession, warnings);
+        return new Result(events, capturedSession, warnings);
     }
 
     private sealed record Result(
-        List<RunnerEvent> Events, int RecordCount, string? SessionId, List<string> Warnings);
+        List<RunnerEvent> Events, string? SessionId, List<string> Warnings);
 
     private static List<string> ToolNames(IEnumerable<RunnerEvent> events) =>
         events.OfType<ToolCallEvent>().Select(e => e.Tool).ToList();
@@ -310,18 +308,28 @@ public sealed class CodexStreamMappingTests
     }
 
     /// <summary>
-    /// The short aliveness clock is safe: every well-formed Codex line bumps per-task
-    /// activity, exactly as a claude line does, because the reader records liveness
-    /// before it dispatches on any harness-specific discriminator. All five documented
-    /// event lines count.
+    /// All five documented Codex lines parse as well-formed event lines — the reader counts
+    /// them before it dispatches on any harness-specific discriminator — and with no mapping
+    /// declared, none of them yields anything, because the built-in defaults are claude's
+    /// property names. That combination is precisely the silent-stream case (#111), so the
+    /// operator gets one warning naming all five.
+    ///
+    /// <para>This is the honest form of a test that used to assert a per-line activity count.
+    /// That count fed a runner-local clock nothing read: a Codex stream under claude defaults
+    /// moved <em>no</em> plane-visible liveness before this change and moves none after, so
+    /// "the aliveness clock is safe" was never what the callback bought. What is real, and what
+    /// is asserted here, is that the five lines are recognized and the misconfiguration is
+    /// reported once — which is the signal an operator can act on.</para>
     /// </summary>
     [Fact]
-    public async Task Every_codex_event_line_records_activity_even_with_no_mapping()
+    public async Task Every_codex_event_line_parses_and_an_unmapped_stream_is_warned_about_once()
     {
         var task = TaskId.New();
 
         var r = await RunAsync(CodexStream(), task);
 
-        Assert.Equal(5, r.RecordCount);
+        Assert.Contains("5 JSON event line(s)", Assert.Single(r.Warnings), StringComparison.Ordinal);
+        Assert.Empty(r.Events);
+        Assert.Null(r.SessionId);
     }
 }
