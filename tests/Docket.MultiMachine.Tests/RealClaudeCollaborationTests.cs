@@ -476,7 +476,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
             // what shows claude -p cannot honour it. WindDown is short so the deadline, not the
             // test's patience, is what ends the worker.
             stop: new StopConfig(
-                StopMode.Message, Signal: null,
+                StopMode.Message,
                 MessageTemplate: ClaudeStopTurnTemplate, WindDown: TimeSpan.FromSeconds(5)));
         await rig.StartAsync(ct);
         await rig.AddMachineAsync("A");

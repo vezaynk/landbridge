@@ -90,7 +90,6 @@ public sealed class TerminalEventReader
 {
     private readonly TaskId _task;
     private readonly OutboundEventRing _ring;
-    private readonly Action<TaskId> _recordActivity;
     private readonly Action<string>? _onSessionId;
     private readonly Action<string>? _rawLineSink;
     private readonly Action<string> _warn;
@@ -111,17 +110,11 @@ public sealed class TerminalEventReader
     /// <summary>Guards the one-per-task warning against a second <see cref="ReadToEndAsync"/>.</summary>
     private bool _warned;
 
-    /// <param name="recordActivity">
-    /// The per-task liveness signal (<see cref="ProcessSupervisor.RecordActivity"/>):
-    /// every well-formed line bumps it, so "the worker is still producing output"
-    /// keeps <see cref="ProcessSupervisor.IsTaskLive"/> true between richer events.
-    /// </param>
     /// <param name="onSessionId">
     /// Invoked once with the harness session id from <c>system/init</c>. The
     /// supervisor stores it on <see cref="SupervisedTask.SessionId"/> and emits a
     /// <see cref="SessionStartedEvent"/> so the plane can stamp the ref for §11
-    /// resume. This reader itself does events and liveness only — the ref is
-    /// opaque to it.
+    /// resume. This reader itself only emits events — the ref is opaque to it.
     /// </param>
     /// <param name="rawLineSink">
     /// §12 transcript capture tee: invoked with every raw stdout line — verbatim,
@@ -139,7 +132,6 @@ public sealed class TerminalEventReader
     public TerminalEventReader(
         TaskId task,
         OutboundEventRing ring,
-        Action<TaskId> recordActivity,
         IReadOnlyDictionary<string, string> mapping,
         TimeProvider clock,
         Action<string>? onSessionId = null,
@@ -148,7 +140,6 @@ public sealed class TerminalEventReader
     {
         _task = task;
         _ring = ring;
-        _recordActivity = recordActivity;
         _onSessionId = onSessionId;
         _rawLineSink = rawLineSink;
         _warn = warn ?? Console.Error.WriteLine;
@@ -244,8 +235,10 @@ public sealed class TerminalEventReader
             if (root.ValueKind != JsonValueKind.Object)
                 return; // a bare scalar/array is not a stream event.
 
-            // A well-formed object line is forward progress: bump per-task liveness.
-            _recordActivity(_task);
+            // A well-formed object line is the denominator of the silent-stream warning below.
+            // It is deliberately NOT a liveness signal: the plane's progress clock moves on the
+            // `tool-call` events this reader emits, and a runner-local activity stamp had no
+            // wire representation for it to move.
             _eventLines++;
 
             var type = GetString(root, _map.TypeKey);

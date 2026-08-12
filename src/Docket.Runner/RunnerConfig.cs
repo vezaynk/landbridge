@@ -296,8 +296,6 @@ public sealed record RunnerConfig(
             readiness,
             maxBackoff,
             new LogsConfig(
-                dto.Logs?.Path,
-                dto.Logs?.Format,
                 dto.Logs?.Capture ?? false,
                 dto.Logs?.MaxBytes ?? TranscriptDefaults.MaxBytes,
                 dto.Logs?.PruneAfterDays ?? TranscriptDefaults.PruneAfterDays),
@@ -524,7 +522,7 @@ public sealed record RunnerConfig(
         var windDown = dto.Stop?.WindDownSeconds is { } w and > 0
             ? TimeSpan.FromSeconds(w)
             : TimeSpan.FromSeconds(30);
-        var stop = new StopConfig(stopMode, dto.Stop?.Signal, dto.Stop?.Message, windDown);
+        var stop = new StopConfig(stopMode, dto.Stop?.Message, windDown);
 
         var resume = dto.Resume?.Args is { Count: > 0 } args
             ? new ResumeConfig(args)
@@ -539,8 +537,6 @@ public sealed record RunnerConfig(
             dto.Telemetry?.Endpoint,
             dto.Telemetry?.Env ?? new Dictionary<string, string>());
         var logs = new LogsConfig(
-            dto.Logs?.Path,
-            dto.Logs?.Format,
             dto.Logs?.Capture ?? false,
             dto.Logs?.MaxBytes ?? TranscriptDefaults.MaxBytes,
             dto.Logs?.PruneAfterDays ?? TranscriptDefaults.PruneAfterDays);
@@ -666,9 +662,19 @@ public enum StdinPolicy
     Closed,
 }
 
-/// <summary>How <c>stop</c> is delivered for this profile (§10). The frozen
-/// vocabulary names the command; the config names the transport.</summary>
-public sealed record StopConfig(StopMode Mode, string? Signal, string? MessageTemplate, TimeSpan WindDown);
+/// <summary>
+/// How <c>stop</c> is delivered for this profile (§10). The frozen vocabulary names the
+/// command; the config names the transport.
+///
+/// <para>There is deliberately no signal <em>name</em> here. A <c>stop</c> is never
+/// delivered as a signal that carries meaning — a signal cannot carry the disposition, so
+/// signals are reserved for the deadline's own kill, and that kill is always the portable
+/// tree-kill (<see cref="ProcessSupervisor.StopAsync"/>). A <c>stop.signal</c> key was
+/// parsed and stored here for a while and never read by anything; it is gone rather than
+/// left to imply a choice the runner does not offer. An existing config naming one still
+/// loads — unknown keys are ignored — it simply never meant anything.</para>
+/// </summary>
+public sealed record StopConfig(StopMode Mode, string? MessageTemplate, TimeSpan WindDown);
 
 /// <summary>
 /// §10: <c>message</c> injects a turn the agent reads (Claude Code:
@@ -745,16 +751,17 @@ public sealed record TelemetryConfig(
 /// days of no writes. Machine-local only — nothing leaves the box in this increment.
 /// Default OFF: an operator opts in per profile.</para>
 ///
-/// <para><b><see cref="Path"/> / <see cref="Format"/>.</b> Originally documented for a
-/// plane-side "tail-and-stream" that was never built (a stub). Capture now writes to a
-/// fixed state-dir layout, so <see cref="Path"/> is not consulted; <see cref="Format"/>
-/// stays an advisory label for the stdout stream's shape (e.g. <c>stream-json</c>).
-/// Both are retained so existing configs keep parsing; the plane's serving increment
-/// decides how a transcript is exposed.</para>
+/// <para><b>No <c>path</c> or <c>format</c>.</b> Both were documented for a plane-side
+/// "tail-and-stream" that was never built, and both were carried here — parsed, stored,
+/// and read by nothing — after capture settled on a fixed state-dir layout
+/// (<see cref="TranscriptStore"/>) that <c>path</c> cannot influence and a shape the
+/// reader derives from the profile's <c>events</c> rather than from a <c>format</c>
+/// label. They are gone rather than retained as advisory: a config field that looks like
+/// a knob and moves nothing is the failure mode this area keeps having. Existing configs
+/// keep parsing — unknown keys are ignored — so a declared <c>format</c> is inert exactly
+/// as it already was.</para>
 /// </summary>
 public sealed record LogsConfig(
-    string? Path,
-    string? Format,
     bool Capture = false,
     long MaxBytes = TranscriptDefaults.MaxBytes,
     int PruneAfterDays = TranscriptDefaults.PruneAfterDays);

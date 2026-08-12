@@ -115,11 +115,11 @@ internal static class TestKit
         new(
             name,
             [HarnessPath(), harnessMode],
-            new StopConfig(stopMode, Signal: null, MessageTemplate: null, WindDown: windDown ?? TimeSpan.FromSeconds(30)),
+            new StopConfig(stopMode, MessageTemplate: null, WindDown: windDown ?? TimeSpan.FromSeconds(30)),
             Resume: null,
             new EventsConfig(events, mapping ?? new Dictionary<string, string>()),
             telemetry ?? new TelemetryConfig(Otel: false, Endpoint: null),
-            new LogsConfig(Path: null, Format: null, Capture: capture,
+            new LogsConfig(Capture: capture,
                 MaxBytes: maxBytes ?? TranscriptDefaults.MaxBytes, PruneAfterDays: pruneAfterDays),
             MaxConcurrent: null,
             Processes: null,
@@ -139,11 +139,11 @@ internal static class TestKit
         new(
             name,
             [HarnessPath(), coldMode],
-            new StopConfig(StopMode.Signal, Signal: null, MessageTemplate: null, WindDown: TimeSpan.FromSeconds(30)),
+            new StopConfig(StopMode.Signal, MessageTemplate: null, WindDown: TimeSpan.FromSeconds(30)),
             new ResumeConfig([HarnessPath(), "echo-argv", "--resume", "{session_id}", "--mcp-config", "{mcp_config}"]),
             new EventsConfig(EventsSource.None, new Dictionary<string, string>()),
             new TelemetryConfig(Otel: false, Endpoint: null),
-            new LogsConfig(Path: null, Format: null),
+            new LogsConfig(),
             MaxConcurrent: null,
             Processes: null,
             Stdin: stdin);

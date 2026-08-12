@@ -19,14 +19,12 @@ public sealed class TerminalEventReaderTests
         string ndjson, TaskId task, IReadOnlyDictionary<string, string>? mapping = null)
     {
         var ring = new OutboundEventRing(capacity: 256);
-        var recordCount = 0;
         string? capturedSession = null;
         var warnings = new List<string>();
 
         var reader = new TerminalEventReader(
             task,
             ring,
-            recordActivity: _ => Interlocked.Increment(ref recordCount),
             mapping ?? new Dictionary<string, string>(),
             new FakeTimeProvider(),
             onSessionId: id => capturedSession = id,
@@ -40,11 +38,11 @@ public sealed class TerminalEventReaderTests
         await foreach (var item in ring.ReadAllAsync(CancellationToken.None))
             events.Add(item.Event);
 
-        return new Result(events, recordCount, capturedSession, warnings);
+        return new Result(events, capturedSession, warnings);
     }
 
     private sealed record Result(
-        List<RunnerEvent> Events, int RecordCount, string? SessionId, List<string> Warnings);
+        List<RunnerEvent> Events, string? SessionId, List<string> Warnings);
 
     private static List<string> ToolNames(IEnumerable<RunnerEvent> events, TaskId task) =>
         events.OfType<ToolCallEvent>().Where(e => e.Task == task).Select(e => e.Tool).ToList();
@@ -73,27 +71,52 @@ public sealed class TerminalEventReaderTests
 
         Assert.Equal("a4bbb0fd-fc3d-4825-9635-0b478017d4f5", r.SessionId);
         Assert.Equal(["Bash"], ToolNames(r.Events, task));
-        // Only tool-calls reach the ring; liveness is the RecordActivity callback.
+        // Only tool-calls reach the ring; the session ref rides its own callback.
         Assert.All(r.Events, e => Assert.IsType<ToolCallEvent>(e));
     }
 
+    /// <summary>
+    /// Which line shapes count as a well-formed event line — the denominator of the
+    /// silent-stream warning, and the reader's only notion of "this stream is producing
+    /// something". Blank, whitespace-only, non-JSON, and JSON-but-not-an-object lines are all
+    /// excluded; a real harness emits every one of them (banners, progress spinners, blank
+    /// separators) and none is evidence about the mapping.
+    ///
+    /// <para>Asserted through the warning text because that is where the count is
+    /// <em>production-visible</em>: an operator reads "parsed as N JSON event line(s)" and
+    /// decides whether their mapping is wrong. The mapping here deliberately describes
+    /// nothing, which is what makes the warning fire and the count observable — the four
+    /// claude lines parse as objects and yield neither a session ref nor a tool-call.</para>
+    ///
+    /// <para>This previously asserted a <c>RecordActivity</c> callback count. That callback fed
+    /// a runner-local activity clock no production code read, so the number it counted had no
+    /// consequence anywhere; the same classification is now pinned on the surface that does.</para>
+    /// </summary>
     [Fact]
-    public async Task Every_well_formed_object_line_records_activity_stray_lines_do_not()
+    public async Task Only_well_formed_object_lines_count_as_event_lines_stray_output_does_not()
     {
         var task = TaskId.New();
         var ndjson = string.Join('\n',
-            RealClaudeInit,            // 1 well-formed
-            "",                        // blank — not activity
-            "   ",                     // whitespace — not activity
-            "plain banner text",       // not JSON — not activity
-            "[1,2,3]",                 // JSON but not an object — not activity
+            RealClaudeInit,            // 1 well-formed object
+            "",                        // blank — not an event line
+            "   ",                     // whitespace — not an event line
+            "plain banner text",       // not JSON — not an event line
+            "[1,2,3]",                 // JSON but not an object — not an event line
             RealClaudeThinking,        // 2 well-formed
             RealClaudeToolUse,         // 3 well-formed
             RealClaudeResult);         // 4 well-formed
 
-        var r = await RunAsync(ndjson, task);
+        // A mapping that matches none of the four, so nothing is extracted and the
+        // silent-stream warning reports the count.
+        var r = await RunAsync(ndjson, task, new Dictionary<string, string>
+        {
+            ["system_type"] = "no-such-type",
+            ["assistant_type"] = "no-such-type-either",
+        });
 
-        Assert.Equal(4, r.RecordCount);
+        Assert.Contains("4 JSON event line(s)", Assert.Single(r.Warnings), StringComparison.Ordinal);
+        Assert.Empty(r.Events);
+        Assert.Null(r.SessionId);
     }
 
     [Fact]
@@ -375,7 +398,6 @@ public sealed class TerminalEventReaderTests
 
         var warning = Assert.Single(r.Warnings);
         Assert.Contains("40 JSON event line(s)", warning, StringComparison.Ordinal);
-        Assert.Equal(40, r.RecordCount);   // liveness was unaffected — this is a mapping fault
     }
 
     [Fact]
@@ -389,7 +411,7 @@ public sealed class TerminalEventReaderTests
         var r = await RunAsync("not json at all\n\n[1,2,3]\n\"bare string\"", task);
 
         Assert.Empty(r.Warnings);
-        Assert.Equal(0, r.RecordCount);
+        Assert.Empty(r.Events);
     }
 
     [Fact]

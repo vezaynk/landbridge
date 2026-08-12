@@ -235,7 +235,7 @@ public class ServiceSupervisionTests
         IReadOnlyDictionary<string, string>? env = null) =>
         new(name, spawn, workDir, env ?? new Dictionary<string, string>(StringComparer.Ordinal),
             port, readiness, ServiceDefaults.MaxBackoff,
-            new LogsConfig(null, null));
+            new LogsConfig());
 
     [Fact]
     public async Task A_service_is_reported_running_once_its_readiness_port_answers()

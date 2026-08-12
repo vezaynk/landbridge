@@ -124,9 +124,6 @@ public sealed class SupervisedTask
     /// </summary>
     public StdinPolicy Stdin { get; init; } = StdinPolicy.Deadman;
 
-    /// <summary>Last per-task liveness signal (started/tool-call), §10.</summary>
-    public DateTimeOffset LastActivityAt { get; set; }
-
     /// <summary>
     /// §11 resume: the harness session id captured from the events stream (claude
     /// <c>system/init</c>), set by the <see cref="TerminalEventReader"/> when
@@ -448,7 +445,6 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             WorkDir = workDir,
             Stop = profile.Stop,
             Stdin = profile.Stdin,
-            LastActivityAt = _clock.GetUtcNow(),
         };
         process.Exited += (_, _) => OnExited(supervised, machineId);
 
@@ -536,7 +532,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
 
         // §10 Terminal events source: start the stdout drain now that the worker is
         // up. It runs for the process's whole lifetime, mapping NDJSON lines to
-        // events and bumping this task's liveness on every well-formed line. Running
+        // events — a `tool-call` on the ring is what moves the plane's clocks. Running
         // continuously is the anti-deadlock requirement — a redirected-but-undrained
         // stdout blocks the worker once the pipe buffer fills. EOF (worker exit) or
         // the CTS (teardown) ends it cleanly; OnExited cancels the CTS as a backstop.
@@ -549,7 +545,6 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             var reader = new TerminalEventReader(
                 dispatch.Task,
                 _ring,
-                RecordActivity,
                 profile.Events.Mapping,
                 _clock,
                 onSessionId: sessionId =>
@@ -614,30 +609,6 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         // is docketd's own observation; a richer events.source refines it upstream.
         _ring.Enqueue(new StartedEvent(dispatch.Task, _clock.GetUtcNow()));
         return dispatch.Task;
-    }
-
-    /// <summary>Records a per-task liveness signal from the events source (§10).</summary>
-    public void RecordActivity(TaskId task)
-    {
-        if (_tasks.TryGetValue(task, out var supervised))
-            supervised.LastActivityAt = _clock.GetUtcNow();
-    }
-
-    /// <summary>
-    /// The runner-local view of per-task liveness (§10): process alive <em>and</em> a
-    /// local signal within <paramref name="timeout"/>. Diagnostic only — the control
-    /// plane does <b>not</b> consult this, and cannot: it is a runner-side read with
-    /// no wire representation. Per-task liveness on the plane is decided from the
-    /// events it receives — <see cref="LiveTasks"/> feeds the periodic <c>alive</c>
-    /// event that carries the process-alive half upstream. Do not mistake this for
-    /// the mechanism §10 promises; conflating the two is what left process-alive
-    /// unwired while appearing implemented.
-    /// </summary>
-    public bool IsTaskLive(TaskId task, TimeSpan timeout)
-    {
-        if (!_tasks.TryGetValue(task, out var supervised) || !supervised.ProcessAlive)
-            return false;
-        return _clock.GetUtcNow() - supervised.LastActivityAt <= timeout;
     }
 
     public async Task<StopAck> StopAsync(
@@ -727,7 +698,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         // §11 resume (#102): remove only if this instance is still the task's — a
         // compare-and-remove, so a superseded predecessor dying mid-resume cannot
         // evict the successor that replaced it in the map. Losing that entry would
-        // leave the successor unsupervised: no liveness bumps, no stop delivery, no
+        // leave the successor unsupervised: no `alive` events, no stop delivery, no
         // kill, and a stray at teardown.
         ((ICollection<KeyValuePair<TaskId, SupervisedTask>>)_tasks)
             .Remove(new KeyValuePair<TaskId, SupervisedTask>(supervised.Task, supervised));

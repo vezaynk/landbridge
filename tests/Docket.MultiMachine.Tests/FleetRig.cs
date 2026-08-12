@@ -140,7 +140,7 @@ internal sealed class FleetRig(
         _profile = new ProfileConfig(
             "default",
             spawnArgv ?? [CollabHarnessPath(), "--mcp-config", "{mcp_config}"],
-            stop ?? new StopConfig(StopMode.Signal, Signal: null, MessageTemplate: null, WindDown: TimeSpan.FromSeconds(30)),
+            stop ?? new StopConfig(StopMode.Signal, MessageTemplate: null, WindDown: TimeSpan.FromSeconds(30)),
             resumeArgv is null ? null : new ResumeConfig(resumeArgv),
             new EventsConfig(
                 terminalEvents ? EventsSource.Terminal : EventsSource.None,
@@ -149,7 +149,7 @@ internal sealed class FleetRig(
             // §12: capture on, so the fleet exercises the real capture → serve path end to
             // end. Pruning disabled (0) — a rig lives seconds and a sweep would only add
             // nondeterminism.
-            new LogsConfig(Path: null, Format: null, Capture: true, PruneAfterDays: 0),
+            new LogsConfig(Capture: true, PruneAfterDays: 0),
             MaxConcurrent: null,
             // §10: the machine owner's decision, enforced machine-side. Off unless a
             // scenario is about agent-started processes.

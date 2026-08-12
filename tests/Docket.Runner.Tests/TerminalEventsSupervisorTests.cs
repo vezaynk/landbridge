@@ -43,19 +43,14 @@ public sealed class TerminalEventsSupervisorTests : IDisposable
 
         supervisor.Spawn(TestKit.Dispatch(task), TerminalProfile(), "machine-term");
 
-        // Make the spawn-time liveness stamp stale up front, so a later "live" can
-        // only come from the reader's own RecordActivity on the streamed lines.
-        _clock.Advance(TimeSpan.FromSeconds(60));
-
-        // The transcript's two tool_use blocks map to ToolCallEvents in order.
+        // The transcript's two tool_use blocks map to ToolCallEvents in order. These events
+        // ARE the reader's liveness contribution: a `tool-call` on the ring is what moves the
+        // plane's progress clock (§10). There is no runner-local liveness stamp to check —
+        // the supervisor keeps no activity clock, because nothing on the plane could read one.
         Assert.True(
             await TestKit.WaitUntilAsync(() => ToolNames(drained).Count >= 2, TimeSpan.FromSeconds(20)),
             "terminal reader never drained the expected tool-call events");
         Assert.Equal(HarnessProgram.EmitStreamToolNames, ToolNames(drained));
-
-        // Per-task liveness reflects the streamed activity: the reader stamped
-        // RecordActivity at the post-advance clock, so the task reads live again.
-        Assert.True(supervisor.IsTaskLive(task, TimeSpan.FromSeconds(10)));
 
         // system/init session id was captured onto the task (reserved for §11 resume).
         Assert.True(
