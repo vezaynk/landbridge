@@ -8,7 +8,7 @@ public class LifecycleTests
     {
         var result = TaskStateMachine.Create(
             new CreateTask(Given.Lead, Given.Team, "pnpm test", CompletionMode.Lead,
-                Profile: null, TeamBudgetRemains: true),
+                Profile: null),
             Given.Id, "team-x/task-y");
 
         var task = Expect.Transitioned(result, TaskState.Submitted);
@@ -182,7 +182,7 @@ public class LifecycleTests
     {
         var created = TaskStateMachine.Create(
             new CreateTask(Given.Lead, Given.Team, "make test", CompletionMode.Lead,
-                Profile: null, TeamBudgetRemains: true),
+                Profile: null),
             Given.Id, "team-x/task-y");
         var task = ((TransitionResult.Transitioned)created).Task;
 

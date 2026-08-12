@@ -171,8 +171,8 @@ the **§11 permission bridge**, which lets a headless worker run *without*
 request the Lead answers with a verdict, or hands to a human on the dashboard;
 **in-band worker reports** and the
 **question/answer exchange** that makes blocking on a human actually carry words;
-Lead-adjudicated completion (`lead`/`review` modes); **budget accounting** as a
-ceiling on committed authorization plus an enforced forward rate limit; the relay
+Lead-adjudicated completion (`lead`/`review` modes); an enforced per-Team
+forward rate limit; the relay
 TCP splice with fail-closed grant validation; **`open_forward`, the Lead-facing
 forward** for reaching a service from your own machine, and the **§8.4 preview
 layer** (wildcard TLS, opaque labels, gated or public); **transcript capture and
@@ -185,10 +185,11 @@ Deliberately deferred — do not assume these work:
   **verbatim**, which is why serving is narrowed instead: human operator sessions
   only, and only for terminal tasks. This gates live tailing, reading a `verifying`
   task's transcript, and any agent-facing read.
-- **Measured spend.** Nothing ingests token/cost telemetry, so the budget ceiling
-  enforces *authorized* spend (the per-dispatch cap, committed at dispatch), never
-  measured spend. Relay bytes are counted and reported but enforce nothing, because
-  §8.3 forbids severing an established splice.
+- **Spend limits.** There are none. The dollar budget ceiling was removed
+  2026-08-12 (spec §9's note keeps the design); what bounds a runaway now is time
+  (the no-progress ceiling), attempts (the requeue cap), and an operator watching.
+  Relay bytes are counted and reported but enforce nothing either, because §8.3
+  forbids severing an established splice.
 - **Event sources beyond `terminal`.** `hooks` and `otel` parse but are wired to
   nothing, so they behave as `none`; `docketd` warns loudly at startup for any
   profile declaring one. The subagent tree and `auth-failed` have no producer.

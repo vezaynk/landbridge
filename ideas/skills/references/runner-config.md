@@ -126,7 +126,6 @@ first three as environment on every spawn, not configurably — §10):
 | `{task_id}` / `DOCKET_TASK_ID` | The dispatched task id. |
 | `{machine_id}` / `DOCKET_MACHINE_ID` | This machine's id. |
 | `{work_dir}` | `{work_root}/{task_id}`, the spawn cwd. |
-| `{budget}` | The task's harness-local hard cap in USD, if any (§9 check 9). |
 | `{mcp_config}` | Path to the generated MCP config `docketd` writes to `{work_dir}/mcp.json` (mode 0600). |
 | `{session_id}` | The opaque harness session ref to resume. Substituted in `resume.args` only, never `spawn` (§11). |
 | `DOCKET_WORKER_TOKEN` | The minted worker-instance token (also embedded in `{mcp_config}`). |
@@ -245,14 +244,14 @@ dispatched instance, and its token dies with the instance (§9 check 14).
   `--mcp-config` equivalent has to read the environment variable instead, which for
   `codex exec` is the only route that works at all — see the Codex example below, where
   the generated file is written and then ignored.
-- **Nothing here caps spend, and the local cost bounds are not symmetric across
-  harnesses.** `claude -p` is where one is even available: `{budget}` exists to fill
-  Claude Code's `--max-budget-usd` (§9 check 9), and `--max-turns` bounds a runaway by
-  turn count instead (what the real-harness E2E tier pins its own workers with).
-  `codex exec` has neither, so on a Codex profile cost control is the pinned model, the
-  Team budget (§9), and the §10 no-progress ceiling — plan for that before opening a
-  profile up, because it is the difference between a bounded runaway and an unbounded
-  one.
+- **Nothing caps spend — not here and not in the plane.** The Team dollar ceiling was
+  removed 2026-08-12 (spec §9's note), and the `{budget}` substitution that fed Claude
+  Code's `--max-budget-usd` went with it, since its value came from that ceiling. What
+  bounds a runaway on a profile is what you write into the argv yourself — `claude -p`
+  has `--max-budget-usd` and `--max-turns`, and the real-harness E2E tier pins its own
+  workers with the latter; `codex exec` has neither — plus the pinned model and the §10
+  no-progress ceiling. Decide that before opening a profile up: it is the difference
+  between a bounded runaway and an unbounded one.
 
 ### Stopping a `claude -p` worker (§10, §11)
 
@@ -563,9 +562,8 @@ nothing from them (see [Event relay](#event-relay-10)).
 ### Two more differences worth budgeting for
 
 **No turn cap, and `CODEX_API_KEY` is the auth variable.** The claude recipe bounds a runaway
-with `--max-turns`; `codex exec` has no equivalent, so `{budget}` has nothing to bind to either.
-Cost control is the pinned model, the Team budget (§9) and the no-progress ceiling, not a
-harness-local cap — plan accordingly on an open profile. For auth in an unattended profile, note
+with `--max-turns`; `codex exec` has no equivalent. Cost control is then the pinned model and the
+no-progress ceiling alone — plan accordingly on an open profile. For auth in an unattended profile, note
 that **`OPENAI_API_KEY` is not read by `codex exec`**: the exec path enables `CODEX_API_KEY`
 specifically (`exec/src/lib.rs:541` sets `enable_codex_api_key_env: true`;
 `login/src/auth/manager.rs:841` defines the variable), while `OPENAI_API_KEY` is consulted only
@@ -635,8 +633,8 @@ they are both `claude -p`, and neither can be handed a wind-down turn.
 The trade is blast radius: on an open profile, a prompt-injected worker can do
 anything the machine account can, including using every local MCP server's
 credentials. Docket's containment still holds at its own boundaries — the
-worker's plane token stays task-scoped (§5), spend is bounded by the harness
-caps and the Team budget (§9) — but the machine-local exposure is the
+worker's plane token stays task-scoped (§5), and time is bounded by the
+no-progress ceiling (§10) — but the machine-local exposure is the
 operator's chosen risk. The two archetypes compose: one machine can declare a
 locked-down `ci-runner` profile and an open `dev-box` profile side by side, and
 the Lead picks per task by profile name. Hard limits are per-instance and a

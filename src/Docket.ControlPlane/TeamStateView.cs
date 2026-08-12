@@ -10,20 +10,13 @@ namespace Docket.ControlPlane;
 /// are the reattachment surface (§4): enough for a fresh Lead to reconstruct what the
 /// Team is doing — including which tasks are waiting on it and what kind of attention
 /// each needs — without ever seeing a task's contents.
-///
-/// <para><see cref="Budget"/> is <b>read-only</b> for a Lead (§9.9): it needs to see the
-/// ceiling to understand why <c>create_task</c> is refusing it, and telling it "no budget"
-/// is strictly better than letting it re-derive that from failures. Changing the ceiling is
-/// a human act on the dashboard and has deliberately no MCP tool — a Lead that could raise
-/// its own limit is enforcement where a model can reason past it (§2 principle 3).</para>
 /// </summary>
 public sealed record TeamStateView(
     Guid TeamId,
     int TotalTasks,
     IReadOnlyDictionary<TaskState, int> CountsByState,
     IReadOnlyList<TeamTaskSummary> Tasks,
-    LeadMachineView? BoundMachine = null,
-    TeamBudgetView? Budget = null);
+    LeadMachineView? BoundMachine = null);
 
 /// <summary>
 /// The calling Lead's own bound machine (§8.3 human path), carried on the

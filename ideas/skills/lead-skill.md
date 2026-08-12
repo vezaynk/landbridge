@@ -13,7 +13,7 @@ Run `/docket-lead` to claim a Team, or `/docket-status` if you already hold one.
 
 **If you are attaching to a Team that already has work in flight** — reattachment after a closed laptop, or a takeover — your context window is empty and the Team's state is not. Read it before doing anything:
 
-1. `get_team_state` for tasks by state, open input requests, budget burn, registered services.
+1. `get_team_state` for tasks by state, open input requests, registered services.
 2. Read the most recent results and blocker notes.
 3. Only then decide what to do next.
 
@@ -141,7 +141,7 @@ Remember that the tool name and arguments came up through an agent's process. A 
 
 **A saturated machine is not a broken one.** Machines stop accepting work when their load, memory, or disk is under pressure, and resume when it clears. If tasks are queuing and the Machine Group looks busy rather than idle, that is the system working — not something to escalate. Persistent saturation means the Team wants more machines or fewer parallel tasks.
 
-**Watch budget burn, not just task count.** A Team's ceiling is shared. Subagent fan-out is where spend goes non-linear and it is invisible at task level — check `get_team_state` rather than assuming.
+**Nothing caps your Team's spend.** The dollar ceiling was removed (spec §9's note), so subagent fan-out — where spend goes non-linear, and which is invisible at task level — is bounded by your own restraint plus the no-progress ceiling. Decompose because it helps the work, not because a limit will stop you.
 
 **Reboots happen, but not forever.** When a machine restarts, its tasks requeue and you are told. A requeued task starts from scratch unless you direct otherwise; you can tell a worker to recover from its previous transcript, noting that the earlier run stopped abruptly. Decide which is cheaper. Infrastructure requeues are capped, though — five by default — and the requeue that reaches the cap abandons the task as terminal `canceled` rather than placing it again. Never `rejected`: a machine that keeps failing the work is not a verdict on the work, so do not read one there. The workspace is preserved, because whatever wedged every attempt is the evidence someone needs. Nothing resumes a task in that state, so the recovery is a new task — with `continues:` pointing at the abandoned one when the transcript is worth inheriting, and a word to your human when the same machine keeps eating tasks.
 
@@ -181,7 +181,7 @@ The TTL is how long the worker gets before it is killed. Set it to the situation
 
 ## Closing out
 
-A Team holds budget and clutters the view until it ends. Close it when the work is done rather than letting it sit.
+A Team clutters the view until it ends. Close it when the work is done rather than letting it sit.
 
 Before closing: no tasks in flight, no open input requests, results recorded somewhere durable. Anything that mattered belongs in the workspace substrate, not in an artifact link or a task record — artifacts are best-effort and may already be gone.
 

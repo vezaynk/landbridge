@@ -154,8 +154,7 @@ internal static class RelayGrantTestKit
     /// </summary>
     public static LeadTools LeadToolsFor(
         DocketDbContext db, TimeProvider clock, RunnerConnectionRegistry registry, IHttpContextAccessor http) =>
-        new(new TaskStore(db, clock, new TeamBudgetService(db, clock)),
-            new TeamBudgetService(db, clock),
+        new(new TaskStore(db, clock),
             registry,
             new LeadMachineBindingService(db, clock),
             new RelayGrantService(db, clock),
@@ -182,7 +181,7 @@ internal static class RelayGrantTestKit
                 ["Docket:PermissionPollIntervalMs"] = ms.ToString(),
             });
         return new WorkerTools(
-            new TaskStore(db, clock, new TeamBudgetService(db, clock)),
+            new TaskStore(db, clock),
             new RelayGrantService(db, clock),
             new ForwardOrchestrator(registry, new ForwardWaiters(), NullLogger<ForwardOrchestrator>.Instance),
             new PreviewMappingService(db, clock),
@@ -205,7 +204,7 @@ internal static class RelayGrantTestKit
         await using var db = pg.NewContext();
         var store = new TaskStore(db, TimeProvider.System);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null, true), ct);
+            new CreateTask(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null), ct);
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(Machine, instance, ct);
         await store.RegisterServiceAsync(new WorkerCaller(team, created.Task.Id, instance), serviceName, port, ct);
@@ -227,7 +226,7 @@ internal static class RelayGrantTestKit
         var store = new TaskStore(db, TimeProvider.System);
         var tokens = new TokenService(db, TimeProvider.System);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null, true), ct);
+            new CreateTask(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null), ct);
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(Machine, instance, ct);
         var token = (await tokens.MintWorkerTokenAsync(team, created.Task.Id, instance, ct)).Token;

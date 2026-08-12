@@ -31,7 +31,6 @@ namespace Docket.Mcp.Tools;
 [McpServerToolType]
 public sealed class LeadTools(
     TaskStore store,
-    TeamBudgetService budgets,
     RunnerConnectionRegistry registry,
     LeadMachineBindingService bindings,
     RelayGrantService grants,
@@ -176,15 +175,10 @@ public sealed class LeadTools(
             throw new McpException("on_machine_gone only applies together with continues.");
         }
 
-        // §9 check 9, for real: until now this was hardcoded true, which made the check a
-        // lie. The Team's ceiling is judged against COMMITTED authorization, not measured
-        // spend — nothing ingests spend telemetry (§9.9) — so this asks whether one more
-        // dispatch could be authorized. An unconfigured Team has no ceiling and always
-        // affords work. Description/workspace ride the command as opaque content the store
-        // persists and the engine never reads (§7).
-        var budgetRemains = await budgets.HasHeadroomAsync(lead.Team, ct);
+        // Description/workspace ride the command as opaque content the store persists and the
+        // engine never reads (§7).
         var result = await store.CreateAsync(
-            new CreateTask(lead, lead.Team, completionCriteria, parsedMode, effectiveProfile, budgetRemains,
+            new CreateTask(lead, lead.Team, completionCriteria, parsedMode, effectiveProfile,
                 Description: description, Workspace: workspace, Continues: continuation), ct);
 
         return result switch
@@ -206,10 +200,8 @@ public sealed class LeadTools(
         CancellationToken ct)
     {
         var id = ParseTaskId(taskId);
-        if (!Enum.TryParse<CancelDisposition>(disposition, ignoreCase: true, out var parsed)
-            || parsed == CancelDisposition.Budget)
-            throw new McpException(
-                "disposition must be 'preserve' or 'discard'; budget cancellation is the control plane's alone.");
+        if (!Enum.TryParse<CancelDisposition>(disposition, ignoreCase: true, out var parsed))
+            throw new McpException("disposition must be 'preserve' or 'discard'.");
 
         return Describe(await store.ApplyAsync(id, new Cancel(Lead, parsed), ct));
     }
@@ -334,17 +326,11 @@ public sealed class LeadTools(
                  "This is the reattachment surface after a session ends or a takeover, and the poll " +
                  "that tells you which tasks are blocked waiting on you. Also reports which " +
                  "machine you have bound as your human's own (bound_machine, null if none) — the " +
-                 "consumer end open_lead_forward needs — and your Team's budget (ceiling, committed, " +
-                 "remaining, exhausted), which is READ-ONLY: only your human can change a ceiling, " +
-                 "from the dashboard. If remaining is too small to cover another dispatch, create_task " +
-                 "will refuse and running tasks are stopped; ask your human to raise it.")]
+                 "consumer end open_lead_forward needs.")]
     public async Task<TeamStateView> GetTeamState(CancellationToken ct)
     {
         var lead = LeadPrincipal;
         var state = await store.GetTeamStateAsync(lead.Team, ct);
-        // §9.9: a Lead sees its own ceiling so a refused create_task is legible as "out of
-        // budget" rather than an unexplained rejection. Read-only — there is no MCP write.
-        state = state with { Budget = await budgets.ReadAsync(lead.Team, ct) };
         // The binding keys on the human, not the Team, so it is composed on here
         // rather than read out of the Team's rows (§8.3 human path). A lead
         // credential with no human attribution simply shows no binding.

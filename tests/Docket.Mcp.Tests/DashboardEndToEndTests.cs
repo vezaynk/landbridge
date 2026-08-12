@@ -828,7 +828,7 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         await using var db = pg.NewContext();
         var store = new TaskStore(db, TimeProvider.System);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(new LeadClaim(team), team, "criteria", mode, null, TeamBudgetRemains: true), ct);
+            new CreateTask(new LeadClaim(team), team, "criteria", mode, null), ct);
         var instance = WorkerInstanceId.New();
         // Deterministic: this is the only submitted task at the moment it dispatches.
         await store.DispatchNextAsync(AnyMachine, instance, ct);

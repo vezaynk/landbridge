@@ -7,12 +7,17 @@ namespace Docket.Core;
 /// spec line.
 ///
 /// Not every check is the engine's to enforce. Enforcement sites:
-///   engine — 1, 3, 4, 8, 9 (creation gate), 12, 14, and the §6 invariants
+///   engine — 1, 3, 4, 8, 12, 14, and the §6 invariants
 ///   store  — 2 (namespace assignment), 5 (SKIP LOCKED single dispatch,
 ///            machine-eligibility half in the engine), 6 (one lead per team)
 ///   plane timers — 7 (expressed as LivenessLost / WaitTtlExpired commands)
 ///   relay  — 10, 11
 ///   auth   — 13
+///
+/// <para><b>9 is retired, not reassigned.</b> The dollar budget ceiling was removed
+/// 2026-08-12 (§9's own note), and its value stays vacant so the remaining checks keep
+/// the numbers every "§9 check N" reference in this codebase already uses. Renumbering
+/// would silently redirect all of them.</para>
 /// </summary>
 public enum Rule
 {
@@ -24,7 +29,7 @@ public enum Rule
     OneLeadPerTeam = 6,
     LivenessTimeoutRequeue = 7,
     VerificationRetriesExhausted = 8,
-    TeamBudgetCeiling = 9,
+    // 9 was TeamBudgetCeiling; see the type remarks.
     TeamByteAllowance = 10,
     ForwardsRequireRegistration = 11,
     CancellationCarriesDisposition = 12,

@@ -292,7 +292,7 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
 
         // A cap of one abandons on the first loss. The point of the terminal state is that
         // the dispatch loop stops paying for this task: a canceled row is not claimable,
-        // so the ~30-minute-per-attempt burn (and its budget commitment, §9.9) ends here.
+        // so the ~30-minute-per-attempt burn of a model's time ends here.
         clock.Advance(Window + TimeSpan.FromSeconds(1));
         await NewDispatch(clock, registry).CheckLivenessAsync(CancellationToken.None);
         Assert.Equal(TaskState.Canceled, await StateAsync(clock, id));
@@ -356,8 +356,7 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
             policy: requeueLimit is { } limit ? new TaskStorePolicy(limit) : null);
         var team = TeamId.New();
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(new LeadClaim(team), team, "completion criteria", CompletionMode.Lead, null,
-                TeamBudgetRemains: true));
+            new CreateTask(new LeadClaim(team), team, "completion criteria", CompletionMode.Lead, null));
         var id = created.Task.Id;
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(
@@ -383,9 +382,6 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
         var services = new ServiceCollection();
         services.AddDbContext<DocketDbContext>(o =>
             o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
-        // §9.9: the store and the budget accounting it commits through are one
-        // registration, and CheckLivenessAsync resolves both — the budget sweep rides the
-        // same timer as the liveness scan.
         services.AddDocketStore();
         services.AddScoped<TokenService>();
         services.AddSingleton(clock);

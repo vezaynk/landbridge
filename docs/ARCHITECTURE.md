@@ -157,7 +157,7 @@ per-task liveness is suspended and process exit is not a failure (§11).
 
 Two counters, not one (`TaskRecord.InfrastructureRequeues` vs
 `VerificationFailures`): a machine rebooting three times must not exhaust the
-budget a task has for failing its criteria. **Only the verification counter drives
+retries a task has for failing its criteria. **Only the verification counter drives
 `rejected`** (default limit 3). Both are capped, but they end differently: the
 infrastructure cap (`InfrastructureRequeueLimit`, default 5, configurable via
 `Docket:InfrastructureRequeueLimit`, non-positive for uncapped) abandons the task as
@@ -321,8 +321,8 @@ Lead takeovers, machine reboots, and evictions land in the event log.
 
 Views render as a plain server-rendered web dashboard (spec §12: "a plain web
 dashboard first"); MCP Apps are not built. Most of §12's data points now have a
-source: a Team's committed budget and its measured relay byte burn are both surfaced
-(§9.9/§9.10), and the derived-telemetry events — auth failures, subagent spawns, and
+source: a Team's measured relay byte burn is surfaced (§9.10), and the
+derived-telemetry events — auth failures, subagent spawns, and
 the typed input-request kind — have a **plane-side path end to end**: each is persisted
 as a task event row and renders structured in the event log, with the auth failures on
 live tasks also joined into the inbox (the log is history; the inbox is what needs a

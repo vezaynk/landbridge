@@ -361,7 +361,7 @@ public sealed class TranscriptDashboardEndToEndTests(PostgresFixture pg) : IAsyn
         await using var db = pg.NewContext();
         var store = new TaskStore(db, TimeProvider.System);
         var created = (StoreResult.Applied)await store.CreateAsync(new CreateTask(
-            new LeadClaim(team), team, "criteria", CompletionMode.Lead, Profile: null, TeamBudgetRemains: true));
+            new LeadClaim(team), team, "criteria", CompletionMode.Lead, Profile: null));
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(Snapshot, instance, ct);
         return (created.Task.Id, new WorkerCaller(team, created.Task.Id, instance));

@@ -194,8 +194,7 @@ Each `profile` carries `spawn` (argv), `stop`, `resume`, `events`, `telemetry`,
 
 `docketd` substitutes `{...}` tokens
 into each `spawn` arg at dispatch: `{task_id}`, `{machine_id}`, `{work_dir}`
-(`= {work_root}/{task_id}`, the cwd), `{budget}` (the harness-local hard cap in
-USD, if any), and `{mcp_config}` (the path to the worker MCP config `docketd`
+(`= {work_root}/{task_id}`, the cwd), and `{mcp_config}` (the path to the worker MCP config `docketd`
 writes to `{work_dir}/mcp.json`, mode `0600`). It also stamps `DOCKET_MACHINE_ID`,
 `DOCKET_TASK_ID`, and `DOCKET_WORKER_TOKEN` on the child.
 

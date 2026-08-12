@@ -287,7 +287,7 @@ public sealed class TranscriptRelayServiceTests(PostgresFixture pg) : IAsyncLife
         var store = new TaskStore(db, rig.Clock);
 
         var created = (StoreResult.Applied)await store.CreateAsync(new CreateTask(
-            lead, team, "completion criteria", CompletionMode.Lead, Profile: null, TeamBudgetRemains: true));
+            lead, team, "completion criteria", CompletionMode.Lead, Profile: null));
         var id = created.Task.Id;
         if (state == TaskState.Submitted)
             return id;

@@ -32,7 +32,6 @@ public sealed record CreateTask(
     string CompletionCriteria,
     CompletionMode Mode,
     string? Profile,
-    bool TeamBudgetRemains,
     string Description = "",
     string? Workspace = null,
     Continuation? Continues = null) : TaskCommand(Actor);
@@ -268,7 +267,9 @@ public sealed record WakeParked(string? Answer = null) : TaskCommand(ControlPlan
 public sealed record StopPreserveAndPark(Actor Actor, ParkRecord Park) : TaskCommand(Actor);
 
 /// <summary>
-/// any → canceled. Disposition required (§9 check 12); the control plane may
-/// cancel only on Team budget exhaustion (§6).
+/// any → canceled. Disposition required (§9 check 12), and the actor is a Lead or a
+/// human: cancelling is a judgement about the work, which the plane does not make. The
+/// one thing it gives up on is <em>placing</em> the work, and that path is the §9 check 7
+/// requeue cap inside <c>LivenessLost</c> — not a command anyone sends (§6).
 /// </summary>
 public sealed record Cancel(Actor Actor, CancelDisposition? Disposition) : TaskCommand(Actor);

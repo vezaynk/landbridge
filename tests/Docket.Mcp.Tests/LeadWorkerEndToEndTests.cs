@@ -254,7 +254,7 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         {
             var store = new TaskStore(db, TimeProvider.System);
             var created = (StoreResult.Applied)await store.CreateAsync(
-                new CreateTask(new LeadClaim(team), team, "seed", CompletionMode.Lead, null, TeamBudgetRemains: true), ct);
+                new CreateTask(new LeadClaim(team), team, "seed", CompletionMode.Lead, null), ct);
             var instance = WorkerInstanceId.New();
             await store.DispatchNextAsync(
                 new MachineSnapshot("m1", true, false, new HashSet<string> { "default" }), instance, ct);

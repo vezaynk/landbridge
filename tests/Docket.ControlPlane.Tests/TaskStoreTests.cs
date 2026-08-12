@@ -22,7 +22,7 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
     private async Task<TaskId> CreateSubmitted(DocketDbContext db, string? profile = null, CompletionMode mode = CompletionMode.Lead)
     {
         var result = await NewStore(db).CreateAsync(
-            new CreateTask(Lead, Team, "pnpm test", mode, profile, TeamBudgetRemains: true));
+            new CreateTask(Lead, Team, "pnpm test", mode, profile));
         return ((StoreResult.Applied)result).Task.Id;
     }
 
@@ -787,7 +787,7 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
     private async Task<TaskId> SeedBlocked(TaskStore store)
     {
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(Lead, Team, "needs input", CompletionMode.Lead, null, TeamBudgetRemains: true));
+            new CreateTask(Lead, Team, "needs input", CompletionMode.Lead, null));
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(Machine(), instance);
         await store.ApplyAsync(created.Task.Id,

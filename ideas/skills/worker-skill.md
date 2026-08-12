@@ -189,7 +189,7 @@ Your task then goes to verification. You do not mark it complete, and reporting 
 
 Spawning local subagents is fine and often correct for parallel work inside your task. They share your machine and your task's workspace, so they contend with each other the same way concurrent tasks do — give them separate working locations if they write.
 
-Fan-out is where token spend goes non-linear. Your Team has a shared budget you can't see; be proportionate.
+Fan-out is where token spend goes non-linear, and nothing caps it. Be proportionate.
 
 ## When the work is code
 

@@ -5,8 +5,7 @@ namespace Docket.ControlPlane;
 
 /// <summary>
 /// Per-Team relay byte accounting, spec §9 check 10 / §9.10 — <b>measurement without
-/// enforcement</b>, and the one number in §9's budget story that is actually measured rather
-/// than authorized.
+/// enforcement</b>.
 ///
 /// <para><b>Nothing is enforced on it, deliberately.</b> No ceiling is checked against these
 /// bytes, because §8.3 forbids severing an established splice mid-flight — a database session

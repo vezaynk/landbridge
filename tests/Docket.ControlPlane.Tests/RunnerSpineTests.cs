@@ -463,7 +463,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         await using var db = pg.NewContext();
         var store = new TaskStore(db, clock);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(new LeadClaim(team), team, "completion criteria", CompletionMode.Lead, profile, TeamBudgetRemains: true));
+            new CreateTask(new LeadClaim(team), team, "completion criteria", CompletionMode.Lead, profile));
         return created.Task.Id;
     }
 
@@ -481,7 +481,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         await using var db = pg.NewContext();
         var store = new TaskStore(db, clock);
         await store.CreateAsync(
-            new CreateTask(new LeadClaim(team), team, "completion criteria", CompletionMode.Lead, null, TeamBudgetRemains: true));
+            new CreateTask(new LeadClaim(team), team, "completion criteria", CompletionMode.Lead, null));
         var instance = WorkerInstanceId.New();
         var applied = (StoreResult.Applied)await store.DispatchNextAsync(
             new MachineSnapshot(machineId, Ready: true, UnderBackPressure: false, Set("default")), instance);
@@ -496,7 +496,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         await using var db = pg.NewContext();
         var store = new TaskStore(db, clock);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(new LeadClaim(team), team, "completion criteria", CompletionMode.Lead, null, TeamBudgetRemains: true));
+            new CreateTask(new LeadClaim(team), team, "completion criteria", CompletionMode.Lead, null));
         var id = created.Task.Id;
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(

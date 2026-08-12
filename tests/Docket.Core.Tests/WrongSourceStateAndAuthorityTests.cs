@@ -32,7 +32,7 @@ public class WrongSourceStateAndAuthorityTests
         // is no meaning to replaying it over a task that already exists, and treating
         // it as a no-op Ok would report success for a command that did nothing.
         var create = new CreateTask(
-            Given.Lead, Given.Team, "ship it", CompletionMode.Lead, Profile: null, TeamBudgetRemains: true);
+            Given.Lead, Given.Team, "ship it", CompletionMode.Lead, Profile: null);
 
         Expect.Rejected(TaskStateMachine.Apply(Given.Task(), create), Rule.InvalidSourceState);
     }
@@ -202,14 +202,13 @@ public class WrongSourceStateAndAuthorityTests
     [Fact]
     public void Cancellation_refuses_a_worker_cancelling_its_own_task()
     {
-        // The authority table names the control plane, a human, and the Team's Lead.
-        // A worker is none of them: a task that could cancel itself would let an
-        // agent retire work it was told to do, and the incumbent is exactly the
-        // caller most likely to try.
+        // The authority table names a human and the Team's Lead. A worker is neither:
+        // a task that could cancel itself would let an agent retire work it was told
+        // to do, and the incumbent is exactly the caller most likely to try.
         var task = Given.Task(TaskState.Working);
         var incumbent = Given.IncumbentOf(task);
 
-        foreach (var disposition in new[] { CancelDisposition.Preserve, CancelDisposition.Discard, CancelDisposition.Budget })
+        foreach (var disposition in new[] { CancelDisposition.Preserve, CancelDisposition.Discard })
         {
             Expect.Rejected(
                 TaskStateMachine.Apply(task, new Cancel(incumbent, disposition)),
@@ -218,20 +217,17 @@ public class WrongSourceStateAndAuthorityTests
     }
 
     [Fact]
-    public void Cancellation_still_admits_the_three_authorized_callers()
+    public void Cancellation_still_admits_the_two_authorized_callers()
     {
         // The negative cases above are only meaningful next to the positives: the
-        // gate is narrow, not shut. Budget is the control plane's alone, and the
-        // other two dispositions are not the control plane's to invoke (§6).
+        // gate is narrow, not shut. Two callers, not three — the control plane's arm
+        // existed for budget exhaustion alone and went with it (§6).
         var task = Given.Task(TaskState.Working);
 
         Expect.Transitioned(
             TaskStateMachine.Apply(task, new Cancel(Given.Lead, CancelDisposition.Preserve)), TaskState.Canceled);
         Expect.Transitioned(
             TaskStateMachine.Apply(task, new Cancel(Given.Human, CancelDisposition.Discard)), TaskState.Canceled);
-        Expect.Transitioned(
-            TaskStateMachine.Apply(task, new Cancel(ControlPlaneActor.Instance, CancelDisposition.Budget)),
-            TaskState.Canceled);
     }
 
     [Fact]

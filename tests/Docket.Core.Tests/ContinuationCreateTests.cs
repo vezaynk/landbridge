@@ -22,7 +22,7 @@ public class ContinuationCreateTests
     private static TransitionResult Create(string? profile, Continuation continuation) =>
         TaskStateMachine.Create(
             new CreateTask(Given.Lead, Given.Team, "criteria", CompletionMode.Lead,
-                Profile: profile, TeamBudgetRemains: true, Continues: continuation),
+                Profile: profile, Continues: continuation),
             Given.Id, "team-x/task-y");
 
     [Fact]
