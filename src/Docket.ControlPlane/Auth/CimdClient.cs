@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
@@ -73,9 +74,10 @@ public interface ICimdClient
 ///   non-private, non-loopback, non-link-local address — and connects to that
 ///   <em>exact vetted IP</em>, which closes the DNS-rebinding gap between a
 ///   name-resolution check and the actual connect.</item>
-/// <item><b>Bounded (§6.6):</b> a short total timeout and a 5&#160;KB response cap
-///   (the draft's recommended maximum), so a slow or huge body cannot tie the
-///   endpoint up.</item>
+/// <item><b>Bounded (§6.6):</b> a short total timeout, plus a 5&#160;KB response
+///   cap (the draft's recommended maximum) enforced by the body read itself,
+///   which stops one byte past the cap and refuses the document — so a slow or
+///   huge body cannot tie the endpoint up.</item>
 /// </list>
 ///
 /// <para>Residual, documented as follow-ups: HTTP cache-header-respecting caching
@@ -115,7 +117,6 @@ public sealed class CimdClient : ICimdClient
         _http = new HttpClient(handler)
         {
             Timeout = Timeout,
-            MaxResponseContentBufferSize = MaxBytes,
         };
     }
 
@@ -131,9 +132,16 @@ public sealed class CimdClient : ICimdClient
             if (!response.IsSuccessStatusCode)
                 return new CimdResult.Failed($"client_id metadata fetch returned {(int)response.StatusCode}");
 
-            // ReadAsStringAsync honours MaxResponseContentBufferSize and throws if
-            // the body exceeds the 5 KB cap (draft §6.6).
-            body = await response.Content.ReadAsStringAsync(ct);
+            // §6.6: the cap is enforced here, on the read, because nothing else
+            // would. HttpClient.MaxResponseContentBufferSize bounds only buffering
+            // HttpClient does itself, which ResponseHeadersRead skips — the body
+            // below is the unbuffered content stream, so the cap has to be counted
+            // out byte by byte. Over-cap is refused rather than truncated: a
+            // truncated prefix can still parse as a complete document.
+            await using var stream = await response.Content.ReadAsStreamAsync(ct);
+            if (await ReadCappedAsync(stream, ct) is not { } capped)
+                return new CimdResult.Failed($"client_id metadata exceeds the {MaxBytes / 1024} KB cap");
+            body = capped;
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or IOException)
         {
@@ -164,6 +172,27 @@ public sealed class CimdClient : ICimdClient
             return new CimdResult.Failed("client_id in metadata does not match the client_id URL");
 
         return new CimdResult.Ok(doc);
+    }
+
+    /// <summary>
+    /// Reads at most <see cref="MaxBytes"/> bytes of body, or <c>null</c> if the
+    /// endpoint had more to give than that (draft §6.6). Reading stops one byte past
+    /// the cap, so an oversized — or endless — body is abandoned there rather than
+    /// drained to learn how big it was.
+    /// </summary>
+    private static async Task<string?> ReadCappedAsync(Stream stream, CancellationToken ct)
+    {
+        var buffer = new byte[MaxBytes + 1];
+        var filled = 0;
+        while (filled < buffer.Length)
+        {
+            var read = await stream.ReadAsync(buffer.AsMemory(filled), ct);
+            if (read == 0)
+                return Encoding.UTF8.GetString(buffer, 0, filled);
+            filled += read;
+        }
+
+        return null;
     }
 
     /// <summary>
