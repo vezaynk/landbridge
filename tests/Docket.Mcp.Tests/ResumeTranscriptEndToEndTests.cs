@@ -134,8 +134,9 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
                 var row = await db.Tasks.AsNoTracking().SingleAsync(t => t.Id == taskId.Value, ct);
                 Assert.Equal(TaskState.Parked, row.State);
                 Assert.Equal("m1", row.ParkMachine);
-                // The crown's spine: the park record carries the harness session ref.
-                Assert.Equal(HarnessProgram.EmitStreamSessionId, row.ParkSessionRef);
+                // The crown's spine: the harness session ref survives the park on the row
+                // dispatch reads it from.
+                Assert.Equal(HarnessProgram.EmitStreamSessionId, row.HarnessSessionRef);
             }
 
             // ── The awaited answer lands → wake to submitted ────────────────────

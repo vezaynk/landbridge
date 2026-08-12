@@ -17,7 +17,7 @@ internal static class Given
         new("machine-a", ready, backPressure,
             profiles.Length == 0 ? new HashSet<string> { "default" } : new HashSet<string>(profiles));
 
-    public static ParkRecord Park => new("machine-a", "/work/task-3", "sess-abc", Attempt: 1);
+    public static ParkRecord Park => new("machine-a");
 
     public static TaskRecord Task(
         TaskState state = TaskState.Submitted,

@@ -107,7 +107,9 @@ public sealed class TaskStore(
     /// transition the task's current state needs — so a Lead answering never has
     /// to know whether the wait-TTL sweeper (§11) parked the task first. One
     /// call, correct outcome either way, and both outcomes requeue for redispatch
-    /// rather than resuming in place (§11: "waiting is always the park shape"):
+    /// rather than resuming in place (§11: the park shape, which every kind a worker
+    /// chooses to ask takes — a permission request is the exception, and this method
+    /// refuses it rather than handling it, below):
     ///
     ///   blocked_on_input → submitted (<see cref="AnswerInput"/>): the task is
     ///     still waiting; the answer requeues it with a park record built from the
@@ -157,16 +159,12 @@ public sealed class TaskStore(
             return await RunTransition(row, new WakeParked(answer), ct);
         }
 
-        // §11: build the redispatch park record from what the plane holds — the
-        // machine still holding the lease (preferred for transcript resume) and the
-        // session ref stamped from this work session's SessionStartedEvent. Same
-        // shape the wait-TTL sweeper writes; the working directory originates
-        // runner-side and is null here. Null when the machine is gone, so redispatch
-        // cold-starts elsewhere from the workspace (§11). Ignored by the engine on
-        // any non-blocked state (the fall-through wrong-state rejection).
-        var park = leaseMachine is { } machine
-            ? new ParkRecord(machine, Directory: null, HarnessSessionRef: row.HarnessSessionRef, row.Attempt)
-            : null;
+        // §11: the redispatch park record is the machine still holding the lease, preferred
+        // for transcript resume. Same shape the wait-TTL sweeper writes. Null when that
+        // machine is gone, so redispatch cold-starts elsewhere from the workspace (§11).
+        // Ignored by the engine on any non-blocked state (the fall-through wrong-state
+        // rejection). The session ref redispatch resumes stays on the row, read live there.
+        var park = leaseMachine is { } machine ? new ParkRecord(machine) : null;
         // §11: the live request kind rides along so the engine can refuse this path on a
         // permission request, whose worker is still alive and waiting on a verdict rather
         // than gone and waiting to be redispatched.

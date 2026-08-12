@@ -45,11 +45,14 @@ public sealed class TaskRow
 
     public Guid? CurrentInstanceId { get; set; }
 
-    // Park record (§11); null unless the task has parked.
+    /// <summary>
+    /// The park record (§11), null unless the task has parked: the machine redispatch
+    /// prefers. One column, because the machine is the whole record — the directory,
+    /// session-ref and attempt columns that used to sit here were written from the live
+    /// <see cref="HarnessSessionRef"/> / <see cref="Attempt"/> columns (or, for the
+    /// directory, never written at all) and read back by nothing.
+    /// </summary>
     public string? ParkMachine { get; set; }
-    public string? ParkDirectory { get; set; }
-    public string? ParkSessionRef { get; set; }
-    public int? ParkAttempt { get; set; }
 
     /// <summary>
     /// When the task most recently entered <see cref="TaskState.BlockedOnInput"/>,
@@ -196,9 +199,9 @@ public sealed class TaskRow
     /// <see cref="ResultReference"/>/<see cref="TraceContext"/>: stored verbatim,
     /// never dereferenced, never entering <c>Docket.Core</c> — so it is set outside
     /// the state machine (a targeted column write) and survives state transitions
-    /// untouched. A park copies it into the park record so redispatch can resume the
-    /// transcript; distinct from <see cref="ParkSessionRef"/>, which is that park
-    /// record's own snapshot. Null until the first session-init is observed.
+    /// untouched. This is the <em>only</em> record of it: a park used to snapshot it into a
+    /// park-specific column too, which nothing read back, so redispatch resumes from this
+    /// column whether the task parked or not. Null until the first session-init is observed.
     /// </summary>
     public string? HarnessSessionRef { get; set; }
 
@@ -282,9 +285,7 @@ public sealed class TaskRow
         VerificationFailures = VerificationFailures,
         VerificationRetryLimit = VerificationRetryLimit,
         CurrentInstance = CurrentInstanceId is { } i ? new WorkerInstanceId(i) : null,
-        Park = ParkMachine is { } m
-            ? new ParkRecord(m, ParkDirectory, ParkSessionRef, ParkAttempt!.Value)
-            : null,
+        Park = ParkMachine is { } m ? new ParkRecord(m) : null,
         CompletionProvenance = CompletionProvenance,
     };
 
@@ -300,9 +301,6 @@ public sealed class TaskRow
         VerificationFailures = task.VerificationFailures;
         CurrentInstanceId = task.CurrentInstance?.Value;
         ParkMachine = task.Park?.Machine;
-        ParkDirectory = task.Park?.Directory;
-        ParkSessionRef = task.Park?.HarnessSessionRef;
-        ParkAttempt = task.Park?.Attempt;
         CompletionProvenance = task.CompletionProvenance;
     }
 }
@@ -394,8 +392,6 @@ public sealed class PreviewMappingRow
 
     /// <summary>Gated (default) requires a §12 operator session; public is the label-only capability (§8.4).</summary>
     public PreviewAuthPolicy AuthPolicy { get; set; }
-
-    public DateTimeOffset CreatedAt { get; set; }
 
     /// <summary>When the mapping stops admitting new connections (§8.4). Mandatory + short for public.</summary>
     public DateTimeOffset ExpiresAt { get; set; }

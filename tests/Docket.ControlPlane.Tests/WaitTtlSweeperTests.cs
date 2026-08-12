@@ -65,15 +65,16 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
         await using var v = pg.NewContext();
         var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
         Assert.Equal(TaskState.Parked, row.State);
-        // Park record (§11): the machine and attempt the plane knows…
+        // Park record (§11): the machine, which is the whole record.
         Assert.Equal("m1", row.ParkMachine);
-        Assert.Equal(1, row.ParkAttempt);
-        // …and null for the runner-side facts that have no source here (§11 resume
-        // seam): the plane never holds a working directory at all, and this task
-        // reported no session ref (no session-started event — the next test covers the
-        // case where it did), so this park cold-starts from the workspace.
-        Assert.Null(row.ParkDirectory);
-        Assert.Null(row.ParkSessionRef);
+        // The attempt a redispatch will report stays on the row and is read live from
+        // there, never snapshotted into the park.
+        Assert.Equal(1, row.Attempt);
+        // This task reported no session ref (no session-started event — the next test
+        // covers the case where it did), so this park cold-starts from the workspace.
+        // §11's directory inheritance is a task id on the dispatch, not a path the plane
+        // ever holds, which is why no directory appears anywhere here.
+        Assert.Null(row.HarnessSessionRef);
         Assert.Null(row.CurrentInstanceId);
         Assert.Null(row.BlockedAt); // cleared on the way out of blocked_on_input
 
@@ -89,11 +90,12 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task Expired_wait_ttl_park_record_carries_the_harness_session_ref()
+    public async Task Expired_wait_ttl_park_leaves_the_harness_session_ref_intact_to_resume_from()
     {
-        // §11 resume: unlike the null case above, a task whose work session reported
-        // its ref (stamped on the row by the SessionStartedEvent sink) parks with
-        // that ref in the park record — so redispatch resumes the transcript.
+        // §11 resume: unlike the null case above, a task whose work session reported its ref
+        // (stamped on the row by the SessionStartedEvent sink) still carries it after parking
+        // — so redispatch resumes the transcript. The park does not copy it anywhere; the row
+        // is the one record of it, and dispatch reads it from there.
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
         var team = TeamId.New();
@@ -111,8 +113,8 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
         var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
         Assert.Equal(TaskState.Parked, row.State);
         Assert.Equal("m1", row.ParkMachine);
-        // The park record's session ref is the ref stamped from the work session.
-        Assert.Equal("sess-park", row.ParkSessionRef);
+        // Survives the park on the row it was stamped on — the ref dispatch resumes from.
+        Assert.Equal("sess-park", row.HarnessSessionRef);
     }
 
     [SkippableFact]
@@ -155,11 +157,11 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
 
         await using var db = pg.NewContext();
         var store = new TaskStore(db, clock);
-        var answerPark = new ParkRecord("m1", Directory: null, HarnessSessionRef: null, Attempt: 1);
+        var answerPark = new ParkRecord("m1");
         Assert.IsType<StoreResult.Applied>(
             await store.ApplyAsync(id, new AnswerInput(new LeadClaim(team), answerPark)));
 
-        var park = new ParkRecord("m1", Directory: null, HarnessSessionRef: null, Attempt: 1);
+        var park = new ParkRecord("m1");
         var rejected = Assert.IsType<StoreResult.Rejected>(
             await store.ApplyAsync(id, new WaitTtlExpired(park)));
         Assert.Equal(Rule.InvalidSourceState, rejected.Rule);
@@ -178,7 +180,7 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
         var (id, _) = await SeedBlockedTaskAsync(clock, team, "m1");
         var registry = LiveMachine(clock, "m1", id);
 
-        var answerPark = new ParkRecord("m1", Directory: null, HarnessSessionRef: null, Attempt: 1);
+        var answerPark = new ParkRecord("m1");
         await using (var db = pg.NewContext())
             await new TaskStore(db, clock).ApplyAsync(id, new AnswerInput(new LeadClaim(team), answerPark));
 

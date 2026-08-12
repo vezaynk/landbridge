@@ -44,7 +44,8 @@ public sealed class PreviewMappingService(DocketDbContext db, TimeProvider clock
             TaskId = task.Value,
             ServiceName = serviceName,
             AuthPolicy = authPolicy,
-            CreatedAt = now,
+            // No created-at: a mapping's whole lifetime is ExpiresAt, which is what resolve
+            // checks, so a creation stamp was written and never read.
             ExpiresAt = now + ttl,
         };
         db.PreviewMappings.Add(row);

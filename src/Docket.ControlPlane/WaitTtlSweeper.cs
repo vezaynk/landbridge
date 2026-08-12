@@ -170,14 +170,12 @@ public sealed class WaitTtlSweeper : IHostedService
 
             if (b.BlockedAt is { } since && now - since >= _waitTtl)
             {
-                // §6/§11: blocked_on_input → parked, wait TTL expired. The plane
-                // knows the machine (live), the attempt (row), and the harness
-                // session ref stamped from the work session's SessionStartedEvent —
-                // so the park carries it and redispatch resumes the transcript. The
-                // working directory still originates runner-side and is null here; a
-                // resume with a session ref but no directory continues the session
-                // from the workspace (§11).
-                var park = new ParkRecord(machine, Directory: null, HarnessSessionRef: b.HarnessSessionRef, b.Attempt);
+                // §6/§11: blocked_on_input → parked, wait TTL expired. The park record is
+                // the machine, which is the one fact of it the plane holds and redispatch
+                // needs — the session ref it resumes and the attempt it reports both stay on
+                // the task row, where dispatch already reads them live rather than from a
+                // snapshot taken here.
+                var park = new ParkRecord(machine);
                 if (await TryApplyAsync(store, task, new WaitTtlExpired(park), ct))
                     _logger.LogInformation(
                         "wait-TTL sweep parked task {Task} on machine {Machine}", task, machine);
