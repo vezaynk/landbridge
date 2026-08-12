@@ -316,7 +316,13 @@ public sealed class TaskStore(
         MachineSnapshot machine, WorkerInstanceId newInstance, CancellationToken ct = default,
         IReadOnlyCollection<string>? connectedMachines = null)
     {
-        if (!machine.Ready || machine.UnderBackPressure)
+        // One fact, read once: the registry already folded back-pressure into Ready when it
+        // took the heartbeat (RunnerConnectionRegistry.Fold), so re-testing UnderBackPressure
+        // here could never refuse anything this line has not already refused. The engine still
+        // re-checks both as §9 check 5's enforcement point — a pure function does not trust its
+        // caller's derivation — which is what this cheap pre-check exists to stay out of the
+        // way of: it only avoids opening a transaction for a machine that cannot be dispatched.
+        if (!machine.Ready)
             return new StoreResult.NotFound($"machine {machine.MachineId} is not accepting dispatch");
 
         await using var tx = await db.Database.BeginTransactionAsync(ct);
