@@ -318,6 +318,9 @@ public sealed class WorkerInstanceRow
     public Guid TaskId { get; set; }
     public bool Revoked { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
+
+    /// <summary>When this instance stopped being the incumbent. Written but read by nothing —
+    /// <see cref="Revoked"/> is what §9 check 14 predicates on. Kept for §13 forensics.</summary>
     public DateTimeOffset? RevokedAt { get; set; }
 
     /// <summary>
@@ -339,7 +342,12 @@ public sealed class WorkerInstanceRow
 /// <summary>
 /// A registered live endpoint (§8.2). Rows for a task are cleared when it
 /// leaves <see cref="TaskState.Working"/> (the ClearServicesAndForwards
-/// effect).
+/// effect) — with one exception: a task blocked on a <b>permission</b> request
+/// keeps its registrations, because that worker is still alive inside its tool
+/// call and returns to <see cref="TaskState.Working"/> as the same incumbent
+/// (§11 permission bridge). It keeps them through a subsequent park or requeue
+/// too, since the clearing effect is only ever emitted from
+/// <see cref="TaskState.Working"/>.
 /// </summary>
 public sealed class RegisteredServiceRow
 {

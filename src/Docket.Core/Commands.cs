@@ -121,9 +121,12 @@ public sealed record VerdictFail(Actor Actor, bool HumanConfirmed = false) : Tas
 ///
 /// <para><see cref="Question"/> is <em>what the worker is actually asking</em> (§10/§11):
 /// the decision it cannot make, the options it sees, what it will do with each answer.
-/// The <see cref="Kind"/> only routes the request — who can answer it — so without the
-/// question the channel is a doorbell, and a Lead or human sees that a task needs
-/// attention but not what for. It rides UP through the plane exactly as the Lead's
+/// The <see cref="Kind"/> only <em>labels</em> the request — the plane branches on it for
+/// <see cref="InputRequestKind.Permission"/> alone, and never uses it to decide who may
+/// answer (any Lead or human may answer any kind) — so without the question the channel is a
+/// doorbell, and a Lead or human sees that a task needs attention but not what for. §11's
+/// "Answered by" column is guidance to the answerer, not an authorization the engine
+/// enforces. It rides UP through the plane exactly as the Lead's
 /// description rides DOWN: opaque content the engine never interprets (§2 principle 1),
 /// the store persists verbatim, and it is size-capped
 /// (<see cref="MaxQuestionBytes"/>) so a worker keeps the ask a question rather than
@@ -152,10 +155,14 @@ public sealed record RequestInput(
 }
 
 /// <summary>
-/// blocked_on_input → submitted: the Lead or a human answered. §11 guarantees a
-/// headless worker's process is gone the moment it blocked ("waiting is always
-/// the park shape"), so the answer cannot resume in place — it routes through the
-/// same park→redispatch path the wait-TTL sweeper uses. <see cref="Park"/> is the
+/// blocked_on_input → submitted: the Lead or a human answered. Waiting is the park shape
+/// for every kind a worker <em>chooses</em> to ask (§11) — such a worker has ended its turn
+/// and its process is gone — so the answer cannot resume in place and routes through the
+/// same park→redispatch path the wait-TTL sweeper uses. The one exception is
+/// <see cref="InputRequestKind.Permission"/>, which the harness asks and whose process
+/// stays up; that request is answered by <see cref="AnswerPermission"/> instead, and
+/// <see cref="PendingKind"/> below is what keeps the two paths from crossing.
+/// <see cref="Park"/> is the
 /// record written for redispatch affinity (§11), built by the control plane from
 /// the held-lease machine and the row's stamped harness session ref; it is null
 /// only when the dispatched machine is gone, and redispatch then cold-starts

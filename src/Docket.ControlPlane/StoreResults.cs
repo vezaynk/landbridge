@@ -27,10 +27,12 @@ public abstract record StoreResult
     /// every non-dispatch transition.
     /// </param>
     /// <param name="WorkDirTask">
-    /// §11: the task whose machine-local work dir holds the session
-    /// <paramref name="HarnessSessionRef"/> names, which the caller passes on as
-    /// <c>DispatchCommand.WorkDirTask</c> — a continuation runs under a new task id, so
-    /// without it the runner would look for the session in a directory that never held one.
+    /// §7/§11: the task whose machine-local work dir this dispatch runs in, which the caller
+    /// passes on as <c>DispatchCommand.WorkDirTask</c>. A continuation runs under a new task
+    /// id and inherits its predecessor's directory — a property of continuation itself rather
+    /// than of transcript resume (#122), so this is set even on a degrade cold-start where
+    /// <paramref name="HarnessSessionRef"/> is null. Resume then additionally needs it, since
+    /// otherwise the runner would look for the session in a directory that never held one.
     /// Null when that dir is the dispatched task's own, and on every non-dispatch transition.
     /// </param>
     public sealed record Applied(
