@@ -28,12 +28,21 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
+    <!-- The shared rig kit is source-linked below; a global using keeps every scenario
+         file from repeating the import for a type that is effectively part of this suite. -->
+    <Using Include="Docket.RigSupport" />
   </ItemGroup>
 
   <!-- Reuse the ControlPlane suite's ephemeral-Postgres fixture verbatim (single
        source of truth) rather than duplicating it, exactly like Docket.Mcp.Tests. -->
   <ItemGroup>
     <Compile Include="..\Docket.ControlPlane.Tests\PostgresFixture.cs" Link="PostgresFixture.cs" />
+    <!-- The plane-facing half a fleet rig needs regardless of how it stands its machines
+         up: loopback reservation, the bounded poll, the Lead MCP surface, and the
+         committed-facts dump. Shared with Docket.Chaos.Tests as source (the
+         HarnessSupport idiom) because the two rigs cannot share an assembly — Chaos
+         deliberately keeps Docket.Runner off its compile closure. -->
+    <Compile Include="..\RigSupport\PlaneProbe.cs" Link="PlaneProbe.cs" />
   </ItemGroup>
 
   <ItemGroup>
