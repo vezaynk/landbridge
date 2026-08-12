@@ -32,6 +32,7 @@ public static class RunnerWire
     public const string SessionStarted = "session-started";
     public const string Alive = "alive";
     public const string ToolCall = "tool-call";
+    public const string UsageReported = "usage-reported";
     public const string SubagentSpawned = "subagent-spawned";
     public const string Exited = "exited";
     public const string AuthFailed = "auth-failed";
@@ -56,7 +57,7 @@ public static class RunnerWire
     public static IReadOnlySet<string> Events { get; } =
         new HashSet<string>(StringComparer.Ordinal)
         {
-            Started, SessionStarted, Alive, ToolCall, SubagentSpawned, Exited, AuthFailed, ForwardOpened, ForwardClosed, Rebooted,
+            Started, SessionStarted, Alive, ToolCall, UsageReported, SubagentSpawned, Exited, AuthFailed, ForwardOpened, ForwardClosed, Rebooted,
             TranscriptChunk, ProcessStarted, ProcessStopped, ProcessWritten,
         };
 
@@ -110,6 +111,7 @@ public static class RunnerWire
             SessionStartedEvent e => (ToObject(e, RunnerWireContext.Default.SessionStartedEvent), SessionStarted),
             AliveEvent e => (ToObject(e, RunnerWireContext.Default.AliveEvent), Alive),
             ToolCallEvent e => (ToObject(e, RunnerWireContext.Default.ToolCallEvent), ToolCall),
+            UsageReportedEvent e => (ToObject(e, RunnerWireContext.Default.UsageReportedEvent), UsageReported),
             SubagentSpawnedEvent e => (ToObject(e, RunnerWireContext.Default.SubagentSpawnedEvent), SubagentSpawned),
             ExitedEvent e => (ToObject(e, RunnerWireContext.Default.ExitedEvent), Exited),
             AuthFailedEvent e => (ToObject(e, RunnerWireContext.Default.AuthFailedEvent), AuthFailed),
@@ -195,6 +197,7 @@ public static class RunnerWire
                 SessionStarted => doc.RootElement.Deserialize(RunnerWireContext.Default.SessionStartedEvent),
                 Alive => doc.RootElement.Deserialize(RunnerWireContext.Default.AliveEvent),
                 ToolCall => doc.RootElement.Deserialize(RunnerWireContext.Default.ToolCallEvent),
+                UsageReported => doc.RootElement.Deserialize(RunnerWireContext.Default.UsageReportedEvent),
                 SubagentSpawned => doc.RootElement.Deserialize(RunnerWireContext.Default.SubagentSpawnedEvent),
                 Exited => doc.RootElement.Deserialize(RunnerWireContext.Default.ExitedEvent),
                 AuthFailed => doc.RootElement.Deserialize(RunnerWireContext.Default.AuthFailedEvent),

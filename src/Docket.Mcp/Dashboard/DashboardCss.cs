@@ -86,6 +86,21 @@ internal static class DashboardCss
     .machine-tasks li { padding: 3px 0; border-top: 1px dashed var(--line); }
     .subtree { color: var(--muted); font-size: 12px; margin-top: 6px; }
     .parks-hot { color: var(--bad); font-weight: 700; }
+    /* Measured-usage section (§10, §12): the harness's own numbers, NOT the plane's.
+       The visual separation is load-bearing, not decorative (§2 principle 2) — a reader has to
+       be able to tell a worker's claim about itself from something the plane observed, and the
+       banner alone would not survive a skim. A dashed left rule plus a tinted ground marks the
+       whole block as a different KIND of fact, and the tag in the heading names it outright. */
+    section.measured {
+      border-left: 3px dashed var(--idle); padding-left: 14px;
+      background: linear-gradient(90deg, var(--idle-bg) 0%, transparent 40%);
+    }
+    section.measured > h2 { display: flex; align-items: baseline; gap: 8px; }
+    .measured-tag {
+      font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.06em;
+      color: var(--idle); background: var(--idle-bg); padding: 2px 7px; border-radius: 10px;
+    }
+    section.measured tfoot td { border-top: 2px solid var(--line); font-weight: 600; }
     /* Permission allow/deny form (§11 permission bridge, human-only) */
     .permission-decide input[type=text] {
       width: 200px; padding: 6px 8px; border: 1px solid var(--line);

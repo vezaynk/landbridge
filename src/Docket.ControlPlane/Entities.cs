@@ -1,3 +1,4 @@
+using Docket.Contracts;
 using Docket.Core;
 
 namespace Docket.ControlPlane;
@@ -498,6 +499,83 @@ public sealed class TaskEventRow
     /// </summary>
     public PermissionVerdict? PermissionVerdict { get; set; }
     public PermissionAnswerer? PermissionAnswerer { get; set; }
+}
+
+/// <summary>
+/// What a task's harness said it consumed, per model (§10 telemetry ingest, §12 measured
+/// view) — <b>measured and reported, enforced on by nothing</b>.
+///
+/// <para><b>The harness's claim, kept as such.</b> Every column here was computed by the
+/// harness and relayed through <c>docketd</c> verbatim; the plane sums rows to aggregate and
+/// does no other arithmetic. That is why §12 renders this in a section visually separated from
+/// the wire-derived facts beside it (§2 principle 2): a reader must be able to tell what the
+/// plane observed from what a worker told it, and the same pixel treatment would erase the
+/// distinction that makes one of them trustworthy.</para>
+///
+/// <para><b>Keyed per (task, model), and the model may be null.</b> One dispatch legitimately
+/// spans several models — a Claude worker whose subagents ran on a cheaper one reports each
+/// separately — so the model is part of the key rather than a column on a per-task row.
+/// <see cref="Model"/> is null when the harness named none, which is a real state and not a
+/// placeholder — and nothing but the harness may fill it (see
+/// <see cref="UsageReportedEvent"/>).</para>
+///
+/// <para><b>Counters only rise, and that is what makes a dropped report harmless.</b> Reports
+/// are cumulative-to-date, so an upsert keeps the high-water mark and §10's best-effort ring
+/// may drop any number of them without the total going backwards. The trade is the tail: a
+/// worker killed between its last report and its exit leaves its final tokens uncounted, so
+/// this figure trails reality and <see cref="ReportedAt"/> is how a reader sees by how much —
+/// the same honesty marker, for the same reason, as §9.10's relay bytes.</para>
+///
+/// <para><b><see cref="CostUsd"/> is null unless the harness stated a cost.</b> Claude does;
+/// Codex states none anywhere. Nothing here derives dollars from tokens — a derived figure is
+/// a different kind of claim from a reported one, and <see cref="ModelPricing"/> exists to
+/// keep that boundary visible rather than to quietly fill this column in.</para>
+///
+/// <para><see cref="ReasoningOutputTokens"/> is a portion OF <see cref="OutputTokens"/>, never
+/// an addition to it (Codex breaks it out, Claude's stream does not expose one). It is stored
+/// because it is free and a real cost lever, and it is excluded from every total on purpose.</para>
+/// </summary>
+public sealed class TaskUsageRow
+{
+    /// <summary>The task whose dispatch reported this. Half the composite key.</summary>
+    public Guid TaskId { get; set; }
+
+    /// <summary>The model the HARNESS named for these tokens, or null when it named none — the
+    /// other half of the key. Opaque: the plane never parses or validates it, so a harness
+    /// naming models in any scheme it likes needs no change here.</summary>
+    public string? Model { get; set; }
+
+    /// <summary>The Team, denormalized off the task so the §12 Team roll-up is one indexed
+    /// query rather than a join per row. Written once with the row and never updated — a task
+    /// does not change Teams.</summary>
+    public Guid TeamId { get; set; }
+
+    /// <summary>Uncached prompt tokens. Disjoint from the two cache columns — for a harness
+    /// that reports its cache hits inside its input count, docketd subtracted before this
+    /// arrived (see <see cref="UsageReportedEvent"/>).</summary>
+    public long InputTokens { get; set; }
+
+    public long OutputTokens { get; set; }
+
+    /// <summary>Prompt tokens served from cache — the cheap ones, and the reason a cache-heavy
+    /// worker's real spend is legible instead of averaged away.</summary>
+    public long CacheReadTokens { get; set; }
+
+    /// <summary>Prompt tokens written INTO the cache — the expensive ones, paid once so the
+    /// reads above can be cheap.</summary>
+    public long CacheWriteTokens { get; set; }
+
+    /// <summary>The reasoning portion of <see cref="OutputTokens"/>, where the harness breaks
+    /// one out. Null when unreported, which is every Claude row.</summary>
+    public long? ReasoningOutputTokens { get; set; }
+
+    /// <summary>Cost in USD as the HARNESS computed it, or null when it computes none. Never
+    /// derived here.</summary>
+    public decimal? CostUsd { get; set; }
+
+    /// <summary>When the last report landed. The staleness marker on a figure that trails a
+    /// live worker by up to one report.</summary>
+    public DateTimeOffset ReportedAt { get; set; }
 }
 
 /// <summary>

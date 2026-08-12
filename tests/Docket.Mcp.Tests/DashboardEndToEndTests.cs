@@ -766,6 +766,144 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         return app;
     }
 
+    // ── (g) Measured usage: real captured harness bytes, end to end ───────────
+
+    /// <summary>
+    /// The measured §12 section, carrying <b>the numbers a real <c>claude -p</c> actually
+    /// reported</b> — captured from a 2.1.226 run, including the two models one trivial dispatch
+    /// really used and the 35k of cache tokens a "Reply with exactly: ok" prompt really cost.
+    ///
+    /// <para>This drives the plane's half end to end with those values: through the real
+    /// <see cref="RunnerWire"/> encode/decode (so a shape that could not survive §10 fails
+    /// here), through <see cref="RunnerEventSink"/> and the store, and out to the HTML a human
+    /// reads. The other half — those bytes becoming these events — is pinned against the
+    /// verbatim captured stream in <c>Docket.Runner.Tests.UsageReportingTests</c>, which is where
+    /// the reader lives; this suite does not reference the runner and should not start.</para>
+    ///
+    /// <para>The section's own labelling is asserted, not just its numbers: a cost rendered
+    /// without its provenance, or a measured figure that looked like a plane-derived one, is the
+    /// specific failure §2 principle 2 exists to prevent.</para>
+    /// </summary>
+    [SkippableFact]
+    public async Task Measured_usage_from_a_real_claude_run_renders_as_reported()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var ct = cts.Token;
+        await using var app = BuildPlane(OperatorPassphraseHash);
+        await app.StartAsync(ct);
+
+        var team = TeamId.New();
+        var (task, _, _) = await SeedWorkingTaskWithCallerAsync(team, CompletionMode.Lead, ct);
+
+        // Exactly what the real run reported, per model. Two models on one dispatch is not
+        // contrived — it is what a single trivial prompt produced.
+        var reports = new[]
+        {
+            new UsageReportedEvent(
+                task, "claude-sonnet-5[1m]",
+                InputTokens: 2, OutputTokens: 4,
+                CacheReadTokens: 18282, CacheWriteTokens: 17178,
+                ReasoningOutputTokens: null, CostUsd: 0.1086186m, At: DateTimeOffset.UtcNow),
+            new UsageReportedEvent(
+                task, "claude-haiku-4-5-20251001",
+                InputTokens: 521, OutputTokens: 13,
+                CacheReadTokens: 0, CacheWriteTokens: 0,
+                ReasoningOutputTokens: null, CostUsd: 0.000586m, At: DateTimeOffset.UtcNow),
+        };
+
+        foreach (var report in reports)
+        {
+            // Through the real wire, both directions: docketd encodes, the plane decodes.
+            var decoded = Assert.IsType<UsageReportedEvent>(
+                RunnerWire.DecodeEvent(RunnerWire.EncodeEvent(report)));
+            Assert.Equal(report, decoded);
+            // The store call RunnerEventSink makes for this event, made directly — this test
+            // plane serves HTTP and does not wire the runner socket's sink, and the sink's arm
+            // for a usage report is exactly this one delegation.
+            await WithStoreAsync(store => store.RecordUsageAsync(decoded, ct));
+        }
+
+        var html = await GetAuthedAsync(app, $"/dashboard/teams/{team.Value}", ct);
+
+        // The section, and the label that makes it readable as a claim rather than a measurement.
+        Assert.Contains("Measured usage", html, StringComparison.Ordinal);
+        Assert.Contains("reported by the harness", html, StringComparison.Ordinal);
+        Assert.Contains("class=\"measured\"", html, StringComparison.Ordinal);
+
+        // Both models, named by the harness itself.
+        Assert.Contains("claude-sonnet-5[1m]", html, StringComparison.Ordinal);
+        Assert.Contains("claude-haiku-4-5-20251001", html, StringComparison.Ordinal);
+
+        // Tokens, thousands-separated as rendered. 18,282 cache reads is the figure that makes
+        // the cache columns worth having.
+        Assert.Contains("18,282", html, StringComparison.Ordinal);
+        Assert.Contains("17,178", html, StringComparison.Ordinal);
+        Assert.Contains("521", html, StringComparison.Ordinal);
+
+        // Cost, as the harness computed it.
+        Assert.Contains("0.1086", html, StringComparison.Ordinal);
+        Assert.Contains("USD", html, StringComparison.Ordinal);
+        // Every model reported a cost, so the total is whole and must NOT be hedged.
+        Assert.DoesNotContain("floor, not a total", html, StringComparison.Ordinal);
+        // And nothing was invented: no derived-estimate marker anywhere on this page.
+        Assert.DoesNotContain("USD est.", html, StringComparison.Ordinal);
+
+        // The JSON twin carries the same numbers with their provenance intact.
+        var json = await GetAuthedAsync(app, $"/dashboard/teams/{team.Value}?format=json", ct);
+        using var doc = JsonDocument.Parse(json);
+        var usage = doc.RootElement.GetProperty("usage");
+        Assert.True(usage.GetProperty("measured").GetBoolean());
+        Assert.Equal(523, usage.GetProperty("inputTokens").GetInt64());        // 2 + 521
+        Assert.Equal(18282, usage.GetProperty("cacheReadTokens").GetInt64());
+        Assert.False(usage.GetProperty("costIsPartial").GetBoolean());
+        Assert.Contains(
+            usage.GetProperty("byModel").EnumerateArray(),
+            m => m.GetProperty("model").GetString() == "claude-sonnet-5[1m]");
+    }
+
+    /// <summary>
+    /// A tokens-only, model-less harness — the Codex shape — must render two honest absences: no
+    /// cost (never <c>$0.00</c>, which would claim the work was free, and never a multiplied
+    /// estimate) and no model (never one the plane supplied, which would be the §2-principle-2
+    /// mislabelling this section's whole layout exists to prevent). The token counts are real
+    /// either way.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_tokens_only_model_less_harness_renders_both_absences_honestly()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var ct = cts.Token;
+        await using var app = BuildPlane(OperatorPassphraseHash);
+        await app.StartAsync(ct);
+
+        var team = TeamId.New();
+        var (task, _, _) = await SeedWorkingTaskWithCallerAsync(team, CompletionMode.Lead, ct);
+
+        await WithStoreAsync(store => store.RecordUsageAsync(
+            new UsageReportedEvent(
+                task, Model: null,
+                InputTokens: 100, OutputTokens: 30, CacheReadTokens: 900, CacheWriteTokens: 50,
+                ReasoningOutputTokens: 12, CostUsd: null, At: DateTimeOffset.UtcNow),
+            ct));
+
+        var html = await GetAuthedAsync(app, $"/dashboard/teams/{team.Value}", ct);
+
+        // Two absences, both stated as absences: the harness named no model, and it stated no
+        // cost. The tokens beside them are real, which is the point of rendering both honestly
+        // rather than dropping the row or inventing a value for either.
+        Assert.Contains("not reported", html, StringComparison.Ordinal);
+        Assert.Contains("900", html, StringComparison.Ordinal);   // the cache reads are real
+        Assert.DoesNotContain("0.00 <span class=\"nt\">USD", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("USD est.", html, StringComparison.Ordinal);
+        // The token total is real even though the cost is not, and the page says the cost
+        // figure is a floor rather than presenting a partial sum as complete.
+        Assert.Contains("floor, not a total", html, StringComparison.Ordinal);
+        // Reasoning is shown as a portion OF output, never added to it.
+        Assert.Contains("reported as reasoning", html, StringComparison.Ordinal);
+    }
+
     private static HttpClient Client(WebApplication app)
     {
         var baseUrl = app.Urls.First(u => u.StartsWith("http://", StringComparison.Ordinal));

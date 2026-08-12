@@ -231,6 +231,7 @@ internal static class DashboardRenderer
         sb.Append(ByteBurnMetric(team.ForwardUsage));
         sb.Append("</section>");
 
+        sb.Append(MeasuredUsageSection(team));
         sb.Append(RelayBytesSection(team));
 
         // Lead attached and who (§12) + last activity.
@@ -477,6 +478,114 @@ internal static class DashboardRenderer
         sb.Append("</div>");
         return Page("Sign in", "", sb.ToString(), autoRefresh: false);
     }
+
+    // ── Measured usage — the harness's own numbers (§10, §12) ─────────────────
+
+    /// <summary>
+    /// What this Team's harnesses said they consumed (§12 measured view). Rendered in its own
+    /// <c>measured</c> section, which is <b>visually distinct on purpose</b> (§2 principle 2):
+    /// every other number on this page is something the plane observed or derived, and these
+    /// are claims a worker made about itself. A reader who cannot tell the two apart cannot
+    /// tell which ones to trust, so the section states its own provenance in a banner rather
+    /// than relying on the reader to remember.
+    ///
+    /// <para>Tokens by model is the primary surface. Cost is shown where the harness computed
+    /// one and marked absent where it did not — never derived, and never rendered as $0.00,
+    /// because zero is a claim that the work was free and absence is a claim that nobody
+    /// measured it (<see cref="ModelPricing"/>).</para>
+    /// </summary>
+    private static string MeasuredUsageSection(TeamDetail team)
+    {
+        var usage = team.Usage;
+        var sb = new StringBuilder();
+        sb.Append("<section class=\"measured\"><h2>Measured usage <span class=\"measured-tag\">reported by the harness</span></h2>");
+        sb.Append("<p class=\"sub\">Every number in this section was computed by the <strong>worker's own " +
+                  "harness</strong> and relayed verbatim — not observed by the control plane, and enforced on " +
+                  "by nothing. A harness can under-report, mis-report, or report nothing at all. Treat it as " +
+                  "the worker's claim about itself (§2 principle 2, §10).</p>");
+
+        if (usage is not { Measured: true })
+        {
+            sb.Append(Empty("Nothing reported yet — no harness on this Team has sent a usage report. " +
+                            "An absence of measurement, not a measurement of zero."));
+            sb.Append("</section>");
+            return sb.ToString();
+        }
+
+        sb.Append("<table><thead><tr><th>Model</th>");
+        sb.Append("<th class=\"num\">Input</th><th class=\"num\">Output</th>");
+        sb.Append("<th class=\"num\">Cache read</th><th class=\"num\">Cache write</th>");
+        sb.Append("<th class=\"num\">Total</th><th class=\"num\">Cost</th>");
+        sb.Append("</tr></thead><tbody>");
+        foreach (var m in usage.ByModel)
+        {
+            sb.Append("<tr>");
+            sb.Append($"<td>{(m.Model is { Length: > 0 } name
+                ? $"<code>{E(name)}</code>"
+                : "<span class=\"nt\" title=\"this harness names no model; the tokens are still real\">not reported</span>")}</td>");
+            sb.Append($"<td class=\"num\">{E(Tokens(m.InputTokens))}</td>");
+            sb.Append($"<td class=\"num\">{E(Tokens(m.OutputTokens))}</td>");
+            sb.Append($"<td class=\"num\">{E(Tokens(m.CacheReadTokens))}</td>");
+            sb.Append($"<td class=\"num\">{E(Tokens(m.CacheWriteTokens))}</td>");
+            sb.Append($"<td class=\"num\">{E(Tokens(m.TotalTokens))}</td>");
+            sb.Append($"<td class=\"num\">{CostCell(m.CostUsd, m.CostProvenance)}</td>");
+            sb.Append("</tr>");
+        }
+        sb.Append("</tbody><tfoot><tr>");
+        sb.Append("<td>All models</td>");
+        sb.Append($"<td class=\"num\">{E(Tokens(usage.InputTokens))}</td>");
+        sb.Append($"<td class=\"num\">{E(Tokens(usage.OutputTokens))}</td>");
+        sb.Append($"<td class=\"num\">{E(Tokens(usage.CacheReadTokens))}</td>");
+        sb.Append($"<td class=\"num\">{E(Tokens(usage.CacheWriteTokens))}</td>");
+        sb.Append($"<td class=\"num\">{E(Tokens(usage.TotalTokens))}</td>");
+        sb.Append($"<td class=\"num\">{CostCell(usage.ReportedCostUsd, usage.ReportedCostUsd is null ? UsageCostProvenance.None : UsageCostProvenance.Reported)}</td>");
+        sb.Append("</tr></tfoot></table>");
+
+        // A reasoning breakdown is Codex-only, so it renders only where one arrived — and says
+        // that it is already inside the output column rather than sitting beside it.
+        var reasoning = usage.ByModel.Where(m => m.ReasoningOutputTokens is > 0).ToList();
+        if (reasoning.Count > 0)
+            sb.Append("<p class=\"nt\">Of the output above, " +
+                      E(Tokens(reasoning.Sum(m => m.ReasoningOutputTokens!.Value))) +
+                      " tokens were reported as reasoning — a portion <em>of</em> output, not an addition to it. " +
+                      "Only some harnesses break this out.</p>");
+
+        if (usage.CostIsPartial)
+            sb.Append("<p class=\"nt\">The cost total covers only the models that reported one, so it is a " +
+                      "<strong>floor, not a total</strong>. A harness that reports tokens but no dollars leaves " +
+                      "its cost blank here; nothing multiplies tokens into a price to fill the gap.</p>");
+
+        sb.Append($"<p class=\"nt\">Last report {E(usage.ReportedAt?.ToString("u", CultureInfo.InvariantCulture) ?? "—")}. " +
+                  "Reports are cumulative and best-effort: this trails a live worker by up to one report, and a " +
+                  "worker killed before its last one leaves that tail uncounted.</p>");
+        sb.Append("</section>");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// A cost cell, carrying its provenance to the pixel. The three cases must not look alike:
+    /// a reported figure is the harness's arithmetic, a derived one would be Docket's, and an
+    /// absent one is neither — and rendering the third as "$0.00" would turn "nobody measured
+    /// this" into "this was free".
+    /// </summary>
+    private static string CostCell(decimal? cost, UsageCostProvenance provenance) =>
+        (cost, provenance) switch
+        {
+            ({ } c, UsageCostProvenance.Reported) => $"{E(Usd(c))} <span class=\"nt\">USD</span>",
+            ({ } c, UsageCostProvenance.Derived) =>
+                $"<span title=\"derived by Docket from token counts, not reported by the harness\">~{E(Usd(c))} "
+                + "<span class=\"nt\">USD est.</span></span>",
+            _ => "<span class=\"nt\" title=\"this harness reports no cost\">not reported</span>",
+        };
+
+    /// <summary>A token count with thousands separators — these run to millions and an
+    /// unseparated run of digits is unreadable at a glance.</summary>
+    private static string Tokens(long count) => count.ToString("N0", CultureInfo.InvariantCulture);
+
+    /// <summary>A USD amount, invariant so the rendered number never depends on the server's
+    /// locale. Four decimals because a single cheap task legitimately costs fractions of a
+    /// cent, and rounding those to 0.00 would make the column look broken.</summary>
+    private static string Usd(decimal amount) => amount.ToString("0.####", CultureInfo.InvariantCulture);
 
     // ── Relay bytes (§9.10) ───────────────────────────────────────────────────
 

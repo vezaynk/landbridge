@@ -175,6 +175,45 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task Usage_reported_event_persists_and_is_not_a_liveness_signal()
+    {
+        // §10 telemetry ingest: the sink stores the harness's own account of what a dispatch
+        // consumed. It deliberately refreshes NEITHER clock — a usage report says what has
+        // already been spent, and a worker wedged mid-turn can still emit one, so treating an
+        // accounting line as progress would make a hung task undetectable (the exact failure the
+        // two clocks exist to catch).
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var taskId = await SeedWorkingTaskAsync(clock, team, "m1");
+
+        var registry = new RunnerConnectionRegistry(clock);
+        registry.Register("m1", Set("default"), (_, _) => Task.CompletedTask);
+        registry.TrackDispatch("m1", taskId); // both clocks stamped at t0
+        var t0 = clock.GetUtcNow();
+        clock.Advance(TimeSpan.FromSeconds(30));
+
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
+        await sink.HandleAsync(new UsageReportedEvent(
+            taskId, "claude-sonnet-5[1m]",
+            InputTokens: 2, OutputTokens: 4, CacheReadTokens: 18282, CacheWriteTokens: 17178,
+            ReasoningOutputTokens: null, CostUsd: 0.1086186m, At: clock.GetUtcNow()));
+
+        await using var db = pg.NewContext();
+        var row = await db.TaskUsage.AsNoTracking().SingleAsync(u => u.TaskId == taskId.Value);
+        Assert.Equal("claude-sonnet-5[1m]", row.Model);
+        Assert.Equal(18282, row.CacheReadTokens);
+        Assert.Equal(0.1086186m, row.CostUsd);
+        Assert.Equal(team.Value, row.TeamId);
+
+        // Neither clock moved: still t0, thirty seconds after the report was handled.
+        var tracked = Assert.Single(registry.AllTracked());
+        Assert.Equal(t0, tracked.LastActivity);
+        Assert.Equal(t0, tracked.LastProgress);
+    }
+
+    [SkippableFact]
     public async Task Session_started_event_stamps_the_harness_session_ref_on_the_row()
     {
         // §11 resume: the sink writes the opaque ref verbatim onto the task row

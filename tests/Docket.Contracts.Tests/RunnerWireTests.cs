@@ -462,6 +462,69 @@ public class RunnerWireTests
     // ── Rejection: anything outside the vocabulary (§10) ──────────────────────
 
     [Fact]
+    public void Usage_reported_event_round_trips_with_every_field()
+    {
+        var original = new UsageReportedEvent(
+            TaskId.New(),
+            "claude-sonnet-5[1m]",
+            InputTokens: 2,
+            OutputTokens: 4,
+            CacheReadTokens: 18282,
+            CacheWriteTokens: 17178,
+            ReasoningOutputTokens: null,
+            CostUsd: 0.1086186m,
+            At: DateTimeOffset.UtcNow);
+
+        var decoded = Assert.IsType<UsageReportedEvent>(RunnerWire.DecodeEvent(RunnerWire.EncodeEvent(original)));
+
+        Assert.Equal(original, decoded);
+        // The cost must survive as an exact decimal: it is money, and a float round-trip that
+        // shifted the last digit would make the reported figure quietly not the harness's.
+        Assert.Equal(0.1086186m, decoded.CostUsd);
+    }
+
+    [Fact]
+    public void Usage_reported_event_round_trips_an_unattributed_tokens_only_report()
+    {
+        // The Codex shape: real tokens, no model, no cost. Every absence has to survive as an
+        // absence — a null cost that decoded as 0 would turn "not measured" into "free".
+        var original = new UsageReportedEvent(
+            TaskId.New(),
+            Model: null,
+            InputTokens: 100,
+            OutputTokens: 30,
+            CacheReadTokens: 900,
+            CacheWriteTokens: 50,
+            ReasoningOutputTokens: 12,
+            CostUsd: null,
+            At: DateTimeOffset.UtcNow);
+
+        var decoded = Assert.IsType<UsageReportedEvent>(RunnerWire.DecodeEvent(RunnerWire.EncodeEvent(original)));
+
+        Assert.Equal(original, decoded);
+        Assert.Null(decoded.Model);
+        Assert.Null(decoded.CostUsd);
+        Assert.Equal(12, decoded.ReasoningOutputTokens);
+    }
+
+    [Fact]
+    public void An_unnamed_model_rides_the_wire_as_an_absence_not_an_empty_string()
+    {
+        // Null means "the harness named no model", and it has to survive as null: an empty string
+        // would read downstream as a model whose name happens to be blank, and the §12 view would
+        // render it as an attribution rather than the honest "not reported".
+        var json = RunnerWire.EncodeEvent(new UsageReportedEvent(
+            TaskId.New(), Model: null,
+            InputTokens: 1, OutputTokens: 1, CacheReadTokens: 0, CacheWriteTokens: 0,
+            ReasoningOutputTokens: null, CostUsd: null, At: DateTimeOffset.UtcNow));
+
+        Assert.DoesNotContain("\"model\":\"\"", json);
+        var decoded = Assert.IsType<UsageReportedEvent>(RunnerWire.DecodeEvent(json));
+        Assert.Null(decoded.Model);
+        Assert.Null(decoded.CostUsd);
+    }
+
+    [Fact]
     public void A_dispatch_carrying_the_removed_budget_field_still_decodes()
     {
         // budget_usd left the contract with the dollar budget (2026-08-12). §10 is frozen, so
@@ -523,7 +586,7 @@ public class RunnerWireTests
             new HashSet<string> { "dispatch", "stop", "kill", "open-forward", "read-transcript", "start-process", "stop-process", "write-process" },
             new HashSet<string>(RunnerWire.Commands));
         Assert.Equal(
-            new HashSet<string> { "started", "session-started", "alive", "tool-call", "subagent-spawned", "exited", "auth-failed", "forward-opened", "forward-closed", "rebooted", "transcript-chunk", "process-started", "process-stopped", "process-written" },
+            new HashSet<string> { "started", "session-started", "alive", "tool-call", "usage-reported", "subagent-spawned", "exited", "auth-failed", "forward-opened", "forward-closed", "rebooted", "transcript-chunk", "process-started", "process-stopped", "process-written" },
             new HashSet<string>(RunnerWire.Events));
     }
 }

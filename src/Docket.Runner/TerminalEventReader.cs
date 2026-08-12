@@ -32,6 +32,42 @@ namespace Docket.Runner;
 ///   <item><c>tool_name_key</c> (<c>name</c>) — property on a tool_use block naming the tool.</item>
 /// </list></para>
 ///
+/// <para><b>Usage reporting (§10 telemetry ingest, §12 measured view).</b> A further set
+/// describes where the harness states what it consumed. Claude's <c>stream-json</c> is again
+/// the default — its <c>result</c> line carries an aggregate <c>usage</c> object, a
+/// <c>modelUsage</c> map broken down per model, and <c>total_cost_usd</c>:
+/// <list type="bullet">
+///   <item><c>usage_type</c> (<c>result</c>) — the <c>type_key</c> value of a usage-bearing
+///     line. Codex: <c>turn.completed</c>.</item>
+///   <item><c>usage_key</c> (<c>usage</c>) — the object holding the aggregate counters.</item>
+///   <item><c>usage_input_key</c> (<c>input_tokens</c>), <c>usage_output_key</c>
+///     (<c>output_tokens</c>), <c>usage_cache_read_key</c> (<c>cache_read_input_tokens</c>),
+///     <c>usage_cache_write_key</c> (<c>cache_creation_input_tokens</c>) — the four buckets.</item>
+///   <item><c>usage_reasoning_key</c> (unset) — a reasoning portion OF output where the harness
+///     breaks one out (Codex: <c>reasoning_output_tokens</c>). Never added to a total.</item>
+///   <item><c>usage_cost_key</c> (<c>total_cost_usd</c>) — a cost the HARNESS computed, read
+///     from the line root. Declare it empty for a harness that computes none; nothing derives
+///     one from tokens here.</item>
+///   <item><c>usage_models_key</c> (<c>modelUsage</c>) — an object keyed BY MODEL NAME whose
+///     values hold that model's own counters, with <c>model_input_key</c>
+///     (<c>inputTokens</c>), <c>model_output_key</c>, <c>model_cache_read_key</c>,
+///     <c>model_cache_write_key</c> and <c>model_cost_key</c> (<c>costUSD</c>) inside. Present
+///     means per-model reporting wins over the aggregate; declare it empty for a harness that
+///     reports no model at all, whose reports then carry no model — the plane does not substitute
+///     one, because a model it asserted would not be reported BY the harness (§12).</item>
+///   <item><c>usage_cached_is_subset</c> (<c>false</c>) — <b>the semantic key, and the one worth
+///     reading twice.</b> True when the harness counts cache hits INSIDE its input total, so
+///     the reader subtracts to keep the four buckets disjoint. Claude's are already disjoint
+///     (its <c>input_tokens</c> excludes cache); Codex's are not, and summing its counters as
+///     reported would double-count every cached token.</item>
+///   <item><c>usage_is_cumulative</c> (<c>true</c>) — false for a harness whose reports are
+///     per-turn deltas (Codex), which this reader then accumulates so what reaches the wire is
+///     always cumulative-to-date.</item>
+/// </list>
+/// Note the two casings in one Claude payload — the aggregate object is snake_case and the
+/// per-model entries are camelCase — which is exactly why every one of these is a separate
+/// overridable key rather than one naming convention applied twice.</para>
+///
 /// <para><b>Flat tool-call mode (§10, issue #111).</b> The eleven keys above all assume
 /// claude's nesting: an assistant turn wrapping an <em>array</em> of content blocks, one of
 /// which is the tool call. A harness that emits one event object <em>per</em> tool call —
@@ -109,6 +145,13 @@ public sealed class TerminalEventReader
 
     /// <summary>Guards the one-per-task warning against a second <see cref="ReadToEndAsync"/>.</summary>
     private bool _warned;
+
+    /// <summary>Running totals per model, for a harness whose usage reports are per-turn
+    /// deltas rather than cumulative (<c>usage_is_cumulative: false</c>). Empty and untouched
+    /// for a cumulative harness. Per-task state, like every other field here — one reader
+    /// supervises one stream.</summary>
+    private readonly Dictionary<string, (long Input, long Output, long CacheRead, long CacheWrite, long? Reasoning)>
+        _accumulated = new(StringComparer.Ordinal);
 
     /// <param name="onSessionId">
     /// Invoked once with the harness session id from <c>system/init</c>. The
@@ -254,6 +297,9 @@ public sealed class TerminalEventReader
             else if (_map.FlatToolCalls && type == _map.ToolEventType)
                 EmitFlatToolCall(root);
 
+            if (type == _map.UsageType)
+                EmitUsage(root);
+
             // SubagentSpawnedEvent (§10 telemetry ingest) is intentionally NOT
             // emitted here. The claude stream-json shape has no first-class
             // subagent-spawned line carrying a clean (AgentId, ParentAgentId) pair:
@@ -323,6 +369,130 @@ public sealed class TerminalEventReader
     }
 
     /// <summary>
+    /// Emits the harness's own usage report for this line (§10 telemetry ingest) — one
+    /// <see cref="UsageReportedEvent"/> per model where the harness breaks its tokens down by
+    /// model, otherwise a single event whose model is the profile's declaration or nothing.
+    ///
+    /// <para><b>Per-model first, aggregate only as the fallback.</b> A harness that reports per
+    /// model is reporting something strictly better than a total: a dispatch whose subagents ran
+    /// on a cheaper model has two real figures, and collapsing them would throw away the
+    /// distinction the §12 view exists to show. So when <c>usage_models_key</c> resolves to an
+    /// object, each of its properties becomes one event naming that model; the flat
+    /// <c>usage_key</c> object is read only when it does not, and its report carries no model at
+    /// all rather than one the plane made up.</para>
+    ///
+    /// <para><b>Nothing is invented.</b> A missing counter reads zero, a missing cost stays
+    /// null, and a line that carries no usage at all emits nothing — Codex's stream has one
+    /// usage-bearing type among many, and every other line reaching here is silence rather than
+    /// a report of zeros.</para>
+    /// </summary>
+    private void EmitUsage(JsonElement root)
+    {
+        if (_map.UsageModelsKey is { Length: > 0 } modelsKey
+            && root.TryGetProperty(modelsKey, out var models)
+            && models.ValueKind == JsonValueKind.Object)
+        {
+            var emitted = false;
+            foreach (var entry in models.EnumerateObject())
+            {
+                if (entry.Value.ValueKind != JsonValueKind.Object)
+                    continue;
+                Emit(
+                    entry.Name,
+                    ReadLong(entry.Value, _map.ModelInputKey),
+                    ReadLong(entry.Value, _map.ModelOutputKey),
+                    ReadLong(entry.Value, _map.ModelCacheReadKey),
+                    ReadLong(entry.Value, _map.ModelCacheWriteKey),
+                    reasoning: null,
+                    cost: _map.ModelCostKey is { Length: > 0 } ck ? ReadDecimal(entry.Value, ck) : null);
+                emitted = true;
+            }
+
+            if (emitted)
+                return;
+        }
+
+        if (!root.TryGetProperty(_map.UsageKey, out var usage) || usage.ValueKind != JsonValueKind.Object)
+            return;
+
+        var input = ReadLong(usage, _map.UsageInputKey);
+        var cacheRead = ReadLong(usage, _map.UsageCacheReadKey);
+        // The disjointness normalization (§10, and the reason this key exists): a harness that
+        // counts its cache hits INSIDE its input total would otherwise have them counted twice
+        // once the four buckets are summed. Codex declares the subset relationship and docketd
+        // subtracts here — the same arithmetic Codex's own non_cached_input() does for its own
+        // display, so this adopts the harness's semantics rather than inventing one. Clamped at
+        // zero because a harness whose two counters briefly disagree must not produce a negative.
+        if (_map.CachedIsSubsetOfInput)
+            input = Math.Max(0, input - cacheRead);
+
+        // No model: the aggregate object names none, and nothing else is allowed to. A profile
+        // declaration or a spawn argv would be the PLANE asserting a model into a surface labelled
+        // "reported by the harness" (§2 principle 2), so an unattributed report with real token
+        // counts is the honest output — §12 renders "not reported" against them.
+        Emit(
+            null,
+            input,
+            ReadLong(usage, _map.UsageOutputKey),
+            cacheRead,
+            ReadLong(usage, _map.UsageCacheWriteKey),
+            reasoning: _map.UsageReasoningKey is { Length: > 0 } rk ? ReadNullableLong(usage, rk) : null,
+            cost: _map.UsageCostKey is { Length: > 0 } tck ? ReadDecimal(root, tck) : null);
+
+        void Emit(
+            string? model,
+            long inputTokens, long outputTokens, long cacheReadTokens, long cacheWriteTokens,
+            long? reasoning, decimal? cost)
+        {
+            // A report of nothing is not a report. A harness that emits its usage envelope
+            // before its first turn (or whose mapping matches a line that merely looks like one)
+            // would otherwise write a row of zeros that reads as a measurement.
+            if (inputTokens == 0 && outputTokens == 0 && cacheReadTokens == 0 && cacheWriteTokens == 0)
+                return;
+
+            // Accumulate for a harness that reports per-turn deltas, so what leaves docketd is
+            // always cumulative-to-date and the plane's upsert can keep a high-water mark
+            // (UsageReportedEvent explains why cumulative is the drop-tolerant shape). The key
+            // is the model, since two models on one dispatch accumulate independently.
+            if (!_map.UsageIsCumulative)
+            {
+                var key = model ?? "";
+                if (!_accumulated.TryGetValue(key, out var running))
+                    running = (0, 0, 0, 0, null);
+                running = (
+                    running.Input + inputTokens,
+                    running.Output + outputTokens,
+                    running.CacheRead + cacheReadTokens,
+                    running.CacheWrite + cacheWriteTokens,
+                    reasoning is { } r ? (running.Reasoning ?? 0) + r : running.Reasoning);
+                _accumulated[key] = running;
+                (inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens, reasoning) = running;
+            }
+
+            _ring.Enqueue(new UsageReportedEvent(
+                _task, model,
+                inputTokens, outputTokens, cacheReadTokens, cacheWriteTokens,
+                reasoning, cost, _clock.GetUtcNow()));
+            _extractedSomething = true;
+        }
+    }
+
+    private static long ReadLong(JsonElement obj, string key) =>
+        obj.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var n)
+            ? n
+            : 0;
+
+    private static long? ReadNullableLong(JsonElement obj, string key) =>
+        obj.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var n)
+            ? n
+            : null;
+
+    private static decimal? ReadDecimal(JsonElement obj, string key) =>
+        obj.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetDecimal(out var d)
+            ? d
+            : null;
+
+    /// <summary>
     /// Walks a pre-split dotted path of object property names and returns the string it lands
     /// on, or null if any segment is missing, any intermediate value is not an object, or the
     /// destination is not a string. Strict by construction: there is no wildcard, no index, and
@@ -365,7 +535,23 @@ internal readonly record struct TerminalStreamMapping(
     string ToolUseBlockType,
     string ToolNameKey,
     string? ToolEventType,
-    string[][] ToolNamePaths)
+    string[][] ToolNamePaths,
+    string UsageType,
+    string UsageKey,
+    string UsageInputKey,
+    string UsageOutputKey,
+    string UsageCacheReadKey,
+    string UsageCacheWriteKey,
+    string? UsageReasoningKey,
+    string? UsageCostKey,
+    string? UsageModelsKey,
+    string ModelInputKey,
+    string ModelOutputKey,
+    string ModelCacheReadKey,
+    string ModelCacheWriteKey,
+    string? ModelCostKey,
+    bool CachedIsSubsetOfInput,
+    bool UsageIsCumulative)
 {
     /// <summary>
     /// True when the profile declared the flat tool-call mode (issue #111). Both keys are
@@ -388,7 +574,33 @@ internal readonly record struct TerminalStreamMapping(
         Pick(mapping, "tool_use_block_type", "tool_use"),
         Pick(mapping, "tool_name_key", "name"),
         PickOrNull(mapping, "tool_event_type"),
-        ParseToolNamePaths(PickOrNull(mapping, "tool_name_path")));
+        ParseToolNamePaths(PickOrNull(mapping, "tool_name_path")),
+        Pick(mapping, "usage_type", "result"),
+        Pick(mapping, "usage_key", "usage"),
+        Pick(mapping, "usage_input_key", "input_tokens"),
+        Pick(mapping, "usage_output_key", "output_tokens"),
+        Pick(mapping, "usage_cache_read_key", "cache_read_input_tokens"),
+        Pick(mapping, "usage_cache_write_key", "cache_creation_input_tokens"),
+        PickOrNull(mapping, "usage_reasoning_key"),
+        Pick(mapping, "usage_cost_key", "total_cost_usd"),
+        Pick(mapping, "usage_models_key", "modelUsage"),
+        Pick(mapping, "model_input_key", "inputTokens"),
+        Pick(mapping, "model_output_key", "outputTokens"),
+        Pick(mapping, "model_cache_read_key", "cacheReadInputTokens"),
+        Pick(mapping, "model_cache_write_key", "cacheCreationInputTokens"),
+        Pick(mapping, "model_cost_key", "costUSD"),
+        IsTrue(PickOrNull(mapping, "usage_cached_is_subset")),
+        !IsFalse(PickOrNull(mapping, "usage_is_cumulative")));
+
+    /// <summary>A mapping flag, read the way a human writes one. Absent means false.</summary>
+    private static bool IsTrue(string? raw) =>
+        raw is not null && bool.TryParse(raw.Trim(), out var b) && b;
+
+    /// <summary>Absent means NOT false — so an undeclared <c>usage_is_cumulative</c> keeps the
+    /// claude default (each report restates the totals) rather than silently switching a
+    /// profile into accumulate mode.</summary>
+    private static bool IsFalse(string? raw) =>
+        raw is not null && bool.TryParse(raw.Trim(), out var b) && !b;
 
     /// <summary>
     /// Resolves a mapping key against the claude default. Shared with
