@@ -766,6 +766,52 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         Assert.Contains(events, e => e.Kind == nameof(AnswerPermission)
                                      && e.PermissionVerdict == PermissionVerdict.Allow
                                      && e.PermissionAnswerer == PermissionAnswerer.Lead);
+
+        // ── §10 telemetry ingest: the emission leg, riding along on this run ────────
+        //
+        // Everything above proves the bridge. This last block proves something orthogonal that
+        // no other tier can: that a REAL worker's own usage numbers actually REACHED the plane.
+        // It rides here rather than in its own fact because it needs nothing this run has not
+        // already paid for — a real claude worker, a streaming profile, and a task that finished.
+        //
+        // The assertion is deliberately on the COMMITTED ROW, not on a parsed line. The parser
+        // is already pinned against captured real output in Docket.Runner.Tests, so what is
+        // unproven by fixtures is the path between the layers: docketd encoding the event, the
+        // §10 wire carrying it, the sink writing it. That path is precisely where a bug hid
+        // during this feature's own build — the encode arm was never registered, so every layer
+        // passed its own tests while docketd could not send anything at all. Only a query
+        // against the row catches that class, which is why this fact exists.
+        //
+        // Polled rather than asserted outright: claude prints its `result` line as the run ENDS,
+        // which is AFTER the report_result that moved this task to verifying, so the row lands
+        // slightly behind the state this test already waited on.
+        Assert.True(
+            await FleetRig.WaitUntilAsync(
+                async () => (await rig.ReportedUsageAsync(task, ct)).Count > 0,
+                TimeSpan.FromSeconds(90)),
+            "the worker finished but no usage report ever reached the plane — docketd parsed the "
+            + "stream (this profile is events.source: terminal) yet nothing landed in task_usage. "
+            + "Suspect the emission path, not the parser: the ring, the wire encode arm, or the "
+            + "sink.\n" + await rig.RealWorkerDiagnosticsAsync(task, ct));
+
+        var usage = await rig.ReportedUsageAsync(task, ct);
+
+        // Claude names its models, so a real run must produce an attributed row. Deliberately NOT
+        // asserting WHICH model: the spawn pins the `haiku` alias, claude resolves it to a dated
+        // slug of its choosing, and pinning that string would make this fact hostage to a model
+        // release. Present-and-non-empty is the durable claim.
+        Assert.Contains(usage, u => !string.IsNullOrWhiteSpace(u.Model));
+
+        // Claude computes its own cost, so a real run must carry dollars. This is the half no
+        // fixture can stand in for — it is the number an operator will read off §12.
+        Assert.Contains(usage, u => u.CostUsd is > 0m);
+
+        // And real token counts. Summed across models because the run may span more than one
+        // (a real dispatch legitimately does), and across the four buckets because which one
+        // carries the volume depends on cache state, which is not this fact's business.
+        Assert.True(
+            usage.Sum(u => u.InputTokens + u.OutputTokens + u.CacheReadTokens + u.CacheWriteTokens) > 0,
+            "a usage row landed but every token bucket was zero, which no real turn produces");
     }
 
     // ── Recipe + descriptions ───────────────────────────────────────────────────
