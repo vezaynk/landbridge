@@ -1,11 +1,7 @@
-using System.Net;
-using System.Net.Sockets;
 using System.Text.Json;
 using Docket.Contracts;
 using Docket.ControlPlane;
 using Docket.ControlPlane.Auth;
-using Docket.ControlPlane.Tests;
-using Docket.Core;
 using Docket.Mcp;
 using Docket.Mcp.Auth;
 using Docket.Mcp.Tools;
@@ -18,7 +14,6 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using ModelContextProtocol.Client;
 
 namespace Docket.MultiMachine.Tests;
 
@@ -108,48 +103,11 @@ internal static class MultiMachineKit
     public static string HttpBaseUrl(WebApplication app) =>
         app.Urls.First(u => u.StartsWith("http://", StringComparison.Ordinal));
 
-    public static async Task<McpClient> ConnectMcpAsync(Uri endpoint, string bearer, CancellationToken ct)
-    {
-        var transport = new HttpClientTransport(new HttpClientTransportOptions
-        {
-            Endpoint = endpoint,
-            TransportMode = HttpTransportMode.StreamableHttp,
-            AdditionalHeaders = new Dictionary<string, string> { ["Authorization"] = $"Bearer {bearer}" },
-        });
-        return await McpClient.CreateAsync(transport, cancellationToken: ct);
-    }
-
-    /// <summary>A live lead token for <paramref name="team"/>, as an OAuth callback would mint it.</summary>
-    public static async Task<string> LeadTokenAsync(PostgresFixture pg, TeamId team, CancellationToken ct)
-    {
-        await using var db = pg.NewContext();
-        var tokens = new TokenService(db, TimeProvider.System);
-        var human = await tokens.IssueHumanSessionAsync(ct);
-        var claim = (LeadClaimResult.Claimed)await tokens.ClaimLeadAsync(human.Token, team, ct: ct);
-        return claim.Token.Token;
-    }
-
-    /// <summary>
-    /// Reserve a free loopback URL by binding an ephemeral port and releasing it, so
-    /// the plane can be configured and the relay bound to the same address without a
-    /// build-order race (§8.3).
-    /// </summary>
-    public static string ReserveLoopbackUrl() => $"http://127.0.0.1:{ReserveLoopbackPort()}";
-
-    /// <summary>
-    /// A free loopback port, found by binding an ephemeral port and releasing it. Used where a
-    /// port has to be known <em>before</em> the thing that binds it exists — a §10 process
-    /// declares no port, so an agent told to start a listener has to be told which one, and the
-    /// test cannot ask the process afterwards.
-    /// </summary>
-    public static int ReserveLoopbackPort()
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
-        return port;
-    }
+    // MCP connect, Lead-token minting, and loopback reservation used to live here. They are
+    // not multi-machine-specific — the chaos rig had grown its own copy of each — so they now
+    // live in PlaneProbe (tests/RigSupport), source-linked into both suites. Call
+    // PlaneProbe.ConnectMcpAsync / LeadTokenAsync / ReserveLoopbackUrl / ReserveLoopbackPort
+    // directly rather than through a wrapper here: one name per thing.
 }
 
 /// <summary>

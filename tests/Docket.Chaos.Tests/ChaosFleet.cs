@@ -1,5 +1,3 @@
-using System.Net;
-using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -10,7 +8,6 @@ using Docket.ControlPlane.Tests;
 using Docket.Core;
 using Microsoft.EntityFrameworkCore;
 using ModelContextProtocol.Client;
-using ModelContextProtocol.Protocol;
 
 namespace Docket.Chaos.Tests;
 
@@ -85,9 +82,10 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
         // machine id we hand it — and point it at a real control plane.
         _stateDir = NewTempDir("state");
 
-        // Mint the machine identity and the Lead credential directly against the
-        // store, the idiom the existing suites use (RunnerSpineEndToEndTests for the
-        // machine, MultiMachineKit.LeadTokenAsync for the Lead).
+        // Mint the machine identity and the Lead credential directly against the store, the
+        // idiom the existing suites use (RunnerSpineEndToEndTests for the machine,
+        // PlaneProbe.LeadTokenAsync for the Lead). The machine half stays here: this is the
+        // only rig that enrolls one, because it is the only one with a real docketd to enroll.
         await using (var db = pg.NewContext())
         {
             var tokens = new TokenService(db, TimeProvider.System);
@@ -101,12 +99,10 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
             _machineToken = credentials.Access.Token;
 
             Team = TeamId.New();
-            var human = await tokens.IssueHumanSessionAsync(ct);
-            var claim = (LeadClaimResult.Claimed)await tokens.ClaimLeadAsync(human.Token, Team, ct: ct);
-            _leadToken = claim.Token.Token;
+            _leadToken = await PlaneProbe.LeadTokenAsync(db, Team, ct);
         }
 
-        _planeUrl = ReserveLoopbackUrl();
+        _planeUrl = PlaneProbe.ReserveLoopbackUrl();
         await StartPlaneAsync(ct);
 
         _configPath = WriteDocketdConfig();
@@ -293,16 +289,11 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     public async Task<TaskId> CreateTaskAsync(string description, string? profile, CancellationToken ct)
     {
         await using var lead = await ConnectLeadAsync(ct);
-        var created = await lead.CallToolAsync("create_task", new Dictionary<string, object?>
-        {
-            ["description"] = description,
-            ["completionCriteria"] = "the chaos scenario holds",
-            ["mode"] = "lead",
-            ["profile"] = profile,
-            ["workspace"] = $"chaos-{Guid.NewGuid():N}",
-        }, cancellationToken: ct);
-        Assert.NotEqual(true, created.IsError);
-        var task = new TaskId(Guid.Parse(Assert.Single(created.Content.OfType<TextContentBlock>()).Text));
+        var task = await PlaneProbe.CreateTaskAsync(
+            lead, description,
+            completionCriteria: "the chaos scenario holds",
+            workspace: $"chaos-{Guid.NewGuid():N}",
+            ct, profile: profile);
         Note($"created task {task} profile={profile ?? "default"}");
         return task;
     }
@@ -311,12 +302,7 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     public async Task AcceptAsync(TaskId task, CancellationToken ct)
     {
         await using var lead = await ConnectLeadAsync(ct);
-        var verdict = await lead.CallToolAsync("submit_review", new Dictionary<string, object?>
-        {
-            ["taskId"] = task.Value.ToString(),
-            ["verdict"] = "accept",
-        }, cancellationToken: ct);
-        Assert.NotEqual(true, verdict.IsError);
+        await PlaneProbe.AcceptAsync(lead, task, ct);
     }
 
     private Task<McpClient> ConnectLeadAsync(CancellationToken ct) => ConnectMcpAsync(_leadToken, ct);
@@ -326,16 +312,8 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     /// for the Lead, and for replaying a dead worker's token (§17.8: "replay a stale
     /// worker-instance token"), where the connection itself is expected to be refused.
     /// </summary>
-    public async Task<McpClient> ConnectMcpAsync(string bearer, CancellationToken ct)
-    {
-        var transport = new HttpClientTransport(new HttpClientTransportOptions
-        {
-            Endpoint = new Uri(_planeUrl + "/"),
-            TransportMode = HttpTransportMode.StreamableHttp,
-            AdditionalHeaders = new Dictionary<string, string> { ["Authorization"] = $"Bearer {bearer}" },
-        });
-        return await McpClient.CreateAsync(transport, cancellationToken: ct);
-    }
+    public Task<McpClient> ConnectMcpAsync(string bearer, CancellationToken ct) =>
+        PlaneProbe.ConnectMcpAsync(new Uri(_planeUrl + "/"), bearer, ct);
 
     /// <summary>
     /// Whether the worker process for <paramref name="task"/> has actually started on the
@@ -435,7 +413,7 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     public async Task<TaskState?> StateAsync(TaskId task, CancellationToken ct)
     {
         await using var db = pg.NewContext();
-        return await new TaskStore(db, TimeProvider.System).GetStateAsync(task, ct);
+        return await PlaneProbe.StateAsync(db, task, ct);
     }
 
     /// <summary>The committed row facts the scenarios assert on, in one read.</summary>
@@ -473,22 +451,13 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
 
     /// <summary>
     /// Bounded poll: true as soon as <paramref name="condition"/> holds, false at the
-    /// deadline. The poll IS the synchronization — no scenario sleeps for a fixed
-    /// duration and hopes.
+    /// deadline. The poll IS the synchronization — no scenario sleeps for a fixed duration
+    /// and hopes. Kept as the name twelve scenarios already read; the implementation is
+    /// <see cref="PlaneProbe.WaitUntilAsync"/>, shared with the multi-machine rig.
     /// </summary>
-    public static async Task<bool> WaitUntilAsync(
-        Func<Task<bool>> condition, TimeSpan timeout, CancellationToken ct)
-    {
-        var deadline = DateTime.UtcNow + timeout;
-        while (DateTime.UtcNow < deadline)
-        {
-            ct.ThrowIfCancellationRequested();
-            if (await condition())
-                return true;
-            await Task.Delay(100, ct);
-        }
-        return await condition();
-    }
+    public static Task<bool> WaitUntilAsync(
+        Func<Task<bool>> condition, TimeSpan timeout, CancellationToken ct) =>
+        PlaneProbe.WaitUntilAsync(condition, timeout, ct);
 
     public Task<bool> WaitForStateAsync(TaskId task, TaskState state, TimeSpan timeout, CancellationToken ct) =>
         WaitUntilAsync(async () => await StateAsync(task, ct) == state, timeout, ct);
@@ -514,37 +483,10 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
         sb.AppendLine("╠═ tasks ═══════════════════════════════════════════════════════");
         await using (var db = pg.NewContext())
         {
+            // The committed row, its worker instances, and the ordered event log, rendered
+            // inside this rig's box (PlaneProbe, shared with the multi-machine rig).
             foreach (var task in tasks)
-            {
-                var row = await db.Tasks.AsNoTracking().SingleOrDefaultAsync(t => t.Id == task.Value, ct);
-                if (row is null)
-                {
-                    sb.AppendLine($"║ {task}: (no row)");
-                    continue;
-                }
-                sb.AppendLine(
-                    $"║ {task}: state={row.State} attempt={row.Attempt} " +
-                    $"infraRequeues={row.InfrastructureRequeues}/{row.InfrastructureRequeueLimit} " +
-                    $"lastRequeueReason={row.LastRequeueReason?.ToString() ?? "(none)"} " +
-                    $"verificationFailures={row.VerificationFailures} " +
-                    $"profile={row.Profile ?? "(default)"} result={row.ResultReference ?? "(none)"} " +
-                    $"instance={row.CurrentInstanceId?.ToString() ?? "(none)"}");
-
-                var instances = await db.WorkerInstances.AsNoTracking()
-                    .Where(w => w.TaskId == task.Value).ToListAsync(ct);
-                sb.AppendLine($"║   instances: " + (instances.Count == 0
-                    ? "(none)"
-                    : string.Join(", ", instances.Select(i => $"{i.Id.ToString()[..8]}{(i.Revoked ? " revoked" : " LIVE")}"))));
-
-                var events = await db.TaskEvents.AsNoTracking()
-                    .Where(e => e.TaskId == task.Value).OrderBy(e => e.OccurredAt).ToListAsync(ct);
-                foreach (var e in events)
-                    sb.AppendLine(
-                        $"║   {e.OccurredAt:HH:mm:ss.fff} {e.Kind} " +
-                        $"{e.FromState?.ToString() ?? "-"}->{e.ToState?.ToString() ?? "-"}" +
-                        (e.LivenessReason is { } reason ? $" reason={reason}" : "") +
-                        (e.Detail is { Length: > 0 } d ? $" [{d}]" : ""));
-            }
+                await PlaneProbe.AppendTaskFactsAsync(sb, db, task, "║ ", ct);
         }
 
         sb.AppendLine("╠═ processes ═══════════════════════════════════════════════════");
@@ -612,20 +554,6 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     /// <summary>http→ws on the plane's own base, the §10 runner path.</summary>
     private static string WsRunnerUrl(string httpBase) =>
         "ws" + httpBase["http".Length..].TrimEnd('/') + "/runner";
-
-    /// <summary>
-    /// An OS-assigned loopback port, reserved by binding and immediately releasing it
-    /// (the MultiMachineKit idiom) — the plane must be told its own public URL before it
-    /// starts, because that URL is what it writes into every worker's mcp.json.
-    /// </summary>
-    private static string ReserveLoopbackUrl()
-    {
-        var listener = new TcpListener(IPAddress.Loopback, 0);
-        listener.Start();
-        var port = ((IPEndPoint)listener.LocalEndpoint).Port;
-        listener.Stop();
-        return $"http://127.0.0.1:{port}";
-    }
 
     /// <summary>TimeSpan config must be written out in full: a bare number parses as DAYS.</summary>
     private static string Fmt(TimeSpan value) => value.ToString(@"hh\:mm\:ss\.fff");

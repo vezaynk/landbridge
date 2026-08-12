@@ -566,7 +566,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         await rig.AddMachineAsync("A");
 
         var processName = "probe-" + NewToken();
-        var port = MultiMachineKit.ReserveLoopbackPort();
+        var port = PlaneProbe.ReserveLoopbackPort();
         var body = "body-" + NewToken();
 
         // Step 1: a real worker starts the process and completes its own task.
@@ -644,7 +644,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
 
         var serviceName = "svc" + NewToken();
         var processName = "serve-" + NewToken();
-        var port = MultiMachineKit.ReserveLoopbackPort();
+        var port = PlaneProbe.ReserveLoopbackPort();
         var body = "relayed-" + NewToken();
 
         // Producer on A: start the listener, advertise it, then hold the turn open.

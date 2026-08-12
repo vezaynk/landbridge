@@ -123,7 +123,7 @@ internal sealed class FleetRig(
     {
         // Pre-reserve the relay URL so the plane can be configured and the relay bound
         // to the same address without a build-order race (§8.3).
-        var relayUrl = MultiMachineKit.ReserveLoopbackUrl();
+        var relayUrl = PlaneProbe.ReserveLoopbackUrl();
         _plane = MultiMachineKit.BuildPlane(pg.ConnectionString, RelayBearer, relayUrl);
         await _plane.StartAsync(ct);
         _baseUrl = MultiMachineKit.HttpBaseUrl(_plane);
@@ -158,7 +158,8 @@ internal sealed class FleetRig(
             Stdin: stdin);
 
         Team = TeamId.New();
-        _leadToken = await MultiMachineKit.LeadTokenAsync(pg, Team, ct);
+        await using (var db = pg.NewContext())
+            _leadToken = await PlaneProbe.LeadTokenAsync(db, Team, ct);
     }
 
     /// <summary>Enroll a machine: its own worker supervisor, its own relay data-plane
@@ -288,13 +289,8 @@ internal sealed class FleetRig(
     /// </summary>
     public async Task AcceptAsync(TaskId task, CancellationToken ct)
     {
-        await using var lead = await MultiMachineKit.ConnectMcpAsync(new Uri(_baseUrl + "/"), _leadToken, ct);
-        var verdict = await lead.CallToolAsync("submit_review", new Dictionary<string, object?>
-        {
-            ["taskId"] = task.Value.ToString(),
-            ["verdict"] = "accept",
-        }, cancellationToken: ct);
-        Assert.NotEqual(true, verdict.IsError);
+        await using var lead = await PlaneProbe.ConnectMcpAsync(new Uri(_baseUrl + "/"), _leadToken, ct);
+        await PlaneProbe.AcceptAsync(lead, task, ct);
     }
 
     /// <summary>Create a task for this fleet's Team via the real Lead MCP surface.</summary>
@@ -305,18 +301,12 @@ internal sealed class FleetRig(
     /// </param>
     public async Task<TaskId> CreateTaskAsync(string description, CancellationToken ct, TaskId? continues = null)
     {
-        await using var lead = await MultiMachineKit.ConnectMcpAsync(new Uri(_baseUrl + "/"), _leadToken, ct);
-        var created = await lead.CallToolAsync("create_task", new Dictionary<string, object?>
-        {
-            ["description"] = description,
-            ["completionCriteria"] = "the byte path holds",
-            ["mode"] = "lead",
-            ["profile"] = null,
-            ["workspace"] = $"multimachine-{Guid.NewGuid():N}",
-            ["continues"] = continues?.Value.ToString(),
-        }, cancellationToken: ct);
-        Assert.NotEqual(true, created.IsError);
-        return new TaskId(Guid.Parse(Assert.Single(created.Content.OfType<TextContentBlock>()).Text));
+        await using var lead = await PlaneProbe.ConnectMcpAsync(new Uri(_baseUrl + "/"), _leadToken, ct);
+        return await PlaneProbe.CreateTaskAsync(
+            lead, description,
+            completionCriteria: "the byte path holds",
+            workspace: $"multimachine-{Guid.NewGuid():N}",
+            ct, continues: continues);
     }
 
     /// <summary>
@@ -326,7 +316,7 @@ internal sealed class FleetRig(
     /// </summary>
     public async Task<string> QuestionAsync(TaskId task, CancellationToken ct)
     {
-        await using var lead = await MultiMachineKit.ConnectMcpAsync(new Uri(_baseUrl + "/"), _leadToken, ct);
+        await using var lead = await PlaneProbe.ConnectMcpAsync(new Uri(_baseUrl + "/"), _leadToken, ct);
         var read = await lead.CallToolAsync("get_task_question", new Dictionary<string, object?>
         {
             ["taskId"] = task.Value.ToString(),
@@ -343,7 +333,7 @@ internal sealed class FleetRig(
     /// </summary>
     public async Task AnswerAsync(TaskId task, string answer, CancellationToken ct)
     {
-        await using var lead = await MultiMachineKit.ConnectMcpAsync(new Uri(_baseUrl + "/"), _leadToken, ct);
+        await using var lead = await PlaneProbe.ConnectMcpAsync(new Uri(_baseUrl + "/"), _leadToken, ct);
         var answered = await lead.CallToolAsync("answer_input_request", new Dictionary<string, object?>
         {
             ["taskId"] = task.Value.ToString(),
@@ -376,7 +366,7 @@ internal sealed class FleetRig(
     public async Task AnswerPermissionAsync(
         TaskId task, string verdict, string? message, CancellationToken ct)
     {
-        await using var lead = await MultiMachineKit.ConnectMcpAsync(new Uri(_baseUrl + "/"), _leadToken, ct);
+        await using var lead = await PlaneProbe.ConnectMcpAsync(new Uri(_baseUrl + "/"), _leadToken, ct);
         var answered = await lead.CallToolAsync("answer_permission_request", new Dictionary<string, object?>
         {
             ["taskId"] = task.Value.ToString(),
@@ -548,7 +538,7 @@ internal sealed class FleetRig(
     public async Task<TaskState?> StateAsync(TaskId id, CancellationToken ct)
     {
         await using var db = pg.NewContext();
-        return await new TaskStore(db, TimeProvider.System).GetStateAsync(id, ct);
+        return await PlaneProbe.StateAsync(db, id, ct);
     }
 
     /// <summary>The machine a task is currently tracked as dispatched to (§10) — the
@@ -624,33 +614,15 @@ internal sealed class FleetRig(
         sb.AppendLine($"REAL-WORKER DIAGNOSTICS for task {task}:");
         await using (var db = pg.NewContext())
         {
-            var row = await db.Tasks.AsNoTracking().SingleOrDefaultAsync(t => t.Id == task.Value, ct);
-            if (row is null)
-            {
-                sb.AppendLine("  (task row not found)");
-            }
-            else
-            {
-                sb.AppendLine(
-                    $"  state={row.State} attempt={row.Attempt} infraRequeues={row.InfrastructureRequeues} " +
-                    $"verificationFailures={row.VerificationFailures}");
-                sb.AppendLine(
-                    $"  resultReference={row.ResultReference ?? "(none)"} " +
-                    $"currentInstance={row.CurrentInstanceId?.ToString() ?? "(none)"}");
-            }
-
-            sb.AppendLine($"  machineRanOn={MachineRanOn(task) ?? "(none)"} machineTrackedNow={MachineOf(task) ?? "(none)"}");
-
-            var events = await db.TaskEvents.AsNoTracking()
-                .Where(e => e.TaskId == task.Value)
-                .OrderBy(e => e.OccurredAt)
-                .ToListAsync(ct);
-            sb.AppendLine($"  events ({events.Count}):");
-            foreach (var e in events)
-                sb.AppendLine(
-                    $"    {e.OccurredAt:HH:mm:ss.fff} {e.Kind} {e.FromState?.ToString() ?? "-"}->{e.ToState?.ToString() ?? "-"}" +
-                    (e.Detail is { Length: > 0 } d ? $" [{d}]" : ""));
+            // The committed row, its worker instances, and the ordered event log — the half
+            // of a timeout dump that is the same question in every rig (PlaneProbe).
+            await PlaneProbe.AppendTaskFactsAsync(sb, db, task, "  ", ct);
         }
+
+        // Rig-specific, and the reason this dump exists on top of the shared facts: which
+        // machine actually ran the task (sticky, survives the worker's exit) versus which the
+        // registry tracks now (cleared when a worker exits and untracks).
+        sb.AppendLine($"  machineRanOn={MachineRanOn(task) ?? "(none)"} machineTrackedNow={MachineOf(task) ?? "(none)"}");
 
         if (_observations.TryGetValue(task, out var obs))
             sb.AppendLine($"  worker: spawns={obs.Starts} exits={obs.Exits} lastExitCode={obs.LastExitCode?.ToString() ?? "(none)"}");
@@ -797,18 +769,11 @@ internal sealed class FleetRig(
     }
 
     /// <summary>Bounded poll: succeeds as soon as <paramref name="condition"/> holds, or
-    /// false at the deadline. No fixed sleeps — the poll IS the synchronization.</summary>
-    public static async Task<bool> WaitUntilAsync(Func<Task<bool>> condition, TimeSpan timeout)
-    {
-        var deadline = DateTime.UtcNow + timeout;
-        while (DateTime.UtcNow < deadline)
-        {
-            if (await condition())
-                return true;
-            await Task.Delay(100);
-        }
-        return await condition();
-    }
+    /// false at the deadline. No fixed sleeps — the poll IS the synchronization. Kept as the
+    /// name eighteen call sites already read; the implementation is
+    /// <see cref="PlaneProbe.WaitUntilAsync"/>, shared with the chaos rig.</summary>
+    public static Task<bool> WaitUntilAsync(Func<Task<bool>> condition, TimeSpan timeout) =>
+        PlaneProbe.WaitUntilAsync(condition, timeout);
 
     public async ValueTask DisposeAsync()
     {
