@@ -105,11 +105,11 @@ public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifet
         var profile = new ProfileConfig(
             "default",
             [WorkerHarnessPath(), "--mcp-config", "{mcp_config}"],
-            new StopConfig(StopMode.Signal, Signal: null, MessageTemplate: null, WindDown: TimeSpan.FromSeconds(30)),
+            new StopConfig(StopMode.Signal, MessageTemplate: null, WindDown: TimeSpan.FromSeconds(30)),
             Resume: null,
             new EventsConfig(EventsSource.None, new Dictionary<string, string>()),
             new TelemetryConfig(Otel: false, Endpoint: null),
-            new LogsConfig(Path: null, Format: null),
+            new LogsConfig(),
             MaxConcurrent: null);
 
         try

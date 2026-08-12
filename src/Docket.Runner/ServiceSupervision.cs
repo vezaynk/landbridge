@@ -74,7 +74,6 @@ public sealed class ServiceSupervisor : IAsyncDisposable
     private readonly ConcurrentDictionary<string, SupervisedService> _state = new(StringComparer.Ordinal);
     private readonly CancellationTokenSource _cts = new();
     private readonly ConcurrentDictionary<Task, byte> _loops = new();
-    private readonly ConcurrentDictionary<string, Task> _watchers = new(StringComparer.Ordinal);
     private readonly object _admission = new();
 
     /// <param name="probe">
@@ -288,7 +287,7 @@ public sealed class ServiceSupervisor : IAsyncDisposable
                 ServiceDefaults.MaxBackoff,
                 // Capture on: the log path goes back in the reply so the declaring agent reads
                 // its own output with file tools.
-                new LogsConfig(null, null, Capture: true));
+                new LogsConfig(Capture: true));
 
             _state[command.Name] = new SupervisedService(config)
             {
@@ -308,8 +307,12 @@ public sealed class ServiceSupervisor : IAsyncDisposable
                 ProcessRefusals.SpawnFailed, $"'{command.Name}' could not be started");
         }
 
-        // Watch for exit and record it. No restart: the exit code is the point.
-        _watchers[command.Name] = Task.Run(() => WatchProcessAsync(command.Name, s, _cts.Token));
+        // Watch for exit and record it. No restart: the exit code is the point. Deliberately
+        // not tracked for shutdown the way a service's supervision loop is (_loops): this
+        // watcher only stamps the exit onto state a heartbeat later reports, so there is
+        // nothing for disposal to wait on, and keeping a handle per process ever started
+        // would retain one completed task forever.
+        _ = Task.Run(() => WatchProcessAsync(command.Name, s, _cts.Token));
 
         return ProcessOutcome.Started(_logs is null ? null : Path.Combine(_logs.Root, command.Name));
     }
@@ -743,13 +746,6 @@ public sealed class ServiceSupervisor : IAsyncDisposable
         try { return process.ExitCode; }
         catch (InvalidOperationException) { return null; }
     }
-
-    /// <summary>
-    /// A service's machine-local identity. Scoped to the declaring task so two tasks may
-    /// each hold a <c>dev</c> without colliding — what actually collides is the <b>port</b>,
-    /// which admission checks separately. A null task is a config-declared service.
-    /// </summary>
-    private readonly record struct ServiceKey(TaskId? Task, string Name);
 
     /// <summary>One supervised service's mutable state, guarded by its own gate.</summary>
     private sealed class SupervisedService(ServiceConfig config)

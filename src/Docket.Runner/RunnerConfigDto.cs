@@ -94,9 +94,12 @@ internal sealed class ProfileProcessesDto
 internal sealed class StopDto
 {
     public string? Mode { get; set; }
-    public string? Signal { get; set; }
     public string? Message { get; set; }
     public double? WindDownSeconds { get; set; }
+
+    // No `signal` property: the deadline's kill is always the portable tree-kill, so a
+    // signal name had nothing to select. A config still carrying the key parses fine —
+    // unknown members are ignored — and now says as little as it always did.
 }
 
 internal sealed class ResumeDto
@@ -124,8 +127,9 @@ internal sealed class TelemetryDto
 
 internal sealed class LogsDto
 {
-    public string? Path { get; set; }
-    public string? Format { get; set; }
+    // No `path` or `format`: capture writes a fixed state-dir layout no path can steer,
+    // and nothing ever read the format label. Configs still carrying either key parse
+    // unchanged — unknown members are ignored.
 
     // §12 machine-local transcript capture. `capture` toggles it (default off);
     // `max_bytes` caps each captured stream per instance; `prune_after_days` is the

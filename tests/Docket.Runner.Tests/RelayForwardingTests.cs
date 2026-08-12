@@ -288,7 +288,7 @@ public sealed class RelayForwardingTests
 
     private static ServiceConfig DeclaredService(string name, int port) =>
         new(name, [TestKit.HarnessPath()], null, new Dictionary<string, string>(StringComparer.Ordinal),
-            port, null, ServiceDefaults.MaxBackoff, new LogsConfig(null, null));
+            port, null, ServiceDefaults.MaxBackoff, new LogsConfig());
 
     private static RunnerDaemon BuildDaemon(
         OutboundEventRing ring, InMemoryControlPlaneChannel channel, TimeSpan acceptTimeout,

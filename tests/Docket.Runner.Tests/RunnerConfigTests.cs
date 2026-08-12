@@ -74,6 +74,42 @@ public class RunnerConfigTests
         Assert.Equal(TranscriptDefaults.PruneAfterDays, config.Resolve("restricted")!.Logs.PruneAfterDays);
     }
 
+    /// <summary>
+    /// The three keys that were parsed into fields nothing ever read — <c>stop.signal</c>,
+    /// <c>logs.path</c>, and <c>logs.format</c> — are gone from the DTOs, and a config still
+    /// declaring all three must load unchanged rather than fail.
+    ///
+    /// <para>This pins a compatibility promise the runner-config reference now makes in
+    /// three places ("a config still declaring either is accepted unchanged"). It holds
+    /// because <see cref="RunnerJsonContext"/> sets no <c>UnmappedMemberHandling</c>, so
+    /// System.Text.Json skips members with no matching property — but that is a default
+    /// somebody could tighten in one line while believing it only affected typos, which is
+    /// exactly the kind of change this test exists to stop. The keys are inert here, as
+    /// they were inert before removal; what must not happen is a machine refusing to start
+    /// on a config file that worked yesterday.</para>
+    /// </summary>
+    [Fact]
+    public void A_config_declaring_the_removed_stop_signal_and_logs_path_format_keys_still_loads()
+    {
+        var json = """
+        { "machine": { "work_root": "/w" },
+          "profiles": [ { "name": "default", "spawn": ["claude", "-p"],
+            "stop": { "mode": "signal", "signal": "SIGTERM", "wind_down_seconds": 12 },
+            "logs": { "path": "/var/log/docket/worker.ndjson", "format": "stream-json",
+                      "capture": true, "max_bytes": 4096 } } ] }
+        """;
+
+        var config = RunnerConfig.Load(json);
+
+        // The surviving neighbours in each section still parse, so the removed keys were
+        // skipped rather than derailing the object they sat in.
+        Assert.Equal(StopMode.Signal, config.Default.Stop.Mode);
+        Assert.Equal(TimeSpan.FromSeconds(12), config.Default.Stop.WindDown);
+        Assert.Null(config.Default.Stop.MessageTemplate);
+        Assert.True(config.Default.Logs.Capture);
+        Assert.Equal(4096, config.Default.Logs.MaxBytes);
+    }
+
     [Fact]
     public void Capture_defaults_to_off_when_logs_is_omitted()
     {

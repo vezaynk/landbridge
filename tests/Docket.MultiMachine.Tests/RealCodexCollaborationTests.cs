@@ -278,7 +278,7 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
             spawnArgv: CodexWorkerSpawn(codexBin, WorkerPrompt),
             terminalEvents: true,
             stop: new StopConfig(
-                StopMode.Signal, Signal: null, MessageTemplate: null, WindDown: TimeSpan.FromSeconds(5)),
+                StopMode.Signal, MessageTemplate: null, WindDown: TimeSpan.FromSeconds(5)),
             eventMapping: CodexEventMapping,
             // signal + closed is the only pairing a config validator will accept for this
             // harness, and it is the honest one twice over — see CodexStdin.
