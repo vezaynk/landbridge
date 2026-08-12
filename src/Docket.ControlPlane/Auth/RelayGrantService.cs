@@ -18,8 +18,11 @@ namespace Docket.ControlPlane.Auth;
 ///
 /// <para>Revocation is not this service's job — it rides the existing
 /// <see cref="ClearServicesAndForwards"/> effect in <see cref="TaskStore"/>,
-/// which revokes a task's live grants the moment it leaves <c>working</c>, next
-/// to where it already clears that task's registered services (§6).</para>
+/// which revokes a task's live grants next to where it already clears that task's
+/// registered services (§6). That effect fires on leaving <c>working</c> in every case
+/// but one: a producer blocked on a <b>permission</b> request is still alive inside its
+/// tool call and emits nothing (§11), so its grants remain live — through a later park or
+/// requeue too. Expiry is what bounds a grant there.</para>
 ///
 /// <para>The mint is also where §9 check 10's <b>forward rate limit</b> is enforced, since a
 /// grant is the one thing no forward can happen without and the plane is the only place the

@@ -1005,8 +1005,11 @@ public sealed class TaskStore(
                     break;
 
                 // WriteParkRecord is already reflected by CopyFrom (row park columns).
-                // DiscardWorkspace / DeferWorkspaceDiscardUntilVerdict are docketd's
-                // to enact; recorded in the event detail for the daemon to observe.
+                // DiscardWorkspace / DeferWorkspaceDiscardUntilVerdict would be docketd's to
+                // enact, and nothing does (§11: "nothing enacts workspace discard today").
+                // No §10 command carries a workspace discard and docketd reads no event
+                // details, so this arm is where the intent stops — a discard cancel and a
+                // preserve cancel leave identical rows.
                 case WriteParkRecord:
                 case DiscardWorkspace:
                 case DeferWorkspaceDiscardUntilVerdict:

@@ -62,6 +62,9 @@ public sealed class CredentialRow
     public DateTimeOffset? UsedAt { get; set; }
 
     public bool Revoked { get; set; }
+
+    /// <summary>When the credential was revoked. Written but read by nothing — every
+    /// authorization predicate reads <see cref="Revoked"/>. Kept for §13 forensics.</summary>
     public DateTimeOffset? RevokedAt { get; set; }
 
     /// <summary>
@@ -133,9 +136,13 @@ public sealed class LeadMachineBindingRow
 
     public DateTimeOffset BoundAt { get; set; }
 
-    /// <summary>Set by an explicit unbind; a revoked row keeps the history and frees both unique slots.</summary>
+    /// <summary>Set by an explicit unbind; a revoked row is kept rather than deleted and frees
+    /// both unique slots. <see cref="Revoked"/> is the fact every predicate reads.</summary>
     public bool Revoked { get; set; }
 
+    /// <summary>When the unbind happened. Written but read by no query or surface — retained
+    /// deliberately, because "when did this stop being true" is what a §13 incident review asks
+    /// and the row is the only place that could answer it. Do not mistake it for a live input.</summary>
     public DateTimeOffset? RevokedAt { get; set; }
 }
 
@@ -162,9 +169,19 @@ public abstract record LeadMachineBindResult
 }
 
 /// <summary>
-/// An enrolled machine (§11). Purpose/OS/specs/permission level are declared
-/// at enrollment and bound server-side — a machine cannot re-declare its own
-/// privileges (§13).
+/// An enrolled machine (§11). <see cref="Purpose"/>, <see cref="Os"/> and
+/// <see cref="PermissionLevel"/> are declared once at enrollment and written server-side,
+/// so a machine cannot re-declare them for itself (§13).
+///
+/// <para><b>As built they are a record, not a control</b> (§11 as-built, 2026-08-03).
+/// Specs are not collected at all — CPU and memory exist only as live load on the
+/// heartbeat, never as declared capacity — and nothing reads these three columns or
+/// <see cref="EnrolledAt"/> once written: no dispatch, forwarding, or tool decision
+/// consults <see cref="PermissionLevel"/>, and the §12 Machine Group view builds from the
+/// live connection registry rather than this table, so the declaration reaches no human
+/// surface either. Only <see cref="Id"/>, <see cref="Name"/> and <see cref="Revoked"/> are
+/// read anywhere. Treat a value here as what a machine said at enrollment, never as a
+/// privilege the plane is enforcing.</para>
 /// </summary>
 public sealed class MachineRow
 {
@@ -175,6 +192,9 @@ public sealed class MachineRow
     public string PermissionLevel { get; set; } = "";
     public DateTimeOffset EnrolledAt { get; set; }
     public bool Revoked { get; set; }
+
+    /// <summary>When the machine was revoked. Written but read by nothing; kept for §13
+    /// forensics, like every other <c>revoked_at</c> in the schema.</summary>
     public DateTimeOffset? RevokedAt { get; set; }
 }
 

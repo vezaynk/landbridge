@@ -302,10 +302,13 @@ public sealed class DispatchService : IHostedService
             // transcript. Opaque metadata surfaced by the store; docketd resumes
             // only if the resolved profile declares resume.args, else cold-starts.
             ResumeSessionRef: applied.HarnessSessionRef,
-            // §11 resume, directory half: a continuation resumes under a NEW task id, so the
-            // runner is told whose work dir the session lives in — Claude Code resumes a
-            // session only from the directory that created it. Null for a same-task
-            // park-resume, where that dir is already the one the runner would pick.
+            // §7/§11 directory inheritance: whose work dir this dispatch runs in. A property
+            // of continuation itself, NOT of transcript resume (#122) — a continuation works
+            // where its predecessor worked whether or not it inherits the session, so this
+            // rides every continuation dispatch including a degrade cold-start, where
+            // ResumeSessionRef above is deliberately null. Transcript resume additionally
+            // depends on it, since a harness session resumes only from the directory that
+            // created it. Null for a same-task park-resume, whose dir the runner already picks.
             WorkDirTask: applied.WorkDirTask,
             // §9.9/§9 check 9: the per-dispatch cap committed against the Team's ceiling,
             // enforced by the harness itself (the profile's {budget} substitution). This is

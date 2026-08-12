@@ -31,6 +31,13 @@ public enum RelayGrantRole
 /// clears the task's registered services (§6). Expiry gates only tunnel-open; an
 /// established splice persists regardless (§8.3), which holds trivially because a
 /// grant is validated only at open.</para>
+///
+/// <para><b>One exception, and it matters here more than anywhere.</b> A producer
+/// blocked on a <b>permission</b> request (§11 permission bridge) does not emit that
+/// effect — it is still alive inside its tool call — so its grants stay live, and they
+/// stay live through a subsequent park or requeue as well, because the effect is only
+/// emitted from <c>working</c>. A grant outliving its producer's <c>working</c> state is
+/// therefore possible; expiry, not revocation, is what bounds it in that case.</para>
 /// </summary>
 public sealed class RelayGrantRow
 {
@@ -70,7 +77,8 @@ public sealed class RelayGrantRow
     /// <summary>Set the first time the producer end opens its tunnel; a second producer open is refused.</summary>
     public DateTimeOffset? UsedByProducerAt { get; set; }
 
-    /// <summary>Revoked when the producer task leaves working (ClearServicesAndForwards, §6/§8.3).</summary>
+    /// <summary>Revoked when the producer task leaves working (ClearServicesAndForwards, §6/§8.3),
+    /// except where a permission block keeps that effect from firing — see the type remarks.</summary>
     public bool Revoked { get; set; }
 }
 

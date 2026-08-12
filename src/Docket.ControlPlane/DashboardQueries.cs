@@ -14,10 +14,14 @@ namespace Docket.ControlPlane;
 /// out of <see cref="TaskStore"/>: the store is the write path (§15), this is a
 /// bystander that only observes.
 ///
-/// Several §12 data points still have no source in the schema; rather than invent a
+/// One §12 data point still has no source in the schema; rather than invent a
 /// column, the query surfaces an honest absence and the renderer shows an empty
-/// state (see the field comments): permission requests and the subagent tree nested
-/// under a machine. A Team's budget and its relay byte burn are no longer among them,
+/// state (see the field comments): the subagent tree <em>nested under a machine</em>.
+/// Permission requests are no longer among them — they have their own columns and a real
+/// inbox section (§11 permission bridge, #108) — and neither are subagent spawns, which are
+/// persisted as task event rows and surface in the event log; what is missing there is only
+/// the per-machine nesting, not the data.
+/// A Team's budget and its relay byte burn are no longer among them,
 /// but the two numbers mean very different things and the views say so: the budget is
 /// authorization COMMITTED at dispatch, never measured spend, which Docket does not
 /// ingest (§9.9); the byte figure IS measured, but best-effort, reported
@@ -55,8 +59,10 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
     /// — exactly the operator signal this view exists to surface (§12). A machine that
     /// is bound but currently disconnected is deliberately absent here, like every other
     /// disconnected machine; its Lead sees the binding in <c>get_team_state</c>. The
-    /// subagent tree is a documented empty state: subagent events reach the plane only
-    /// as liveness pings (§10), nothing is persisted, so there is nothing to nest.
+    /// subagent tree is a documented empty state, but the reason is narrower than "no
+    /// data": spawns <em>are</em> persisted as task event rows and do reach the §12 event
+    /// log (#51). What this view has no source for is the per-machine <em>nesting</em> —
+    /// there is nothing that resolves a subagent to the machine row it should hang under.
     /// </summary>
     public async Task<IReadOnlyList<MachineView>> GetMachinesAsync(CancellationToken ct = default)
     {

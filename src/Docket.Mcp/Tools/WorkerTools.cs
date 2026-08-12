@@ -104,7 +104,9 @@ public sealed class WorkerTools(
                  "process ends when you block, and the answer reaches your successor on get_task.")]
     public async Task<string> RequestInput(
         [Description("The kind of input needed: question, spawn_request, auth_help, endpoint_wait, or unreachable. " +
-                     "This only routes the request (who can answer it) — it does not say what you are asking.")]
+                     "This is a LABEL on the request, not a route: the plane does not use it to decide who may " +
+                     "answer — a Lead or a human can answer any kind — and it does not say what you are asking. " +
+                     "Put that in 'question'.")]
         string kind,
         [Description("What you are actually asking, in prose: the decision you cannot make, the options you see, " +
                      "your recommendation, and what you will do with each answer. Self-contained — the answerer " +

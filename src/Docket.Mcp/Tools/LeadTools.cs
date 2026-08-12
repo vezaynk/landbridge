@@ -183,8 +183,11 @@ public sealed class LeadTools(
     }
 
     [McpServerTool(Name = "cancel_task"),
-     Description("Cancel a task with a disposition. 'preserve' keeps the workspace; 'discard' removes this " +
-                 "task's workspace instance. TTL=0 (immediate kill) is delivered by the runner, not here.")]
+     Description("Cancel a task with a disposition. The disposition records your INTENT about the " +
+                 "workspace and is not enacted today: nothing removes a workspace, so 'discard' and " +
+                 "'preserve' both leave it on disk (§11 — 'nothing enacts workspace discard today'). " +
+                 "Say 'discard' when the work should not be kept and 'preserve' when it should, but do " +
+                 "not rely on either to clean up. TTL=0 (immediate kill) is delivered by the runner, not here.")]
     public async Task<string> CancelTask(
         [Description("The task id to cancel.")] string taskId,
         [Description("Disposition: 'preserve' or 'discard'.")] string disposition,
@@ -220,8 +223,10 @@ public sealed class LeadTools(
         // The store routes on the task's current state so this one call is correct
         // whether or not the wait-TTL sweeper (§11) parked the task first: a task
         // still blocked_on_input is requeued for redispatch-with-resume, a task
-        // already parked is woken the same way (§6, §11). The worker process is gone
-        // the moment the task blocked (§11), so there is no in-place resume — the
+        // already parked is woken the same way (§6, §11). A worker that chose to ask has
+        // ended its turn and its process is gone (§11), so there is no in-place resume on
+        // this path — a permission request is the exception and belongs to
+        // answer_permission_request below, which the store refuses to confuse with this. The
         // machine still holding the lease is a control-plane fact read from the
         // connection registry (null if it is gone) and becomes the park record's
         // preferred machine; redispatch cold-starts elsewhere when it is null. The
