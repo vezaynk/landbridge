@@ -77,6 +77,13 @@ That is deliberate, and it makes cleanup your job. **Before you close out work o
 
 Two reasons a continuation is the right shape rather than a fresh task. The agent that started the processes knows their names without being told, and it knows what it left in the workspace. A cold worker would have to be handed both, and would get it wrong.
 
+**Continuing a task that has already finished works, and it is the ordinary case rather than a corner.** You do not have to catch the predecessor before it exits: the plane remembers durably where a task ran, so a continuation of a `completed` — or `canceled`, or `rejected` — task still prefers the machine that holds its transcript. What you get depends on whether that machine is still around, and `on_machine_gone` is where you say which you want:
+
+- **`degrade`** (the default) — if the machine is gone, the successor cold-starts on any machine matching the profile. It **still inherits the predecessor's working directory and lineage**, so it lands where the work is even though it does not remember doing it, and the plane records that the conversation was lost so you can see it happened rather than inferring it from a confused worker.
+- **`pin`** — the successor waits in `submitted` for that machine to come back. Use it when the remembered conversation is the point and waiting is cheaper than re-deriving it.
+
+Write the description so it survives the `degrade` case: name the processes and paths rather than relying on "you know what you started". A continuation that kept its memory ignores the redundancy; one that cold-started needs it. The single case still refused at creation is continuing a task that was **never dispatched** — it has no transcript and no directory, so there is nothing to carry on from, and an ordinary task is the right shape.
+
 Check the Machine Group view (`/dashboard/machines`) if you are unsure what is still running — it lists every process a machine holds and which task started it. A machine accumulating processes across closed-out work is the visible symptom of a cleanup continuation nobody sent.
 
 ## Choosing a profile
