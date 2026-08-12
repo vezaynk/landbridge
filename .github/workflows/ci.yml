@@ -227,8 +227,7 @@ jobs:
   # onboarding prefill and the realtime-conversation path — NOT by exec. The job still skips
   # cleanly and passes when the secret is absent (fork PRs), by design.
   #
-  # WHAT TO EXPECT ON THE FIRST DISPATCH AFTER #110: all four facts RUN, and three of them
-  # spend tokens for the first time. Reading the Codex CLI source at rust-v0.147.0 established
+  # WHY ALL FOUR FACTS RUN HERE: reading the Codex CLI source at rust-v0.147.0 established
   # that `codex exec` blocks forever reading a held-open stdin pipe before it takes its first
   # turn (exec/src/lib.rs:1961 -> 1888 -> 1909); docketd's dead-man pipe used to be
   # unconditional, so a Codex worker could not run here at all. #110 made it the per-profile
@@ -236,20 +235,23 @@ jobs:
   # DOCKET_CODEX_STDIN_FIXED gate that held them back is gone. The fourth fact keeps
   # characterizing the hang under an explicit `stdin: deadman` and still spends nothing.
   #
-  # None of the three has ever executed against the real binary, so treat a red first run as
-  # information rather than a regression: each failure message leads with a hypothesis chosen
-  # from what the ring observed (never spawned / spawned and still running / spawned and exited
-  # non-zero / exited cleanly without reporting), and the likeliest first-run causes are auth
-  # (CODEX_API_KEY, below), the `required = true` MCP table in the generated CODEX_HOME, and a
-  # server-side-retired model slug — DOCKET_CODEX_MODEL overrides that last one with no code
-  # change.
+  # STATUS: green. Run 31430436700 (e6fbae8, 2026-08-10) executed all four against the real
+  # binary — 4 passed, 0 skipped, a few cents — so this tier is a regression check now rather
+  # than an experiment. A red run still leads with a hypothesis chosen from what the ring
+  # observed (never spawned / spawned and still running / spawned and exited non-zero / exited
+  # cleanly without reporting); the causes worth suspecting first are auth (CODEX_API_KEY,
+  # below), the `required = true` MCP table in the generated CODEX_HOME, and a server-side
+  # retired model slug. That last one is not hypothetical: it is what the first dispatch hit,
+  # and DOCKET_CODEX_MODEL overrides it with no code change.
   #
   # `npm install -g @openai/codex` deliberately takes the latest version rather than pinning
   # 0.147.0: if upstream changes the stdin behaviour, the characterization fact FAILS, which is
   # exactly the notification we want. Source citations above are against 0.147.0.
   #
-  # Cost: the tests pin gpt-5.1-codex-mini (the cheapest codex-family model) and the tasks are
-  # single-echo, so a full run is a few cents.
+  # Cost: the tasks are single-echo, so a full run is cents rather than dollars. Note the slug
+  # this job actually uses is NOT the tests' own default: the code falls back to
+  # gpt-5.1-codex-mini (the cheapest codex-family model), while the input below defaults to
+  # gpt-5.1-codex, because the mini was the slug that 404'd. Pass codex_model to override.
   real-codex-e2e:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
@@ -287,8 +289,9 @@ jobs:
         run: npm install -g @openai/codex
 
       # The claude CLI too: the mixed claude+codex fleet fact needs BOTH binaries and
-      # skips when either is missing. First dispatch proved everything else; this
-      # un-skips the fact that is the whole BYO-harness pitch.
+      # skips when either is missing. Installing it is what un-skipped the fact that is the
+      # whole BYO-harness pitch — which then passed, so this step is load-bearing, not
+      # preparatory.
       - name: Install claude CLI
         run: npm install -g @anthropic-ai/claude-code
 

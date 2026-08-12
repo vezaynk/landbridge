@@ -21,12 +21,23 @@ namespace Docket.MultiMachine.Tests;
 /// dedicated CI job (<c>.github/workflows/ci.yml</c>, <c>real-codex-e2e</c>) sets the key
 /// and runs only this trait.</para>
 ///
-/// <para><b>Nothing here has ever been executed.</b> <c>codex</c> is not installed on the
-/// machine where this tier was written and will not be. Every Codex claim below was instead
-/// verified by reading the CLI's own source at tag <c>rust-v0.147.0</c> — the version
-/// <c>npm install -g @openai/codex</c> resolves to, and the one the CI job installs — with
-/// file:line citations. Source reading settles far more than the docs did, including the one
-/// thing that decides whether this tier can pass at all:</para>
+/// <para><b>This tier has now run, and it passes.</b> A <c>workflow_dispatch</c> on
+/// 2026-08-10 (CI run 31430436700, <c>e6fbae8</c>) executed all four facts against the real
+/// binary: <b>4 passed, 0 skipped</b> — including the mixed claude+codex fleet handoff, which
+/// is the fact the whole BYO-harness claim rests on. One thing needed fixing to get there and
+/// it was not Docket: the pinned <c>gpt-5.1-codex-mini</c> 404'd on the API-key path
+/// (Responses API, "Model not found") while auth, MCP init and the closed-stdin spawn all
+/// worked, so the model slug became the <c>DOCKET_CODEX_MODEL</c> dispatch input rather than
+/// a code change.</para>
+///
+/// <para><b>Source reading is still the authority for every claim below</b>, and that is
+/// deliberate rather than leftover: <c>codex</c> is not installed on the machine where this
+/// tier was written and will not be, so the reasoning was established by reading the CLI's own
+/// source at tag <c>rust-v0.147.0</c> — the version <c>npm install -g @openai/codex</c>
+/// resolves to, and the one the CI job installs — with file:line citations. The green run
+/// confirms the conclusions; it does not replace them, because a passing test says *that* the
+/// profiles are right and the citations say *why*. That includes the one thing which decides
+/// whether this tier can pass at all:</para>
 ///
 /// <para><b>The blocker, and what closed it.</b> A held-open stdin pipe is fatal to
 /// <c>codex exec</c>. Codex's cold-start path is <c>resolve_root_prompt</c>
@@ -454,6 +465,14 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
     /// slug and not a legacy alias. Note the model catalog is fetched server-side rather than
     /// hard-coded in the CLI, so a slug can be retired out from under this constant —
     /// <c>DOCKET_CODEX_MODEL</c> overrides it without a code change when that happens.</para>
+    ///
+    /// <para><b>And that is exactly what happened.</b> On the first real dispatch this slug
+    /// returned "Model not found" from the Responses API on the API-key path, while auth, MCP
+    /// init and the closed-stdin spawn all worked — so the CLI knowing a slug is not the same
+    /// as the account's catalog serving it. The CI job therefore passes
+    /// <c>DOCKET_CODEX_MODEL=gpt-5.1-codex</c> and the tier went green. This constant stays the
+    /// cheapest slug on purpose: it is the right default for a local run, and the override is
+    /// the documented way past a catalog that disagrees.</para>
     /// </summary>
     private static string CodexModel =>
         Environment.GetEnvironmentVariable("DOCKET_CODEX_MODEL") is { Length: > 0 } m
@@ -723,10 +742,12 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
     ];
 
     /// <summary>
-    /// The diagnostic that has to earn its keep on the <b>first</b> real dispatch of this tier,
-    /// because nothing in it has ever been executed: <c>codex</c> is not installed on the
-    /// machine where it was written, so its first CI run is also its first run, and a red one
-    /// must name its own cause rather than hand the next reader a wall of state.
+    /// The diagnostic that earns its keep on a red run of this tier, and it earned it on the
+    /// first one: <c>codex</c> is not installed on the machine where this was written, so CI is
+    /// the only place these facts execute, and a failure has to name its own cause rather than
+    /// hand the next reader a wall of state. That is not hypothetical — the first dispatch came
+    /// back red on a retired model slug, and what made it a five-minute fix instead of an
+    /// investigation was this branching naming the cause.
     ///
     /// <para>It branches on what the ring actually observed, because the three plausible
     /// failures have three different signatures and completely different fixes. Printed above

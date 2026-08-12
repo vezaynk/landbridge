@@ -738,7 +738,8 @@ proposed arguments. The Lead's triage rubric — what to approve and what to esc
 > non-`terminal` profile emits three of those: `started` at spawn, `exited` at the
 > end, and the periodic `alive` that `docketd` sends for every live process on its
 > own heartbeat timer. **`alive` is not gated on `events.source`**, so the short
-> aliveness window (**60s, hardcoded**) stays satisfied and such a task is *not*
+> aliveness window (**60s by default** — `Docket:PerTaskLivenessWindow` on the control
+> plane, not anything a runner config declares) stays satisfied and such a task is *not*
 > requeued merely for being quiet.
 >
 > What it loses is `tool-call`, and with it the progress clock. Work that
