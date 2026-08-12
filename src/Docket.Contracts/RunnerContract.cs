@@ -71,6 +71,17 @@ public abstract record RunnerCommand : RunnerMessage
 /// runner is what maps a task id to a directory under it. Naming a task keeps that
 /// mapping in one place and keeps this record free of machine-specific paths, which is
 /// also why <c>ParkRecord.Directory</c> never got a producer.</para>
+///
+/// <para><b><see cref="SpawnSubstitutions"/> is a reserved slot with no producer today.</b>
+/// The runner consumes it — extra <c>{key}</c> placeholders it substitutes into the spawn
+/// argv alongside the built-in <c>task_id</c> / <c>machine_id</c> / <c>work_dir</c> /
+/// <c>budget</c> / <c>session_id</c> / <c>mcp_config</c> set — but nothing on the plane
+/// populates it: <c>DispatchService</c> is the only place a dispatch is constructed and it
+/// passes none, so the field arrives <c>null</c> on every real dispatch and only the wire
+/// round-trip tests exercise it. Recorded rather than removed, on the same terms as
+/// <c>ParkRecord.Directory</c> above: §10 is frozen, and dropping an optional field is the
+/// one change an older plane would notice. Read this as "the seam exists and is unused",
+/// not as a capability an operator can rely on.</para>
 /// </summary>
 public sealed record DispatchCommand(
     TaskId Task,
@@ -114,6 +125,14 @@ public sealed record KillCommand(TaskId Task) : RunnerCommand;
 /// <see cref="Port"/>, which the runner treats as "acknowledge, do nothing"
 /// (§10, the pre-increment-3 stub behaviour) rather than crashing.</para>
 /// </summary>
+/// <param name="ServiceName">
+/// Which registered service this forward is for — <b>diagnostic only: the runner never reads
+/// it.</b> A dial is resolved entirely from <see cref="Port"/>, <see cref="Role"/>,
+/// <see cref="Grant"/>, and <see cref="RelayUrl"/>, and refuse-at-dial resolves a target to a
+/// service by <em>port</em> (§10), so this travels for the plane's own logging and for a human
+/// reading a captured envelope. Do not start routing on it: port is the resolution key on both
+/// ends, and a second one would be a second source of truth.
+/// </param>
 /// <param name="Role"><c>consumer</c>|<c>producer</c> (<see cref="RelayTunnel"/>); empty on a legacy envelope.</param>
 /// <param name="Grant">The opaque connection grant both ends present to the relay, each for its own role.</param>
 /// <param name="RelayUrl">The relay base URL this end dials (http/https → ws/wss <c>/tunnel</c>).</param>

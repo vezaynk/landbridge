@@ -17,7 +17,7 @@ argv a worker is launched with.
 | `profiles[]` | `stop` | `mode` (`message` \| `signal`), `message`, `wind_down_seconds` (default `30`). **`mode: message` is a declaration about your harness** — that a running session reads turns off stdin — and docketd takes it at its word: it writes the turn, then waits `min(ttl, wind_down_seconds)` for a voluntary exit before a hard tree-kill backstops it. It cannot check the claim, so declaring it for a harness that does not read stdin buys nothing and makes `preserve` a promise the machine will break. **`claude -p` is such a harness — use `signal` there** ([Stopping a `claude -p` worker](#stopping-a-claude--p-worker-10-11)). A `signal` profile writes nothing, and the worker gets the full `ttl` the plane granted to exit on its own before the kill (`wind_down_seconds` does not apply). Only `ttl=0` is killed immediately (§10, §11). The `signal` **key** parses but is not acted on: the deadline's kill is always the tree-kill. |
 | `profiles[]` | `stdin` | `deadman` (default) \| `closed` — what the worker's stdin is. `deadman` holds the pipe's write end open for the worker's whole life; that pipe **is** the §10 dead-man's switch. `closed` sends EOF right after the spawn, for a harness that blocks reading piped stdin — **`codex exec` requires it**, and gives up nothing, because it never reaches the read that would observe EOF-as-death. Two things behave unlike the other enums here: a **typo is refused** rather than defaulted (defaulting would silently restore the pipe a profile was written to escape), and `closed` is **refused together with `stop.mode: message`**, whose wind-down turn would have nowhere to land. See [Closing the worker's stdin](#closing-the-workers-stdin-10). |
 | `profiles[]` | `resume` | `args`: argv to resume a parked task's transcript, directory-scoped (§11). |
-| `profiles[]` | `events` | `source` (`hooks` \| `otel` \| `terminal` \| `none`) + `mapping`, which overrides the **stdout stream's property names** — not harness event names — and, via `tool_event_type` + `tool_name_path`, describes a harness that emits one flat event object per tool call. **Only `terminal` is implemented**; `hooks` and `otel` parse but are wired to nothing, so all three non-`terminal` values behave as `none`. See [Event relay](#event-relay-10) below before choosing — a non-`terminal` profile requeues any task that runs longer than about a minute. |
+| `profiles[]` | `events` | `source` (`hooks` \| `otel` \| `terminal` \| `none`) + `mapping`, which overrides the **stdout stream's property names** — not harness event names — and, via `tool_event_type` + `tool_name_path`, describes a harness that emits one flat event object per tool call. **Only `terminal` is implemented**; `hooks` and `otel` parse but are wired to nothing, so all three non-`terminal` values behave as `none`. See [Event relay](#event-relay-10) below before choosing — a non-`terminal` profile has no progress signal, so the no-progress ceiling is the only clock governing its tasks (the periodic `alive` keeps the short aliveness clock satisfied either way). |
 | `profiles[]` | `telemetry` | `otel` bool (opt-in, default **false**), `endpoint` (OTLP destination; falls back to the one docketd inherited), and `env` (a string map of harness-specific variables, applied verbatim). When on, docketd sets the vendor-neutral `OTEL_*` exporter variables and appends `docket.task_id`/`docket.machine_id` to `OTEL_RESOURCE_ATTRIBUTES`, so the harness's own token/cost telemetry is attributable per task (§10). `otel: true` with **no endpoint configured and none inherited sets nothing at all** and warns once — telemetry is never enabled without a destination. Claude Code additionally needs `"env": { "CLAUDE_CODE_ENABLE_TELEMETRY": "1" }` (its own flag is data, since docketd holds no harness knowledge). **Visibility only**: Docket ingests none of it and enforces no ceiling — see [docs/TELEMETRY.md](../../../docs/TELEMETRY.md). |
 | `profiles[]` | `logs` | §12 machine-local transcript capture: `capture` (bool, default **false**), `max_bytes` (per-stream cap, default 50 MiB), `prune_after_days` (local hygiene, default 7, `0` disables). Legacy `format`/`path` are advisory/reserved — see [Transcript capture](#transcript-capture-12) below. |
 | `profiles[]` | `max_concurrent` | Optional hard cap for a licence/rate/posture reason, unrelated to load (§10). |
@@ -730,15 +730,23 @@ proposed arguments. The Lead's triage rubric — what to approve and what to esc
 ## Event relay (§10)
 
 > ⚠️ **Only `events.source: terminal` is implemented. A profile that declares
-> anything else will have every task longer than about a minute requeued, forever.**
+> anything else has no progress signal, so the no-progress ceiling (30 minutes by
+> default) is the only clock governing its tasks.**
 >
 > Per-task liveness on the control plane is refreshed *only* by an inbound event —
-> `started`, `session-started`, `alive`, `tool-call`, or `subagent-spawned`. Of those,
-> a non-`terminal` profile emits exactly one: `started`, once, at spawn. Nothing
-> refreshes it again. The plane requeues any `working` task whose last activity is
-> older than the per-task liveness window (**60s, hardcoded**), so the task is
-> declared lost at the first check after the minute mark, requeued, redispatched,
-> and lost again. Nothing caps that loop.
+> `started`, `session-started`, `alive`, `tool-call`, or `subagent-spawned`. A
+> non-`terminal` profile emits three of those: `started` at spawn, `exited` at the
+> end, and the periodic `alive` that `docketd` sends for every live process on its
+> own heartbeat timer. **`alive` is not gated on `events.source`**, so the short
+> aliveness window (**60s, hardcoded**) stays satisfied and such a task is *not*
+> requeued merely for being quiet.
+>
+> What it loses is `tool-call`, and with it the progress clock. Work that
+> legitimately runs longer than the no-progress ceiling without a tool call is
+> requeued, and until then a wedged agent cannot be told from a busy one. Such
+> requeues are capped (§9 check 7 — 5 by default): at the cap the task is abandoned
+> as `canceled` with the reason that reclaimed it on the record and its workspace
+> preserved, rather than being redispatched forever.
 
 `source` selects how `docketd` observes a worker's progress. The four values it
 accepts are not four implementations:
@@ -746,33 +754,36 @@ accepts are not four implementations:
 | `source` | Status | What you get |
 |---|---|---|
 | `terminal` | **Implemented** — the only consumer is the stdout drain | `started`, `session-started` (the resume ref), `tool-call` per tool use, `exited`. Liveness refreshes on every well-formed line. |
-| `hooks` | Parses, wired to nothing | `started` + `exited` only — identical to `none` |
-| `otel` | Parses, wired to nothing | `started` + `exited` only — identical to `none` |
-| `none` | Honest declaration of no stream | `started` + `exited` only |
+| `hooks` | Parses, wired to nothing | `started` + `alive` + `exited` — identical to `none` |
+| `otel` | Parses, wired to nothing | `started` + `alive` + `exited` — identical to `none` |
+| `none` | Honest declaration of no stream | `started` + `alive` + `exited` |
 
 So the choice is really binary: either the harness streams structured output on
-stdout that `docketd` can read, or this profile has no progress signal and no
-usable per-task liveness. `docketd` prints a warning at startup for every profile
-that declares a non-`terminal` source, naming the requeue consequence — if you see
-it, the profile is not merely degraded, it is unusable for work that takes longer
-than the liveness window.
+stdout that `docketd` can read, or this profile has no progress signal at all.
+`docketd` prints a warning at startup for every profile that declares a
+non-`terminal` source, naming exactly that cost — such a profile is degraded, not
+unusable: its tasks survive on the `alive` signal, but nothing distinguishes a hung
+agent from a busy one, and work quiet for longer than the no-progress ceiling is
+reclaimed.
 
-**Two spec promises that are not yet kept**, so do not plan around them: §10 says
-liveness for a source-less profile "degrades to process-alive," and that per-task
-liveness includes "process-alive for that PID." `docketd` *has* that check
-(`ProcessSupervisor.IsTaskLive`), but nothing calls it and the plane never learns
-process state — the machine heartbeat carries a running-task list but does not
-refresh per-task activity, and a worker's own MCP calls do not either. Until a
-process-alive or periodic `alive` signal is wired, `none` is honest about what it
-reports and misleading about what it costs.
+**The §10 process-alive promise is kept.** §10 says liveness for a source-less
+profile "degrades to process-alive," and that is now wired: `docketd` emits the
+frozen-wire `alive` event for each supervised live process on its heartbeat timer,
+which is the one channel by which a fact only the runner can observe reaches the
+plane. The machine heartbeat is machine-scoped and refreshes no task's clock, and a
+worker's own MCP calls refresh nothing either — so `alive` is what makes `none` an
+honest declaration about its cost as well as its coverage.
 
-**`mapping` overrides stream *property names*, not harness event names.** It does
-not map `PostToolUse` → `tool-call`; there is no hook-name seam. The recognized
-keys, with the built-in defaults in parentheses, are `type_key` (`type`),
-`system_type` (`system`), `assistant_type` (`assistant`), `subtype_key`
+**`mapping` overrides stream *property names*, and — in flat mode — one event
+type.** It does not map `PostToolUse` → `tool-call`; there is no hook-name seam. The
+eleven property-name keys, with the built-in defaults in parentheses, are `type_key`
+(`type`), `system_type` (`system`), `assistant_type` (`assistant`), `subtype_key`
 (`subtype`), `init_subtype` (`init`), `session_id_key` (`session_id`),
 `message_key` (`message`), `content_key` (`content`), `block_type_key` (`type`),
-`tool_use_block_type` (`tool_use`), and `tool_name_key` (`name`).
+`tool_use_block_type` (`tool_use`), and `tool_name_key` (`name`). Two further keys —
+`tool_event_type` and `tool_name_path` — describe a harness that emits one flat event
+object per tool call, which renaming alone cannot express; they have their own
+subsection below.
 
 Those defaults already describe `claude -p --output-format stream-json`, which is
 why the worked example above declares `"events": { "source": "terminal" }` with no

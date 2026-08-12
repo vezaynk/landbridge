@@ -206,10 +206,10 @@ public sealed class ServiceSupervisor : IAsyncDisposable
     /// Checks run in the order an operator would want them reported — policy, then shape, then
     /// resources — so the first refusal names the thing that actually needs changing.
     ///
-    /// <para>Serialized on <see cref="_admission"/>: the name and port checks and the insert
-    /// must be indivisible, or two concurrent calls could both see a name free and both take
-    /// it. Config load can check uniqueness at rest; a wire declaration has to check it under
-    /// a lock.</para>
+    /// <para>Serialized on <see cref="_admission"/>: the name check and the insert must be
+    /// indivisible, or two concurrent calls could both see a name free and both take it.
+    /// Config load can check uniqueness at rest; a wire declaration has to check it under
+    /// a lock. There is no port check here — a process declares no port (§10).</para>
     ///
     /// <para><b>No restart.</b> A process is a job, not a daemon: it is spawned, watched, and
     /// its exit recorded for the agent to act on. Hiding a crash behind a backoff ladder would
@@ -469,12 +469,6 @@ public sealed class ServiceSupervisor : IAsyncDisposable
         _cts.Dispose();
     }
 
-    /// <summary>
-    /// One service's whole life: start, probe, watch, back off, start again. Exponential
-    /// backoff is capped by <c>restart.max_backoff_seconds</c> so a service that cannot
-    /// start (a bad path, a taken port) settles into a slow retry that stays visible in
-    /// the heartbeat instead of hot-looping.
-    /// </summary>
     /// <summary>Starts one supervision loop for an admitted service and tracks it.</summary>
     private void Launch(string name)
     {
@@ -482,6 +476,12 @@ public sealed class ServiceSupervisor : IAsyncDisposable
         _loops[loop] = 0;
     }
 
+    /// <summary>
+    /// One service's whole life: start, probe, watch, back off, start again. Exponential
+    /// backoff is capped by <c>restart.max_backoff_seconds</c> so a service that cannot
+    /// start (a bad path, a taken port) settles into a slow retry that stays visible in
+    /// the heartbeat instead of hot-looping.
+    /// </summary>
     private async Task SuperviseAsync(string key, CancellationToken ct)
     {
         if (!_state.TryGetValue(key, out var s))
