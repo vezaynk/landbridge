@@ -1,28 +1,23 @@
 namespace Docket.Core;
 
 /// <summary>
-/// Written when a task parks, spec §11. Redispatch prefers this machine and
-/// directory because harness transcripts are machine- and directory-local.
-/// All fields are opaque to the control plane; it stores and returns them,
-/// never dereferences them.
+/// Written when a task parks, spec §11: the machine redispatch should prefer, because
+/// harness transcripts are machine-local. Opaque to the control plane, which stores and
+/// returns it and never dereferences it.
 ///
-/// <see cref="Directory"/> and <see cref="HarnessSessionRef"/> are nullable because
-/// they originate <em>runner-side</em> (§11's resume seam): a harness working
-/// directory and session id are machine-local facts the plane cannot observe on its
-/// own. The session ref does reach it — the runner's <c>session-started</c> event
-/// stamps it on the task row, and the wait-TTL sweeper copies it into the park record
-/// so redispatch can resume the transcript — so it is null only for a work session
-/// that never reported one. The directory has no producer at all and is always null
-/// from the sweeper, so such a redispatch cold-starts from the workspace plus the
-/// worker's persisted notes (§11 explicitly allows this when the recorded directory is
-/// absent), and null honestly means "not known to the plane" rather than an empty path.
-/// A <see cref="StopPreserveAndPark"/> issued through a runner may carry either.
+/// <para><b>The machine is all that is left, and all there ever was.</b> This record once
+/// also carried a working directory, a harness session ref, and an attempt number. None of
+/// the three survived contact with where those facts actually live: the directory never had
+/// a producer at all (the plane cannot observe a machine's filesystem layout, and §11's
+/// directory inheritance is expressed as a task id instead — see
+/// <see cref="TaskRecord.Park"/>'s callers and the work-dir task on the dispatch command);
+/// and the session ref and attempt were copied out of the live <c>tasks</c> columns on the
+/// way in and written to park-specific columns on the way out that nothing ever read back.
+/// Redispatch reads the live <c>harness_session_ref</c> and <c>attempt</c>, which is why the
+/// snapshots could drift from them without anyone noticing. So the park record is one fact,
+/// stated once.</para>
 /// </summary>
-public sealed record ParkRecord(
-    string Machine,
-    string? Directory,
-    string? HarnessSessionRef,
-    int Attempt);
+public sealed record ParkRecord(string Machine);
 
 /// <summary>
 /// What dispatch needs to know about a machine, as reported by its runner.

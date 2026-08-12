@@ -460,12 +460,14 @@ internal sealed class FleetRig(
                 : null;
     }
 
-    /// <summary>The park record's session ref and machine (§11), or nulls when unparked.</summary>
+    /// <summary>The park record's machine (§11), null when unparked, alongside the harness
+    /// session ref a redispatch would resume — which lives on the task row rather than in the
+    /// park record, and so is present whether or not the task ever parked.</summary>
     public async Task<(string? Machine, string? SessionRef)> ParkAsync(TaskId task, CancellationToken ct)
     {
         await using var db = pg.NewContext();
         var row = await db.Tasks.AsNoTracking().SingleAsync(t => t.Id == task.Value, ct);
-        return (row.ParkMachine, row.ParkSessionRef);
+        return (row.ParkMachine, row.HarnessSessionRef);
     }
 
     /// <summary>

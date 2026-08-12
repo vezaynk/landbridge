@@ -360,7 +360,7 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
             new WorkerCaller(Team, id, instance), InputRequestKind.Question, "which database?"));
         // The sweeper parks it first.
         Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(id,
-            new WaitTtlExpired(new ParkRecord("m1", Directory: null, HarnessSessionRef: null, Attempt: 1))));
+            new WaitTtlExpired(new ParkRecord("m1"))));
 
         Assert.IsType<StoreResult.Applied>(
             await store.AnswerOrWakeAsync(Lead, id, leaseMachine: "m1", answer: "staging-pg"));
@@ -391,7 +391,7 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         var second = WorkerInstanceId.New();
         await store.DispatchNextAsync(Machine(), second);
         await store.ApplyAsync(id, new StopPreserveAndPark(
-            Lead, new ParkRecord("m1", Directory: null, HarnessSessionRef: null, Attempt: 2)));
+            Lead, new ParkRecord("m1")));
         Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(id, new WakeParked()));
 
         await using var v = pg.NewContext();
@@ -600,7 +600,7 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         await store.DispatchNextAsync(Machine(), instance);
         await store.ApplyAsync(id, new RequestInput(new WorkerCaller(Team, id, instance), InputRequestKind.Question));
 
-        var park = new ParkRecord("m1", "/work/task", "sess-1", Attempt: 1);
+        var park = new ParkRecord("m1");
         await store.ApplyAsync(id, new WaitTtlExpired(park));
 
         await using (var v = pg.NewContext())
@@ -608,7 +608,6 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
             var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
             Assert.Equal(TaskState.Parked, row.State);
             Assert.Equal("m1", row.ParkMachine);
-            Assert.Equal("/work/task", row.ParkDirectory);
         }
 
         await store.ApplyAsync(id, new WakeParked());
@@ -630,7 +629,7 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         var id = await SeedBlocked(store);
 
         // The sweeper's outcome (§11): the task parked with the record the plane held.
-        var park = new ParkRecord("m1", "/work/task", "sess-1", Attempt: 1);
+        var park = new ParkRecord("m1");
         await store.ApplyAsync(id, new WaitTtlExpired(park));
 
         // The Lead answers — through the routing method — with no knowledge that
@@ -646,7 +645,6 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
             Assert.Equal(TaskState.Submitted, row.State);
             // Park record survives into submitted for redispatch affinity (§11).
             Assert.Equal("m1", row.ParkMachine);
-            Assert.Equal("/work/task", row.ParkDirectory);
         }
 
         // Redispatch resumes it; the successor sees the incremented attempt (§11).
@@ -687,7 +685,7 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
             var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
             Assert.Equal(TaskState.Submitted, row.State);      // requeued, not left working
             Assert.Equal("m1", row.ParkMachine);               // preferred machine (§11)
-            Assert.Equal("sess-answer", row.ParkSessionRef);   // resume ref rides the park
+            Assert.Equal("sess-answer", row.HarnessSessionRef); // the ref redispatch resumes
             Assert.Equal(0, row.InfrastructureRequeues);       // a Lead answer is not an infra requeue (§6)
             Assert.Null(row.CurrentInstanceId);
         }
@@ -733,7 +731,7 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         await using var db = pg.NewContext();
         var store = NewStore(db);
         var id = await SeedBlocked(store);
-        await store.ApplyAsync(id, new WaitTtlExpired(new ParkRecord("m1", null, null, Attempt: 1)));
+        await store.ApplyAsync(id, new WaitTtlExpired(new ParkRecord("m1")));
 
         // A Lead for another Team cannot wake this Team's parked task (§4, §5) —
         // the same Team scope the AnswerInput engine check enforces on the blocked
@@ -760,7 +758,7 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         // …and the sweep's park lands on a now-submitted task, which the engine refuses.
         // Exactly one transition, no lost answer, no double move.
         var rejected = Assert.IsType<StoreResult.Rejected>(
-            await store.ApplyAsync(id, new WaitTtlExpired(new ParkRecord("m1", null, null, Attempt: 1))));
+            await store.ApplyAsync(id, new WaitTtlExpired(new ParkRecord("m1"))));
         Assert.Equal(Rule.InvalidSourceState, rejected.Rule);
         await using var v = pg.NewContext();
         Assert.Equal(TaskState.Submitted, (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value)).State);
@@ -776,7 +774,7 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
 
         // The sweep parks a beat before the Lead answers…
         Assert.IsType<StoreResult.Applied>(
-            await store.ApplyAsync(id, new WaitTtlExpired(new ParkRecord("m1", null, null, Attempt: 1))));
+            await store.ApplyAsync(id, new WaitTtlExpired(new ParkRecord("m1"))));
         // …and the same one answer call now routes to the wake and requeues it.
         // One call, correct outcome either way — exactly one transition, no double move.
         var woken = Assert.IsType<StoreResult.Applied>(await store.AnswerOrWakeAsync(Lead, id, leaseMachine: null));

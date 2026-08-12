@@ -429,7 +429,7 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         await WithStoreAsync(async store =>
         {
             await store.ApplyAsync(parkedId, new RequestInput(parkedCaller, InputRequestKind.Question), ct);
-            await store.ApplyAsync(parkedId, new WaitTtlExpired(new ParkRecord("box-1", null, null, 1)), ct);
+            await store.ApplyAsync(parkedId, new WaitTtlExpired(new ParkRecord("box-1")), ct);
         });
 
         // A completed lead-mode task, adjudicated by the Lead (§9 check 4 provenance),
@@ -558,7 +558,7 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         {
             await store.ApplyAsync(parkedId,
                 new RequestInput(parkedCaller, InputRequestKind.Question, parkedQuestion), ct);
-            await store.ApplyAsync(parkedId, new WaitTtlExpired(new ParkRecord("box-9", null, null, 1)), ct);
+            await store.ApplyAsync(parkedId, new WaitTtlExpired(new ParkRecord("box-9")), ct);
         });
 
         // §11/§12 (#50): an auth failure on a live task is something only a person can

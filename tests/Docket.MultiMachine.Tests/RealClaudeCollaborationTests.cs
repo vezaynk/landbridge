@@ -238,8 +238,13 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         var ct = cts.Token;
 
         // The nonce rides the spawn prompt, which the RESUME argv does not repeat — so the
-        // second turn can only get it from the conversation.
-        var nonce = "nonce-" + NewToken();
+        // second turn can only get it from the conversation. The hex is minted separately
+        // because it, not the prefixed string, is the proof: "nonce-" is a label we chose, and
+        // a model can defensibly report the value without it (the continuation fact below hit
+        // exactly that with claude 2.1.226). Asserting the hex keeps this fact measuring the
+        // resume instead of the next model's reading of our wording.
+        var remembered = NewToken();
+        var nonce = "nonce-" + remembered;
         await using var rig = new FleetRig(
             pg,
             // Both legs get headroom over the shared default, for the same reason the process
@@ -312,8 +317,8 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
             + await rig.RealWorkerDiagnosticsAsync(task, ct));
 
         // The value only the restored conversation held, committed on the row by a real
-        // report_result call.
-        Assert.Contains(nonce, await rig.ResultReferenceAsync(task, ct));
+        // report_result call — the hex, not the prefixed string (see where it is minted).
+        Assert.Contains(remembered, await rig.ResultReferenceAsync(task, ct));
 
         // Harness-side proof that the second instance resumed the first, independent of anything
         // the agent said: both captured instances report the SAME session id on their own
