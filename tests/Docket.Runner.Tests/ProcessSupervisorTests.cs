@@ -292,26 +292,51 @@ public sealed class ProcessSupervisorTests : IDisposable
         supervisor.Kill(taskB);
     }
 
+    /// <summary>
+    /// §10 per-task liveness, process-alive half: <see cref="ProcessSupervisor.LiveTasks"/> is
+    /// the set <c>RunnerDaemon.EmitAliveEvents</c> turns into one <c>alive</c> per task on every
+    /// heartbeat, and it is the only channel by which a fact only the runner can observe reaches
+    /// the plane. So this pins the property the wire actually depends on.
+    ///
+    /// <para>The subtlety worth a test is that it must be <em>narrower</em> than
+    /// <see cref="ProcessSupervisor.RunningTasks"/>: a task whose process has died but whose
+    /// bookkeeping has not yet been torn down still appears in <c>RunningTasks</c>, and
+    /// reporting that one as alive would refresh the aliveness clock for a worker that is gone
+    /// and hold off a requeue that should happen. Killing one of two tasks is what separates
+    /// the two collections.</para>
+    ///
+    /// <para>This replaces a test of <c>IsTaskLive</c>, a runner-local activity clock that no
+    /// production code ever read — the plane decides per-task liveness from the events it
+    /// receives, not from a supervisor query with no wire representation.</para>
+    /// </summary>
     [Fact]
-    public async Task Per_task_liveness_derives_from_activity_and_process_alive()
+    public async Task Live_tasks_carries_only_processes_still_alive_and_is_narrower_than_running()
     {
-        var task = TaskId.New();
         var supervisor = Supervisor();
-        supervisor.Spawn(TestKit.Dispatch(task), TestKit.Profile("run"), "m");
-        supervisor.TryGet(task, out var supervised);
-        Assert.True(await TestKit.WaitUntilAsync(() => supervised.ProcessAlive, TimeSpan.FromSeconds(5)));
+        var alive = TaskId.New();
+        var doomed = TaskId.New();
+        supervisor.Spawn(TestKit.Dispatch(alive), TestKit.Profile("run"), "m");
+        supervisor.Spawn(TestKit.Dispatch(doomed), TestKit.Profile("run"), "m");
 
-        var timeout = TimeSpan.FromSeconds(10);
-        Assert.True(supervisor.IsTaskLive(task, timeout)); // fresh
+        Assert.True(
+            await TestKit.WaitUntilAsync(() => supervisor.LiveTasks.Count == 2, TimeSpan.FromSeconds(10)),
+            "both spawned workers should report process-alive");
+        Assert.Contains(alive, supervisor.LiveTasks);
+        Assert.Contains(doomed, supervisor.LiveTasks);
 
-        _clock.Advance(TimeSpan.FromSeconds(20));
-        Assert.False(supervisor.IsTaskLive(task, timeout)); // stale: no signal within the window
+        supervisor.Kill(doomed);
 
-        supervisor.RecordActivity(task); // a tool-call arrives
-        Assert.True(supervisor.IsTaskLive(task, timeout));
+        // The killed task drops out of LiveTasks — so no further `alive` is emitted for it and
+        // the plane's aliveness clock is free to expire — while its sibling keeps reporting.
+        Assert.True(
+            await TestKit.WaitUntilAsync(
+                () => !supervisor.LiveTasks.Contains(doomed), TimeSpan.FromSeconds(10)),
+            "a killed task must stop reporting process-alive");
+        Assert.Contains(alive, supervisor.LiveTasks);
 
-        supervisor.Kill(task);
-        Assert.True(await TestKit.WaitUntilAsync(() => !supervisor.IsTaskLive(task, timeout), TimeSpan.FromSeconds(10)));
+        supervisor.Kill(alive);
+        Assert.True(
+            await TestKit.WaitUntilAsync(() => supervisor.LiveTasks.Count == 0, TimeSpan.FromSeconds(10)));
     }
 
     [Fact]
