@@ -454,18 +454,35 @@ public sealed class TaskStore(
     /// <summary>
     /// The seed facts a <c>create_task(continues:)</c> reads off the continued task's
     /// row (§6/§11): its owning Team (the same-Team gate), its profile (the default
-    /// when the caller omits one), the opaque harness session ref to resume, and the
+    /// when the caller omits one), the opaque harness session ref to resume, the
     /// park machine (a fallback preferred machine when the task is parked and no
-    /// longer tracked in the live registry). A pure read; null when the continued
-    /// task does not exist. Team-scoping is deliberately not applied here so the tool
-    /// can surface a precise cross-Team rejection rather than an indistinguishable
-    /// not-found (the engine enforces the same-Team gate on the resulting command).
+    /// longer tracked in the live registry), and <see cref="ContinuationSource.LastRanOn"/>
+    /// — the machine of the task's most recent dispatch, read off its worker-instance
+    /// rows. A pure read; null when the continued task does not exist. Team-scoping is
+    /// deliberately not applied here so the tool can surface a precise cross-Team
+    /// rejection rather than an indistinguishable not-found (the engine enforces the
+    /// same-Team gate on the resulting command).
+    ///
+    /// <para><b>Why the instance rows and not just the two columns.</b> The registry
+    /// forgets a task the moment its process exits and <c>ParkMachine</c> only ever
+    /// describes a parked task, so for the ordinary continuation — one whose predecessor
+    /// finished — neither can say where it ran, and that used to be refused outright.
+    /// <see cref="WorkerInstanceRow.MachineId"/> is the durable answer (one row per
+    /// dispatch, §12) and outlives both. Deliberately <em>not</em> filtered on
+    /// <c>!Revoked</c>: a task that reached a terminal state has had its last instance
+    /// revoked, and where it ran is still where it ran.</para>
     /// </summary>
     public async Task<ContinuationSource?> ReadContinuationSourceAsync(TaskId continued, CancellationToken ct = default) =>
         await db.Tasks.AsNoTracking()
             .Where(t => t.Id == continued.Value)
             .Select(t => new ContinuationSource(
-                new TeamId(t.TeamId), t.Profile, t.HarnessSessionRef, t.ParkMachine))
+                new TeamId(t.TeamId), t.Profile, t.HarnessSessionRef, t.ParkMachine,
+                db.WorkerInstances
+                    .Where(w => w.TaskId == t.Id && w.MachineId != null)
+                    .OrderByDescending(w => w.CreatedAt)
+                    .ThenByDescending(w => w.Id)
+                    .Select(w => w.MachineId)
+                    .FirstOrDefault()))
             .FirstOrDefaultAsync(ct);
 
     /// <summary>

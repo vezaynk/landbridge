@@ -74,6 +74,49 @@ public sealed class ContinuationEndToEndTests(PostgresFixture pg) : IAsyncLifeti
         return id;
     }
 
+    private static HashSet<string> Profiles(params string[] names) =>
+        new(names.Length == 0 ? ["default"] : names, StringComparer.Ordinal);
+
+    /// <summary>
+    /// Seeds a continued task that actually <em>ran</em> on <paramref name="machine"/> and then
+    /// finished: dispatched (so a worker-instance row durably records the machine, §12), session
+    /// ref stamped, then reported and accepted — which revokes that instance. Nothing tracks it
+    /// afterwards and it never parked, which is the ordinary shape of a predecessor a Lead wants
+    /// to continue.
+    /// </summary>
+    private async Task<TaskId> SeedRanAndFinished(TeamId team, string machine, string sessionRef)
+    {
+        TaskId id;
+        WorkerInstanceId instance;
+        // Two contexts on purpose: StampHarnessSessionRefAsync is an ExecuteUpdate, so it moves
+        // the row's xmin without the tracked entity knowing, and a transition applied afterwards
+        // on the same context loses the optimistic-concurrency check it never saw coming.
+        await using (var db = pg.NewContext())
+        {
+            var store = new TaskStore(db, _clock);
+            var created = (StoreResult.Applied)await store.CreateAsync(new CreateTask(
+                new LeadClaim(team), team, "criteria", CompletionMode.Lead, Profile: null,
+                TeamBudgetRemains: true));
+            id = created.Task.Id;
+
+            var dispatched = Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(
+                new MachineSnapshot(machine, Ready: true, UnderBackPressure: false, Profiles()),
+                WorkerInstanceId.New()));
+            Assert.Equal(id, dispatched.Task.Id);
+            instance = dispatched.Task.CurrentInstance!.Value;
+
+            await store.StampHarnessSessionRefAsync(id, sessionRef);
+        }
+        await using (var db = pg.NewContext())
+        {
+            var store = new TaskStore(db, _clock);
+            Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(
+                id, new ReportResult(new WorkerCaller(team, id, instance), "ref")));
+            Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(id, new VerdictAccept(new LeadClaim(team))));
+        }
+        return id;
+    }
+
     [SkippableFact]
     public async Task Create_task_continues_seeds_the_lineage_machine_and_inherited_session()
     {
@@ -125,18 +168,56 @@ public sealed class ContinuationEndToEndTests(PostgresFixture pg) : IAsyncLifeti
     }
 
     [SkippableFact]
-    public async Task Create_task_continues_a_task_whose_machine_is_gone_is_refused()
+    public async Task Create_task_continues_a_finished_task_whose_machine_is_gone_and_degrade_decides_at_dispatch()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
+        // THE ordinary continuation, and it used to be refused outright: the predecessor
+        // finished, so its process exited and the registry tracks it nowhere, and it never
+        // parked — neither of the two live sources can name its machine. The durable
+        // worker-instance row can (§12), including after completion revoked that instance.
+        var registry = new RunnerConnectionRegistry(_clock); // empty: m1 is gone
+        var continued = await SeedRanAndFinished(Team, "m1", "sess-1");
+
+        var newIdText = await LeadFor(Team, registry).CreateTask(
+            "carry on", "ship it", "lead", null, null, CancellationToken.None,
+            continues: continued.ToString());
+
+        var newId = new TaskId(Guid.Parse(newIdText));
+        await using var db = pg.NewContext();
+        var row = await db.Tasks.AsNoTracking().SingleAsync(t => t.Id == newId.Value);
+        Assert.Equal(continued.Value, row.ContinuesTaskId);
+        Assert.Equal("m1", row.PreferredMachine); // seeded from the instance row
+        Assert.Equal(MachineGonePolicy.Degrade, row.OnMachineGone);
+        Assert.Equal("sess-1", row.HarnessSessionRef);
+        Assert.Equal(continued.Value, row.WorkDirTaskId); // §11: the directory follows regardless
+
+        // And the machine-gone question is answered where §6/§11 puts it — at dispatch, by the
+        // policy the Lead chose. m2 claims it, cold-starts, and the dropped conversation is
+        // recorded rather than silently lost. Refusing at creation pre-empted all of this.
+        var store = new TaskStore(db, _clock);
+        var applied = Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(
+            new MachineSnapshot("m2", Ready: true, UnderBackPressure: false, Profiles()),
+            WorkerInstanceId.New(), CancellationToken.None, connectedMachines: ["m2"]));
+        Assert.Equal(newId, applied.Task.Id);
+        Assert.Null(applied.HarnessSessionRef);          // cold start: transcript abandoned
+        Assert.Equal(continued, applied.WorkDirTask);    // directory still inherited
+        Assert.True(await db.TaskEvents.AnyAsync(e =>
+            e.TaskId == newId.Value && e.Kind == TaskEventRow.ContinuationMemoryLostKind));
+    }
+
+    [SkippableFact]
+    public async Task Create_task_continues_a_task_that_never_ran_is_refused()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        // The one case still refused, and it is not the machine-gone case: this task has
+        // never been dispatched at all, so there is no transcript to resume and no working
+        // directory to carry on in. Nothing a policy could decide later.
         var registry = new RunnerConnectionRegistry(_clock);
-        // The continued task exists but is not tracked anywhere and was never parked,
-        // so the plane can't locate its machine-local session — there is nothing to
-        // resume, and the tool says so rather than silently cold-starting.
-        var continued = await SeedContinued(registry, Team, "m1", profile: null, sessionRef: "sess-1", track: false);
+        var continued = await SeedContinued(registry, Team, "m1", profile: null, sessionRef: null, track: false);
 
         var ex = await Assert.ThrowsAsync<McpException>(() => LeadFor(Team, registry).CreateTask(
             "resume", "ship it", "lead", null, null, CancellationToken.None, continues: continued.ToString()));
-        Assert.Contains("no longer", ex.Message);
+        Assert.Contains("never been dispatched", ex.Message);
     }
 
     [SkippableFact]

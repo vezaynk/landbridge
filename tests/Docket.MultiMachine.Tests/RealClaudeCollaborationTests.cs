@@ -356,7 +356,16 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(20));
         var ct = cts.Token;
 
-        var nonce = "nonce-" + NewToken();
+        // The value the first worker is told, and — separately — the part of it that is the
+        // proof. The hex is random per run and appears ONLY in the first task's spawn prompt,
+        // so a continuation reporting it can only have resumed the inherited conversation;
+        // that is the whole assertion. The "nonce-" prefix is decoration, and a model can
+        // defensibly read it as a label on the value rather than part of it — claude 2.1.226
+        // did exactly that, reporting the hex alone. Asserting the prefixed string would make
+        // this fact hostage to the next model's reading of a word we chose, and tightening the
+        // prompt would only move that hostage, so the assertion is on the hex.
+        var remembered = NewToken();
+        var nonce = "nonce-" + remembered;
         await using var rig = new FleetRig(
             pg,
             // The first task's worker is told the nonce and reports something else; the
@@ -399,8 +408,9 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
             "the continuation worker never drove its task to verifying.\n"
             + await rig.RealWorkerDiagnosticsAsync(second, ct));
 
-        // The value only the inherited conversation held.
-        Assert.Contains(nonce, await rig.ResultReferenceAsync(second, ct));
+        // The value only the inherited conversation held — the hex, not the prefixed string
+        // (see where `remembered` is minted).
+        Assert.Contains(remembered, await rig.ResultReferenceAsync(second, ct));
 
         // Harness-side proof, independent of anything the agent said: two DIFFERENT tasks'
         // captured instances report the SAME session id on their own system/init. A cold start

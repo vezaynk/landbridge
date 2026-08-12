@@ -177,14 +177,21 @@ public sealed record PermissionOutcome(PermissionVerdict Verdict, string? Messag
 /// The seed facts a <c>create_task(continues:)</c> reads off the continued task's
 /// row (§6/§11), returned by <see cref="TaskStore.ReadContinuationSourceAsync"/>:
 /// the owning Team, the profile to default to, the opaque harness session ref to
-/// resume, and the park machine as a fallback preferred machine. Identifiers and
-/// opaque refs only — no prose.
+/// resume, and two fallbacks for the preferred machine. Identifiers and opaque refs
+/// only — no prose.
 /// </summary>
+/// <param name="ParkMachine">The park record's machine, set only while the continued task
+/// is parked.</param>
+/// <param name="LastRanOn">The machine of the continued task's most recent dispatch, from
+/// its worker-instance rows (§12) — the durable fact that survives the task going terminal
+/// and its process being forgotten by the live registry. Null only for a task that has
+/// never been dispatched, or one whose instance rows predate the machine column.</param>
 public sealed record ContinuationSource(
     TeamId Team,
     string? Profile,
     string? HarnessSessionRef,
-    string? ParkMachine);
+    string? ParkMachine,
+    string? LastRanOn = null);
 
 /// <summary>
 /// One blocked_on_input task as the wait-TTL sweeper reads it (§11):

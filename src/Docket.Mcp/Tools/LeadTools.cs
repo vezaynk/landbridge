@@ -132,15 +132,27 @@ public sealed class LeadTools(
             if (source.Team != lead.Team)
                 throw new McpException($"cannot continue task {continues}: it belongs to another Team.");
 
-            // The machine that last held/ran the continued task: the live registry
-            // for a currently-tracked task, else the park record for a parked one.
-            // Without it the machine-local transcript can't be located, so there is
-            // nothing to resume — say so rather than silently cold-starting.
-            var preferredMachine = registry.MachineFor(continuedId) ?? source.ParkMachine;
+            // The machine that last held/ran the continued task, most authoritative first:
+            // the live registry for a currently-tracked task, the park record for a parked
+            // one, else the durable worker-instance row for a task that has simply finished
+            // (§12). The third is what makes the ordinary case work — continuing a completed
+            // task, whose process exited and is therefore tracked nowhere.
+            //
+            // A machine that is gone is NOT refused here. Whether that is fatal is exactly
+            // what on_machine_gone decides, at dispatch, where the answer is knowable: the
+            // Lead's `degrade` (the default) cold-starts on any profile-matching machine and
+            // records continuation-memory-lost, and `pin` waits in submitted for the machine
+            // to come back (§6/§11). Refusing at creation pre-empted that decision, and told
+            // the Lead to create a plain task instead — which would silently drop the
+            // directory inheritance and the lineage a degraded continuation still keeps.
+            var preferredMachine =
+                registry.MachineFor(continuedId) ?? source.ParkMachine ?? source.LastRanOn;
             if (preferredMachine is null)
                 throw new McpException(
-                    $"cannot continue task {continues}: the machine that last ran it is no longer " +
-                    "connected, so its session can't be located. Create a new task instead.");
+                    $"cannot continue task {continues}: it has never been dispatched, so there is no " +
+                    "transcript to resume and no working directory to carry on in. Create an ordinary " +
+                    "task instead. (A continuation whose machine is merely gone is fine — " +
+                    "on_machine_gone decides that at dispatch.)");
 
             var policy = MachineGonePolicy.Degrade;
             if (!string.IsNullOrWhiteSpace(onMachineGone))
