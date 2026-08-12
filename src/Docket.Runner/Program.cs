@@ -97,11 +97,13 @@ public static class Program
         if (!backPressure.ObservesCpu)
             Console.WriteLine("docketd: cpu back-pressure unavailable on this platform; max_cpu_load is inert (memory and disk still gate).");
 
-        // §10 event relay: terminal is the only implemented source. A profile
-        // declaring hooks/otel/none emits one event ever (started, at spawn), so the
-        // plane's per-task liveness window requeues everything it runs that outlives
-        // that window. Silent degradation here reads as a hung harness, so say it
-        // loudly at startup — same posture as the inert-max_cpu_load line above.
+        // §10 event relay: terminal is the only implemented source. A profile declaring
+        // hooks/otel/none has no tool-call source and therefore no progress signal, so
+        // the no-progress ceiling becomes the only clock governing its tasks — the
+        // periodic `alive` this daemon emits keeps the short aliveness clock satisfied
+        // either way. EventRelayWarnings states the cost precisely; this loop only
+        // prints it, loudly, because silent degradation reads as a hung harness —
+        // same posture as the inert-max_cpu_load line above.
         foreach (var warning in config.EventRelayWarnings())
             Console.WriteLine(warning);
 

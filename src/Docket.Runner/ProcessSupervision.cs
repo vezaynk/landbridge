@@ -209,9 +209,10 @@ public sealed class SupervisedTask
 /// <c>command</c> is argv passed to <see cref="ProcessStartInfo.ArgumentList"/>
 /// (§10). Every spawn is stamped with <c>DOCKET_MACHINE_ID</c> and
 /// <c>DOCKET_TASK_ID</c> (§10, not configurable), started in
-/// <c>{work_root}/{task_id}</c> (§10 work_root note), and killed as a whole
-/// tree so children — subagents, dev servers — go down with the parent (§10
-/// process groups). The portable tree-kill (<see cref="Process.Kill(bool)"/>)
+/// <c>{work_root}/{task_id}</c> — or in the predecessor's directory when the
+/// dispatch names a <see cref="DispatchCommand.WorkDirTask"/>, which every
+/// continuation does (§7, §11) — and killed as a whole tree so children —
+/// subagents, dev servers — go down with the parent (§10 process groups). The portable tree-kill (<see cref="Process.Kill(bool)"/>)
 /// is the group-kill baseline the conventions call for; each task is its own
 /// tree, so a kill leaves siblings untouched.
 ///
