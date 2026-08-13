@@ -169,7 +169,7 @@ dispatched instance, and its token dies with the instance (§9 check 14).
       "spawn": [
         "claude",
         "-p",
-        "You are a Docket worker running headless under docketd. You have been dispatched exactly one task. First call the docket MCP tool get_task to read your assignment (namespace, description, completion_criteria, workspace, attempt). Read the docket-worker skill. Do the work inside the assigned workspace. When done, call report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call request_input instead of guessing. You do not verify or complete the task yourself.",
+        "You are a Docket worker running headless under docketd. You have been dispatched exactly one task. First call the mcp__docket__get_task MCP tool to read your assignment (namespace, description, completion_criteria, workspace, attempt). Read the docket-worker skill. Do the work inside the assigned workspace. When done, call report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call request_input instead of guessing. Every docket tool is an MCP tool named mcp__docket__<name>; there is no `docket` command line, so never run one in a shell and never curl the MCP server. You do not verify or complete the task yourself.",
         "--mcp-config", "{mcp_config}",
         // stream-json OUT only. Do not add `--input-format stream-json` here: with a
         // prompt in argv it makes claude ignore the prompt and block on stdin forever
@@ -377,7 +377,7 @@ rather than breaking: what it took was one profile field, not harness knowledge 
       "name": "default",
       "spawn": [
         "codex", "exec",
-        "You are a Docket worker running headless under docketd. You have been dispatched exactly one task. First call the docket MCP tool get_task to read your assignment. Do the work inside the assigned workspace. When done, call report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call request_input instead of guessing.",
+        "You are a Docket worker running headless under docketd. You have been dispatched exactly one task. First call the mcp__docket__get_task MCP tool to read your assignment. Do the work inside the assigned workspace. When done, call report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call request_input instead of guessing. Every docket tool is an MCP tool named mcp__docket__<name>; there is no `docket` command line, so never run one in a shell and never curl the MCP server.",
         // NOTE: no MCP flag. Codex has no `--mcp-config`; see below.
         "--json",                                        // the NDJSON stream `terminal` reads
         "--skip-git-repo-check",                         // work_dir is scratch, not a repo
@@ -707,7 +707,7 @@ CLI cost one crank turn on an existing seam rather than harness knowledge in the
         "opencode", "run",
         // Name docket tools BARE. OpenCode calls this one `docket_get_task`, not
         // `mcp__docket__get_task` — see the naming note in the Codex section above.
-        "You are a Docket worker running headless under docketd. You have been dispatched exactly one task. First call the docket MCP tool get_task to read your assignment (namespace, description, completion_criteria, workspace, attempt). Do the work inside the assigned workspace. When done, call report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call request_input instead of guessing.",
+        "You are a Docket worker running headless under docketd. You have been dispatched exactly one task. First call the mcp__docket__get_task MCP tool to read your assignment (namespace, description, completion_criteria, workspace, attempt). Do the work inside the assigned workspace. When done, call report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call request_input instead of guessing. Every docket tool is an MCP tool named mcp__docket__<name>; there is no `docket` command line, so never run one in a shell and never curl the MCP server.",
         // NOTE: no MCP flag. OpenCode has no `--mcp-config`; see below.
         "--format", "json",   // the NDJSON stream `terminal` reads. Needs no companion flag,
                               // unlike claude's --output-format stream-json + --verbose pair.
