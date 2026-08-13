@@ -112,11 +112,32 @@ internal static class OAuthTestKit
     }
 
     /// <summary>
+    /// The <c>client_uri</c> the default CIMD fixture advertises. Deliberately a host
+    /// the document does <b>not</b> live on: <c>client_uri</c> is unvalidated document
+    /// body, so a fixture that set it to its own <c>client_id</c> origin would let a
+    /// consent-page assertion pass no matter which of the two the page actually read.
+    /// With them divergent, any test asserting on the displayed host is pinned to the
+    /// integrity-checked <c>client_id</c>.
+    /// </summary>
+    public const string UnverifiedClientUri = "https://claimed-site.example";
+
+    /// <summary>
     /// A loopback server serving one Client ID Metadata Document at
     /// <c>/client.json</c>; returns the app and the <c>client_id</c> URL to present.
-    /// The document's <c>client_id</c> equals that URL exactly, as CIMD requires.
+    /// The document's <c>client_id</c> equals that URL exactly, as CIMD requires,
+    /// while its <c>client_uri</c> points at <see cref="UnverifiedClientUri"/>.
     /// </summary>
-    public static (WebApplication App, string ClientId) BuildCimdServer(string clientName, params string[] redirectUris)
+    public static (WebApplication App, string ClientId) BuildCimdServer(string clientName, params string[] redirectUris) =>
+        BuildCimdServer(clientName, UnverifiedClientUri, redirectUris);
+
+    /// <summary>
+    /// As <see cref="BuildCimdServer(string, string[])"/>, but with the document's
+    /// <c>client_uri</c> (and <c>client_name</c>) chosen by the caller — the two
+    /// unverified fields, so a test can serve the impersonation shape: a real
+    /// <c>client_id</c> the attacker owns, dressed in a trusted client's name and site.
+    /// </summary>
+    public static (WebApplication App, string ClientId) BuildCimdServer(
+        string clientName, string? clientUri, string[] redirectUris)
     {
         var port = FreePort();
         var builder = WebApplication.CreateBuilder();
@@ -130,7 +151,7 @@ internal static class OAuthTestKit
         {
             client_id = clientId,
             client_name = clientName,
-            client_uri = url,
+            client_uri = clientUri,
             redirect_uris = redirectUris,
             token_endpoint_auth_method = "none",
             application_type = "native",

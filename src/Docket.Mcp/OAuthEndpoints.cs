@@ -39,6 +39,15 @@ public static class OAuthEndpoints
     /// </summary>
     private static readonly TimeSpan FailedAttemptDelay = TimeSpan.FromMilliseconds(500);
 
+    /// <summary>
+    /// The one <c>invalid_grant</c> description the token endpoint ever emits. Every
+    /// way a code exchange can fail — unknown, expired, replayed, or bound to a
+    /// different client/redirect/resource/verifier — answers with this exact string,
+    /// so the response distinguishes nothing (RFC 6749 §5.2).
+    /// </summary>
+    private const string InvalidGrantDescription =
+        "the authorization code is invalid, expired, already used, or does not match this request";
+
     public static IEndpointRouteBuilder MapOAuthEndpoints(this IEndpointRouteBuilder app)
     {
         // Anonymous by construction: a client reaches these before it has a token.
@@ -150,8 +159,10 @@ public static class OAuthEndpoints
 
     private static async Task<IResult> TokenAsync(
         HttpContext http, OAuthAuthorizationCodeService codes, TokenService tokens,
-        OAuthServerConfig server, TimeProvider clock, CancellationToken ct)
+        OAuthServerConfig server, TimeProvider clock, ILoggerFactory logs, CancellationToken ct)
     {
+        var log = logs.CreateLogger("Docket.Mcp.OAuth");
+
         if (!http.Request.HasFormContentType)
             return TokenError("invalid_request", "token requests are application/x-www-form-urlencoded");
 
@@ -175,7 +186,16 @@ public static class OAuthEndpoints
 
         var result = await codes.ConsumeAsync(code, clientId, redirectUri, codeVerifier, resource, server, ct);
         if (result is CodeExchangeResult.InvalidGrant invalid)
-            return TokenError("invalid_grant", invalid.Reason);
+        {
+            // ConsumeAsync's per-mismatch reason is a server-side diagnostic, not a
+            // wire value: the caller here is an unauthenticated public client, and
+            // telling it *which* bound value failed turns this endpoint into an
+            // enumeration oracle (an attacker holding a stolen code could probe for
+            // the client_id and redirect_uri it was bound to). Same split as the CIMD
+            // failure above — log the detail, answer with one constant description.
+            log.LogWarning("rejecting token exchange for client {ClientId}: {Reason}", clientId, invalid.Reason);
+            return TokenError("invalid_grant", InvalidGrantDescription);
+        }
 
         var scope = ((CodeExchangeResult.Exchanged)result).Scope;
 
@@ -295,11 +315,24 @@ public static class OAuthEndpoints
 
     /// <summary>
     /// The consent page (§5): minimal, self-contained (no external assets), showing
-    /// the client's name and hostname from CIMD, the requested scope, and the
-    /// operator passphrase field. Every client-supplied value is HTML-encoded — the
-    /// CIMD document is attacker-influenced, so the client name/uri must never reach
-    /// the page unescaped. All original authorize parameters ride hidden inputs so
-    /// the POST re-validates the identical request.
+    /// who is asking, where the grant would go, the requested scope, and the operator
+    /// passphrase field. All original authorize parameters ride hidden inputs so the
+    /// POST re-validates the identical request.
+    ///
+    /// <para><b>What the human is shown is chosen by integrity, not by prettiness.</b>
+    /// Of everything in a CIMD document only <c>client_id</c> is verified: the fetcher
+    /// enforces that the document's own <c>client_id</c> equals the URL it was fetched
+    /// from (<see cref="CimdClient.FetchAsync"/>, CIMD draft §4.1), so an attacker
+    /// cannot present a <c>client_id</c> it does not control the origin of.
+    /// <c>client_name</c> and <c>client_uri</c> are ordinary document body — a
+    /// malicious client is free to claim "Claude Code" at "claude.ai" while listing
+    /// its own <c>redirect_uris</c>. So the identity line is derived from
+    /// <c>client_id</c> alone and shown alongside the <c>redirect_uri</c> the code
+    /// would be sent to (CIMD draft §6.4/§6.7); the self-reported name and site are
+    /// rendered only as explicitly-labelled, unverified decoration.</para>
+    ///
+    /// <para>Every client-supplied value is HTML-encoded — the CIMD document is
+    /// attacker-influenced, so none of it may reach the page unescaped.</para>
     /// </summary>
     private static IResult ConsentPage(CimdDocument doc, AuthorizeParams p, string? error = null)
     {
@@ -310,19 +343,36 @@ public static class OAuthEndpoints
         sb.Append("<title>Authorize Docket access</title>");
         sb.Append("<style>body{font:16px system-ui,sans-serif;max-width:34rem;margin:3rem auto;padding:0 1rem;color:#111}"
             + "h1{font-size:1.3rem}.client{background:#f4f4f5;border-radius:.5rem;padding:1rem;margin:1rem 0}"
-            + ".client b{font-size:1.05rem}.host{color:#555;font-size:.9rem}label{display:block;margin:1rem 0 .3rem}"
+            + ".client b{font-size:1.05rem}.host{color:#555;font-size:.9rem;word-break:break-all}"
+            + ".host code{background:#e7e7e9;padding:.1rem .3rem;border-radius:.2rem}"
+            + "label{display:block;margin:1rem 0 .3rem}"
             + "input[type=password]{width:100%;padding:.6rem;font-size:1rem;box-sizing:border-box}"
             + "button{margin-top:1.2rem;padding:.6rem 1.2rem;font-size:1rem;cursor:pointer}"
-            + ".err{color:#b00020;margin:.5rem 0}.scope{font-size:.9rem;color:#555}</style></head><body>");
+            + ".err{color:#b00020;margin:.5rem 0}.scope{font-size:.9rem;color:#555}"
+            + ".unverified{font-size:.85rem;color:#666;margin:.4rem 0 0}</style></head><body>");
         sb.Append("<h1>Authorize access to Docket</h1>");
 
-        sb.Append("<div class=\"client\"><b>").Append(e.Encode(doc.ClientName ?? "Unknown client")).Append("</b>");
-        // Display the client_id hostname — with a failed/absent fetch this is the
-        // only signal the human has about who is asking (CIMD draft §6.4/§6.7).
-        var host = ClientHost(doc);
-        if (host is not null)
-            sb.Append("<div class=\"host\">").Append(e.Encode(host)).Append("</div>");
-        sb.Append("</div>");
+        // The identity: the client_id host, then the whole client_id URL, then the
+        // redirect_uri. client_id is the only field the fetcher proves (it must equal
+        // the URL it came from), and the redirect_uri is where this grant physically
+        // goes — together they are the human's real answer to "who is asking, and
+        // where does the code land?" (CIMD draft §6.4/§6.7).
+        sb.Append("<div class=\"client\"><b>")
+          .Append(e.Encode(ClientIdHost(doc.ClientId) ?? "unidentified client")).Append("</b>");
+        if (doc.ClientId is not null)
+            sb.Append("<div class=\"host\">").Append(e.Encode(doc.ClientId)).Append("</div>");
+        if (p.RedirectUri is not null)
+            sb.Append("<div class=\"host\">Access will be sent to <code>")
+              .Append(e.Encode(p.RedirectUri)).Append("</code></div>");
+
+        // Unverified by construction: both are attacker-controllable document body,
+        // so they are labelled rather than trusted — a document claiming the name and
+        // site of a well-known client must not be able to borrow its reputation.
+        sb.Append("<p class=\"unverified\">Claimed by the client, not verified: ")
+          .Append(e.Encode(doc.ClientName ?? "(no name)"));
+        if (doc.ClientUri is not null)
+            sb.Append(" &lt;").Append(e.Encode(doc.ClientUri)).Append("&gt;");
+        sb.Append("</p></div>");
 
         sb.Append("<p>This client is requesting a Docket human session");
         if (p.Scope is not null)
@@ -357,11 +407,15 @@ public static class OAuthEndpoints
           .Append("\" value=\"").Append(e.Encode(value)).Append("\">");
     }
 
-    private static string? ClientHost(CimdDocument doc)
-    {
-        var source = doc.ClientUri ?? doc.ClientId;
-        return source is not null && Uri.TryCreate(source, UriKind.Absolute, out var u) ? u.Host : null;
-    }
+    /// <summary>
+    /// The hostname of the <c>client_id</c> URL, for the consent page's identity line.
+    /// Deliberately never consults the document's <c>client_uri</c>: that field is
+    /// unvalidated body text, so preferring it would let a malicious client render a
+    /// trusted hostname above its own <c>redirect_uri</c>. Only <c>client_id</c> is
+    /// pinned to an origin the client demonstrably controls (CIMD draft §4.1).
+    /// </summary>
+    private static string? ClientIdHost(string? clientId) =>
+        clientId is not null && Uri.TryCreate(clientId, UriKind.Absolute, out var u) ? u.Host : null;
 
     private static string BuildErrorHtml(string error, string message)
     {

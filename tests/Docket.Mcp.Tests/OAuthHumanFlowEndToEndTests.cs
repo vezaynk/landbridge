@@ -108,7 +108,9 @@ public sealed class OAuthHumanFlowEndToEndTests(PostgresFixture pg) : IAsyncLife
             Assert.Equal(HttpStatusCode.OK, form.StatusCode);
             var formHtml = await form.Content.ReadAsStringAsync(ct);
             Assert.Contains("Operator passphrase", formHtml);
-            Assert.Contains("Claude Code (test)", formHtml); // client name from CIMD
+            Assert.Contains(clientId, formHtml); // the verified identity: the client_id URL
+            Assert.Contains(redirectUri, formHtml); // and where the grant would go
+            Assert.Contains("Claude Code (test)", formHtml); // CIMD name, as an unverified claim
 
             // ── 5. authorize (POST) — submit the passphrase; expect a 302 back ──
             using var authResp = await http.PostAsync(authorizeEndpoint, new FormUrlEncodedContent(

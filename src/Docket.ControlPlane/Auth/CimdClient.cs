@@ -73,7 +73,8 @@ public interface ICimdClient
 ///   <c>ConnectCallback</c> resolves the host and connects only to a
 ///   non-private, non-loopback, non-link-local address — and connects to that
 ///   <em>exact vetted IP</em>, which closes the DNS-rebinding gap between a
-///   name-resolution check and the actual connect.</item>
+///   name-resolution check and the actual connect. Proxies are off, so the
+///   endpoint that callback vets is always the origin.</item>
 /// <item><b>Bounded (§6.6):</b> a short total timeout, plus a 5&#160;KB response
 ///   cap (the draft's recommended maximum) enforced by the body read itself,
 ///   which stops one byte past the cap and refuses the document — so a slow or
@@ -113,6 +114,12 @@ public sealed class CimdClient : ICimdClient
             AutomaticDecompression = DecompressionMethods.None,
             ConnectTimeout = TimeSpan.FromSeconds(3),
             ConnectCallback = ValidatedConnectAsync,
+            // No proxy (§6.5). UseProxy defaults to true, and through a proxy
+            // ValidatedConnectAsync would vet the *proxy's* endpoint instead of
+            // the origin's — both the address fence and the connect-to-the-vetted-IP
+            // anti-rebinding property would then apply to the wrong host. A CIMD
+            // document lives on a public origin, so reach it directly or not at all.
+            UseProxy = false,
         };
         _http = new HttpClient(handler)
         {

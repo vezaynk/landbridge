@@ -203,6 +203,42 @@ public sealed class OAuthEndpointsTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task Consent_page_identifies_the_client_by_client_id_not_by_its_claimed_client_uri()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var (plane, baseUrl, ct) = await StartPlaneAsync(configureOperator: true);
+        await using var host = plane;
+        // The impersonation shape. An attacker serves a perfectly valid CIMD from an
+        // origin it controls — so the client_id integrity check passes — and fills the
+        // unvalidated fields with a well-known client's name and site while listing its
+        // own redirect. The page must believe only client_id and the redirect_uri.
+        const string attackerRedirect = "https://attacker.example/callback";
+        var (cimd, clientId) = OAuthTestKit.BuildCimdServer(
+            "Claude Code", "https://claude.ai", [attackerRedirect]);
+        await cimd.StartAsync(ct);
+        try
+        {
+            using var http = NewClient();
+            using var resp = await http.GetAsync(AuthorizeUrl(baseUrl, clientId, attackerRedirect, method: "S256"), ct);
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+            var html = await resp.Content.ReadAsStringAsync(ct);
+
+            // Identity = the client_id's host, then the client_id itself, then where
+            // the grant actually goes: the two facts the human decides on.
+            Assert.Contains($"<b>{new Uri(clientId).Host}</b>", html);
+            Assert.Contains($"<div class=\"host\">{clientId}</div>", html);
+            Assert.Contains($"Access will be sent to <code>{attackerRedirect}</code>", html);
+
+            // The claimed name and site appear only as labelled decoration — never as
+            // the identity line, and never as a hostname the page vouches for.
+            Assert.Contains("Claimed by the client, not verified: Claude Code &lt;https://claude.ai&gt;", html);
+            Assert.DoesNotContain("<b>claude.ai</b>", html);
+            Assert.DoesNotContain("<div class=\"host\">https://claude.ai</div>", html);
+        }
+        finally { await cimd.StopAsync(ct); await plane.StopAsync(ct); }
+    }
+
+    [SkippableFact]
     public async Task Wrong_passphrase_re_renders_the_form_and_mints_no_code()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
@@ -278,7 +314,75 @@ public sealed class OAuthEndpointsTests(PostgresFixture pg) : IAsyncLifetime
         finally { await plane.StopAsync(ct); }
     }
 
+    [SkippableFact]
+    public async Task Token_describes_every_invalid_grant_identically()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var (plane, baseUrl, ct) = await StartPlaneAsync(configureOperator: true);
+        await using var host = plane;
+        const string redirect = "http://127.0.0.1:54322/callback";
+        var (cimd, clientId) = OAuthTestKit.BuildCimdServer("Client", redirect);
+        await cimd.StartAsync(ct);
+        try
+        {
+            using var http = NewClient();
+            var verifier = OAuthTestKit.NewCodeVerifier();
+
+            // Walk authorize for a real, live code.
+            using var authResp = await http.PostAsync($"{baseUrl}/oauth/authorize", new FormUrlEncodedContent(
+                new Dictionary<string, string>
+                {
+                    ["response_type"] = "code",
+                    ["client_id"] = clientId,
+                    ["redirect_uri"] = redirect,
+                    ["code_challenge"] = OAuthTestKit.S256Challenge(verifier),
+                    ["code_challenge_method"] = "S256",
+                    ["passphrase"] = OAuthTestKit.Passphrase,
+                }), ct);
+            Assert.Equal(HttpStatusCode.Redirect, authResp.StatusCode);
+            var code = QueryHelpers.ParseQuery(authResp.Headers.Location!.Query)["code"].ToString();
+
+            // Fail its exchange on a bound value — a sibling loopback port, which the
+            // code's exact-match binding refuses (the bound-value checks run before the
+            // consume, so the code survives for the second probe).
+            var boundMismatch = await ExchangeDescriptionAsync(
+                http, baseUrl, code, clientId, "http://127.0.0.1:54999/callback", verifier, ct);
+            // ...versus a code that never existed at all.
+            var unknownCode = await ExchangeDescriptionAsync(
+                http, baseUrl, "dkt_c_never-issued", clientId, redirect, verifier, ct);
+
+            // Two unrelated server-side reasons, one indistinguishable answer: holding a
+            // stolen code, an unauthenticated caller cannot probe out what it was bound to.
+            Assert.Equal(unknownCode, boundMismatch);
+        }
+        finally { await cimd.StopAsync(ct); await plane.StopAsync(ct); }
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// POSTs one token exchange expected to fail, asserts the RFC 6749 §5.2 shape, and
+    /// yields the <c>error_description</c> so two failure modes can be compared.
+    /// </summary>
+    private static async Task<string> ExchangeDescriptionAsync(
+        HttpClient http, string baseUrl, string code, string clientId,
+        string redirectUri, string verifier, CancellationToken ct)
+    {
+        using var resp = await http.PostAsync($"{baseUrl}/oauth/token", new FormUrlEncodedContent(
+            new Dictionary<string, string>
+            {
+                ["grant_type"] = "authorization_code",
+                ["code"] = code,
+                ["client_id"] = clientId,
+                ["redirect_uri"] = redirectUri,
+                ["code_verifier"] = verifier,
+            }), ct);
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        var body = await resp.Content.ReadFromJsonAsync<JsonElement>(ct);
+        Assert.Equal("invalid_grant", body.GetProperty("error").GetString());
+        return body.GetProperty("error_description").GetString()!;
+    }
+
 
     private async Task<(WebApplication Plane, string BaseUrl, CancellationToken Ct)> StartPlaneAsync(bool configureOperator)
     {

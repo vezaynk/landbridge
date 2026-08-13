@@ -530,7 +530,7 @@ this branch.
 | `Docket:PreviewUrlBase` | `http://preview.localhost` | The wildcard base §8.4 preview URLs are built from — the opaque label becomes its leftmost subdomain. Set to your real wildcard host (`https://preview.example.com`) in production. |
 | `Docket:PreviewConnect:Bearer` | *(unset → 503)* | Shared bearer the preview frontend must present to `POST /preview/connect`. Fail-closed when unset, like `Docket:RelayValidation:Bearer`. |
 | `Docket:RelayValidation:Bearer` | *(unset → 503)* | Shared bearer the relay must present to `POST /relay/validate`. Fail-closed when unset. |
-| `Docket:Oauth:AllowInsecureClientMetadata` | `false` | DEV/TEST ONLY. Disables the CIMD SSRF address fence (accepts http / loopback `client_id` hosts). Never enable in production. |
+| `Docket:Oauth:AllowInsecureClientMetadata` | `false` | DEV/TEST ONLY. Disables the CIMD SSRF address fence (accepts `http` `client_id` URLs and hosts resolving to private, loopback, or link-local addresses). Never enable in production. |
 | `Docket:MigrateOnStartup` | `false` | Apply the checked-in EF migration on boot. Set by the dev loop; production migrates out of band. |
 | `Docket:DevSeed:TokenFile` | *(unset)* | Dev-loop only: bootstrap a machine identity and write the seed file here. Never set in production. |
 | env `OTEL_EXPORTER_OTLP_ENDPOINT` | *(unset)* | When set, the host exports OpenTelemetry via OTLP (the Aspire dashboard sets this in the dev loop). |
