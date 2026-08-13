@@ -453,6 +453,20 @@ public sealed record RunnerConfig(
     /// that no harness emits, so they resolve to nothing and the silent-stream warning reports
     /// it against the real stream, which is more honest than pretending to validate a syntax
     /// this resolver does not have.
+    ///
+    /// <para>Two more, both surfaced by the OpenCode integration (#144), both the same class of
+    /// mistake — a profile that parses and reports nothing:
+    /// <list type="number">
+    ///   <item>an unwalkable <b>usage</b> path. The usage keys became dotted paths so a harness
+    ///     that nests its counters is reachable, which means they can now be malformed the same
+    ///     way <c>tool_name_path</c> can. Checked here for the same reason.</item>
+    ///   <item><c>usage_type</c> equal to the effective <c>system_type</c>. This one is a real
+    ///     trap rather than a typo: the reader <c>return</c>s early on a session-init line, so a
+    ///     usage report riding that same type is never read, and the symptom is a profile with a
+    ///     perfect resume ref and permanently empty usage. It bites hardest on a harness whose
+    ///     stream has few distinct types to choose from — OpenCode has six — where reaching for
+    ///     the same one twice is the natural mistake.</item>
+    /// </list></para>
     /// </summary>
     private static IReadOnlyList<string> EventsMappingProblems(IReadOnlyDictionary<string, string>? mapping)
     {
@@ -509,8 +523,43 @@ public sealed record RunnerConfig(
                     "type value (§10)");
         }
 
+        // The usage keys are dotted paths (#144), so they can be malformed exactly as
+        // tool_name_path can. Only declared keys are checked: every default is a valid
+        // one-segment path, so an absent key cannot be at fault.
+        foreach (var key in UsagePathKeys)
+        {
+            if (!mapping.TryGetValue(key, out var raw) || string.IsNullOrWhiteSpace(raw))
+                continue;
+            if (Array.Exists(raw.Split('.'), s => s.Length == 0 || s.Trim() != s))
+                problems.Add(
+                    $"has an unwalkable events.mapping {key} '{raw}' — segments are object property names " +
+                    "separated by '.', each non-empty and unpadded (§10)");
+        }
+
+        var usageType = TerminalStreamMapping.Pick(mapping, "usage_type", "result");
+        if (usageType == TerminalStreamMapping.Pick(mapping, "system_type", "system"))
+            problems.Add(
+                $"sets events.mapping usage_type '{usageType}', which is also the effective system_type — the " +
+                "reader stops at a session-init line, so usage on that same type is never read and the profile " +
+                "reports none. Point one of the two at a different stream type (§10)");
+
         return problems;
     }
+
+    /// <summary>
+    /// The <c>events.mapping</c> keys whose values are dotted paths rather than plain strings
+    /// (#144). Listed once here so validation cannot drift from
+    /// <see cref="TerminalStreamMapping.From"/>; <c>usage_type</c> is deliberately absent because
+    /// it is a stream <em>value</em>, and so is <c>tool_name_path</c>, which is checked above with
+    /// its own comma-alternative rule.
+    /// </summary>
+    private static readonly string[] UsagePathKeys =
+    [
+        "usage_key", "usage_input_key", "usage_output_key", "usage_cache_read_key",
+        "usage_cache_write_key", "usage_reasoning_key", "usage_cost_key", "usage_models_key",
+        "model_input_key", "model_output_key", "model_cache_read_key", "model_cache_write_key",
+        "model_cost_key",
+    ];
 
     private static ProfileConfig BuildProfile(ProfileDto dto)
     {

@@ -228,6 +228,72 @@ public class RunnerConfigTests
         Assert.Equal("item.command, item.tool", mapping["tool_name_path"]);
     }
 
+    /// <summary>
+    /// The usage keys are dotted paths too (#144), so they can be malformed the same way — and
+    /// the consequence is worse than an inert tool mapping, because a profile that resumes and
+    /// clocks progress correctly while reporting zero spend forever looks healthy.
+    /// </summary>
+    [Theory]
+    [InlineData("usage_key", "part..tokens")]
+    [InlineData("usage_key", "part . tokens")]
+    [InlineData("usage_cache_read_key", "cache.")]
+    [InlineData("usage_cost_key", ".cost")]
+    [InlineData("model_input_key", "a..b")]
+    public void Rejects_an_unwalkable_usage_path(string key, string path)
+    {
+        var ex = Assert.Throws<RunnerConfigException>(
+            () => RunnerConfig.Load(WithMapping($$"""{ "{{key}}": "{{path}}" }""")));
+
+        Assert.Contains(ex.Errors, e =>
+            e.Contains(key, StringComparison.Ordinal) && e.Contains("unwalkable", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// The trap the OpenCode integration surfaced. The reader returns early on a session-init
+    /// line, so usage riding that same stream type is never read — and nothing about the config
+    /// looked wrong. Easy to hit on a harness whose stream has few types to pick from, which is
+    /// exactly OpenCode's situation with six.
+    /// </summary>
+    [Fact]
+    public void Rejects_a_usage_type_that_collides_with_the_session_init_type()
+    {
+        var json = WithMapping("""
+            { "system_type": "step_start", "subtype_key": "type", "init_subtype": "step_start",
+              "session_id_key": "sessionID", "usage_type": "step_start" }
+            """);
+
+        var ex = Assert.Throws<RunnerConfigException>(() => RunnerConfig.Load(json));
+
+        Assert.Contains(ex.Errors, e =>
+            e.Contains("usage_type", StringComparison.Ordinal)
+            && e.Contains("system_type", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// The worked OpenCode mapping loads clean — nested usage paths, both semantic booleans, and
+    /// a deliberately blanked <c>usage_models_key</c> for a harness that reports no model.
+    /// </summary>
+    [Fact]
+    public void Accepts_the_worked_opencode_mapping_including_nested_usage_paths()
+    {
+        var json = WithMapping("""
+            { "system_type": "step_start", "subtype_key": "type", "init_subtype": "step_start",
+              "session_id_key": "sessionID", "tool_event_type": "tool_use", "tool_name_path": "part.tool",
+              "usage_type": "step_finish", "usage_key": "part.tokens", "usage_input_key": "input",
+              "usage_output_key": "output", "usage_cache_read_key": "cache.read",
+              "usage_cache_write_key": "cache.write", "usage_reasoning_key": "reasoning",
+              "usage_cost_key": "part.cost", "usage_models_key": "",
+              "usage_cached_is_subset": "false", "usage_reasoning_is_subset": "false",
+              "usage_is_cumulative": "false" }
+            """);
+
+        var mapping = RunnerConfig.Load(json).Default.Events.Mapping;
+
+        Assert.Equal("part.tokens", mapping["usage_key"]);
+        Assert.Equal("cache.read", mapping["usage_cache_read_key"]);
+        Assert.Equal("part.cost", mapping["usage_cost_key"]);
+    }
+
     [Fact]
     public void Rejects_a_config_with_no_default_profile()
     {
