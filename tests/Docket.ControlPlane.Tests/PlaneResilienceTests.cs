@@ -2,6 +2,7 @@ using Docket.Contracts;
 using Docket.ControlPlane.Auth;
 using Docket.Core;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
@@ -50,6 +51,16 @@ namespace Docket.ControlPlane.Tests;
 /// the teardown no-op and what survives it, that a superseded socket can no longer steer
 /// readiness, and the replace-then-rehydrate interaction that decides what happens to the
 /// old connection's tracked dispatches.</para>
+///
+/// <para><b>A failing dispatch pass could stop dispatch for the process's life.</b> The
+/// loop's only error handling wrapped the whole <c>await foreach</c>, so one throw from one
+/// pass was logged once and <c>LoopAsync</c> returned — nothing restarts it, and the plane
+/// went on accepting tasks and reporting itself healthy while every submission sat in
+/// <c>submitted</c>. A throw between the committed submitted→working claim and the send (the
+/// token mint is a database write) additionally stranded that task working AND untracked, so
+/// no clock covered it either. Containment is now per pass, and the mint/send region requeues
+/// on a throw exactly as it does on a failed send. Covered here in both halves: the requeue,
+/// and that the loop still serves the next wake.</para>
 ///
 /// <para>A dispatch pass stands in for the <c>pg_notify</c> wake throughout — the pass IS
 /// what the notify runs, and driving it directly makes the race deterministic instead of
@@ -649,9 +660,152 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Empty(live.Commands.OfType<DispatchCommand>());
     }
 
+    // ── A failing pass must not take the loop, or the claimed task, with it ──────
+
+    [SkippableFact]
+    public async Task A_mint_that_throws_after_the_claim_requeues_the_task_instead_of_stranding_it_working()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+        var task = await SeedSubmittedAsync(clock);
+        var registry = new RunnerConnectionRegistry(clock);
+        var connection = LiveConnection(clock, registry, "m1");
+
+        // The worker token is a database write like any other, issued after the claim has
+        // already committed submitted→working. Failing its insert is the whole scenario:
+        // nothing is wrong with the task, the machine, or the send channel.
+        var db = new FailingWrite { OnAdding = nameof(CredentialRow) };
+        await NewDispatch(clock, registry, db).RunDispatchPassAsync(default);
+
+        // So it takes the remedy a failed send takes (§10 best-effort commands), where before
+        // the throw unwound out of the pass and left this row working with nothing working it
+        // — and untracked, so no liveness clock would ever come back for it.
+        Assert.Equal(TaskState.Submitted, await StateAsync(clock, task));
+        Assert.Equal([LivenessLossReason.AckTimeout], await RequeueReasonsAsync(task));
+        Assert.Equal(1, await RequeueCountAsync(task));
+        Assert.Empty(registry.TasksOn("m1"));
+        Assert.Empty(connection.Commands.OfType<DispatchCommand>());
+
+        // And the requeue's own effects landed with it: the instance minted for the dead
+        // attempt is revoked and off the row, so nothing holds a live credential for work
+        // that never started (§9.14).
+        await using var verify = pg.NewContext();
+        Assert.Null((await verify.Tasks.AsNoTracking().SingleAsync(t => t.Id == task.Value)).CurrentInstanceId);
+        Assert.Equal(0, await verify.WorkerInstances.CountAsync(w => w.TaskId == task.Value && !w.Revoked));
+    }
+
+    [SkippableFact]
+    public async Task A_pass_that_throws_does_not_end_the_dispatch_loop()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+        var task = await SeedSubmittedAsync(clock);
+        var registry = new RunnerConnectionRegistry(clock);
+        var dispatched = new TaskCompletionSource<DispatchCommand>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var connection = registry.Register("m1", Set("default"), (command, _) =>
+        {
+            if (command is DispatchCommand d)
+                dispatched.TrySetResult(d);
+            return Task.CompletedTask;
+        });
+        registry.ApplyHeartbeat(connection.Token, Heartbeat("m1", "default"));
+
+        // Break the claim itself — the instance-mint effect's insert, inside
+        // DispatchNextAsync's own transaction. Deliberately a failure NO requeue path can
+        // catch, so it unwinds all the way out of the pass: that is the shape that used to
+        // end the loop, and a database blip during the startup backlog scan is enough.
+        var db = new FailingWrite { OnAdding = nameof(WorkerInstanceRow) };
+        var dispatch = NewDispatch(clock, registry, db);
+
+        await dispatch.StartAsync(default);
+        try
+        {
+            await WaitUntil(() => db.Failures > 0, "the startup backlog scan to fail");
+            // The claim rolled back with the throw, so the task owes nothing for it.
+            Assert.Equal(TaskState.Submitted, await StateAsync(clock, task));
+            Assert.Equal(0, await RequeueCountAsync(task));
+
+            // The blip passes and the next notify wake arrives. A loop that ended on the
+            // throw never serves it: this task — and every task submitted afterwards — stays
+            // in submitted for as long as the process lives, with one log line to say so.
+            db.OnAdding = null;
+            dispatch.Signal();
+
+            Assert.Equal(task, (await WithTimeout(dispatched.Task, "a later dispatch")).Task);
+            Assert.Equal(TaskState.Working, await StateAsync(clock, task));
+        }
+        finally
+        {
+            await dispatch.StopAsync(default);
+        }
+    }
+
     // ── Helpers ─────────────────────────────────────────────────────────────────
 
+    /// <summary>
+    /// A database that fails one chosen write. Standing in for the transient faults a real
+    /// one has — the plane's own writes are the only moving part in the two tests above, and
+    /// naming the entity being inserted picks which step of a dispatch breaks without
+    /// touching the code under test.
+    /// </summary>
+    private sealed class FailingWrite : ISaveChangesInterceptor
+    {
+        /// <summary>The entity type whose insert throws, or null to let every write through.
+        /// Settable mid-test, so a fault can clear the way a real one does.</summary>
+        public string? OnAdding { get; set; }
+
+        /// <summary>How many writes have been failed, which is how a test observes a
+        /// background loop reaching the fault at all.</summary>
+        public int Failures => _failures;
+
+        private int _failures;
+
+        public ValueTask<InterceptionResult<int>> SavingChangesAsync(
+            DbContextEventData eventData, InterceptionResult<int> result,
+            CancellationToken cancellationToken = default)
+        {
+            if (OnAdding is { } entity && eventData.Context!.ChangeTracker.Entries()
+                    .Any(e => e.State == EntityState.Added && e.Metadata.ClrType.Name == entity))
+            {
+                Interlocked.Increment(ref _failures);
+                throw new InvalidOperationException($"the {entity} insert failed");
+            }
+            return ValueTask.FromResult(result);
+        }
+    }
+
+    /// <summary>Polls a condition on the real clock: the dispatch loop runs on its own task,
+    /// so the only way to observe its progress is to wait for it.</summary>
+    private static async Task WaitUntil(Func<bool> condition, string what)
+    {
+        var deadline = DateTime.UtcNow + TimeSpan.FromSeconds(10);
+        while (!condition())
+        {
+            Assert.True(DateTime.UtcNow < deadline, $"timed out waiting for {what}");
+            await Task.Delay(20);
+        }
+    }
+
+    private static async Task<T> WithTimeout<T>(Task<T> pending, string what)
+    {
+        Assert.True(
+            await Task.WhenAny(pending, Task.Delay(TimeSpan.FromSeconds(10))) == pending,
+            $"timed out waiting for {what}");
+        return await pending;
+    }
+
     private readonly record struct Seeded(TaskId Task, WorkerInstanceId Instance, TeamId Team);
+
+    /// <summary>Create only: a submitted task waiting for a dispatch pass to claim it.</summary>
+    private async Task<TaskId> SeedSubmittedAsync(TimeProvider clock)
+    {
+        await using var db = pg.NewContext();
+        var team = TeamId.New();
+        var created = (StoreResult.Applied)await new TaskStore(db, clock).CreateAsync(new CreateTask(
+            new LeadClaim(team), team, "completion criteria", CompletionMode.Lead, null));
+        return created.Task.Id;
+    }
 
     /// <summary>Create → dispatch, leaving the task <c>working</c> on the machine with a
     /// live worker instance minted for it — the shape a plane restart interrupts.</summary>
@@ -714,8 +868,10 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         return (registry, connection.Token);
     }
 
-    private DispatchService NewDispatch(TimeProvider clock, RunnerConnectionRegistry registry) =>
-        new(ScopeFactory(clock), registry, clock, NullLogger<DispatchService>.Instance,
+    private DispatchService NewDispatch(
+        TimeProvider clock, RunnerConnectionRegistry registry,
+        ISaveChangesInterceptor? interceptor = null) =>
+        new(ScopeFactory(clock, interceptor), registry, clock, NullLogger<DispatchService>.Instance,
             listener: null, livenessWindow: Window, publicMcpUrl: null, noProgressCeiling: Ceiling);
 
     private RunnerEventSink NewSink(TimeProvider clock, RunnerConnectionRegistry registry) =>
@@ -795,11 +951,18 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
             .ToListAsync();
     }
 
-    private IServiceScopeFactory ScopeFactory(TimeProvider clock)
+    private IServiceScopeFactory ScopeFactory(
+        TimeProvider clock, ISaveChangesInterceptor? interceptor = null)
     {
         var services = new ServiceCollection();
         services.AddDbContext<DocketDbContext>(o =>
-            o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
+        {
+            o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention();
+            // Registered on the provider, so every scope the service opens for itself gets
+            // it — including the fresh one a failed dispatch requeues through.
+            if (interceptor is not null)
+                o.AddInterceptors(interceptor);
+        });
         services.AddDocketStore();
         services.AddScoped<TokenService>();
         services.AddSingleton(clock);
