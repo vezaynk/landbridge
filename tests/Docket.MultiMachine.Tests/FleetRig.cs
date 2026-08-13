@@ -746,6 +746,30 @@ internal sealed class FleetRig(
         return (await db.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value, ct)).ResultReference;
     }
 
+    /// <summary>
+    /// Every usage report a task's harness sent, as <b>committed plane state</b> (§10 telemetry
+    /// ingest) — one row per model the harness named.
+    ///
+    /// <para>Reading the persisted rows rather than the parsed stream is the whole point of the
+    /// fact that uses this: the parser is covered against captured fixtures already, so what is
+    /// unproven is the leg BETWEEN the layers — docketd encoding the event, the wire carrying it,
+    /// the plane's sink storing it. That leg is exactly where a bug hid once, with every layer
+    /// green in isolation and nothing sending anything (the <c>EncodeEvent</c> arm that was never
+    /// registered), and only a query against the committed row can catch its return.</para>
+    ///
+    /// <para>Empty is a legitimate answer and callers must poll rather than assert immediately:
+    /// claude prints its <c>result</c> line as the run ENDS, which is after the
+    /// <c>report_result</c> that moved the task to <c>verifying</c> — so a row that is not there
+    /// yet may simply be a second away.</para>
+    /// </summary>
+    public async Task<IReadOnlyList<TaskUsageRow>> ReportedUsageAsync(TaskId id, CancellationToken ct)
+    {
+        await using var db = pg.NewContext();
+        return await db.TaskUsage.AsNoTracking()
+            .Where(u => u.TaskId == id.Value)
+            .ToListAsync(ct);
+    }
+
     /// <summary>Read a collaborator marker from the machine's work dir for a task, or null.</summary>
     public async Task<string?> ReadMarkerAsync(string machineId, TaskId task, string markerName, CancellationToken ct)
     {
