@@ -398,6 +398,12 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
         // OpenCode reports no per-model breakdown, so the row names no model — and docketd does
         // not substitute one, because a model the plane asserted would not be reported BY the
         // harness. This is the honest empty, not a mapping failure.
+        //
+        // Null, not "": this reads through TaskUsageView, where the empty string storage uses for
+        // an unnamed model (a composite key cannot hold a NULL) is mapped back exactly once. This
+        // tier is the first to exercise that path end to end — claude and Codex both name models —
+        // and the first dispatch caught the rig handing back the raw row instead, which is why
+        // ReportedUsageAsync now returns the view.
         Assert.Null(row.Model);
 
         // Real tokens, not a row of zeros. Input is the one bucket every run must have: the

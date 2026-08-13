@@ -197,6 +197,51 @@ public sealed class TaskUsageTests(PostgresFixture pg) : IAsyncLifetime
         }
     }
 
+    /// <summary>
+    /// The <c>""</c>-versus-<c>null</c> contract on the <b>per-task</b> read path, pinned at $0.
+    ///
+    /// <para>The Team roll-up above already covers this through <see cref="TeamUsageView"/>, but
+    /// the single-row path had no fast test of its own — and that is the gap a real dispatch found
+    /// the expensive way. A harness that names no model (OpenCode reports none anywhere) writes
+    /// the empty string storage requires, because a composite primary key cannot hold a NULL; the
+    /// invariant every reader above the row depends on is that <c>model is null ⟺ unnamed</c>, and
+    /// <see cref="TaskUsageView.From"/> is the one place that translation happens. A reader that
+    /// bypasses it sees <c>""</c> and can only interpret it as a harness that reported a model
+    /// whose name is blank — the exact misreading the deleted attribution enum used to guard
+    /// against, now guarded by this invariant instead. So it is worth a test that costs nothing.</para>
+    /// </summary>
+    [SkippableFact]
+    public async Task An_unnamed_models_empty_string_never_escapes_the_per_task_view()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var (task, _) = await SeedTaskAsync();
+
+        await using (var db = pg.NewContext())
+            await new TaskStore(db, _clock).RecordUsageAsync(
+                Report(task, model: null, input: 900, output: 120, cost: 0.0123m));
+
+        await using (var db = pg.NewContext())
+        {
+            var row = await db.TaskUsage.AsNoTracking().SingleAsync(u => u.TaskId == task.Value);
+
+            // Storage: the empty string, deliberately. Asserted so a future change that made this
+            // column nullable has to come here and say so rather than silently drifting.
+            Assert.Equal("", row.Model);
+
+            // The view: null. Everything else passes through untouched, so this is the one field
+            // the mapping is allowed to change.
+            var view = TaskUsageView.From(row);
+            Assert.Null(view.Model);
+            Assert.Equal(900, view.InputTokens);
+            Assert.Equal(0.0123m, view.CostUsd);
+
+            // And a named model is NOT rewritten — the mapping keys off emptiness, not presence,
+            // so the fix for the unnamed case cannot quietly erase an attributed one.
+            var named = TaskUsageView.From(new TaskUsageRow { Model = "anthropic/claude-haiku-4-5-20251001" });
+            Assert.Equal("anthropic/claude-haiku-4-5-20251001", named.Model);
+        }
+    }
+
     [SkippableFact]
     public async Task A_team_nothing_reported_for_is_unmeasured_rather_than_zero()
     {

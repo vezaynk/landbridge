@@ -761,13 +761,24 @@ internal sealed class FleetRig(
     /// claude prints its <c>result</c> line as the run ENDS, which is after the
     /// <c>report_result</c> that moved the task to <c>verifying</c> — so a row that is not there
     /// yet may simply be a second away.</para>
+    ///
+    /// <para><b>Returns the view, not the row, and that is load-bearing.</b> Storage spells the
+    /// unnamed model as the empty string because a composite primary key cannot hold a NULL
+    /// (<c>DocketDbContext</c>), and <see cref="TaskUsageView.From"/> is the one place that
+    /// convention is undone. Handing a test the raw <see cref="TaskUsageRow"/> routed around that
+    /// single place, so an unattributed report surfaced as <c>""</c> here while every production
+    /// reader saw <c>null</c> — which cost the first real-OpenCode dispatch a red on an otherwise
+    /// green run, because OpenCode names no model and was the first harness to exercise this path.
+    /// Reading through the view means a test asserts the same <c>model is null ⟺ unnamed</c>
+    /// invariant the §12 surfaces do, rather than a storage detail.</para>
     /// </summary>
-    public async Task<IReadOnlyList<TaskUsageRow>> ReportedUsageAsync(TaskId id, CancellationToken ct)
+    public async Task<IReadOnlyList<TaskUsageView>> ReportedUsageAsync(TaskId id, CancellationToken ct)
     {
         await using var db = pg.NewContext();
-        return await db.TaskUsage.AsNoTracking()
+        var rows = await db.TaskUsage.AsNoTracking()
             .Where(u => u.TaskId == id.Value)
             .ToListAsync(ct);
+        return [.. rows.Select(TaskUsageView.From)];
     }
 
     /// <summary>Read a collaborator marker from the machine's work dir for a task, or null.</summary>
