@@ -229,7 +229,7 @@ public class RunnerConfigTests
     }
 
     /// <summary>
-    /// The usage keys are dotted paths too (#144), so they can be malformed the same way — and
+    /// The usage keys are dotted paths too (#142), so they can be malformed the same way — and
     /// the consequence is worse than an inert tool mapping, because a profile that resumes and
     /// clocks progress correctly while reporting zero spend forever looks healthy.
     /// </summary>

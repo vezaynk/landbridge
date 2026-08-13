@@ -205,6 +205,39 @@ in [Caveats](#caveats) rather than a wiring bug — so before reading an empty d
 one, check what your harness documents it emits, and under which variable. The table
 above is not a contract any harness signed.
 
+**OpenCode is the third case, and it is neither of the first two.** Source-read at tag
+`v1.18.17`, it lands in three places at once:
+
+| | claude | `codex exec` | `opencode run` |
+|---|---|---|---|
+| opt-in variable | `CLAUDE_CODE_ENABLE_TELEMETRY=1` | — | **none needed** |
+| OTLP signals | metrics + traces + logs | none documented | **traces + logs only** |
+| token/cost channel | OTLP metrics | its stdout stream (tokens only) | **its stdout stream (tokens *and* USD)** |
+
+It reads the vendor-neutral `OTEL_EXPORTER_OTLP_ENDPOINT`, `OTEL_EXPORTER_OTLP_HEADERS` and
+`OTEL_RESOURCE_ATTRIBUTES` straight from the environment (`packages/core/src/flag/flag.ts:16-17`,
+`observability/otlp.ts:20-34`), so `telemetry: { "otel": true }` works with an **empty**
+`telemetry.env` — no harness-specific flag to carry as data. But its exporters are only
+`${endpoint}/v1/logs` and `${endpoint}/v1/traces` (`observability/otlp.ts:50-77`); there is no
+metrics exporter, so **no `claude_code.token.usage` analogue arrives and the table above stays
+empty on an OpenCode profile no matter what you set.**
+
+That is not a gap in what Docket measures, because the §12 measured view never depended on OTLP:
+it reads the harness's own numbers off the stdout stream via `events.mapping`, and OpenCode states
+both token counts and a USD cost there, per step, on the `step_finish` line it already emits for
+the progress clock. So an OpenCode profile gets the *fuller* measured view of the three — Codex
+reports no cost anywhere — while contributing nothing to this OTLP section. Two independent
+channels, and it is worth not confusing them: an empty Aspire dashboard says nothing about whether
+`docket_task_usage` has rows. See `ideas/skills/references/runner-config.md` for the usage mapping
+that reads it, including the two nesting details specific to this harness.
+
+One caveat on the cost figure: OpenCode computes it itself, client-side, by multiplying its token
+counts against a price from the models.dev catalog
+(`packages/opencode/src/session/session.ts:382-399`). It is genuinely harness-reported rather than
+derived by Docket, which is what the §12 label claims — but it is the harness's arithmetic over a
+catalog, not a figure the provider billed, so it can drift from an invoice in a way claude's
+self-reported `total_cost_usd` also can.
+
 ## How attribution works
 
 §10: *"Token attribution must carry a task id"* — otherwise a machine running

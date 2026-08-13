@@ -81,7 +81,7 @@ namespace Docket.Runner;
 /// per-model entries are camelCase — which is exactly why every one of these is a separate
 /// overridable key rather than one naming convention applied twice.</para>
 ///
-/// <para><b>The usage keys are dotted paths, not bare property names (OpenCode, issue #144).</b>
+/// <para><b>The usage keys are dotted paths, not bare property names (OpenCode, issue #142).</b>
 /// Claude and Codex both put their counters in one object one level below the line root, with
 /// the four buckets flat inside it, so a bare name reached everything. OpenCode does not: its
 /// <c>step_finish</c> line wraps everything in a <c>part</c>, nests the buckets two deep
@@ -462,7 +462,7 @@ public sealed class TerminalEventReader
         var output = ReadLong(usage, _map.UsageOutputKey);
         var reasoning = _map.UsageReasoningKey is { Length: > 0 } rk ? ReadNullableLong(usage, rk) : null;
 
-        // The second disjointness normalization, and the mirror of the one above (OpenCode, #144).
+        // The second disjointness normalization, and the mirror of the one above (OpenCode, #142).
         // UsageReportedEvent.ReasoningOutputTokens is DEFINED as a portion of OutputTokens, which
         // is why the plane's TotalTokens deliberately omits it. A harness that has already
         // subtracted reasoning out of its output total breaks that invariant in the one direction

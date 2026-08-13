@@ -2,7 +2,6 @@ using Docket.Contracts;
 using Docket.ControlPlane.Tests;
 using Docket.Core;
 using Docket.Runner;
-using Microsoft.EntityFrameworkCore;
 
 namespace Docket.MultiMachine.Tests;
 
@@ -21,7 +20,7 @@ namespace Docket.MultiMachine.Tests;
 /// <para><b>Why OpenCode was the cheap harness to add.</b> It needed no seam Codex had not
 /// already forced into existence: <c>stdin: closed</c> (#110) and the flat tool-call mode (#111)
 /// are exactly the two knobs it requires. What it <em>did</em> force is one generalization of the
-/// usage keys from bare property names to dotted paths (#144) — no new key — plus one semantic
+/// usage keys from bare property names to dotted paths (#142) — no new key — plus one semantic
 /// boolean, <c>usage_reasoning_is_subset</c>, mirroring the <c>usage_cached_is_subset</c> that
 /// Codex forced one bucket over.</para>
 ///
@@ -346,6 +345,16 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
     /// the accumulation of per-step deltas, and the upsert in one go. A cost that is present and
     /// positive is the OpenCode-specific half — claude self-reports USD too, but Codex reports
     /// none at all, so "this harness states dollars" is a real distinction to pin.</para>
+    ///
+    /// <para><b>The wait is not belt-and-braces.</b> Per <c>ReportedUsageAsync</c>'s contract
+    /// (#145) an empty result is legitimate for a moment: the task reaches <c>verifying</c> on the
+    /// <c>report_result</c> call, while the usage still has to travel the ring, the wire and the
+    /// plane's sink. OpenCode is less exposed to this than claude — its <c>step_finish</c> lines
+    /// arrive per step rather than once at the end, so early rows exist well before the run
+    /// finishes — but it is <em>more</em> exposed to reading a stale one, because docketd
+    /// accumulates per-step deltas and the row is a high-water mark. Polling for a cost rather
+    /// than asserting on the first row is what makes this assert the total instead of a
+    /// prefix.</para>
     /// </summary>
     [SkippableFact]
     public async Task A_real_opencode_worker_reports_its_own_tokens_and_cost_on_the_stream_docketd_reads()
@@ -373,12 +382,18 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
             + "assert on.\n" + OpenCodeFailureHypotheses()
             + await rig.RealWorkerDiagnosticsAsync(task, ct));
 
-        await using var db = pg.NewContext();
-        var rows = await db.TaskUsage.AsNoTracking()
-            .Where(u => u.TaskId == task.Value)
-            .ToListAsync(ct);
+        // Wait for the report to land AND to carry a cost, so this reads the accumulated total
+        // rather than whichever step happened to be committed first.
+        Assert.True(
+            await FleetRig.WaitUntilAsync(
+                async () => await rig.ReportedUsageAsync(task, ct) is [{ CostUsd: not null }, ..],
+                TimeSpan.FromMinutes(2)),
+            "no usage report with a cost ever reached the plane for this task. Either "
+            + "events.mapping never resolved OpenCode's step_finish line, or the usage never "
+            + "crossed the runner->plane leg.\n"
+            + OpenCodeFailureHypotheses() + await rig.RealWorkerDiagnosticsAsync(task, ct));
 
-        var row = Assert.Single(rows);
+        var row = Assert.Single(await rig.ReportedUsageAsync(task, ct));
 
         // OpenCode reports no per-model breakdown, so the row names no model — and docketd does
         // not substitute one, because a model the plane asserted would not be reported BY the
@@ -490,7 +505,7 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
     /// work. <c>step_start</c> is the type chosen because it is the earliest line emitted.</para>
     ///
     /// <para><b>Usage.</b> Every usage key here is a dotted path, which is what OpenCode forced
-    /// (#144): the counters are two levels down at <c>part.tokens</c>, the cache buckets one
+    /// (#142): the counters are two levels down at <c>part.tokens</c>, the cache buckets one
     /// deeper still, and cost sits beside the counters at <c>part.cost</c> rather than at the line
     /// root. Note <c>usage_type</c> must differ from <c>system_type</c> — the reader returns early
     /// on a session-init line — which is why the ref rides <c>step_start</c> and usage rides

@@ -497,7 +497,14 @@ but is deliberately rejected: *"uses unsupported `bearer_token`; set `bearer_tok
 **`enabled_tools` takes bare tool names**, not the `mcp__docket__*` spelling — but the names the
 *model* sees are `mcp__docket__<tool>`, built as `mcp__{namespace}__{name}`
 (`codex-rs/core/src/tools/handlers/mcp.rs:87-97`), which is identical to Claude Code's, so
-worker prompts, skills, and allow-list vocabulary need no rewording. **`required = true`** turns
+worker prompts, skills, and allow-list vocabulary carry over **between these two harnesses**.
+Do not read that as a general rule: it is a coincidence of two vendors picking the same
+convention, not a standard. OpenCode is the counterexample and it is the third harness anyone
+tries — it names the same tool `docket_get_task`, as `<server>_<tool>`
+(`packages/opencode/src/mcp/catalog.ts:119` at `v1.18.17`), so a prompt or allow-list that
+spells `mcp__docket__get_task` sends that agent hunting a tool it does not have. **Naming docket
+tools bare in a worker prompt is the phrasing that ports to all three**; the qualified spelling
+is per-harness data. **`required = true`** turns
 a broken wiring into an error instead of an agent that runs happily with no docket tools and
 reports nothing. And **the server name must match `^[a-zA-Z0-9_-]+$`**
 (`codex-mcp/src/rmcp_client.rs:849`) — `docket` is fine; anything with a dot or slash is refused.
@@ -567,22 +574,44 @@ profile needs none of these:
 
 | key | default | what it is |
 |---|---|---|
-| `usage_type` | `result` | the `type` value of a usage-bearing line (Codex: `turn.completed`) |
-| `usage_key` | `usage` | the object holding the aggregate counters |
+| `usage_type` | `result` | the `type` value of a usage-bearing line (Codex: `turn.completed`; OpenCode: `step_finish`). A **value**, not a path |
+| `usage_key` | `usage` | path to the object holding the aggregate counters (OpenCode: `part.tokens`) |
 | `usage_input_key` | `input_tokens` | |
 | `usage_output_key` | `output_tokens` | |
-| `usage_cache_read_key` | `cache_read_input_tokens` | Codex: `cached_input_tokens` |
-| `usage_cache_write_key` | `cache_creation_input_tokens` | Codex: `cache_write_input_tokens` |
-| `usage_reasoning_key` | unset | a reasoning portion **of** output, where a harness breaks one out (Codex: `reasoning_output_tokens`) |
+| `usage_cache_read_key` | `cache_read_input_tokens` | Codex: `cached_input_tokens`; OpenCode: `cache.read` |
+| `usage_cache_write_key` | `cache_creation_input_tokens` | Codex: `cache_write_input_tokens`; OpenCode: `cache.write` |
+| `usage_reasoning_key` | unset | a reasoning portion **of** output, where a harness breaks one out (Codex: `reasoning_output_tokens`). Not a portion for every harness — see `usage_reasoning_is_subset` |
 | `usage_cost_key` | `total_cost_usd` | a cost the **harness** computed. Set empty for a harness that computes none — nothing derives one from tokens |
-| `usage_models_key` | `modelUsage` | an object keyed **by model name**, each value holding that model's own counters. Set empty for a harness that reports no model |
+| `usage_models_key` | `modelUsage` | path to an object keyed **by model name**, each value holding that model's own counters. Set empty for a harness that reports no model |
 | `model_input_key` … `model_cost_key` | `inputTokens`, `outputTokens`, `cacheReadInputTokens`, `cacheCreationInputTokens`, `costUSD` | field names *inside* each per-model entry |
 | `usage_cached_is_subset` | `false` | **read this one twice — see below** |
-| `usage_is_cumulative` | `true` | `false` for a harness reporting per-turn deltas; docketd then accumulates |
+| `usage_reasoning_is_subset` | `true` | the other one that changes numbers — see below |
+| `usage_is_cumulative` | `true` | `false` for a harness reporting per-turn deltas (Codex, OpenCode); docketd then accumulates |
 
 Note the two casings in one claude payload — snake_case in the aggregate `usage` object,
 camelCase inside `modelUsage`. That is why every key is separately overridable rather than
 one naming convention applied twice.
+
+**Every key above except `usage_type` is a dotted path, not a bare property name.** Claude and
+Codex both put their counters in one object a single level below the line root with the buckets
+flat inside it, so a bare name reached everything and the distinction never came up. OpenCode
+broke all three assumptions at once — counters at `part.tokens`, cache buckets one deeper at
+`tokens.cache.read`, and cost *beside* the counters at `part.cost` rather than at the line root —
+and no rename reaches any of them. **This cost no new key:** a path with no dots is a
+one-segment path, so every default above and every mapping written before this behaves exactly
+as it did. What each path is rooted at did not change either: `usage_key`, `usage_models_key` and
+`usage_cost_key` walk from the **line root**; the four buckets and `usage_reasoning_key` walk
+from the `usage_key` object; the `model_*` keys walk from each per-model entry. Same segment
+rules as `tool_name_path` — property names only, no wildcards or indexes — and a malformed path
+fails the config load rather than reading nothing quietly. There are no comma-separated
+alternatives here, because a counter has one home.
+
+⚠️ **`usage_type` must not equal your effective `system_type`.** docketd stops at a
+session-init line, so usage riding that same stream type is never read — and the symptom is a
+profile that resumes perfectly and reports zero spend forever. The config load refuses the
+collision. It is an easy one to hit on a harness with few stream types to choose from: OpenCode
+has six, which is why its profile puts the session ref on `step_start` and usage on
+`step_finish`.
 
 **`usage_cached_is_subset` is the one that changes numbers.** The two harnesses do not mean
 the same thing by "input":
@@ -597,6 +626,23 @@ Get it wrong on a Codex profile and every cached token is counted twice the mome
 buckets are summed — on a cache-heavy worker that roughly doubles the reported total. It is
 declared per profile as data because it is a fact about the harness, and docketd holds no
 harness knowledge in code (§10).
+
+**`usage_reasoning_is_subset` is the same problem one bucket over, and it fails the other way.**
+`ReasoningOutputTokens` on the wire is *defined* as a portion of the output count, which is why
+the §12 total is `input + output + cache_read + cache_write` and excludes it. Two conventions
+exist in the wild:
+
+- **claude and `codex exec`** report reasoning *inside* their output total. Leave this `true`
+  (the default) and it rides along as the informational portion it is.
+- **OpenCode** has already subtracted it: it publishes `output = output − reasoning` and
+  `reasoning` separately. Set this `false` and docketd folds it back in before emitting.
+
+Where `usage_cached_is_subset` fails by double-counting, this one fails by *losing* tokens: leave
+it `true` on an OpenCode profile and every reasoning token vanishes from the task's total, which
+on a thinking model is most of the spend. Note the two defaults deliberately disagree — `false`
+for cache, `true` for reasoning — because that is what claude actually does: its cache counters
+are disjoint from input while its reasoning is inside output. The defaults describe a harness,
+not a symmetry.
 
 A worked Codex `events.mapping` for usage:
 
@@ -635,6 +681,194 @@ off" — which a worker that must reach forwarded services cannot live with.
 is `--sandbox workspace-write` plus `-c sandbox_workspace_write.network_access=true`. Note this
 governs commands the **model** runs; Codex's own MCP client connection to the plane is made by
 the `codex` process itself and is not subject to it.
+
+## Worked example — OpenCode (`opencode run`), the third harness
+
+> **Status: verified by reading OpenCode's source** at tag `v1.18.17` (npm `opencode-ai@1.18.17`,
+> which the README's own badge and install line point at) — **not** by running it. No `opencode`
+> binary was available. Docket's own side is pinned by tests:
+> `Docket.Runner.Tests/OpenCodeStreamMappingTests` covers the mapping and usage for $0, and
+> `Docket.MultiMachine.Tests/RealOpenCodeCollaborationTests` holds the opt-in end-to-end tier.
+> Note the upstream repo moved: `sst/opencode` now redirects to `anomalyco/opencode`.
+
+**OpenCode was the cheapest of the three harnesses to support, and that is the interesting
+result.** It needed no seam Codex had not already forced into existence — `stdin: closed` and the
+flat tool-call mode are exactly the two knobs it wants. What it did force was one generalization
+of the usage keys (bare names became dotted paths, **no new key**) and one new semantic boolean
+(`usage_reasoning_is_subset`). Read that as the §10 config-only promise holding: a third vendor's
+CLI cost one crank turn on an existing seam rather than harness knowledge in the daemon.
+
+```jsonc
+{
+  "profiles": [
+    {
+      "name": "default",
+      "spawn": [
+        "opencode", "run",
+        // Name docket tools BARE. OpenCode calls this one `docket_get_task`, not
+        // `mcp__docket__get_task` — see the naming note in the Codex section above.
+        "You are a Docket worker running headless under docketd. You have been dispatched exactly one task. First call the docket MCP tool get_task to read your assignment (namespace, description, completion_criteria, workspace, attempt). Do the work inside the assigned workspace. When done, call report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call request_input instead of guessing.",
+        // NOTE: no MCP flag. OpenCode has no `--mcp-config`; see below.
+        "--format", "json",   // the NDJSON stream `terminal` reads. Needs no companion flag,
+                              // unlike claude's --output-format stream-json + --verbose pair.
+        // The bypassPermissions equivalent. NOT OPTIONAL, and its failure mode is quiet:
+        // without it a headless worker AUTO-REJECTS every permission ask and fails the task
+        // rather than hanging (`run.ts:806-815`).
+        "--auto",
+        // Pin the model. `opencode run` has no --max-turns and no budget flag, so this plus the
+        // no-progress ceiling is the whole cost bound — and since the stream carries no model
+        // field, this argv is also the only record of what produced the tokens.
+        "--model", "anthropic/claude-haiku-4-5-20251001"
+      ],
+      // NOT OPTIONAL for this harness, and the failure is SILENT — see below.
+      "stdin": "closed",
+      // Forced by `stdin: closed`, and honest regardless: stdin is read once before the loop
+      // starts and never again, and the CLI installs no SIGTERM handler at all.
+      "stop": { "mode": "signal" },
+      // `--session`, never `--continue` — see the project-scoping trap below.
+      "resume": {
+        "args": ["opencode", "run", "Your task has resumed. Call get_task for the answer you were waiting for, then continue.",
+                 "--session", "{session_id}", "--format", "json", "--auto",
+                 "--model", "anthropic/claude-haiku-4-5-20251001"]
+      },
+      // REQUIRED — the built-in claude defaults match nothing in this stream.
+      "events": {
+        "source": "terminal",
+        "mapping": {
+          // §11 resume ref. OpenCode emits no init line, but `sessionID` is top-level on EVERY
+          // line, so the Codex trick applies: point the sub-discriminator back at `type` and
+          // match the same value. `step_start` because it is the earliest line emitted.
+          "system_type": "step_start",
+          "subtype_key": "type",
+          "init_subtype": "step_start",
+          "session_id_key": "sessionID",
+          // Progress clock. One `tool_use` line IS one tool call, and every tool kind names
+          // itself in the same property — so unlike Codex this needs no alternatives.
+          "tool_event_type": "tool_use",
+          "tool_name_path": "part.tool",
+          // Usage. Every one of these is a dotted path, which is what this harness forced.
+          // usage_type MUST differ from system_type (docketd returns early on an init line).
+          "usage_type": "step_finish",
+          "usage_key": "part.tokens",
+          "usage_input_key": "input",
+          "usage_output_key": "output",
+          "usage_cache_read_key": "cache.read",     // one level deeper than its siblings
+          "usage_cache_write_key": "cache.write",
+          "usage_reasoning_key": "reasoning",
+          "usage_cost_key": "part.cost",            // BESIDE the counters, not at the root
+          "usage_models_key": "",                   // OpenCode names no model anywhere
+          "usage_cached_is_subset": "false",        // it already subtracts cache out of input
+          "usage_reasoning_is_subset": "false",     // ...and reasoning out of output. Fold back.
+          "usage_is_cumulative": "false"            // step_finish is one step's own figures
+        }
+      },
+      // No harness-specific opt-in needed: opencode reads the vendor-neutral OTEL_* variables
+      // directly, where claude needs CLAUDE_CODE_ENABLE_TELEMETRY. Exports logs and traces
+      // only — no metrics, so no token/cost here. Those ride stdout (see docs/TELEMETRY.md).
+      "telemetry": { "otel": true, "endpoint": "http://127.0.0.1:4318" },
+      "logs": { "capture": true }
+    }
+  ]
+}
+```
+
+### The MCP wiring: a static file, and the best bearer story of the three
+
+OpenCode has no `--mcp-config`, so `{mcp_config}` is written and ignored exactly as it is for
+Codex. What replaces it is one **static** operator-written file, and it can be static because
+OpenCode applies `{env:VAR}` substitution to the config **text** before parsing it, reading
+`process.env` at load time (`packages/opencode/src/config/variable.ts:33-38`, called from
+`config/config.ts:220`) — and `docketd` already stamps a fresh per-instance token on every spawn
+as `DOCKET_WORKER_TOKEN`:
+
+```jsonc
+// ~/.config/opencode/opencode.json — written once, correct for every dispatch
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "docket": {
+      "type": "remote",
+      "url": "https://plane.example/mcp",     // Docket:PublicMcpUrl / DOCKET_PUBLIC_MCP_URL
+      "enabled": true,
+      "headers": { "Authorization": "Bearer {env:DOCKET_WORKER_TOKEN}" },
+      "oauth": false,                          // REQUIRED — see below
+      "timeout": 120000
+    }
+  }
+}
+```
+
+Three things worth knowing.
+
+**`"oauth": false` is load-bearing, not defensive.** Without it OAuth auto-detection can take
+over a server meant to authenticate by bearer header; the documented recipe pairs the two exactly
+this way (`opencode.ai/docs/mcp-servers`, "API key authentication").
+
+**A missing token fails silently, and there is no `required` to catch it.** An unset variable
+substitutes to the **empty string** rather than erroring (`variable.ts:37`), so the wire carries
+`Authorization: Bearer ` and the plane answers 401 — leaving an agent that runs happily with no
+docket tools and reports nothing. Codex's `bearer_token_env_var` errors loudly and its
+`required = true` fails the run; OpenCode's remote schema has neither. Nothing config-side
+prevents it, so this is one to catch in the conformance smoke test.
+
+**Tool allow-listing is a config map with wildcards, not a flag.** `"tools": { "docket_*": true }`
+and the per-agent form `"agent": { "<name>": { "tools": { … } } }` (`opencode.ai/docs/mcp-servers`).
+Patterns use the `<server>_<tool>` naming, so a `mcp__docket__*` pattern matches nothing.
+
+**Per-dispatch config is reachable but `docketd` cannot express it.** `OPENCODE_CONFIG` (a file
+path), `OPENCODE_CONFIG_CONTENT` (a whole config inline) and `OPENCODE_CONFIG_DIR` all exist
+(`packages/core/src/flag/flag.ts:21-22, 63-65`), and any of them would remove the need for the
+static file above — but profiles have no environment seam, so none is usable today. Same gap
+Codex hit for `CODEX_HOME`, tracked as G3 in #112.
+
+### Why `stdin: closed` is mandatory here — and why the failure is worse than Codex's
+
+`opencode run` resolves its prompt through `packages/opencode/src/cli/cmd/run.ts:416`:
+
+```ts
+const piped = process.stdin.isTTY ? undefined : await Bun.stdin.text()
+```
+
+`Bun.stdin.text()` reads to EOF, a pipe is not a TTY, and a `deadman` profile never sends one —
+so the worker blocks here, *before* the empty-prompt check at `:420` and before any session
+exists. Two ways this is nastier than the Codex equivalent:
+
+- **The argv prompt does not save you.** Codex at least has an argv arm; OpenCode reads stdin
+  whenever it is not a TTY and then *concatenates* the two (`run.ts:40-50`).
+- **It is completely silent.** Codex prints `Reading additional input from stdin...` on stderr —
+  the give-away this file teaches operators to look for. OpenCode prints nothing and leaves an
+  empty transcript. A worker that starts, emits zero bytes, and dies of the liveness window is
+  all you get.
+
+`stdin: closed` costs this harness nothing it ever had, for the same reason it costs Codex
+nothing: it never reaches a read that would observe EOF-as-death. `RealOpenCodeCollaborationTests`
+keeps the hang characterized against the real binary for $0.
+
+### Three more differences worth budgeting for
+
+**No tool-call *start* event, so the progress clock lags.** OpenCode emits a `tool_use` line only
+when a call reaches `completed` or `error`; the `running` branch is explicitly excluded from JSON
+mode (`run.ts:719`, `:729-738`). There is nothing to point `tool_event_type` at that fires
+earlier — `step_start` marks LLM round-trips, not tool starts. So a 25-minute build reports at
+minute 25, which is most of the no-progress ceiling spent looking wedged, and it is the one place
+OpenCode is strictly worse than Codex (which has `item.started`). Nothing in config fixes it; the
+honest fix is upstream.
+
+**Every non-git work dir is the same "project".** `packages/core/src/project.ts:111-112`: with no
+repository discovered, the project id is the global one and its directory is the filesystem root.
+`docketd`'s `{work_root}/{task_id}` scratch dirs are not repos, so **all** OpenCode workers on a
+machine share one project and one session store. Two consequences pointing opposite ways: it is
+why `--session {session_id}` resumes fine from a fresh scratch dir, and it is why `--continue`
+must never appear in a profile — it would find another concurrent task's session. A per-task
+`OPENCODE_CONFIG_DIR` is the real fix and needs the same missing env seam as above.
+
+**Auth is the simplest of the three.** OpenCode resolves a provider key by mapping its catalog's
+per-provider `env` list over the process environment
+(`packages/opencode/src/provider/provider.ts:1527-1531`), so `ANTHROPIC_API_KEY` (or the relevant
+provider's variable) in `docketd`'s environment is enough — no harness-specific spelling like
+Codex's `CODEX_API_KEY`, and nothing refuses an API key in favour of a first-party login. Stored
+credentials otherwise live in `auth.json` under the global data dir (`src/auth/index.ts:10`), and
+an undocumented `OPENCODE_AUTH_CONTENT` accepts them inline (`auth/index.ts:59`).
 
 ## Profile archetypes — open vs. strict
 

@@ -23,6 +23,10 @@ on:
         description: "Codex model slug for the real-codex tier (DOCKET_CODEX_MODEL)"
         required: false
         default: "gpt-5.3-codex"
+      opencode_model:
+        description: "OpenCode model for the real-opencode tier, provider/model (DOCKET_OPENCODE_MODEL)"
+        required: false
+        default: "anthropic/claude-haiku-4-5-20251001"
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -315,3 +319,103 @@ jobs:
           # spawn all worked. The tier reads DOCKET_CODEX_MODEL precisely for
           # server-side catalog drift, so the slug is a dispatch input, not a PR.
           DOCKET_CODEX_MODEL: ${{ inputs.codex_model || 'gpt-5.3-codex' }}
+
+  # The §10 BYO-harness tier, THIRD harness: the same fleet driven by OpenCode
+  # (`opencode run --format json`). Gated exactly like real-claude-e2e and real-codex-e2e and
+  # for the same reason — it spends tokens, so it runs ONLY on a manual workflow_dispatch and
+  # ONLY the RealOpenCode trait.
+  #
+  # AUTH IS THE SIMPLEST OF THE THREE, and reuses a secret that already exists. OpenCode
+  # resolves a provider key by mapping its catalog's per-provider `env` list over the process
+  # environment (packages/opencode/src/provider/provider.ts:1527-1531, tagged source: "env"), so
+  # ANTHROPIC_API_KEY is read directly — no harness-specific spelling like Codex's CODEX_API_KEY,
+  # and no login step. The pinned model is therefore an Anthropic one. The job still skips
+  # cleanly and passes when the secret is absent (fork PRs), by design.
+  #
+  # WHY `npm install -g opencode-ai` AND NOT THE VENDOR'S INSTALLER: OpenCode's primary install
+  # path is `curl -fsSL https://opencode.ai/install | bash`, and this repo does not run shell
+  # scripts. The npm package is an official path, not a guess — the project's own README at
+  # v1.18.17 carries the npmjs.com/package/opencode-ai badge (README.md:13) and documents
+  # `npm i -g opencode-ai@latest` (README.md:53). Verified read-only against the registry:
+  # opencode-ai@1.18.17 is `latest`, maintained by `thdxr`, and ships bin `opencode` with the
+  # per-platform binaries as optionalDependencies. The version matches the git tag every source
+  # citation in RealOpenCodeCollaborationTests is pinned to.
+  #
+  # Deliberately unpinned here, exactly like the codex step: if upstream changes the stdin
+  # behaviour, the characterization fact FAILS, which is precisely the notification we want.
+  #
+  # WHAT THE FIVE FACTS COVER: the silent dead-man hang under an explicit `stdin: deadman`
+  # (spends nothing — OpenCode blocks at cli/cmd/run.ts:416 before contacting a model); a real
+  # worker driving a task to verifying; a stop landing as a kill deadline with the session ref
+  # preserved; a mixed claude+opencode fleet handing a token across the harness boundary; and the
+  # measured-telemetry fact, which asserts the plane's usage row carries real tokens AND a
+  # non-null USD cost. That last one is the reason this tier matters beyond parity: OpenCode has
+  # no OTLP metrics exporter, so its stdout stream is the whole cost channel, and the three nested
+  # usage paths that read it (part.tokens / cache.read / part.cost) are the most fragile part of
+  # the recipe. It is also the only one of the three harnesses whose numbers were derived from a
+  # schema rather than captured from a run — this job is where that reading gets checked.
+  #
+  # STATUS: never run. Unlike the codex tier this has no green baseline, so treat the first red
+  # run as information rather than a regression. The hypotheses the test prints on failure are
+  # ordered by likelihood for a NEW harness — model slug first (OpenCode resolves models through
+  # a fetched catalog, so DOCKET_OPENCODE_MODEL is a dispatch input, not a PR), then the MCP
+  # bearer, then tool naming.
+  real-opencode-e2e:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: 1
+      DOTNET_NOLOGO: 1
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: docket
+          POSTGRES_PASSWORD: docket
+          POSTGRES_DB: docket
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U docket"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      # The worker binary docketd spawns. Installed to PATH as `opencode`; the test resolves it
+      # via PATH (or DOCKET_OPENCODE_BIN) and skips if it is missing.
+      - name: Install opencode CLI
+        run: npm install -g opencode-ai
+
+      # The claude CLI too: the mixed claude+opencode fleet fact needs BOTH binaries and skips
+      # when either is missing. Same reasoning as the codex job — installing the second binary is
+      # what un-skips the fact that is the whole BYO-harness pitch.
+      - name: Install claude CLI
+        run: npm install -g @anthropic-ai/claude-code
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build (Release)
+        run: dotnet build tests/Docket.MultiMachine.Tests --no-restore -c Release
+
+      # Only the real-opencode trait. Its own database, so a dispatch that runs several real
+      # tiers cannot have one tier's reset truncate another's fleet mid-run.
+      - name: Test - real opencode run multi-machine E2E
+        run: dotnet test tests/Docket.MultiMachine.Tests --no-build -c Release --filter "Category=RealOpenCode"
+        env:
+          DOCKET_TEST_PG: Host=localhost;Port=5432;Username=docket;Password=docket;Database=docket_realopencode
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_KEY }}
+          # OpenCode resolves models through a fetched catalog, so a slug can be retired
+          # server-side. The tier reads DOCKET_OPENCODE_MODEL for exactly that drift — which is
+          # what bit the codex tier on its first dispatch.
+          DOCKET_OPENCODE_MODEL: ${{ inputs.opencode_model || 'anthropic/claude-haiku-4-5-20251001' }}

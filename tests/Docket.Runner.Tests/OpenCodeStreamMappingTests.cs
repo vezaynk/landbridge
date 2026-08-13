@@ -27,7 +27,7 @@ namespace Docket.Runner.Tests;
 /// progress signal are both reachable with the seams that already existed — the Codex trick for
 /// the ref, flat mode for the calls. (2) The <b>usage</b> report was <em>not</em>: OpenCode nests
 /// its counters where a bare property name cannot reach them, which is what made the usage keys
-/// dotted paths (#144). The negative half of that is pinned here as its own fact, because "the
+/// dotted paths (#142). The negative half of that is pinned here as its own fact, because "the
 /// old scheme read nothing" is the claim that justifies the change. (3) OpenCode's reasoning
 /// count is disjoint from its output where claude's and Codex's is a subset, so the reader folds
 /// it back rather than letting the plane's total silently omit it.</para>
@@ -125,7 +125,7 @@ public sealed class OpenCodeStreamMappingTests
         // Progress clock: one `tool_use` line IS one tool call.
         ["tool_event_type"] = "tool_use",
         ["tool_name_path"] = "part.tool",
-        // Usage: every one of these is a dotted path (#144).
+        // Usage: every one of these is a dotted path (#142).
         ["usage_type"] = "step_finish",
         ["usage_key"] = "part.tokens",
         ["usage_input_key"] = "input",
@@ -192,11 +192,11 @@ public sealed class OpenCodeStreamMappingTests
         Assert.Contains("no session ref and no tool-call", warning);
     }
 
-    // ── The usage fit: why the keys became paths (#144) ─────────────────────────
+    // ── The usage fit: why the keys became paths (#142) ─────────────────────────
 
     /// <summary>
-    /// <b>The negative half of the #144 case.</b> Everything except the usage keys is mapped
-    /// correctly, and the usage keys are spelled the only way the pre-#144 scheme allowed — bare
+    /// <b>The negative half of the #142 case.</b> Everything except the usage keys is mapped
+    /// correctly, and the usage keys are spelled the only way the pre-#142 scheme allowed — bare
     /// property names, as deep as a bare name can go. The result is no usage at all, because
     /// <c>tokens</c> is not a property of the line root. A profile in this state looks configured,
     /// resumes correctly, has a working progress clock, and reports zero spend forever.
@@ -309,7 +309,7 @@ public sealed class OpenCodeStreamMappingTests
     }
 
     /// <summary>
-    /// The one-segment guarantee that made #144 cost no new key: a path with no dots behaves
+    /// The one-segment guarantee that made #142 cost no new key: a path with no dots behaves
     /// exactly like the bare name it used to be. Claude's own default shape, read through the
     /// path-based reader, still comes out whole.
     /// </summary>

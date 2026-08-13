@@ -454,7 +454,7 @@ public sealed record RunnerConfig(
     /// it against the real stream, which is more honest than pretending to validate a syntax
     /// this resolver does not have.
     ///
-    /// <para>Two more, both surfaced by the OpenCode integration (#144), both the same class of
+    /// <para>Two more, both surfaced by the OpenCode integration (#142), both the same class of
     /// mistake — a profile that parses and reports nothing:
     /// <list type="number">
     ///   <item>an unwalkable <b>usage</b> path. The usage keys became dotted paths so a harness
@@ -523,7 +523,7 @@ public sealed record RunnerConfig(
                     "type value (§10)");
         }
 
-        // The usage keys are dotted paths (#144), so they can be malformed exactly as
+        // The usage keys are dotted paths (#142), so they can be malformed exactly as
         // tool_name_path can. Only declared keys are checked: every default is a valid
         // one-segment path, so an absent key cannot be at fault.
         foreach (var key in UsagePathKeys)
@@ -548,7 +548,7 @@ public sealed record RunnerConfig(
 
     /// <summary>
     /// The <c>events.mapping</c> keys whose values are dotted paths rather than plain strings
-    /// (#144). Listed once here so validation cannot drift from
+    /// (#142). Listed once here so validation cannot drift from
     /// <see cref="TerminalStreamMapping.From"/>; <c>usage_type</c> is deliberately absent because
     /// it is a stream <em>value</em>, and so is <c>tool_name_path</c>, which is checked above with
     /// its own comma-alternative rule.
