@@ -22,7 +22,7 @@ on:
       codex_model:
         description: "Codex model slug for the real-codex tier (DOCKET_CODEX_MODEL)"
         required: false
-        default: "gpt-5.1-codex"
+        default: "gpt-5.3-codex"
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -249,9 +249,10 @@ jobs:
   # exactly the notification we want. Source citations above are against 0.147.0.
   #
   # Cost: the tasks are single-echo, so a full run is cents rather than dollars. Note the slug
-  # this job actually uses is NOT the tests' own default: the code falls back to
-  # gpt-5.1-codex-mini (the cheapest codex-family model), while the input below defaults to
-  # gpt-5.1-codex, because the mini was the slug that 404'd. Pass codex_model to override.
+  # this job actually uses is NOT the tests' own code default (gpt-5.1-codex-mini): the input
+  # below overrides it. That input keeps drifting with the server-side catalog — first
+  # gpt-5.1-codex-mini, then gpt-5.1-codex, both 404'd ("Model not found") — so it now defaults
+  # to gpt-5.3-codex. When that drifts too, pass codex_model to override; a slug bump is not a PR.
   real-codex-e2e:
     if: github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-latest
@@ -313,4 +314,4 @@ jobs:
           # (Responses API, "Model not found"), while auth, MCP init and the closed-stdin
           # spawn all worked. The tier reads DOCKET_CODEX_MODEL precisely for
           # server-side catalog drift, so the slug is a dispatch input, not a PR.
-          DOCKET_CODEX_MODEL: ${{ inputs.codex_model || 'gpt-5.1-codex' }}
+          DOCKET_CODEX_MODEL: ${{ inputs.codex_model || 'gpt-5.3-codex' }}
