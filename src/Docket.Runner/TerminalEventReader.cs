@@ -38,13 +38,16 @@ namespace Docket.Runner;
 /// <c>modelUsage</c> map broken down per model, and <c>total_cost_usd</c>:
 /// <list type="bullet">
 ///   <item><c>usage_type</c> (<c>result</c>) — the <c>type_key</c> value of a usage-bearing
-///     line. Codex: <c>turn.completed</c>.</item>
+///     line. Codex: <c>turn.completed</c>. OpenCode: <c>step_finish</c>. This is a
+///     <em>value</em>, not a path.</item>
 ///   <item><c>usage_key</c> (<c>usage</c>) — the object holding the aggregate counters.</item>
 ///   <item><c>usage_input_key</c> (<c>input_tokens</c>), <c>usage_output_key</c>
 ///     (<c>output_tokens</c>), <c>usage_cache_read_key</c> (<c>cache_read_input_tokens</c>),
-///     <c>usage_cache_write_key</c> (<c>cache_creation_input_tokens</c>) — the four buckets.</item>
+///     <c>usage_cache_write_key</c> (<c>cache_creation_input_tokens</c>) — the four buckets,
+///     resolved <em>within</em> the <c>usage_key</c> object.</item>
 ///   <item><c>usage_reasoning_key</c> (unset) — a reasoning portion OF output where the harness
-///     breaks one out (Codex: <c>reasoning_output_tokens</c>). Never added to a total.</item>
+///     breaks one out (Codex: <c>reasoning_output_tokens</c>). Never added to a total —
+///     unless <c>usage_reasoning_is_subset</c> says it is not a portion, below.</item>
 ///   <item><c>usage_cost_key</c> (<c>total_cost_usd</c>) — a cost the HARNESS computed, read
 ///     from the line root. Declare it empty for a harness that computes none; nothing derives
 ///     one from tokens here.</item>
@@ -60,13 +63,43 @@ namespace Docket.Runner;
 ///     the reader subtracts to keep the four buckets disjoint. Claude's are already disjoint
 ///     (its <c>input_tokens</c> excludes cache); Codex's are not, and summing its counters as
 ///     reported would double-count every cached token.</item>
+///   <item><c>usage_reasoning_is_subset</c> (<c>true</c>) — the second semantic key, and the
+///     mirror of the one above one bucket over. True (the default, and both claude and Codex)
+///     means the reasoning count is <em>inside</em> the output total, so it rides the wire as
+///     the informational portion <see cref="UsageReportedEvent.ReasoningOutputTokens"/> is
+///     defined to be and is never added to a sum. False means the harness already
+///     <em>subtracted</em> it — OpenCode publishes <c>output = output - reasoning</c>
+///     (<c>session.ts:373</c> at <c>v1.18.17</c>) — so the reader folds it back in before
+///     emitting. Without that fold the plane's
+///     <c>TotalTokens = input + output + cacheRead + cacheWrite</c> would silently omit every
+///     reasoning token, which on a thinking model is most of the spend.</item>
 ///   <item><c>usage_is_cumulative</c> (<c>true</c>) — false for a harness whose reports are
-///     per-turn deltas (Codex), which this reader then accumulates so what reaches the wire is
-///     always cumulative-to-date.</item>
+///     per-turn deltas (Codex, OpenCode), which this reader then accumulates so what reaches
+///     the wire is always cumulative-to-date.</item>
 /// </list>
 /// Note the two casings in one Claude payload — the aggregate object is snake_case and the
 /// per-model entries are camelCase — which is exactly why every one of these is a separate
 /// overridable key rather than one naming convention applied twice.</para>
+///
+/// <para><b>The usage keys are dotted paths, not bare property names (OpenCode, issue #142).</b>
+/// Claude and Codex both put their counters in one object one level below the line root, with
+/// the four buckets flat inside it, so a bare name reached everything. OpenCode does not: its
+/// <c>step_finish</c> line wraps everything in a <c>part</c>, nests the buckets two deep
+/// (<c>part.tokens.cache.read</c>), and puts cost <em>beside</em> the counters object rather
+/// than at the line root (<c>part.cost</c>). Three mismatches at once, and no rename reaches
+/// any of them. So every usage key here accepts the same dotted-path syntax
+/// <c>tool_name_path</c> introduced in #111 — <c>usage_key: "part.tokens"</c>,
+/// <c>usage_cache_read_key: "cache.read"</c>, <c>usage_cost_key: "part.cost"</c>. This added
+/// <b>no new key</b>: a path with no dots is a one-segment path, so every default and every
+/// pre-existing claude/Codex mapping resolves exactly as it did. Comma-separated alternatives
+/// are deliberately <em>not</em> supported here — that exists for <c>tool_name_path</c> because
+/// one harness names a tool differently per tool kind, and a counter has one home.
+///
+/// <para>What each path is rooted at is unchanged — only "name" became "path":
+/// <c>usage_key</c>, <c>usage_models_key</c> and <c>usage_cost_key</c> walk from the
+/// <em>line root</em>; the four bucket keys and <c>usage_reasoning_key</c> walk from the
+/// <c>usage_key</c> object; the <c>model_*</c> keys walk from each <c>usage_models_key</c>
+/// entry.</para></para>
 ///
 /// <para><b>Flat tool-call mode (§10, issue #111).</b> The eleven keys above all assume
 /// claude's nesting: an assistant turn wrapping an <em>array</em> of content blocks, one of
@@ -389,7 +422,7 @@ public sealed class TerminalEventReader
     private void EmitUsage(JsonElement root)
     {
         if (_map.UsageModelsKey is { Length: > 0 } modelsKey
-            && root.TryGetProperty(modelsKey, out var models)
+            && TryWalk(root, modelsKey, out var models)
             && models.ValueKind == JsonValueKind.Object)
         {
             var emitted = false;
@@ -412,7 +445,7 @@ public sealed class TerminalEventReader
                 return;
         }
 
-        if (!root.TryGetProperty(_map.UsageKey, out var usage) || usage.ValueKind != JsonValueKind.Object)
+        if (!TryWalk(root, _map.UsageKey, out var usage) || usage.ValueKind != JsonValueKind.Object)
             return;
 
         var input = ReadLong(usage, _map.UsageInputKey);
@@ -426,6 +459,20 @@ public sealed class TerminalEventReader
         if (_map.CachedIsSubsetOfInput)
             input = Math.Max(0, input - cacheRead);
 
+        var output = ReadLong(usage, _map.UsageOutputKey);
+        var reasoning = _map.UsageReasoningKey is { Length: > 0 } rk ? ReadNullableLong(usage, rk) : null;
+
+        // The second disjointness normalization, and the mirror of the one above (OpenCode, #142).
+        // UsageReportedEvent.ReasoningOutputTokens is DEFINED as a portion of OutputTokens, which
+        // is why the plane's TotalTokens deliberately omits it. A harness that has already
+        // subtracted reasoning out of its output total breaks that invariant in the one direction
+        // that loses tokens rather than double-counting them, so fold it back in and the invariant
+        // holds again — for OpenCode this is putting back exactly the arithmetic session.ts:373
+        // did. Only the reported output moves; `reasoning` itself is unchanged, because after the
+        // fold it genuinely is the portion it claims to be.
+        if (!_map.ReasoningIsSubsetOfOutput && reasoning is { } disjoint)
+            output += disjoint;
+
         // No model: the aggregate object names none, and nothing else is allowed to. A profile
         // declaration or a spawn argv would be the PLANE asserting a model into a surface labelled
         // "reported by the harness" (§2 principle 2), so an unattributed report with real token
@@ -433,10 +480,10 @@ public sealed class TerminalEventReader
         Emit(
             null,
             input,
-            ReadLong(usage, _map.UsageOutputKey),
+            output,
             cacheRead,
             ReadLong(usage, _map.UsageCacheWriteKey),
-            reasoning: _map.UsageReasoningKey is { Length: > 0 } rk ? ReadNullableLong(usage, rk) : null,
+            reasoning: reasoning,
             cost: _map.UsageCostKey is { Length: > 0 } tck ? ReadDecimal(root, tck) : null);
 
         void Emit(
@@ -477,20 +524,43 @@ public sealed class TerminalEventReader
         }
     }
 
-    private static long ReadLong(JsonElement obj, string key) =>
-        obj.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var n)
-            ? n
-            : 0;
+    private static long ReadLong(JsonElement obj, string[] path) => ReadNullableLong(obj, path) ?? 0;
 
-    private static long? ReadNullableLong(JsonElement obj, string key) =>
-        obj.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var n)
+    private static long? ReadNullableLong(JsonElement obj, string[] path) =>
+        TryWalk(obj, path, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetInt64(out var n)
             ? n
             : null;
 
-    private static decimal? ReadDecimal(JsonElement obj, string key) =>
-        obj.TryGetProperty(key, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetDecimal(out var d)
+    private static decimal? ReadDecimal(JsonElement obj, string[] path) =>
+        TryWalk(obj, path, out var v) && v.ValueKind == JsonValueKind.Number && v.TryGetDecimal(out var d)
             ? d
             : null;
+
+    /// <summary>
+    /// Walks a pre-split dotted path of object property names and hands back whatever value it
+    /// lands on, of any kind — the shared primitive behind every usage read and the
+    /// <c>usage_key</c>/<c>usage_models_key</c> container lookups. Distinct from
+    /// <see cref="ResolvePath"/>, which exists for tool names and therefore insists on landing on
+    /// a string; usage lands on numbers and objects, so the kind check belongs at each call site
+    /// rather than in the walk.
+    /// </summary>
+    private static bool TryWalk(JsonElement root, string[] segments, out JsonElement value)
+    {
+        var current = root;
+        foreach (var segment in segments)
+        {
+            if (current.ValueKind != JsonValueKind.Object || !current.TryGetProperty(segment, out var next))
+            {
+                value = default;
+                return false;
+            }
+
+            current = next;
+        }
+
+        value = current;
+        return true;
+    }
 
     /// <summary>
     /// Walks a pre-split dotted path of object property names and returns the string it lands
@@ -537,20 +607,21 @@ internal readonly record struct TerminalStreamMapping(
     string? ToolEventType,
     string[][] ToolNamePaths,
     string UsageType,
-    string UsageKey,
-    string UsageInputKey,
-    string UsageOutputKey,
-    string UsageCacheReadKey,
-    string UsageCacheWriteKey,
-    string? UsageReasoningKey,
-    string? UsageCostKey,
-    string? UsageModelsKey,
-    string ModelInputKey,
-    string ModelOutputKey,
-    string ModelCacheReadKey,
-    string ModelCacheWriteKey,
-    string? ModelCostKey,
+    string[] UsageKey,
+    string[] UsageInputKey,
+    string[] UsageOutputKey,
+    string[] UsageCacheReadKey,
+    string[] UsageCacheWriteKey,
+    string[]? UsageReasoningKey,
+    string[]? UsageCostKey,
+    string[]? UsageModelsKey,
+    string[] ModelInputKey,
+    string[] ModelOutputKey,
+    string[] ModelCacheReadKey,
+    string[] ModelCacheWriteKey,
+    string[]? ModelCostKey,
     bool CachedIsSubsetOfInput,
+    bool ReasoningIsSubsetOfOutput,
     bool UsageIsCumulative)
 {
     /// <summary>
@@ -576,21 +647,41 @@ internal readonly record struct TerminalStreamMapping(
         PickOrNull(mapping, "tool_event_type"),
         ParseToolNamePaths(PickOrNull(mapping, "tool_name_path")),
         Pick(mapping, "usage_type", "result"),
-        Pick(mapping, "usage_key", "usage"),
-        Pick(mapping, "usage_input_key", "input_tokens"),
-        Pick(mapping, "usage_output_key", "output_tokens"),
-        Pick(mapping, "usage_cache_read_key", "cache_read_input_tokens"),
-        Pick(mapping, "usage_cache_write_key", "cache_creation_input_tokens"),
-        PickOrNull(mapping, "usage_reasoning_key"),
-        Pick(mapping, "usage_cost_key", "total_cost_usd"),
-        Pick(mapping, "usage_models_key", "modelUsage"),
-        Pick(mapping, "model_input_key", "inputTokens"),
-        Pick(mapping, "model_output_key", "outputTokens"),
-        Pick(mapping, "model_cache_read_key", "cacheReadInputTokens"),
-        Pick(mapping, "model_cache_write_key", "cacheCreationInputTokens"),
-        Pick(mapping, "model_cost_key", "costUSD"),
+        ParsePath(Pick(mapping, "usage_key", "usage")),
+        ParsePath(Pick(mapping, "usage_input_key", "input_tokens")),
+        ParsePath(Pick(mapping, "usage_output_key", "output_tokens")),
+        ParsePath(Pick(mapping, "usage_cache_read_key", "cache_read_input_tokens")),
+        ParsePath(Pick(mapping, "usage_cache_write_key", "cache_creation_input_tokens")),
+        ParsePathOrNull(PickOrNull(mapping, "usage_reasoning_key")),
+        ParsePathOrNull(Pick(mapping, "usage_cost_key", "total_cost_usd")),
+        ParsePathOrNull(Pick(mapping, "usage_models_key", "modelUsage")),
+        ParsePath(Pick(mapping, "model_input_key", "inputTokens")),
+        ParsePath(Pick(mapping, "model_output_key", "outputTokens")),
+        ParsePath(Pick(mapping, "model_cache_read_key", "cacheReadInputTokens")),
+        ParsePath(Pick(mapping, "model_cache_write_key", "cacheCreationInputTokens")),
+        ParsePathOrNull(Pick(mapping, "model_cost_key", "costUSD")),
         IsTrue(PickOrNull(mapping, "usage_cached_is_subset")),
+        !IsFalse(PickOrNull(mapping, "usage_reasoning_is_subset")),
         !IsFalse(PickOrNull(mapping, "usage_is_cumulative")));
+
+    /// <summary>
+    /// Splits one usage key into its dotted segments. Unlike
+    /// <see cref="ParseToolNamePaths"/> there are no comma-separated alternatives: a counter has
+    /// exactly one home, so a comma here is a property name containing a comma, not a choice.
+    /// A malformed segment is left in place rather than dropped — <see cref="RunnerConfig"/>
+    /// fails the load for it, and silently repairing it here would make that error unreachable.
+    /// </summary>
+    internal static string[] ParsePath(string raw) => raw.Split('.');
+
+    /// <summary>
+    /// As <see cref="ParsePath"/>, but an absent or blank key stays null so the reader can tell
+    /// "not declared" from "declared as something". The three optional usage keys
+    /// (<c>usage_reasoning_key</c>, <c>usage_cost_key</c>, <c>usage_models_key</c>) each mean
+    /// something specific when blanked: a harness that reports no reasoning split, computes no
+    /// cost, or names no model.
+    /// </summary>
+    private static string[]? ParsePathOrNull(string? raw) =>
+        string.IsNullOrWhiteSpace(raw) ? null : raw.Split('.');
 
     /// <summary>A mapping flag, read the way a human writes one. Absent means false.</summary>
     private static bool IsTrue(string? raw) =>
