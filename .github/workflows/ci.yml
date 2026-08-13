@@ -204,8 +204,41 @@ jobs:
 
       # The worker binary docketd spawns. Installed to PATH as `claude`; the test
       # resolves it via PATH (or DOCKET_CLAUDE_BIN) and skips if it is missing.
+      #
+      # PINNED, and the version is the finding rather than a preference. This install used
+      # to take `latest`, and `latest` moved under us mid-day on 2026-08-13: run 31653004962
+      # (00:02Z) installed 2.1.229 and went 9/9 green, run 31732739610 (18:50Z) installed
+      # 2.1.231 — published 08:27Z that morning — and went 7/2 on IDENTICAL test code. npm
+      # prints no version, so the versions are read off the registry's publish times against
+      # each step's own timestamp; 2.1.230 was never published.
+      #
+      # This is NOT a permission-routing bug, though it looks like one at first: the failing
+      # fact is `_without_bypass_` and the bridge is the thing it exercises. The bridge worked.
+      # It recorded a real pending request and blocked the task `blocked_on_input`, so
+      # request_permission fired exactly as designed; what it recorded was the wrong command —
+      # `{"command":"docket get_task"}` as BASH. There is no `docket` CLI (this repo builds
+      # `docketd` and nothing else), and `mcp__docket__get_task` was already in --allowedTools,
+      # i.e. pre-approved, so no permission gate was ever involved.
+      #
+      # The worker invented a phantom CLI out of its own prompt. The prompt says "call the
+      # docket get_task tool"; 2.1.231 read that as a shell command and shelled out, then tried
+      # curl against the MCP server when that failed. 2.1.229 reads the same words and calls
+      # `mcp__docket__get_task`. The park/resume fact failed on its COLD leg the same way, for
+      # the same phrase. So the prompt phrasing is a latent trap that has been here all along,
+      # and the version bump is only what finally triggered it.
+      #
+      # Which is why THIS PIN IS A STOPGAP, NOT THE FIX. The durable fix is prompt clarity —
+      # name `mcp__docket__get_task` explicitly, say there is no `docket` CLI, and forbid
+      # shelling or curling to the MCP server — in the shipped worker skill and in the
+      # RealClaudeCollaborationTests recipe prompts. Re-unpin once the prompts no longer invite
+      # the misreading, not merely because a newer claude has shipped.
+      #
+      # Two dead ends recorded so nobody re-derives them: 2.1.231's changelog has exactly one
+      # entry and it is about MCP OAuth, nothing about permissions; and the auto-mode default
+      # rollout of 2026-08-14 (anthropics/claude-code#86451, #86478) was live during the red run
+      # but is not needed to explain any of this, because the tools were pre-approved.
       - name: Install claude CLI
-        run: npm install -g @anthropic-ai/claude-code
+        run: npm install -g @anthropic-ai/claude-code@2.1.229
 
       - name: Restore
         run: dotnet restore
@@ -248,9 +281,21 @@ jobs:
   # retired model slug. That last one is not hypothetical: it is what the first dispatch hit,
   # and DOCKET_CODEX_MODEL overrides it with no code change.
   #
-  # `npm install -g @openai/codex` deliberately takes the latest version rather than pinning
-  # 0.147.0: if upstream changes the stdin behaviour, the characterization fact FAILS, which is
-  # exactly the notification we want. Source citations above are against 0.147.0.
+  # `npm install -g @openai/codex@0.147.0` is PINNED, reversing this job's original argument that
+  # taking `latest` was a feature because a changed stdin behaviour would fail the
+  # characterization fact loudly. It does fail loudly — but into whichever tier happens to be
+  # dispatched next, at a version nobody chose, which is how real-claude-e2e lost two facts to a
+  # mid-day `latest` move on 2026-08-13. Reproducibility first: a tier's red should mean our code
+  # changed, not that npm served a different binary this hour. Drift is still wanted, just
+  # controlled — a daily bump bot (built separately) proposes the version bump, runs the e2e, and
+  # auto-merges only on green, so an upstream behaviour change arrives as a failing PR instead of
+  # silently breaking a tier.
+  #
+  # 0.147.0 is the version this tier is actually green on: it has been `latest` since
+  # 2026-08-07T01:47Z, so every green codex dispatch since already installed it, and pinning is
+  # behaviour-neutral rather than a bet. It is also the version every source citation above is
+  # against. Note `latest` is the RELEASE line — the newer-by-timestamp 0.148.0-alpha.* sit under
+  # the `alpha` dist-tag and were never what this step installed.
   #
   # Cost: the tasks are single-echo, so a full run is cents rather than dollars. Note the slug
   # this job actually uses is NOT the tests' own code default (gpt-5.1-codex-mini): the input
@@ -289,16 +334,21 @@ jobs:
           node-version: 20
 
       # The worker binary docketd spawns. Installed to PATH as `codex`; the test resolves it
-      # via PATH (or DOCKET_CODEX_BIN) and skips if it is missing.
+      # via PATH (or DOCKET_CODEX_BIN) and skips if it is missing. Pinned for reproducibility —
+      # the argument, and why it reverses this job's original one, is in the header above.
       - name: Install codex CLI
-        run: npm install -g @openai/codex
+        run: npm install -g @openai/codex@0.147.0
 
       # The claude CLI too: the mixed claude+codex fleet fact needs BOTH binaries and
       # skips when either is missing. Installing it is what un-skipped the fact that is the
       # whole BYO-harness pitch — which then passed, so this step is load-bearing, not
       # preparatory.
+      #
+      # Pinned to the same version as real-claude-e2e's install, and for the reasons written
+      # out there. Kept in lockstep deliberately: a mixed-fleet fact that ran a different
+      # claude than the claude tier would make one tier's green say nothing about the other's.
       - name: Install claude CLI
-        run: npm install -g @anthropic-ai/claude-code
+        run: npm install -g @anthropic-ai/claude-code@2.1.229
 
       - name: Restore
         run: dotnet restore
@@ -337,12 +387,20 @@ jobs:
   # scripts. The npm package is an official path, not a guess — the project's own README at
   # v1.18.17 carries the npmjs.com/package/opencode-ai badge (README.md:13) and documents
   # `npm i -g opencode-ai@latest` (README.md:53). Verified read-only against the registry:
-  # opencode-ai@1.18.17 is `latest`, maintained by `thdxr`, and ships bin `opencode` with the
-  # per-platform binaries as optionalDependencies. The version matches the git tag every source
-  # citation in RealOpenCodeCollaborationTests is pinned to.
+  # opencode-ai is maintained by `thdxr` and ships bin `opencode` with the per-platform binaries
+  # as optionalDependencies.
   #
-  # Deliberately unpinned here, exactly like the codex step: if upstream changes the stdin
-  # behaviour, the characterization fact FAILS, which is precisely the notification we want.
+  # PINNED to 1.18.18, reversing the "deliberately unpinned so a stdin-behaviour change fails
+  # loudly" argument this job inherited from the codex tier — see that tier's header for why
+  # reproducibility wins and how the daily bump bot keeps the drift signal without letting an
+  # unchosen version break a tier.
+  #
+  # 1.18.18 is the version this tier is green on, not merely today's `latest`: it published
+  # 2026-08-13T01:13Z and the 5/5 dispatch (run 31740997672, job 94584059538) installed at
+  # 20:29Z that evening, so it ran 1.18.18. Worth stating because `latest` had ALREADY moved off
+  # the 1.18.17 this comment originally named — pinning what a header says rather than what a
+  # green run installed is exactly the mistake this whole PR exists to stop. The `0.0.0-dev-*`
+  # and `snapshot-*` builds carry their own dist-tags and were never what this step installed.
   #
   # WHAT THE FIVE FACTS COVER: the silent dead-man hang under an explicit `stdin: deadman`
   # (spends nothing — OpenCode blocks at cli/cmd/run.ts:416 before contacting a model); a real
@@ -392,15 +450,21 @@ jobs:
           node-version: 20
 
       # The worker binary docketd spawns. Installed to PATH as `opencode`; the test resolves it
-      # via PATH (or DOCKET_OPENCODE_BIN) and skips if it is missing.
+      # via PATH (or DOCKET_OPENCODE_BIN) and skips if it is missing. Pinned for reproducibility —
+      # the argument, and the evidence for this exact version, is in the header above.
       - name: Install opencode CLI
-        run: npm install -g opencode-ai
+        run: npm install -g opencode-ai@1.18.18
 
       # The claude CLI too: the mixed claude+opencode fleet fact needs BOTH binaries and skips
       # when either is missing. Same reasoning as the codex job — installing the second binary is
       # what un-skips the fact that is the whole BYO-harness pitch.
+      #
+      # Pinned in lockstep with the other two claude installs; the reasoning is written out at
+      # real-claude-e2e's. Same lockstep argument as the codex job: a mixed-fleet fact running a
+      # different claude than the claude tier would make one tier's green say nothing about the
+      # other's.
       - name: Install claude CLI
-        run: npm install -g @anthropic-ai/claude-code
+        run: npm install -g @anthropic-ai/claude-code@2.1.229
 
       - name: Restore
         run: dotnet restore
