@@ -52,14 +52,41 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// injected <c>docket</c> server the only MCP surface (never the operator's own).</summary>
     private const string AllowedTools = "mcp__docket__get_task,mcp__docket__report_result";
 
+    /// <summary>
+    /// The standing rule every prompt here carries, and it is a fix for a real failure rather
+    /// than boilerplate. These prompts used to say "call the docket get_task tool"; a real
+    /// claude 2.1.231 worker read that as a shell command and ran <c>docket get_task</c> through
+    /// <c>Bash</c> — a program that does not exist anywhere in this repo, which builds
+    /// <c>docketd</c> and nothing else — rather than calling the MCP tool it was already
+    /// allow-listed for. Two facts died that way, and one of them looked like a permission-bridge
+    /// regression because the phantom shell command is what the bridge dutifully recorded.
+    ///
+    /// <para>So the tool names are now spelled the way the harness actually exposes them, which
+    /// has no reading as a command line. Two clauses are scoped narrowly on purpose, because the
+    /// obvious blanket wording would break the very facts this is meant to protect. The
+    /// <c>curl</c> ban names the MCP server only — the service scenario's consumer must curl a
+    /// <em>forwarded service port</em>. And the last sentence says "missing or errors" rather than
+    /// "refused": a refusal is the permission bridge working, and a worker told to report refusals
+    /// would abandon the Bash call it is supposed to wait out and then complete.</para>
+    /// </summary>
+    private const string McpToolsRule =
+        " Docket's tools are MCP tools, named exactly mcp__docket__get_task, " +
+        "mcp__docket__report_result and so on — call them as tools, under those names. There is " +
+        "no `docket` program: no such command exists on this machine, so never run `docket` in a " +
+        "shell, and never try to reach the docket MCP server yourself over HTTP or with curl. (A " +
+        "shell command your assignment explicitly asks for is a different thing, and is fine.) If " +
+        "a docket MCP tool is missing or errors, report that with mcp__docket__report_result " +
+        "instead of working around it.";
+
     /// <summary>Generic worker prompt (§7): the specifics live in each task's opaque
     /// <b>description</b>, read via <c>get_task</c>, so one profile drives every role.</summary>
     private const string WorkerPrompt =
-        "You are a Docket worker agent. Your FIRST action must be to call the docket get_task " +
-        "tool to read your assignment. The assignment's description tells you the exact string " +
-        "to report. Your ONLY other action is to call the docket report_result tool once, with " +
-        "that exact string as resultReference. Do not write files, do not explain, do not ask " +
-        "questions. Two tool calls total: get_task, then report_result.";
+        "You are a Docket worker agent. Your FIRST action must be to call the " +
+        "mcp__docket__get_task tool to read your assignment. The assignment's description tells " +
+        "you the exact string to report. Your ONLY other action is to call the " +
+        "mcp__docket__report_result tool once, with that exact string as resultReference. Do not " +
+        "write files, do not explain, do not ask questions. Two tool calls total: " +
+        "mcp__docket__get_task, then mcp__docket__report_result." + McpToolsRule;
 
     /// <summary>
     /// The prompt for scenarios whose description asks for more than an echo (§7: the
@@ -70,11 +97,12 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// success. That is not a hypothetical: it is what a real haiku worker did.
     /// </summary>
     private const string StepwiseWorkerPrompt =
-        "You are a Docket worker agent. Your FIRST action must be to call the docket get_task " +
-        "tool to read your assignment. Its description lists numbered steps: carry them out in " +
-        "order, exactly as written, using the tools it names. Do not add steps, do not skip " +
-        "steps, and do not substitute one tool for another. Do not write or edit files unless a " +
-        "step tells you to. Do not explain and do not ask questions.";
+        "You are a Docket worker agent. Your FIRST action must be to call the " +
+        "mcp__docket__get_task tool to read your assignment. Its description lists numbered " +
+        "steps: carry them out in order, exactly as written, using the tools it names. Do not add " +
+        "steps, do not skip steps, and do not substitute one tool for another. Do not write or " +
+        "edit files unless a step tells you to. Do not explain and do not ask questions." +
+        McpToolsRule;
 
     public async Task InitializeAsync()
     {
@@ -896,7 +924,8 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     private static string RememberThenAskPrompt(string nonce) =>
         "You are a Docket worker agent. Remember this value for the rest of this conversation: " +
         $"{nonce}. Do not write it to any file, and do not put it in any tool call yet. Now call " +
-        "the docket get_task tool and do exactly what its description tells you.";
+        "the mcp__docket__get_task tool and do exactly what its description tells you." +
+        McpToolsRule;
 
     /// <summary>
     /// The profile's static <c>resume.args</c> prompt (§11) — generic config, carrying no task
@@ -904,10 +933,10 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// is the whole point: the value has to come from the resumed conversation or not at all.
     /// </summary>
     private const string ResumeAndReportPrompt =
-        "Your task has resumed. FIRST call the docket get_task tool — it carries the answer you " +
-        "were waiting for. Then call the docket report_result tool exactly once, with " +
+        "Your task has resumed. FIRST call the mcp__docket__get_task tool — it carries the answer " +
+        "you were waiting for. Then call the mcp__docket__report_result tool exactly once, with " +
         "resultReference set to the exact value you were asked to remember earlier in this " +
-        "conversation, and nothing else. Two tool calls total.";
+        "conversation, and nothing else. Two tool calls total." + McpToolsRule;
 
     /// <summary>Turn one: ask, then end the turn. The question text is asserted on, so it is
     /// fixed prose rather than left to the model's phrasing.</summary>
@@ -937,9 +966,10 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// profile here; the shell step it will be stopped on lives in the description.
     /// </summary>
     private const string PermissionWorkerPrompt =
-        "You are a Docket worker agent. Your FIRST action must be to call the docket get_task " +
-        "tool to read your assignment, then do exactly what its description says. If a tool call " +
-        "is refused, read the refusal and follow it — do not retry the same call.";
+        "You are a Docket worker agent. Your FIRST action must be to call the " +
+        "mcp__docket__get_task tool to read your assignment, then do exactly what its description " +
+        "says. If a tool call is refused, read the refusal and follow it — do not retry the same " +
+        "call." + McpToolsRule;
 
     /// <summary>
     /// A task that cannot be finished without a tool the allow-list withholds, so the harness
@@ -994,7 +1024,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     private static string RememberThenWorkPrompt(string nonce) =>
         "You are a Docket worker agent. Remember this value for the rest of this conversation: " +
         $"{nonce}. Do not write it to any file, and do not put it in any tool call. Now call the " +
-        "docket get_task tool and do exactly what its description tells you.";
+        "mcp__docket__get_task tool and do exactly what its description tells you." + McpToolsRule;
 
     /// <summary>
     /// The profile's static <c>resume.args</c> prompt for the continuation leg (§11) — generic
@@ -1002,9 +1032,9 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// whose assignment is new but whose conversation is not.
     /// </summary>
     private const string ContinuationReportPrompt =
-        "This conversation continues under a new task. FIRST call the docket get_task tool to " +
-        "read that new assignment, then do exactly what its description says. The value it asks " +
-        "for is one you were told earlier in this conversation.";
+        "This conversation continues under a new task. FIRST call the mcp__docket__get_task tool " +
+        "to read that new assignment, then do exactly what its description says. The value it asks " +
+        "for is one you were told earlier in this conversation." + McpToolsRule;
 
     /// <summary>The continuation task's own description: it names no value, because the whole
     /// point is that the value comes from the inherited conversation and from nowhere the new
