@@ -33,9 +33,20 @@ public sealed class InMemoryControlPlaneChannel : IControlPlaneChannel
     private readonly object _gate = new();
     private readonly List<PublishedEvent> _events = [];
     private readonly List<MachineHeartbeat> _heartbeats = [];
+    private volatile bool _connected = true;
 
-    /// <summary>When false, publishes/heartbeats are dropped (best-effort semantics).</summary>
-    public bool Connected { get; set; } = true;
+    /// <summary>
+    /// When false, publishes/heartbeats are dropped (best-effort semantics) — the fake's
+    /// stand-in for a socket that is not open. Volatile because a test flips it from its
+    /// own thread while the daemon's ring pump reads it from the pump's, and a pump that
+    /// never sees the flip would look exactly like the drop-on-disconnect bug it is there
+    /// to catch.
+    /// </summary>
+    public bool Connected
+    {
+        get => _connected;
+        set => _connected = value;
+    }
 
     public IReadOnlyList<PublishedEvent> Events
     {

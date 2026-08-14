@@ -1,3 +1,4 @@
+using System.Globalization;
 using Docket.Core;
 using Microsoft.Extensions.Time.Testing;
 
@@ -78,6 +79,141 @@ public class RunnerDaemonTests
             () => h.Recorded.Events.Any(e => e.Event is RebootedEvent), TimeSpan.FromSeconds(5)));
         var rebooted = (RebootedEvent)h.Recorded.Events.First(e => e.Event is RebootedEvent).Event;
         Assert.Equal("machine-1", rebooted.MachineId);
+
+        await h.Daemon.ShutdownAsync();
+    }
+
+    /// <summary>
+    /// §10 buffering: the ring exists so an event outlives a dead connection. The pump
+    /// drains it against a best-effort channel, so an event whose publish is refused must
+    /// be held and re-offered, not consumed — otherwise the buffer silently loses exactly
+    /// the events the plane's recovery reads (a <c>session-started</c> that never arrives
+    /// degrades a resume to a cold start with no signal at all).
+    /// </summary>
+    [Fact]
+    public async Task An_event_enqueued_while_the_channel_is_down_is_delivered_after_reconnect()
+    {
+        var channel = new InMemoryControlPlaneChannel { Connected = false };
+        var h = Build(channel: channel);
+        await h.Daemon.StartAsync();
+        var task = TaskId.New();
+
+        h.Ring.Enqueue(new SessionStartedEvent(task, "sess-1", h.Clock.GetUtcNow()));
+
+        // While the socket is down nothing lands — the point of the test is what happens
+        // to the event in the meantime, and this window is where it used to be eaten.
+        Assert.False(
+            await TestKit.WaitUntilAsync(() => h.Recorded.Events.Count > 0, TimeSpan.FromMilliseconds(250)),
+            "a disconnected channel recorded a publish");
+
+        channel.Connected = true;
+
+        // The parked pump wakes off the injected clock, so the fake has to be pushed past
+        // the retry interval. Advancing inside the poll rather than once beforehand keeps
+        // the wake independent of whether the pump had reached its delay yet.
+        Assert.True(
+            await TestKit.WaitUntilAsync(
+                () =>
+                {
+                    h.Clock.Advance(TimeSpan.FromSeconds(2));
+                    return h.Recorded.Events.Any(e => e.Event is SessionStartedEvent);
+                },
+                TimeSpan.FromSeconds(10)),
+            "session-started enqueued while the channel was down was never delivered after reconnect");
+
+        // Delivered once, and behind the rebooted that was already queued ahead of it:
+        // retrying a refused publish must not double-publish or reorder.
+        var started = Assert.Single(h.Recorded.Events, e => e.Event is SessionStartedEvent);
+        Assert.Equal("sess-1", ((SessionStartedEvent)started.Event).SessionRef);
+        Assert.IsType<RebootedEvent>(h.Recorded.Events[0].Event);
+
+        await h.Daemon.ShutdownAsync();
+    }
+
+    /// <summary>
+    /// The start ordering, §10 runner restart: <c>docketd</c> starts the daemon and only
+    /// then dials, so <c>rebooted</c> is always enqueued against a channel with no live
+    /// socket. It has to survive that wait — it is the signal that requeues everything
+    /// this machine was holding.
+    /// </summary>
+    [Fact]
+    public async Task Rebooted_survives_being_enqueued_before_the_first_connection()
+    {
+        var channel = new InMemoryControlPlaneChannel { Connected = false };
+        var h = Build(channel: channel);
+
+        await h.Daemon.StartAsync();
+        Assert.False(
+            await TestKit.WaitUntilAsync(() => h.Recorded.Events.Count > 0, TimeSpan.FromMilliseconds(250)),
+            "a disconnected channel recorded a publish");
+
+        channel.Connected = true; // the first dial completes
+
+        Assert.True(
+            await TestKit.WaitUntilAsync(
+                () =>
+                {
+                    h.Clock.Advance(TimeSpan.FromSeconds(2));
+                    return h.Recorded.Events.Any(e => e.Event is RebootedEvent);
+                },
+                TimeSpan.FromSeconds(10)),
+            "rebooted enqueued before the first connection was never delivered");
+        Assert.Single(h.Recorded.Events, e => e.Event is RebootedEvent);
+
+        await h.Daemon.ShutdownAsync();
+    }
+
+    /// <summary>
+    /// Holding an event the channel refused must not make the loss accounting lie. An
+    /// outage longer than the ring still drops — that is §10's bound, and the alternative
+    /// is unbounded memory — but every drop has to surface as a gap marker on a survivor,
+    /// including the drops that happen while the pump is parked on a held event.
+    /// </summary>
+    [Fact]
+    public async Task Overflow_while_the_pump_is_parked_still_lands_as_a_gap_marker()
+    {
+        var channel = new InMemoryControlPlaneChannel { Connected = false };
+        var h = Build(channel: channel);
+        var task = TaskId.New();
+        await h.Daemon.StartAsync();
+
+        // Park the pump: it drains rebooted, is refused, and holds it.
+        Assert.False(
+            await TestKit.WaitUntilAsync(() => h.Recorded.Events.Count > 0, TimeSpan.FromMilliseconds(250)),
+            "a disconnected channel recorded a publish");
+
+        // Then overrun the ring behind the held event.
+        const int enqueued = 200;
+        for (var i = 0; i < enqueued; i++)
+            h.Ring.Enqueue(new ToolCallEvent(task, i.ToString(), h.Clock.GetUtcNow()));
+        var dropped = h.Ring.DroppedCount;
+        Assert.True(dropped > 0, "the ring was expected to overflow during the outage");
+        var expectedToolCalls = enqueued - dropped;
+
+        channel.Connected = true;
+        Assert.True(
+            await TestKit.WaitUntilAsync(
+                () =>
+                {
+                    h.Clock.Advance(TimeSpan.FromSeconds(2));
+                    return h.Recorded.Events.Count(e => e.Event is ToolCallEvent) >= expectedToolCalls;
+                },
+                TimeSpan.FromSeconds(10)),
+            "the ring's survivors were not delivered after reconnect");
+
+        var delivered = h.Recorded.Events;
+        // The held event went first and survived the overflow behind it.
+        Assert.IsType<RebootedEvent>(delivered[0].Event);
+        Assert.Equal(0, delivered[0].GapBefore);
+        // Every drop is accounted for exactly once, on the survivor that followed it.
+        Assert.Equal(dropped, delivered.Sum(e => e.GapBefore));
+        // Nothing was delivered twice, and order held.
+        var tools = delivered.Where(e => e.Event is ToolCallEvent)
+            .Select(e => int.Parse(((ToolCallEvent)e.Event).Tool, CultureInfo.InvariantCulture))
+            .ToArray();
+        Assert.Equal(expectedToolCalls, tools.Length);
+        Assert.Equal(tools.OrderBy(t => t).ToArray(), tools);
+        Assert.Equal(enqueued - 1, tools[^1]);
 
         await h.Daemon.ShutdownAsync();
     }
