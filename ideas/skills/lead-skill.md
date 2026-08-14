@@ -84,7 +84,7 @@ Two reasons a continuation is the right shape rather than a fresh task. The agen
 
 Write the description so it survives the `degrade` case: name the processes and paths rather than relying on "you know what you started". A continuation that kept its memory ignores the redundancy; one that cold-started needs it. The single case still refused at creation is continuing a task that was **never dispatched** — it has no transcript and no directory, so there is nothing to carry on from, and an ordinary task is the right shape.
 
-Check the Machine Group view (`/dashboard/machines`) if you are unsure what is still running — it lists every process a machine holds and which task started it. A machine accumulating processes across closed-out work is the visible symptom of a cleanup continuation nobody sent.
+If you are unsure what is still running, ask your operator to check the Machine Group view (`/dashboard/machines`) — it lists every process a machine holds and which task started it, and a machine accumulating processes across closed-out work is the visible symptom of a cleanup continuation nobody sent. That view is human-only: your Lead token reads your own Team, not the fleet.
 
 ## Choosing a profile
 
@@ -92,7 +92,7 @@ Machines may declare more than one runner profile — a second harness, a restri
 
 Leave it unset unless you have a specific reason. An unset profile runs on `default` anywhere in the Machine Group, which is what you want almost always.
 
-Set it when the task genuinely needs that configuration: work handling sensitive material that should run under a restricted posture, or work you are deliberately routing to a particular harness. Check the Machine Group view (`/dashboard/machines`, or `?format=json` with your token) for which profiles exist — **a task requesting a profile no machine declares will sit unclaimable indefinitely.** Nothing will tell you except the task not starting. There is no MCP tool for this; machine enumeration is a dashboard surface by design.
+Set it when the task genuinely needs that configuration: work handling sensitive material that should run under a restricted posture, or work you are deliberately routing to a particular harness. **A task requesting a profile no machine declares will sit unclaimable indefinitely** — nothing will tell you except the task not starting, so do not guess a profile name. Which profiles exist is not something you can look up: there is no MCP tool for it, and the Machine Group view that lists them is human-only (machine enumeration is a permanent non-goal for agents by design). Ask your operator for the exact string, and set `profile` only once you have it.
 
 Do not use profiles to express what kind of work a task is. They describe how an agent runs, not what it does.
 

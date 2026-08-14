@@ -479,6 +479,28 @@ internal static class DashboardRenderer
         return Page("Sign in", "", sb.ToString(), autoRefresh: false);
     }
 
+    // ── Refusals that are about the credential, not the data ──────────────────
+
+    /// <summary>
+    /// The 403 page for a request this session's credential does not reach: a Lead asking for
+    /// the machine group or another Team (§12 — a Lead reads its own Team and nothing else), or
+    /// a mutating POST that did not come from this origin.
+    ///
+    /// <para>No auto-refresh, and no partial view of what was asked for. A page that showed the
+    /// scoped subset under a warning would be a worse answer than a refusal: the caller could
+    /// not tell which of the two it was looking at.</para>
+    /// </summary>
+    public static string ScopeRefused(string reason)
+    {
+        var sb = new StringBuilder();
+        sb.Append("<div class=\"login-wrap card\">");
+        sb.Append("<h1>Not for this session</h1>");
+        sb.Append($"<p class=\"err\">{E(reason)}</p>");
+        sb.Append("<p><a href=\"/dashboard/teams\">← Teams</a></p>");
+        sb.Append("</div>");
+        return Page("Not for this session", "", sb.ToString(), autoRefresh: false);
+    }
+
     // ── Measured usage — the harness's own numbers (§10, §12) ─────────────────
 
     /// <summary>

@@ -2,6 +2,7 @@ using Docket.Meta.Auth;
 using Docket.Meta.Data;
 using Docket.Meta.Provisioning;
 using Docket.Meta.Substrate;
+using Docket.Web;
 using Microsoft.EntityFrameworkCore;
 
 namespace Docket.Meta.Web;
@@ -26,6 +27,8 @@ internal static class MetaEndpoints
         app.MapPost("/login", HandleLoginAsync);
         app.MapPost("/logout", (HttpContext http, MetaSessionStore sessions) =>
         {
+            if (CrossOriginRefusal(http) is { } refusal)
+                return refusal;
             sessions.Revoke(http.Request.Cookies[MetaSessionStore.CookieName]);
             MetaAuth.ClearSessionCookie(http);
             return Results.Redirect("/login");
@@ -54,19 +57,45 @@ internal static class MetaEndpoints
 
     // ── Auth gate ──────────────────────────────────────────────────────────────
 
-    /// <summary>Wraps a handler so it runs only for an authenticated operator; otherwise redirect to login.</summary>
+    /// <summary>
+    /// Wraps a handler so it runs only for an authenticated operator, and — for the mutating
+    /// verbs — only for a request that came from this panel's own origin; otherwise redirect to
+    /// login or refuse.
+    /// </summary>
     private static Func<HttpContext, Task<IResult>> GatedAsync(Func<HttpContext, Task<IResult>> handler) =>
         async http =>
         {
+            if (CrossOriginRefusal(http) is { } refusal)
+                return refusal;
             var sessions = http.RequestServices.GetRequiredService<MetaSessionStore>();
             if (!MetaAuth.IsAuthenticated(http, sessions))
                 return Results.Redirect("/login");
             return await handler(http);
         };
 
+    /// <summary>
+    /// The refusal for a mutating request that did not come from this panel's own origin, or
+    /// null to proceed. The panel is cookie-authenticated HTML forms with no token in them, so
+    /// without this any page an operator visits while signed in could add a Docker host, upgrade
+    /// an instance's image, or destroy one — the destroy's typed-name confirm is defence against
+    /// a mis-click, not against a form the operator never saw.
+    ///
+    /// <para>Reads are exempt: a cross-origin GET here changes nothing, and a forging page cannot
+    /// read the response back. Meta configures no public origin of its own, so the comparison is
+    /// against the origin the request was addressed to (<see cref="OriginGuard.IsSameOrigin"/>).</para>
+    /// </summary>
+    private static IResult? CrossOriginRefusal(HttpContext http) =>
+        HttpMethods.IsGet(http.Request.Method) || HttpMethods.IsHead(http.Request.Method)
+        || OriginGuard.IsSameOrigin(http.Request)
+            ? null
+            : Html(MetaRenderer.CrossOriginRefused(), StatusCodes.Status403Forbidden);
+
     private static async Task<IResult> HandleLoginAsync(
         HttpContext http, MetaOperatorVerifier verifier, MetaSessionStore sessions)
     {
+        if (CrossOriginRefusal(http) is { } refusal)
+            return refusal;
+
         var form = await http.Request.ReadFormAsync();
         var passphrase = form["passphrase"].ToString();
 

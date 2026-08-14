@@ -2,6 +2,7 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Docket.ControlPlane;
 using Docket.ControlPlane.Auth;
+using Docket.Web;
 using Microsoft.Extensions.Configuration;
 
 namespace Docket.Mcp.Dashboard;
@@ -19,6 +20,12 @@ namespace Docket.Mcp.Dashboard;
 /// all reads live in <see cref="DashboardQueries"/>, all HTML in
 /// <see cref="DashboardRenderer"/>; the handlers only resolve the caller, negotiate
 /// the representation, and map to an <see cref="IResult"/>.
+///
+/// <para>Two rules run across the whole surface rather than route by route. Reads are scoped to
+/// what the resolved principal may see — a human operator reads the instance, a Lead reads its
+/// own Team (<see cref="Gated"/>). Mutating POSTs must come from this dashboard's own origin
+/// (<see cref="CrossOriginRefusal"/>), because the session cookie is the only thing they need
+/// and a browser will attach it to anyone's form.</para>
 /// </summary>
 public static class DashboardEndpoints
 {
@@ -48,8 +55,10 @@ public static class DashboardEndpoints
         // access to a preview's Team and the plane mints a one-time code, sent back
         // to the preview origin. Open like login (it establishes, not consumes, auth).
         app.MapGet("/dashboard/preview-auth", HandlePreviewAuthAsync);
-        app.MapPost("/dashboard/logout", (HttpContext http) =>
+        app.MapPost("/dashboard/logout", (HttpContext http, IConfiguration config) =>
         {
+            if (CrossOriginRefusal(http, config) is { } refusal)
+                return refusal;
             DashboardAuth.ClearSessionCookie(http);
             return Results.Redirect("/dashboard/login");
         });
@@ -59,27 +68,37 @@ public static class DashboardEndpoints
 
         app.MapGet("/dashboard/machines", async (
             HttpContext http, TokenService tokens, DashboardQueries queries, TimeProvider clock, CancellationToken ct) =>
-            await Gated(http, tokens, ct, async () =>
+            await Gated(http, tokens, ct, async principal =>
             {
+                // The one view with no Lead-scoped answer to give: a machine is not Team-scoped,
+                // and machine enumeration is a permanent non-goal for agents (§12 "human operator
+                // session only", §10 as-built). A Lead sees its machines through its own Team.
+                if (principal is not Principal.Human)
+                    return Refused(http, MachinesAreHumanOnly);
                 var machines = await queries.GetMachinesAsync(ct);
                 return Negotiated(http, machines, () => DashboardRenderer.Machines(machines, clock.GetUtcNow()));
             }));
 
         app.MapGet("/dashboard/teams", async (
             HttpContext http, TokenService tokens, DashboardQueries queries, TimeProvider clock, CancellationToken ct) =>
-            await Gated(http, tokens, ct, async () =>
+            await Gated(http, tokens, ct, async principal =>
             {
-                var teams = await queries.GetTeamsAsync(ct);
+                var teams = await queries.GetTeamsAsync(TeamScope(principal), ct);
                 return Negotiated(http, teams, () => DashboardRenderer.Teams(teams, clock.GetUtcNow()));
             }));
 
         app.MapGet("/dashboard/teams/{teamId}", async (
             string teamId, HttpContext http, TokenService tokens, DashboardQueries queries, TimeProvider clock,
             CancellationToken ct) =>
-            await Gated(http, tokens, ct, async () =>
+            await Gated(http, tokens, ct, async principal =>
             {
                 if (!Guid.TryParse(teamId, out var id))
                     return Results.BadRequest(new { error = "invalid team id" });
+                // The route takes an arbitrary id, so membership is checked here or nowhere:
+                // this page carries the Team's prose — worker reports, questions, answers,
+                // result references — which is exactly what must not cross a Team boundary.
+                if (!OperatorMayAccess(principal, new Docket.Core.TeamId(id)))
+                    return Refused(http, NotYourTeam);
                 var team = await queries.GetTeamAsync(id, ct);
                 if (team is null)
                     return WantsJson(http)
@@ -90,17 +109,17 @@ public static class DashboardEndpoints
 
         app.MapGet("/dashboard/inbox", async (
             HttpContext http, TokenService tokens, DashboardQueries queries, TimeProvider clock, CancellationToken ct) =>
-            await Gated(http, tokens, ct, async () =>
+            await Gated(http, tokens, ct, async principal =>
             {
-                var inbox = await queries.GetInboxAsync(ct);
+                var inbox = await queries.GetInboxAsync(TeamScope(principal), ct);
                 return Negotiated(http, inbox, () => DashboardRenderer.Inbox(inbox, clock.GetUtcNow()));
             }));
 
         app.MapGet("/dashboard/events", async (
             HttpContext http, TokenService tokens, DashboardQueries queries, TimeProvider clock, CancellationToken ct) =>
-            await Gated(http, tokens, ct, async () =>
+            await Gated(http, tokens, ct, async principal =>
             {
-                var events = await queries.GetEventsAsync(200, ct);
+                var events = await queries.GetEventsAsync(200, TeamScope(principal), ct);
                 return Negotiated(http, events, () => DashboardRenderer.Events(events, clock.GetUtcNow()));
             }));
 
@@ -135,13 +154,19 @@ public static class DashboardEndpoints
     /// <see cref="TokenService.ValidateAsync"/> as every other §5 path and set as
     /// the cookie only if it resolves to a human or a live Lead.</item>
     /// </list>
-    /// The only state-changing POST besides logout, and it only sets the caller's
-    /// own session — from a passphrase they present or a token they already hold —
-    /// so there is no CSRF surface to protect in v1.
+    /// <para>Same-origin only, like every other mutating POST here
+    /// (<see cref="CrossOriginRefusal"/>). This one sets no <em>existing</em> session, so the
+    /// exposure is the inverse of the usual: a cross-site POST here would log the operator into
+    /// a session the attacker minted, and everything they then did on this dashboard would be
+    /// happening in it.</para>
     /// </summary>
     private static async Task<IResult> HandleLoginAsync(
-        HttpContext http, IOperatorVerifier verifier, TokenService tokens, CancellationToken ct)
+        HttpContext http, IOperatorVerifier verifier, TokenService tokens, IConfiguration config,
+        CancellationToken ct)
     {
+        if (CrossOriginRefusal(http, config) is { } refusal)
+            return refusal;
+
         var form = await http.Request.ReadFormAsync(ct);
         var passphrase = form["passphrase"].ToString();
         var token = form["token"].ToString().Trim();
@@ -275,8 +300,14 @@ public static class DashboardEndpoints
     private static async Task<IResult> HandleDecidePermissionAsync(
         HttpContext http, TokenService tokens,
         [Microsoft.AspNetCore.Mvc.FromServices] TaskStore store,
+        IConfiguration config,
         CancellationToken ct)
     {
+        // Before the session is even resolved: this POST needs only a task id and a verdict, so
+        // whether it came from this dashboard is a question about the request, not the caller.
+        if (CrossOriginRefusal(http, config) is { } refusal)
+            return refusal;
+
         var principal = await DashboardAuth.ResolveAsync(http, tokens, ct);
         switch (principal)
         {
@@ -389,22 +420,89 @@ public static class DashboardEndpoints
     /// Runs <paramref name="body"/> only for an authenticated human/Lead; otherwise a JSON
     /// caller gets 401 and a browser is redirected to the login page.
     ///
-    /// <para>The resolved principal is not handed to the body: no read view here renders
-    /// differently for a human than for a Lead. One did — §9.9's set-limits form, drawn only
-    /// for a human — and it went with the budget subsystem (2026-08-12). The surfaces that
-    /// still discriminate (the transcript endpoints, the permission write) resolve the
-    /// principal themselves because they <em>refuse</em> on it, which is a decision no shared
-    /// wrapper should be making on their behalf.</para>
+    /// <para><b>The resolved principal is handed to the body, and every body has to use it.</b>
+    /// These views are not uniform: a human operator reads the instance (§12), while a Lead
+    /// holds a credential scoped to one Team (§5) and reads only that Team (§4 reattachment,
+    /// §10 as-built — no cross-Team or machine-group views for agents). Authenticating and then
+    /// discarding the principal is what turned a Lead token into an instance-wide reader, so the
+    /// signature no longer allows it: <see cref="TeamScope"/> for a scoped read,
+    /// <see cref="OperatorMayAccess"/> for a named Team, <see cref="Refused"/> for the views
+    /// with no Lead-scoped answer.</para>
     /// </summary>
     private static async Task<IResult> Gated(
-        HttpContext http, TokenService tokens, CancellationToken ct, Func<Task<IResult>> body)
+        HttpContext http, TokenService tokens, CancellationToken ct, Func<Principal, Task<IResult>> body)
     {
-        if (await DashboardAuth.ResolveAsync(http, tokens, ct) is null)
+        if (await DashboardAuth.ResolveAsync(http, tokens, ct) is not { } principal)
             return WantsJson(http)
                 ? Results.Json(new { error = "unauthorized" }, Json, statusCode: 401)
                 : Results.Redirect("/dashboard/login");
-        return await body();
+        return await body(principal);
     }
+
+    /// <summary>
+    /// The single Team a caller's multi-Team reads are confined to, or null for the instance-wide
+    /// view a human operator gets. The inverse of <see cref="OperatorMayAccess"/>, for the routes
+    /// that name no Team: rather than refusing a Lead outright they answer with its own Team,
+    /// which is the §4 reattachment surface it is entitled to.
+    /// </summary>
+    private static Guid? TeamScope(Principal principal) => principal switch
+    {
+        Principal.Lead l => l.Team.Value,
+        Principal.Human => null,
+        // Unreachable — DashboardAuth.ResolveAsync admits only the two above. Written as a
+        // Team that owns nothing rather than as null, so if a third principal ever reaches
+        // here it reads an empty instance instead of the whole one. The permissive answer is
+        // the one this whole seam exists to stop being the default.
+        _ => Guid.Empty,
+    };
+
+    private const string MachinesAreHumanOnly =
+        "the machine group is a human-operator view; a Lead session sees its own Team's tasks "
+        + "on /dashboard/teams and through get_team_state";
+
+    private const string NotYourTeam =
+        "this session may only read its own Team";
+
+    /// <summary>
+    /// A 403 for a caller whose credential does not reach what it asked for: the JSON twin gets
+    /// the reason as data (a Lead consuming the twin should be able to tell a scope refusal from
+    /// an expired token), a browser gets the page that names it.
+    /// </summary>
+    private static IResult Refused(HttpContext http, string reason) =>
+        WantsJson(http)
+            ? Results.Json(new { error = reason }, Json, statusCode: StatusCodes.Status403Forbidden)
+            : Results.Content(
+                DashboardRenderer.ScopeRefused(reason), "text/html; charset=utf-8",
+                statusCode: StatusCodes.Status403Forbidden);
+
+    /// <summary>
+    /// The origin a mutating dashboard POST must have come from. The dashboard is a same-origin
+    /// surface on the plane itself (§12), so its origin is the plane's public URL — the same
+    /// value §5's OAuth identity derives from — and a deployment configuring none falls back to
+    /// the origin the request was addressed to (see <see cref="OriginGuard.IsSameOrigin"/>).
+    /// </summary>
+    private static string? DashboardOrigin(IConfiguration config) =>
+        config["Docket:PublicMcpUrl"] ?? Environment.GetEnvironmentVariable("DOCKET_PUBLIC_MCP_URL");
+
+    /// <summary>
+    /// The refusal for a mutating POST that did not come from the dashboard's own origin, or
+    /// null to proceed. Applied to every POST that changes something a session is authority for
+    /// — the permission verdict (§11) and the two session writes — because the cookie is
+    /// <c>SameSite=Lax</c> and Lax is a <em>site</em> control: a §8.4 preview page shares the
+    /// dashboard's registrable domain by design, so a worker's own preview can otherwise POST
+    /// its own pending permission request and have the operator's session allow it.
+    ///
+    /// <para><c>/dashboard/preview</c> is deliberately not here: its worst case is minting a
+    /// preview URL the forging page cannot read back, and it is the one POST with a JSON twin an
+    /// agent legitimately drives.</para>
+    /// </summary>
+    private static IResult? CrossOriginRefusal(HttpContext http, IConfiguration config) =>
+        OriginGuard.IsSameOrigin(http.Request, DashboardOrigin(config))
+            ? null
+            : Refused(http, CrossOriginReason);
+
+    private const string CrossOriginReason =
+        "this form is same-origin only: the request carried no Origin from the dashboard's own host";
 
     /// <summary>Serve the model as JSON, or the rendered HTML, per content negotiation.</summary>
     private static IResult Negotiated<T>(HttpContext http, T model, Func<string> html) =>

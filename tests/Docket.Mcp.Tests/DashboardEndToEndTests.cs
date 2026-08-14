@@ -124,9 +124,7 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         await app.StartAsync(ct);
         using var client = Client(app);
 
-        using var form = new FormUrlEncodedContent(
-            new Dictionary<string, string> { ["passphrase"] = OperatorPassphrase });
-        var res = await client.PostAsync("/dashboard/login", form, ct);
+        var res = await PostLoginAsync(app, client, ct, ("passphrase", OperatorPassphrase));
 
         Assert.Equal(HttpStatusCode.Redirect, res.StatusCode);
         Assert.Contains("/dashboard/machines", res.Headers.Location!.ToString(), StringComparison.Ordinal);
@@ -156,11 +154,8 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         await app.StartAsync(ct);
         using var client = Client(app);
 
-        using var form = new FormUrlEncodedContent(
-            new Dictionary<string, string> { ["passphrase"] = "not-the-passphrase" });
-
         var sw = Stopwatch.StartNew();
-        var res = await client.PostAsync("/dashboard/login", form, ct);
+        var res = await PostLoginAsync(app, client, ct, ("passphrase", "not-the-passphrase"));
         sw.Stop();
 
         Assert.Equal(HttpStatusCode.Unauthorized, res.StatusCode);
@@ -183,9 +178,7 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         await app.StartAsync(ct);
         using var client = Client(app);
 
-        using var form = new FormUrlEncodedContent(
-            new Dictionary<string, string> { ["passphrase"] = "anything" });
-        var res = await client.PostAsync("/dashboard/login", form, ct);
+        var res = await PostLoginAsync(app, client, ct, ("passphrase", "anything"));
 
         Assert.Equal(HttpStatusCode.ServiceUnavailable, res.StatusCode);
         Assert.False(res.Headers.Contains("Set-Cookie"));
@@ -208,24 +201,18 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
 
         // Valid: a real human-session token → cookie set, land on the dashboard.
         var humanToken = await IssueHumanTokenAsync(ct);
-        using (var form = new FormUrlEncodedContent(new Dictionary<string, string> { ["token"] = humanToken }))
-        {
-            var ok = await client.PostAsync("/dashboard/login", form, ct);
-            Assert.Equal(HttpStatusCode.Redirect, ok.StatusCode);
-            Assert.Contains("/dashboard/machines", ok.Headers.Location!.ToString(), StringComparison.Ordinal);
-            var setCookie = Assert.Single(ok.Headers.GetValues("Set-Cookie"));
-            Assert.Contains(DashboardAuth.CookieName, setCookie, StringComparison.Ordinal);
-            Assert.Contains("httponly", setCookie, StringComparison.OrdinalIgnoreCase);
-        }
+        var ok = await PostLoginAsync(app, client, ct, ("token", humanToken));
+        Assert.Equal(HttpStatusCode.Redirect, ok.StatusCode);
+        Assert.Contains("/dashboard/machines", ok.Headers.Location!.ToString(), StringComparison.Ordinal);
+        var setCookie = Assert.Single(ok.Headers.GetValues("Set-Cookie"));
+        Assert.Contains(DashboardAuth.CookieName, setCookie, StringComparison.Ordinal);
+        Assert.Contains("httponly", setCookie, StringComparison.OrdinalIgnoreCase);
 
         // Invalid: a garbage token → re-rendered form, no cookie.
-        using (var form = new FormUrlEncodedContent(new Dictionary<string, string> { ["token"] = "dkt_h_not-a-real-token" }))
-        {
-            var bad = await client.PostAsync("/dashboard/login", form, ct);
-            Assert.Equal(HttpStatusCode.Unauthorized, bad.StatusCode);
-            Assert.False(bad.Headers.Contains("Set-Cookie"));
-            Assert.Contains("not a valid human or Lead session", await bad.Content.ReadAsStringAsync(ct), StringComparison.Ordinal);
-        }
+        var bad = await PostLoginAsync(app, client, ct, ("token", "dkt_h_not-a-real-token"));
+        Assert.Equal(HttpStatusCode.Unauthorized, bad.StatusCode);
+        Assert.False(bad.Headers.Contains("Set-Cookie"));
+        Assert.Contains("not a valid human or Lead session", await bad.Content.ReadAsStringAsync(ct), StringComparison.Ordinal);
 
         await app.StopAsync(ct);
     }
@@ -904,13 +891,27 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Contains("reported as reasoning", html, StringComparison.Ordinal);
     }
 
-    private static HttpClient Client(WebApplication app)
+    private static string BaseUrl(WebApplication app) =>
+        app.Urls.First(u => u.StartsWith("http://", StringComparison.Ordinal));
+
+    private static HttpClient Client(WebApplication app) =>
+        new(new HttpClientHandler { AllowAutoRedirect = false }) { BaseAddress = new Uri(BaseUrl(app)) };
+
+    /// <summary>
+    /// A login POST as a browser on the sign-in page makes it, declaring the dashboard's own
+    /// <c>Origin</c> — which every mutating POST here is now judged on. The refusals for one
+    /// that is not are in <see cref="DashboardScopeAndOriginTests"/>.
+    /// </summary>
+    private static async Task<HttpResponseMessage> PostLoginAsync(
+        WebApplication app, HttpClient client, CancellationToken ct, params (string Key, string Value)[] fields)
     {
-        var baseUrl = app.Urls.First(u => u.StartsWith("http://", StringComparison.Ordinal));
-        return new HttpClient(new HttpClientHandler { AllowAutoRedirect = false })
+        using var req = new HttpRequestMessage(HttpMethod.Post, "/dashboard/login")
         {
-            BaseAddress = new Uri(baseUrl),
+            Content = new FormUrlEncodedContent(
+                fields.Select(f => new KeyValuePair<string, string>(f.Key, f.Value))),
         };
+        req.Headers.Add("Origin", new Uri(BaseUrl(app)).GetLeftPart(UriPartial.Authority));
+        return await client.SendAsync(req, ct);
     }
 
     /// <summary>GETs a gated page with a freshly-issued human-session cookie; asserts 200.</summary>

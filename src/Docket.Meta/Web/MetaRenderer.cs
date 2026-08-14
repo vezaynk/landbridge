@@ -26,6 +26,22 @@ internal static class MetaRenderer
             """, autoRefresh: false);
     }
 
+    /// <summary>
+    /// The 403 for a mutating request that did not come from this panel's own origin. Deliberately
+    /// says what happened rather than redirecting to a form: an operator who lands here from a
+    /// legitimate proxy setup needs to know it stripped the <c>Origin</c> header.
+    /// </summary>
+    public static string CrossOriginRefused() =>
+        Page("Request refused", "", """
+            <div class="login-wrap">
+              <h1>Request refused</h1>
+              <p class="err">This panel accepts changes only from its own pages.</p>
+              <p class="sub">The request carried no <code>Origin</code> from this panel's host. If you
+              submitted this from the panel itself, an intermediary is stripping that header.</p>
+              <p><a href="/instances">← Instances</a></p>
+            </div>
+            """, autoRefresh: false);
+
     // ── Instances list ─────────────────────────────────────────────────────────
     public static string InstancesList(
         IReadOnlyList<(InstanceRow Instance, string HostName, string? Busy)> rows, DateTimeOffset now)
