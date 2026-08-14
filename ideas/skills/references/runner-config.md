@@ -130,16 +130,16 @@ spawn, not configurably — §10):
 | `{task_id}` / `DOCKET_TASK_ID` | The dispatched task id. |
 | `{machine_id}` / `DOCKET_MACHINE_ID` | This machine's id. |
 | `{work_dir}` | `{work_root}/{task_id}`, the spawn cwd. |
-| `{mcp_config}` | Path to the generated MCP config `docketd` writes to `{work_dir}/mcp.json` (mode 0600). |
+| `{mcp_config}` | Path to the generated MCP config `docketd` writes to `{work_dir}/mcp.json` (mode 0600) — **only when this token appears in spawn or resume argv**. A profile that never names it (Grok, Codex, OpenCode) gets no file. |
 | `{mcp_url}` | The plane's public MCP URL (`Docket:PublicMcpUrl`). Filled by the plane on every dispatch so a `files[]` body can name the URL without parsing `mcp.json`. Also stamped on the worker as `DOCKET_MCP_URL`. |
 | `{session_id}` | The opaque harness session ref to resume. Substituted in `resume.args` only, never `spawn` (§11). |
 | `DOCKET_WORKER_TOKEN` | The minted worker-instance token (also embedded in `{mcp_config}`). |
 
 ## The generated MCP config (`{mcp_config}`)
 
-At dispatch `docketd` writes the worker's MCP client config — the control plane
-mints the worker token and builds it (`DispatchService`), the runner only writes
-it 0600 and passes the path. It is Claude Code's `--mcp-config` HTTP shape:
+At dispatch the plane still *sends* the worker's MCP client config (it cannot see
+the profile). `docketd` writes it 0600 **only if** spawn or resume argv contains
+`{mcp_config}` (#112 G11). It is Claude Code's `--mcp-config` HTTP shape:
 
 ```json
 {
@@ -247,8 +247,8 @@ dispatched instance, and its token dies with the instance (§9 check 14).
   substitutions](#spawn-substitutions)), and which of the two matters is the harness's
   business, not `docketd`'s. Claude Code takes the file; a harness with no
   `--mcp-config` equivalent has to read the environment variable instead, which for
-  `codex exec` is the only route that works at all — see the Codex example below, where
-  the generated file is written and then ignored.
+  `codex exec` is the only route that works at all — see the Codex example below.
+  Because that profile never names `{mcp_config}`, `mcp.json` is not written.
 - **Nothing caps spend — not here and not in the plane.** The Team dollar ceiling was
   removed 2026-08-12 (spec §9's note), and the `{budget}` substitution that fed Claude
   Code's `--max-budget-usd` went with it, since its value came from that ceiling. What
@@ -473,8 +473,8 @@ fact pinned against the real binary so that reasoning stays checkable rather tha
 
 **1. `{mcp_config}` is unusable — wire the MCP server through `CODEX_HOME` instead.**
 Codex has no `--mcp-config <file>` flag; its only MCP client surface is a `[mcp_servers.<name>]`
-table in `config.toml` under `CODEX_HOME` (default `~/.codex`). So the JSON config `docketd`
-generates per dispatch is written, and then ignored. What replaces it is one **static** file —
+table in `config.toml` under `CODEX_HOME` (default `~/.codex`). The JSON the plane still
+sends is not written, because this profile never names `{mcp_config}`. What replaces it is one **static** file —
 and it can be static, because Codex resolves the bearer from an environment variable and
 `docketd` already injects a fresh per-instance token as `DOCKET_WORKER_TOKEN` on every spawn:
 
@@ -796,8 +796,8 @@ CLI cost one crank turn on an existing seam rather than harness knowledge in the
 
 ### The MCP wiring: a static file, and the best bearer story of the three
 
-OpenCode has no `--mcp-config`, so `{mcp_config}` is written and ignored exactly as it is for
-Codex. What replaces it is one **static** operator-written file, and it can be static because
+OpenCode has no `--mcp-config`, so this profile never names `{mcp_config}` and
+`mcp.json` is not written. What replaces it is one **static** operator-written file, and it can be static because
 OpenCode applies `{env:VAR}` substitution to the config **text** before parsing it, reading
 `process.env` at load time (`packages/opencode/src/config/variable.ts:33-38`, called from
 `config/config.ts:220`) — and `docketd` already stamps a fresh per-instance token on every spawn

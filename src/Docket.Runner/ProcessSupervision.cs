@@ -354,10 +354,11 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             foreach (var (key, value) in dispatch.SpawnSubstitutions)
                 substitutions[key] = value;
 
-        // §13: the worker token's generated MCP config lives in the task dir, 0600.
-        // A resumed claude still needs its MCP config (and a fresh worker token in
-        // the env below), so {mcp_config} substitutes on the resume path too.
-        if (dispatch.McpConfigJson is not null)
+        // §13 / #112 G11: write Claude's mcp.json only when this argv actually
+        // names {mcp_config}. The plane still sends McpConfigJson on every
+        // dispatch (it cannot see the profile); a Grok/Codex/OpenCode spawn that
+        // never references the token must not leave a live bearer on disk.
+        if (dispatch.McpConfigJson is not null && ArgvReferences(spawnArgv, "mcp_config"))
         {
             // In an inherited dir the plain name is already taken by the task that owns the
             // dir, and that task's own worker may still be running (a continuation of a task
@@ -1010,6 +1011,15 @@ public sealed class ProcessSupervisor : IProcessSupervisor
                 $"docketd: profile '{profile.Name}' requests harness telemetry (telemetry.otel) but no endpoint " +
                 $"resolved — set telemetry.endpoint or {HarnessTelemetry.EndpointVar} on docketd. No telemetry " +
                 "variables were set on the worker.");
+    }
+
+    internal static bool ArgvReferences(IReadOnlyList<string> argv, string token)
+    {
+        var needle = "{" + token + "}";
+        foreach (var arg in argv)
+            if (arg.Contains(needle, StringComparison.Ordinal))
+                return true;
+        return false;
     }
 
     private static string Substitute(string arg, IReadOnlyDictionary<string, string> substitutions)

@@ -115,6 +115,22 @@ public sealed class ProfileFilesSpawnTests : IDisposable
     }
 
     [Fact]
+    public async Task Mcp_json_is_not_written_when_the_argv_never_names_it()
+    {
+        var task = TaskId.New();
+        Supervisor().Spawn(
+            new DispatchCommand(task, "default", McpConfigJson: """{"mcpServers":{}}"""),
+            TestKit.Profile("echo-env"),
+            "m");
+
+        var workDir = Path.Combine(_workRoot, task.ToString());
+        Assert.True(await TestKit.WaitUntilAsync(
+            () => File.Exists(Path.Combine(workDir, "env")), TimeSpan.FromSeconds(10)));
+        Assert.False(File.Exists(Path.Combine(workDir, "mcp.json")));
+        Assert.True(_supervisor!.Kill(task));
+    }
+
+    [Fact]
     public void A_path_that_escapes_the_work_dir_fails_the_spawn()
     {
         var task = TaskId.New();

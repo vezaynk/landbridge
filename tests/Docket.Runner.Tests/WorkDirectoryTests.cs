@@ -109,9 +109,10 @@ public sealed class WorkDirectoryTests : IDisposable
         Assert.DoesNotContain("--resume", argv);        // …on the cold argv, with no resume
         // The predecessor's work is what it can see from there.
         Assert.True(File.Exists(Path.Combine(predecessorDir, "artifact.txt")));
-        // Its own dir was never used, and the borrowed dir's own config name is untouched.
+        // Its own dir was never used. Cold-start spawn argv does not name {mcp_config},
+        // so no bearer file is written into the borrowed dir (#112 G11).
         Assert.False(Directory.Exists(Path.Combine(_workRoot, task.ToString())));
-        Assert.True(File.Exists(Path.Combine(predecessorDir, $"mcp-{task}.json")));
+        Assert.False(File.Exists(Path.Combine(predecessorDir, $"mcp-{task}.json")));
         Assert.False(File.Exists(Path.Combine(predecessorDir, "mcp.json")));
 
         supervisor.Kill(task);
