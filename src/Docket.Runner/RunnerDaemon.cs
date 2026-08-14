@@ -176,6 +176,14 @@ public sealed class RunnerDaemon
             case OpenForwardCommand forward:
                 return HandleOpenForward(forward);
 
+            case CloseForwardCommand close:
+                // §8.3: the plane says this forward's authority is gone. Best-effort like
+                // every §10 command — a forward this machine no longer holds is acked as
+                // already closed, which is the outcome the plane asked for.
+                var closed = _forwarder.Close(close);
+                return new CommandOutcome.Acknowledged(
+                    closed ? $"close-forward {close.ForwardId}" : $"close-forward {close.ForwardId} (not held)");
+
             case ReadTranscriptCommand read:
                 return HandleReadTranscript(read);
 

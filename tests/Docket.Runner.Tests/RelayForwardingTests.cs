@@ -138,6 +138,127 @@ public sealed class RelayForwardingTests
         await daemon.ShutdownAsync();
     }
 
+    // ── §8.3 close-forward: the splice's authority ends with the task ───────────
+
+    /// <summary>
+    /// §8.3: "an established splice persists <b>until the owning task leaves
+    /// <c>working</c></b>". Nothing enforced the second half — the plane revoked the grant,
+    /// which gates only the <em>next</em> open, and the running splice had no handle anywhere
+    /// in the system. This is that handle: an established consumer splice, proven live by a
+    /// byte round-trip, then closed on command, and the worker's own TCP connection dies with
+    /// it. Fails before the fix because <c>close-forward</c> did not exist and the only way to
+    /// end one forward was to take the whole daemon down.
+    /// </summary>
+    [Fact]
+    public async Task Close_forward_ends_an_established_consumer_splice()
+    {
+        var ct = Timeout(out var cts);
+        using var _ = cts;
+
+        var ring = new OutboundEventRing(256);
+        var channel = new InMemoryControlPlaneChannel();
+        var daemon = BuildDaemon(ring, channel, acceptTimeout: TimeSpan.FromSeconds(30));
+        await daemon.StartAsync();
+        await using var relay = await FakeRelay.StartAsync();
+
+        var task = TaskId.New();
+        const string forwardId = "fwd-closable";
+        await daemon.HandleAsync(new OpenForwardCommand(
+            task, forwardId, "db", RelayTunnel.ConsumerRole, "dkt_g_x", relay.HttpUrl, Port: 0));
+
+        var opened = await WaitForEventAsync<ForwardOpenedEvent>(channel, forwardId, ct);
+        using var client = new TcpClient();
+        await client.ConnectAsync(IPAddress.Loopback, opened.Port, ct);
+        await using var tcp = client.GetStream();
+
+        // Live: the bytes go through. Everything after this is about a splice that WAS
+        // working, which is the case the old code could not end.
+        var relaySocket = await relay.Accepted.WaitAsync(ct);
+        var echo = Task.Run(() => EchoWebSocketAsync(relaySocket, ct), ct);
+        var payload = RandomBytes(4096);
+        await tcp.WriteAsync(payload, ct);
+        var echoed = await ReadExactlyAsync(tcp, payload.Length, ct);
+        Assert.True(payload.AsSpan().SequenceEqual(echoed), "the splice was not live before the close");
+
+        var outcome = Assert.IsType<CommandOutcome.Acknowledged>(
+            await daemon.HandleAsync(new CloseForwardCommand(task, forwardId)));
+        Assert.Contains(forwardId, outcome.Detail);
+        Assert.DoesNotContain("not held", outcome.Detail);
+
+        // The worker's connection dies: docketd shuts its end of the loopback socket down,
+        // so the next read is EOF (or a reset if the abort raced) — never a live connection
+        // outliving the task that authorized it.
+        Assert.True(await ConnectionIsDeadAsync(tcp, ct), "the worker's connection survived close-forward");
+        var closed = await WaitForEventAsync<ForwardClosedEvent>(channel, forwardId, ct);
+        Assert.Equal(forwardId, closed.ForwardId);
+
+        await echo.WaitAsync(TimeSpan.FromSeconds(5), ct).ContinueWith(_ => { }, TaskScheduler.Default);
+        await daemon.ShutdownAsync();
+    }
+
+    /// <summary>
+    /// The other half a revoked grant left running: a consumer listener that never accepted
+    /// anything. It was bounded only by the accept timeout — up to the grant's whole 2 minutes
+    /// of an idle loopback port kept open for a task that has finished — because nothing ever
+    /// told it to close. Driven with a long accept timeout, so the close is what ends it and
+    /// not the clock.
+    /// </summary>
+    [Fact]
+    public async Task Close_forward_closes_a_consumer_listener_that_never_accepted()
+    {
+        var ct = Timeout(out var cts);
+        using var _ = cts;
+
+        var ring = new OutboundEventRing(256);
+        var channel = new InMemoryControlPlaneChannel();
+        var daemon = BuildDaemon(ring, channel, acceptTimeout: TimeSpan.FromMinutes(2));
+        await daemon.StartAsync();
+        await using var relay = await FakeRelay.StartAsync();
+
+        var task = TaskId.New();
+        const string forwardId = "fwd-idle-listener";
+        await daemon.HandleAsync(new OpenForwardCommand(
+            task, forwardId, "db", RelayTunnel.ConsumerRole, "dkt_g_x", relay.HttpUrl, Port: 0));
+        var opened = await WaitForEventAsync<ForwardOpenedEvent>(channel, forwardId, ct);
+
+        await daemon.HandleAsync(new CloseForwardCommand(task, forwardId));
+
+        // Reported closed well inside the two-minute accept wait, and the port it bound
+        // stops accepting: the listener is gone, not merely unreported.
+        var closed = await WaitForEventAsync<ForwardClosedEvent>(channel, forwardId, ct);
+        Assert.Equal(forwardId, closed.ForwardId);
+        await Assert.ThrowsAnyAsync<SocketException>(async () =>
+        {
+            using var late = new TcpClient();
+            await late.ConnectAsync(IPAddress.Loopback, opened.Port, ct);
+        });
+
+        await daemon.ShutdownAsync();
+    }
+
+    [Fact]
+    public async Task Close_forward_for_a_forward_this_machine_does_not_hold_is_acked_as_already_closed()
+    {
+        var ct = Timeout(out var cts);
+        using var _ = cts;
+
+        var ring = new OutboundEventRing(256);
+        var channel = new InMemoryControlPlaneChannel();
+        var daemon = BuildDaemon(ring, channel, acceptTimeout: TimeSpan.FromSeconds(30));
+        await daemon.StartAsync();
+
+        // §10 commands are best-effort against a live machine: the plane closes what its
+        // grant rows say a leaving task held, and a forward that already ended on its own is
+        // exactly the outcome it wanted. Acked, never thrown, and no event invented for it.
+        var outcome = Assert.IsType<CommandOutcome.Acknowledged>(
+            await daemon.HandleAsync(new CloseForwardCommand(TaskId.New(), "fwd-never-existed")));
+
+        Assert.Contains("not held", outcome.Detail);
+        Assert.DoesNotContain(channel.Events, e => e.Event is ForwardClosedEvent);
+
+        await daemon.ShutdownAsync();
+    }
+
     [Fact]
     public async Task Producer_plane_dial_failure_surfaces_as_forward_closed()
     {
@@ -335,6 +456,30 @@ public sealed class RelayForwardingTests
         var b = new byte[n];
         Random.Shared.NextBytes(b);
         return b;
+    }
+
+    /// <summary>
+    /// Whether the far end of <paramref name="stream"/> has gone: a read that returns 0
+    /// (docketd shut its side down, the clean case) or throws (the socket was reset, which
+    /// a teardown race can produce). Bounded so a connection that is still very much alive
+    /// fails the assertion instead of hanging the test.
+    /// </summary>
+    private static async Task<bool> ConnectionIsDeadAsync(Stream stream, CancellationToken ct)
+    {
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        bounded.CancelAfter(TimeSpan.FromSeconds(15));
+        try
+        {
+            return await stream.ReadAsync(new byte[1], bounded.Token) == 0;
+        }
+        catch (OperationCanceledException)
+        {
+            return false; // still open, and nothing arrived: the splice outlived the close.
+        }
+        catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException)
+        {
+            return true;
+        }
     }
 
     private static async Task<byte[]> ReadExactlyAsync(Stream stream, int count, CancellationToken ct)

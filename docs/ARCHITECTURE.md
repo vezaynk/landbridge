@@ -182,7 +182,7 @@ the vocabulary (`RunnerWire.Decode*` returns null on an unknown `type`).
 
 | Direction | Messages |
 |---|---|
-| **Outbound** (plane → runner) | `dispatch` · `stop(ttl, disposition)` · `kill` · `open-forward` · `read-transcript` · `start-process` · `stop-process` · `write-process` |
+| **Outbound** (plane → runner) | `dispatch` · `stop(ttl, disposition)` · `kill` · `open-forward` · `close-forward` · `read-transcript` · `start-process` · `stop-process` · `write-process` |
 | **Inbound** (runner → plane) | `started` · `session-started` · `alive` · `tool-call` · `subagent-spawned` · `exited` · `auth-failed` · `forward-opened` · `forward-closed` · `rebooted` · `transcript-chunk` · `process-started` · `process-stopped` · `process-written` |
 
 **Every message carries a task id** — it is the required first field of every
@@ -296,7 +296,11 @@ other, so there is no peer key exchange and nothing to distribute. The grant is 
 **connection-establishment** credential, checked once when the tunnel opens (the
 relay calls the plane's `POST /relay/validate`); an established splice is never
 severed mid-flight by grant expiry — it persists until the owning task leaves
-`working`. Only registered services are forwardable — that requirement is the one
+`working`, and that bound is enforced rather than hoped for: the same
+`ClearServicesAndForwards` effect that revokes the task's grants sends `close-forward`
+to both machines, because revoking a grant only stops the *next* open and a splice
+already running has nothing else that can end it. Only registered services are
+forwardable — that requirement is the one
 thing between the relay and a fleet-wide port scanner (§13). The relay validator
 is **fail-closed**: an unreachable or unconfigured plane refuses every tunnel.
 
@@ -306,7 +310,9 @@ is **fail-closed**: an unreachable or unconfigured plane refuses every tunnel.
 > the limit is enforced at grant mint), and the **HTTP layer** (§8.4's
 > subdomain-per-service preview) all work today. Still deferred: generalizing beyond
 > **one tunnel per forward id**, and any *enforcement* on the byte counter — §8.3
-> forbids severing an established splice, so a reached ceiling has no defined action.
+> forbids severing an established splice *by policy*, so a reached ceiling has no defined
+> action. (That prohibition is about a ceiling cutting work in progress; the owning task
+> leaving `working` is the splice's own end, and `close-forward` is what makes it happen.)
 
 ## Observability (§12)
 

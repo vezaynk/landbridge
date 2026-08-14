@@ -68,6 +68,18 @@ public enum Rule
     PermissionEscalationCarriesReason = 114,
     EscalatedPermissionIsHumanOnly = 115,
     PermissionWaiterStillIncumbent = 116,
+
+    /// <summary>
+    /// §8.2: a service name is the Team-scoped <em>address</em> of an endpoint, so at most one
+    /// live registration may hold it. Store-enforced (and backed by a unique index), because
+    /// it is an invariant about rows rather than about one task's state: everything that
+    /// resolves a forward — <c>open_forward</c>, an §8.4 preview, the §8.3 human path — is
+    /// handed a name and a Team and nothing else, so a second task registering a name already
+    /// held made the resolution a raffle between two ports. Refused rather than silently
+    /// reassigned: the second worker learns the name is taken and can pick another, where a
+    /// last-writer-wins upsert would have quietly redirected the first worker's consumers.
+    /// </summary>
+    ServiceNameUniqueInTeam = 117,
 }
 
 public abstract record TransitionResult

@@ -21,6 +21,7 @@ namespace Docket.Contracts;
 [JsonSerializable(typeof(StopCommand))]
 [JsonSerializable(typeof(KillCommand))]
 [JsonSerializable(typeof(OpenForwardCommand))]
+[JsonSerializable(typeof(CloseForwardCommand))]
 [JsonSerializable(typeof(ReadTranscriptCommand))]
 [JsonSerializable(typeof(StartProcessCommand))]
 [JsonSerializable(typeof(StopProcessCommand))]

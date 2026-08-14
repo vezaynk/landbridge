@@ -213,7 +213,65 @@ public sealed class PreviewConnectServiceTests(PostgresFixture pg) : IAsyncLifet
             await connect.ConnectAsync(mint.Label, null, null, RelayUrl));
     }
 
+    /// <summary>
+    /// The §8.4 authority the mapping is <em>for</em>: a label minted against one task's
+    /// service resolves to that task's registration and nothing else. The mapping has
+    /// recorded its task all along (<c>PreviewMappingRow.TaskId</c>) and connect dropped it,
+    /// minting by <c>(Team, name)</c> — so once the label's own task finished and a second
+    /// task in the Team registered the same name, an unexpired URL for A's <c>web</c> spliced
+    /// a browser into B's <c>web</c>: a preview reaching a service its holder never exposed,
+    /// on a URL its holder shared. Fails before the fix, where the connect is
+    /// <see cref="PreviewConnectResult.Established"/> against B's port.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_label_minted_for_one_task_never_resolves_another_tasks_service()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var clock = new FakeTimeProvider();
+        var team = TeamId.New();
+
+        var (taskA, instanceA) = await WorkingServiceWithInstanceAsync(db, clock, team, "web", 3000);
+        var mint = await new PreviewMappingService(db, clock)
+            .CreateAsync(team, taskA, "web", PreviewAuthPolicy.Public, TimeSpan.FromHours(2));
+
+        // A finishes: its registration goes with it (ClearServicesAndForwards), which frees
+        // the name — and the label, TTL-bound rather than task-bound, outlives it.
+        Assert.IsType<StoreResult.Applied>(await new TaskStore(db, clock).ApplyAsync(
+            taskA, new ReportResult(new WorkerCaller(team, taskA, instanceA), "ref")));
+
+        // B, same Team, registers the same name on a different port — legitimate, since the
+        // name is free now.
+        var (taskB, _) = await WorkingServiceAsync(db, clock, team, "web", 4000);
+        var (connect, sent, _) = BuildConnect(db, clock, taskA, taskB);
+
+        var result = await connect.ConnectAsync(mint.Label, null, null, RelayUrl);
+
+        Assert.IsType<PreviewConnectResult.Unavailable>(result);
+        Assert.Empty(sent);
+        // Nothing was minted either: no grant, so nothing to replay against B later.
+        Assert.Empty(db.RelayGrants);
+    }
+
     // ── Helpers ───────────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// <see cref="WorkingServiceAsync"/>, also handing back the worker instance — needed
+    /// wherever a test drives the producer task's own transition afterwards.
+    /// </summary>
+    private static async Task<(TaskId Task, WorkerInstanceId Instance)> WorkingServiceWithInstanceAsync(
+        DocketDbContext db, TimeProvider clock, TeamId team, string name, int port)
+    {
+        var store = new TaskStore(db, clock);
+        var created = (StoreResult.Applied)await store.CreateAsync(
+            new CreateTask(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null));
+        var instance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(
+            new MachineSnapshot("m1", Ready: true, UnderBackPressure: false, new HashSet<string> { "default" }), instance);
+        Assert.IsType<StoreResult.Applied>(
+            await store.RegisterServiceAsync(new WorkerCaller(team, created.Task.Id, instance), name, port));
+        return (created.Task.Id, instance);
+    }
 
     /// <summary>A working producer task in <paramref name="team"/> with <paramref name="name"/> registered.</summary>
     private static async Task<(TaskId Task, int Port)> WorkingServiceAsync(
@@ -235,7 +293,7 @@ public sealed class PreviewConnectServiceTests(PostgresFixture pg) : IAsyncLifet
     /// store (so tests can mint a per-label session).
     /// </summary>
     private static (PreviewConnectService Connect, List<OpenForwardCommand> Sent, PreviewAuthStore PreviewAuth) BuildConnect(
-        DocketDbContext db, TimeProvider clock, TaskId producerTask)
+        DocketDbContext db, TimeProvider clock, params TaskId[] trackedTasks)
     {
         var sent = new List<OpenForwardCommand>();
         var registry = new RunnerConnectionRegistry(clock);
@@ -245,7 +303,10 @@ public sealed class PreviewConnectServiceTests(PostgresFixture pg) : IAsyncLifet
                 sent.Add(ofc);
             return Task.CompletedTask;
         });
-        registry.TrackDispatch("mp", producerTask);
+        // Every task named is live on the one machine, so a producer the connect resolves
+        // — right or wrong — is always reachable and therefore always visible in `sent`.
+        foreach (var task in trackedTasks)
+            registry.TrackDispatch("mp", task);
         var orch = new ForwardOrchestrator(registry, new ForwardWaiters(), NullLogger<ForwardOrchestrator>.Instance);
         var previewAuth = new PreviewAuthStore(clock);
         var connect = new PreviewConnectService(

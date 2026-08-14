@@ -308,6 +308,10 @@ Unreachable URLs surface as `blocked_on_input`, never a mystery timeout.
 
 A task registers `{name, port}` on its record while `working`. Visible to other tasks **in the same Team only**. Cleared when the task leaves `working`.
 
+**A name is the Team-scoped address, so one live registration holds it.** Every resolver — `open_forward`, an §8.4 preview, the §8.3 human path — is handed a name and a Team and nothing else, so two holders make "which port does this reach" a raffle. Re-registering a name a task already holds *corrects* that entry (a service restarted on a new port); another task claiming a live name is *refused*, so the second worker picks another name instead of silently redirecting the first one's consumers. A finished task's name is free again, since registrations do not outlive `working`. Uniqueness is a database constraint, not just a check, so two concurrent registrations cannot both win.
+
+**A preview resolves by `(task, name)`, not by name.** §8.4 mints a label against one task's service and records which; resolving the label by name alone would let it outlive its subject and reach whatever answers to that name later — a URL reaching a service its holder never exposed.
+
 **Register after a successful bind, never before.** An agent that registers and then fails to bind leaves an entry pointing at whatever process actually owns that port — and a consumer forwards into the wrong stack and gets plausible wrong answers instead of an error. Bind collisions are otherwise loud (`EADDRINUSE`) and safe to leave to guidance.
 
 **A registration may advertise a process the registering task does not own.** With §10 operator-declared services, the process is supervised by `docketd` independently of any task, so its lifetime is no longer bounded by the holder task's — the registration and the process can now disagree in a way this section originally could not produce. The failure that matters is not the refused connection; it is the **successful** one, dialing a port whose service has died and something else has taken.
@@ -354,6 +358,8 @@ Two gaps close for that to work:
 **The human's forward is one connection, briefly available.** v1 is one tunnel per forward id (§8.3 above), so the returned address carries exactly one connection — one `psql` session, not a pool — and the consumer listener closes if nobody connects within the bound accept window. A Lead therefore opens it *when its human is ready to connect* and opens another for another session. Once spliced, the ordinary rule holds: the connection survives grant expiry and lives until the owning task leaves `working`.
 
 **A grant is a connection-establishment credential.** It is checked when a tunnel opens; an established splice persists until the owning task leaves `working`. A database session or websocket is never severed mid-flight by grant expiry, and no renewal path needs to exist.
+
+**"Until the owning task leaves `working`" is a bound something has to enforce, and revoking the grant is not it** — a grant gates only the *next* open, so a splice already running has no handle in it. That is what `close-forward{task, forward_id}` is for: the same effect that clears the task's registered services and revokes its grants sends it to both ends' machines, and each cancels that forward — ending an established splice through the ordinary teardown, and closing a consumer listener that never accepted. Without it the bound held only by accident, where the plane happened to kill the worker and the producer's sockets died with it; on `report_result` or `cancel_task`, where nothing is killed, the tunnel simply outlived the task that authorized it. This is the one addition to §10's frozen outbound vocabulary that the section needed, and it is skew-safe in the usual way: a `docketd` that predates it rejects the envelope and behaves exactly as it does today.
 
 Per-Team accounting (§9 check 10): the forward rate limit is enforced at grant mint, and the relay counts the bytes it splices and reports them to the plane over the plane-facing HTTP contract. The counting gates nothing — an established splice is never severed, so there is no byte allowance to breach; §9's as-built note records why.
 
@@ -459,7 +465,7 @@ Skills ship as MCP resources, reaching every agent on connect where the client s
 
 **The only frozen interface in the system.** A runner rejects anything outside the vocabulary.
 
-**Outbound:** `dispatch` · `stop(ttl, disposition)` · `kill` · `open-forward` · `read-transcript`
+**Outbound:** `dispatch` · `stop(ttl, disposition)` · `kill` · `open-forward` · `close-forward` · `read-transcript`
 **Inbound:** `started` · `session-started` · `alive` · `tool-call` · `subagent-spawned` · `exited` · `auth-failed` · `forward-opened` · `forward-closed` · `rebooted` · `transcript-chunk`
 
 `read-transcript`/`transcript-chunk` are a strict request/reply pair correlated by an opaque request id — the only place in the vocabulary where the control plane pulls and the runner answers, rather than the runner pushing. It exists so transcript bulk is flow-controlled by the reader: one chunk in flight, the next requested only once the reader has taken the last, and replies bypass the runner's bounded event ring entirely (a dropped chunk is a corrupted read, and a transcript backlog must never evict a liveness event or delay a `kill`). The runner sends the file's bytes and interprets nothing (§13). §12 has the read path.

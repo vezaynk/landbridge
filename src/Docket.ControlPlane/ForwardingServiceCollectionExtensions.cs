@@ -25,6 +25,12 @@ public static class ForwardingServiceCollectionExtensions
         services.TryAddSingleton<RunnerConnectionRegistry>();
         services.TryAddSingleton<ForwardWaiters>();
         services.TryAddSingleton<ForwardOrchestrator>();
+        // The other end of a forward's life (§8.3): the store resolves this to tell both
+        // machines to close a splice when its owning task leaves working. Registered here
+        // rather than with the store because it sends through the registry above and must
+        // share that one instance — a host wiring the store alone gets none and the
+        // optional dependency stays null, which is the pre-#8.3 behaviour, not a break.
+        services.TryAddSingleton<ForwardTeardownService>();
         services.TryAddScoped<LeadMachineBindingService>();
         // §12 transcript serving rides the same runner channel and the same registry, so
         // its rendezvous and relay register here too — the sink and the relay must share

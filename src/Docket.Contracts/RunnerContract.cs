@@ -163,6 +163,50 @@ public sealed record OpenForwardCommand(
     int Port = 0) : RunnerCommand;
 
 /// <summary>
+/// <c>close-forward</c> — end one relay forward this machine holds (§8.3). The
+/// counterpart to <see cref="OpenForwardCommand"/>, and the one thing that was
+/// missing from it: §8.3 says an established splice "persists until the owning task
+/// leaves <c>working</c>", which is a <em>bound</em>, and nothing enforced it. The
+/// plane cleared the task's registered services and revoked its grants at that
+/// moment, but a grant only gates <em>open</em> — a splice already running had no
+/// handle anywhere in the system, so it survived until one of its peers happened to
+/// drop. Where the worker was killed (a liveness loss tree-kills it, #84) its sockets
+/// died by RST and the splice ended by accident; where nothing was killed —
+/// <c>report_result</c>, <c>cancel_task</c> — the tunnel stayed up past the task that
+/// authorized it, and so did the consumer end's idle loopback listener.
+///
+/// <para><b>This is not the severing §8.3 forbids.</b> That prohibition is about
+/// grant expiry and byte ceilings cutting a live database session or websocket
+/// mid-flight (§9.10) — policy interrupting work in progress. Leaving <c>working</c>
+/// is the opposite: the authority the splice ran under is gone, and §8.3 names that
+/// exact moment as its end.</para>
+///
+/// <para><b>Additive and skew-compatible</b> like every §10 addition since the freeze:
+/// a <c>docketd</c> that predates it rejects the envelope at the wire boundary
+/// (<see cref="RunnerWire.DecodeCommand(string)"/> returns null on an unknown type) and
+/// goes on serving its splice exactly as it does today — the pre-fix behaviour, not a
+/// crash. A newer <c>docketd</c> talking to an older plane simply never receives one.</para>
+/// </summary>
+/// <param name="Task">
+/// The task this forward serves — <b>correlation, not the close key.</b> §10 requires a
+/// task id on every message and this is it: the runner logs it and its handle span keys
+/// off it, exactly as <see cref="OpenForwardCommand.ServiceName"/> travels for
+/// diagnostics while <see cref="OpenForwardCommand.Port"/> does the resolving. Which end
+/// of the forward it names therefore follows whichever end the plane addressed (a
+/// worker's consumer end names its own task, a Lead's names the producer's — see
+/// <c>ForwardOrchestrator</c>), and a runner that resolved by it instead would have to
+/// know that distinction.
+/// </param>
+/// <param name="ForwardId">
+/// The forward to close — the resolution key, and unambiguous because a forward id is
+/// unique per grant and is what both the relay and <c>RelayForwarder</c> already key
+/// their pairing on. Closing one this machine does not hold is a no-op: §10 commands are
+/// best-effort against a live machine, and a forward that already ended is exactly what
+/// the plane wanted.
+/// </param>
+public sealed record CloseForwardCommand(TaskId Task, string ForwardId) : RunnerCommand;
+
+/// <summary>
 /// <c>read-transcript</c> — read one byte range of one captured transcript stream
 /// this machine holds, or (<see cref="Ordinal"/> <c>0</c>) inventory what it holds
 /// for the task (§12 serving). The <b>only pull in the vocabulary</b>: every other

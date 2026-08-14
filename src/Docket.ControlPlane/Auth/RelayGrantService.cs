@@ -24,6 +24,12 @@ namespace Docket.ControlPlane.Auth;
 /// tool call and emits nothing (§11), so its grants remain live — through a later park or
 /// requeue too. Expiry is what bounds a grant there.</para>
 ///
+/// <para>Revoking bounds only the <em>next</em> open. Ending the splices already running is
+/// the same effect's other arm — <c>close-forward</c> to both machines
+/// (<see cref="Docket.ControlPlane.ForwardTeardownService"/>) — because §8.3 bounds an
+/// established splice by its owning task's <c>working</c> state, and no row can enforce
+/// that.</para>
+///
 /// <para>The mint is also where §9 check 10's <b>forward rate limit</b> is enforced, since a
 /// grant is the one thing no forward can happen without and the plane is the only place the
 /// limit holds without a live relay. Check 10's other half — a Team <em>byte</em> allowance —
@@ -67,7 +73,8 @@ public sealed class RelayGrantService(
     public Task<RelayGrantResult> IssueAsync(
         WorkerCaller consumer, string serviceName, CancellationToken ct = default) =>
         // The §8.3 consumer is a worker task; bind it for attribution.
-        MintAsync(consumer.Team, serviceName, consumer.Task.Value, consumer.Instance.Value, ct);
+        MintAsync(consumer.Team, serviceName, producer: null,
+            consumer.Task.Value, consumer.Instance.Value, ct);
 
     /// <summary>
     /// Issues a grant for an §8.4 HTTP preview: the consumer is the preview
@@ -79,10 +86,20 @@ public sealed class RelayGrantService(
     /// keys on <c>ProducerTaskId</c> via <see cref="ClearServicesAndForwards"/>).
     /// The producer machine dials on demand — a fresh grant + forward id per
     /// browser connection (§8.4) — so the plane calls this once per connection.
+    ///
+    /// <para><b><paramref name="producer"/> is the authority, not a hint.</b> A preview URL
+    /// is minted against one task's service (<c>PreviewMappingRow.TaskId</c>), and this
+    /// resolves that exact registration rather than whatever now answers to
+    /// <paramref name="serviceName"/> in the Team. Without it the mapping's task was written
+    /// and never read, so a label minted for task A's <c>web</c> could splice a browser to
+    /// task B's <c>web</c> — a URL reaching a service its holder never exposed. Distinct
+    /// from <see cref="IssueAsync"/> deliberately: <c>open_forward</c> resolves by name
+    /// because a name is exactly what a worker asks with, while a preview carries a durable
+    /// record of what it was minted for and is held to it.</para>
     /// </summary>
     public Task<RelayGrantResult> IssueForPreviewAsync(
-        TeamId team, string serviceName, CancellationToken ct = default) =>
-        MintAsync(team, serviceName, consumerTaskId: null, consumerInstanceId: null, ct);
+        TeamId team, TaskId producer, string serviceName, CancellationToken ct = default) =>
+        MintAsync(team, serviceName, producer.Value, consumerTaskId: null, consumerInstanceId: null, ct);
 
     /// <summary>
     /// Issues a grant for the §8.3 <b>human</b> path: the consumer is the Lead's own
@@ -97,15 +114,22 @@ public sealed class RelayGrantService(
     /// </summary>
     public Task<RelayGrantResult> IssueForLeadAsync(
         TeamId team, string serviceName, CancellationToken ct = default) =>
-        MintAsync(team, serviceName, consumerTaskId: null, consumerInstanceId: null, ct);
+        MintAsync(team, serviceName, producer: null, consumerTaskId: null, consumerInstanceId: null, ct);
 
     /// <summary>
     /// The shared check-11 gate + mint behind <see cref="IssueAsync"/> (§8.3) and
     /// <see cref="IssueForPreviewAsync"/> (§8.4). Everything is scoped to
     /// <paramref name="team"/> so another Team's services never leak (§8.2).
     /// </summary>
+    /// <param name="producer">
+    /// When set, the <em>only</em> task whose registration may satisfy this mint — §8.4's
+    /// preview, which was minted against one task's service and must not resolve another's.
+    /// Null for the two by-name surfaces (<c>open_forward</c> and the §8.3 human path), where
+    /// the Team-scoped name is the whole of what the caller asked for.
+    /// </param>
     private async Task<RelayGrantResult> MintAsync(
-        TeamId team, string serviceName, Guid? consumerTaskId, Guid? consumerInstanceId,
+        TeamId team, string serviceName, Guid? producer,
+        Guid? consumerTaskId, Guid? consumerInstanceId,
         CancellationToken ct)
     {
         var now = clock.GetUtcNow();
@@ -134,9 +158,12 @@ public sealed class RelayGrantService(
 
         // Registered in this Team at all? Scoped to the Team, so a service that
         // exists only in another Team is indistinguishable from one that does not
-        // exist — cross-Team reads as not-registered (§8.2).
+        // exist — cross-Team reads as not-registered (§8.2). A preview additionally
+        // narrows to the task its mapping named, so a stale label reads as
+        // not-registered rather than resolving whatever holds the name now.
         var registered = await db.RegisteredServices.AsNoTracking()
-            .AnyAsync(s => s.TeamId == team.Value && s.Name == serviceName, ct);
+            .AnyAsync(s => s.TeamId == team.Value && s.Name == serviceName
+                           && (producer == null || s.TaskId == producer), ct);
         if (!registered)
             return new RelayGrantResult.Refused(Rule.ForwardsRequireRegistration,
                 $"no service '{serviceName}' is registered in your Team");
@@ -147,15 +174,24 @@ public sealed class RelayGrantService(
         // Grab the producer task id AND the service's loopback port in one read:
         // both ride the Issued result so the plane can send the producer end its
         // dial target without re-querying (§8.3).
-        var producer = await (
+        //
+        // ORDERED, and that is not cosmetic. (TeamId, Name) is unique now (§8.2,
+        // Rule.ServiceNameUniqueInTeam), so this reads at most one row — but an unordered
+        // FirstOrDefault is what turned a duplicate name into a raffle for whichever row
+        // Postgres happened to return, and re-adding a second row is a schema change away.
+        // Oldest-first, so if one ever exists again this resolves the registration that held
+        // the name first rather than a different port per call.
+        var holder = await (
                 from s in db.RegisteredServices.AsNoTracking()
                 join t in db.Tasks.AsNoTracking() on s.TaskId equals t.Id
                 where s.TeamId == team.Value
                       && s.Name == serviceName
+                      && (producer == null || s.TaskId == producer)
                       && t.State == TaskState.Working
+                orderby s.Seq
                 select new { t.Id, s.Port })
             .FirstOrDefaultAsync(ct);
-        if (producer is null)
+        if (holder is null)
             return new RelayGrantResult.Refused(Rule.ForwardsRequireRegistration,
                 $"service '{serviceName}' is registered but its task is no longer working");
 
@@ -169,14 +205,14 @@ public sealed class RelayGrantService(
             ConsumerTaskId = consumerTaskId,
             ConsumerInstanceId = consumerInstanceId,
             ServiceName = serviceName,
-            ProducerTaskId = producer.Id,
+            ProducerTaskId = holder.Id,
             TeamId = team.Value,
             CreatedAt = now,
             ExpiresAt = now + GrantTtl,
         });
         await db.SaveChangesAsync(ct);
         return new RelayGrantResult.Issued(
-            grant, forwardId, now + GrantTtl, new TaskId(producer.Id), producer.Port);
+            grant, forwardId, now + GrantTtl, new TaskId(holder.Id), holder.Port);
     }
 
     /// <summary>

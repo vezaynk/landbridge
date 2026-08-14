@@ -1,5 +1,8 @@
+using System.Net;
+using System.Net.Sockets;
 using Docket.Contracts;
 using Docket.ControlPlane;
+using Docket.ControlPlane.Auth;
 using Docket.ControlPlane.Tests;
 using Docket.Core;
 using Docket.Runner;
@@ -108,13 +111,15 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
             registry.Register("mp", new HashSet<string> { "default" }, (command, sendCt) => command switch
             {
                 DispatchCommand d => Spawn(supervisor, d, profile, "mp"),
-                OpenForwardCommand => producerDaemon.Send(command, sendCt),
+                // Both halves of a forward's life go to the daemon: open-forward stands the
+                // data plane up, close-forward ends it when the owning task leaves working.
+                OpenForwardCommand or CloseForwardCommand => producerDaemon.Send(command, sendCt),
                 _ => Task.CompletedTask,
             });
             registry.Register("mc", new HashSet<string> { "default" }, (command, sendCt) => command switch
             {
                 DispatchCommand d => Spawn(supervisor, d, profile, "mc"),
-                OpenForwardCommand => consumerDaemon.Send(command, sendCt),
+                OpenForwardCommand or CloseForwardCommand => consumerDaemon.Send(command, sendCt),
                 _ => Task.CompletedTask,
             });
 
@@ -159,18 +164,60 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
             Assert.NotNull(reference);
             Assert.StartsWith("relay-echo:ok:", reference);
 
-            // ── Bookkeeping (§6/§8.3): the producer leaving working clears its
-            //    registered services. Kill its worker, drive the plane's liveness
-            //    loss, and the service row is gone.
-            Assert.True(supervisor.Kill(taskA), "producer worker was not running to kill");
-            await using (var db = pg.NewContext())
+            // ── §8.3's second bound, through the whole real stack: "an established
+            //    splice persists UNTIL the owning task leaves working."
+            //
+            //    The consumer end above belonged to a worker that has since exited, so the
+            //    test takes one for itself: a real grant, both real docketd ends armed by the
+            //    real orchestrator, and a TCP client the test holds OPEN across the
+            //    producer's transition. Deliberately driven by report_result and NOT by a
+            //    liveness loss, because a liveness loss tree-kills the worker (§10, #84) — the
+            //    echo service dies with it and the splice would end by accident, which is
+            //    exactly how this gap stayed invisible. Here the producer worker and its echo
+            //    service stay up, so nothing but close-forward can end this connection.
+            var instanceB = await IncumbentInstanceAsync(taskB, ct);
+            RelayGrantResult.Issued issued;
+            await using (var scope = plane.Services.CreateAsyncScope())
             {
-                var store = new TaskStore(db, TimeProvider.System);
-                Assert.IsType<StoreResult.Applied>(
-                    await store.ApplyAsync(taskA, new LivenessLost(LivenessLossReason.MachineReboot), ct));
+                issued = Assert.IsType<RelayGrantResult.Issued>(
+                    await scope.ServiceProvider.GetRequiredService<RelayGrantService>()
+                        .IssueAsync(new WorkerCaller(team, taskB, instanceB), ServiceName, ct));
             }
+            Assert.Equal(taskA, issued.Producer);
+
+            var established = Assert.IsType<ForwardEstablishResult.Established>(
+                await plane.Services.GetRequiredService<ForwardOrchestrator>().EstablishAsync(
+                    new WorkerCaller(team, taskB, instanceB), issued, ServiceName, relayUrl, ct));
+
+            using var held = new TcpClient();
+            await held.ConnectAsync(IPAddress.Loopback, established.Port, ct);
+            await using var heldStream = held.GetStream();
+
+            // Live first: the bytes go consumer machine → relay → producer machine → the
+            // worker's echo service and back. Everything after this is about a splice that
+            // was demonstrably working.
+            var probe = System.Text.Encoding.UTF8.GetBytes("splice-teardown-probe\n");
+            await heldStream.WriteAsync(probe, ct);
+            var echoed = await ReadExactlyAsync(heldStream, probe.Length, ct);
+            Assert.True(probe.AsSpan().SequenceEqual(echoed), "the held forward never round-tripped bytes");
+
+            // The producer reports and leaves working, through the plane's OWN store — so the
+            // §8.3 teardown is wired exactly as a production host wires it.
+            var instanceA = await IncumbentInstanceAsync(taskA, ct);
+            await using (var scope = plane.Services.CreateAsyncScope())
+            {
+                Assert.IsType<StoreResult.Applied>(
+                    await scope.ServiceProvider.GetRequiredService<TaskStore>().ApplyAsync(
+                        taskA, new ReportResult(new WorkerCaller(team, taskA, instanceA), "served"), ct));
+            }
+
+            // Bookkeeping (§6/§8.3): the registration is gone…
             Assert.False(await ServiceExistsAsync(team, ServiceName, ct),
                 "registered_services row for the echo service was not cleared when the producer left working");
+            // …and so is the live connection through it, with the producer's worker — and the
+            // echo service it started — still running, which is the whole point.
+            Assert.True(await ConnectionIsDeadAsync(heldStream, ct),
+                "the established splice outlived the task that authorized it (§8.3)");
         }
         finally
         {
@@ -223,6 +270,55 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
     {
         await using var db = pg.NewContext();
         return await new TaskStore(db, TimeProvider.System).GetStateAsync(id, ct);
+    }
+
+    /// <summary>
+    /// A task's incumbent worker instance, read off the row — the tokens themselves stay
+    /// inside the harness processes, so this is how the test speaks as one of them.
+    /// </summary>
+    private async Task<WorkerInstanceId> IncumbentInstanceAsync(TaskId id, CancellationToken ct)
+    {
+        await using var db = pg.NewContext();
+        var current = (await db.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value, ct)).CurrentInstanceId;
+        Assert.NotNull(current);
+        return new WorkerInstanceId(current.Value);
+    }
+
+    private static async Task<byte[]> ReadExactlyAsync(Stream stream, int count, CancellationToken ct)
+    {
+        var buffer = new byte[count];
+        var offset = 0;
+        while (offset < count)
+        {
+            var read = await stream.ReadAsync(buffer.AsMemory(offset), ct);
+            if (read == 0)
+                throw new InvalidOperationException($"the forward closed after {offset}/{count} bytes");
+            offset += read;
+        }
+        return buffer;
+    }
+
+    /// <summary>
+    /// Whether the far end has gone: a read of 0 (docketd shut its side of the loopback
+    /// socket down, the clean case) or a reset. Bounded, so a connection that is still very
+    /// much alive fails the assertion rather than hanging the test.
+    /// </summary>
+    private static async Task<bool> ConnectionIsDeadAsync(Stream stream, CancellationToken ct)
+    {
+        using var bounded = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        bounded.CancelAfter(TimeSpan.FromSeconds(30));
+        try
+        {
+            return await stream.ReadAsync(new byte[1], bounded.Token) == 0;
+        }
+        catch (OperationCanceledException)
+        {
+            return false;
+        }
+        catch (Exception e) when (e is IOException or SocketException or ObjectDisposedException)
+        {
+            return true;
+        }
     }
 
     /// <summary>The harness diagnostic for a task's work dir, if it left one.</summary>

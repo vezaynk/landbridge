@@ -70,6 +70,8 @@ Never register before binding. If you register and the bind then fails, your ent
 
 Bind to loopback. Registration plus the relay is how other agents reach you; exposing a port to the network is not.
 
+**A name is an address, and one live registration holds it in your Team.** Registering a name you already hold updates its port — that is how you correct an advertisement when your service restarts somewhere else. Registering a name *another* task in your Team currently holds is refused, because consumers ask for a name and nothing else, so two holders would make which port they reach a coin flip. If you are refused, pick a more specific name (`api-<what-it-is>` rather than `api`) rather than retrying; the name frees up on its own when the task holding it finishes.
+
 ## Running a service that must outlive your own turn
 
 A service you start as a child of your own process dies with you: `docketd` kills each task as a whole process tree, so anything you launched goes down when your turn ends. That is correct for a build or a test run and wrong for "stand up the dev server and keep it up".

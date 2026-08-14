@@ -29,8 +29,16 @@ public enum RelayGrantRole
 /// <para>An issued grant is revoked when the owning (producer) task leaves
 /// <c>working</c> — the same <see cref="ClearServicesAndForwards"/> effect that
 /// clears the task's registered services (§6). Expiry gates only tunnel-open; an
-/// established splice persists regardless (§8.3), which holds trivially because a
+/// established splice persists past it (§8.3), which holds trivially because a
 /// grant is validated only at open.</para>
+///
+/// <para><b>Revocation is therefore only half of leaving <c>working</c>, and the other
+/// half is not a row.</b> Nothing here can end a splice that is already running — that is
+/// what §8.3's "until the owning task leaves working" needs, and it takes a command to the
+/// two machines holding the sockets (<c>close-forward</c>,
+/// <see cref="Docket.ControlPlane.ForwardTeardownService"/>), issued from the same effect.
+/// Read a revoked row as "no further tunnel may open on this", never as "the tunnel that
+/// did open is gone".</para>
 ///
 /// <para><b>One exception, and it matters here more than anywhere.</b> A producer
 /// blocked on a <b>permission</b> request (§11 permission bridge) does not emit that

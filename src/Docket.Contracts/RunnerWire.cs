@@ -23,6 +23,7 @@ public static class RunnerWire
     public const string Stop = "stop";
     public const string Kill = "kill";
     public const string OpenForward = "open-forward";
+    public const string CloseForward = "close-forward";
     public const string ReadTranscript = "read-transcript";
     public const string StartProcess = "start-process";
     public const string StopProcess = "stop-process";
@@ -51,7 +52,10 @@ public static class RunnerWire
 
     /// <summary>The closed outbound (control plane → runner) vocabulary.</summary>
     public static IReadOnlySet<string> Commands { get; } =
-        new HashSet<string>(StringComparer.Ordinal) { Dispatch, Stop, Kill, OpenForward, ReadTranscript, StartProcess, StopProcess, WriteProcess };
+        new HashSet<string>(StringComparer.Ordinal)
+        {
+            Dispatch, Stop, Kill, OpenForward, CloseForward, ReadTranscript, StartProcess, StopProcess, WriteProcess,
+        };
 
     /// <summary>The closed inbound (runner → control plane) vocabulary.</summary>
     public static IReadOnlySet<string> Events { get; } =
@@ -87,6 +91,7 @@ public static class RunnerWire
             StopCommand s => (ToObject(s, RunnerWireContext.Default.StopCommand), Stop),
             KillCommand k => (ToObject(k, RunnerWireContext.Default.KillCommand), Kill),
             OpenForwardCommand o => (ToObject(o, RunnerWireContext.Default.OpenForwardCommand), OpenForward),
+            CloseForwardCommand c => (ToObject(c, RunnerWireContext.Default.CloseForwardCommand), CloseForward),
             ReadTranscriptCommand r => (ToObject(r, RunnerWireContext.Default.ReadTranscriptCommand), ReadTranscript),
             StartProcessCommand sp => (ToObject(sp, RunnerWireContext.Default.StartProcessCommand), StartProcess),
             StopProcessCommand tp => (ToObject(tp, RunnerWireContext.Default.StopProcessCommand), StopProcess),
@@ -169,6 +174,7 @@ public static class RunnerWire
                 Stop => doc.RootElement.Deserialize(RunnerWireContext.Default.StopCommand),
                 Kill => doc.RootElement.Deserialize(RunnerWireContext.Default.KillCommand),
                 OpenForward => doc.RootElement.Deserialize(RunnerWireContext.Default.OpenForwardCommand),
+                CloseForward => doc.RootElement.Deserialize(RunnerWireContext.Default.CloseForwardCommand),
                 ReadTranscript => doc.RootElement.Deserialize(RunnerWireContext.Default.ReadTranscriptCommand),
                 StartProcess => doc.RootElement.Deserialize(RunnerWireContext.Default.StartProcessCommand),
                 StopProcess => doc.RootElement.Deserialize(RunnerWireContext.Default.StopProcessCommand),
