@@ -96,7 +96,7 @@ dotnet test tests/Docket.Runner.Tests --no-build -c Release        # process sup
 # ...and so on per project
 ```
 
-CI runs in **three workflows** because they have different needs:
+CI runs in **four workflows** because they have different needs:
 
 - **`.github/workflows/ci.yml`** (ubuntu only) builds the solution and runs the
   suites needing Postgres — `ControlPlane`, `Mcp`, `Meta`, `MultiMachine` — against
@@ -109,11 +109,14 @@ CI runs in **three workflows** because they have different needs:
   that SIGKILLs real processes — it spawns the real plane, the real `docketd` and real
   worker binaries and kills them mid-task; ubuntu-only, because stray discovery is a
   documented deferral on Windows and the scenarios would assert nothing there. The
-  **`real-claude-e2e`** and **`real-codex-e2e`** jobs are the token-spending real-harness
-  tiers, both gated to `workflow_dispatch` so an ordinary push can never spend: each
-  takes its own database and runs only its own trait (`Category=RealClaude` /
-  `Category=RealCodex`), and each skips cleanly when its key is absent. `real-codex-e2e`
-  installs **both** CLIs, because the mixed claude+codex fleet fact needs both.
+  **`real-claude-e2e`**, **`real-codex-e2e`** and **`real-opencode-e2e`** jobs are the
+  token-spending real-harness tiers, all gated to `workflow_dispatch` so an ordinary push can
+  never spend: each takes its own database and runs only its own trait (`Category=RealClaude` /
+  `Category=RealCodex` / `Category=RealOpenCode`), and each skips cleanly when its key is absent.
+  The codex and opencode jobs each install **both** their own CLI and claude, because the
+  mixed-fleet facts — the whole BYO-harness pitch — need two binaries present.
+- **`.github/workflows/harness-bump.yml`** (daily cron) keeps the three harness-CLI pins
+  current. See below.
 - **`.github/workflows/os-matrix.yml`** runs the platform-sensitive suites — Core,
   Contracts, Runner, Relay, Preview — on **ubuntu, macOS, and Windows**. The point
   is machinery whose behavior is genuinely per-OS: process supervision and stray
@@ -125,6 +128,42 @@ CI runs in **three workflows** because they have different needs:
   `docket-relay` runtime images to GHCR (linux/amd64 + linux/arm64), on a pushed
   `v*` tag or manual dispatch — never on a push to master, because `docket-meta`
   pins an immutable tag per Instance. See [docs/META.md](docs/META.md).
+
+### The harness CLIs are pinned, and a bot moves the pins
+
+All three BYO-harness CLIs — `@anthropic-ai/claude-code`, `@openai/codex`, `opencode-ai` — are
+installed at **exact versions** in ci.yml. This supersedes the earlier rule that they were
+deliberately left unpinned so an upstream change would surface as a failing characterization fact.
+That reasoning was sound and the mechanism was not: on 2026-08-13 `latest` moved *mid-day*, one run
+installed claude 2.1.229 and went 9/9 while another installed 2.1.231 and went 7/2 **on identical
+test code**, and since npm prints no version the two had to be reconstructed from registry publish
+times against step timestamps. Unpinned installs report drift by reddening whatever unrelated PR
+happens to be in flight, at a random time, recording nothing.
+
+Drift is still caught daily — by a job instead of by accident.
+**[`tools/Docket.HarnessBump`](tools/Docket.HarnessBump/README.md)** compares each pin against that
+package's `dist-tags.latest`, opens a PR when something is newer, dispatches ci.yml against that
+branch, and merges **only if all three real tiers ran and passed**. A red bump is left open for a
+human; the bot never bisects and never retries. It is a C# console tool with the cron workflow as a
+one-line `dotnet run`, because this repo runs no shell scripts — which also means its rules are
+unit-tested (`dotnet test tests/Docket.HarnessBump.Tests`) rather than discovered on a live run
+against real money.
+
+**Its only state is the single open bump PR.** No known-bad list, no tracking file, nothing
+remembered about versions that failed. If a bump PR is open and `latest` has climbed past it, the
+bot closes it as superseded and opens a fresh one; if the open PR already targets `latest`, the bot
+does nothing; if none is open and a pin is behind, it opens one combined PR for every available
+bump. The cost guard falls out of that: a bump to version X gets exactly one e2e run, when its PR
+is opened, and a red PR then sits open costing nothing until a human resolves it or a higher version
+ships. Nothing being remembered is deliberate — it means a version that failed gets retried as soon
+as a newer one arrives.
+
+Two details that are load-bearing rather than incidental. It reads **`dist-tags.latest`, never the
+newest version by publish time**: codex publishes `0.148.0-alpha.12` above its own `latest`, and
+opencode publishes `0.0.0-dev-<stamp>` snapshots that are the newest thing on the registry and rank
+*below* `1.18.18`. And **a green real-harness job is not accepted as evidence on its own** — those
+facts skip when their API key is absent and the job still goes green, so the bot reads the logs and
+requires that facts actually passed.
 
 Two things worth knowing when a matrix goes red. Suites that are individually green
 can still break `master` **together** — a DI registration or shared fixture added by
