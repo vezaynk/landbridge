@@ -875,6 +875,115 @@ Codex's `CODEX_API_KEY`, and nothing refuses an API key in favour of a first-par
 credentials otherwise live in `auth.json` under the global data dir (`src/auth/index.ts:10`), and
 an undocumented `OPENCODE_AUTH_CONTENT` accepts them inline (`auth/index.ts:59`).
 
+## Worked example — Grok Build (`grok -p`), the fourth harness
+
+> **Status: verified against `grok` 1.0.3** on 2026-08-14 (live `-p` runs, not
+> source reading). Parser half is pinned for $0 by
+> `Docket.Runner.Tests/GrokStreamMappingTests` against a captured
+> `streaming-messages-json` stream.
+> `Docket.MultiMachine.Tests/RealGrokCollaborationTests` is the opt-in token-spending
+> tier. Auth is `XAI_API_KEY` (not `XAI_KEY`) or `grok login`.
+
+**Grok is the cheapest fourth harness, and the interesting result is why.** Pick
+`--output-format streaming-messages-json` and the stream *is* Claude's Messages NDJSON
+(`system`/`init` + `assistant`/`tool_use` + `result`/`usage`). No `events.mapping`.
+What it did force is `stdin: closed`, for a reason Codex and OpenCode do not share.
+
+```jsonc
+{
+  "profiles": [
+    {
+      "name": "default",
+      "spawn": [
+        "grok", "-p",
+        // Name docket tools the way Grok spells them: `docket__get_task`, NOT
+        // `mcp__docket__get_task` (claude/Codex) and NOT `docket_get_task` (OpenCode).
+        "You are a Docket worker running headless under docketd. You have been dispatched exactly one task. First call the docket__get_task MCP tool to read your assignment (namespace, description, completion_criteria, workspace, attempt). Do the work inside the assigned workspace. When done, call docket__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call docket__request_input instead of guessing. Every docket tool is an MCP tool named docket__<name>; there is no `docket` command line, so never run one in a shell and never curl the MCP server.",
+        // NOTE: no --mcp-config. Grok has none; see the static file below.
+        "--output-format", "streaming-messages-json",
+        // Always-approve. --yolo and --permission-mode bypassPermissions are the same mode.
+        // There is no --permission-prompt-tool, so Docket's permission bridge does not plug in.
+        "--always-approve",
+        "--no-auto-update",
+        // Unlike Codex/OpenCode, grok -p has --max-turns.
+        "--max-turns", "30",
+        "-m", "grok-4.6"
+      ],
+      // NOT OPTIONAL. grok -p starts immediately with a held-open pipe, then never
+      // exits until stdin EOF. deadman leaks the process after report_result.
+      "stdin": "closed",
+      "stop": { "mode": "signal" },
+      "resume": {
+        "args": [
+          "grok", "-p",
+          "Your task has resumed. Call docket__get_task for the answer you were waiting for, then continue.",
+          "--resume", "{session_id}",
+          "--output-format", "streaming-messages-json",
+          "--always-approve",
+          "--no-auto-update",
+          "-m", "grok-4.6"
+        ]
+      },
+      // No mapping. The built-in claude defaults match this stream.
+      "events": { "source": "terminal" },
+      "logs": { "capture": true }
+    }
+  ]
+}
+```
+
+### Why `stdin: closed` is mandatory — and why it is not Codex's hang
+
+Measured against 1.0.3: first stdout at ~1.3s with the dead-man pipe still held, process
+still alive until the pipe closed (20s hold → 20s wall clock). `</dev/null` finished in
+~5s. So Grok **does take its turn** under deadman — then it waits for EOF before
+exiting. A Docket worker would call `report_result`, the task would go `verifying`, and
+the process would sit on the pipe until the next `docketd` restart.
+
+The user-guide line "Headless mode does not read piped stdin into the prompt" is true
+and incomplete. Codex/OpenCode block *before* the first turn; Grok blocks *after* it.
+
+`stdin: closed` costs the dead-man switch. Grok never needed it to start; it needed it
+to stop. Isolation (`sleep | grok`) waits for EOF before exiting; under `docketd` a
+worker has been observed to exit after the turn anyway. The profile still closes stdin
+so we do not depend on that, and so `stop.mode: signal` stays legal.
+`RealGrokCollaborationTests` keeps both halves: a deadman fact that asserts the session
+ref still arrives (Grok is not Codex-shaped), and the closed-stdin facts that complete.
+
+### The MCP wiring: a static file, `${DOCKET_WORKER_TOKEN}`
+
+Grok has no `--mcp-config`. Servers live in `~/.grok/config.toml` (or `$GROK_HOME`).
+String fields in `[mcp_servers.*]` expand `${VAR}` at load
+(`07-mcp-servers.md`):
+
+```toml
+# ~/.grok/config.toml — written once, correct for every dispatch
+[mcp_servers.docket]
+url = "https://plane.example/mcp"
+enabled = true
+headers = { "Authorization" = "Bearer ${DOCKET_WORKER_TOKEN}" }
+```
+
+An unset variable becomes an empty Bearer and the plane 401s — same silent
+toolless-agent failure as OpenCode. There is no `required = true`. Catch it in the
+smoke test.
+
+Tool names are `server__tool` → **`docket__get_task`**. A prompt that says
+`mcp__docket__get_task` or `docket_get_task` sends the agent hunting a tool it does
+not have.
+
+`GROK_HOME` would isolate sessions and this file per spawn. Profiles still have no env
+seam — same #112 gap as `CODEX_HOME` / `OPENCODE_CONFIG_DIR`.
+
+### Do not pick `streaming-json`
+
+That is the ACP shape (`tool_call` / `end`). The Claude defaults read nothing from it —
+no session ref, no progress clock. `GrokStreamMappingTests` pins that miss. The profile
+above uses `streaming-messages-json` on purpose.
+
+`--resume {session_id}` works from a different cwd (confirmed 2026-08-14). Never
+`-c/--continue`: that is "latest session in this directory."
+
 ## Profile archetypes — open vs. strict
 
 Two flags decide how much of the machine a worker can use, and the choice is

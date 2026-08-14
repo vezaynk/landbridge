@@ -27,6 +27,10 @@ on:
         description: "OpenCode model for the real-opencode tier, provider/model (DOCKET_OPENCODE_MODEL)"
         required: false
         default: "anthropic/claude-haiku-4-5-20251001"
+      grok_model:
+        description: "Grok Build model slug for the real-grok tier (DOCKET_GROK_MODEL)"
+        required: false
+        default: "grok-4.6"
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -498,3 +502,65 @@ jobs:
           # server-side. The tier reads DOCKET_OPENCODE_MODEL for exactly that drift — which is
           # what bit the codex tier on its first dispatch.
           DOCKET_OPENCODE_MODEL: ${{ inputs.opencode_model || 'anthropic/claude-haiku-4-5-20251001' }}
+
+  # The §10 BYO-harness tier, FOURTH harness: Grok Build (`grok -p --output-format
+  # streaming-messages-json`). Gated exactly like the other real tiers — it spends tokens, so
+  # it runs ONLY on a manual workflow_dispatch and ONLY the RealGrok trait.
+  #
+  # AUTH: Grok reads XAI_API_KEY (headless-mode.md). The repo secret is XAI_KEY (the name
+  # that was created first); this job maps it. Forks without the secret skip cleanly.
+  #
+  # INSTALL: Grok has no npm package. The documented path is
+  # `curl -fsSL https://x.ai/cli/install.sh | bash -s <version>` (user-guide 01-getting-started).
+  # Pinned to 1.0.3 — the version the recipe and GrokStreamMappingTests were captured against.
+  # This is not in the harness-bump bot (that bot only knows npm dist-tags).
+  #
+  # WHAT THE THREE FACTS COVER: deadman still takes a turn (session ref arrives — Grok is
+  # not Codex-shaped; isolation then waits for EOF, which is why stdin is closed);
+  # a real worker driving a task to verifying (MCP bearer via ${DOCKET_WORKER_TOKEN} +
+  # docket__get_task naming); and usage+cost on the streaming-messages-json result line
+  # (no events.mapping — Claude defaults).
+  real-grok-e2e:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: 1
+      DOTNET_NOLOGO: 1
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: docket
+          POSTGRES_PASSWORD: docket
+          POSTGRES_DB: docket
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U docket"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Install grok CLI
+        run: |
+          curl -fsSL https://x.ai/cli/install.sh | bash -s 1.0.3
+          echo "$HOME/.grok/bin" >> "$GITHUB_PATH"
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build (Release)
+        run: dotnet build tests/Docket.MultiMachine.Tests --no-restore -c Release
+
+      - name: Test - real grok -p multi-machine E2E
+        run: dotnet test tests/Docket.MultiMachine.Tests --no-build -c Release --filter "Category=RealGrok"
+        env:
+          DOCKET_TEST_PG: Host=localhost;Port=5432;Username=docket;Password=docket;Database=docket_realgrok
+          XAI_API_KEY: ${{ secrets.XAI_API_KEY || secrets.XAI_KEY }}
+          DOCKET_GROK_MODEL: ${{ inputs.grok_model || 'grok-4.6' }}

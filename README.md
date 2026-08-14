@@ -109,12 +109,15 @@ CI runs in **four workflows** because they have different needs:
   that SIGKILLs real processes — it spawns the real plane, the real `docketd` and real
   worker binaries and kills them mid-task; ubuntu-only, because stray discovery is a
   documented deferral on Windows and the scenarios would assert nothing there. The
-  **`real-claude-e2e`**, **`real-codex-e2e`** and **`real-opencode-e2e`** jobs are the
-  token-spending real-harness tiers, all gated to `workflow_dispatch` so an ordinary push can
-  never spend: each takes its own database and runs only its own trait (`Category=RealClaude` /
-  `Category=RealCodex` / `Category=RealOpenCode`), and each skips cleanly when its key is absent.
-  The codex and opencode jobs each install **both** their own CLI and claude, because the
-  mixed-fleet facts — the whole BYO-harness pitch — need two binaries present.
+  **`real-claude-e2e`**, **`real-codex-e2e`**, **`real-opencode-e2e`** and **`real-grok-e2e`**
+  jobs are the token-spending real-harness tiers, all gated to `workflow_dispatch` so an
+  ordinary push can never spend: each takes its own database and runs only its own trait
+  (`Category=RealClaude` / `Category=RealCodex` / `Category=RealOpenCode` / `Category=RealGrok`),
+  and each skips cleanly when its key is absent. The codex and opencode jobs each install
+  **both** their own CLI and claude, because the mixed-fleet facts — the whole BYO-harness
+  pitch — need two binaries present. `real-grok-e2e` maps `XAI_KEY` → `XAI_API_KEY` (Grok's
+  name). Grok has no npm package, so the bump bot never rewrites its install.sh pin, but a
+  dispatch of this workflow still runs the job and the merge gate waits for it.
 - **`.github/workflows/harness-bump.yml`** (daily cron) keeps the three harness-CLI pins
   current. See below.
 - **`.github/workflows/os-matrix.yml`** runs the platform-sensitive suites — Core,
@@ -143,7 +146,10 @@ happens to be in flight, at a random time, recording nothing.
 Drift is still caught daily — by a job instead of by accident.
 **[`tools/Docket.HarnessBump`](tools/Docket.HarnessBump/README.md)** compares each pin against that
 package's `dist-tags.latest`, opens a PR when something is newer, dispatches ci.yml against that
-branch, and merges **only if all three real tiers ran and passed**. A red bump is left open for a
+branch, and merges **only if all four real tiers ran and passed**. Grok is not an npm pin — the
+bot never rewrites its install.sh version — but a dispatch of this workflow runs `real-grok-e2e`
+and the merge gate waits for it, because a `real-*` job the gate does not wait on would let a
+bump land while that tier was red. A red bump is left open for a
 human; the bot never bisects and never retries. It is a C# console tool with the cron workflow as a
 one-line `dotnet run`, because this repo runs no shell scripts — which also means its rules are
 unit-tested (`dotnet test tests/Docket.HarnessBump.Tests`) rather than discovered on a live run
