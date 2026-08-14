@@ -301,6 +301,72 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
             () => tools.CreateTask("build the thing", "a", "lead", null, null, CancellationToken.None));
     }
 
+    [SkippableFact]
+    public void List_profiles_shows_a_lead_the_declared_profiles_the_machines_offering_them_and_liveness()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        // §7/§10: the routing read. A Lead about to set create_task(profile:) needs the
+        // names that exist, where each can run, and whether it can run there now — exact
+        // match means a guessed name is a task nothing ever claims.
+        var registry = new RunnerConnectionRegistry(_clock);
+        registry.Register("m1", new HashSet<string> { "default", "gpu" }, (_, _) => Task.CompletedTask);
+        registry.ApplyHeartbeat("m1", Heartbeat("m1", "default", "gpu"));
+        registry.Register("m2", new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
+        registry.ApplyHeartbeat("m2", Heartbeat("m2", "default"));
+        var tools = LeadFor(new Principal.Lead(Team), registry);
+
+        var view = tools.ListProfiles();
+
+        Assert.Equal(new[] { "default", "gpu" }, view.Profiles.Select(p => p.Profile));
+        Assert.Equal(2, view.ConnectedMachines);
+        Assert.Equal(MachineSnapshot.DefaultProfile, view.DefaultProfile);
+
+        var shared = view.Profiles.Single(p => p.Profile == "default");
+        Assert.Equal(new[] { "m1", "m2" }, shared.Machines.Select(m => m.MachineId));
+        Assert.True(shared.Dispatchable);
+        // Liveness per machine, so "this profile is reachable NOW" is answerable rather
+        // than inferred from the mere fact that a machine once declared it.
+        Assert.All(shared.Machines, m =>
+        {
+            Assert.True(m.Ready);
+            Assert.False(m.UnderBackPressure);
+            Assert.NotNull(m.LastHeartbeat);
+        });
+
+        // The narrower profile carries only the machine that declares it (§7 exact match).
+        Assert.Equal(new[] { "m1" }, view.Profiles.Single(p => p.Profile == "gpu").Machines
+            .Select(m => m.MachineId));
+    }
+
+    [SkippableFact]
+    public void List_profiles_refuses_a_worker_and_tells_it_nothing_about_the_fleet()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        // Lead-only through the real authority path: the principal is rebuilt from the
+        // claims on HttpContext.User, so a worker's credential is refused by the same
+        // LeadPrincipal check every other tool here makes — no test-only seam.
+        var registry = new RunnerConnectionRegistry(_clock);
+        registry.Register("secret-machine", new HashSet<string> { "restricted" }, (_, _) => Task.CompletedTask);
+        registry.ApplyHeartbeat("secret-machine", Heartbeat("secret-machine", "restricted"));
+        var worker = new Principal.Worker(new WorkerCaller(Team, TaskId.New(), WorkerInstanceId.New()));
+
+        var refused = Assert.Throws<McpException>(() => LeadFor(worker, registry).ListProfiles());
+
+        // The refusal must not leak the answer it withheld — this read is fleet-wide, so a
+        // message naming a machine or a profile would hand a worker exactly the enumeration
+        // it was denied.
+        Assert.DoesNotContain("secret-machine", refused.Message, StringComparison.Ordinal);
+        Assert.DoesNotContain("restricted", refused.Message, StringComparison.Ordinal);
+        Assert.Contains("lead claim", refused.Message, StringComparison.Ordinal);
+
+        // An evicted Lead is refused too, with its own §4 reason rather than this one.
+        var evicted = new Principal.EvictedLead(Team, Guid.NewGuid(), DateTimeOffset.UtcNow);
+        Assert.Contains(
+            "taken over",
+            Assert.Throws<McpException>(() => LeadFor(evicted, registry).ListProfiles()).Message,
+            StringComparison.Ordinal);
+    }
+
     /// <summary>The question the seeded worker asks (§11), so the answer round-trip
     /// assertions have both halves of the exchange to check.</summary>
     private const string SeededQuestion = "which database should I target?";

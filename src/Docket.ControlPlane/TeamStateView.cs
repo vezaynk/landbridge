@@ -29,6 +29,76 @@ public sealed record TeamStateView(
 public sealed record LeadMachineView(Guid MachineId, string MachineName, DateTimeOffset BoundAt);
 
 /// <summary>
+/// The fleet's declared profiles as <b>routing targets</b>, returned by the Lead's
+/// <c>list_profiles</c> (§7 exact-match routing, §10 as-built refinement). A task's
+/// <c>profile</c> is matched exactly against what a machine declares, so a Lead that
+/// guesses a name it cannot look up creates a task nothing will ever claim — and nothing
+/// reports why. This is the read that ends that.
+///
+/// <para><b>Deliberately not the Machine Group view</b> (§12, which stays human-only).
+/// This is the routing projection and nothing else: profile names, the machines offering
+/// each, and whether each of those machines can take work right now. No tasks, no owning
+/// Teams, no services, no processes, no takeover history — a Lead needs to know where a
+/// profile can run, not what the fleet is doing.</para>
+///
+/// <para><b>Fleet-wide, and that is the correct scope for this one read.</b> Every other
+/// Lead read is Team-scoped because it carries Team content; a profile name is
+/// operator-declared machine configuration that no Team owns, and it is the Lead's own
+/// <c>create_task</c> argument. Scoping it to a Team would be scoping a fact that has no
+/// Team — and would leave the Lead guessing again.</para>
+///
+/// <para><see cref="ConnectedMachines"/> is a count, not an enumeration, and it exists for
+/// the empty answer: no profiles with no machines connected means the fleet is down, while
+/// no profiles with machines connected means they have dialled in but not yet declared
+/// anything (a machine's profiles arrive on its first heartbeat, §10). Those are different
+/// problems and a Lead that cannot tell them apart waits on the wrong one.</para>
+/// </summary>
+/// <param name="DefaultProfile">The profile an omitted <c>create_task(profile:)</c> resolves
+/// to — <c>default</c>. Carried rather than left implicit because it is the one profile name
+/// a Lead uses without typing it: if it is absent from <see cref="Profiles"/>, or present but
+/// not <see cref="ProfileRoutingEntry.Dispatchable"/>, then plain profile-less tasks are not
+/// routable either, which is otherwise an invisible fleet condition.</param>
+public sealed record ProfileRoutingView(
+    IReadOnlyList<ProfileRoutingEntry> Profiles,
+    int ConnectedMachines,
+    string DefaultProfile = MachineSnapshot.DefaultProfile);
+
+/// <summary>
+/// One declared profile and where it can run. A profile appears here if and only if some
+/// currently-connected machine declares it, so the list is the exact set of names
+/// <c>create_task(profile:)</c> can match — a name absent from it is a name no task should
+/// carry.
+/// </summary>
+/// <param name="Dispatchable">Whether at least one machine declaring this profile can take a
+/// task <em>now</em>. Equivalent by construction to
+/// <see cref="RunnerConnectionRegistry.TryPickMachine"/> finding a machine for it, which is
+/// the same eligibility dispatch itself runs on: readiness already has back-pressure folded
+/// into it (§10), and the engine's own check is this readiness plus this exact-match. False
+/// with a non-empty <see cref="Machines"/> is the informative case — the profile exists and
+/// every machine offering it is saturated or not yet ready, so a task on it will queue and
+/// then run, rather than sit unclaimable forever.</param>
+public sealed record ProfileRoutingEntry(
+    string Profile,
+    bool Dispatchable,
+    IReadOnlyList<ProfileMachineView> Machines);
+
+/// <summary>
+/// One machine offering a profile, as a routing candidate: its id and whether it is
+/// currently able to accept a dispatch. Identifiers and liveness only (§10) — the machine's
+/// tasks, services and processes are the §12 human view's business, not routing's.
+/// <see cref="UnderBackPressure"/> rides beside <see cref="Ready"/> for the same reason the
+/// §12 view keeps both: "saturated" and "not ready" are different waits, and a Lead told
+/// only "not ready" cannot tell a busy fleet from a broken one.
+/// <see cref="LastHeartbeat"/> is when the machine last spoke, so a Lead can judge how fresh
+/// this answer is rather than trusting a boolean of unknown age.
+/// </summary>
+public sealed record ProfileMachineView(
+    string MachineId,
+    bool Ready,
+    bool UnderBackPressure,
+    DateTimeOffset? LastHeartbeat);
+
+/// <summary>
 /// One task's structural summary. <see cref="Namespace"/> is the server-assigned
 /// <c>team-{id}/task-{id}</c> identifier (§7), not content. <see cref="Parked"/>
 /// surfaces §12's "parks per task" signal — whether decomposition is starving on

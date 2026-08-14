@@ -84,7 +84,7 @@ Two reasons a continuation is the right shape rather than a fresh task. The agen
 
 Write the description so it survives the `degrade` case: name the processes and paths rather than relying on "you know what you started". A continuation that kept its memory ignores the redundancy; one that cold-started needs it. The single case still refused at creation is continuing a task that was **never dispatched** — it has no transcript and no directory, so there is nothing to carry on from, and an ordinary task is the right shape.
 
-If you are unsure what is still running, ask your operator to check the Machine Group view (`/dashboard/machines`) — it lists every process a machine holds and which task started it, and a machine accumulating processes across closed-out work is the visible symptom of a cleanup continuation nobody sent. That view is human-only: your Lead token reads your own Team, not the fleet.
+If you are unsure what is still running, ask your operator to check the Machine Group view (`/dashboard/machines`) — it lists every process a machine holds and which task started it, and a machine accumulating processes across closed-out work is the visible symptom of a cleanup continuation nobody sent. That view is human-only: your Lead token reads your own Team, not the fleet. The one fleet-wide read you do have is `list_profiles`, and it carries routing only — which profiles exist and where they can run — never what those machines are running.
 
 ## Choosing a profile
 
@@ -92,7 +92,13 @@ Machines may declare more than one runner profile — a second harness, a restri
 
 Leave it unset unless you have a specific reason. An unset profile runs on `default` anywhere in the Machine Group, which is what you want almost always.
 
-Set it when the task genuinely needs that configuration: work handling sensitive material that should run under a restricted posture, or work you are deliberately routing to a particular harness. **A task requesting a profile no machine declares will sit unclaimable indefinitely** — nothing will tell you except the task not starting, so do not guess a profile name. Which profiles exist is not something you can look up: there is no MCP tool for it, and the Machine Group view that lists them is human-only (machine enumeration is a permanent non-goal for agents by design). Ask your operator for the exact string, and set `profile` only once you have it.
+Set it when the task genuinely needs that configuration: work handling sensitive material that should run under a restricted posture, or work you are deliberately routing to a particular harness. **A task requesting a profile no machine declares will sit unclaimable indefinitely** — nothing will tell you except the task not starting, so never guess a profile name.
+
+Look it up instead. **`list_profiles`** returns every profile the fleet currently declares, the machines offering each one, and whether those machines can take work right now. Read it before you set `profile`, and set it only to a name that came back. It is the same data dispatch matches on, so what it shows you is what routing will do.
+
+Two things to read carefully in the answer. **`dispatchable: false` with machines listed is not a problem** — the profile exists and every machine offering it is saturated or not yet ready, so your task will queue and then run; wait rather than re-routing it. **A profile missing from the list entirely is the problem** — nothing declares it, so nothing will ever pick that task up, and you should either drop the profile or ask your operator to bring up a machine that declares it. And if `default` itself is missing, even tasks with no profile set have nowhere to run: that is a fleet outage to raise with your operator, not something to route around.
+
+It answers routing and only routing — profile names, their machines, and liveness. What those machines are actually running is the Machine Group view, which stays human-only.
 
 Do not use profiles to express what kind of work a task is. They describe how an agent runs, not what it does.
 

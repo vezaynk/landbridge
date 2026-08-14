@@ -393,6 +393,66 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
                 new HashSet<string>(conn.Profiles, StringComparer.Ordinal));
     }
 
+    /// <summary>
+    /// The fleet's declared profiles grouped as routing targets — what a Lead's
+    /// <c>list_profiles</c> reads (§7 exact-match routing, §10 as-built refinement).
+    ///
+    /// <para><b>Derived from the dispatch inputs themselves, not from a parallel view.</b>
+    /// It walks <see cref="MachineIds"/> and reads each machine through
+    /// <see cref="SnapshotFor"/> — the very <see cref="MachineSnapshot"/> a dispatch pass
+    /// hands the store and the engine matches on — plus
+    /// <see cref="LastHeartbeatFor"/>. So the profiles listed are exactly the profiles a
+    /// task can match, and <see cref="ProfileRoutingEntry.Dispatchable"/> agrees with
+    /// <see cref="TryPickMachine"/> by construction: both are "some machine is
+    /// <c>Ready</c> and declares this name", and <c>Ready</c> is where back-pressure was
+    /// already folded in (<see cref="Fold"/>). A second, hand-rolled notion of
+    /// eligibility here is precisely the divergence that would let a Lead be told a
+    /// profile is reachable when dispatch disagrees.</para>
+    ///
+    /// <para>Full enumeration rather than <see cref="ReadyMachines"/>, for the same reason
+    /// the §12 view enumerates: a machine that is connected and saturated still declares
+    /// its profiles, and a Lead needs the profile to appear — as present but not
+    /// dispatchable — rather than to vanish and read as "no machine declares this".</para>
+    ///
+    /// <para>Not a snapshot of one instant, and it does not need to be: membership comes
+    /// from the concurrent dictionary and each machine is then read under its own
+    /// <c>Gate</c>, so a machine that raced away mid-walk is skipped and one that arrives
+    /// mid-walk may or may not appear. Routing is a live question whose answer can change
+    /// the moment after it is given, so a consistent-at-an-instant read would be no more
+    /// true — and this is how <see cref="DashboardQueries.GetMachinesAsync"/> reads the
+    /// registry too.</para>
+    /// </summary>
+    public ProfileRoutingView ProfileRouting()
+    {
+        var byProfile = new Dictionary<string, List<ProfileMachineView>>(StringComparer.Ordinal);
+        var connected = 0;
+
+        foreach (var machineId in MachineIds())
+        {
+            if (SnapshotFor(machineId) is not { } snapshot)
+                continue; // raced away between enumeration and read
+            connected++;
+            var machine = new ProfileMachineView(
+                machineId, snapshot.Ready, snapshot.UnderBackPressure, LastHeartbeatFor(machineId));
+            foreach (var profile in snapshot.DeclaredProfiles)
+            {
+                if (!byProfile.TryGetValue(profile, out var machines))
+                    byProfile[profile] = machines = [];
+                machines.Add(machine);
+            }
+        }
+
+        var profiles = byProfile
+            .Select(p => new ProfileRoutingEntry(
+                p.Key,
+                p.Value.Any(m => m.Ready),
+                p.Value.OrderBy(m => m.MachineId, StringComparer.Ordinal).ToList()))
+            .OrderBy(p => p.Profile, StringComparer.Ordinal)
+            .ToList();
+
+        return new ProfileRoutingView(profiles, connected);
+    }
+
     /// <summary>The machine ids currently ready to accept dispatch.</summary>
     public IReadOnlyList<string> ReadyMachines()
     {

@@ -1,3 +1,4 @@
+using Docket.Contracts;
 using Docket.ControlPlane;
 using Docket.ControlPlane.Auth;
 using Docket.ControlPlane.Tests;
@@ -277,6 +278,117 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
 
         await app.StopAsync(ct);
     }
+
+    [SkippableFact]
+    public async Task List_profiles_answers_a_lead_over_mcp_and_refuses_a_worker_token()
+    {
+        // §7/§10 over the wire, both halves against the real auth handler: the Lead's
+        // routing read arrives as structured data naming the fleet's profiles and the
+        // machines offering them, and the same tool refuses a worker token — authority is
+        // structural (§5), so the refusal is the credential's, not a check the tool chose
+        // to make for this caller.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var ct = cts.Token;
+
+        await using var app = BuildServer();
+        await app.StartAsync(ct);
+        var baseUri = new Uri(app.Urls.First(u => u.StartsWith("http://")) + "/");
+
+        var team = TeamId.New();
+
+        // Two machines dial in and heartbeat, exactly as the runner endpoint would: this is
+        // the same singleton registry a dispatch pass reads, so what the tool reports below
+        // is what routing would match.
+        var registry = app.Services.GetRequiredService<RunnerConnectionRegistry>();
+        registry.Register("m1", new HashSet<string> { "default", "gpu" }, (_, _) => Task.CompletedTask);
+        registry.ApplyHeartbeat("m1", Heartbeat("m1", "default", "gpu"));
+        registry.Register("m2", new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
+        registry.ApplyHeartbeat("m2", Heartbeat("m2", "default"));
+
+        string leadToken;
+        TaskId seeded;
+        string workerToken;
+        await using (var db = pg.NewContext())
+        {
+            var tokens = new TokenService(db, TimeProvider.System);
+            var human = await tokens.IssueHumanSessionAsync(ct);
+            var claim = Assert.IsType<LeadClaimResult.Claimed>(await tokens.ClaimLeadAsync(human.Token, team, ct: ct));
+            leadToken = claim.Token.Token;
+
+            // A real dispatched worker in the same Team, so its token is a valid principal
+            // that simply carries no lead claim.
+            var store = new TaskStore(db, TimeProvider.System);
+            var created = (StoreResult.Applied)await store.CreateAsync(
+                new CreateTask(new LeadClaim(team), team, "seed", CompletionMode.Lead, null), ct);
+            seeded = created.Task.Id;
+            var instance = WorkerInstanceId.New();
+            await store.DispatchNextAsync(
+                new MachineSnapshot("m1", true, false, new HashSet<string> { "default" }), instance, ct);
+            workerToken = (await tokens.MintWorkerTokenAsync(team, seeded, instance, ct)).Token;
+        }
+
+        // ── Lead: the routing view, parsed as the structured data it is ──────
+        await using (var lead = await ConnectAsync(baseUri, leadToken, ct))
+        {
+            var listed = await lead.CallToolAsync(
+                "list_profiles", new Dictionary<string, object?>(), cancellationToken: ct);
+            Assert.NotEqual(true, listed.IsError);
+
+            var text = Assert.Single(listed.Content.OfType<TextContentBlock>()).Text;
+            using var doc = System.Text.Json.JsonDocument.Parse(text);
+            var root = doc.RootElement;
+
+            Assert.Equal(2, root.GetProperty("connectedMachines").GetInt32());
+            Assert.Equal("default", root.GetProperty("defaultProfile").GetString());
+
+            var profiles = root.GetProperty("profiles").EnumerateArray().ToList();
+            Assert.Equal(
+                new[] { "default", "gpu" }, profiles.Select(p => p.GetProperty("profile").GetString()));
+
+            var shared = profiles.Single(p => p.GetProperty("profile").GetString() == "default");
+            Assert.True(shared.GetProperty("dispatchable").GetBoolean());
+            Assert.Equal(
+                new[] { "m1", "m2" },
+                shared.GetProperty("machines").EnumerateArray()
+                    .Select(m => m.GetProperty("machineId").GetString()));
+            // Liveness per candidate machine — "reachable now", not "declared once" (§10).
+            Assert.All(shared.GetProperty("machines").EnumerateArray(), m =>
+            {
+                Assert.True(m.GetProperty("ready").GetBoolean());
+                Assert.False(m.GetProperty("underBackPressure").GetBoolean());
+                Assert.NotNull(m.GetProperty("lastHeartbeat").GetString());
+            });
+
+            // The narrow profile carries only the machine declaring it, which is the whole
+            // point of reading this before setting create_task(profile:).
+            Assert.Equal(
+                new[] { "m1" },
+                profiles.Single(p => p.GetProperty("profile").GetString() == "gpu")
+                    .GetProperty("machines").EnumerateArray()
+                    .Select(m => m.GetProperty("machineId").GetString()));
+        }
+
+        // ── Worker: refused, and told nothing about the fleet ────────────────
+        await using (var worker = await ConnectAsync(baseUri, workerToken, ct))
+        {
+            var refused = await worker.CallToolAsync(
+                "list_profiles", new Dictionary<string, object?>(), cancellationToken: ct);
+
+            Assert.Equal(true, refused.IsError);
+            var text = string.Concat(refused.Content.OfType<TextContentBlock>().Select(c => c.Text));
+            // A worker learns the machine group's shape from neither the answer nor the
+            // refusal: no machine id, no profile name it did not already know.
+            Assert.DoesNotContain("m2", text, StringComparison.Ordinal);
+            Assert.DoesNotContain("gpu", text, StringComparison.Ordinal);
+        }
+
+        await app.StopAsync(ct);
+    }
+
+    private static MachineHeartbeat Heartbeat(string machineId, params string[] profiles) =>
+        new(machineId, Ready: true, UnderBackPressure: false,
+            new SystemLoad(0, 0, 0), RunningTasks: 0, profiles, DateTimeOffset.UtcNow);
 
     private WebApplication BuildServer()
     {

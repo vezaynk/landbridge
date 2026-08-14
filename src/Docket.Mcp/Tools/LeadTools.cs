@@ -22,6 +22,14 @@ namespace Docket.Mcp.Tools;
 /// re-check authority (§9 check 3 for creation, the §7 human-confirmation gate
 /// for review, disposition for cancel), so nothing here interprets task content.
 ///
+/// <para><c>list_profiles</c> is the one tool with no Team in it and no store behind it: a
+/// declared runner profile is machine config no Team owns, and it is read straight off the
+/// live <see cref="RunnerConnectionRegistry"/> (§7 routing, §10 as-built refinement). That
+/// makes the lead-claim check at its top the whole of its authority rather than a
+/// pre-filter, which is why it is written as a deliberate read of
+/// <see cref="LeadPrincipal"/> rather than left to a downstream re-check that does not
+/// exist for it.</para>
+///
 /// <para>The last three tools are the §8.3 <b>human path</b>: a Lead binds an
 /// enrolled machine as its human's own, then opens a forward whose consumer end is
 /// that machine — how a person reaches a raw-TCP service (a worker's Postgres) from
@@ -88,7 +96,8 @@ public sealed class LeadTools(
                      "never complete it either way.")]
         string? mode = null,
         [Description("Optional runner profile name for exact-match routing. Omit for the default profile. " +
-                     "With 'continues', defaults to the continued task's profile.")]
+                     "Call list_profiles first if you are setting this — a name no machine declares makes " +
+                     "a task nothing can ever claim. With 'continues', defaults to the continued task's profile.")]
         string? profile = null,
         [Description("Optional opaque workspace blob: where the work happens, how it is isolated, which " +
                      "ports it may use. Assigned by the Lead so concurrent tasks never collide (§7).")]
@@ -339,6 +348,35 @@ public sealed class LeadTools(
         return await bindings.GetAsync(human, ct) is { } bound
             ? state with { BoundMachine = new LeadMachineView(bound.MachineId, bound.MachineName, bound.BoundAt) }
             : state;
+    }
+
+    [McpServerTool(Name = "list_profiles"),
+     Description("List the runner profiles the fleet currently declares, and for each one the " +
+                 "machines offering it and whether they can take work right now. Read this BEFORE " +
+                 "passing a profile to create_task: routing is exact-match (§7), so a task naming a " +
+                 "profile no machine declares sits unclaimable indefinitely and nothing reports why. " +
+                 "A name absent from this list is a name no task should carry. 'dispatchable' false " +
+                 "with machines listed means the profile exists but every machine offering it is " +
+                 "saturated or not yet ready — that task will queue and then run, so wait rather than " +
+                 "re-route. 'defaultProfile' is what an omitted profile resolves to; if it is missing " +
+                 "here, even profile-less tasks have nowhere to run. Read-only, and NOT the machine " +
+                 "group: it carries no tasks, Teams, services or processes — that view is human-only " +
+                 "(§12), and your operator reads it on /dashboard/machines.")]
+    public ProfileRoutingView ListProfiles()
+    {
+        // Lead-only, checked the way every tool in this class checks: the principal is
+        // re-derived from the authenticated token, so a worker credential — or an evicted
+        // claim — is refused at the door with the same reason it gets everywhere else. There
+        // is no caller parameter to disagree with, and nothing downstream to re-check it:
+        // unlike the store transitions below, this read never reaches the engine, so this IS
+        // the enforcement point.
+        _ = LeadPrincipal;
+
+        // §7/§10: the routing projection over the live connection registry — the same
+        // MachineSnapshot dispatch matches on, so the Lead is told what routing would
+        // actually do. Deliberately unscoped by Team: a declared profile belongs to a
+        // machine's operator config, not to any Team (see ProfileRoutingView).
+        return registry.ProfileRouting();
     }
 
     [McpServerTool(Name = "get_task_report"),
