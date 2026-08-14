@@ -14,6 +14,14 @@ namespace Docket.ControlPlane;
 /// out of <see cref="TaskStore"/>: the store is the write path (§15), this is a
 /// bystander that only observes.
 ///
+/// <para><b>Every read here is instance-wide unless the caller scopes it.</b> The §12 views are
+/// a human-operator surface and a human sees the whole instance; the same routes also serve a
+/// reattaching Lead its own Team as structured data (§4), and a Lead's scope is that Team and
+/// nothing else (§10 as-built: no cross-Team or machine views for agents). So the tenant filter
+/// is a <c>teamScope</c> parameter on the multi-Team reads rather than an assumption — the
+/// endpoint resolves the principal and says what it may see, and <c>null</c> is the deliberate
+/// "a human asked" case, not a default that happens to be permissive.</para>
+///
 /// One §12 data point still has no source in the schema; rather than invent a
 /// column, the query surfaces an honest absence and the renderer shows an empty
 /// state (see the field comments): the subagent tree <em>nested under a machine</em>.
@@ -119,36 +127,56 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
     /// (§12). A Team exists if it owns any task or holds a live Lead claim. Carries its
     /// reported relay bytes (§9.10, measured but best-effort).
     /// </summary>
-    public async Task<IReadOnlyList<TeamOverview>> GetTeamsAsync(CancellationToken ct = default)
+    /// <param name="teamScope">The one Team this read may see, or null for the instance-wide
+    /// human view (§12 — see <see cref="GetInboxAsync"/> for why the parameter exists). A
+    /// scoped call returns at most one overview: the Lead's own Team.</param>
+    public async Task<IReadOnlyList<TeamOverview>> GetTeamsAsync(
+        Guid? teamScope = null, CancellationToken ct = default)
     {
-        var stateCounts = await db.Tasks.AsNoTracking()
+        // One place says what a scoped read means, so none of the aggregates below can be
+        // left unfiltered by accident — each is a whole-instance read otherwise.
+        var tasks = db.Tasks.AsNoTracking();
+        var events = db.TaskEvents.AsNoTracking();
+        var services = db.RegisteredServices.AsNoTracking();
+        var credentials = db.Credentials.AsNoTracking();
+        var forwards = db.TeamForwardUsage.AsNoTracking();
+        if (teamScope is { } only)
+        {
+            tasks = tasks.Where(t => t.TeamId == only);
+            events = events.Where(e => e.TeamId == only);
+            services = services.Where(s => s.TeamId == only);
+            credentials = credentials.Where(c => c.TeamId == only);
+            forwards = forwards.Where(u => u.TeamId == only);
+        }
+
+        var stateCounts = await tasks
             .GroupBy(t => new { t.TeamId, t.State })
             .Select(g => new { g.Key.TeamId, g.Key.State, Count = g.Count() })
             .ToListAsync(ct);
 
-        var parksByTeam = await db.TaskEvents.AsNoTracking()
+        var parksByTeam = await events
             .Where(e => e.ToState == TaskState.Parked)
             .GroupBy(e => e.TeamId)
             .Select(g => new { TeamId = g.Key, Count = g.Count() })
             .ToDictionaryAsync(x => x.TeamId, x => x.Count, ct);
 
-        var lastActivity = await db.TaskEvents.AsNoTracking()
+        var lastActivity = await events
             .GroupBy(e => e.TeamId)
             .Select(g => new { TeamId = g.Key, Last = g.Max(e => e.OccurredAt) })
             .ToDictionaryAsync(x => x.TeamId, x => x.Last, ct);
 
-        var serviceCounts = await db.RegisteredServices.AsNoTracking()
+        var serviceCounts = await services
             .GroupBy(s => s.TeamId)
             .Select(g => new { TeamId = g.Key, Count = g.Count() })
             .ToDictionaryAsync(x => x.TeamId, x => x.Count, ct);
 
-        var leads = await db.Credentials.AsNoTracking()
+        var leads = await credentials
             .Where(c => c.Kind == CredentialKind.Lead && !c.Revoked && c.TeamId != null)
             .Select(c => new { TeamId = c.TeamId!.Value, c.HumanId, c.CreatedAt })
             .ToListAsync(ct);
         var leadByTeam = leads.ToDictionary(l => l.TeamId, l => (l.HumanId, l.CreatedAt));
 
-        var forwardUsage = await db.TeamForwardUsage.AsNoTracking().ToDictionaryAsync(u => u.TeamId, ct);
+        var forwardUsage = await forwards.ToDictionaryAsync(u => u.TeamId, ct);
 
         var teamIds = new HashSet<Guid>(stateCounts.Select(s => s.TeamId));
         foreach (var l in leads)
@@ -358,9 +386,26 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
     /// authority, so this read does not filter on it and instead reports it, which is what
     /// lets the page mark the ones a Lead has handed over.</para>
     /// </summary>
-    public async Task<InboxView> GetInboxAsync(CancellationToken ct = default)
+    /// <param name="teamScope">
+    /// The one Team this read may see, or null for the instance-wide human view.
+    ///
+    /// <para>The §12 inbox is "everything waiting on a person <em>across every Team</em>", and
+    /// for a human it still is. But the same routes serve a Lead its own Team as structured
+    /// data (§4 reattachment, §12), and a Lead's scope is its Team and nothing else (§10
+    /// as-built: no cross-Team views for agents) — so the caller passes the Team it is allowed
+    /// to see and the filter happens in SQL, not in a renderer that could forget.</para>
+    /// </param>
+    public async Task<InboxView> GetInboxAsync(Guid? teamScope = null, CancellationToken ct = default)
     {
-        var questions = await db.Tasks.AsNoTracking()
+        var scopedTasks = db.Tasks.AsNoTracking();
+        var scopedEvents = db.TaskEvents.AsNoTracking();
+        if (teamScope is { } only)
+        {
+            scopedTasks = scopedTasks.Where(t => t.TeamId == only);
+            scopedEvents = scopedEvents.Where(e => e.TeamId == only);
+        }
+
+        var questions = await scopedTasks
             .Where(t => t.State == TaskState.BlockedOnInput
                         && t.InputKind != InputRequestKind.Permission)
             .OrderBy(t => t.BlockedAt)
@@ -370,7 +415,7 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
 
         // Oldest first, like the questions above: age is what matters on a queue whose items
         // each have a worker blocked behind them and a wait TTL running down.
-        var permissionRequests = await db.Tasks.AsNoTracking()
+        var permissionRequests = await scopedTasks
             .Where(t => t.State == TaskState.BlockedOnInput
                         && t.InputKind == InputRequestKind.Permission)
             .OrderBy(t => t.BlockedAt)
@@ -380,13 +425,13 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
                 t.PermissionEscalatedAt, t.PermissionEscalationReason))
             .ToListAsync(ct);
 
-        var awaitingReview = await db.Tasks.AsNoTracking()
+        var awaitingReview = await scopedTasks
             .Where(t => t.State == TaskState.Verifying && t.CompletionMode == CompletionMode.Review)
             .OrderBy(t => t.Namespace)
             .Select(t => new ReviewItemView(t.Id, t.Namespace, t.TeamId))
             .ToListAsync(ct);
 
-        var parked = await db.Tasks.AsNoTracking()
+        var parked = await scopedTasks
             .Where(t => t.State == TaskState.Parked)
             .OrderBy(t => t.Namespace)
             .Select(t => new ParkedItemView(
@@ -403,7 +448,7 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
         // of live ids stays an index lookup, where filtering its whole history by kind would
         // scan it — on a page that refreshes every 5s. It also means the namespace and state
         // this view labels each failure with come from the same read that chose it.
-        var liveTasks = await db.Tasks.AsNoTracking()
+        var liveTasks = await scopedTasks
             .Where(t => ActiveStates.Contains(t.State))
             .Select(t => new { t.Id, t.Namespace, t.State })
             .ToDictionaryAsync(t => t.Id, t => (t.Namespace, t.State), ct);
@@ -412,7 +457,7 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
         // Collapsed by the facts that identify the same problem: a retrying worker writes one
         // row per attempt, and what that repetition is worth to a person is the count and the
         // newest of them, not a wall of identical rows.
-        var failureGroups = await db.TaskEvents.AsNoTracking()
+        var failureGroups = await scopedEvents
             .Where(e => e.Kind == TaskEventRow.AuthFailedKind && liveTaskIds.Contains(e.TaskId))
             .GroupBy(e => new
             {
@@ -454,9 +499,21 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
     /// (§10/§12). Each event carries only structure — kind, from/to state,
     /// identifiers, the store's own effect-name detail — never prose.
     /// </summary>
-    public async Task<IReadOnlyList<DashboardEvent>> GetEventsAsync(int limit = 200, CancellationToken ct = default)
+    /// <param name="teamScope">See <see cref="GetInboxAsync"/> — a Lead's own Team, or null for
+    /// the instance-wide human view. Scoped on both sources, so a Lead's log carries neither
+    /// another Team's transitions nor another Team's takeovers.</param>
+    public async Task<IReadOnlyList<DashboardEvent>> GetEventsAsync(
+        int limit = 200, Guid? teamScope = null, CancellationToken ct = default)
     {
-        var rawTaskEvents = await db.TaskEvents.AsNoTracking()
+        var scopedTaskEvents = db.TaskEvents.AsNoTracking();
+        var scopedLeadEvents = db.LeadEvents.AsNoTracking();
+        if (teamScope is { } only)
+        {
+            scopedTaskEvents = scopedTaskEvents.Where(e => e.TeamId == only);
+            scopedLeadEvents = scopedLeadEvents.Where(e => e.TeamId == only);
+        }
+
+        var rawTaskEvents = await scopedTaskEvents
             .OrderByDescending(e => e.Seq)
             .Take(limit)
             .Select(e => new
@@ -510,7 +567,7 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
             e.PermissionVerdict,
             e.PermissionAnswerer));
 
-        var leadEvents = await db.LeadEvents.AsNoTracking()
+        var leadEvents = await scopedLeadEvents
             .OrderByDescending(e => e.Seq)
             .Take(limit)
             .Select(e => new DashboardEvent(

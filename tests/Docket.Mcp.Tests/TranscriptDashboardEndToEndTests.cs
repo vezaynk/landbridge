@@ -1,4 +1,5 @@
 using System.Net;
+using System.Text.Json;
 using Docket.Contracts;
 using Docket.ControlPlane;
 using Docket.ControlPlane.Auth;
@@ -50,19 +51,25 @@ public sealed class TranscriptDashboardEndToEndTests(PostgresFixture pg) : IAsyn
     // ── The human-only rule ───────────────────────────────────────────────────
 
     [SkippableFact]
-    public async Task A_lead_token_is_refused_while_the_same_token_still_reads_other_views()
+    public async Task A_lead_token_is_refused_while_the_same_token_still_reads_its_own_team()
     {
-        // The one dashboard route family that refuses a Lead credential. Every other §12 view
-        // must keep accepting one (§12 requires a Lead-consumable twin), so this asserts BOTH
-        // halves — a regression that widened transcripts would otherwise look like a pass.
+        // The one dashboard route family that refuses a Lead credential outright. Every other
+        // §12 view must keep answering one (§12 requires a Lead-consumable twin) — but with the
+        // Lead's own Team, not the instance (§4 reattachment; §10 as-built gives an agent no
+        // cross-Team view). So this asserts all three halves: transcripts refused, the Team list
+        // served, and another Team's row absent from it. A regression in any one of them —
+        // transcripts widened, the twin removed, or the twin widened back to instance-wide —
+        // would otherwise look like a pass.
         Skip.IfNot(pg.Available, pg.SkipReason);
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var ct = cts.Token;
         var team = TeamId.New();
+        var somebodyElse = TeamId.New();
 
         await using var app = BuildPlane();
         await app.StartAsync(ct);
         var task = await SeedCompletedTaskAsync(team, ct);
+        await SeedWorkingTaskAsync(somebodyElse, ct);
         var leadToken = await IssueLeadTokenAsync(team, ct);
 
         using var client = Client(app);
@@ -75,8 +82,13 @@ public sealed class TranscriptDashboardEndToEndTests(PostgresFixture pg) : IAsyn
         Assert.Equal(HttpStatusCode.Forbidden, transcripts.StatusCode);
         Assert.Equal(HttpStatusCode.Forbidden, stream.StatusCode);
         Assert.Contains("human operator", await transcripts.Content.ReadAsStringAsync(ct));
-        // Same credential, other view: still fine.
+
+        // Same credential, the reattachment view: served, and scoped to the Team the credential
+        // is for. The other Team exists and is busy; this Lead has no business seeing that.
         Assert.Equal(HttpStatusCode.OK, teamsView.StatusCode);
+        using var teams = JsonDocument.Parse(await teamsView.Content.ReadAsStringAsync(ct));
+        var only = Assert.Single(teams.RootElement.EnumerateArray());
+        Assert.Equal(team.Value, only.GetProperty("teamId").GetGuid());
     }
 
     [SkippableFact]

@@ -154,6 +154,7 @@ public sealed class PermissionBridgeDashboardTests(PostgresFixture pg) : IAsyncL
             }),
         };
         req.Headers.Add("Cookie", $"{DashboardAuth.CookieName}={leadToken}");
+        req.Headers.Add("Origin", SelfOrigin(app));
         var res = await client.SendAsync(req, ct);
 
         Assert.Equal(HttpStatusCode.Forbidden, res.StatusCode);
@@ -273,6 +274,9 @@ public sealed class PermissionBridgeDashboardTests(PostgresFixture pg) : IAsyncL
             Content = new FormUrlEncodedContent(fields),
         };
         req.Headers.Add("Cookie", $"{DashboardAuth.CookieName}={token}");
+        // As a browser on the inbox page sends it: this POST is same-origin only, and what
+        // happens to one that is not belongs to DashboardScopeAndOriginTests.
+        req.Headers.Add("Origin", SelfOrigin(app));
         return await client.SendAsync(req, ct);
     }
 
@@ -304,11 +308,15 @@ public sealed class PermissionBridgeDashboardTests(PostgresFixture pg) : IAsyncL
         return app;
     }
 
+    private static string BaseUrl(WebApplication app) =>
+        app.Urls.First(u => u.StartsWith("http://", StringComparison.Ordinal));
+
+    /// <summary>The origin the plane answers on — what a browser on its own page sends.</summary>
+    private static string SelfOrigin(WebApplication app) =>
+        new Uri(BaseUrl(app)).GetLeftPart(UriPartial.Authority);
+
     private static HttpClient Client(WebApplication app) =>
-        new(new HttpClientHandler { AllowAutoRedirect = false })
-        {
-            BaseAddress = new Uri(app.Urls.First(u => u.StartsWith("http://", StringComparison.Ordinal))),
-        };
+        new(new HttpClientHandler { AllowAutoRedirect = false }) { BaseAddress = new Uri(BaseUrl(app)) };
 
     private async Task<string> GetAuthedAsync(WebApplication app, string path, CancellationToken ct)
     {

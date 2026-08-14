@@ -114,7 +114,7 @@ Then have the human's Lead create one trivial task against that profile (`create
 | The task moves | `/dashboard/teams/{team}`, or the Lead's `get_team_state` | `Submitted` → `Working` → `Verifying`, with `Attempt` reaching 1 and staying there |
 | The work actually happened | the task's report | the value it was asked for, not a restatement of the ask |
 
-Both views take `?format=json` with a Lead bearer token if you would rather read them structured. There is no MCP tool that lists machines and none that reads events — for those two the dashboard is the only surface.
+Both views take `?format=json` if you would rather read them structured — the Team view with a Lead bearer token, the Machine Group view with an operator session only (machine enumeration is human-only by design, so a Lead token gets a 403 there). There is no MCP tool that lists machines and none that reads events — for those two the dashboard is the only surface.
 
 The failures worth naming, and what each really looks like:
 

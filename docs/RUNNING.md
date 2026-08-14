@@ -87,7 +87,13 @@ secrets or the environment variable `Docket__Operator__PassphraseHash` (see the
   `/dashboard/teams` + `/dashboard/teams/{id}` (Team views), `/dashboard/inbox`
   (human inbox), and `/dashboard/events`. Pages carry a 5-second auto-refresh and
   each has a JSON twin (`?format=json` or an `Accept: application/json` request).
-  A pasted human/Lead token is accepted as a secondary door.
+  A pasted human/Lead token is accepted as a secondary door — but a **Lead** token
+  reads only its own Team: `/dashboard/teams`, `/dashboard/inbox` and
+  `/dashboard/events` come back filtered to it, another Team's
+  `/dashboard/teams/{id}` is a 403, and `/dashboard/machines` is human-only
+  (machine enumeration is a human surface by design, §12). The mutating forms
+  (login, logout, the permission verdict) are refused unless the request carries
+  this dashboard's own `Origin` — so a scripted POST has to send one.
 - **MCP / harness (OAuth 2.1)** — a harness acting as a Lead authenticates via the
   authorization-code flow with PKCE (S256 only). The plane advertises
   `/.well-known/oauth-protected-resource` (RFC 9728) and
