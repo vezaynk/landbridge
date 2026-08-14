@@ -43,6 +43,23 @@ public enum RefuseReason
 /// </summary>
 public sealed class RunnerDaemon
 {
+    /// <summary>
+    /// How long the ring pump waits before re-offering an event the channel refused
+    /// (see <see cref="PumpRingAsync"/>). Deliberately short: this is a poll of a local
+    /// socket-state flag, not a dial — the channel runs its own connect backoff — so the
+    /// cost while offline is a few bool checks a second, and in exchange a reconnect
+    /// flushes the buffer promptly.
+    ///
+    /// <para>Promptness is load-bearing for <c>rebooted</c>, which rides the ring while
+    /// heartbeats go direct: the plane requeues everything a machine holds when it hears
+    /// <c>rebooted</c> (<c>RunnerEventSink.HandleRebootedAsync</c>) and dispatches nothing
+    /// to a connection until a heartbeat marks it ready. Landing well inside the shortest
+    /// sane <c>heartbeat_seconds</c> keeps <c>rebooted</c> ahead of this machine's first
+    /// readiness, so the requeue can only ever catch the previous generation's tasks and
+    /// never work dispatched to this one.</para>
+    /// </summary>
+    private static readonly TimeSpan PublishRetryInterval = TimeSpan.FromMilliseconds(250);
+
     private readonly string _machineId;
     private readonly RunnerConfig _config;
     private readonly IProcessSupervisor _supervisor;
@@ -445,16 +462,52 @@ public sealed class RunnerDaemon
             _ring.Enqueue(new AliveEvent(task, now));
     }
 
+    /// <summary>
+    /// Drains the ring to the control-plane channel, in order, one event at a time.
+    ///
+    /// <para><b>A read is not finished until the publish is.</b> The channel is
+    /// best-effort against a live connection (§10): when the socket is not open it
+    /// returns <c>false</c> — never throws, never queues — because buffering is
+    /// explicitly this ring's job. So a refused publish <em>parks</em> the pump on the
+    /// item it just drained and retries that same item; dropping it here is how the
+    /// events the plane's recovery is built on would go missing with no trace — a lost
+    /// <c>session-started</c> silently degrades resume to a cold start, a lost
+    /// <c>exited</c> waits out the liveness window and burns a requeue, a lost
+    /// <c>forward-opened</c> fails a relay open on the waiter TTL. It also covers the
+    /// start ordering: <c>rebooted</c> is enqueued before anything has dialed
+    /// (<c>docketd</c> starts the daemon, then the socket), and now waits for the
+    /// first connection instead of being published into a null socket.</para>
+    ///
+    /// <para>Overflow while parked is still bounded — the ring keeps dropping oldest and
+    /// the next survivor carries the gap marker — so an outage longer than the buffer
+    /// loses events with an accounted-for gap rather than silently. Head-of-line
+    /// blocking is the deliberate trade: order holds, and nothing behind a held event
+    /// overtakes it.</para>
+    ///
+    /// <para>At-most-once is preserved in the cases that matter: the real channel returns
+    /// false either when nothing was sent (socket not open) or when the send faulted the
+    /// socket, so a retry re-sends at most the one frame that died with the old
+    /// connection, never an event the plane already accepted.</para>
+    ///
+    /// <para>The retry sleeps on the INJECTED clock, so a test that hands the daemon a
+    /// fake time provider must advance it for a parked pump to wake — the same contract
+    /// as <see cref="WebSocketControlPlaneChannel"/>'s reconnect backoff.</para>
+    /// </summary>
     private async Task PumpRingAsync(CancellationToken ct)
     {
         try
         {
             await foreach (var item in _ring.ReadAllAsync(ct))
-                await _channel.PublishAsync(item.Event, item.GapBefore, ct);
+            {
+                while (!await _channel.PublishAsync(item.Event, item.GapBefore, ct))
+                    await Task.Delay(PublishRetryInterval, _clock, ct);
+            }
         }
         catch (OperationCanceledException)
         {
-            // expected on shutdown
+            // Expected on shutdown. An event still held here is one nobody is waiting
+            // on: the machine is going away, and the next generation re-announces
+            // itself with rebooted (§10 runner restart).
         }
     }
 
