@@ -87,6 +87,69 @@ public class InstanceFencingAndParkTests
     }
 
     [Fact]
+    public void A_liveness_loss_that_names_its_attempt_still_requeues_that_attempt()
+    {
+        // The positive control for the fence: in the ordinary case the attempt the clock
+        // judged is still the one on the task, and naming it changes nothing.
+        var task = Given.Task(TaskState.Working);
+        var judged = task.CurrentInstance!.Value;
+
+        var result = TaskStateMachine.Apply(
+            task, new LivenessLost(LivenessLossReason.NoProgress, judged));
+
+        var next = Expect.Transitioned(result, TaskState.Submitted);
+        Assert.Equal(1, next.InfrastructureRequeues);
+        Assert.Contains(new RevokeWorkerInstanceToken(judged), Expect.Effects(result));
+    }
+
+    [Fact]
+    public void A_liveness_loss_cannot_requeue_a_task_that_parked_on_a_permission_request()
+    {
+        // The plane's per-dispatch clocks read the row, decide, and then apply — and a
+        // permission request committing in that window parks the task while KEEPING its
+        // instance, because the asking worker is alive inside the tool call it is waiting in
+        // (§11). Unfenced, the requeue landed on it anyway: a §9 check 7 requeue against a
+        // task nothing was wrong with, the waiting worker's token revoked under it, and the
+        // scan's follow-up kill (#84) aimed at a live process.
+        var working = Given.Task(TaskState.Working);
+        var judged = working.CurrentInstance!.Value;
+
+        var blocked = Expect.Transitioned(
+            TaskStateMachine.Apply(working, new RequestInput(
+                Given.IncumbentOf(working), InputRequestKind.Permission,
+                Question: "run `rm -rf build`?", PermissionTool: "Bash")),
+            TaskState.BlockedOnInput);
+        Assert.Equal(judged, blocked.CurrentInstance);
+
+        Expect.Rejected(
+            TaskStateMachine.Apply(blocked, new LivenessLost(LivenessLossReason.NoProgress, judged)),
+            Rule.IncumbentInstanceOnly);
+    }
+
+    [Fact]
+    public void A_liveness_loss_cannot_requeue_the_successor_of_the_attempt_it_judged()
+    {
+        // The same window, the other move the task can make in it: requeued (by a disconnect,
+        // a reboot) and redispatched before the decision arrives. Applying it then requeues a
+        // healthy successor for its predecessor's silence — two requeues off the cap for one
+        // loss, and a kill sent to the worker that is actually making progress.
+        var task = Given.Task(TaskState.Working);
+        var judged = task.CurrentInstance!.Value;
+
+        var requeued = Expect.Transitioned(
+            TaskStateMachine.Apply(task, new LivenessLost(LivenessLossReason.MachineReboot)),
+            TaskState.Submitted);
+        var redispatched = Expect.Transitioned(
+            TaskStateMachine.Apply(requeued, new Dispatch(Given.Machine(), WorkerInstanceId.New())),
+            TaskState.Working);
+
+        Expect.Rejected(
+            TaskStateMachine.Apply(redispatched, new LivenessLost(LivenessLossReason.NoProgress, judged)),
+            Rule.IncumbentInstanceOnly);
+        Assert.Equal(1, redispatched.InfrastructureRequeues);
+    }
+
+    [Fact]
     public void An_answer_after_the_machine_is_gone_still_requeues_for_a_cold_start()
     {
         // The dispatched machine is gone, so there is no park record to write (null

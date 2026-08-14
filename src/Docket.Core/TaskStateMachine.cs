@@ -121,6 +121,23 @@ public static class TaskStateMachine
             return TransitionResult.Reject(Rule.InvalidSourceState,
                 $"liveness loss applies to working or blocked_on_input, not {task.State}");
 
+        // §9 check 14: a loss that names the attempt it judged applies only while that
+        // attempt is still working this task. The plane's per-dispatch clocks read the row,
+        // decide, and then send this command, so this is where that read is re-checked
+        // against committed state — and without it the requeue landed on whatever the row
+        // held by the time it arrived. That is how a task which parked on a permission
+        // request in between was requeued out from under a worker still alive inside its
+        // tool call (the incumbent is deliberately kept there, §11), taking a §9 check 7
+        // requeue and a kill with it; and how a redispatched successor was requeued for its
+        // predecessor's silence. Machine death carries no instance and is untouched: it is a
+        // fact about the machine rather than about one attempt, and still applies from
+        // blocked_on_input.
+        if (c.Instance is { } judged
+            && (task.State != TaskState.Working || task.CurrentInstance != judged))
+            return TransitionResult.Reject(Rule.IncumbentInstanceOnly,
+                $"liveness loss was decided about instance {judged}, which is no longer the "
+                + $"incumbent of a working task (now {task.State}); the dispatch it judged has moved on");
+
         var effects = new List<Effect>();
         if (task.CurrentInstance is { } instance)
             effects.Add(new RevokeWorkerInstanceToken(instance));

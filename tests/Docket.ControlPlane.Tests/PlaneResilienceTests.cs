@@ -1,3 +1,4 @@
+using System.Data.Common;
 using Docket.Contracts;
 using Docket.ControlPlane.Auth;
 using Docket.Core;
@@ -51,6 +52,20 @@ namespace Docket.ControlPlane.Tests;
 /// the teardown no-op and what survives it, that a superseded socket can no longer steer
 /// readiness, and the replace-then-rehydrate interaction that decides what happens to the
 /// old connection's tracked dispatches.</para>
+///
+/// <para><b>#147 — the liveness scan could steal a task that had just moved on.</b> The scan
+/// reads a task's state, decides, and then applies a <see cref="LivenessLost"/> — separate
+/// round trips with nothing tying them together, while the engine accepted that command from
+/// <c>blocked_on_input</c> as readily as from <c>working</c> and it named no attempt. So a
+/// permission request committing in that window (which parks the task and deliberately keeps
+/// its incumbent, because the asking worker is alive inside the tool call it is waiting in,
+/// §11) was requeued anyway — against §9 check 7 — and the kill that follows a requeue (#84)
+/// went out to that live worker; a requeue-plus-redispatch in the same window cost the
+/// successor the same. The command now carries the attempt the scan judged and the engine
+/// applies it only while that attempt is still working the task (§9 check 14). Covered here
+/// with the window forced open at the scan's own read, in both directions, plus the refusal's
+/// consequence for tracking — a refused requeue must not untrack, or the task it left alone is
+/// left under no clock.</para>
 ///
 /// <para><b>A failing dispatch pass could stop dispatch for the process's life.</b> The
 /// loop's only error handling wrapped the whole <c>await foreach</c>, so one throw from one
@@ -499,6 +514,98 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
             await RequeueReasonsAsync(seeded.Task));
     }
 
+    // ── #147: a liveness loss applies to the attempt it judged ───────────────────
+
+    [SkippableFact]
+    public async Task A_permission_request_committing_mid_scan_is_neither_requeued_nor_killed()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+        var seeded = await SeedWorkingAsync(clock, "m1");
+        var registry = new RunnerConnectionRegistry(clock);
+        var connection = LiveConnection(clock, registry, "m1");
+        registry.TrackDispatch("m1", seeded.Task);
+
+        // The worker asks for permission in the window between the scan's read and the requeue
+        // that read decided on — the harness's own MCP call, committing at the one instant that
+        // used to cost it its task. This is the request kind whose process does NOT exit (§11),
+        // so the task parks with the same instance still on it.
+        var raced = new CommitAfterTaskRead(async () =>
+        {
+            await using var db = pg.NewContext();
+            Assert.IsType<StoreResult.Applied>(await new TaskStore(db, clock).ApplyAsync(
+                seeded.Task,
+                new RequestInput(
+                    new WorkerCaller(seeded.Team, seeded.Task, seeded.Instance),
+                    InputRequestKind.Permission, "run `rm -rf build`?", PermissionTool: "Bash")));
+        });
+
+        clock.Advance(Window + TimeSpan.FromSeconds(1));
+        await NewDispatch(clock, registry, raced).CheckLivenessAsync(default);
+
+        Assert.True(raced.Fired, "the scan's read of the task row was never intercepted");
+        await using var verify = pg.NewContext();
+        var row = await verify.Tasks.AsNoTracking().SingleAsync(t => t.Id == seeded.Task.Value);
+        // Everything the permission bridge needs is untouched: the task is still waiting for a
+        // verdict, it owes nothing to §9 check 7, and the worker holding the tool call open is
+        // still the incumbent with a live token to answer through.
+        Assert.Equal(TaskState.BlockedOnInput, row.State);
+        Assert.Equal(0, row.InfrastructureRequeues);
+        Assert.Equal(seeded.Instance.Value, row.CurrentInstanceId);
+        Assert.Equal(1, await verify.WorkerInstances.CountAsync(
+            w => w.TaskId == seeded.Task.Value && !w.Revoked));
+        // And no kill — the process is not wedged, it is parked inside a tool call waiting for
+        // an answer, which is the whole difference the fence draws.
+        Assert.Empty(connection.Commands.OfType<KillCommand>());
+        // A refused requeue leaves tracking alone: the wait-TTL sweeper resolves a blocked
+        // task's machine through the registry (§11), so untracking here would strand it —
+        // never parked on TTL, never requeued if the machine died.
+        Assert.Contains(seeded.Task, registry.TasksOn("m1"));
+    }
+
+    [SkippableFact]
+    public async Task A_redispatched_successor_is_not_requeued_for_its_predecessors_silence()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+        var seeded = await SeedWorkingAsync(clock, "m1");
+        var registry = new RunnerConnectionRegistry(clock);
+        var connection = LiveConnection(clock, registry, "m1");
+        registry.TrackDispatch("m1", seeded.Task);
+
+        // The other move available in that window: something else requeues the task first (a
+        // reboot announcement, a dropped socket) and the notify it commits redispatches it. By
+        // the time the scan applies, the attempt it judged is gone and a fresh one is running.
+        var successor = WorkerInstanceId.New();
+        var raced = new CommitAfterTaskRead(async () =>
+        {
+            await using (var requeue = pg.NewContext())
+                Assert.IsType<StoreResult.Applied>(await new TaskStore(requeue, clock)
+                    .ApplyAsync(seeded.Task, new LivenessLost(LivenessLossReason.MachineReboot)));
+            await using var redispatch = pg.NewContext();
+            Assert.IsType<StoreResult.Applied>(await new TaskStore(redispatch, clock).DispatchNextAsync(
+                new MachineSnapshot("m1", Ready: true, UnderBackPressure: false, Set("default")),
+                successor));
+        });
+
+        clock.Advance(Window + TimeSpan.FromSeconds(1));
+        await NewDispatch(clock, registry, raced).CheckLivenessAsync(default);
+
+        Assert.True(raced.Fired, "the scan's read of the task row was never intercepted");
+        await using var verify = pg.NewContext();
+        var row = await verify.Tasks.AsNoTracking().SingleAsync(t => t.Id == seeded.Task.Value);
+        // One loss, one requeue — the injected one. The scan's own is refused rather than
+        // charged to the task a second time, and the successor keeps working with its token.
+        Assert.Equal(TaskState.Working, row.State);
+        Assert.Equal(successor.Value, row.CurrentInstanceId);
+        Assert.Equal(1, row.InfrastructureRequeues);
+        Assert.Equal([LivenessLossReason.MachineReboot], await RequeueReasonsAsync(seeded.Task));
+        Assert.False(await verify.WorkerInstances.AsNoTracking()
+            .Where(w => w.Id == successor.Value).Select(w => w.Revoked).SingleAsync());
+        Assert.Empty(connection.Commands.OfType<KillCommand>());
+        Assert.Contains(seeded.Task, registry.TasksOn("m1"));
+    }
+
     // ── #94: one machine, two connections ────────────────────────────────────────
 
     [Fact]
@@ -775,6 +882,39 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         }
     }
 
+    /// <summary>
+    /// Commits a write in the window a read-then-apply sequence leaves open: the callback runs
+    /// once, immediately after the liveness scan's own read of the task row has executed and
+    /// before the transition that read decided on is applied. That window is the whole of #147,
+    /// and forcing it open here is what makes the race a deterministic test rather than one
+    /// that fails on a machine under load once a month. The callback commits on its own context
+    /// and connection, so what it lands is exactly what a worker's MCP call — or another requeue
+    /// path — would have landed at that instant.
+    /// </summary>
+    private sealed class CommitAfterTaskRead(Func<Task> commit) : DbCommandInterceptor
+    {
+        /// <summary>Whether the window was actually hit. Asserted by the tests, so a read this
+        /// no longer recognizes fails them loudly instead of passing them vacuously.</summary>
+        public bool Fired { get; private set; }
+
+        public override async ValueTask<DbDataReader> ReaderExecutedAsync(
+            DbCommand command, CommandExecutedEventData eventData, DbDataReader result,
+            CancellationToken cancellationToken = default)
+        {
+            // The scan's decision read is the projected state+incumbent pair
+            // (TaskStore.GetIncumbentDispatchAsync); the transition's own read, which comes
+            // after and must not be intercepted, loads the whole row — hence the second clause.
+            if (!Fired
+                && command.CommandText.Contains("current_instance_id", StringComparison.Ordinal)
+                && !command.CommandText.Contains("completion_criteria", StringComparison.Ordinal))
+            {
+                Fired = true;
+                await commit();
+            }
+            return result;
+        }
+    }
+
     /// <summary>Polls a condition on the real clock: the dispatch loop runs on its own task,
     /// so the only way to observe its progress is to wait for it.</summary>
     private static async Task WaitUntil(Func<bool> condition, string what)
@@ -869,8 +1009,7 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     private DispatchService NewDispatch(
-        TimeProvider clock, RunnerConnectionRegistry registry,
-        ISaveChangesInterceptor? interceptor = null) =>
+        TimeProvider clock, RunnerConnectionRegistry registry, IInterceptor? interceptor = null) =>
         new(ScopeFactory(clock, interceptor), registry, clock, NullLogger<DispatchService>.Instance,
             listener: null, livenessWindow: Window, publicMcpUrl: null, noProgressCeiling: Ceiling);
 
@@ -952,7 +1091,7 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     private IServiceScopeFactory ScopeFactory(
-        TimeProvider clock, ISaveChangesInterceptor? interceptor = null)
+        TimeProvider clock, IInterceptor? interceptor = null)
     {
         var services = new ServiceCollection();
         services.AddDbContext<DocketDbContext>(o =>

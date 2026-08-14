@@ -309,6 +309,11 @@ public sealed class TaskStore(
     /// the Dispatch transition — which re-checks readiness, back-pressure, and
     /// profile as defense in depth.
     ///
+    /// <para>Profile is matched exactly as the engine matches it, a null profile included:
+    /// both halves resolve it to <see cref="MachineSnapshot.DefaultProfile"/>, so a
+    /// profile-less task is claimable by a machine declaring <c>default</c> and by no other
+    /// — never claimed here only to be refused there (see the clause's own comment).</para>
+    ///
     /// <para>Continuation targeting (§6/§11) adds a preferred-machine clause to the
     /// SQL half of check 5. A row with no <c>preferred_machine</c> (an ordinary
     /// profile-targeted task, or a parked task whose affinity lives in the park
@@ -342,9 +347,16 @@ public sealed class TaskStore(
         // entity by id inside the same transaction. Selecting only the id
         // (not SELECT *) keeps the xmin concurrency token out of the raw query;
         // the row lock is held to end of transaction, so concurrent dispatchers
-        // skip it. Profile match is the SQL half of check 5: a task with no
-        // profile runs anywhere; a task with one runs only where the machine
-        // declares it. The preferred-machine clause is the §6/§11 continuation half
+        // skip it. Profile match is the SQL half of check 5, and it resolves a null
+        // profile to `default` exactly as the engine's half does (§9 check 5,
+        // TaskStateMachine.ApplyDispatch): "absent a request, default" (§15), so a
+        // profile-less task runs where `default` is declared rather than anywhere at all.
+        // The two halves have to agree — this clause used to pass a profile-less row to
+        // ANY machine, which the engine then refused, so on a fleet where nothing declares
+        // `default` such a task was picked, bounced, and picked again on every pass, and it
+        // took each pass's one claim for that machine with it (a bounced claim ends the
+        // machine's turn) instead of waiting quietly for a machine that could run it.
+        // The preferred-machine clause is the §6/§11 continuation half
         // (see the method summary): NOT (preferred_machine = ANY(connected)) reads as
         // "preferred machine gone" and is true for an empty connected set too.
         var profiles = machine.DeclaredProfiles.ToArray();
@@ -354,7 +366,7 @@ public sealed class TaskStore(
                 $"""
                  SELECT id AS "Value" FROM tasks
                  WHERE state = 'Submitted'
-                   AND (profile IS NULL OR profile = ANY({profiles}))
+                   AND COALESCE(profile, {MachineSnapshot.DefaultProfile}) = ANY({profiles})
                    AND (
                          preferred_machine IS NULL
                       OR preferred_machine = {machine.MachineId}
@@ -742,6 +754,26 @@ public sealed class TaskStore(
         await db.Tasks.AsNoTracking()
             .Where(t => t.Id == id.Value)
             .Select(t => (TaskState?)t.State)
+            .FirstOrDefaultAsync(ct);
+
+    /// <summary>
+    /// The state read of <see cref="GetStateAsync"/> plus the instance currently working the
+    /// task — the pair the §10 per-task liveness scan decides against
+    /// (<see cref="DispatchService.CheckLivenessAsync"/>). Null when the task is gone.
+    ///
+    /// <para>Two columns rather than one because the scan's requeue is fenced on the attempt
+    /// it judged (§9 check 14, <see cref="LivenessLost.Instance"/>): the instance has to come
+    /// from the same read as the state, or the command would carry an incumbent the scan
+    /// never actually saw beside a <c>working</c>. A pure read; the fence itself is the
+    /// engine's.</para>
+    /// </summary>
+    public async Task<IncumbentDispatchView?> GetIncumbentDispatchAsync(
+        TaskId id, CancellationToken ct = default) =>
+        await db.Tasks.AsNoTracking()
+            .Where(t => t.Id == id.Value)
+            .Select(t => new IncumbentDispatchView(
+                t.State,
+                t.CurrentInstanceId == null ? null : new WorkerInstanceId(t.CurrentInstanceId.Value)))
             .FirstOrDefaultAsync(ct);
 
     /// <summary>

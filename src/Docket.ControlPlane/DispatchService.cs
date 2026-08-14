@@ -486,6 +486,15 @@ public sealed class DispatchService : IHostedService
     /// decides — the count is on the record and the decision is the engine's; it supplies
     /// the fact of which signal fired.</para>
     ///
+    /// <para><b>The requeue is fenced on the attempt it judged</b> (§9 check 14,
+    /// <see cref="LivenessLost.Instance"/>). A scan reads the row, decides, and then applies —
+    /// separate round trips — and the task can move in between: a permission request parks it
+    /// while deliberately keeping its live incumbent (§11), and a requeue from elsewhere plus a
+    /// redispatch replaces the attempt outright. Unfenced, the requeue landed on whatever the
+    /// row held when it arrived, so a task that had just blocked was requeued against §9 check
+    /// 7 and the worker still alive inside the tool call it was waiting in was killed. Now such
+    /// a loss is refused — and refused without untracking, so nothing is left uncovered.</para>
+    ///
     /// <para><b>A requeue takes the process down too</b>, where the plane has a channel to
     /// take it down with (<see cref="KillAbandonedDispatchAsync"/>, #84). Requeueing revoked
     /// the attempt's authorization and freed the task, but on its own it said nothing to the
@@ -507,10 +516,12 @@ public sealed class DispatchService : IHostedService
 
             using var scope = _scopes.CreateScope();
             var store = scope.ServiceProvider.GetRequiredService<TaskStore>();
-            var state = await store.GetStateAsync(tracked.Task, ct);
-            switch (state)
+            // State AND incumbent, in one read: this decision is about one attempt of one
+            // state, and the requeue below is fenced on exactly the pair read here (§9 check
+            // 14) so it cannot land on a task that moved between this line and that one.
+            switch (await store.GetIncumbentDispatchAsync(tracked.Task, ct))
             {
-                case TaskState.Working:
+                case { State: TaskState.Working } dispatch:
                     // The progress ceiling alone does not requeue a service-bearing
                     // task; the aliveness clock still does.
                     if (!notAlive && await store.HasRegisteredServiceAsync(tracked.Task, ct))
@@ -535,24 +546,39 @@ public sealed class DispatchService : IHostedService
                         "requeueing task {Task} on {Machine}: {Reason} (last alive {Alive} ago, last progress {Progress} ago)",
                         tracked.Task, tracked.Machine, reason,
                         now - tracked.LastActivity, now - tracked.LastProgress);
-                    var requeue = await store.ApplyAsync(tracked.Task, new LivenessLost(reason), ct);
-                    if (requeue is StoreResult.Applied { Task.State: TaskState.Canceled } abandoned)
+                    var requeue = await store.ApplyAsync(
+                        tracked.Task, new LivenessLost(reason, dispatch.Instance), ct);
+                    if (requeue is not StoreResult.Applied applied)
+                    {
+                        // The fence refused, or the row lost the xmin race: the attempt this
+                        // scan judged is not the one on the task any more. Whatever moved it
+                        // owns it now, so nothing is requeued, nothing is killed — and the
+                        // task stays TRACKED, because the two things it can have moved to
+                        // both need that. A permission request keeps its live worker and its
+                        // machine assignment, which is what the wait-TTL sweeper resolves a
+                        // blocked task's machine through (§11), and a successor dispatch is
+                        // under these same clocks. Untracking either would strand it with
+                        // nothing watching, the #86 symptom by a new route.
+                        _logger.LogInformation(
+                            "liveness requeue of task {Task} on {Machine} did not apply ({Result}); " +
+                            "the dispatch it judged has moved on",
+                            tracked.Task, tracked.Machine, requeue.GetType().Name);
+                        break;
+                    }
+                    if (applied.Task.State == TaskState.Canceled)
                         _logger.LogError(
                             "task {Task} abandoned after {Requeues} infrastructure requeues (cap {Cap}), last reason {Reason}",
-                            tracked.Task, abandoned.Task.InfrastructureRequeues,
-                            abandoned.Task.InfrastructureRequeueLimit, reason);
+                            tracked.Task, applied.Task.InfrastructureRequeues,
+                            applied.Task.InfrastructureRequeueLimit, reason);
                     _registry.Untrack(tracked.Task);
                     // Only once the plane has actually given up on this dispatch: a refused
                     // transition means it has not, and killing a process the plane still
                     // considers live would destroy work nothing requeued.
-                    if (requeue is StoreResult.Applied)
-                        await KillAbandonedDispatchAsync(tracked.Task, tracked.Machine, ct);
+                    await KillAbandonedDispatchAsync(tracked.Task, tracked.Machine, ct);
                     break;
                 case null:
-                case TaskState.Verifying:
-                case TaskState.Completed:
-                case TaskState.Rejected:
-                case TaskState.Canceled:
+                case { State: TaskState.Verifying or TaskState.Completed
+                    or TaskState.Rejected or TaskState.Canceled }:
                     _registry.Untrack(tracked.Task);
                     break;
                     // blocked_on_input / parked / submitted: leave tracked (§11).

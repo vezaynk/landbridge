@@ -276,3 +276,14 @@ public sealed record BlockedTaskView(
     DateTimeOffset? BlockedAt,
     int Attempt,
     string? HarnessSessionRef);
+
+/// <summary>
+/// What a task's row says about the dispatch currently on it (§10, §9.14), returned by
+/// <see cref="TaskStore.GetIncumbentDispatchAsync"/>: the state, and the worker instance
+/// working it (null in every state that holds no incumbent). Read as one pair because that
+/// is what the §10 liveness scan decides against and what the <see cref="LivenessLost"/> it
+/// then sends is fenced on — a state read and an instance read taken a moment apart would
+/// fence nothing, since the fence's whole content is that the pair has not changed since the
+/// scan looked. Null from the store means no such task.
+/// </summary>
+public sealed record IncumbentDispatchView(TaskState State, WorkerInstanceId? Instance);
