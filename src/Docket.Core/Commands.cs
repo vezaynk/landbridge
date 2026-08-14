@@ -77,8 +77,29 @@ public sealed record Dispatch(MachineSnapshot Machine, WorkerInstanceId NewInsta
 /// that counter reaches the task's cap (§9 check 7). <see cref="Reason"/> names the
 /// signal that fired and is persisted on the requeue, so the trail distinguishes a
 /// wedged agent from a silent daemon from a rebooted runner (#73).
+///
+/// <para><see cref="Instance"/> fences the loss to <em>one dispatch attempt</em> (§9 check
+/// 14), and which of the two forms a caller sends says what its signal was about:</para>
+/// <list type="bullet">
+///   <item><b>A per-dispatch clock names the attempt it judged.</b> The aliveness and
+///   no-progress clocks judge one working attempt, from a read taken before this command is
+///   applied — the engine holds no clock, so the plane reads, decides, and only then
+///   applies. Naming the instance makes that decision a compare-and-set: it lands
+///   only while the attempt it judged is still the incumbent of a still-<c>working</c>
+///   task, so a task that has moved on in between is left alone instead of being requeued
+///   on evidence about a dispatch that no longer exists. Two moves are why it matters — a
+///   permission request parks the task with its incumbent still alive inside the tool call
+///   it is waiting in (§11), and a requeue plus redispatch replaces the attempt outright —
+///   and applying a stale loss to either requeues work nothing is wrong with and kills a
+///   live worker.</item>
+///   <item><b>Machine death names nothing.</b> A reboot, a dropped socket, or a machine
+///   gone silent under a task blocked on input is a fact about everything that machine
+///   holds rather than about one attempt, so those callers send no instance and the loss
+///   applies to whichever incumbent it finds — including from <c>blocked_on_input</c>,
+///   where a per-dispatch clock never fires at all (§11 suspends liveness there).</item>
+/// </list>
 /// </summary>
-public sealed record LivenessLost(LivenessLossReason Reason)
+public sealed record LivenessLost(LivenessLossReason Reason, WorkerInstanceId? Instance = null)
     : TaskCommand(ControlPlaneActor.Instance);
 
 /// <summary>

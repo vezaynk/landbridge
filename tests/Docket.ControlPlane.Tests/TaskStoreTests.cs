@@ -94,6 +94,32 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task A_profile_less_task_waits_for_a_machine_that_declares_default()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var id = await CreateSubmitted(db);
+
+        // §15: "absent a request, `default`" — and both halves of check 5 have to say so. The
+        // SQL pre-filter used to read a null profile as "runs anywhere", so on a fleet where
+        // nothing declares `default` this row was claimed here and then refused by the engine's
+        // half, which resolves it to `default`. A bounced claim ends that machine's turn in the
+        // pass, so the task was picked, bounced and picked again on every wake — taking one
+        // claim per pass with it — instead of waiting for a machine that could run it.
+        Assert.IsType<StoreResult.NotFound>(
+            await NewStore(db).DispatchNextAsync(Machine("restricted"), WorkerInstanceId.New()));
+
+        await using var verify = pg.NewContext();
+        var row = await verify.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(TaskState.Submitted, row.State);
+        Assert.Equal(0, row.Attempt);
+
+        // Claimable the moment a machine that declares `default` asks — the unchanged half.
+        Assert.IsType<StoreResult.Applied>(
+            await NewStore(db).DispatchNextAsync(Machine("restricted", "default"), WorkerInstanceId.New()));
+    }
+
+    [SkippableFact]
     public async Task Report_result_clears_registered_services_transactionally()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
