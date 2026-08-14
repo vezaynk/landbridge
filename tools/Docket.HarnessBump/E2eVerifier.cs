@@ -142,8 +142,19 @@ public sealed class E2eVerifier(Cli cli, string repository, Action<string> log)
             }
 
             // Green is not enough — see TestSummary's remarks.
-            var log_ = await ReadJobLogAsync(job.DatabaseId, cancellationToken);
-            var summary = log_ is null ? null : TestSummary.Parse(log_);
+            var jobLog = await ReadJobLogAsync(job.DatabaseId, cancellationToken);
+            if (jobLog.Text is null)
+            {
+                // Distinct from "read it and found no summary": that is a broken test step, this is
+                // a broken reader. Naming which one saves the next person the hand-audit of a run
+                // that was, in the first occurrence, entirely green.
+                details.Add($"- `{name}`: green, but its log could NOT BE READ, so the result is unconfirmed " +
+                            $"rather than bad — `{jobLog.Error}`. Check the run yourself before merging.");
+                green = false;
+                continue;
+            }
+
+            var summary = TestSummary.Parse(jobLog.Text);
             if (summary is null)
             {
                 details.Add($"- `{name}`: green, but no `dotnet test` summary found in the log — treating as unverified.");
@@ -172,19 +183,72 @@ public sealed class E2eVerifier(Cli cli, string repository, Action<string> log)
         return new E2eOutcome(green, headline, details);
     }
 
+    /// <summary>Outcome of trying to read one job's log: the text, or why it could not be had.</summary>
+    private sealed record JobLog(string? Text, string? Error);
+
     /// <summary>
-    /// The plain-text log for one job. Null rather than throwing: a log that has expired or is
-    /// briefly unavailable must read as "unverified", not crash the run after a PR already exists.
+    /// argv for fetching one job's raw log.
     /// </summary>
-    private async Task<string?> ReadJobLogAsync(long jobId, CancellationToken cancellationToken)
+    /// <param name="allowEscapeSequences">
+    /// Adds <c>--allow-escape-sequences</c>. REQUIRED on newer gh and REJECTED by older gh, which is
+    /// why <see cref="ReadJobLogAsync"/> tries both — see its remarks.
+    /// </param>
+    public static IReadOnlyList<string> JobLogArgs(string repository, long jobId, bool allowEscapeSequences)
+    {
+        List<string> args = ["api", $"/repos/{repository}/actions/jobs/{jobId}/logs"];
+        if (allowEscapeSequences)
+            args.Add("--allow-escape-sequences");
+        return args;
+    }
+
+    /// <summary>
+    /// The plain-text log for one job.
+    /// </summary>
+    /// <remarks>
+    /// THIS IS THE STEP THAT BROKE THE FIRST REAL RUN, and the failure was invisible to the fixture
+    /// tests because they fed log TEXT to <see cref="TestSummary"/> and never exercised the fetch.
+    /// A runner's gh refused the response: "the response contains terminal escape sequences; pass
+    /// --allow-escape-sequences to output it anyway". Job logs really do carry them — the log for
+    /// run 31829608810's real-claude job has 8 ESC bytes in its coloured test lines, though the
+    /// xUnit summary line the parser wants is plain. So the bot could not confirm a genuinely green
+    /// 9/9 run, correctly fail-closed, and left the PR unmerged.
+    /// <para>
+    /// The flag is passed FIRST but not unconditionally, because it is gh-version-coupled in both
+    /// directions: gh 2.92.0 rejects it outright with "unknown flag", while newer gh requires it.
+    /// Pinning either way would break the other, and because this gate fails closed, a gh the flag
+    /// does not suit means the bot silently stops merging anything rather than erroring loudly. So
+    /// it tries with the flag and retries without it on exactly that "unknown flag" rejection.
+    /// </para>
+    /// <para>
+    /// Failure returns a reason rather than throwing: a log that has expired or is briefly
+    /// unavailable must read as "unverified", not crash the run after a PR already exists. The
+    /// reason is surfaced in the PR comment, so the next incident of this kind says what went wrong
+    /// on the PR instead of requiring someone to read the run by hand.
+    /// </para>
+    /// </remarks>
+    private async Task<JobLog> ReadJobLogAsync(long jobId, CancellationToken cancellationToken)
     {
         var result = await cli.RunAsync(
-            "gh",
-            ["api", $"/repos/{repository}/actions/jobs/{jobId}/logs"],
+            "gh", JobLogArgs(repository, jobId, allowEscapeSequences: true),
             cancellationToken: cancellationToken);
+
+        if (!result.Ok && RejectsUnknownFlag(result.StdErr))
+        {
+            log($"this gh does not know --allow-escape-sequences; retrying the job {jobId} log without it.");
+            result = await cli.RunAsync(
+                "gh", JobLogArgs(repository, jobId, allowEscapeSequences: false),
+                cancellationToken: cancellationToken);
+        }
+
         if (result.Ok)
-            return result.StdOut;
-        log($"could not read the log for job {jobId}: {result.StdErr.Trim()}");
-        return null;
+            return new JobLog(result.StdOut, null);
+
+        var error = result.StdErr.Trim();
+        log($"could not read the log for job {jobId}: {error}");
+        return new JobLog(null, error.Length > 0 ? error : $"gh exited {result.ExitCode}");
     }
+
+    /// <summary>True when gh rejected an argument it does not have, rather than failing the request.</summary>
+    public static bool RejectsUnknownFlag(string stdErr) =>
+        stdErr.Contains("unknown flag", StringComparison.OrdinalIgnoreCase);
 }
