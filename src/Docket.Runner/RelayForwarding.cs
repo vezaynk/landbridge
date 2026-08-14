@@ -18,9 +18,11 @@ namespace Docket.Runner;
 /// emits <c>forward-closed</c> when its splice ends (or fails to establish).
 ///
 /// <para>Owned by <see cref="RunnerDaemon"/>: every forward runs as a tracked
-/// background task so <see cref="RunnerDaemon.HandleAsync"/> never blocks, and
-/// <see cref="DisposeAsync"/> tears every live forward down on shutdown / kill-all
-/// (§10). It moves opaque bytes without interpreting them (design principle 1).</para>
+/// background task so <see cref="RunnerDaemon.HandleAsync"/> never blocks,
+/// <see cref="Close"/> ends one on the plane's command (§8.3 — the splice's authority
+/// ends when the owning task leaves <c>working</c>), and <see cref="DisposeAsync"/> tears
+/// every live forward down on shutdown / kill-all (§10). It moves opaque bytes without
+/// interpreting them (design principle 1).</para>
 ///
 /// <para><b>v1 is one tunnel per forward id.</b> The grant is single-use per role
 /// and the relay pairs exactly two ends per id, so the consumer listener accepts
@@ -88,7 +90,7 @@ public sealed class RelayForwarder : IAsyncDisposable
     {
         var forwardId = command.ForwardId;
         var linked = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
-        var live = new LiveForward();
+        var live = new LiveForward(linked);
 
         // A forward id is unique per grant, so a collision here means the same
         // command arrived twice; keep the first and drop the duplicate.
@@ -108,6 +110,14 @@ public sealed class RelayForwarder : IAsyncDisposable
                 else
                     refusal = await RunProducerAsync(command, linked.Token);
             }
+            catch (OperationCanceledException)
+            {
+                // Teardown, not a fault: shutdown (§10) or a commanded close (Close, below)
+                // cancels this forward's token, and the accept wait is the one place that
+                // surfaces as an exception rather than a return. Swallowed so an ordered
+                // close leaves no faulted task behind for nobody to observe — the finally
+                // below still reports it closed exactly once.
+            }
             finally
             {
                 // A forward closing is always reported once, whether it spliced,
@@ -118,6 +128,43 @@ public sealed class RelayForwarder : IAsyncDisposable
                 linked.Dispose();
             }
         });
+    }
+
+    /// <summary>
+    /// End one forward this machine holds (§8.3 <c>close-forward</c>): cancel its own
+    /// token, which unwinds whichever state it is in — a consumer still waiting on its
+    /// one accept closes its loopback listener, and an established splice tears both
+    /// directions down through the ordinary <see cref="SpliceAsync"/> path (close frame
+    /// first, then the TCP shutdown that ends the peer's connection). Returns whether
+    /// this machine held it, so the daemon's ack says which happened.
+    ///
+    /// <para><b>Resolved by forward id alone.</b> That is the key <see cref="_live"/> and
+    /// the relay's own pairing already use, and it is unique per grant;
+    /// <see cref="CloseForwardCommand.Task"/> is correlation, and which end's task it
+    /// names depends on which end the plane addressed (see the record's remarks), so
+    /// matching on it would import that asymmetry into the runner.</para>
+    ///
+    /// <para>Cancelling is all this does — the splice reports its own
+    /// <c>forward-closed</c> from <see cref="Open"/>'s finally, the same way it does for
+    /// a peer drop or a timeout, so a commanded close is not a second reporting path.
+    /// The token may already be disposed by a forward finishing in this instant, which is
+    /// the same outcome as closing it and is treated as such.</para>
+    /// </summary>
+    public bool Close(CloseForwardCommand command)
+    {
+        if (!_live.TryGetValue(command.ForwardId, out var live))
+            return false;
+        try
+        {
+            live.Cancellation.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // It ended on its own between the lookup and here; already closed.
+            return false;
+        }
+        _log?.Invoke($"forward {command.ForwardId}: closed on command");
+        return true;
     }
 
     // ── Consumer end ──────────────────────────────────────────────────────────
@@ -351,8 +398,17 @@ public sealed class RelayForwarder : IAsyncDisposable
         _cts.Dispose();
     }
 
-    private sealed class LiveForward
+    /// <summary>
+    /// One live forward: its splice task and — the part that makes <see cref="Close"/>
+    /// possible — its <em>own</em> cancellation source. Before this the source was a local
+    /// that only the splice itself could see, so the finest handle anything had was the
+    /// class-wide <c>_cts</c> <see cref="DisposeAsync"/> cancels, and the finest act
+    /// available was taking every forward on the machine down at once.
+    /// </summary>
+    private sealed class LiveForward(CancellationTokenSource cancellation)
     {
+        public CancellationTokenSource Cancellation { get; } = cancellation;
+
         public Task? Runner { get; set; }
     }
 }

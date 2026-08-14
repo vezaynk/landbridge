@@ -327,7 +327,9 @@ public sealed class WorkerTools(
     [McpServerTool(Name = "register_service"),
      Description("Advertise a live endpoint to other tasks in your Team. Bind the port first, " +
                  "then register — an entry pointing at a port you failed to bind sends consumers " +
-                 "into the wrong process.")]
+                 "into the wrong process. One live registration per name in your Team: " +
+                 "registering a name you already hold updates its port, and a name another task " +
+                 "holds is refused, so pick a more specific one rather than retrying.")]
     public async Task<string> RegisterService(
         [Description("A name other tasks will use to find this service.")] string name,
         [Description("The loopback port you have already bound.")] int port,

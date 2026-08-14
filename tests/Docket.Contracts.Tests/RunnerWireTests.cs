@@ -188,6 +188,38 @@ public class RunnerWireTests
         Assert.Equal(0, decoded.Port);
     }
 
+    [Fact]
+    public void Close_forward_command_round_trips()
+    {
+        var original = new CloseForwardCommand(TaskId.New(), "fwd-1");
+
+        var decoded = Assert.IsType<CloseForwardCommand>(RunnerWire.DecodeCommand(RunnerWire.EncodeCommand(original)));
+
+        Assert.Equal(original, decoded);
+    }
+
+    [Fact]
+    public void Close_forward_envelope_is_the_documented_snake_case_shape()
+    {
+        // The envelope a docketd that predates close-forward will see, spelled out: adding a
+        // COMMAND is skew-safe precisely because such a runner rejects the whole envelope at
+        // the wire boundary (§10) and goes on serving its splice, which is the pre-fix
+        // behaviour rather than a crash. Asserted on the field names because they are what an
+        // older/newer peer has to agree about.
+        var task = TaskId.New();
+
+        var json = RunnerWire.EncodeCommand(new CloseForwardCommand(task, "fwd-7"));
+
+        Assert.Contains("\"type\":\"close-forward\"", json);
+        Assert.Contains("\"forward_id\":\"fwd-7\"", json);
+        Assert.Contains(task.Value.ToString(), json);
+        // Decoded by hand off the same text, so encode and decode are not each other's alibi.
+        var decoded = Assert.IsType<CloseForwardCommand>(RunnerWire.DecodeCommand(
+            $$"""{ "type": "close-forward", "task": { "value": "{{task.Value}}" }, "forward_id": "fwd-7" }"""));
+        Assert.Equal(task, decoded.Task);
+        Assert.Equal("fwd-7", decoded.ForwardId);
+    }
+
     // ── Traceparent: opaque transport metadata on the envelope (§1 tracing) ───
 
     [Fact]
@@ -583,7 +615,7 @@ public class RunnerWireTests
     public void Vocabulary_sets_are_the_closed_frozen_lists()
     {
         Assert.Equal(
-            new HashSet<string> { "dispatch", "stop", "kill", "open-forward", "read-transcript", "start-process", "stop-process", "write-process" },
+            new HashSet<string> { "dispatch", "stop", "kill", "open-forward", "close-forward", "read-transcript", "start-process", "stop-process", "write-process" },
             new HashSet<string>(RunnerWire.Commands));
         Assert.Equal(
             new HashSet<string> { "started", "session-started", "alive", "tool-call", "usage-reported", "subagent-spawned", "exited", "auth-failed", "forward-opened", "forward-closed", "rebooted", "transcript-chunk", "process-started", "process-stopped", "process-written" },

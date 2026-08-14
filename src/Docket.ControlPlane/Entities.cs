@@ -347,6 +347,12 @@ public sealed class WorkerInstanceRow
 /// (§11 permission bridge). It keeps them through a subsequent park or requeue
 /// too, since the clearing effect is only ever emitted from
 /// <see cref="TaskState.Working"/>.
+///
+/// <para><c>(TeamId, Name)</c> is <b>unique</b>: the name is the Team-scoped address every
+/// resolver is handed, so one live row may hold it (<see cref="Rule.ServiceNameUniqueInTeam"/>,
+/// enforced by the index and by <c>TaskStore.RegisterServiceAsync</c>, which updates a task's
+/// own row and refuses another task's). Since a row exists only while its task is working, a
+/// finished task's name is free for the next one.</para>
 /// </summary>
 public sealed class RegisteredServiceRow
 {
@@ -385,7 +391,13 @@ public sealed class PreviewMappingRow
 
     public Guid TeamId { get; set; }
 
-    /// <summary>The task that owns the previewed service — check 11 re-verifies it is still working at connect.</summary>
+    /// <summary>
+    /// The task that owns the previewed service, and <b>half of what the label resolves
+    /// to</b>: <see cref="PreviewConnectService"/> mints against <c>(TaskId, ServiceName)</c>,
+    /// so check 11 re-verifies <em>this</em> registration is still working at connect rather
+    /// than accepting whatever else answers to the name in the Team by then. Resolving by
+    /// name alone let a label outlive its subject and reach a different task's service.
+    /// </summary>
     public Guid TaskId { get; set; }
 
     /// <summary>The registered service name the preview resolves to (§8.2).</summary>

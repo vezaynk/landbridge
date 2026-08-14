@@ -66,6 +66,22 @@ public class RunnerWireTests
         Assert.Equal(TranscriptStreams.Stdout, read.Stream);
     }
 
+    [Fact]
+    public void Decodes_a_known_close_forward_command()
+    {
+        // §8.3: the runner side of ending a splice whose owning task left working. The
+        // envelope names the forward; the task rides along as §10 correlation.
+        var id = TaskId.New();
+        var json = $$"""
+            { "type": "close-forward", "task": { "value": "{{id.Value}}" }, "forward_id": "fwd-9" }
+            """;
+
+        var close = Assert.IsType<CloseForwardCommand>(RunnerWire.DecodeCommand(json));
+
+        Assert.Equal(id, close.Task);
+        Assert.Equal("fwd-9", close.ForwardId);
+    }
+
     /// <summary>The frozen §10 lists, spelled out as literals on purpose — the same
     /// tripwire as <c>Docket.Contracts.Tests</c>, asserted here too because this is the
     /// side that must reject anything outside the vocabulary.</summary>
@@ -73,7 +89,7 @@ public class RunnerWireTests
     public void Vocabulary_sets_are_the_closed_frozen_lists()
     {
         Assert.Equal(
-            new HashSet<string> { "dispatch", "stop", "kill", "open-forward", "read-transcript", "start-process", "stop-process", "write-process" },
+            new HashSet<string> { "dispatch", "stop", "kill", "open-forward", "close-forward", "read-transcript", "start-process", "stop-process", "write-process" },
             new HashSet<string>(RunnerWire.Commands));
         Assert.Equal(
             new HashSet<string> { "started", "session-started", "alive", "tool-call", "usage-reported", "subagent-spawned", "exited", "auth-failed", "forward-opened", "forward-closed", "rebooted", "transcript-chunk", "process-started", "process-stopped", "process-written" },

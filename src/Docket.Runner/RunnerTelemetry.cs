@@ -82,6 +82,7 @@ public static class RunnerTelemetry
         StopCommand => RunnerWire.Stop,
         KillCommand => RunnerWire.Kill,
         OpenForwardCommand => RunnerWire.OpenForward,
+        CloseForwardCommand => RunnerWire.CloseForward,
         _ => "command",
     };
 
@@ -91,6 +92,7 @@ public static class RunnerTelemetry
         StopCommand s => s.Task.ToString(),
         KillCommand k => k.Task.ToString(),
         OpenForwardCommand o => o.Task.ToString(),
+        CloseForwardCommand c => c.Task.ToString(),
         _ => "",
     };
 

@@ -546,6 +546,78 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(5001, svc.Port);
     }
 
+    /// <summary>
+    /// §8.2: a service name is an address, so re-registering one a task already holds
+    /// <b>corrects</b> that row rather than adding a second. The write used to be an
+    /// unconditional insert, so a service restarted on a new port left two rows for one name
+    /// and the resolver picked between them — including picking the dead port, which is
+    /// precisely §8.2's "successful dial into the wrong stack".
+    /// </summary>
+    [SkippableFact]
+    public async Task Re_registering_a_name_the_task_already_holds_corrects_its_port()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await CreateSubmitted(db);
+        var instance = WorkerInstanceId.New();
+        var caller = new WorkerCaller(Team, id, instance);
+        await store.DispatchNextAsync(Machine(), instance);
+
+        Assert.IsType<StoreResult.Applied>(await store.RegisterServiceAsync(caller, "api", 5001));
+        Assert.IsType<StoreResult.Applied>(await store.RegisterServiceAsync(caller, "api", 5002));
+
+        await using var verify = pg.NewContext();
+        var svc = await verify.RegisteredServices.AsNoTracking().SingleAsync(s => s.TaskId == id.Value);
+        Assert.Equal("api", svc.Name);
+        Assert.Equal(5002, svc.Port);
+        // A different name on the same task is a different address, and still its own row.
+        Assert.IsType<StoreResult.Applied>(await store.RegisterServiceAsync(caller, "metrics", 5003));
+        Assert.Equal(2, await verify.RegisteredServices.AsNoTracking().CountAsync(s => s.TaskId == id.Value));
+    }
+
+    /// <summary>
+    /// The other half: another task in the Team may not take a live name. Everything that
+    /// resolves a forward is handed a name and a Team and nothing else, so two holders made
+    /// the resolution a raffle — refused rather than silently reassigned, so the second worker
+    /// learns to pick another name instead of believing it advertised something.
+    /// </summary>
+    [SkippableFact]
+    public async Task A_second_task_cannot_take_a_service_name_that_is_live_in_the_Team()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+
+        var first = await CreateSubmitted(db);
+        var firstInstance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), firstInstance);
+        Assert.IsType<StoreResult.Applied>(await store.RegisterServiceAsync(
+            new WorkerCaller(Team, first, firstInstance), "api", 5001));
+
+        var second = await CreateSubmitted(db);
+        var secondInstance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), secondInstance);
+        var secondCaller = new WorkerCaller(Team, second, secondInstance);
+
+        var rejected = Assert.IsType<StoreResult.Rejected>(
+            await store.RegisterServiceAsync(secondCaller, "api", 5002));
+        Assert.Equal(Rule.ServiceNameUniqueInTeam, rejected.Rule);
+
+        await using var verify = pg.NewContext();
+        var svc = await verify.RegisteredServices.AsNoTracking().SingleAsync(s => s.Name == "api");
+        Assert.Equal(first.Value, svc.TaskId);
+        Assert.Equal(5001, svc.Port);
+
+        // The holder finishing frees the name: registrations live only while their task does,
+        // so this is a lease on the address rather than a permanent claim.
+        Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(
+            first, new ReportResult(new WorkerCaller(Team, first, firstInstance), "ref")));
+        Assert.IsType<StoreResult.Applied>(await store.RegisterServiceAsync(secondCaller, "api", 5002));
+        Assert.Equal(second.Value,
+            (await verify.RegisteredServices.AsNoTracking().SingleAsync(s => s.Name == "api")).TaskId);
+    }
+
     [SkippableFact]
     public async Task Liveness_loss_requeues_and_revokes_the_instance_row()
     {

@@ -17,11 +17,19 @@ namespace Docket.ControlPlane;
 /// opens the transaction itself rather than leaving it to <see cref="CommitAsync"/>: an
 /// <c>ExecuteUpdate</c> effect issues its SQL where it stands, so a transaction opened after
 /// the effects would leave a revoke committed beside a row that never moved.</para>
+///
+/// <para><paramref name="forwards"/> is the one consequence that cannot be part of that
+/// transaction, because it is not a write: closing a live relay splice is a command to two
+/// machines (§8.3, <see cref="ForwardTeardownService"/>), so it runs <b>after</b> the commit
+/// and only for what the committed effect said. Null when a host wired the store without
+/// <see cref="ForwardingServiceCollectionExtensions.AddDocketForwarding"/> and in the pure
+/// store tests, where the rows are the subject and there are no machines to tell.</para>
 /// </summary>
 public sealed class TaskStore(
     DocketDbContext db,
     TimeProvider clock,
-    TaskStorePolicy? policy = null)
+    TaskStorePolicy? policy = null,
+    ForwardTeardownService? forwards = null)
 {
     public async Task<StoreResult> CreateAsync(CreateTask command, CancellationToken ct = default)
     {
@@ -470,6 +478,29 @@ public sealed class TaskStore(
     /// authority check as a state transition, though registration is not one.
     /// "Register after a successful bind" is the worker's discipline (§8.2);
     /// the store only records what it's told.
+    ///
+    /// <para><b>A name is an address, so it is registered once</b>
+    /// (<see cref="Rule.ServiceNameUniqueInTeam"/>). Two registrations used to be able to
+    /// hold one <c>(Team, name)</c> — the write was an
+    /// unconditional insert — and every resolver is handed a name and a Team and nothing
+    /// else, so which port a forward reached became a raffle between duplicate rows. Two
+    /// different situations were hiding behind that one insert, and they get different
+    /// answers:</para>
+    /// <list type="bullet">
+    ///   <item><b>The same task re-registering its own name</b> — a service restarted on a
+    ///   fresh port, or a re-register after a bind retry — <b>updates</b> the row it already
+    ///   owns. The worker is correcting its own advertisement, and its old port is by then
+    ///   exactly the stale target §8.2's dial hazard is about.</item>
+    ///   <item><b>Another task in the Team claiming a name that is live</b> is
+    ///   <b>refused</b>. Silently taking it over would redirect the holder's consumers
+    ///   mid-flight, and silently ignoring it would leave the second worker believing it had
+    ///   advertised something. Refusing tells it the name is taken so it can pick another.
+    ///   The row it collides with is always live: registrations are deleted when their task
+    ///   leaves <c>working</c>, so a finished task's name is free again.</item>
+    /// </list>
+    /// <para>The unique index on <c>(team_id, name)</c> is what makes this an invariant
+    /// rather than a check — two concurrent registrations of one name cannot both land, and
+    /// the loser surfaces as the same refusal below on its retry.</para>
     /// </summary>
     public async Task<StoreResult> RegisterServiceAsync(
         WorkerCaller caller, string name, int port, CancellationToken ct = default)
@@ -484,15 +515,46 @@ public sealed class TaskStore(
             return new StoreResult.Rejected(Rule.IncumbentInstanceOnly,
                 "only the incumbent worker of this task may register a service");
 
-        db.RegisteredServices.Add(new RegisteredServiceRow
+        // Tracked, not AsNoTracking: the same-task arm below updates this row.
+        var existing = await db.RegisteredServices
+            .FirstOrDefaultAsync(s => s.TeamId == caller.Team.Value && s.Name == name, ct);
+        if (existing is not null && existing.TaskId != caller.Task.Value)
+            return new StoreResult.Rejected(Rule.ServiceNameUniqueInTeam,
+                $"service '{name}' is already registered in your Team by another task; " +
+                "pick a name nothing else holds");
+
+        if (existing is not null)
         {
-            TaskId = caller.Task.Value,
-            TeamId = caller.Team.Value,
-            Name = name,
-            Port = port,
-            CreatedAt = clock.GetUtcNow(),
-        });
-        await db.SaveChangesAsync(ct);
+            existing.Port = port;
+            existing.CreatedAt = clock.GetUtcNow();
+        }
+        else
+        {
+            db.RegisteredServices.Add(new RegisteredServiceRow
+            {
+                TaskId = caller.Task.Value,
+                TeamId = caller.Team.Value,
+                Name = name,
+                Port = port,
+                CreatedAt = clock.GetUtcNow(),
+            });
+        }
+        try
+        {
+            await db.SaveChangesAsync(ct);
+        }
+        catch (DbUpdateException ex)
+            when (ex.InnerException is Npgsql.PostgresException { SqlState: "23505" })
+        {
+            // A concurrent worker claimed the name between the read above and this insert.
+            // The unique index made the loss safe; report it as the same refusal a
+            // sequential second caller would have got (the only rows this save writes are
+            // registered_services, so this is that constraint).
+            db.ChangeTracker.Clear();
+            return new StoreResult.Rejected(Rule.ServiceNameUniqueInTeam,
+                $"service '{name}' was registered by another task in your Team just now; " +
+                "pick a name nothing else holds");
+        }
         return new StoreResult.Applied(row.ToDomain(), []);
     }
 
@@ -951,7 +1013,7 @@ public sealed class TaskStore(
             ? await db.Database.BeginTransactionAsync(ct)
             : null;
 
-        ApplyEffects(row, ok.Effects);
+        var teardown = ApplyEffects(row, ok.Effects);
         // §6/§9 check 7 (#73): the requeue's reason onto its own event row, the same way
         // the input-request kind rides its transition. The row's from/to states already
         // say which outcome the requeue took, so reason + to-state is the whole story an
@@ -986,11 +1048,30 @@ public sealed class TaskStore(
             return new StoreResult.Conflict($"task {row.Id} moved concurrently; re-read and retry");
         }
 
+        // §8.3, after the commit and only after it: tell both machines to close the splices
+        // the task just stopped being allowed to hold. Ordered this way because it is a
+        // command, not a write — a close sent for a transition that then rolled back would
+        // have severed a live session for nothing, where a close sent late costs only the
+        // milliseconds between commit and send. Awaited rather than fired off so the wire
+        // send is ordered before the caller is told the transition applied. (The one caller
+        // that passes an outerTx — dispatch — reaches working and so emits no clearing
+        // effect at all, which is why "after the commit" is true here and not only usually.)
+        if (teardown.Count > 0 && forwards is not null)
+            await forwards.CloseAsync(teardown, ct);
+
         return new StoreResult.Applied(ok.Task, ok.Effects);
     }
 
-    private void ApplyEffects(TaskRow row, IReadOnlyList<Effect> effects)
+    /// <summary>
+    /// Persist a transition's effects (§6) inside the caller's open transaction, and hand
+    /// back the one consequence that is a <em>command</em> rather than a write: the live
+    /// relay forwards <see cref="ClearServicesAndForwards"/> just released, for the caller to
+    /// close once the transition has actually committed (§8.3). Empty for every other
+    /// effect and for a task holding no forwards, which is the overwhelming majority.
+    /// </summary>
+    private IReadOnlyList<ForwardTeardown> ApplyEffects(TaskRow row, IReadOnlyList<Effect> effects)
     {
+        IReadOnlyList<ForwardTeardown> teardown = [];
         foreach (var effect in effects)
         {
             switch (effect)
@@ -1019,11 +1100,29 @@ public sealed class TaskStore(
 
                 case ClearServicesAndForwards:
                     db.RegisteredServices.Where(s => s.TaskId == row.Id).ExecuteDelete();
-                    // §8.3: leaving working also releases the task's relay forwards.
+                    // §8.3: leaving working also releases the task's relay forwards, and
+                    // that takes both halves. Read the live ones FIRST — the revoke below
+                    // is what makes them stop being live — so the post-commit close knows
+                    // which forwards and which two ends to tell (ForwardTeardownService).
+                    // Read HERE, inside the transition's transaction and next to the revoke,
+                    // rather than again after the commit: this is the one moment the set is
+                    // knowable, since a later read finds them all revoked and cannot tell
+                    // them from any other task's — and a transition that loses the xmin race
+                    // rolls this back with everything else, so nothing is closed for a
+                    // transition that never happened.
+                    teardown = db.RelayGrants
+                        .Where(g => g.ProducerTaskId == row.Id && !g.Revoked)
+                        .Select(g => new { g.ForwardId, g.ConsumerTaskId })
+                        .ToList()
+                        .Select(g => new ForwardTeardown(
+                            new TaskId(row.Id), g.ForwardId.ToString(),
+                            g.ConsumerTaskId is { } consumer ? new TaskId(consumer) : null))
+                        .ToList();
                     // Revoke every live grant this task produced, so a grant issued
                     // against a now-gone service can never open a tunnel — the same
-                    // moment its registered services are cleared, no schema churn.
-                    // Established splices are untouched; a grant only gates open.
+                    // moment its registered services are cleared, no schema churn. The
+                    // revoke closes the door; close-forward ends what is already through
+                    // it, since a grant only ever gated open.
                     db.RelayGrants
                         .Where(g => g.ProducerTaskId == row.Id && !g.Revoked)
                         .ExecuteUpdate(s => s.SetProperty(g => g.Revoked, true));
@@ -1041,6 +1140,8 @@ public sealed class TaskStore(
                     break;
             }
         }
+
+        return teardown;
     }
 
     private void AppendEvent(

@@ -214,13 +214,14 @@ internal sealed class FleetRig(
                 _pumps.Add(Task.Run(() => PumpHeartbeatsAsync(_pumpCts.Token)));
         }
 
-        // The §10 socket seam: dispatch → the real spawn, open-forward → the real
-        // daemon standing up the relay data plane. Nothing else is exercised here.
+        // The §10 socket seam: dispatch → the real spawn, open-/close-forward → the real
+        // daemon standing the relay data plane up and tearing it down (§8.3 — a splice's
+        // authority ends when its owning task leaves working). Nothing else is exercised here.
         var reader = new TranscriptReader(transcripts);
         _registry.Register(machineId, new HashSet<string> { "default" }, (command, sendCt) => command switch
         {
             DispatchCommand d => Spawn(machine, d),
-            OpenForwardCommand => machine.Daemon.Send(command, sendCt),
+            OpenForwardCommand or CloseForwardCommand => machine.Daemon.Send(command, sendCt),
             // §12: the real reader answering off the real captured files, replying through
             // the plane's real sink — the same two hops production makes.
             ReadTranscriptCommand read => _sink.HandleAsync(reader.Read(read), sendCt),
