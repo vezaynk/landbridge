@@ -115,6 +115,31 @@ public sealed class ProfileFilesSpawnTests : IDisposable
     }
 
     [Fact]
+    public async Task A_claude_shaped_file_can_be_written_from_worker_token_and_mcp_url()
+    {
+        var task = TaskId.New();
+        Supervisor().Spawn(
+            new DispatchCommand(
+                task, "default",
+                WorkerToken: "dkt_w_abc",
+                SpawnSubstitutions: new Dictionary<string, string> { ["mcp_url"] = "http://plane.test/mcp" }),
+            TestKit.Profile("echo-env", files:
+            [
+                new ProfileFile(
+                    "{work_dir}/mcp-{task_id}.json",
+                    """{"mcpServers":{"docket":{"type":"http","url":"{mcp_url}","headers":{"Authorization":"Bearer {worker_token}"}}}}"""),
+            ]),
+            "m");
+
+        var path = Path.Combine(_workRoot, task.ToString(), $"mcp-{task}.json");
+        Assert.True(await TestKit.WaitUntilAsync(() => File.Exists(path), TimeSpan.FromSeconds(5)));
+        var body = await File.ReadAllTextAsync(path);
+        Assert.Contains("\"url\":\"http://plane.test/mcp\"", body, StringComparison.Ordinal);
+        Assert.Contains("\"Authorization\":\"Bearer dkt_w_abc\"", body, StringComparison.Ordinal);
+        Assert.True(_supervisor!.Kill(task));
+    }
+
+    [Fact]
     public async Task Mcp_json_is_not_written_when_the_argv_never_names_it()
     {
         var task = TaskId.New();

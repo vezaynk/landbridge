@@ -345,6 +345,12 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             ["machine_id"] = machineId,
             ["work_dir"] = workDir,
         };
+        // So a files[] body can write Claude's --mcp-config JSON without the
+        // plane's BuildWorkerMcpConfig helper. Tokens are dkt_<class>_<64 hex>
+        // and are safe to splice into JSON. Empty when the dispatch carries none
+        // (the same tests that omit McpConfigJson).
+        if (dispatch.WorkerToken.Length > 0)
+            substitutions["worker_token"] = dispatch.WorkerToken;
         // §11 resume: the opaque session ref fills the {session_id} placeholder in
         // resume.args (e.g. `--resume {session_id}`). Only present when resuming;
         // a cold-start argv carries no {session_id}.

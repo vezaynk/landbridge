@@ -125,7 +125,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(12));
         var ct = cts.Token;
 
-        await using var rig = new FleetRig(pg, ClaudeWorkerSpawn(claudeBin));
+        await using var rig = new FleetRig(pg, ClaudeWorkerSpawn(claudeBin), files: ClaudeMcpFile);
         await rig.StartAsync(ct);
         await rig.AddMachineAsync("A");
         await rig.AddMachineAsync("B"); // a real fleet: >1 machine enrolled, dispatch steered to A
@@ -158,7 +158,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(20));
         var ct = cts.Token;
 
-        await using var rig = new FleetRig(pg, ClaudeWorkerSpawn(claudeBin));
+        await using var rig = new FleetRig(pg, ClaudeWorkerSpawn(claudeBin), files: ClaudeMcpFile);
         await rig.StartAsync(ct);
         await rig.AddMachineAsync("A");
         await rig.AddMachineAsync("B");
@@ -287,7 +287,8 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
             resumeArgv: StreamingSpawn(
                 claudeBin, ResumeAndReportPrompt, ParkTools, "--resume", "{session_id}",
                 "--max-turns", "14"),
-            terminalEvents: true);
+            terminalEvents: true,
+            files: ClaudeMcpFile);
         await rig.StartAsync(ct);
         await rig.AddMachineAsync("A");
 
@@ -409,7 +410,8 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
             resumeArgv: StreamingSpawn(
                 claudeBin, ContinuationReportPrompt, ParkTools, "--resume", "{session_id}",
                 "--max-turns", "14"),
-            terminalEvents: true);
+            terminalEvents: true,
+            files: ClaudeMcpFile);
         await rig.StartAsync(ct);
         await rig.AddMachineAsync("A");
 
@@ -503,6 +505,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
             pg,
             spawnArgv: StreamingSpawn(claudeBin, WorkerPrompt, AllowedTools),
             terminalEvents: true,
+            files: ClaudeMcpFile,
             // Deliberately the configuration the reference docs used to recommend and no longer
             // do (#103): mode message, with a stream-json user turn carrying the disposition.
             // Keeping it here is the point — this profile makes the claim, and the run below is
@@ -589,7 +592,8 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         await using var rig = new FleetRig(
             pg,
             spawnArgv: StreamingSpawn(claudeBin, StepwiseWorkerPrompt, ProcessTools, "--max-turns", "14"),
-            agentProcesses: true);
+            agentProcesses: true,
+            files: ClaudeMcpFile);
         await rig.StartAsync(ct);
         await rig.AddMachineAsync("A");
 
@@ -665,7 +669,8 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         await using var rig = new FleetRig(
             pg,
             spawnArgv: StreamingSpawn(claudeBin, StepwiseWorkerPrompt, ServiceTools, "--max-turns", "16"),
-            agentProcesses: true);
+            agentProcesses: true,
+            files: ClaudeMcpFile);
         await rig.StartAsync(ct);
         await rig.AddMachineAsync("A");
         await rig.AddMachineAsync("B");
@@ -729,7 +734,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
 
         var token = NewToken();
         await using var rig = new FleetRig(
-            pg, spawnArgv: PermissionBridgeSpawn(claudeBin), terminalEvents: true);
+            pg, spawnArgv: PermissionBridgeSpawn(claudeBin), terminalEvents: true, files: ClaudeMcpFile);
         await rig.StartAsync(ct);
         await rig.AddMachineAsync("A");
 
@@ -845,18 +850,29 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     // ── Recipe + descriptions ───────────────────────────────────────────────────
 
     /// <summary>
+    /// Per-task Claude MCP file. <c>{task_id}</c> in the name so a continuation
+    /// writing into a borrowed work dir does not overwrite its predecessor's bearer.
+    /// </summary>
+    private const string ClaudeMcpPath = "{work_dir}/mcp-{task_id}.json";
+
+    private static readonly ProfileFile[] ClaudeMcpFile =
+    [
+        new(
+            ClaudeMcpPath,
+            """{"mcpServers":{"docket":{"type":"http","url":"{mcp_url}","headers":{"Authorization":"Bearer {worker_token}"}}}}"""),
+    ];
+
+    /// <summary>
     /// The validated real-<c>claude -p</c> worker argv (S2 spike, 2026-07-29): headless
-    /// print mode, the injected per-task <c>{mcp_config}</c> as the ONLY MCP server
-    /// (<c>--strict-mcp-config</c>), a minimal docket tool allow-list, haiku, and a tight
-    /// turn cap. docketd's <see cref="Docket.Runner.ProcessSupervisor"/> substitutes
-    /// <c>{mcp_config}</c> with the worker's 0600 mcp.json path per task (§13). Auth is
-    /// the static bearer in that config plus the ambient <c>ANTHROPIC_API_KEY</c> the
-    /// spawned process inherits from this test's environment.
+    /// print mode, a per-task MCP file written by <c>files[]</c> as the ONLY MCP
+    /// server (<c>--strict-mcp-config</c>), a minimal docket tool allow-list, haiku,
+    /// and a tight turn cap. Auth is the bearer <c>{worker_token}</c> in that file
+    /// plus the ambient <c>ANTHROPIC_API_KEY</c> the spawned process inherits.
     /// </summary>
     private static string[] ClaudeWorkerSpawn(string claudeBin) =>
     [
         claudeBin, "-p", WorkerPrompt,
-        "--mcp-config", "{mcp_config}",
+        "--mcp-config", ClaudeMcpPath,
         "--strict-mcp-config",
         "--allowedTools", AllowedTools,
         "--model", "haiku",
@@ -890,7 +906,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         string claudeBin, string prompt, string tools, params string[] extra) =>
     [
         claudeBin, "-p", prompt,
-        "--mcp-config", "{mcp_config}",
+        "--mcp-config", ClaudeMcpPath,
         "--strict-mcp-config",
         "--allowedTools", tools,
         "--output-format", "stream-json",
@@ -1003,7 +1019,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     private static string[] PermissionBridgeSpawn(string claudeBin) =>
     [
         claudeBin, "-p", PermissionWorkerPrompt,
-        "--mcp-config", "{mcp_config}",
+        "--mcp-config", ClaudeMcpPath,
         "--strict-mcp-config",
         "--allowedTools", PermissionTools,
         "--permission-prompt-tool", "mcp__docket__request_permission",

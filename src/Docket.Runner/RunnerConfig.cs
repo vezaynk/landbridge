@@ -765,7 +765,8 @@ public sealed record ProfileConfig(
     /// §10 / #112 G3: extra environment stamped on every spawn (and resume) of this
     /// profile, after the reserved <c>DOCKET_*</c> variables and before
     /// <c>telemetry.env</c>. Values take the same <c>{task_id}</c> / <c>{machine_id}</c>
-    /// / <c>{work_dir}</c> / <c>{mcp_config}</c> / <c>{session_id}</c> substitutions
+    /// / <c>{work_dir}</c> / <c>{mcp_config}</c> / <c>{mcp_url}</c> /
+    /// <c>{worker_token}</c> / <c>{session_id}</c> substitutions
     /// <see cref="Spawn"/> does. Never null: an absent <c>env</c> block is an empty map.
     /// </summary>
     public IReadOnlyDictionary<string, string> Env { get; init; } =

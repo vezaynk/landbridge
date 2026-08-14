@@ -130,10 +130,11 @@ spawn, not configurably — §10):
 | `{task_id}` / `DOCKET_TASK_ID` | The dispatched task id. |
 | `{machine_id}` / `DOCKET_MACHINE_ID` | This machine's id. |
 | `{work_dir}` | `{work_root}/{task_id}`, the spawn cwd. |
-| `{mcp_config}` | Path to the generated MCP config `docketd` writes to `{work_dir}/mcp.json` (mode 0600) — **only when this token appears in spawn or resume argv**. A profile that never names it (Grok, Codex, OpenCode) gets no file. |
+| `{mcp_config}` | Path to the generated MCP config `docketd` writes to `{work_dir}/mcp.json` (mode 0600) — **only when this token appears in spawn or resume argv**. Prefer `files[]` + `{worker_token}` / `{mcp_url}` (below) for a new profile; this token is the Claude convenience that remains so existing argv keeps working. |
 | `{mcp_url}` | The plane's public MCP URL (`Docket:PublicMcpUrl`). Filled by the plane on every dispatch so a `files[]` body can name the URL without parsing `mcp.json`. Also stamped on the worker as `DOCKET_MCP_URL`. |
+| `{worker_token}` | The minted worker-instance token (`dkt_w_` + 64 hex). For a `files[]` body that must embed the bearer (Claude's `--mcp-config` does not expand `${DOCKET_WORKER_TOKEN}`). Same secret as `DOCKET_WORKER_TOKEN` on the spawn env. |
 | `{session_id}` | The opaque harness session ref to resume. Substituted in `resume.args` only, never `spawn` (§11). |
-| `DOCKET_WORKER_TOKEN` | The minted worker-instance token (also embedded in `{mcp_config}`). |
+| `DOCKET_WORKER_TOKEN` | The minted worker-instance token (also `{worker_token}`). |
 
 ## The generated MCP config (`{mcp_config}`)
 
@@ -175,7 +176,7 @@ dispatched instance, and its token dies with the instance (§9 check 14).
         "claude",
         "-p",
         "You are a Docket worker running headless under docketd. You have been dispatched exactly one task. First call the mcp__docket__get_task MCP tool to read your assignment (namespace, description, completion_criteria, workspace, attempt). Read the docket-worker skill. Do the work inside the assigned workspace. When done, call report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call request_input instead of guessing. Every docket tool is an MCP tool named mcp__docket__<name>; there is no `docket` command line, so never run one in a shell and never curl the MCP server. You do not verify or complete the task yourself.",
-        "--mcp-config", "{mcp_config}",
+        "--mcp-config", "{work_dir}/mcp-{task_id}.json",
         // stream-json OUT only. Do not add `--input-format stream-json` here: with a
         // prompt in argv it makes claude ignore the prompt and block on stdin forever
         // (see Stopping a claude -p worker below). `--verbose` is what makes claude
@@ -194,7 +195,15 @@ dispatched instance, and its token dies with the instance (§9 check 14).
         // line nobody reads while reporting that it had.
         "mode": "signal"
       },
-      "resume": { "args": ["claude", "-p", "Resume your task.", "--resume", "{session_id}", "--mcp-config", "{mcp_config}"] },
+      // Claude's --mcp-config does not expand ${DOCKET_WORKER_TOKEN}. files[]
+      // writes the same JSON {mcp_config} used to, with {worker_token} and
+      // {mcp_url}. mcp-{task_id}.json so a continuation does not overwrite
+      // its predecessor's bearer in a borrowed work dir.
+      "files": [{
+        "path": "{work_dir}/mcp-{task_id}.json",
+        "contents": "{\"mcpServers\":{\"docket\":{\"type\":\"http\",\"url\":\"{mcp_url}\",\"headers\":{\"Authorization\":\"Bearer {worker_token}\"}}}}"
+      }],
+      "resume": { "args": ["claude", "-p", "Resume your task.", "--resume", "{session_id}", "--mcp-config", "{work_dir}/mcp-{task_id}.json"] },
       // `terminal` reads this worker's stdout stream — the only implemented event
       // source, and the only one that yields tool-call events and the per-task
       // liveness they carry. No `mapping` is needed: the built-in defaults already
@@ -241,14 +250,12 @@ dispatched instance, and its token dies with the instance (§9 check 14).
   under `-p`. Without it the `events.source: terminal` profile above reads nothing,
   which costs you the session ref (§11 resume) and per-task liveness (§10) — the
   same forever-requeue failure as declaring a non-`terminal` source.
-- **`{mcp_config}`** is the injected path; the worker reads the plane URL and its
-  bearer token from that file. It is not the only carrier — the same token is stamped on
-  every spawn's environment as `DOCKET_WORKER_TOKEN` ([Spawn
-  substitutions](#spawn-substitutions)), and which of the two matters is the harness's
-  business, not `docketd`'s. Claude Code takes the file; a harness with no
-  `--mcp-config` equivalent has to read the environment variable instead, which for
-  `codex exec` is the only route that works at all — see the Codex example below.
-  Because that profile never names `{mcp_config}`, `mcp.json` is not written.
+- **`--mcp-config {work_dir}/mcp-{task_id}.json`** is the file `files[]` writes
+  (above). `{mcp_config}` still works as a shorthand that has docketd write
+  Claude's JSON itself, but a new profile should use `files[]` + `{worker_token}`
+  / `{mcp_url}` so the plane's Claude-shaped builder is not load-bearing.
+  A harness with no `--mcp-config` equivalent reads `DOCKET_WORKER_TOKEN` from
+  the environment instead — see Codex below.
 - **Nothing caps spend — not here and not in the plane.** The Team dollar ceiling was
   removed 2026-08-12 (spec §9's note), and the `{budget}` substitution that fed Claude
   Code's `--max-budget-usd` went with it, since its value came from that ceiling. What
