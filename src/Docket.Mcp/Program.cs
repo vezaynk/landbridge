@@ -46,6 +46,10 @@ builder.Services.AddDbContext<DocketDbContext>(o =>
 builder.Services.AddDocketStore(
     builder.Configuration.GetValue<int?>("Docket:InfrastructureRequeueLimit"));
 builder.Services.AddScoped<TokenService>();
+// §13 un-trust a machine: credentials + command channel + its workers, composed. Scoped
+// like TokenService (it is the same DbContext); the registry and sink it also needs are
+// singletons, which a scoped service may depend on.
+builder.Services.AddScoped<MachineRevocationService>();
 builder.Services.AddScoped<RelayGrantService>();
 // §8.4 HTTP preview: the mapping store (resolve/create) and the per-connection
 // connect orchestrator, both scoped (per-request DbContext) like the grant service.

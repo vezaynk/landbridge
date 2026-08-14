@@ -64,9 +64,16 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// machine while the stale socket still listed it — leaving a dead dispatch tracked and
     /// under a liveness clock. There is no double-tracking either way: dispatches are keyed
     /// by task, so re-adoption overwrites rather than accumulates.</para>
+    ///
+    /// <para><paramref name="close"/> is how the plane hangs up on this connection from
+    /// somewhere other than its own endpoint — <see cref="DisconnectAsync"/>, which
+    /// machine revocation needs (§13). It is optional because a caller driving the
+    /// registry with no socket underneath it (every test, the in-process rigs) has
+    /// nothing to close, and such a connection simply disconnects without a hang-up.</para>
     /// </summary>
     public Registration Register(
-        string machineId, IReadOnlySet<string> profiles, Func<RunnerCommand, CancellationToken, Task> send)
+        string machineId, IReadOnlySet<string> profiles, Func<RunnerCommand, CancellationToken, Task> send,
+        Func<CancellationToken, Task>? close = null)
     {
         var token = new ConnectionToken(machineId, Interlocked.Increment(ref _generations));
         var superseded = _connections.ContainsKey(machineId);
@@ -74,6 +81,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
         {
             Profiles = profiles,
             LastHeartbeat = clock.GetUtcNow(),
+            Close = close,
         };
         return new Registration(token, superseded);
     }
@@ -112,6 +120,55 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
             return new UnregisterOutcome(false, []);
         lock (conn.Gate)
             return new UnregisterOutcome(true, conn.Dispatched.Keys.ToArray());
+    }
+
+    /// <summary>
+    /// Hangs up on whichever connection a machine currently holds: drops the registry
+    /// entry and closes the socket underneath it, returning the tasks it held so the
+    /// caller can requeue them exactly as a dropped connection's teardown does.
+    ///
+    /// <para>Machine-keyed, not connection-keyed, and that is the point: the caller is
+    /// machine revocation (§13, <see cref="Auth.MachineRevocationService"/>), which is
+    /// about the box rather than about one socket, and the box is reachable on whatever
+    /// connection it holds right now. Removing the entry <em>before</em> closing keeps
+    /// the #87 order — the requeue that follows commits a <c>pg_notify</c>, and a
+    /// still-registered ready machine would take one of those tasks straight back onto
+    /// the socket being torn down.</para>
+    ///
+    /// <para>The endpoint serving that socket will run its own teardown when the close
+    /// lands; <see cref="Unregister"/> then finds the entry already gone and reports
+    /// nothing held, so the requeue happens once, here.</para>
+    ///
+    /// <para>Returns <see cref="UnregisterOutcome.Unregistered"/> false with an empty
+    /// held set for a machine holding no connection — a machine that is enrolled but
+    /// offline is the ordinary case for a revoke, not an error.</para>
+    /// </summary>
+    public async Task<UnregisterOutcome> DisconnectAsync(string machineId, CancellationToken ct = default)
+    {
+        if (!_connections.TryRemove(machineId, out var conn))
+            return new UnregisterOutcome(false, []);
+
+        TaskId[] held;
+        lock (conn.Gate)
+            held = conn.Dispatched.Keys.ToArray();
+
+        if (conn.Close is { } close)
+        {
+            // Best-effort, like every other write down a runner socket (§10): a
+            // connection we are hanging up on may already be dead, and a revoke must
+            // not fail because the box it un-trusts stopped answering.
+            try
+            {
+                await close(ct);
+            }
+            catch
+            {
+                // Ignored: the entry is already out of the registry, which is the part
+                // that decides what the plane will send or dispatch here.
+            }
+        }
+
+        return new UnregisterOutcome(true, held);
     }
 
     /// <summary>
@@ -521,6 +578,10 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     {
         public object Gate { get; } = new();
         public Func<RunnerCommand, CancellationToken, Task> Send { get; } = send;
+
+        /// <summary>How to hang up on this connection from outside its endpoint
+        /// (<see cref="DisconnectAsync"/>); null for a connection with no socket under it.</summary>
+        public Func<CancellationToken, Task>? Close { get; init; }
 
         /// <summary>This connection's half of its <see cref="ConnectionToken"/>.</summary>
         public long Generation { get; } = generation;

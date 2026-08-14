@@ -36,6 +36,41 @@ public sealed class TokenServiceTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Null(await tokens.ExchangeEnrollmentAsync(enrollment.Token, Decl));
     }
 
+    /// <summary>
+    /// Single-use has to hold under a race, not just under a replay (§5, §11). Sequential
+    /// re-exchange was always refused because the first one's <c>UsedAt</c> had landed by
+    /// then; two concurrent <c>POST /enroll</c> calls with the same token both read it
+    /// unused, both decided, and both minted — one bootstrap secret, two machine identities
+    /// in the fleet, one of which nobody enrolled.
+    ///
+    /// <para>Two independent contexts (so, two connections) is the whole point: the gate is
+    /// the conditional update's row lock, which a single shared DbContext would serialize
+    /// for the wrong reason and prove nothing about.</para>
+    /// </summary>
+    [SkippableFact]
+    public async Task Concurrent_double_enrollment_mints_exactly_one_machine()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var seed = pg.NewContext();
+        var enrollment = await new TokenService(seed, new FakeTimeProvider()).IssueEnrollmentTokenAsync();
+
+        await using var db1 = pg.NewContext();
+        await using var db2 = pg.NewContext();
+        var t1 = new TokenService(db1, new FakeTimeProvider()).ExchangeEnrollmentAsync(enrollment.Token, Decl);
+        var t2 = new TokenService(db2, new FakeTimeProvider()).ExchangeEnrollmentAsync(enrollment.Token, Decl);
+        var results = await Task.WhenAll(t1, t2);
+
+        Assert.Equal(1, results.Count(r => r is null));
+        var winner = Assert.Single(results, r => r is not null)!;
+
+        // And the loser left nothing behind: one machine row, and it is the winner's. A
+        // rolled-back mint that still committed its machine would be an unenrolled box
+        // holding no credentials — invisible in the fleet and impossible to revoke.
+        await using var check = pg.NewContext();
+        var machine = Assert.Single(await check.Set<MachineRow>().AsNoTracking().ToListAsync());
+        Assert.Equal(winner.MachineId, machine.Id);
+    }
+
     [SkippableFact]
     public async Task Expired_enrollment_tokens_exchange_nothing()
     {
@@ -82,7 +117,7 @@ public sealed class TokenServiceTests(PostgresFixture pg) : IAsyncLifetime
 
         // §5: un-trusting a machine must take seconds — one call kills access,
         // refresh, and future refresh mints alike.
-        await tokens.RevokeMachineAsync(creds.MachineId);
+        await tokens.RevokeMachineCredentialsAsync(creds.MachineId);
         Assert.Null(await tokens.ValidateAsync(creds.Access.Token));
         Assert.Null(await tokens.RefreshMachineAccessAsync(creds.Refresh.Token));
     }

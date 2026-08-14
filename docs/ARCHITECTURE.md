@@ -139,6 +139,24 @@ maps a bearer token to a typed `Principal`; the MCP tools then narrow (Lead tool
 require a lead principal, worker tools a worker principal), and `/runner` requires
 a machine principal.
 
+**Un-trusting a machine is `MachineRevocationService`, not `TokenService` alone.**
+Two of the three things a revoke has to reach are not credential rows. `/runner`
+authenticates once at the upgrade and never again, so revoking the machine's tokens
+leaves an open, dispatchable command channel; and a worker token carries no machine
+id — only `{team, task, instance}` — so a credential sweep keyed on machine reaches
+none of the workers on the box. So the service composes all three: revoke the
+credentials, drop and close the connection (requeueing what it held, exactly as a
+dead socket does), then revoke the worker instances recorded as having run there.
+`TokenService.RevokeMachineCredentialsAsync` is deliberately named as the half it is.
+The surface is one human-only action on the §12 Machine Group view — a machine
+belongs to no Team, so there is no Lead twin.
+
+**A copied `credentials.json` is a working machine identity on any host.** The
+refresh token's machine binding is server-side only (which machine the row mints
+for), and nothing collects or checks a host fingerprint, so the copy is not
+defeated by it — revocation is the whole answer today. Binding refresh and connect
+to a host-sealed secret (TPM, keychain) is a tracked follow-up, not built.
+
 ## The task state machine (§6)
 
 ```
@@ -323,7 +341,12 @@ readiness/back-pressure, heartbeat age, running tasks with owning Team), the
 task, whether a Lead is attached — doubles as the §4 reattachment surface), and
 the **human inbox** (everything waiting on a person: open questions, tasks
 awaiting review, parked tasks, and the auth failures still blocking a live task).
-Lead takeovers, machine reboots, and evictions land in the event log.
+Lead takeovers, machine reboots, and evictions land in the event log. The dashboard's
+writes are few, and all but the preview mint are human-only: answering a permission
+request, and **Revoke machine** — the §5/§13 un-trust action, which is the only surface
+the operation has (see above). Both, plus login/logout, are same-origin only
+(`OriginGuard`); the preview mint is deliberately exempt as the one POST an agent
+legitimately drives.
 
 Views render as a plain server-rendered web dashboard (spec §12: "a plain web
 dashboard first"); MCP Apps are not built. Most of §12's data points now have a

@@ -346,6 +346,79 @@ public sealed class DashboardScopeAndOriginTests(PostgresFixture pg) : IAsyncLif
         await app.StopAsync(ct);
     }
 
+    /// <summary>
+    /// The §13 machine revoke is the most valuable POST on this surface to forge, and the
+    /// cheapest: it needs nothing but a machine id, and the ids are rendered on a page the
+    /// operator's own session can read — so a same-site page that has seen one (a §8.4 preview,
+    /// which shares the registrable domain by design) could evict a machine mid-flight, taking
+    /// its command channel, its worker tokens and its running work with it. Denial of service
+    /// against the fleet, spendable once per machine id and requiring no credential of its own.
+    ///
+    /// <para>Asserted on the machine row rather than the status code alone: a 403 that had
+    /// already revoked would be the same hole with a tidier response. The honest POST then goes
+    /// through, so this is a rule about where the request came from and not a
+    /// human-only surface that refuses everyone.</para>
+    /// </summary>
+    [SkippableFact]
+    public async Task A_machine_revoke_posted_from_a_preview_host_is_refused_and_the_machine_keeps_running()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var ct = cts.Token;
+
+        await using var app = BuildPlane();
+        await app.StartAsync(ct);
+
+        Guid machineId;
+        await using (var db = pg.NewContext())
+        {
+            var tokens = new TokenService(db, TimeProvider.System);
+            var creds = await tokens.ExchangeEnrollmentAsync(
+                (await tokens.IssueEnrollmentTokenAsync(ct)).Token,
+                new MachineDeclaration("box-1", "test", "macos", "standard"), ct);
+            machineId = creds!.MachineId;
+        }
+
+        // The machine is dialed in and holding its channel, so a successful forgery would cost
+        // something rather than flipping a row on an absent box.
+        var registry = app.Services.GetRequiredService<RunnerConnectionRegistry>();
+        registry.Register(
+            machineId.ToString(), new HashSet<string>(StringComparer.Ordinal) { "default" },
+            (_, _) => Task.CompletedTask);
+        registry.ApplyHeartbeat(
+            machineId.ToString(),
+            new MachineHeartbeat(machineId.ToString(), Ready: true, UnderBackPressure: false,
+                new SystemLoad(0, 0, 0), RunningTasks: 0, ["default"], DateTimeOffset.UtcNow));
+
+        var human = await IssueHumanTokenAsync(ct);
+        using var client = Client(app);
+
+        var forged = await PostAsync(
+            client, "/dashboard/machines/revoke", human, "http://abcd1234.preview.localhost", ct,
+            [("machineId", machineId.ToString())]);
+        Assert.Equal(HttpStatusCode.Forbidden, forged.StatusCode);
+
+        // Nothing was taken away: the machine is still trusted and still connected.
+        await using (var db = pg.NewContext())
+            Assert.False((await db.Set<MachineRow>().AsNoTracking()
+                .SingleAsync(m => m.Id == machineId, ct)).Revoked);
+        Assert.NotNull(registry.SnapshotFor(machineId.ToString()));
+
+        // The same POST from the dashboard's own page revokes, so the refusal above was about
+        // the origin and not about the action being unreachable.
+        var honest = await PostAsync(
+            client, "/dashboard/machines/revoke", human, SelfOrigin(app), ct,
+            [("machineId", machineId.ToString())]);
+        Assert.Equal(HttpStatusCode.OK, honest.StatusCode);
+
+        await using (var db = pg.NewContext())
+            Assert.True((await db.Set<MachineRow>().AsNoTracking()
+                .SingleAsync(m => m.Id == machineId, ct)).Revoked);
+        Assert.Null(registry.SnapshotFor(machineId.ToString()));
+
+        await app.StopAsync(ct);
+    }
+
     // ── Rig ───────────────────────────────────────────────────────────────────
 
     /// <summary>The other Team's prose — distinctive, so its absence can be asserted against a
@@ -365,6 +438,11 @@ public sealed class DashboardScopeAndOriginTests(PostgresFixture pg) : IAsyncLif
         builder.Services.AddScoped<DashboardQueries>();
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<RunnerConnectionRegistry>();
+        // §13 revoke, the fourth origin-guarded write on this surface: the service plus the
+        // sink it requeues a revoked machine's held work through.
+        builder.Services.AddScoped<MachineRevocationService>();
+        builder.Services.AddDocketForwarding();
+        builder.Services.AddSingleton<RunnerEventSink>();
         builder.Services.AddSingleton<IOperatorVerifier>(new ConfiguredOperatorVerifier((string?)null));
         builder.Services.AddHttpContextAccessor();
 

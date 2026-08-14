@@ -74,6 +74,7 @@ internal static class DashboardRenderer
 
             AppendServices(sb, m, now);
             AppendProcesses(sb, m, now);
+            sb.Append(RevokeMachineForm(m.MachineId));
             sb.Append("</section>");
         }
 
@@ -747,6 +748,53 @@ internal static class DashboardRenderer
         sb.Append("<p><a href=\"/dashboard/inbox\">Back to the inbox</a></p>");
         sb.Append("</section>");
         return Page("Permission", "inbox", sb.ToString(), autoRefresh: false);
+    }
+
+    /// <summary>
+    /// The 'Revoke machine' control on each Machine Group entry (§5, §13). Posts to
+    /// <c>/dashboard/machines/revoke</c>, which un-trusts the box completely — credentials,
+    /// command channel, and the worker tokens on it.
+    ///
+    /// <para>The label says what it costs, because the operator reaching for this in an
+    /// incident should not have to already know: the machine's running tasks requeue, and it
+    /// cannot come back without a fresh enrollment. Both are recoverable, which is why this
+    /// is a plain button and not a typed confirmation.</para>
+    /// </summary>
+    private static string RevokeMachineForm(string machineId)
+    {
+        var sb = new StringBuilder();
+        sb.Append("<form class=\"machine-revoke\" method=\"post\" action=\"/dashboard/machines/revoke\">");
+        sb.Append($"<input type=\"hidden\" name=\"machineId\" value=\"{E(machineId)}\">");
+        sb.Append("<button type=\"submit\">Revoke machine</button> ");
+        sb.Append("<span class=\"nt\">closes its channel, requeues its tasks, and kills its " +
+                  "worker tokens — it must enroll again to return</span>");
+        sb.Append("</form>");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// The revoke confirmation (§5, §13): what the revoke actually took away, rather than a
+    /// bare success. An offline or already-revoked machine reports zeros — the call is
+    /// idempotent, and saying so is more useful than implying something happened.
+    /// </summary>
+    public static string MachineRevoked(Guid machineId, Docket.ControlPlane.Auth.MachineRevocation revoked)
+    {
+        var sb = new StringBuilder();
+        sb.Append("<section class=\"card\"><h1>Machine revoked</h1>");
+        sb.Append($"<p class=\"sub mono\">{E(machineId.ToString())}</p>");
+        sb.Append("<ul>");
+        sb.Append(revoked.ChannelClosed
+            ? "<li>Its command channel was closed.</li>"
+            : "<li>It held no live command channel.</li>");
+        sb.Append($"<li>{revoked.WorkersRevoked} worker token(s) on the box were revoked.</li>");
+        sb.Append($"<li>{revoked.TasksRequeued} task(s) it held were requeued for another machine.</li>");
+        sb.Append("<li>Its access and refresh tokens no longer authenticate.</li>");
+        sb.Append("</ul>");
+        sb.Append("<p class=\"nt\">The machine must enroll again to return. If it is still running, " +
+                  "it will reconnect and be refused.</p>");
+        sb.Append("<p><a href=\"/dashboard/machines\">← back to the Machine Group</a></p>");
+        sb.Append("</section>");
+        return Page("Machine revoked", "machines", sb.ToString(), autoRefresh: false);
     }
 
     /// <summary>
