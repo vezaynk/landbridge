@@ -29,8 +29,10 @@ namespace Docket.MultiMachine.Tests;
 /// <c>codex exec</c> prints <c>Reading additional input from stdin...</c> to stderr, OpenCode
 /// prints nothing at all and leaves an empty transcript. (2) MCP tool names are
 /// <c>docket_get_task</c>, not <c>mcp__docket__get_task</c>
-/// (<c>packages/opencode/src/mcp/catalog.ts:119</c>), so the worker prompt names tools bare —
-/// the portable phrasing across all three harnesses. (3) There is no tool-call <em>start</em>
+/// (<c>packages/opencode/src/mcp/catalog.ts:119</c>), and the worker prompts here spell that
+/// underscore form rather than the bare <c>get_task</c> they used to — see
+/// <see cref="McpToolsRule"/> for why the portable bare spelling turned out to cost more than it
+/// bought. (3) There is no tool-call <em>start</em>
 /// event, only completion (<c>run.ts:719</c>), so the progress clock necessarily lags by each
 /// tool call's duration. None of these facts depends on that lag, but a long build on an
 /// OpenCode profile looks wedged in a way it would not on Codex.</para>
@@ -50,19 +52,43 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
     private static readonly TimeSpan PerLegBudget = TimeSpan.FromMinutes(8);
 
     /// <summary>
+    /// The standing rule both prompts here carry, ported from the claude tier where it fixed a real
+    /// failure — a prompt that said "call the docket get_task tool" was read as a shell command and
+    /// the worker ran <c>docket get_task</c> instead of calling its MCP tool.
+    ///
+    /// <para><b>The spelling is this tier's own, and that is the whole subtlety.</b> OpenCode names
+    /// docket's tools <c>docket_get_task</c> (<c>mcp/catalog.ts:119</c>), where claude and Codex
+    /// both use <c>mcp__docket__get_task</c>. Porting the claude wording verbatim would name a tool
+    /// that does not exist on this harness — inventing a phantom tool, which is precisely the bug
+    /// this rule exists to prevent. So the underscore form here is not a typo, and a "consistency"
+    /// edit that aligns it with the other two tiers breaks this one.</para>
+    ///
+    /// <para>This supersedes OC-G3's original reasoning, which named the tools <em>bare</em>
+    /// (<c>get_task</c>) on the grounds that the bare form is the one spelling that ports across
+    /// all three harnesses. That was true and is still true — but portability was buying less than
+    /// it cost: the bare form is exactly what a worker misread as <c>docket get_task</c>. Each tier
+    /// naming its own real tool is unambiguous in a way no shared spelling can be.</para>
+    /// </summary>
+    private const string McpToolsRule =
+        " Docket's tools are MCP tools, named exactly docket_get_task, docket_report_result and so " +
+        "on — call them as tools, under those names. There is no `docket` program: no such command " +
+        "exists on this machine, so never run `docket` in a shell, and never try to reach the " +
+        "docket MCP server yourself over HTTP or with curl. (A shell command your assignment " +
+        "explicitly asks for is a different thing, and is fine.) If a docket MCP tool is missing " +
+        "or errors, report that with docket_report_result instead of working around it.";
+
+    /// <summary>
     /// Generic worker prompt (§7), deliberately the same shape as the other two tiers' so a
-    /// cross-harness comparison means something — with one difference that is the point of
-    /// OC-G3: the docket tools are named <b>bare</b>. OpenCode would spell them
-    /// <c>docket_get_task</c> and claude/Codex <c>mcp__docket__get_task</c>, so a prompt that
-    /// spells the qualified name is the one thing that does not port between harnesses. Naming
-    /// them bare works on all three.
+    /// cross-harness comparison means something — differing only in how it spells the tools, for
+    /// the reason given on <see cref="McpToolsRule"/>.
     /// </summary>
     private const string WorkerPrompt =
-        "You are a Docket worker agent. Your FIRST action must be to call the docket get_task " +
+        "You are a Docket worker agent. Your FIRST action must be to call the docket_get_task " +
         "tool to read your assignment. The assignment's description tells you the exact string " +
-        "to report. Your ONLY other action is to call the docket report_result tool once, with " +
+        "to report. Your ONLY other action is to call the docket_report_result tool once, with " +
         "that exact string as resultReference. Do not write files, do not explain, do not ask " +
-        "questions. Two tool calls total: get_task, then report_result.";
+        "questions. Two tool calls total: docket_get_task, then docket_report_result." +
+        McpToolsRule;
 
     public async Task InitializeAsync()
     {
@@ -652,17 +678,44 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
     /// and the fact fails on its assertions rather than hanging until the outer deadline.
     /// </summary>
     private const string SlowWorkerPrompt =
-        "You are a Docket worker agent. First call the docket get_task tool to read your "
+        "You are a Docket worker agent. First call the docket_get_task tool to read your "
         + "assignment. Then, before reporting anything, count slowly from 1 to 400, writing each "
         + "number on its own line with a short remark about it. Only after finishing the count "
-        + "may you call the docket report_result tool with the exact string from the description.";
+        + "may you call the docket_report_result tool with the exact string from the description."
+        + McpToolsRule;
+
+    /// <summary>
+    /// The mixed-fleet fact's claude worker needs the SAME words as <see cref="WorkerPrompt"/> but
+    /// its own tool spelling, and that is the whole reason this constant exists. Claude names
+    /// docket's tools <c>mcp__docket__get_task</c>; OpenCode names them <c>docket_get_task</c>. One
+    /// prompt cannot serve both once each names its real tool, so the mixed fact carries two — the
+    /// coupling that the old bare spelling hid, and the trap it hid it at.
+    ///
+    /// <para>This is the sharp edge of dropping the portable bare form: the mixed fleet is the one
+    /// place a single prompt was handed to two different harnesses. Sharing it again, in either
+    /// spelling, sends one of the two workers hunting a tool that does not exist on its harness.</para>
+    /// </summary>
+    private const string ClaudeWorkerPrompt =
+        "You are a Docket worker agent. Your FIRST action must be to call the " +
+        "mcp__docket__get_task tool to read your assignment. The assignment's description tells " +
+        "you the exact string to report. Your ONLY other action is to call the " +
+        "mcp__docket__report_result tool once, with that exact string as resultReference. Do not " +
+        "write files, do not explain, do not ask questions. Two tool calls total: " +
+        "mcp__docket__get_task, then mcp__docket__report_result." +
+        " Docket's tools are MCP tools, named exactly mcp__docket__get_task, " +
+        "mcp__docket__report_result and so on — call them as tools, under those names. There is " +
+        "no `docket` program: no such command exists on this machine, so never run `docket` in a " +
+        "shell, and never try to reach the docket MCP server yourself over HTTP or with curl. (A " +
+        "shell command your assignment explicitly asks for is a different thing, and is fine.) If " +
+        "a docket MCP tool is missing or errors, report that with mcp__docket__report_result " +
+        "instead of working around it.";
 
     /// <summary>The claude argv for the mixed-fleet fact's machine A. Kept minimal and
     /// independent of the claude tier's own recipe so this file has no cross-tier
     /// dependency.</summary>
     private static string[] ClaudeWorkerSpawn(string claudeBin) =>
     [
-        claudeBin, "-p", WorkerPrompt,
+        claudeBin, "-p", ClaudeWorkerPrompt,
         "--mcp-config", "{mcp_config}",
         "--output-format", "stream-json",
         "--verbose",

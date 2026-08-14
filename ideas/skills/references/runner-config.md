@@ -705,9 +705,14 @@ CLI cost one crank turn on an existing seam rather than harness knowledge in the
       "name": "default",
       "spawn": [
         "opencode", "run",
-        // Name docket tools BARE. OpenCode calls this one `docket_get_task`, not
-        // `mcp__docket__get_task` — see the naming note in the Codex section above.
-        "You are a Docket worker running headless under docketd. You have been dispatched exactly one task. First call the mcp__docket__get_task MCP tool to read your assignment (namespace, description, completion_criteria, workspace, attempt). Do the work inside the assigned workspace. When done, call report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call request_input instead of guessing. Every docket tool is an MCP tool named mcp__docket__<name>; there is no `docket` command line, so never run one in a shell and never curl the MCP server.",
+        // Name docket tools the way OpenCode spells them: `docket_get_task`, NOT the
+        // `mcp__docket__get_task` the claude and Codex profiles use — see the naming note in the
+        // Codex section above. This prompt used to name them bare (`get_task`) because the bare
+        // form is the one spelling that ports to all three harnesses; it no longer does, because
+        // bare is exactly what a real worker misread as a shell command and tried to run as
+        // `docket get_task`. Each harness naming its own real tool is unambiguous; a shared
+        // spelling cannot be.
+        "You are a Docket worker running headless under docketd. You have been dispatched exactly one task. First call the docket_get_task MCP tool to read your assignment (namespace, description, completion_criteria, workspace, attempt). Do the work inside the assigned workspace. When done, call docket_report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call docket_request_input instead of guessing. Every docket tool is an MCP tool named docket_<name>; there is no `docket` command line, so never run one in a shell and never curl the MCP server.",
         // NOTE: no MCP flag. OpenCode has no `--mcp-config`; see below.
         "--format", "json",   // the NDJSON stream `terminal` reads. Needs no companion flag,
                               // unlike claude's --output-format stream-json + --verbose pair.

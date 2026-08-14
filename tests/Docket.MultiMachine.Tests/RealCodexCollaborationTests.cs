@@ -106,14 +106,33 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
     /// </summary>
     private static readonly string[] AllowedDocketTools = ["get_task", "report_result"];
 
+    /// <summary>
+    /// The standing rule the worker prompt carries, ported from the claude tier where it was a fix
+    /// for a real failure: a prompt that said "call the docket get_task tool" got read as a shell
+    /// command and a worker ran <c>docket get_task</c> instead of calling its MCP tool. The
+    /// spelling here is <c>mcp__docket__*</c> because that is what the <em>model</em> sees on this
+    /// harness (see <see cref="AllowedDocketTools"/>: only Codex's <c>enabled_tools</c> config key
+    /// takes the bare names). Do not "fix" this to bare names to match that key — they are two
+    /// different surfaces, and the OpenCode tier spells its own third way.
+    /// </summary>
+    private const string McpToolsRule =
+        " Docket's tools are MCP tools, named exactly mcp__docket__get_task, " +
+        "mcp__docket__report_result and so on — call them as tools, under those names. There is " +
+        "no `docket` program: no such command exists on this machine, so never run `docket` in a " +
+        "shell, and never try to reach the docket MCP server yourself over HTTP or with curl. (A " +
+        "shell command your assignment explicitly asks for is a different thing, and is fine.) If " +
+        "a docket MCP tool is missing or errors, report that with mcp__docket__report_result " +
+        "instead of working around it.";
+
     /// <summary>Generic worker prompt (§7), deliberately the same shape as the claude tier's:
     /// the specifics live in the task's opaque description, read via <c>get_task</c>.</summary>
     private const string WorkerPrompt =
-        "You are a Docket worker agent. Your FIRST action must be to call the docket get_task " +
-        "tool to read your assignment. The assignment's description tells you the exact string " +
-        "to report. Your ONLY other action is to call the docket report_result tool once, with " +
-        "that exact string as resultReference. Do not write files, do not explain, do not ask " +
-        "questions. Two tool calls total: get_task, then report_result.";
+        "You are a Docket worker agent. Your FIRST action must be to call the " +
+        "mcp__docket__get_task tool to read your assignment. The assignment's description tells " +
+        "you the exact string to report. Your ONLY other action is to call the " +
+        "mcp__docket__report_result tool once, with that exact string as resultReference. Do not " +
+        "write files, do not explain, do not ask questions. Two tool calls total: " +
+        "mcp__docket__get_task, then mcp__docket__report_result." + McpToolsRule;
 
     public async Task InitializeAsync()
     {
@@ -622,7 +641,14 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
          """;
 
     /// <summary>The claude argv, for the mixed-fleet fact only — the validated recipe from the
-    /// claude tier, trimmed to what an echo task needs.</summary>
+    /// claude tier, trimmed to what an echo task needs.
+    ///
+    /// <para>It shares <see cref="WorkerPrompt"/> with the Codex workers, and that sharing is safe
+    /// for exactly one reason: Codex and claude both spell docket's tools <c>mcp__docket__*</c>, so
+    /// one prompt names real tools on both harnesses. Do not generalise it — the OpenCode tier
+    /// spells them <c>docket_get_task</c> and had to split its shared prompt in two for this same
+    /// mixed-fleet shape. The <c>--allowedTools</c> value just below is the same spelling; Codex's
+    /// own <c>enabled_tools</c> is the bare-name surface, not this one.</para></summary>
     private static string[] ClaudeWorkerSpawn(string claudeBin) =>
     [
         claudeBin, "-p", WorkerPrompt,
