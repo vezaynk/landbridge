@@ -92,8 +92,10 @@ secrets or the environment variable `Docket__Operator__PassphraseHash` (see the
   `/dashboard/events` come back filtered to it, another Team's
   `/dashboard/teams/{id}` is a 403, and `/dashboard/machines` is human-only
   (machine enumeration is a human surface by design, §12). The mutating forms
-  (login, logout, the permission verdict) are refused unless the request carries
-  this dashboard's own `Origin` — so a scripted POST has to send one.
+  (login, logout, the permission verdict, **Revoke machine**) are refused unless
+  the request carries this dashboard's own `Origin` — so a scripted POST has to
+  send one. Revoking is human-only for the same reason the Machine Group view is:
+  a machine belongs to no Team.
 - **MCP / harness (OAuth 2.1)** — a harness acting as a Lead authenticates via the
   authorization-code flow with PKCE (S256 only). The plane advertises
   `/.well-known/oauth-protected-resource` (RFC 9728) and
@@ -151,8 +153,15 @@ docketd --config /etc/docketd/config.json --state-dir /var/lib/docketd
 
 The access token is short-lived and re-minted at `POST /machine/refresh` —
 proactively at ~50% of its remaining lifetime and reactively on a 401 reconnect.
-The long-lived refresh token is the only durable secret and is bound to the
-machine id, so a copied credential file fails on another host.
+The long-lived refresh token is the only durable secret on the box.
+
+> **Treat `credentials.json` as the machine.** The refresh token is bound to its
+> machine only server-side — the row names which machine it mints for — so a copy of
+> the file is a working machine identity on *any* host: nothing collects or checks a
+> host fingerprint. Protect the file (it is `0600` in a `0700` dir for this reason),
+> and if it leaks, revoke the machine — **Revoke machine** on the dashboard's Machine
+> Group view closes its channel, requeues its tasks, kills its worker tokens, and
+> makes it re-enroll to return.
 
 > **Half built.** The agent-guided enrollment §11 describes ships as a *skill*, not a
 > prompt: `docket-enroll` (`docket://skills/enroll`) walks an agent through probing the

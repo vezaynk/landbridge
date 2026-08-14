@@ -50,6 +50,21 @@ public static class RunnerEndpoint
         using var socket = await context.WebSockets.AcceptWebSocketAsync();
         var sendLock = new SemaphoreSlim(1, 1);
 
+        // The plane's own hang-up on this socket (§13 revoke): cancelling breaks the
+        // receive loop out of ReceiveAsync, so the finally below runs and the `using`
+        // closes the socket. Deliberately NOT a close handshake — the caller is
+        // un-trusting this machine, and a courtesy close frame would have to be
+        // written to a peer that may be wedged, making revocation wait on the box it
+        // is revoking. docketd reads the drop as any other disconnect and reconnects;
+        // its credentials are already dead by then, so it gets a 401 instead of a
+        // channel. Linked to RequestAborted so a shutdown still tears this down.
+        using var hangUp = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted);
+
+        // Which of the two ways this connection can leave the registry without dying (#94,
+        // §13) happened to it — the teardown log below says something different, and true, for
+        // each. Written on the revoke path, read once in the finally, so no interlocking.
+        var hungUpByPlane = false;
+
         async Task Send(RunnerCommand command, CancellationToken ct)
         {
             // §1 tracing: stamp the current dispatch span's W3C id onto the
@@ -74,7 +89,14 @@ public static class RunnerEndpoint
         // registration names THIS connection (#94) — every later call that is about this
         // socket rather than about the machine presents it, so a connection that has been
         // replaced cannot act on the registry in its successor's name.
-        var connection = registry.Register(machineId, new HashSet<string>(StringComparer.Ordinal), Send);
+        var connection = registry.Register(
+            machineId, new HashSet<string>(StringComparer.Ordinal), Send,
+            close: _ =>
+            {
+                hungUpByPlane = true;
+                hangUp.Cancel();
+                return Task.CompletedTask;
+            });
         logger.LogInformation(
             "runner connected: machine={Machine} connection={Generation}",
             machineId, connection.Token.Generation);
@@ -97,10 +119,10 @@ public static class RunnerEndpoint
             // instead of being dropped, and both liveness clocks resume from now.
             // Inside the try: a failure here still unregisters below, and docketd's
             // reconnect backoff retries the whole handshake.
-            await dispatch.RehydrateMachineAsync(machineId, context.RequestAborted);
+            await dispatch.RehydrateMachineAsync(machineId, hangUp.Token);
 
             await ReceiveLoopAsync(
-                socket, connection.Token, registry, sink, dispatch, logger, context.RequestAborted);
+                socket, connection.Token, registry, sink, dispatch, logger, hangUp.Token);
         }
         catch (OperationCanceledException) { }
         catch (WebSocketException e)
@@ -136,6 +158,15 @@ public static class RunnerEndpoint
             if (teardown.Unregistered)
                 logger.LogInformation(
                     "runner disconnected: machine={Machine} connection={Generation}",
+                    machineId, connection.Token.Generation);
+            else if (hungUpByPlane)
+                // The plane took this connection out of the registry and hung up on it: a
+                // machine revocation (§13), which requeues what the connection held as part
+                // of the revoke. So the requeue is already done and is not this teardown's,
+                // exactly as for a superseded connection but for the opposite reason.
+                logger.LogWarning(
+                    "revoked runner connection closed: machine={Machine} connection={Generation} " +
+                    "(the plane hung up; its requeue belongs to the revoke)",
                     machineId, connection.Token.Generation);
             else
                 logger.LogInformation(

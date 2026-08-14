@@ -164,16 +164,43 @@ public sealed class TokenService(DocketDbContext db, TimeProvider clock)
     /// The one exchange in the system (§9 check 13): a live, unused enrollment
     /// token becomes a machine identity plus its access/refresh pair. Any
     /// other credential class presented here is refused.
+    ///
+    /// <para><b>Single-use is a conditional update, not a read-then-write.</b> The
+    /// read below only decides whether to try; the gate is the <c>WHERE</c> on the
+    /// burn, which re-asserts unused/unrevoked/unexpired and therefore takes the
+    /// row lock that serializes two concurrent exchanges. Deciding on the read and
+    /// then writing <c>UsedAt</c> would let both callers pass the check and both
+    /// mint — one enrollment token, two machine identities, which is the whole
+    /// blast radius §11 hands a single short-lived bootstrap secret. Same gate, and
+    /// the same reasoning, as <see cref="OAuthAuthorizationCodeService.ConsumeAsync"/>.</para>
+    ///
+    /// <para>The burn and the mint share one transaction, so a failure between them
+    /// cannot spend the token without issuing anything (which would strand an
+    /// enrolling machine with no way to retry) or issue credentials against a token
+    /// still open for a second exchange.</para>
     /// </summary>
     public async Task<MachineCredentials?> ExchangeEnrollmentAsync(
         string enrollmentToken, MachineDeclaration declaration, CancellationToken ct = default)
     {
-        // Tracked: we mutate UsedAt and rely on SaveChanges to persist it.
-        var row = await FindLive(enrollmentToken, ct, tracking: true);
+        // No-tracking: the burn below is an ExecuteUpdate, which bypasses the change
+        // tracker, so nothing here relies on this entity being persisted.
+        var row = await FindLive(enrollmentToken, ct);
         if (row is null || row.Kind != CredentialKind.Enrollment || row.UsedAt is not null)
             return null;
 
-        row.UsedAt = clock.GetUtcNow();
+        var now = clock.GetUtcNow();
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
+
+        var burned = await db.Set<CredentialRow>()
+            .Where(c => c.Id == row.Id && c.UsedAt == null && !c.Revoked
+                        && (c.ExpiresAt == null || c.ExpiresAt > now))
+            .ExecuteUpdateAsync(s => s.SetProperty(c => c.UsedAt, now), ct);
+        if (burned != 1)
+            // A concurrent exchange (or a revoke, or expiry) got there between the
+            // read and here. Refused exactly like a sequential second exchange —
+            // the caller cannot tell the race from the replay, and neither can it
+            // matter to them.
+            return null;
 
         var machine = new MachineRow
         {
@@ -182,7 +209,7 @@ public sealed class TokenService(DocketDbContext db, TimeProvider clock)
             Purpose = declaration.Purpose,
             Os = declaration.Os,
             PermissionLevel = declaration.PermissionLevel,
-            EnrolledAt = clock.GetUtcNow(),
+            EnrolledAt = now,
         };
         db.Set<MachineRow>().Add(machine);
 
@@ -190,6 +217,7 @@ public sealed class TokenService(DocketDbContext db, TimeProvider clock)
         var (refresh, refreshRow) = NewCredential(CredentialKind.MachineRefresh, MachineRefreshTtl, machineId: machine.Id);
         db.Set<CredentialRow>().AddRange(accessRow, refreshRow);
         await db.SaveChangesAsync(ct);
+        await tx.CommitAsync(ct);
 
         return new MachineCredentials(
             machine.Id,
@@ -198,8 +226,18 @@ public sealed class TokenService(DocketDbContext db, TimeProvider clock)
     }
 
     /// <summary>
-    /// Mints a fresh access token from a live refresh token. The refresh is
-    /// bound to its machine (§13): a revoked machine's refresh mints nothing.
+    /// Mints a fresh access token from a live refresh token. The refresh is bound to
+    /// its machine (§13) in the only sense the store can express: the row names which
+    /// machine it mints for, so a revoked machine's refresh mints nothing.
+    ///
+    /// <para><b>That binding is not a host binding.</b> The presented token is the
+    /// whole credential — nothing here can tell the enrolled box from a copy of its
+    /// <c>credentials</c> file on another host, and neither can <c>/runner</c>. A
+    /// leaked refresh token is a working machine identity anywhere until the machine
+    /// is revoked, which is why revocation has to be complete and immediate
+    /// (<see cref="MachineRevocationService"/>). Binding the refresh to a
+    /// host-derived secret that never lands in the credentials file is the real
+    /// answer and is not built (§13 as-built).</para>
     /// </summary>
     public async Task<IssuedToken?> RefreshMachineAccessAsync(string refreshToken, CancellationToken ct = default)
     {
@@ -288,7 +326,22 @@ public sealed class TokenService(DocketDbContext db, TimeProvider clock)
 
     // ── Revocation (§5: un-trusting a machine must take seconds) ───────────
 
-    public async Task RevokeMachineAsync(Guid machineId, CancellationToken ct = default)
+    /// <summary>
+    /// Kills a machine's row and every credential minted <em>for</em> that machine —
+    /// its access and refresh tokens — so nothing it holds authenticates again and no
+    /// further access can be refreshed.
+    ///
+    /// <para><b>This is one half of un-trusting a machine, not the whole of it.</b>
+    /// The predicate is <c>CredentialRow.MachineId</c>, and a worker token carries no
+    /// machine id (it is minted per {team, task, instance}), so this reaches no worker
+    /// running on the box; nor does it close the <c>/runner</c> socket, which
+    /// authenticated once at upgrade and is never re-checked. A machine revoked
+    /// through this method alone keeps its command channel and its workers' tokens.
+    /// Callers want <see cref="MachineRevocationService.RevokeAsync"/>, which composes
+    /// this with both; this stays public only because credential revocation is
+    /// separately meaningful to tests and to the store layer.</para>
+    /// </summary>
+    public async Task RevokeMachineCredentialsAsync(Guid machineId, CancellationToken ct = default)
     {
         var now = clock.GetUtcNow();
         await db.Set<MachineRow>().Where(m => m.Id == machineId && !m.Revoked)

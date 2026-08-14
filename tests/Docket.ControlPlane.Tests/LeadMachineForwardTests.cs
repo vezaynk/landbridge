@@ -110,7 +110,7 @@ public sealed class LeadMachineForwardTests(PostgresFixture pg) : IAsyncLifetime
         var clock = new FakeTimeProvider();
         var machine = await EnrollAsync(db, clock, "untrusted-box");
         // §13: un-trusting a machine takes it out of the fleet, binding included.
-        await new TokenService(db, clock).RevokeMachineAsync(machine);
+        await new TokenService(db, clock).RevokeMachineCredentialsAsync(machine);
 
         var refused = Assert.IsType<LeadMachineBindResult.Refused>(
             await new LeadMachineBindingService(db, clock).BindAsync(Guid.NewGuid(), machine));

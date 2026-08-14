@@ -132,6 +132,11 @@ public static class DashboardEndpoints
         // able to answer any of them.
         app.MapPost("/dashboard/permission", HandleDecidePermissionAsync);
 
+        // §5/§13 un-trust a machine, from the Machine Group view. Human-only and with no
+        // Lead twin, deliberately: this is the incident-response action, and the §5
+        // requirement it serves is that it takes seconds.
+        app.MapPost("/dashboard/machines/revoke", HandleRevokeMachineAsync);
+
         return app;
     }
 
@@ -367,6 +372,68 @@ public static class DashboardEndpoints
     }
 
     /// <summary>
+    /// POST /dashboard/machines/revoke — un-trust an enrolled machine (§5, §13).
+    ///
+    /// <para>The whole revoke, through <see cref="MachineRevocationService"/>: credentials,
+    /// the live <c>/runner</c> channel, and the worker tokens on the box. Until this existed
+    /// the operation had <em>no</em> surface at all — a compromised machine could only be
+    /// un-trusted by editing the database — which is the gap that made §5's
+    /// "un-trusting a machine must take seconds" untrue in practice.</para>
+    ///
+    /// <para><b>Human-only</b>, exactly like the <c>/dashboard/machines</c> view it is a
+    /// control on and for the same reason (<see cref="MachinesAreHumanOnly"/>): a machine is
+    /// not Team-scoped. A Lead is a Team-scoped harness client, so letting one revoke a
+    /// machine would let a Team un-trust infrastructure other Teams are working on — a
+    /// strictly worse version of the over-scoped read the view itself was closed against.
+    /// There is no MCP twin for the same reason, so the refusal names what a Lead should do
+    /// instead of implying a tool exists.</para>
+    ///
+    /// <para><b>Same-origin, like every other mutating form here</b>
+    /// (<see cref="CrossOriginRefusal"/>) — and this one is the most valuable POST on the
+    /// surface to forge: it needs nothing but a machine id, the ids are on a page the session
+    /// can already read, and a successful forgery evicts a machine mid-flight. Checked before
+    /// the session is resolved, because whether the request came from this dashboard is a
+    /// question about the request rather than about the caller.</para>
+    ///
+    /// <para>Idempotent and total: a machine that is offline, unknown, or already revoked
+    /// still returns 200 with a report of nothing taken away, because a caller reaching for
+    /// this in an incident should not have to establish the machine's state first. The
+    /// Machine Group view only lists <em>connected</em> machines, so a JSON caller naming an
+    /// offline machine's id directly is the path for one that has already dropped.</para>
+    /// </summary>
+    private static async Task<IResult> HandleRevokeMachineAsync(
+        HttpContext http, TokenService tokens,
+        [Microsoft.AspNetCore.Mvc.FromServices] MachineRevocationService revocations,
+        IConfiguration config,
+        CancellationToken ct)
+    {
+        if (CrossOriginRefusal(http, config) is { } refusal)
+            return refusal;
+
+        return await Gated(http, tokens, ct, async principal =>
+        {
+            if (principal is not Principal.Human)
+                return Refused(http, RevokingIsHumanOnly);
+
+            var form = await http.Request.ReadFormAsync(ct);
+            if (!Guid.TryParse(form["machineId"].ToString(), out var machineId))
+                return Results.BadRequest(new { error = "invalid machine id" });
+
+            var revoked = await revocations.RevokeAsync(machineId, ct);
+            return WantsJson(http)
+                ? Results.Json(
+                    new
+                    {
+                        machineId,
+                        channelClosed = revoked.ChannelClosed,
+                        tasksRequeued = revoked.TasksRequeued,
+                        workersRevoked = revoked.WorkersRevoked,
+                    }, Json)
+                : Html(DashboardRenderer.MachineRevoked(machineId, revoked));
+        });
+    }
+
+    /// <summary>
     /// GET /dashboard/preview-auth?label=&amp;return= — the gated-browser-flow confirm
     /// (§8.4). An operator with a live <c>docket_session</c> (host-scoped to the
     /// dashboard origin) confirms access to the preview's Team; the plane mints a
@@ -459,6 +526,10 @@ public static class DashboardEndpoints
     private const string MachinesAreHumanOnly =
         "the machine group is a human-operator view; a Lead session sees its own Team's tasks "
         + "on /dashboard/teams and through get_team_state";
+
+    private const string RevokingIsHumanOnly =
+        "revoking a machine is a human-operator action; a machine belongs to no Team, so a Lead "
+        + "session cannot un-trust one — ask your operator";
 
     private const string NotYourTeam =
         "this session may only read its own Team";

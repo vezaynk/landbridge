@@ -171,7 +171,7 @@ public sealed class EnrollmentEndpointsTests(PostgresFixture pg) : IAsyncLifetim
 
         // Un-trusting the machine (§5) kills its refresh: it mints nothing.
         await using (var db = pg.NewContext())
-            await new TokenService(db, clock).RevokeMachineAsync(enrolled.MachineId, ct);
+            await new TokenService(db, clock).RevokeMachineCredentialsAsync(enrolled.MachineId, ct);
 
         var refreshResp = await client.PostAsJsonAsync("/machine/refresh", new { refreshToken = enrolled.RefreshToken }, ct);
         Assert.Equal(HttpStatusCode.Unauthorized, refreshResp.StatusCode);

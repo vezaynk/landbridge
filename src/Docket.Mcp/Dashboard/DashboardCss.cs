@@ -112,6 +112,13 @@ internal static class DashboardCss
     }
     .permission-decide button[value=deny] { background: var(--bad); }
     .permission-decide .nt { margin-top: 6px; }
+    /* Revoke machine (§13, human-only). Destructive, so it reads as such rather than
+       sitting in the accent colour every other action shares. */
+    .machine-revoke { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+    .machine-revoke button {
+      padding: 6px 12px; border: none; border-radius: 6px;
+      background: var(--bad); color: var(--accent-ink); font: inherit; font-weight: 600; cursor: pointer;
+    }
     /* Login */
     .login-wrap { max-width: 420px; margin: 8vh auto; }
     .login-wrap input[type=text], .login-wrap input[type=password] {
