@@ -77,6 +77,26 @@ API-key secret is absent, and the job still concludes `success` — by design, s
 bot therefore reads each job's log and requires that facts actually *passed*; a tier that went
 green having skipped everything counts as **not verified** and blocks the merge.
 
+### The log fetch is gh-version-coupled — do not "simplify" it
+
+Reading those logs is the step that broke the first real run, and it is worth knowing why before
+touching it. Job logs carry terminal escape sequences in their coloured test lines (the log for run
+31829608810's real-claude job has 8 ESC bytes; its xUnit summary line is plain). **Newer gh refuses
+to emit such a response** without `--allow-escape-sequences`, and **gh 2.92.0 rejects that flag
+outright** with `unknown flag`. Either choice alone breaks the other version — and because this gate
+fails closed, the wrong choice does not error loudly, it makes the bot **silently stop merging
+anything**. So `ReadJobLogAsync` passes the flag first and retries without it on exactly an
+`unknown flag` rejection. The escape-sequence refusal deliberately does *not* trigger that retry,
+since retrying without the flag is precisely what cannot work in that case.
+
+`JobLogArgs` is a pure function so both argv forms are asserted in tests; the first real run's
+failure was invisible to the original tests because they fed log *text* to the parser and never
+exercised the fetch that produces it.
+
+When the fetch fails, the PR comment says the log **could not be read** and quotes gh's error —
+distinct from "read it and found no summary". The first occurrence of this required someone to
+hand-audit an entirely green run to discover the bot was fine and the reader was not.
+
 ## Adding a fourth harness
 
 An entry in `HarnessPackages.All` and a pinned `npm install -g` line in ci.yml, plus its job name
