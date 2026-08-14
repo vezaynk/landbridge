@@ -12,6 +12,11 @@ namespace Docket.ControlPlane;
 /// effects, and an event row in one transaction — so a transition and its
 /// consequences (token mint/revoke, service clearing, park record) are
 /// atomic, and a NOTIFY fires only if the write commits.
+///
+/// <para>Atomic including the set-based effects, which is why <see cref="RunTransition"/>
+/// opens the transaction itself rather than leaving it to <see cref="CommitAsync"/>: an
+/// <c>ExecuteUpdate</c> effect issues its SQL where it stands, so a transaction opened after
+/// the effects would leave a revoke committed beside a row that never moved.</para>
 /// </summary>
 public sealed class TaskStore(
     DocketDbContext db,
@@ -926,6 +931,26 @@ public sealed class TaskStore(
         };
         if (answerText is not null)
             row.InputAnswer = answerText;
+
+        // The transaction opens HERE, before the effects — not down in CommitAsync. Two of
+        // the effects are set-based (§9.14's instance revoke, and the §8.2/§8.3 service and
+        // relay-grant clearing): ExecuteUpdate/ExecuteDelete bypass the change tracker and
+        // issue their SQL the moment ApplyEffects runs, rather than riding the SaveChanges
+        // that persists the row. A transaction opened after them therefore did not contain
+        // them, and the atomicity this class claims held only for the one caller that
+        // supplies its own (DispatchNextAsync).
+        //
+        // No crash is needed to see it: SaveChanges losing on the row's xmin token returns
+        // Conflict below, with the revoke already committed on its own. The caller then
+        // re-reads a task whose row never moved — still working, its dispatch untouched —
+        // while the instance working it has had its authorization destroyed, so the worker
+        // 401s on every call it makes (§9 check 14) and the task sits working until a
+        // liveness clock reclaims it. Opening first makes the effects and the row commit or
+        // roll back together, which is what the summary above has always said.
+        await using var ownTx = outerTx is null
+            ? await db.Database.BeginTransactionAsync(ct)
+            : null;
+
         ApplyEffects(row, ok.Effects);
         // §6/§9 check 7 (#73): the requeue's reason onto its own event row, the same way
         // the input-request kind rides its transition. The row's from/to states already
@@ -951,10 +976,13 @@ public sealed class TaskStore(
 
         try
         {
-            await CommitAsync(row.Id, ct, outerTx);
+            await CommitAsync(row.Id, ct, outerTx ?? ownTx);
+            if (ownTx is not null)
+                await ownTx.CommitAsync(ct);
         }
         catch (DbUpdateConcurrencyException)
         {
+            // The `await using` above rolls ownTx back, taking the effects with it.
             return new StoreResult.Conflict($"task {row.Id} moved concurrently; re-read and retry");
         }
 
@@ -1045,6 +1073,17 @@ public sealed class TaskStore(
     private static PermissionAnswerer AnswererOf(Actor actor) =>
         actor is HumanSession ? PermissionAnswerer.Human : PermissionAnswerer.Lead;
 
+    /// <summary>
+    /// Persists whatever the caller has staged and fires the task's NOTIFY in the same
+    /// transaction, so subscribers wake only on committed writes.
+    ///
+    /// <para><paramref name="outerTx"/> is a transaction this method must not commit —
+    /// someone above owns it and commits it (the SKIP LOCKED claim in
+    /// <see cref="DispatchNextAsync"/>, or <see cref="RunTransition"/>'s own, opened before
+    /// the effects run). Absent one — the out-of-band event recorders, which stage a single
+    /// row and no effects — it opens and commits its own, since the write and the NOTIFY
+    /// are two statements and a NOTIFY must not outlive a rolled-back insert.</para>
+    /// </summary>
     private async Task CommitAsync(
         Guid taskId, CancellationToken ct,
         Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction? outerTx = null)

@@ -17,8 +17,9 @@ namespace Docket.ControlPlane;
 /// eligible submitted tasks to ready machines via
 /// <see cref="TaskStore.DispatchNextAsync"/> — whose SKIP LOCKED claim picks the
 /// task, does the submitted→working transition, and mints the worker instance
-/// <em>before</em> the command is sent, so a failed send requeues a now-working
-/// task rather than losing it (§10 best-effort commands).
+/// <em>before</em> the command is sent, so a failed send — or a throw anywhere
+/// between that commit and the send — requeues a now-working task rather than
+/// losing it (§10 best-effort commands).
 ///
 /// A liveness timer requeues working tasks on either of two clocks — no
 /// process-aliveness signal, or no forward progress for far longer (see
@@ -145,14 +146,45 @@ public sealed class DispatchService : IHostedService
     {
         try
         {
-            await RunDispatchPassAsync(ct); // startup backlog scan
+            await RunPassContainedAsync(ct); // startup backlog scan
             await foreach (var _ in _wake.Reader.ReadAllAsync(ct))
-                await RunDispatchPassAsync(ct);
+                await RunPassContainedAsync(ct);
         }
         catch (OperationCanceledException) { }
         catch (Exception e)
         {
             _logger.LogError(e, "dispatch loop crashed");
+        }
+    }
+
+    /// <summary>
+    /// One pass, with its failure contained to itself — because a pass that throws must
+    /// never be able to end the loop. This loop is the only thing that turns submitted
+    /// tasks into running work, it is started once per process, and nothing restarts it:
+    /// with the containment one level up (where the outer catch below sat alone), a single
+    /// throw from a single pass — a token mint against a momentarily unreachable database
+    /// is enough — stopped dispatch for the rest of the process's life, while the plane
+    /// went on accepting tasks and reporting itself healthy. Every submission after that
+    /// simply sat in <c>submitted</c>.
+    ///
+    /// <para>A bad pass is therefore logged and left behind; the next wake runs another
+    /// one, and passes are idempotent by construction (the SKIP LOCKED claim), so nothing
+    /// is owed to the one that failed. Shutdown still ends the loop, which is what the
+    /// cancellation rethrow preserves.</para>
+    /// </summary>
+    private async Task RunPassContainedAsync(CancellationToken ct)
+    {
+        try
+        {
+            await RunDispatchPassAsync(ct);
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception e)
+        {
+            _logger.LogError(e, "dispatch pass failed; the loop continues");
         }
     }
 
@@ -284,36 +316,78 @@ public sealed class DispatchService : IHostedService
         // flows into the encode call on the send path.
         using var activity = StartDispatchActivity(task.Id, machineId, profile, applied.TraceContext);
 
-        // §5, §13: mint the worker token for this instance; docketd injects it,
-        // wrapped in the MCP client config the worker dials the plane with.
-        var minted = await tokens.MintWorkerTokenAsync(task.Team, task.Id, instance, ct);
-        var command = new DispatchCommand(
-            task.Id, profile, minted.Token, McpConfigJson: BuildWorkerMcpConfig(minted.Token),
-            // §11 resume: pass the prior work session's ref (present when this task
-            // was worked before and parked/requeued) so docketd continues the
-            // transcript. Opaque metadata surfaced by the store; docketd resumes
-            // only if the resolved profile declares resume.args, else cold-starts.
-            ResumeSessionRef: applied.HarnessSessionRef,
-            // §7/§11 directory inheritance: whose work dir this dispatch runs in. A property
-            // of continuation itself, NOT of transcript resume (#122) — a continuation works
-            // where its predecessor worked whether or not it inherits the session, so this
-            // rides every continuation dispatch including a degrade cold-start, where
-            // ResumeSessionRef above is deliberately null. Transcript resume additionally
-            // depends on it, since a harness session resumes only from the directory that
-            // created it. Null for a same-task park-resume, whose dir the runner already picks.
-            WorkDirTask: applied.WorkDirTask);
+        try
+        {
+            // §5, §13: mint the worker token for this instance; docketd injects it,
+            // wrapped in the MCP client config the worker dials the plane with.
+            var minted = await tokens.MintWorkerTokenAsync(task.Team, task.Id, instance, ct);
+            var command = new DispatchCommand(
+                task.Id, profile, minted.Token, McpConfigJson: BuildWorkerMcpConfig(minted.Token),
+                // §11 resume: pass the prior work session's ref (present when this task
+                // was worked before and parked/requeued) so docketd continues the
+                // transcript. Opaque metadata surfaced by the store; docketd resumes
+                // only if the resolved profile declares resume.args, else cold-starts.
+                ResumeSessionRef: applied.HarnessSessionRef,
+                // §7/§11 directory inheritance: whose work dir this dispatch runs in. A property
+                // of continuation itself, NOT of transcript resume (#122) — a continuation works
+                // where its predecessor worked whether or not it inherits the session, so this
+                // rides every continuation dispatch including a degrade cold-start, where
+                // ResumeSessionRef above is deliberately null. Transcript resume additionally
+                // depends on it, since a harness session resumes only from the directory that
+                // created it. Null for a same-task park-resume, whose dir the runner already picks.
+                WorkDirTask: applied.WorkDirTask);
 
-        _registry.TrackDispatch(machineId, task.Id);
-        var sent = await _registry.SendAsync(machineId, command, ct);
-        if (sent)
-            return DispatchOutcome.Dispatched;
+            _registry.TrackDispatch(machineId, task.Id);
+            if (await _registry.SendAsync(machineId, command, ct))
+                return DispatchOutcome.Dispatched;
+
+            _logger.LogWarning("dispatch send failed for task {Task} on {Machine}; requeued", task.Id, machineId);
+        }
+        catch (Exception e) when (e is not OperationCanceledException || !ct.IsCancellationRequested)
+        {
+            // A throw between the committed submitted→working transition and the send leaves
+            // exactly the wreckage a failed send leaves — a working row that nothing is
+            // working on — so it takes the same remedy rather than escaping. The mint above
+            // can fail for reasons that have nothing to do with this task — it is a database
+            // write, and a transient fault there is one the next attempt would sail through
+            // — which is the whole of what makes this reachable in a healthy system.
+            //
+            // Uncaught, such a throw left the row stranded working AND untracked, the worst
+            // of the shapes available: nothing tracks it, so the liveness scan never walks
+            // it and no clock covers it, and only a machine reconnect's rehydration would
+            // ever put it back under one — the #86 symptom by a new route. Shutdown
+            // cancellation is left to propagate instead: nothing ran, and the restarted
+            // plane re-adopts the instance on reconnect and lets the aliveness clock
+            // reclaim it.
+            _logger.LogError(
+                e, "dispatch of task {Task} to {Machine} failed after the claim; requeued",
+                task.Id, machineId);
+        }
 
         // §10: the submitted→working transition already committed, but nothing is
         // running — requeue against the infrastructure counter.
         _registry.Untrack(task.Id);
-        await store.ApplyAsync(task.Id, new LivenessLost(LivenessLossReason.AckTimeout), ct);
-        _logger.LogWarning("dispatch send failed for task {Task} on {Machine}; requeued", task.Id, machineId);
+        await RequeueUndispatchedAsync(task.Id, ct);
         return DispatchOutcome.SendFailed;
+    }
+
+    /// <summary>
+    /// Frees a task that was claimed but never started (§10 best-effort commands). The
+    /// submitted→working transition has committed, so only a transition of its own puts the
+    /// task back in the queue — which also revokes the instance minted for the dead attempt
+    /// (§9.14) and counts against the infrastructure requeue cap (§9 check 7).
+    ///
+    /// <para>On a scope of its own, deliberately. The caller's store shares one DbContext
+    /// with the token mint, and a mint that threw part-way through its <c>SaveChanges</c>
+    /// leaves its credential row tracked as Added on that context — so requeueing through
+    /// the same store would re-attempt the very write that just failed and lose the requeue
+    /// to the same exception. A fresh scope owes nothing to whatever broke.</para>
+    /// </summary>
+    private async Task RequeueUndispatchedAsync(TaskId task, CancellationToken ct)
+    {
+        using var scope = _scopes.CreateScope();
+        var store = scope.ServiceProvider.GetRequiredService<TaskStore>();
+        await store.ApplyAsync(task, new LivenessLost(LivenessLossReason.AckTimeout), ct);
     }
 
     /// <summary>

@@ -1,3 +1,4 @@
+using Docket.ControlPlane.Auth;
 using Docket.Core;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Time.Testing;
@@ -834,6 +835,54 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         // it re-reads is no longer working) — never a second successful mutation.
         Assert.IsType<StoreResult.Applied>(ra);
         Assert.True(rb is StoreResult.Conflict or StoreResult.Rejected, $"unexpected {rb}");
+    }
+
+    [SkippableFact]
+    public async Task A_transition_that_loses_the_race_takes_its_effects_down_with_it()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+        var id = await CreateSubmittedOnNewContext();
+        var instance = WorkerInstanceId.New();
+        await using (var d = pg.NewContext())
+            await new TaskStore(d, clock).DispatchNextAsync(Machine(), instance);
+
+        // The dispatched worker's live credential — the thing the effect at issue destroys,
+        // and the reason this matters beyond bookkeeping.
+        string workerToken;
+        await using (var t = pg.NewContext())
+            workerToken = (await new TokenService(t, clock).MintWorkerTokenAsync(Team, id, instance)).Token;
+
+        await using var db = pg.NewContext();
+        // This context reads the working row at its current version...
+        _ = await db.Tasks.FirstAsync(t => t.Id == id.Value);
+        // ...and the runner then stamps the harness session this dispatch started (§11), an
+        // ordinary out-of-band write: the row's xmin moves and its state does not. Every
+        // part of the task is healthy, which is what makes this the interesting failure —
+        // no crash, no outage, just two writers.
+        await using (var runner = pg.NewContext())
+            await new TaskStore(runner, clock).StampHarnessSessionRefAsync(id, "session-1");
+
+        // Now the liveness scan requeues off its stale read. The engine agrees (the row this
+        // context holds still says working), so the transition runs its effects — revoking
+        // the instance — and then loses on the concurrency token.
+        var result = await new TaskStore(db, clock)
+            .ApplyAsync(id, new LivenessLost(LivenessLossReason.LivenessTimeout));
+        Assert.IsType<StoreResult.Conflict>(result);
+
+        // Conflict means nothing happened, and that has to include the effects. When the
+        // revoke committed on its own — as it did, ExecuteUpdate running the moment
+        // ApplyEffects reached it, before any transaction was open — the row stayed working
+        // while the worker actually doing that work lost its authorization: every call it
+        // made 401d (§9 check 14), so its result never landed and the task sat working until
+        // a clock reclaimed it.
+        await using var verify = pg.NewContext();
+        var row = await verify.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(TaskState.Working, row.State);
+        Assert.Equal(instance.Value, row.CurrentInstanceId);
+        Assert.False(await verify.WorkerInstances.AsNoTracking()
+            .Where(w => w.Id == instance.Value).Select(w => w.Revoked).SingleAsync());
+        Assert.IsType<Principal.Worker>(await new TokenService(verify, clock).ValidateAsync(workerToken));
     }
 
     private async Task<TaskId> CreateSubmittedOnNewContext()
