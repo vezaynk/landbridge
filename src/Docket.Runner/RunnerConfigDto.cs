@@ -83,6 +83,12 @@ internal sealed class ProfileDto
     // `services`, because a process and a service are different things (§10) and this is the
     // key a human types.
     public ProfileProcessesDto? Processes { get; set; }
+
+    // §10 / #112 G3: per-spawn environment. Substituted with the same {task_id} /
+    // {machine_id} / {work_dir} / {mcp_config} / {session_id} tokens spawn gets. The
+    // four DOCKET_* variables docketd stamps itself are refused at load, not silently
+    // dropped — a profile that thinks it overwrote DOCKET_WORKER_TOKEN must not start.
+    public Dictionary<string, string>? Env { get; set; }
 }
 
 internal sealed class ProfileProcessesDto

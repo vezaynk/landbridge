@@ -172,6 +172,9 @@ public sealed class RealGrokCollaborationTests(PostgresFixture pg) : IAsyncLifet
     /// Isolated <c>GROK_HOME</c> so the test does not write into the operator's
     /// <c>~/.grok</c>. Holds the static MCP server that replaces <c>--mcp-config</c>
     /// (Grok has none). Bearer is <c>${DOCKET_WORKER_TOKEN}</c>, expanded at load.
+    /// The production seam for this variable is now <c>profiles[].env</c> (#112 G3);
+    /// the rig still publishes it process-wide because it constructs the profile
+    /// before the MCP URL — and therefore this directory — exists.
     /// </summary>
     private sealed class GrokHome : IDisposable
     {

@@ -60,6 +60,10 @@ When `otel` is true **and** a destination resolves:
 
 Then `telemetry.env` is applied over those defaults, so you can override any of
 them — a gRPC-only collector, events without metrics, a shorter export interval.
+`profiles[].env` is a different map (harness homes, API keys, anything that is
+not telemetry) and is stamped first; when `otel` is on, `telemetry.env` overlays
+it. Neither map can set `DOCKET_MACHINE_ID`, `DOCKET_TASK_ID`,
+`DOCKET_WORKER_TOKEN`, or `DOCKET_TRACEPARENT`.
 The one thing it cannot override is attribution: an `OTEL_RESOURCE_ATTRIBUTES`
 you set becomes the *base* that `docket.task_id` is appended to, never a
 replacement for it.

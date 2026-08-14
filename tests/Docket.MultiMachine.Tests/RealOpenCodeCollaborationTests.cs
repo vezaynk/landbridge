@@ -600,12 +600,10 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
     /// <c>Authorization: Bearer </c>, a plane 401, and an agent that runs happily with no docket
     /// tools. Nothing config-side prevents it; this tier failing loudly is the substitute.</para>
     ///
-    /// <para><b>Known production gap (OC-G4), also not worked around.</b> One config file is
-    /// shared by every worker this test process spawns, because docketd has no per-profile
-    /// environment seam — a test can set <c>OPENCODE_CONFIG</c> process-wide, a real operator
-    /// cannot set it per task. Fine for a rig that runs tasks in sequence; #112's
-    /// <c>profiles[].env</c> is the real fix, and with it this file would not need to exist at all
-    /// (<c>OPENCODE_CONFIG_CONTENT</c> carries a whole config inline, <c>flag.ts:22</c>).</para>
+    /// <para>A real operator now sets this via <c>profiles[].env</c> (#112 G3), including
+    /// inline via <c>OPENCODE_CONFIG_CONTENT</c>. The rig still publishes
+    /// <c>OPENCODE_CONFIG</c> process-wide because one file is shared across sequential
+    /// facts and the profile is built before this path exists.</para>
     ///
     /// <para><b>Tools are deliberately not gated here.</b> OpenCode's allow-list is a config map
     /// with wildcards rather than a CLI flag, and narrowing it to the docket tools alone would

@@ -421,6 +421,34 @@ public sealed record RunnerConfig(
                     "definition) or stdin 'deadman' (§10)");
             }
 
+            // #112 G3: reserved names fail the load rather than being dropped at spawn.
+            // Silently ignoring DOCKET_WORKER_TOKEN would leave an operator believing
+            // they had overwritten a per-instance secret.
+            if (dto.Env is { Count: > 0 })
+            {
+                foreach (var key in dto.Env.Keys)
+                {
+                    if (string.IsNullOrWhiteSpace(key))
+                    {
+                        problems.Add($"profile '{name}' env has an empty key");
+                        continue;
+                    }
+
+                    if (key.Contains('=', StringComparison.Ordinal) || key.Contains('\0'))
+                    {
+                        problems.Add(
+                            $"profile '{name}' env key '{key}' is not a variable name — keys cannot " +
+                            "contain '=' or NUL");
+                        continue;
+                    }
+
+                    if (HarnessTelemetry.IsReserved(key))
+                        problems.Add(
+                            $"profile '{name}' env cannot set {key} — docketd stamps it on every " +
+                            "spawn, not configurably (§10)");
+                }
+            }
+
             built[name] = BuildProfile(dto);
         }
 
@@ -604,7 +632,8 @@ public sealed record RunnerConfig(
                 : new ProfileProcessesConfig(
                     dto.Processes.AgentInitiated ?? false,
                     dto.Processes.Max is { } cap and > 0 ? cap : 8),
-            stdin);
+            stdin,
+            dto.Env);
     }
 
     /// <summary>
@@ -684,10 +713,21 @@ public sealed record ProfileConfig(
     LogsConfig Logs,
     int? MaxConcurrent,
     ProfileProcessesConfig? Processes = null,
-    StdinPolicy Stdin = StdinPolicy.Deadman)
+    StdinPolicy Stdin = StdinPolicy.Deadman,
+    IReadOnlyDictionary<string, string>? Env = null)
 {
     /// <summary>This profile's agent-process policy; the closed default when unstated.</summary>
     public ProfileProcessesConfig ProcessPolicy => Processes ?? new ProfileProcessesConfig();
+
+    /// <summary>
+    /// §10 / #112 G3: extra environment stamped on every spawn (and resume) of this
+    /// profile, after the reserved <c>DOCKET_*</c> variables and before
+    /// <c>telemetry.env</c>. Values take the same <c>{task_id}</c> / <c>{machine_id}</c>
+    /// / <c>{work_dir}</c> / <c>{mcp_config}</c> / <c>{session_id}</c> substitutions
+    /// <see cref="Spawn"/> does. Never null: an absent <c>env</c> block is an empty map.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> Env { get; init; } =
+        Env ?? new Dictionary<string, string>(StringComparer.Ordinal);
 }
 
 /// <summary>

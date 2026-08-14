@@ -428,6 +428,11 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         if (Activity.Current?.Id is { } traceparent)
             psi.Environment["DOCKET_TRACEPARENT"] = traceparent;
 
+        // #112 G3: the profile's own env, substituted with the same tokens as spawn.
+        // Applied after the reserved DOCKET_* stamps (which it cannot overwrite) and
+        // before telemetry, so telemetry.env still overlays OTEL_* when otel is on.
+        ApplyProfileEnvironment(psi, profile, substitutions);
+
         // §10 telemetry ingest: when this profile opts in, turn the harness's own
         // exporter on and stamp docket.task_id onto everything it emits, so the
         // operator's collector can bucket token/cost per task (visibility only —
@@ -801,6 +806,22 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         if (job is null)
             Console.Error.WriteLine($"docketd: Job Object containment degraded for a worker: {failure}");
         return job;
+    }
+
+    /// <summary>
+    /// #112 G3: stamp <see cref="ProfileConfig.Env"/> onto the child. Reserved names
+    /// are skipped even if they somehow reached the record — load validation is the
+    /// operator-facing refusal; this is the belt.
+    /// </summary>
+    private static void ApplyProfileEnvironment(
+        ProcessStartInfo psi, ProfileConfig profile, IReadOnlyDictionary<string, string> substitutions)
+    {
+        foreach (var (key, value) in profile.Env)
+        {
+            if (string.IsNullOrWhiteSpace(key) || HarnessTelemetry.IsReserved(key))
+                continue;
+            psi.Environment[key] = Substitute(value, substitutions);
+        }
     }
 
     /// <summary>

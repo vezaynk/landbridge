@@ -564,11 +564,10 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
     /// warn that Codex rewrites refresh tokens in place, so a copy can go stale against the
     /// original.</para>
     ///
-    /// <para><b>Known production gap, deliberately not worked around here.</b> One
-    /// <c>CODEX_HOME</c> is shared by every worker this test process spawns, because docketd
-    /// has no per-profile environment seam and no <c>{codex_home}</c> placeholder — a test can
-    /// set it process-wide, a real operator cannot set it per task. Fine for a rig that runs
-    /// tasks in sequence; called out in the gaps report as the real fix.</para>
+    /// <para>A real operator now sets this via <c>profiles[].env</c> (#112 G3). The rig
+    /// still publishes it process-wide because one home is shared across sequential
+    /// facts and the profile is built before this directory exists. Per-task
+    /// <c>{work_dir}/.codex</c> still needs the file to exist in that directory (G2).</para>
     /// </summary>
     private sealed class CodexHome : IDisposable
     {
