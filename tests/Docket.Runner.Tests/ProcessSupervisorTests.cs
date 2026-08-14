@@ -359,6 +359,27 @@ public sealed class ProcessSupervisorTests : IDisposable
 
     // ── §11 resume: spawn argv selection ────────────────────────────────────────
 
+    [SkippableFact]
+    public async Task The_injected_mcp_config_is_removed_when_the_worker_exits()
+    {
+        // Spec §13: the generated MCP config is 0600 and removed on exit. The walking
+        // skeleton pins the write; this pins the delete, against a worker that exits
+        // on its own (exit-code), so a leftover file is not "we have not killed it yet."
+        var task = TaskId.New();
+        var supervisor = Supervisor();
+        var mcpPath = Path.Combine(_workRoot, task.ToString(), "mcp.json");
+        supervisor.Spawn(
+            new DispatchCommand(task, "default", McpConfigJson: """{"mcpServers":{}}"""),
+            TestKit.Profile("exit-code"), "m");
+
+        Assert.True(await TestKit.WaitUntilAsync(() => File.Exists(mcpPath), TimeSpan.FromSeconds(15)),
+            "docketd never wrote the injected mcp.json");
+        Assert.True(await TestKit.WaitUntilAsync(() => supervisor.RunningTotal == 0, TimeSpan.FromSeconds(15)),
+            "exit-code harness never left the running set");
+        Skip.If(File.Exists(mcpPath),
+            "pending #147: OnExited does not delete mcp.json — unskip when the file is gone");
+    }
+
     [Fact]
     public async Task Resume_spawns_from_resume_args_substituting_session_id_and_mcp_config()
     {

@@ -796,6 +796,43 @@ public class ServiceSupervisionTests
     }
 
     [Fact]
+    public async Task A_process_survives_killing_the_declaring_worker()
+    {
+        // The process is docketd's child, not the worker's. Killing the declaring
+        // task's harness must not reap it — that is the whole point of start_process.
+        var workRoot = TestKit.NewWorkRoot();
+        var procDir = TestKit.NewWorkRoot();
+        var ring = new OutboundEventRing(capacity: 16);
+        var supervisor = new ProcessSupervisor(TestKit.Machine(workRoot), ring, TimeProvider.System);
+        await using var services = new ServiceSupervisor([], "m1", TimeProvider.System);
+        try
+        {
+            var worker = TaskId.New();
+            supervisor.Spawn(TestKit.Dispatch(worker), TestKit.Profile("run"), "m1");
+            var workerPidPath = Path.Combine(workRoot, worker.ToString(), "pid");
+            Assert.True(await TestKit.WaitUntilAsync(() => File.Exists(workerPidPath), TimeSpan.FromSeconds(15)));
+            var workerPid = int.Parse(await File.ReadAllTextAsync(workerPidPath));
+
+            Assert.IsType<ProcessOutcome.StartedOk>(await services.StartProcessAsync(
+                Ask("held", spawn: [TestKit.HarnessPath(), "sleeper"], cwd: procDir),
+                ProfileWith(true), CancellationToken.None));
+            var ready = Path.Combine(procDir, "ready");
+            Assert.True(await TestKit.WaitUntilAsync(() => File.Exists(ready), TimeSpan.FromSeconds(15)));
+
+            Assert.True(supervisor.Kill(worker));
+            Assert.True(await TestKit.WaitUntilAsync(() => !TestKit.PidAlive(workerPid), TimeSpan.FromSeconds(10)));
+
+            Assert.Equal(ServiceState.Running, Assert.Single(services.ReportProcesses()).State);
+        }
+        finally
+        {
+            supervisor.KillAll();
+            TestKit.TryDeleteRoot(workRoot);
+            TestKit.TryDeleteRoot(procDir);
+        }
+    }
+
+    [Fact]
     public void An_empty_report_and_a_null_report_are_different_answers()
     {
         // Null on the heartbeat means "this machine says nothing about services" (an

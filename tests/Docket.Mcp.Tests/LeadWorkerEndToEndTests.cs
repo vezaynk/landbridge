@@ -278,6 +278,205 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         await app.StopAsync(ct);
     }
 
+    [SkippableFact]
+    public async Task Takeover_evicts_the_incumbent_lead_mid_task_and_the_worker_still_reports()
+    {
+        // §4 / §17.8: evict a Lead while a worker is mid-flight. The evicted session's
+        // next privileged call names who and when; the incumbent worker's token is
+        // untouched, so it can still drive the task to verifying.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var ct = cts.Token;
+
+        await using var app = BuildServer();
+        await app.StartAsync(ct);
+        var baseUri = new Uri(app.Urls.First(u => u.StartsWith("http://")) + "/");
+
+        var team = TeamId.New();
+        string incumbentToken;
+        string successorHumanN;
+        await using (var db = pg.NewContext())
+        {
+            var tokens = new TokenService(db, TimeProvider.System);
+            var first = await tokens.IssueHumanSessionAsync(ct);
+            var claimed = Assert.IsType<LeadClaimResult.Claimed>(
+                await tokens.ClaimLeadAsync(first.Token, team, ct: ct));
+            incumbentToken = claimed.Token.Token;
+
+            var second = await tokens.IssueHumanSessionAsync(ct);
+            successorHumanN = second.CredentialId.ToString("N");
+            Assert.IsType<LeadClaimResult.Claimed>(
+                await tokens.ClaimLeadAsync(second.Token, team, takeover: true, ct: ct));
+        }
+
+        await using (var evicted = await ConnectAsync(baseUri, incumbentToken, ct))
+        {
+            var refused = await evicted.CallToolAsync("create_task", new Dictionary<string, object?>
+            {
+                ["description"] = "should not land",
+                ["completionCriteria"] = "should not land",
+                ["mode"] = "lead",
+            }, cancellationToken: ct);
+            Assert.Equal(true, refused.IsError);
+            var text = string.Concat(refused.Content.OfType<TextContentBlock>().Select(b => b.Text));
+            Assert.Contains("taken over", text, StringComparison.OrdinalIgnoreCase);
+            Assert.Contains(successorHumanN, text, StringComparison.OrdinalIgnoreCase);
+        }
+
+        // A worker dispatched under the new Lead still reports — eviction is a Lead
+        // session fact, not a revocation of in-flight work.
+        string leadToken;
+        await using (var db = pg.NewContext())
+        {
+            var tokens = new TokenService(db, TimeProvider.System);
+            var human = await tokens.IssueHumanSessionAsync(ct);
+            // Team already has a Lead; take it so we can create.
+            var claim = Assert.IsType<LeadClaimResult.Claimed>(
+                await tokens.ClaimLeadAsync(human.Token, team, takeover: true, ct: ct));
+            leadToken = claim.Token.Token;
+        }
+
+        TaskId taskId;
+        await using (var lead = await ConnectAsync(baseUri, leadToken, ct))
+        {
+            var created = await lead.CallToolAsync("create_task", new Dictionary<string, object?>
+            {
+                ["description"] = "finish after the takeover",
+                ["completionCriteria"] = "the suite is green",
+                ["mode"] = "lead",
+            }, cancellationToken: ct);
+            Assert.NotEqual(true, created.IsError);
+            taskId = new TaskId(Guid.Parse(Assert.Single(created.Content.OfType<TextContentBlock>()).Text));
+        }
+
+        string workerToken;
+        await using (var db = pg.NewContext())
+        {
+            var store = new TaskStore(db, TimeProvider.System);
+            var instance = WorkerInstanceId.New();
+            await store.DispatchNextAsync(
+                new MachineSnapshot("m1", Ready: true, UnderBackPressure: false, new HashSet<string> { "default" }),
+                instance, ct);
+            workerToken = (await new TokenService(db, TimeProvider.System)
+                .MintWorkerTokenAsync(team, taskId, instance, ct)).Token;
+        }
+
+        await using (var worker = await ConnectAsync(baseUri, workerToken, ct))
+        {
+            var reported = await worker.CallToolAsync("report_result", new Dictionary<string, object?>
+            {
+                ["resultReference"] = "git:after-takeover",
+            }, cancellationToken: ct);
+            Assert.NotEqual(true, reported.IsError);
+        }
+
+        await using (var v = pg.NewContext())
+            Assert.Equal(TaskState.Verifying,
+                (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == taskId.Value, ct)).State);
+
+        await app.StopAsync(ct);
+    }
+
+    [SkippableFact]
+    public async Task Answering_a_parked_task_after_the_machine_is_gone_redispatches_elsewhere()
+    {
+        // §11 / §17.8: the machine that held the park is gone. The answer still wakes
+        // the task, and a different machine's dispatch is the one that reads it.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var ct = cts.Token;
+
+        await using var app = BuildServer();
+        await app.StartAsync(ct);
+        var baseUri = new Uri(app.Urls.First(u => u.StartsWith("http://")) + "/");
+
+        var team = TeamId.New();
+        const string question = "the laptop is closed; answer this after it is gone";
+        const string answer = "use the other machine; the first one is not coming back";
+
+        string leadToken;
+        await using (var db = pg.NewContext())
+        {
+            var tokens = new TokenService(db, TimeProvider.System);
+            var human = await tokens.IssueHumanSessionAsync(ct);
+            leadToken = Assert.IsType<LeadClaimResult.Claimed>(
+                await tokens.ClaimLeadAsync(human.Token, team, ct: ct)).Token.Token;
+        }
+
+        TaskId taskId;
+        await using (var lead = await ConnectAsync(baseUri, leadToken, ct))
+        {
+            var created = await lead.CallToolAsync("create_task", new Dictionary<string, object?>
+            {
+                ["description"] = "add the index",
+                ["completionCriteria"] = "the migration applies",
+                ["mode"] = "lead",
+            }, cancellationToken: ct);
+            taskId = new TaskId(Guid.Parse(Assert.Single(created.Content.OfType<TextContentBlock>()).Text));
+        }
+
+        var firstMachine = new MachineSnapshot("gone", Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });
+        await using (var db = pg.NewContext())
+        {
+            var store = new TaskStore(db, TimeProvider.System);
+            var instance = WorkerInstanceId.New();
+            await store.DispatchNextAsync(firstMachine, instance, ct);
+            var workerToken = (await new TokenService(db, TimeProvider.System)
+                .MintWorkerTokenAsync(team, taskId, instance, ct)).Token;
+
+            await using var worker = await ConnectAsync(baseUri, workerToken, ct);
+            var asked = await worker.CallToolAsync("request_input", new Dictionary<string, object?>
+            {
+                ["kind"] = "question",
+                ["question"] = question,
+            }, cancellationToken: ct);
+            Assert.NotEqual(true, asked.IsError);
+        }
+
+        // The wait TTL expires into a park on the machine that is about to disappear.
+        await using (var db = pg.NewContext())
+        {
+            var store = new TaskStore(db, TimeProvider.System);
+            Assert.IsType<StoreResult.Applied>(
+                await store.ApplyAsync(taskId, new WaitTtlExpired(new ParkRecord("gone")), ct));
+        }
+
+        await using (var lead = await ConnectAsync(baseUri, leadToken, ct))
+        {
+            var answered = await lead.CallToolAsync("answer_input_request", new Dictionary<string, object?>
+            {
+                ["taskId"] = taskId.ToString(),
+                ["answer"] = answer,
+            }, cancellationToken: ct);
+            Assert.NotEqual(true, answered.IsError);
+        }
+
+        // A different machine claims the woken task. "gone" is not registered anywhere.
+        var elsewhere = new MachineSnapshot("elsewhere", Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });
+        string successorToken;
+        await using (var db = pg.NewContext())
+        {
+            var store = new TaskStore(db, TimeProvider.System);
+            var successor = WorkerInstanceId.New();
+            var dispatched = Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(elsewhere, successor, ct));
+            Assert.Equal(taskId, dispatched.Task.Id);
+            successorToken = (await new TokenService(db, TimeProvider.System)
+                .MintWorkerTokenAsync(team, taskId, successor, ct)).Token;
+        }
+
+        await using (var worker = await ConnectAsync(baseUri, successorToken, ct))
+        {
+            var assignment = await worker.CallToolAsync(
+                "get_task", new Dictionary<string, object?>(), cancellationToken: ct);
+            using var doc = System.Text.Json.JsonDocument.Parse(
+                Assert.Single(assignment.Content.OfType<TextContentBlock>()).Text);
+            Assert.Equal(answer, doc.RootElement.GetProperty("answer").GetString());
+            Assert.Equal(question, doc.RootElement.GetProperty("question").GetString());
+        }
+
+        await app.StopAsync(ct);
+    }
+
     private WebApplication BuildServer()
     {
         var builder = WebApplication.CreateBuilder();

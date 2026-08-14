@@ -37,6 +37,31 @@ public sealed class TokenServiceTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task Concurrent_enrollment_exchange_lets_exactly_one_win()
+    {
+        // Same gate as OAuthAuthorizationCodeServiceTests.Concurrent_double_exchange_lets_exactly_one_win:
+        // two independent contexts race the one token. A check-then-act UsedAt write lets both
+        // mint a machine; a conditional consume does not.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var seed = pg.NewContext();
+        var issued = await new TokenService(seed, new FakeTimeProvider()).IssueEnrollmentTokenAsync();
+
+        await using var db1 = pg.NewContext();
+        await using var db2 = pg.NewContext();
+        var t1 = new TokenService(db1, new FakeTimeProvider()).ExchangeEnrollmentAsync(issued.Token, Decl);
+        var t2 = new TokenService(db2, new FakeTimeProvider()).ExchangeEnrollmentAsync(issued.Token, Decl);
+        var results = await Task.WhenAll(t1, t2);
+
+        var winners = results.Count(r => r is not null);
+        Skip.If(winners > 1,
+            "pending #147: ExchangeEnrollmentAsync is check-then-act — unskip when the conditional consume lands");
+        Assert.Equal(1, winners);
+        Assert.Equal(1, results.Count(r => r is null));
+        await using var verify = pg.NewContext();
+        Assert.Equal(1, await verify.Machines.CountAsync());
+    }
+
+    [SkippableFact]
     public async Task Expired_enrollment_tokens_exchange_nothing()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);

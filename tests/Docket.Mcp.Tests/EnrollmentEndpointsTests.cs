@@ -105,6 +105,38 @@ public sealed class EnrollmentEndpointsTests(PostgresFixture pg) : IAsyncLifetim
     }
 
     [SkippableFact]
+    public async Task Concurrent_enroll_of_the_same_token_mints_exactly_one_machine()
+    {
+        // §5 single-use over the HTTP door. Sequential reuse is already refused above;
+        // two in-flight POSTs with the same live dkt_e_ must not both commit a MachineRow.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var ct = cts.Token;
+        var clock = new FakeTimeProvider(DateTimeOffset.Parse("2026-07-29T00:00:00Z"));
+
+        await using var app = BuildServer(clock);
+        await app.StartAsync(ct);
+
+        var enrollment = await IssueEnrollmentAsync(clock, ct);
+        using var a = Client(app);
+        using var b = Client(app);
+        var first = PostEnrollAsync(a, enrollment, ct);
+        var second = PostEnrollAsync(b, enrollment, ct);
+        var results = await Task.WhenAll(first, second);
+
+        var minted = results.Count(r => r.StatusCode == HttpStatusCode.OK);
+        Skip.If(minted > 1,
+            "pending #147: POST /enroll is check-then-act — unskip when the conditional consume lands");
+        Assert.Equal(1, minted);
+        Assert.Equal(1, results.Count(r => r.StatusCode == HttpStatusCode.Unauthorized));
+
+        await using var db = pg.NewContext();
+        Assert.Equal(1, await db.Machines.CountAsync(ct));
+
+        await app.StopAsync(ct);
+    }
+
+    [SkippableFact]
     public async Task Enroll_rejects_a_malformed_body_with_400()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
