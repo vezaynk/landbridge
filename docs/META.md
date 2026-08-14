@@ -277,9 +277,36 @@ shown-once-and-discarded.
      are untouched (the plane re-migrates on boot).
    - **Destroy** — remove containers, network, **and volume** (data is lost); requires
      retyping the Instance name. Destroyed ≠ suspended.
-   - **Retry** — re-run a stalled (`failed`) provision from its last good step.
+   - **Retry** — re-run a stalled (`failed`) saga from its last good step. Whatever stalled:
+     a first provision, a resume, or an upgrade — all three are the same saga, and the row
+     already records which one's intent.
 
-Provisioning is a resumable saga: every step is idempotent and checkpointed, so a meta
-restart mid-provision resumes on startup, and a stalled Instance is retried from where it
-stopped. A destroy or suspend tolerates an unreachable edge — a dangling route resolves to
-a dead upstream until the next reconcile clears it, rather than blocking teardown.
+   While a transition is running, the Instance reads `provisioning`, `suspending`,
+   `resuming`, `upgrading`, or `destroying`, and the actions are unavailable until it
+   finishes — every one of them would be refused anyway (see below).
+
+**Resume and upgrade are the provisioning saga**, not sequences beside it. Each records
+what it wants — a resume, that being stopped and unrouted is no longer desired; an upgrade,
+the new image tag — marks the checkpoints that intent falsified, and runs the same ordered
+steps. So all three are idempotent and checkpointed: a meta restart or a readiness timeout
+mid-upgrade resumes from the first incomplete step, and an upgrade leaves Postgres and its
+volume alone because their checkpoints still stand. Container steps converge on the recipe's
+image, replacing a container running a different one, which is what makes "roll to a new
+tag" the ordinary saga rather than a special path.
+
+**One transition at a time, enforced by the Instance row.** Every transition begins by
+claiming the row — a conditional state change that only succeeds from the states that
+transition is legal from — so a destroy cannot start while an upgrade is recreating
+containers, and of two operators clicking at once exactly one wins. A request that returns
+before its background operation finishes therefore cannot leave a window: the row is taken
+for as long as the work runs, not for as long as the request does.
+
+**A transition nothing is driving gets finished.** A background sweep (every 30s) looks for
+Instances left mid-transition — a process that died, or a stall — and re-enters them: the
+three that were heading for `ready` by running the saga, a `suspending` or `destroying` one
+by finishing in its own direction, never converged upward against the operator's intent. A
+`failed` Instance is retried too, but only once its last step activity is a couple of
+minutes old, so a tag that will never pull is not re-pulled every sweep.
+
+A destroy or suspend tolerates an unreachable edge — a dangling route resolves to a dead
+upstream until the next reconcile clears it, rather than blocking teardown.

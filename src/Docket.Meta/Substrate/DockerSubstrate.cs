@@ -71,12 +71,16 @@ public sealed class DockerSubstrate(IDockerClient client) : ISubstrate
     public async Task<string> EnsureContainerAsync(ContainerSpec spec, CancellationToken ct)
     {
         var existing = await FindContainerAsync(spec.Name, ct);
-        if (existing is not null)
+        if (existing is not null && RunsImage(existing, spec.Image))
         {
             if (!string.Equals(existing.State, "running", StringComparison.OrdinalIgnoreCase))
                 await client.Containers.StartContainerAsync(existing.ID, new ContainerStartParameters(), ct);
             return existing.ID;
         }
+        // A container of this name on some other image is the upgrade case: converge on the
+        // spec by replacing it rather than adopting something the recipe no longer describes.
+        if (existing is not null)
+            await RemoveContainerAsync(existing.ID, ct);
 
         var portKey = spec.PublishContainerPort is int p ? $"{p}/tcp" : null;
 
@@ -197,6 +201,19 @@ public sealed class DockerSubstrate(IDockerClient client) : ISubstrate
         try { await client.Volumes.RemoveAsync(name, force: true, ct); }
         catch (DockerApiException e) when (e.StatusCode == HttpStatusCode.NotFound) { /* idempotent */ }
     }
+
+    /// <summary>
+    /// Whether an existing container is running the image the spec asks for. Docker reports
+    /// the reference the container was created from, which is the same string the recipe
+    /// builds, so this compares like with like. A report we cannot read as a reference
+    /// (empty, or an id left behind by a tag since re-pointed) counts as a match: churning a
+    /// running container on an unreadable signal is worse than leaving it alone, and a
+    /// genuine tag change is always legible.
+    /// </summary>
+    private static bool RunsImage(ContainerListResponse existing, string wanted) =>
+        string.IsNullOrEmpty(existing.Image)
+        || existing.Image.StartsWith("sha256:", StringComparison.OrdinalIgnoreCase)
+        || existing.Image == wanted;
 
     private async Task<ContainerListResponse?> FindContainerAsync(string name, CancellationToken ct)
     {

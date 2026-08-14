@@ -31,6 +31,37 @@ public class MetaMigrationTests(MetaPostgresFixture pg)
         Assert.Equal(host.Name, row.Host!.Name);
     }
 
+    /// <summary>
+    /// Why the in-flight lifecycle states needed no migration: <c>instances.state</c> is a
+    /// plain <c>text</c> column with no Postgres enum type and no check constraint behind it
+    /// (the model converts the CLR enum to its name), so a new state is a new value and not a
+    /// new schema. Asserted rather than assumed, because the whole no-migration claim rests
+    /// on it — and asserted on the raw column too, so this would also catch the day someone
+    /// narrows the column and expects the enum to keep widening for free.
+    /// </summary>
+    [SkippableFact]
+    public async Task The_in_flight_states_round_trip_the_real_schema_with_no_migration()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        await ResetAsync(db);
+
+        var host = NewHost();
+        db.Hosts.Add(host);
+        foreach (var state in InstanceStates.InFlight)
+            db.Instances.Add(NewInstance(state.ToString().ToLowerInvariant(), host.Id, state));
+        await db.SaveChangesAsync();
+
+        await using var read = pg.NewContext();
+        foreach (var state in InstanceStates.InFlight)
+        {
+            var name = state.ToString().ToLowerInvariant();
+            var row = await read.Instances.AsNoTracking().SingleAsync(i => i.Name == name);
+            Assert.Equal(state, row.State);
+            Assert.Equal(state.ToString(), await pg.RawColumnAsync("instances", "state", row.Id));
+        }
+    }
+
     [SkippableFact]
     public async Task Partial_unique_index_blocks_two_live_but_frees_a_destroyed_name()
     {

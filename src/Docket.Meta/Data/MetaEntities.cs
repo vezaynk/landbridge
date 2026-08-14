@@ -7,14 +7,57 @@ namespace Docket.Meta.Data;
 /// stalled (<see cref="InstanceRow.FailedStep"/>) — recoverable by re-running the
 /// saga, which resumes from that step. Destroyed ≠ suspended: a destroyed record
 /// is a tombstone, a suspended one keeps its volume + secrets for resume.
+///
+/// <para><b>Every transition has a state of its own</b> (<see cref="InstanceStates.InFlight"/>),
+/// and that is load-bearing rather than cosmetic. An operation that removes and recreates
+/// containers is only safe if the row says so <em>while it runs</em>: the state is both the
+/// lock another operation is refused by (<c>InstanceProvisioner</c> claims it with a
+/// conditional UPDATE) and the marker that tells <c>InstanceReconciler</c> a process died
+/// holding the row and its work needs finishing. An upgrade that recorded nothing in flight
+/// left a window as long as the upgrade itself in which a destroy could interleave, and left
+/// a crash mid-upgrade indistinguishable from a healthy <see cref="Ready"/> — a row claiming
+/// ready with no relay container, which nothing would ever heal.</para>
 /// </summary>
 public enum InstanceState
 {
+    /// <summary>The provisioning saga is running (or is queued to run) for this Instance.</summary>
     Provisioning,
     Ready,
     Suspended,
     Destroyed,
     Failed,
+
+    /// <summary>Suspend is running: routes coming down, containers stopping.</summary>
+    Suspending,
+
+    /// <summary>Resume is running: containers starting back up, routes going back in.</summary>
+    Resuming,
+
+    /// <summary>An image upgrade is running: the row's <see cref="InstanceRow.ImageTag"/> is already the new one.</summary>
+    Upgrading,
+
+    /// <summary>Destroy is running: resources coming down before the row is tombstoned.</summary>
+    Destroying,
+}
+
+/// <summary>
+/// Which <see cref="InstanceState"/>s mean "a lifecycle operation holds this row".
+/// </summary>
+public static class InstanceStates
+{
+    /// <summary>
+    /// The states that say an operation is mid-flight. Exactly the states that need
+    /// finishing when nothing is driving them (<c>InstanceReconciler</c>) and that no
+    /// other operation may claim (<c>InstanceProvisioner</c>).
+    /// </summary>
+    public static readonly InstanceState[] InFlight =
+    [
+        InstanceState.Provisioning, InstanceState.Suspending,
+        InstanceState.Resuming, InstanceState.Upgrading, InstanceState.Destroying,
+    ];
+
+    /// <summary>True when an operation holds the row — no operator action is offered while it does.</summary>
+    public static bool IsInFlight(InstanceState state) => Array.IndexOf(InFlight, state) >= 0;
 }
 
 /// <summary>How meta reaches a host's Docker Engine API (spec §3 host pool).</summary>

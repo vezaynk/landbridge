@@ -23,9 +23,16 @@ public interface ISubstrate
     Task EnsureVolumeAsync(string name, IReadOnlyDictionary<string, string> labels, CancellationToken ct);
 
     /// <summary>
-    /// Creates the container from <paramref name="spec"/> if absent and starts it; if a
-    /// container of that name already exists, adopts it and ensures it is running.
-    /// Returns the container id. Idempotent — safe to call on every saga run.
+    /// Converges the named container on <paramref name="spec"/>: creates and starts it when
+    /// absent, adopts and starts an existing one already running the spec's image, and
+    /// <b>replaces</b> (removes, then recreates) one running a different image. Returns the
+    /// container id. Idempotent — safe to call on every saga run.
+    ///
+    /// <para>That last case is what an image upgrade <em>is</em> here: the saga re-runs its
+    /// ordinary start steps against a recipe whose tag changed, so "ensure" has to mean the
+    /// container this spec describes and not merely a container by that name. Keeping the
+    /// replace inside the substrate is what lets provision, resume, and upgrade be one
+    /// checkpointed saga instead of three sequences.</para>
     /// </summary>
     Task<string> EnsureContainerAsync(ContainerSpec spec, CancellationToken ct);
 
