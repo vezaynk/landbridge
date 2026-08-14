@@ -1,0 +1,95 @@
+# Daily harness-CLI bump-and-verify bot.
+#
+# ci.yml pins the three BYO-harness CLIs (`@anthropic-ai/claude-code`, `@openai/codex`,
+# `opencode-ai`) to exact versions. This workflow is what keeps those pins from rotting: once a
+# day it compares each pin against the package's `dist-tags.latest`, and when something is newer
+# it opens a PR, dispatches ci.yml's real-harness tiers against that PR's branch, and merges only
+# if they really passed.
+#
+# ALL of the logic lives in tools/Docket.HarnessBump — a C# console project — because this repo
+# runs no shell scripts (spec §10): external processes are argv spawns, never `run: |` blocks. The
+# only real step below is `dotnet run`. Anything that looks like it wants to be bash here belongs
+# in the tool instead, where it can be unit-tested; see tests/Docket.HarnessBump.Tests, which
+# covers the version compare, the dist-tag read, the ci.yml rewrite and every branch of the
+# decision procedure against fixtures.
+#
+# THE ONLY STATE IS THE ONE OPEN BUMP PR. There is no known-bad list, no tracking file, no label,
+# and no memory of what has already been tried. Each run:
+#   * a bump PR is open and `latest` has climbed past what it targets → close it as superseded and
+#     open a fresh PR at the new `latest` (a PR per version, so each keeps its own e2e record);
+#   * a bump PR is open and it already targets `latest` → do nothing;
+#   * no bump PR is open and a pin is behind → open ONE combined PR for every available bump.
+#
+# COST FOLLOWS FROM THAT RULE rather than from a suppression list. A bump to version X gets
+# exactly ONE e2e run — when its PR is opened. Every later run sees the open PR already targeting X
+# and idles, so a red bump sits open costing nothing instead of being retried on a schedule. One
+# combined PR also means three newer CLIs cost one dispatch, not three. And because nothing is
+# remembered, a version that failed is retried the moment a higher one ships — which a
+# known-bad list would have refused to do.
+#
+# A red PR is left OPEN with a comment naming which tier failed and linking the run. The bot never
+# bisects and never retries: each attempt is real API spend. Resolving it is a human's job — fix
+# the cause and re-run the dispatch by hand, or close the PR.
+#
+# TOKEN. `secrets.HARNESS_BUMP_TOKEN`, not the default GITHUB_TOKEN, and this is a hard
+# requirement rather than a preference — verified against this repository's settings, both of these
+# are true today:
+#   * `can_approve_pull_request_reviews` is false (the "Allow GitHub Actions to create and approve
+#     pull requests" setting is OFF), so GITHUB_TOKEN cannot open the PR at all; and
+#   * `default_workflow_permissions` is `read`.
+# On top of that, a PR opened with GITHUB_TOKEN does not trigger `pull_request` workflows, so the
+# bump PR would arrive with no checks of its own. A PAT avoids all three. It needs, on this
+# repository only: Contents read+write (push the branch), Pull requests read+write (open, comment,
+# close, merge) and Actions read+write (dispatch ci.yml and read the run). Nothing is hardcoded
+# here — if the secret is absent the tool fails fast rather than half-running.
+name: Harness CLI bump
+
+on:
+  schedule:
+    # 06:17 UTC daily. Deliberately off the hour: scheduled workflows queue behind everyone
+    # else's on-the-hour crons, and a delayed start here costs the whole run's freshness.
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Report the plan and stop — no PR opened or closed, no dispatch, nothing spent"
+        type: boolean
+        required: false
+        default: false
+
+# One bot at a time. Two overlapping runs would both see the same `latest` and the same "no open
+# PR", and both would open one — breaking the single-open-PR invariant that IS the cost guard.
+concurrency:
+  group: harness-bump
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    # Generous, because the job's own runtime is dominated by waiting for the dispatched CI run
+    # (build-test + chaos + three real tiers) to finish. The tool has its own 60-minute ceiling on
+    # that wait and exits cleanly when it expires, leaving the PR open.
+    timeout-minutes: 90
+    env:
+      DOTNET_CLI_TELEMETRY_OPTOUT: 1
+      DOTNET_NOLOGO: 1
+    steps:
+      # The PAT here too, not just on the tool: it is what the pushed branch is authenticated
+      # with, and it is what makes the resulting PR trigger ordinary PR checks.
+      - uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.HARNESS_BUMP_TOKEN }}
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 10.0.x
+
+      # The whole bot. No arguments: the dry-run switch arrives as an environment variable
+      # precisely so this stays a bare `dotnet run` with no expression logic in the YAML.
+      - name: Bump the harness CLI pins and verify
+        run: dotnet run --project tools/Docket.HarnessBump -c Release
+        env:
+          GH_TOKEN: ${{ secrets.HARNESS_BUMP_TOKEN }}
+          DOCKET_BUMP_DRY_RUN: ${{ inputs.dry_run }}
+          DOCKET_BUMP_COMMITTER_NAME: docket harness-bump bot
+          DOCKET_BUMP_COMMITTER_EMAIL: noreply@github.com

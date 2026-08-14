@@ -74,6 +74,15 @@ jobs:
       - name: Test - Docket.Contracts (wire vocabulary)
         run: dotnet test tests/Docket.Contracts.Tests --no-build -c Release
 
+      # The bump bot's own logic (tools/Docket.HarnessBump): the semver compare, the
+      # dist-tags.latest read, the pin rewrite below, and the one-open-PR rule that decides
+      # whether to spend a real-harness dispatch at all. Pure and fast — it runs here, on every
+      # push, precisely so those rules are never first exercised by a live 06:17 cron run against
+      # real money. Some of its tests read THIS file and assert the three harness pins are still
+      # present and parseable, and that the jobs its merge gate waits on still exist by name.
+      - name: Test - Docket.HarnessBump (the CLI bump bot's own rules)
+        run: dotnet test tests/Docket.HarnessBump.Tests --no-build -c Release
+
       - name: Test - Docket.Runner (process supervision + WebSocket channel)
         run: dotnet test tests/Docket.Runner.Tests --no-build -c Release
 
@@ -230,8 +239,14 @@ jobs:
       # Which is why THIS PIN IS A STOPGAP, NOT THE FIX. The durable fix is prompt clarity —
       # name `mcp__docket__get_task` explicitly, say there is no `docket` CLI, and forbid
       # shelling or curling to the MCP server — in the shipped worker skill and in the
-      # RealClaudeCollaborationTests recipe prompts. Re-unpin once the prompts no longer invite
-      # the misreading, not merely because a newer claude has shipped.
+      # RealClaudeCollaborationTests recipe prompts — which #150 has since done.
+      #
+      # Do NOT go back to installing `latest`, though: the daily bump bot
+      # (.github/workflows/harness-bump.yml) is what carries this pin forward now. It opens a PR
+      # per newer `latest`, dispatches this workflow against it, and merges only if all three real
+      # tiers pass — so the pin moves on evidence rather than on whatever npm served that hour,
+      # which is the failure this pin exists to record. The bot keeps no list of bad versions, so
+      # if a claude bump does go red its PR simply sits open for a human, costing nothing.
       #
       # Two dead ends recorded so nobody re-derives them: 2.1.231's changelog has exactly one
       # entry and it is about MCP OAuth, nothing about permissions; and the auto-mode default
