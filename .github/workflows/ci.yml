@@ -253,7 +253,7 @@ jobs:
       # rollout of 2026-08-14 (anthropics/claude-code#86451, #86478) was live during the red run
       # but is not needed to explain any of this, because the tools were pre-approved.
       - name: Install claude CLI
-        run: npm install -g @anthropic-ai/claude-code@2.1.229
+        run: npm install -g @anthropic-ai/claude-code@2.1.232
 
       - name: Restore
         run: dotnet restore
@@ -363,7 +363,7 @@ jobs:
       # out there. Kept in lockstep deliberately: a mixed-fleet fact that ran a different
       # claude than the claude tier would make one tier's green say nothing about the other's.
       - name: Install claude CLI
-        run: npm install -g @anthropic-ai/claude-code@2.1.229
+        run: npm install -g @anthropic-ai/claude-code@2.1.232
 
       - name: Restore
         run: dotnet restore
@@ -479,7 +479,7 @@ jobs:
       # different claude than the claude tier would make one tier's green say nothing about the
       # other's.
       - name: Install claude CLI
-        run: npm install -g @anthropic-ai/claude-code@2.1.229
+        run: npm install -g @anthropic-ai/claude-code@2.1.232
 
       - name: Restore
         run: dotnet restore
