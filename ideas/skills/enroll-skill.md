@@ -19,7 +19,7 @@ The config must cover:
 
 | Section | What it answers |
 |---|---|
-| Harness invocation | How to start the harness headlessly with a task (`spawn`), and where it reads its MCP config |
+| Harness invocation | How to start the harness headlessly with a task (`spawn`), and where it reads its MCP config (`{mcp_config}`, `files[]`, or `hooks.before_spawn`) |
 | Process control | How `stop` is delivered (`mode: message` only where the harness demonstrably reads mid-task stdin turns — **not `claude -p`**, which takes `signal`), the message template, and how long wind-down gets before the hard tree-kill |
 | Resume | The argv that reattaches to a parked task's transcript (`resume.args`), which is how a parked task comes back with its context |
 | Event relay | Whether the harness streams structured output docketd can read (`events.source`), and the property names it is keyed by (`events.mapping`) |
@@ -29,6 +29,29 @@ The config must cover:
 The full config schema and a worked Claude Code profile — including the exact
 headless `spawn` argv, the `{mcp_config}` injection, and the generated MCP config
 a worker dials the plane with — are in `references/runner-config.md`.
+
+## Wiring the docket MCP server additively
+
+A worker must reach the plane as an MCP client. Claude takes `{mcp_config}` in
+argv. Other harnesses do not. Prefer the option that **adds** the docket server
+without hiding the operator's existing MCP servers, skills, or auth.
+
+1. **`files[]` under `{work_dir}`** when the harness merges a project-local
+   config with the user home. Grok does: `{cwd}/.grok/config.toml` plus
+   `~/.grok/config.toml`. Write only the docket block; leave `GROK_HOME` unset.
+   Use `{mcp_url}` for the plane URL and a literal `${DOCKET_WORKER_TOKEN}` (or
+   the harness's own env syntax) for the bearer. Never write a live token.
+2. **`hooks.before_spawn` argv** when the only MCP surface is a user-global
+   file (Codex / `CODEX_HOME`). The program must be idempotent
+   (ensure-if-absent). Never invoke a shell — argv only, same as `spawn`.
+   Omit `after_exit`: removing the block races a sibling worker and leaves
+   interactive use with a 401ing docket server either way.
+3. **`env.GROK_HOME` / `env.CODEX_HOME`** only when the operator asked for a
+   **sealed** home (strict archetype). That replaces the directory; the worker
+   will not see `~/.grok` MCP servers, skills, or `auth.json`.
+
+Probe the harness before choosing. If you cannot tell whether it merges
+project config, treat that as a question for the human, not a guess.
 
 ## Check the prerequisites first
 

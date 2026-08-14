@@ -449,6 +449,29 @@ public sealed record RunnerConfig(
                 }
             }
 
+            if (dto.Files is { Count: > 0 })
+            {
+                for (var i = 0; i < dto.Files.Count; i++)
+                {
+                    var file = dto.Files[i];
+                    if (string.IsNullOrWhiteSpace(file.Path))
+                        problems.Add($"profile '{name}' files[{i}] has an empty path");
+                    if (file.Contents is null)
+                        problems.Add($"profile '{name}' files[{i}] is missing contents");
+                    if (file.Mode is { } mode && !IsOctalFileMode(mode))
+                        problems.Add(
+                            $"profile '{name}' files[{i}] mode '{mode}' is not an octal permission " +
+                            "(e.g. 0600 or 644)");
+                }
+            }
+
+            if (dto.Hooks?.BeforeSpawn is { Count: > 0 } before
+                && string.IsNullOrWhiteSpace(before[0]))
+                problems.Add($"profile '{name}' hooks.before_spawn has an empty argv[0]");
+            if (dto.Hooks?.AfterExit is { Count: > 0 } after
+                && string.IsNullOrWhiteSpace(after[0]))
+                problems.Add($"profile '{name}' hooks.after_exit has an empty argv[0]");
+
             built[name] = BuildProfile(dto);
         }
 
@@ -633,7 +656,24 @@ public sealed record RunnerConfig(
                     dto.Processes.AgentInitiated ?? false,
                     dto.Processes.Max is { } cap and > 0 ? cap : 8),
             stdin,
-            dto.Env);
+            dto.Env,
+            dto.Files?.Select(f => new ProfileFile(f.Path ?? "", f.Contents ?? "", f.Mode)).ToArray(),
+            dto.Hooks is null
+                ? null
+                : new ProfileHooks(dto.Hooks.BeforeSpawn, dto.Hooks.AfterExit));
+    }
+
+    internal static bool IsOctalFileMode(string raw)
+    {
+        var s = raw.Trim();
+        if (s.Length is < 3 or > 4)
+            return false;
+        if (s.Length == 4 && s[0] != '0')
+            return false;
+        for (var i = s.Length == 4 ? 1 : 0; i < s.Length; i++)
+            if (s[i] is < '0' or > '7')
+                return false;
+        return true;
     }
 
     /// <summary>
@@ -714,7 +754,9 @@ public sealed record ProfileConfig(
     int? MaxConcurrent,
     ProfileProcessesConfig? Processes = null,
     StdinPolicy Stdin = StdinPolicy.Deadman,
-    IReadOnlyDictionary<string, string>? Env = null)
+    IReadOnlyDictionary<string, string>? Env = null,
+    IReadOnlyList<ProfileFile>? Files = null,
+    ProfileHooks? Hooks = null)
 {
     /// <summary>This profile's agent-process policy; the closed default when unstated.</summary>
     public ProfileProcessesConfig ProcessPolicy => Processes ?? new ProfileProcessesConfig();
@@ -728,6 +770,33 @@ public sealed record ProfileConfig(
     /// </summary>
     public IReadOnlyDictionary<string, string> Env { get; init; } =
         Env ?? new Dictionary<string, string>(StringComparer.Ordinal);
+
+    /// <summary>#112 G2: files written under the work dir before the harness starts.</summary>
+    public IReadOnlyList<ProfileFile> Files { get; init; } = Files ?? [];
+
+    /// <summary>Argv hooks. Never null: an absent block is an empty record.</summary>
+    public ProfileHooks Hooks { get; init; } = Hooks ?? new ProfileHooks();
+}
+
+/// <summary>
+/// A file <see cref="ProcessSupervisor"/> writes into the task work dir before spawn
+/// (#112 G2). <see cref="Path"/> and <see cref="Contents"/> take the same
+/// <c>{…}</c> substitutions as <see cref="ProfileConfig.Spawn"/>. After substitution
+/// the path must stay under the work dir.
+/// </summary>
+public sealed record ProfileFile(string Path, string Contents, string? Mode = null);
+
+/// <summary>
+/// Argv hooks on a profile, never a shell (§10). <see cref="BeforeSpawn"/> is
+/// fail-closed; <see cref="AfterExit"/> is best-effort and skipped for superseded
+/// instances.
+/// </summary>
+public sealed record ProfileHooks(
+    IReadOnlyList<string>? BeforeSpawn = null,
+    IReadOnlyList<string>? AfterExit = null)
+{
+    public IReadOnlyList<string> BeforeSpawn { get; init; } = BeforeSpawn ?? [];
+    public IReadOnlyList<string> AfterExit { get; init; } = AfterExit ?? [];
 }
 
 /// <summary>

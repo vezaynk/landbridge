@@ -323,6 +323,10 @@ public sealed class DispatchService : IHostedService
             var minted = await tokens.MintWorkerTokenAsync(task.Team, task.Id, instance, ct);
             var command = new DispatchCommand(
                 task.Id, profile, minted.Token, McpConfigJson: BuildWorkerMcpConfig(minted.Token),
+                // #112 G2: the plane URL as a spawn substitution so a profile can write
+                // a harness-native MCP file without parsing Claude's mcp.json. The runner
+                // already consumes SpawnSubstitutions; this is the first producer.
+                SpawnSubstitutions: new Dictionary<string, string> { ["mcp_url"] = _publicMcpUrl },
                 // §11 resume: pass the prior work session's ref (present when this task
                 // was worked before and parked/requeued) so docketd continues the
                 // transcript. Opaque metadata surfaced by the store; docketd resumes

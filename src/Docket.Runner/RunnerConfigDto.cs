@@ -89,6 +89,28 @@ internal sealed class ProfileDto
     // four DOCKET_* variables docketd stamps itself are refused at load, not silently
     // dropped — a profile that thinks it overwrote DOCKET_WORKER_TOKEN must not start.
     public Dictionary<string, string>? Env { get; set; }
+
+    // #112 G2: files written into {work_dir} before the harness starts. Paths are
+    // substituted then jailed to the work dir at spawn; a path that escapes fails
+    // the spawn rather than writing outside it.
+    public List<ProfileFileDto>? Files { get; set; }
+
+    // Argv hooks (never a shell). before_spawn is fail-closed; after_exit is
+    // best-effort. See ProfileHooks.
+    public ProfileHooksDto? Hooks { get; set; }
+}
+
+internal sealed class ProfileFileDto
+{
+    public string? Path { get; set; }
+    public string? Contents { get; set; }
+    public string? Mode { get; set; }
+}
+
+internal sealed class ProfileHooksDto
+{
+    public List<string>? BeforeSpawn { get; set; }
+    public List<string>? AfterExit { get; set; }
 }
 
 internal sealed class ProfileProcessesDto

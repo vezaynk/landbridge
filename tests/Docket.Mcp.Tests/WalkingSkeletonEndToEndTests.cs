@@ -111,10 +111,14 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
             // DispatchCommand — token + generated MCP config and all — to the real
             // supervisor. This is the seam a socket would occupy in production.
             var registry = new RunnerConnectionRegistry(TimeProvider.System);
+            DispatchCommand? seen = null;
             registry.Register("m1", new HashSet<string> { "default" }, (command, _) =>
             {
                 if (command is DispatchCommand d)
+                {
+                    seen = d;
                     supervisor.Spawn(d, profile, "m1");
+                }
                 return Task.CompletedTask;
             });
             registry.ApplyHeartbeat("m1", new MachineHeartbeat(
@@ -140,6 +144,9 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
                 var detail = File.Exists(errPath) ? await File.ReadAllTextAsync(errPath, ct) : "(no harness_error.txt)";
                 Assert.Fail($"worker harness never drove the task to verifying. Harness diagnostic:\n{detail}");
             }
+
+            Assert.NotNull(seen);
+            Assert.Equal(baseUrl, seen!.SpawnSubstitutions?["mcp_url"]);
 
             // ── §13: docketd wrote the generated MCP config, owner-only ──
             var mcpPath = Path.Combine(workDir, "mcp.json");

@@ -518,8 +518,10 @@ Full schema and a worked Claude Code example: `skills/docket-enroll/references/r
 | Section | Covers |
 |---|---|
 | `machine` | `work_root` for per-task scratch directories; back-pressure thresholds |
-| `profiles` | Named configurations, one required to be `default`. Each carries `spawn`, `stdin`, `env`, `stop`, `resume`, `events`, `telemetry`, `logs`, and an optional `max_concurrent` cap. |
-| `profiles[].env` | Per-spawn environment map. Values take the same `{…}` substitutions `spawn` does. Applied after the reserved `DOCKET_*` stamps and before `telemetry.env`. The four names docketd owns (`DOCKET_MACHINE_ID`, `DOCKET_TASK_ID`, `DOCKET_WORKER_TOKEN`, `DOCKET_TRACEPARENT`) are refused at load. Does not create files. |
+| `profiles` | Named configurations, one required to be `default`. Each carries `spawn`, `stdin`, `env`, `files`, `hooks`, `stop`, `resume`, `events`, `telemetry`, `logs`, and an optional `max_concurrent` cap. |
+| `profiles[].env` | Per-spawn environment map. Values take the same `{…}` substitutions `spawn` does. Applied after the reserved `DOCKET_*` stamps and before `telemetry.env`. The four names docketd owns (`DOCKET_MACHINE_ID`, `DOCKET_TASK_ID`, `DOCKET_WORKER_TOKEN`, `DOCKET_TRACEPARENT`) are refused at load. |
+| `profiles[].files` | Files written under `{work_dir}` before spawn. Paths are jailed to the work dir after substitution. Prefer this for additive project-local MCP (Grok merges `{cwd}/.grok/config.toml` with `~/.grok`). |
+| `profiles[].hooks` | Argv hooks, never a shell. `before_spawn` is fail-closed; `after_exit` is best-effort. For a harness whose only MCP surface is a user-global file (Codex). |
 | `profiles[].telemetry` | Per-profile opt-in (off by default) that points a harness's own OTel export at the operator's collector: `otel`, `endpoint`, and `env` for the harness's own enable flag. `docketd` sets only vendor-neutral `OTEL_*` — a harness's telemetry variables are data like everything else. Never enabled without a destination. |
 | `services` | Operator-declared long-lived processes `docketd` supervises: `name`, `spawn` argv, `working_directory`, `env`, `port`, `readiness`, `restart`, `logs`, `backend`, and `enabled`. Optional; absent on most machines. |
 

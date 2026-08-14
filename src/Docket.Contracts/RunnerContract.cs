@@ -85,20 +85,15 @@ public abstract record RunnerCommand : RunnerMessage
 /// months and nothing plane-side could ever fill it in, so every caller passed null and
 /// the field was eventually dropped.</para>
 ///
-/// <para><b><see cref="SpawnSubstitutions"/> is a reserved slot with no producer today.</b>
-/// The runner consumes it — extra <c>{key}</c> placeholders it substitutes into the spawn
-/// argv alongside the built-in <c>task_id</c> / <c>machine_id</c> / <c>work_dir</c> /
-/// <c>session_id</c> / <c>mcp_config</c> set — but nothing on the plane
-/// populates it: <c>DispatchService</c> is the only place a dispatch is constructed and it
-/// passes none, so the field arrives <c>null</c> on every real dispatch and only the wire
-/// round-trip tests exercise it. <b>Recorded rather than removed, and the reason is the
-/// wire.</b> §10 is frozen: this record is what a <c>docketd</c> that may go a year without
-/// being touched deserializes, so dropping even an optional field is the one change an
-/// older runner would notice. That is a different situation from an unused field on a
-/// plane-internal type, which can simply go — the park record's directory did, once it was
-/// clear nothing could produce it — because no deployed peer has an opinion about it. Read
-/// this as "the seam exists and is unused", not as a capability an operator can rely
-/// on.</para>
+/// <para><b><see cref="SpawnSubstitutions"/> now has one producer: <c>mcp_url</c>.</b>
+/// The runner consumes the map as extra <c>{key}</c> placeholders alongside the built-in
+/// <c>task_id</c> / <c>machine_id</c> / <c>work_dir</c> / <c>session_id</c> /
+/// <c>mcp_config</c> set. <c>DispatchService</c> fills <c>mcp_url</c> with the plane's
+/// public MCP URL so a profile can write a harness-native config file (#112 G2) without
+/// parsing Claude's <c>mcp.json</c>. An older envelope with a null map still decodes;
+/// an older runner receiving the key just substitutes it. The field stays on the
+/// frozen wire for that reason — dropping it is the one change a year-old
+/// <c>docketd</c> would notice.</para>
 /// </summary>
 public sealed record DispatchCommand(
     TaskId Task,

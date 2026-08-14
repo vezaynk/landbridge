@@ -69,7 +69,8 @@ internal sealed class FleetRig(
     bool agentProcesses = false,
     StopConfig? stop = null,
     IReadOnlyDictionary<string, string>? eventMapping = null,
-    StdinPolicy stdin = StdinPolicy.Deadman) : IAsyncDisposable
+    StdinPolicy stdin = StdinPolicy.Deadman,
+    IReadOnlyList<ProfileFile>? files = null) : IAsyncDisposable
 {
     private const string RelayBearer = "multimachine-relay-shared-secret-under-test";
 
@@ -155,7 +156,8 @@ internal sealed class FleetRig(
             // scenario is about agent-started processes.
             Processes: agentProcesses ? new ProfileProcessesConfig(AgentInitiated: true) : null,
             // §10 (#110): the dead-man pipe, unless a scenario's harness cannot survive it.
-            Stdin: stdin);
+            Stdin: stdin,
+            Files: files);
 
         Team = TeamId.New();
         await using (var db = pg.NewContext())

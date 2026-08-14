@@ -16,7 +16,9 @@ argv a worker is launched with.
 | `profiles[]` | `spawn` | argv passed to `execve` — **never a shell** (§10). Substitutions below. |
 | `profiles[]` | `stop` | `mode` (`message` \| `signal`), `message`, `wind_down_seconds` (default `30`). **`mode: message` is a declaration about your harness** — that a running session reads turns off stdin — and docketd takes it at its word: it writes the turn, then waits `min(ttl, wind_down_seconds)` for a voluntary exit before a hard tree-kill backstops it. It cannot check the claim, so declaring it for a harness that does not read stdin buys nothing and makes `preserve` a promise the machine will break. **`claude -p` is such a harness — use `signal` there** ([Stopping a `claude -p` worker](#stopping-a-claude--p-worker-10-11)). A `signal` profile writes nothing, and the worker gets the full `ttl` the plane granted to exit on its own before the kill (`wind_down_seconds` does not apply). Only `ttl=0` is killed immediately (§10, §11). There is no `signal` **key**: the deadline's kill is always the portable tree-kill, so a signal name had nothing to select. A config still declaring one is accepted unchanged — unknown keys are ignored — and means exactly what it always meant, which is nothing. |
 | `profiles[]` | `stdin` | `deadman` (default) \| `closed` — what the worker's stdin is. `deadman` holds the pipe's write end open for the worker's whole life; that pipe **is** the §10 dead-man's switch. `closed` sends EOF right after the spawn, for a harness that blocks reading piped stdin — **`codex exec` requires it**, and gives up nothing, because it never reaches the read that would observe EOF-as-death. Two things behave unlike the other enums here: a **typo is refused** rather than defaulted (defaulting would silently restore the pipe a profile was written to escape), and `closed` is **refused together with `stop.mode: message`**, whose wind-down turn would have nowhere to land. See [Closing the worker's stdin](#closing-the-workers-stdin-10). |
-| `profiles[]` | `env` | String map stamped on every spawn (and resume) of this profile. Values take the same `{task_id}` / `{machine_id}` / `{work_dir}` / `{mcp_config}` / `{session_id}` substitutions `spawn` does. Applied after the reserved `DOCKET_*` stamps and before `telemetry.env`. The four names docketd owns — `DOCKET_MACHINE_ID`, `DOCKET_TASK_ID`, `DOCKET_WORKER_TOKEN`, `DOCKET_TRACEPARENT` — are **refused at load**, not silently dropped. This is the seam that lets a Codex/OpenCode/Grok profile point `CODEX_HOME` / `OPENCODE_CONFIG` / `GROK_HOME` at an isolated directory instead of the operator's own home (#112 G3). It does not create files: if the harness still needs a config in that directory, the operator writes it (G2). |
+| `profiles[]` | `env` | String map stamped on every spawn (and resume) of this profile. Values take the same `{task_id}` / `{machine_id}` / `{work_dir}` / `{mcp_config}` / `{session_id}` / `{mcp_url}` substitutions `spawn` does. Applied after the reserved `DOCKET_*` stamps and before `telemetry.env`. The four names docketd owns — `DOCKET_MACHINE_ID`, `DOCKET_TASK_ID`, `DOCKET_WORKER_TOKEN`, `DOCKET_TRACEPARENT` — are **refused at load**, not silently dropped. Use this to isolate a home (`GROK_HOME` / `CODEX_HOME`) only when the operator asked for a sealed box. Prefer `files[]` for additive project-local MCP. |
+| `profiles[]` | `files` | Files written into `{work_dir}` **before** the harness starts (#112 G2). Each entry is `path` + `contents` (both substituted) and optional `mode` (octal, default `0600`). After substitution the path must stay under the work dir — `..` that escapes fails the spawn. Parent directories are created. This is how a Grok profile drops `{work_dir}/.grok/config.toml` so Grok **merges** docket with `~/.grok` instead of replacing it. |
+| `profiles[]` | `hooks` | Argv hooks, **never a shell** (§10). `before_spawn` runs after `files[]` and before `Process.Start`; non-zero or timeout (10s) is fail-closed (`spawn_failed`). `after_exit` is best-effort after the worker's `exited` and stray reap, skipped for superseded instances. Hook processes get `DOCKET_MACHINE_ID` and `DOCKET_HOOK`, not `DOCKET_TASK_ID` / `DOCKET_WORKER_TOKEN`. Use only when the harness will not read a project-local file (Codex / `CODEX_HOME`). |
 | `profiles[]` | `resume` | `args`: argv to resume a parked task's transcript, directory-scoped (§11). |
 | `profiles[]` | `events` | `source` (`hooks` \| `otel` \| `terminal` \| `none`) + `mapping`, which overrides the **stdout stream's property names** — not harness event names — and, via `tool_event_type` + `tool_name_path`, describes a harness that emits one flat event object per tool call. **Only `terminal` is implemented**; `hooks` and `otel` parse but are wired to nothing, so all three non-`terminal` values behave as `none`. See [Event relay](#event-relay-10) below before choosing — a non-`terminal` profile has no progress signal, so the no-progress ceiling is the only clock governing its tasks (the periodic `alive` keeps the short aliveness clock satisfied either way). |
 | `profiles[]` | `telemetry` | `otel` bool (opt-in, default **false**), `endpoint` (OTLP destination; falls back to the one docketd inherited), and `env` (a string map of harness-specific variables, applied verbatim). When on, docketd sets the vendor-neutral `OTEL_*` exporter variables and appends `docket.task_id`/`docket.machine_id` to `OTEL_RESOURCE_ATTRIBUTES`, so the harness's own token/cost telemetry is attributable per task (§10). `otel: true` with **no endpoint configured and none inherited sets nothing at all** and warns once — telemetry is never enabled without a destination. Claude Code additionally needs `"env": { "CLAUDE_CODE_ENABLE_TELEMETRY": "1" }` (its own flag is data, since docketd holds no harness knowledge). **Visibility only**: Docket ingests none of it and enforces no ceiling — see [docs/TELEMETRY.md](../../../docs/TELEMETRY.md). |
@@ -129,6 +131,7 @@ spawn, not configurably — §10):
 | `{machine_id}` / `DOCKET_MACHINE_ID` | This machine's id. |
 | `{work_dir}` | `{work_root}/{task_id}`, the spawn cwd. |
 | `{mcp_config}` | Path to the generated MCP config `docketd` writes to `{work_dir}/mcp.json` (mode 0600). |
+| `{mcp_url}` | The plane's public MCP URL (`Docket:PublicMcpUrl`). Filled by the plane on every dispatch so a `files[]` body can name the URL without parsing `mcp.json`. Also stamped on the worker as `DOCKET_MCP_URL`. |
 | `{session_id}` | The opaque harness session ref to resume. Substituted in `resume.args` only, never `spawn` (§11). |
 | `DOCKET_WORKER_TOKEN` | The minted worker-instance token (also embedded in `{mcp_config}`). |
 
@@ -394,9 +397,10 @@ rather than breaking: what it took was one profile field, not harness knowledge 
       // NOT OPTIONAL for this harness. Without it codex exec blocks reading the dead-man
       // pipe and never takes a turn; see "Closing the worker's stdin" above for the trade.
       "stdin": "closed",
-      // Isolate Codex from the operator's ~/.codex. The directory must already hold
-      // the config.toml below — docketd does not write it (#112 G2).
-      "env": { "CODEX_HOME": "/var/lib/docketd/codex" },
+      // Codex has no project-local MCP file. Either leave the static ~/.codex
+      // config.toml in place (enroll writes it once) or run an idempotent
+      // hooks.before_spawn argv that ensures the docket table exists. Do not
+      // remove it in after_exit — that races a sibling worker.
       // Forced by `stdin: closed` (a message-mode turn would have nowhere to land) and the
       // honest declaration for this harness regardless — see seam 2 below.
       "stop": { "mode": "signal" },
@@ -931,9 +935,12 @@ What it did force is `stdin: closed`, for a reason Codex and OpenCode do not sha
       // NOT OPTIONAL. grok -p starts immediately with a held-open pipe, then never
       // exits until stdin EOF. deadman leaks the process after report_result.
       "stdin": "closed",
-      // Isolate Grok from the operator's ~/.grok. The directory must already hold
-      // the config.toml below — docketd does not write it (#112 G2).
-      "env": { "GROK_HOME": "/var/lib/docketd/grok" },
+      // Additive MCP: Grok merges {cwd}/.grok/config.toml with ~/.grok. Do NOT set
+      // GROK_HOME — that replaces the operator's auth, skills, and MCP servers.
+      "files": [{
+        "path": "{work_dir}/.grok/config.toml",
+        "contents": "[mcp_servers.docket]\nurl = \"{mcp_url}\"\nenabled = true\nheaders = { \"Authorization\" = \"Bearer ${DOCKET_WORKER_TOKEN}\" }\n"
+      }],
       "stop": { "mode": "signal" },
       "resume": {
         "args": [
@@ -972,37 +979,23 @@ so we do not depend on that, and so `stop.mode: signal` stays legal.
 `RealGrokCollaborationTests` keeps both halves: a deadman fact that asserts the session
 ref still arrives (Grok is not Codex-shaped), and the closed-stdin facts that complete.
 
-### The MCP wiring: a static file, `${DOCKET_WORKER_TOKEN}`
+### The MCP wiring: a project file, `${DOCKET_WORKER_TOKEN}`
 
-Grok has no `--mcp-config`. Servers live in `~/.grok/config.toml` (or `$GROK_HOME`).
-String fields in `[mcp_servers.*]` expand `${VAR}` at load
-(`07-mcp-servers.md`):
+Grok has no `--mcp-config`. It **merges** MCP servers from `{cwd}/.grok/config.toml`
+and `~/.grok/config.toml` (cwd wins on a name clash). Write only the docket
+block into the work dir via `files[]` (the profile above). Auth, skills, plugins,
+memory, and the operator's other MCP servers stay in `~/.grok`.
 
-```toml
-# ~/.grok/config.toml — written once, correct for every dispatch
-[mcp_servers.docket]
-url = "https://plane.example/mcp"
-enabled = true
-headers = { "Authorization" = "Bearer ${DOCKET_WORKER_TOKEN}" }
-```
+Do **not** set `GROK_HOME` unless the operator asked for a sealed home. That
+replaces the whole directory, not just MCP.
 
-An unset variable becomes an empty Bearer and the plane 401s — same silent
-toolless-agent failure as OpenCode. There is no `required = true`. Catch it in the
-smoke test.
+`${DOCKET_WORKER_TOKEN}` in the file is a literal; Grok expands it at load.
+`{mcp_url}` is substituted by docketd. An unset token becomes an empty Bearer
+and the plane 401s — same silent toolless-agent failure as OpenCode.
 
 Tool names are `server__tool` → **`docket__get_task`**. A prompt that says
 `mcp__docket__get_task` or `docket_get_task` sends the agent hunting a tool it does
 not have.
-
-Isolate it with `profiles[].env`:
-
-```jsonc
-"env": { "GROK_HOME": "/var/lib/docketd/grok" }   // prepared isolated home
-// or "GROK_HOME": "{work_dir}/.grok"             // only if that dir already has config.toml
-```
-
-`docketd` does not create the directory or the file (G2 in #112). A prepared
-isolated home keeps the docket server off the operator's interactive `~/.grok`.
 
 ### Do not pick `streaming-json`
 

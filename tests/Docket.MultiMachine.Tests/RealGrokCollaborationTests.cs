@@ -68,9 +68,9 @@ public sealed class RealGrokCollaborationTests(PostgresFixture pg) : IAsyncLifet
             pg,
             spawnArgv: GrokWorkerSpawn(grokBin, WorkerPrompt),
             terminalEvents: true,
-            stdin: StdinPolicy.Deadman);
+            stdin: StdinPolicy.Deadman,
+            files: GrokMcpFile);
         await rig.StartAsync(ct);
-        using var home = GrokHome.Create(rig.McpUrl);
         await rig.AddMachineAsync("A");
 
         var task = await rig.CreateTaskAsync(EchoDescription("A", NewToken()), ct);
@@ -96,9 +96,9 @@ public sealed class RealGrokCollaborationTests(PostgresFixture pg) : IAsyncLifet
             pg,
             spawnArgv: GrokWorkerSpawn(grokBin, WorkerPrompt),
             terminalEvents: true,
-            stdin: GrokStdin);
+            stdin: GrokStdin,
+            files: GrokMcpFile);
         await rig.StartAsync(ct);
-        using var home = GrokHome.Create(rig.McpUrl);
         await rig.AddMachineAsync("A");
         await rig.AddMachineAsync("B");
 
@@ -129,9 +129,9 @@ public sealed class RealGrokCollaborationTests(PostgresFixture pg) : IAsyncLifet
             pg,
             spawnArgv: GrokWorkerSpawn(grokBin, WorkerPrompt),
             terminalEvents: true,
-            stdin: GrokStdin);
+            stdin: GrokStdin,
+            files: GrokMcpFile);
         await rig.StartAsync(ct);
-        using var home = GrokHome.Create(rig.McpUrl);
         await rig.AddMachineAsync("A");
 
         var token = NewToken();
@@ -169,47 +169,22 @@ public sealed class RealGrokCollaborationTests(PostgresFixture pg) : IAsyncLifet
     private const StdinPolicy GrokStdin = StdinPolicy.Closed;
 
     /// <summary>
-    /// Isolated <c>GROK_HOME</c> so the test does not write into the operator's
-    /// <c>~/.grok</c>. Holds the static MCP server that replaces <c>--mcp-config</c>
-    /// (Grok has none). Bearer is <c>${DOCKET_WORKER_TOKEN}</c>, expanded at load.
-    /// The production seam for this variable is now <c>profiles[].env</c> (#112 G3);
-    /// the rig still publishes it process-wide because it constructs the profile
-    /// before the MCP URL — and therefore this directory — exists.
+    /// Project-local Grok MCP file (#112 G2). Grok merges
+    /// <c>{cwd}/.grok/config.toml</c> with <c>~/.grok</c>, so this keeps operator
+    /// auth/skills/MCPs and does not set <c>GROK_HOME</c>. <c>{mcp_url}</c> comes
+    /// from the plane; the bearer stays a literal <c>${DOCKET_WORKER_TOKEN}</c>.
     /// </summary>
-    private sealed class GrokHome : IDisposable
-    {
-        private readonly string _dir;
-        private readonly string? _previous;
-
-        private GrokHome(string dir, string? previous)
-        {
-            _dir = dir;
-            _previous = previous;
-        }
-
-        public static GrokHome Create(string mcpUrl)
-        {
-            var previous = Environment.GetEnvironmentVariable("GROK_HOME");
-            var dir = Path.Combine(Path.GetTempPath(), "docket-grok-" + Guid.NewGuid().ToString("N")[..8]);
-            Directory.CreateDirectory(dir);
-            File.WriteAllText(
-                Path.Combine(dir, "config.toml"),
-                $$"""
-                 [mcp_servers.docket]
-                 url = "{{mcpUrl.TrimEnd('/')}}"
-                 enabled = true
-                 headers = { "Authorization" = "Bearer ${DOCKET_WORKER_TOKEN}" }
-                 """);
-            Environment.SetEnvironmentVariable("GROK_HOME", dir);
-            return new GrokHome(dir, previous);
-        }
-
-        public void Dispose()
-        {
-            Environment.SetEnvironmentVariable("GROK_HOME", _previous);
-            try { Directory.Delete(_dir, recursive: true); } catch { /* best effort */ }
-        }
-    }
+    private static readonly ProfileFile[] GrokMcpFile =
+    [
+        new(
+            "{work_dir}/.grok/config.toml",
+            """
+            [mcp_servers.docket]
+            url = "{mcp_url}"
+            enabled = true
+            headers = { "Authorization" = "Bearer ${DOCKET_WORKER_TOKEN}" }
+            """),
+    ];
 
     private static string EchoDescription(string label, string token) =>
         $"""
@@ -277,15 +252,15 @@ public sealed class RealGrokCollaborationTests(PostgresFixture pg) : IAsyncLifet
 
          Suspect, in order:
            1. MODEL SLUG. This tier pins '{{GrokModel}}'. Override with DOCKET_GROK_MODEL.
-           2. MCP WIRING. Bearer is ${DOCKET_WORKER_TOKEN} in GROK_HOME/config.toml.
-              An unset variable becomes an empty Bearer and the plane 401s; the worker then
-              invents a docket CLI. Confirm GROK_HOME points at the test config.
+           2. MCP WIRING. files[] writes {work_dir}/.grok/config.toml with {mcp_url}
+              and Bearer ${DOCKET_WORKER_TOKEN}. An unset token becomes an empty Bearer
+              and the plane 401s; the worker then invents a docket CLI.
            3. TOOL NAMES. Grok spells MCP tools <server>__<tool>, so docket__get_task, NOT
               mcp__docket__get_task and NOT docket_get_task.
            4. STDIN. A deadman profile starts then never exits. This file's closed facts are
               the working path.
            5. AUTH. XAI_API_KEY (not XAI_KEY) must be in the environment, or grok login
-              under the same GROK_HOME.
+              under ~/.grok (this tier does not set GROK_HOME).
 
          """;
 

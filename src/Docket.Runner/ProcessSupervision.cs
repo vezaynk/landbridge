@@ -124,6 +124,10 @@ public sealed class SupervisedTask
     /// </summary>
     public StdinPolicy Stdin { get; init; } = StdinPolicy.Deadman;
 
+    /// <summary>Argv for <c>hooks.after_exit</c>, captured at spawn so OnExited
+    /// does not have to keep the profile. Empty means no hook.</summary>
+    public IReadOnlyList<string> AfterExit { get; init; } = [];
+
     /// <summary>
     /// §11 resume: the harness session id captured from the events stream (claude
     /// <c>system/init</c>), set by the <see cref="TerminalEventReader"/> when
@@ -367,6 +371,10 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             substitutions["mcp_config"] = mcpPath;
         }
 
+        WriteProfileFiles(profile, workDir, substitutions);
+        RunProfileHook(
+            profile.Hooks.BeforeSpawn, substitutions, workDir, machineId, "before_spawn", failClosed: true);
+
         var argv = spawnArgv.Select(a => Substitute(a, substitutions)).ToArray();
 
         // §10 event relay: the Terminal events source redirects stdout so the reader
@@ -418,6 +426,8 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         psi.Environment["DOCKET_TASK_ID"] = dispatch.Task.ToString();
         if (dispatch.WorkerToken.Length > 0)
             psi.Environment["DOCKET_WORKER_TOKEN"] = dispatch.WorkerToken;
+        if (substitutions.TryGetValue("mcp_url", out var mcpUrl) && mcpUrl.Length > 0)
+            psi.Environment["DOCKET_MCP_URL"] = mcpUrl;
 
         // §1 tracing: hand the worker the current handle span's W3C id so its root
         // span — and its MCP calls back to the plane — continue the one trace.
@@ -449,6 +459,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             WorkDir = workDir,
             Stop = profile.Stop,
             Stdin = profile.Stdin,
+            AfterExit = profile.Hooks.AfterExit,
         };
         process.Exited += (_, _) => OnExited(supervised, machineId);
 
@@ -766,6 +777,22 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         // reaping the successor it was replaced by (#102).
         try { _taskReaper?.ReapTask(machineId, supervised.Task.ToString()); }
         catch { /* best effort */ }
+
+        // After reap so a hook that accidentally carried DOCKET_TASK_ID is not
+        // killed mid-run. Best-effort: a failed after_exit must not rewrite the
+        // exit the plane already recorded.
+        try
+        {
+            var afterSubs = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["task_id"] = supervised.Task.ToString(),
+                ["machine_id"] = machineId,
+                ["work_dir"] = supervised.WorkDir,
+            };
+            RunProfileHook(
+                supervised.AfterExit, afterSubs, supervised.WorkDir, machineId, "after_exit", failClosed: false);
+        }
+        catch { /* best effort */ }
     }
 
     private static void KillTree(SupervisedTask supervised)
@@ -821,6 +848,141 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             if (string.IsNullOrWhiteSpace(key) || HarnessTelemetry.IsReserved(key))
                 continue;
             psi.Environment[key] = Substitute(value, substitutions);
+        }
+    }
+
+    internal static readonly TimeSpan HookTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// #112 G2: write <see cref="ProfileConfig.Files"/> into the work dir. Paths
+    /// that escape after substitution fail the spawn.
+    /// </summary>
+    private static void WriteProfileFiles(
+        ProfileConfig profile, string workDir, IReadOnlyDictionary<string, string> substitutions)
+    {
+        foreach (var file in profile.Files)
+        {
+            var path = Substitute(file.Path, substitutions);
+            if (!IsUnderWorkDir(workDir, path))
+                throw new InvalidOperationException(
+                    $"profile '{profile.Name}' file '{file.Path}' resolves outside the work dir");
+            var full = Path.GetFullPath(path);
+            var dir = Path.GetDirectoryName(full);
+            if (!string.IsNullOrEmpty(dir))
+                Directory.CreateDirectory(dir);
+            File.WriteAllText(full, Substitute(file.Contents, substitutions));
+            ApplyDeclaredMode(full, file.Mode);
+        }
+    }
+
+    internal static bool IsUnderWorkDir(string workDir, string path)
+    {
+        var root = Path.GetFullPath(workDir);
+        var full = Path.GetFullPath(path);
+        if (string.Equals(root, full, StringComparison.Ordinal))
+            return true;
+        var prefix = root.EndsWith(Path.DirectorySeparatorChar)
+            ? root
+            : root + Path.DirectorySeparatorChar;
+        return full.StartsWith(prefix, StringComparison.Ordinal);
+    }
+
+    private static void ApplyDeclaredMode(string path, string? mode)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            if (mode is null)
+            {
+                SetOwnerOnly(path);
+                return;
+            }
+
+            var octal = mode.Trim();
+            if (octal.Length == 4 && octal[0] == '0')
+                octal = octal[1..];
+            File.SetUnixFileMode(path, (UnixFileMode)Convert.ToInt32(octal, 8));
+        }
+    }
+
+    /// <summary>
+    /// Run a profile hook as argv (never a shell). <paramref name="failClosed"/> is
+    /// <c>before_spawn</c>: a non-zero, timeout, or start failure throws so the
+    /// harness never starts. <c>after_exit</c> logs and returns.
+    /// </summary>
+    private static void RunProfileHook(
+        IReadOnlyList<string> argv,
+        IReadOnlyDictionary<string, string> substitutions,
+        string workDir,
+        string machineId,
+        string hookName,
+        bool failClosed)
+    {
+        if (argv.Count == 0)
+            return;
+
+        var resolved = argv.Select(a => Substitute(a, substitutions)).ToArray();
+        if (string.IsNullOrWhiteSpace(resolved[0]))
+        {
+            if (failClosed)
+                throw new InvalidOperationException($"profile hook '{hookName}' has an empty argv[0]");
+            return;
+        }
+
+        var psi = new ProcessStartInfo(resolved[0])
+        {
+            WorkingDirectory = workDir,
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        for (var i = 1; i < resolved.Length; i++)
+            psi.ArgumentList.Add(resolved[i]);
+
+        psi.Environment["DOCKET_MACHINE_ID"] = machineId;
+        psi.Environment["DOCKET_HOOK"] = hookName;
+        psi.Environment.Remove("DOCKET_TASK_ID");
+        psi.Environment.Remove("DOCKET_WORKER_TOKEN");
+
+        using var process = new Process { StartInfo = psi };
+        try
+        {
+            if (!process.Start())
+                throw new InvalidOperationException($"profile hook '{hookName}' Process.Start returned false");
+        }
+        catch (Exception e) when (failClosed)
+        {
+            throw new InvalidOperationException($"profile hook '{hookName}' failed to start: {e.Message}", e);
+        }
+        catch
+        {
+            Console.Error.WriteLine($"docketd: profile hook '{hookName}' failed to start");
+            return;
+        }
+
+        process.StandardInput.Close();
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
+
+        if (!process.WaitForExit((int)HookTimeout.TotalMilliseconds))
+        {
+            try { process.Kill(entireProcessTree: true); } catch { /* best effort */ }
+            try { Task.WaitAll([stdout, stderr], TimeSpan.FromSeconds(1)); } catch { /* drain */ }
+            var message = $"profile hook '{hookName}' timed out after {HookTimeout.TotalSeconds:0}s";
+            if (failClosed)
+                throw new InvalidOperationException(message);
+            Console.Error.WriteLine("docketd: " + message);
+            return;
+        }
+
+        try { Task.WaitAll([stdout, stderr], TimeSpan.FromSeconds(1)); } catch { /* drain */ }
+
+        if (process.ExitCode != 0)
+        {
+            var message = $"profile hook '{hookName}' exited {process.ExitCode}";
+            if (failClosed)
+                throw new InvalidOperationException(message);
+            Console.Error.WriteLine("docketd: " + message);
         }
     }
 
