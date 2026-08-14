@@ -154,16 +154,27 @@ internal static class MetaRenderer
         }
         sb.Append("</section>");
 
-        // Actions (guarded by state; a destroyed instance offers nothing)
-        if (i.State != InstanceState.Destroyed)
+        // Actions (guarded by state; a destroyed instance offers nothing, and neither does
+        // one an operation is already holding — every one of these would be refused by the
+        // claim, so offering them would only mislead).
+        if (InstanceStates.IsInFlight(i.State))
+        {
+            sb.Append("<section><h2>Actions</h2>");
+            sb.Append(Empty($"An operation is in flight ({i.State.ToString().ToLowerInvariant()}); " +
+                            "actions are available again when it finishes. A stalled operation is retried automatically."));
+            sb.Append("</section>");
+        }
+        else if (i.State != InstanceState.Destroyed)
         {
             sb.Append("<section><h2>Actions</h2><div class=\"actions\">");
             if (i.State is InstanceState.Ready)
                 sb.Append(PostButton($"/instances/{i.Id}/suspend", "Suspend", "btn"));
             if (i.State is InstanceState.Suspended)
                 sb.Append(PostButton($"/instances/{i.Id}/resume", "Resume", "btn"));
+            // Re-runs whatever stalled — a first provision, a resume, or an upgrade — since
+            // all three are the same saga and the row already records which one's intent.
             if (i.State is InstanceState.Failed)
-                sb.Append(PostButton($"/instances/{i.Id}/retry", "Retry provisioning", "btn"));
+                sb.Append(PostButton($"/instances/{i.Id}/retry", "Retry", "btn"));
             sb.Append("</div>");
 
             // Upgrade

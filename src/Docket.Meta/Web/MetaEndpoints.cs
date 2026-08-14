@@ -159,7 +159,7 @@ internal static class MetaEndpoints
         try
         {
             var result = await creator.CreateAsync(req, http.RequestAborted);
-            launcher.Provision(result.Id);
+            launcher.TryProvision(result.Id);
             return Html(MetaRenderer.Created(result));
         }
         catch (InstanceCreateException ex)
@@ -201,6 +201,12 @@ internal static class MetaEndpoints
             instance, instance.Host?.Name ?? "—", health, tracker.Busy(instance.Id), clock.GetUtcNow()));
     }
 
+    /// <summary>
+    /// The three no-argument lifecycle buttons. The state check here decides whether the
+    /// click does anything at all; it is not the guard against a concurrent operation — the
+    /// transition claims the Instance row for that (<see cref="InstanceProvisioner"/>), which
+    /// is what closes the window between this check and the background operation starting.
+    /// </summary>
     private static Func<HttpContext, Task<IResult>> HandleActionAsync(string action) => async http =>
     {
         var id = RouteGuid(http);
@@ -212,9 +218,9 @@ internal static class MetaEndpoints
 
         switch (action)
         {
-            case "suspend" when instance.State is InstanceState.Ready: launcher.Suspend(id); break;
-            case "resume" when instance.State is InstanceState.Suspended: launcher.Resume(id); break;
-            case "retry" when instance.State is InstanceState.Failed: launcher.Provision(id); break;
+            case "suspend" when instance.State is InstanceState.Ready: launcher.TrySuspend(id); break;
+            case "resume" when instance.State is InstanceState.Suspended: launcher.TryResume(id); break;
+            case "retry" when instance.State is InstanceState.Failed: launcher.TryProvision(id); break;
         }
         return Results.Redirect($"/instances/{id}");
     };
@@ -231,7 +237,7 @@ internal static class MetaEndpoints
         if (instance is null)
             return Results.NotFound();
         if (!string.IsNullOrWhiteSpace(tag) && instance.State is InstanceState.Ready or InstanceState.Failed)
-            launcher.Upgrade(id, tag);
+            launcher.TryUpgrade(id, tag);
         return Results.Redirect($"/instances/{id}");
     }
 
@@ -246,9 +252,10 @@ internal static class MetaEndpoints
         var instance = await db.Instances.FirstOrDefaultAsync(i => i.Id == id);
         if (instance is null)
             return Results.NotFound();
-        // Typed-name confirm: only destroy when the operator retyped the exact name.
+        // Typed-name confirm: only destroy when the operator retyped the exact name. A destroy
+        // while another operation holds the row is refused by the claim, not here.
         if (instance.State != InstanceState.Destroyed && confirm == instance.Name)
-            launcher.Destroy(id);
+            launcher.TryDestroy(id);
         return Results.Redirect($"/instances/{id}");
     }
 

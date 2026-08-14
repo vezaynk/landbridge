@@ -46,8 +46,14 @@ public sealed class FakeSubstrate : ISubstrate
         await Hook("run:" + spec.Name);
         if (Containers.TryGetValue(spec.Name, out var existing))
         {
-            existing.Running = true;
-            return "id-" + spec.Name;
+            if (existing.Spec.Image == spec.Image)
+            {
+                existing.Running = true;
+                return "id-" + spec.Name;
+            }
+            // Mirrors the real substrate: a container on another image is the upgrade case,
+            // so it is replaced rather than adopted.
+            await RemoveContainerAsync(spec.Name, ct);
         }
         Containers[spec.Name] = new ContainerRecord(spec);
         return "id-" + spec.Name;

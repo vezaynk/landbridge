@@ -67,7 +67,8 @@ internal static class MetaCss
       font-size: 12px; font-weight: 600; background: var(--idle-bg); color: var(--idle);
     }
     .state-ready { background: var(--ok-bg); color: var(--ok); }
-    .state-provisioning, .busy { background: var(--warn-bg); color: var(--warn); }
+    .state-provisioning, .state-suspending, .state-resuming, .state-upgrading,
+    .state-destroying, .busy { background: var(--warn-bg); color: var(--warn); }
     .state-suspended { background: var(--idle-bg); color: var(--idle); }
     .state-failed { background: var(--bad-bg); color: var(--bad); }
     .state-destroyed { background: var(--idle-bg); color: var(--muted); text-decoration: line-through; }
