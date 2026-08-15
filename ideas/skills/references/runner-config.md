@@ -139,7 +139,7 @@ spawn, not configurably — §10):
 | `{mcp_config}` | Path to the generated MCP config `docketd` writes to `{work_dir}/mcp.json` (mode 0600) — **only when this token appears in spawn or resume argv**. Prefer `files[]` + `{worker_token}` / `{mcp_url}` (below) for a new profile; this token is the Claude convenience that remains so existing argv keeps working. |
 | `{mcp_url}` | The plane's public MCP URL (`Docket:PublicMcpUrl`). Filled by the plane on every dispatch so a `files[]` body can name the URL without parsing `mcp.json`. Also stamped on the worker as `DOCKET_MCP_URL`. |
 | `{worker_token}` | The minted worker-instance token (`dkt_w_` + 64 hex). For a `files[]` body that must embed the bearer (Claude's `--mcp-config` does not expand `${DOCKET_WORKER_TOKEN}`). Same secret as `DOCKET_WORKER_TOKEN` on the spawn env. |
-| `{session_id}` | The opaque harness session ref to resume. Substituted in `resume.args` only, never `spawn` (§11). |
+| `{session_id}` | Unused on an ACP profile. Resume is `session/load` on the connection, not an argv token. |
 | `DOCKET_WORKER_TOKEN` | The minted worker-instance token (also `{worker_token}`). |
 
 ## The plane's MCP server, and how a worker gets it
@@ -279,7 +279,6 @@ follow differ only in the spawn argv and the tool spelling.
   "profiles": [
     {
       "name": "default",
-      "protocol": "acp",
       // `opencode acp` starts OpenCode as an ACP agent over stdio. NOT `opencode run` —
       // that is the stream-mode command, and pointing an acp profile at it produces a
       // worker that never answers `initialize`. docketd reports exactly that, per task.
@@ -294,7 +293,7 @@ follow differ only in the spawn argv and the tool spelling.
       "follow_up": "There is new input on your assignment. Call docket_get_task to read it, then continue.",
       // No events block: ACP is the event source. No resume block: resume is session/load.
       // No stdin key: deadman is correct and `closed` is refused.
-      "stop": { "mode": "signal", "wind_down_seconds": 30 },
+      "stop": { "wind_down_seconds": 30 },
       "logs": { "capture": true }
     }
   ]
@@ -326,7 +325,6 @@ there is no interactive login step in the enroll path.
   "profiles": [
     {
       "name": "default",
-      "protocol": "acp",
       // The adapter, not `claude`. It spawns claude itself.
       "spawn": ["claude-agent-acp"],
       "prompt": "You are a Docket worker running headless under docketd. You have been dispatched exactly one task. First call the mcp__docket__get_task MCP tool to read your assignment (namespace, description, completion_criteria, workspace, attempt). Read the docket-worker skill. Do the work inside the assigned workspace. When done, call mcp__docket__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call mcp__docket__request_input instead of guessing. You do not verify or complete the task yourself.",
@@ -335,7 +333,7 @@ there is no interactive login step in the enroll path.
       // same environment claude does. `--max-turns` has no ACP equivalent, so on this
       // profile the bound is the model plus the §10 no-progress ceiling. See the cost note.
       "env": { "ANTHROPIC_MODEL": "claude-haiku-4-5-20251001" },
-      "stop": { "mode": "signal", "wind_down_seconds": 30 },
+      "stop": { "wind_down_seconds": 30 },
       "telemetry": { "otel": true, "env": { "CLAUDE_CODE_ENABLE_TELEMETRY": "1" } },
       "logs": { "capture": true }
     }
@@ -361,14 +359,13 @@ ACP simply has.
   "profiles": [
     {
       "name": "default",
-      "protocol": "acp",
       "spawn": ["codex-acp"],
       "prompt": "You are a Docket worker running headless under docketd. You have been dispatched exactly one task. First call the mcp__docket__get_task MCP tool to read your assignment. Do the work inside the assigned workspace. When done, call mcp__docket__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call mcp__docket__request_input instead of guessing.",
       "follow_up": "There is new input on your assignment. Call mcp__docket__get_task to read it, then continue.",
       // codex-acp authenticates from the environment (API Key) or a cached ChatGPT login,
       // both of which it declares as authMethods at initialize.
       "env": { "CODEX_API_KEY": "{env:CODEX_API_KEY}" },
-      "stop": { "mode": "signal", "wind_down_seconds": 30 },
+      "stop": { "wind_down_seconds": 30 },
       "logs": { "capture": true }
     }
   ]
@@ -398,7 +395,6 @@ gone, along with its side effect of declaring a docket MCP server for every inte
   "profiles": [
     {
       "name": "default",
-      "protocol": "acp",
       // `grok agent stdio`, NOT `grok -p --output-format streaming-json`. The latter is an
       // output shape that merely resembles ACP; the former is the protocol.
       "spawn": ["grok", "agent", "stdio"],
@@ -407,16 +403,14 @@ gone, along with its side effect of declaring a docket MCP server for every inte
       // 1.0.4+ gates project-local config behind folder trust and a work dir is a
       // throwaway folder. Carried over from the stream profile; re-confirm under ACP.
       "env": { "GROK_FOLDER_TRUST": "0" },
-      "stop": { "mode": "signal", "wind_down_seconds": 30 },
+      "stop": { "wind_down_seconds": 30 },
       "logs": { "capture": true }
     }
   ]
 }
 ```
 
-If Grok turns out to require a client-side terminal, it cannot run under this client today
-and stays on its `streaming-messages-json` stream profile — which is a perfectly good
-profile and the only one of the four whose stream mapping needed no `events.mapping` at all.
+If Grok turns out to require a client-side terminal, it cannot run under this client today.
 
 ### The caveat that could make an ACP worker useless
 
@@ -482,22 +476,13 @@ For `codex exec` and `opencode run` that is no change — neither ever had a tur
 to an unbounded one. Weigh that per profile before migrating, and note it compounds with
 the usage gap below — you lose the cap and the meter in the same move.
 
-### Two things this increment does not do yet
-
-**Permissions are auto-allowed, not bridged.** ACP delivers a permission request
-structured, with the agent's own options attached, which is a far better fit for §11's
-permission bridge than the per-harness prompt-tool it was built on. This increment answers
-with the agent's own always-allow option — a like-for-like port of what
-`bypassPermissions`/`--auto` buy a stream profile, chosen so the protocol change is not
-also a silent policy change. Routing it into the plane is the next increment.
+### What this increment still does not do
 
 **Token accounting is not carried over.** ACP's accepted usage surface (`usage_update`) is
 context-window utilization plus an optional cumulative cost, not the four disjoint token
-buckets `UsageReportedEvent` carries today, and per-turn token accounting is still a
-separate RFD. So an ACP profile currently reports **no usage at all** — it does not report
-zeros, and it does not fabricate buckets from a context gauge. Reshaping the measured view
-around `used`/`size`/`cost` is tracked separately; until then, a profile whose spend you
-need to see should stay on `stream`.
+buckets `UsageReportedEvent` carries today. An ACP profile currently reports **no usage
+at all** — it does not report zeros, and it does not fabricate buckets from a context
+gauge. Reshaping the measured view is tracked separately.
 
 ## Profile archetypes — open vs. strict
 
@@ -508,48 +493,23 @@ commands) is the machine's declaration, invisible to the plane (§1's
 infrastructure/work split, §10's "everything specific is data").
 
 **Open** — the worker uses the machine like its owner would, including starting its own
-background processes (§10 `start_process`). Omit
-`--allowedTools` entirely (with `--permission-mode bypassPermissions` every
-tool is available) and omit `--strict-mcp-config`: the injected `{mcp_config}`
-then **merges** with the machine's own user- and project-scope MCP servers, so
-the worker sees `docket` *plus* every locally installed MCP — GitHub, database,
-browser servers — using credentials that live on that machine and never touch
-Docket:
+background processes (§10 `start_process`). Permissions go through
+`session/request_permission` to the plane; do not put bypass flags on `spawn`.
 
 ```jsonc
-"spawn": [
-  "claude", "-p", "<worker prompt>",
-  "--mcp-config", "{mcp_config}",
-  "--output-format", "stream-json", "--verbose",
-  "--permission-mode", "bypassPermissions"
-],
-// §10: let a worker start its own background processes. On an open profile this grants
-// nothing it could not already do with a shell — and it means the agent uses the supported
-// route instead of discovering `setsid`/env-scrubbing, which would defeat the kill guarantee
-// for everything else on the machine.
+"spawn": ["claude-agent-acp"],
+"prompt": "<opening turn naming mcp__docket__get_task / report_result / request_input>",
+"follow_up": "There is new input on your assignment. Call mcp__docket__get_task to read it, then continue.",
 "processes": { "agent_initiated": true }
 ```
 
-On a **strict** profile leave `processes.agent_initiated` off (the default): a worker with no
-shell cannot start a background process by hand, and `start_process` refuses honestly rather
-than granting a capability the rest of the profile withholds.
+On a **strict** profile leave `processes.agent_initiated` off (the default): a worker
+that cannot start a background process by hand is refused honestly by `start_process`
+rather than granted a capability the rest of the profile withholds.
 
-**Strict** — the worker gets an enumerated toolbox and nothing else. Keep
-`--allowedTools` narrow and add `--strict-mcp-config`, which makes the injected
-config the *only* MCP config loaded — local servers are excluded:
-
-```jsonc
-"spawn": [
-  "claude", "-p", "<worker prompt>",
-  "--mcp-config", "{mcp_config}", "--strict-mcp-config",
-  "--output-format", "stream-json", "--verbose",
-  "--permission-mode", "bypassPermissions",
-  "--allowedTools", "Read,Glob,Grep,mcp__docket__get_task,mcp__docket__report_result,mcp__docket__request_input"
-]
-```
-
-Both archetypes take `stop.mode: signal` for the same reason the default profile does —
-they are both `claude -p`, and neither can be handed a wind-down turn.
+**Strict** is a prompt and a permission policy, not an argv allow-list. The plane
+answers `session/request_permission`; deny what should not run. There is no
+`--allowedTools` key on an ACP profile.
 
 The trade is blast radius: on an open profile, a prompt-injected worker can do
 anything the machine account can, including using every local MCP server's
@@ -588,16 +548,14 @@ guarantee for everything else too.
 A permission request is part of the protocol: an agent that wants to use a tool its policy
 does not cover sends `session/request_permission`, with its own options attached, and waits.
 
-**Today `docketd` answers with the agent's own always-allow option.** That reproduces exactly
-what `--permission-mode bypassPermissions`, `--dangerously-bypass-approvals-and-sandbox` and
-`--auto` bought a stream profile: a headless worker that runs to completion without a human.
-It is a like-for-like port, chosen so the protocol change was not also a silent policy change.
+**docketd routes it through the plane.** The runner posts the worker bearer at
+`POST /worker/permission`, which is the same `PermissionRelay` as the MCP
+`request_permission` tool. A Lead or human answers with allow or deny. Allow maps
+to the agent's `allow_once` option, never `allow_always`. Deny maps to a reject
+option, or `cancelled` if the agent offered none.
 
-**Routing it into the plane is the next increment.** Docket already has the machinery — §11's
-`InputRequestKind.Permission` relays a prompt to a Lead and answers it with a
-`PermissionVerdict` — and ACP is a far better fit for it than the per-harness prompt-tool it
-was built against: the request arrives structured, and the agent supplies the options rather
-than the profile having to describe them. See `ideas/sessions.md`.
+Do not put bypass / `--always-approve` / `--auto` on `spawn`. That skips a dialog
+Docket is now the one answering.
 
 ## Park vs wait
 

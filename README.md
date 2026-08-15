@@ -194,13 +194,9 @@ split — a Lead or human adjudicates, never the task's own worker); Postgres st
 with `SKIP LOCKED` dispatch and `LISTEN/NOTIFY` push; opaque-token auth across the
 four credential classes; OAuth 2.1 authorization-code + PKCE (S256) + Client ID
 Metadata Documents; machine enrollment and refresh; `docketd` supervision,
-stop/kill with a bounded wind-down deadline (an injected turn where the harness reads
-one, a TTL'd kill for `claude -p`, which cannot be handed one), heartbeats,
-terminal-source tool-call events — in either of two stream shapes, claude's nested
-assistant turns or one flat event object per call, so a second harness's stream is a
-`mapping` rather than a code change — a **per-profile `stdin` policy** (the §10
-dead-man pipe by default, `closed` for a harness like `codex exec` that would block
-on it forever),
+stop/kill as `session/cancel` plus a bounded wind-down deadline, heartbeats,
+ACP `session/update` tool-call events, the §10 dead-man pipe (stdin is the
+JSON-RPC channel),
 real per-OS CPU-load back-pressure, and stray cleanup; **two-clock per-task
 liveness** (aliveness vs no-progress, so a ten-minute build is no longer mistaken
 for a hang), capped requeues, and **a requeue that takes the process down with it** —
@@ -211,9 +207,8 @@ prior task's transcript under a fresh token; **agent-started background processe
 (`start_process` / `write_process` / `stop_process` / `list_processes` — supervised by
 `docketd` as its own children, so they outlive the task that started them, machine-scoped
 for any later task to find and stop, never restarted, with an optional stdin pipe);
-the **§11 permission bridge**, which lets a headless worker run *without*
-`bypassPermissions` — a tool call its profile does not pre-approve becomes an approval
-request the Lead answers with a verdict, or hands to a human on the dashboard;
+the **§11 permission bridge** — ACP `session/request_permission` becomes an
+approval request the Lead answers with a verdict, or hands to a human on the dashboard;
 **in-band worker reports** and the
 **question/answer exchange** that makes blocking on a human actually carry words;
 Lead-adjudicated completion (`lead`/`review` modes); an enforced per-Team

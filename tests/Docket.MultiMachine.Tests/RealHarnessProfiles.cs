@@ -3,74 +3,12 @@ using Docket.Runner;
 namespace Docket.MultiMachine.Tests;
 
 /// <summary>
-/// The four real-CLI fixtures. Spawn argv, mapping, files, and attach helpers are
-/// the same recipes the per-harness characterization files already used — lifted
-/// here so the shared bar and those files do not drift.
+/// The four real-CLI fixtures. What differs per harness is the ACP entry point
+/// and how that vendor spells docket's MCP tools. MCP itself rides
+/// <c>session/new</c>; these fixtures do not write a bearer file.
 /// </summary>
 internal static class RealHarnessProfiles
 {
-    public const string ClaudeMcpPath = "{work_dir}/mcp-{task_id}.json";
-
-    public static readonly ProfileFile[] ClaudeMcpFile =
-    [
-        new(
-            ClaudeMcpPath,
-            """{"mcpServers":{"docket":{"type":"http","url":"{mcp_url}","headers":{"Authorization":"Bearer {worker_token}"}}}}"""),
-    ];
-
-    public static readonly ProfileFile[] GrokMcpFile =
-    [
-        new(
-            "{work_dir}/.grok/config.toml",
-            """
-            [mcp_servers.docket]
-            url = "{mcp_url}"
-            enabled = true
-            headers = { "Authorization" = "Bearer {worker_token}" }
-            """,
-            "600"),
-    ];
-
-    public static readonly Dictionary<string, string> CodexEventMapping = new()
-    {
-        ["system_type"] = "thread.started",
-        ["subtype_key"] = "type",
-        ["init_subtype"] = "thread.started",
-        ["session_id_key"] = "thread_id",
-        ["tool_event_type"] = "item.started",
-        ["tool_name_path"] = "item.command, item.tool",
-        ["usage_type"] = "turn.completed",
-        ["usage_cache_read_key"] = "cached_input_tokens",
-        ["usage_cache_write_key"] = "cache_write_input_tokens",
-        ["usage_reasoning_key"] = "reasoning_output_tokens",
-        ["usage_cost_key"] = "",
-        ["usage_models_key"] = "",
-        ["usage_cached_is_subset"] = "true",
-        ["usage_is_cumulative"] = "false",
-    };
-
-    public static readonly Dictionary<string, string> OpenCodeEventMapping = new()
-    {
-        ["system_type"] = "step_start",
-        ["subtype_key"] = "type",
-        ["init_subtype"] = "step_start",
-        ["session_id_key"] = "sessionID",
-        ["tool_event_type"] = "tool_use",
-        ["tool_name_path"] = "part.tool",
-        ["usage_type"] = "step_finish",
-        ["usage_key"] = "part.tokens",
-        ["usage_input_key"] = "input",
-        ["usage_output_key"] = "output",
-        ["usage_cache_read_key"] = "cache.read",
-        ["usage_cache_write_key"] = "cache.write",
-        ["usage_reasoning_key"] = "reasoning",
-        ["usage_cost_key"] = "part.cost",
-        ["usage_models_key"] = "",
-        ["usage_cached_is_subset"] = "false",
-        ["usage_reasoning_is_subset"] = "false",
-        ["usage_is_cumulative"] = "false",
-    };
-
     public static readonly string[] CodexBareTools = ["get_task", "report_result", "request_input"];
 
     public static RealHarnessProfile Claude(string bin) => new()
@@ -81,7 +19,6 @@ internal static class RealHarnessProfiles
         // protocol 1, loadSession true, mcpCapabilities.http true, ambient auth.
         AcpSpawn = ["claude-agent-acp"],
         Bin = bin,
-        Files = ClaudeMcpFile,
         GetTask = "mcp__docket__get_task",
         ReportResult = "mcp__docket__report_result",
         RequestInput = "mcp__docket__request_input",
@@ -130,10 +67,8 @@ internal static class RealHarnessProfiles
         // `-p --output-format streaming-json`, which is an output shape not the protocol.
         AcpSpawn = [bin, "agent", "stdio"],
         Bin = bin,
-        Files = GrokMcpFile,
-        // 1.0.4 gates project-local MCP (the files[] config.toml) behind folder
-        // trust. A docketd work dir is a throwaway temp folder, so disable the
-        // gate rather than writing ~/.grok/trusted_folders.toml per task.
+        // 1.0.4 gates project-local config behind folder trust. A docketd work
+        // dir is a throwaway temp folder, so disable the gate.
         Env = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["GROK_FOLDER_TRUST"] = "0",
@@ -145,81 +80,6 @@ internal static class RealHarnessProfiles
         SupportsResume = true,
         FailureHypotheses = GrokHypotheses(),
     };
-
-    public static string[] ClaudeSpawn(string bin, string prompt, string tools, params string[] extra) =>
-    [
-        bin, "-p", prompt,
-        "--mcp-config", ClaudeMcpPath,
-        "--strict-mcp-config",
-        "--allowedTools", tools,
-        "--output-format", "stream-json",
-        "--verbose",
-        "--model", "haiku",
-        "--max-turns", "8",
-        .. extra,
-    ];
-
-    public static string[] CodexSpawn(string bin, string prompt, params string[] extra)
-    {
-        var argv = new List<string>
-        {
-            bin, "exec", prompt,
-            "--json",
-            "--skip-git-repo-check",
-            "--dangerously-bypass-approvals-and-sandbox",
-            "--model", CodexModel,
-        };
-        argv.AddRange(extra);
-        return [.. argv];
-    }
-
-    public static string[] CodexResume(string bin, string prompt) =>
-    [
-        bin, "exec", "resume", "{session_id}", prompt,
-        "--json",
-        "--skip-git-repo-check",
-        "--dangerously-bypass-approvals-and-sandbox",
-        "--model", CodexModel,
-    ];
-
-    public static string[] OpenCodeSpawn(string bin, string prompt, params string[] extra) =>
-    [
-        bin, "run", prompt,
-        "--format", "json",
-        "--auto",
-        "--model", OpenCodeModel,
-        .. extra,
-    ];
-
-    public static string[] OpenCodeResume(string bin, string prompt) =>
-    [
-        bin, "run", prompt,
-        "--session", "{session_id}",
-        "--format", "json",
-        "--auto",
-        "--model", OpenCodeModel,
-    ];
-
-    public static string[] GrokSpawn(string bin, string prompt, params string[] extra) =>
-    [
-        bin, "-p", prompt,
-        "--output-format", "streaming-messages-json",
-        "--always-approve",
-        "--no-auto-update",
-        "--max-turns", "8",
-        "-m", GrokModel,
-        .. extra,
-    ];
-
-    public static string[] GrokResume(string bin, string prompt) =>
-    [
-        bin, "-p", prompt,
-        "--resume", "{session_id}",
-        "--output-format", "streaming-messages-json",
-        "--always-approve",
-        "--no-auto-update",
-        "-m", GrokModel,
-    ];
 
     public static string CodexModel =>
         Environment.GetEnvironmentVariable("DOCKET_CODEX_MODEL") is { Length: > 0 } m ? m : "gpt-5.1-codex-mini";
@@ -432,12 +292,9 @@ internal static class RealHarnessProfiles
 
          Suspect, in order:
            1. MODEL SLUG. This tier pins '{{GrokModel}}'. Override with DOCKET_GROK_MODEL.
-           2. MCP WIRING. files[] writes {work_dir}/.grok/config.toml with {mcp_url}
-              and Bearer {worker_token}, both docketd file-substitutions written
-              verbatim (grok does NOT expand ${ENV} in config.toml). A 401 here means
-              the minted token or url is wrong. If search_tool says "No MCP tools are
-              available" with mcp_wait_ms=0, folder trust blocked the project file —
-              this profile sets GROK_FOLDER_TRUST=0 for that reason.
+           2. MCP WIRING. The plane is handed over on session/new. A 401 means the
+              minted token or url is wrong. GROK_FOLDER_TRUST=0 is set so a throwaway
+              work dir is not blocked by folder trust.
            3. TOOL NAMES. Grok spells MCP tools docket__get_task, not mcp__docket__get_task.
            4. STDIN. A deadman profile starts then never exits. Bar facts declare closed.
            5. AUTH. XAI_API_KEY (not XAI_KEY) must be in the environment.

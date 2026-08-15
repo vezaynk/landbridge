@@ -7,15 +7,13 @@ using Microsoft.EntityFrameworkCore;
 namespace Docket.MultiMachine.Tests;
 
 /// <summary>
-/// The multi-machine collaboration crown (spec §8.3), <b>real-<c>claude -p</c> tier</b>:
+/// The multi-machine collaboration crown (spec §8.3), <b>real Claude ACP tier</b>:
 /// the same real plane + real relay + N real <c>docketd</c> rigs the scripted
 /// <see cref="MultiMachineCollaborationTests"/> stand up, but each machine's
-/// <c>default</c> profile spawns a REAL <c>claude -p</c> agent instead of the no-LLM
+/// <c>default</c> profile spawns <c>claude-agent-acp</c> instead of the no-LLM
 /// <c>Docket.CollabHarness</c>. Nothing below the spawn seam changes — this is the §10
 /// config-only harness promise exercised for real: the worker learns its assignment
-/// from the injected <c>--mcp-config</c> + <c>get_task</c>, does the work, and reports
-/// back, driving the task through the live control plane exactly as a scripted worker
-/// would (the recipe proven by the S2 operator spike, 2026-07-29).
+/// from <c>session/new</c> MCP + <c>get_task</c>, does the work, and reports back.
 ///
 /// <para><b>Opt-in, token-spending, and deliberately kept out of the default suite.</b>
 /// The real-worker facts SKIP cleanly unless the run opted in — an Anthropic key in the
@@ -25,9 +23,8 @@ namespace Docket.MultiMachine.Tests;
 /// spends zero tokens. See <see cref="RequireRealClaude"/> for why the two paths are not
 /// interchangeable. The dedicated CI job (see
 /// <c>.github/workflows/ci.yml</c>) sets the key and runs <em>only</em> this trait. Kept
-/// tiny and turn-capped (<c>--model haiku</c>, small <c>--max-turns</c>) and tolerant of a
-/// single flaked worker turn (bounded redispatch) so a full run costs a few cents and a
-/// lone haiku hiccup doesn't red the job.</para>
+/// tiny and tolerant of a single flaked worker turn (bounded redispatch) so a full
+/// run costs a few cents and a lone haiku hiccup doesn't red the job.</para>
 ///
 /// <para>The portable minimum bar — verifying + session ref, usage/cost, park → resume —
 /// lives in <see cref="RealHarnessBar"/> and is wrapped below so this class's
@@ -52,11 +49,6 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// that ends without the tool call, without letting the job run away.</summary>
     private const int MaxAttempts = 3;
     private static readonly TimeSpan PerLegBudget = TimeSpan.FromMinutes(8);
-
-    /// <summary>The allow-listed docket tools the worker needs — and nothing else, so a
-    /// stray step can't wander off spending turns. <c>--strict-mcp-config</c> keeps the
-    /// injected <c>docket</c> server the only MCP surface (never the operator's own).</summary>
-    private const string AllowedTools = "mcp__docket__get_task,mcp__docket__report_result";
 
     /// <summary>
     /// The standing rule every prompt here carries, and it is a fix for a real failure rather
@@ -141,11 +133,12 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     [SkippableFact]
     public async Task Real_claude_workers_hand_off_a_token_across_two_machines()
     {
-        var claudeBin = RequireRealClaude();
+        var profile = RealHarnessProfiles.Claude(RequireRealClaude());
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(20));
         var ct = cts.Token;
 
-        await using var rig = new FleetRig(pg, ClaudeWorkerSpawn(claudeBin), files: ClaudeMcpFile);
+        await using var rig = new FleetRig(
+            pg, profile.AcpSpawn, prompt: profile.EchoPrompt, followUp: profile.FollowUpTurn);
         await rig.StartAsync(ct);
         await rig.AddMachineAsync("A");
         await rig.AddMachineAsync("B");
@@ -339,16 +332,17 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     [SkippableFact]
     public async Task A_real_claude_process_outlives_its_task_and_a_later_real_worker_finds_and_stops_it()
     {
-        var claudeBin = RequireRealClaude();
+        RequireRealClaude();
         FleetRig.PublishDotnetRootForSpawnedApphosts();
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(20));
         var ct = cts.Token;
 
         await using var rig = new FleetRig(
             pg,
-            spawnArgv: StreamingSpawn(claudeBin, StepwiseWorkerPrompt, ProcessTools, "--max-turns", "14"),
+            spawnArgv: ["claude-agent-acp"],
             agentProcesses: true,
-            files: ClaudeMcpFile);
+            prompt: StepwiseWorkerPrompt,
+            followUp: "There is new input on your assignment. Call mcp__docket__get_task to read it, then continue.");
         await rig.StartAsync(ct);
         await rig.AddMachineAsync("A");
 
@@ -416,16 +410,17 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     [SkippableFact]
     public async Task Real_claude_workers_reach_a_registered_service_across_two_machines()
     {
-        var claudeBin = RequireRealClaude();
+        RequireRealClaude();
         FleetRig.PublishDotnetRootForSpawnedApphosts();
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(20));
         var ct = cts.Token;
 
         await using var rig = new FleetRig(
             pg,
-            spawnArgv: StreamingSpawn(claudeBin, StepwiseWorkerPrompt, ServiceTools, "--max-turns", "16"),
+            spawnArgv: ["claude-agent-acp"],
             agentProcesses: true,
-            files: ClaudeMcpFile);
+            prompt: StepwiseWorkerPrompt,
+            followUp: "There is new input on your assignment. Call mcp__docket__get_task to read it, then continue.");
         await rig.StartAsync(ct);
         await rig.AddMachineAsync("A");
         await rig.AddMachineAsync("B");
@@ -468,26 +463,6 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
 
     // ── Recipe + descriptions ───────────────────────────────────────────────────
 
-    private const string ClaudeMcpPath = RealHarnessProfiles.ClaudeMcpPath;
-    private static readonly ProfileFile[] ClaudeMcpFile = RealHarnessProfiles.ClaudeMcpFile;
-
-    /// <summary>
-    /// The validated real-<c>claude -p</c> worker argv (S2 spike, 2026-07-29): headless
-    /// print mode, a per-task MCP file written by <c>files[]</c> as the ONLY MCP
-    /// server (<c>--strict-mcp-config</c>), a minimal docket tool allow-list, haiku,
-    /// and a tight turn cap. Auth is the bearer <c>{worker_token}</c> in that file
-    /// plus the ambient <c>ANTHROPIC_API_KEY</c> the spawned process inherits.
-    /// </summary>
-    private static string[] ClaudeWorkerSpawn(string claudeBin) =>
-    [
-        claudeBin, "-p", WorkerPrompt,
-        "--mcp-config", ClaudeMcpPath,
-        "--strict-mcp-config",
-        "--allowedTools", AllowedTools,
-        "--model", "haiku",
-        "--max-turns", "8",
-    ];
-
     /// <summary>The one description template both roles use (§7): report
     /// <c>&lt;label&gt;:&lt;token&gt;</c>, front-loading the imperative so a haiku worker's
     /// happy path is two tool calls. Kept identical across roles so B is exactly as
@@ -502,108 +477,6 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
          That is the entire task. Do not create or edit files. Do not do anything else.
          """;
 
-    // ── Streaming recipe (session refs, resume, stop) ───────────────────────────
-
-    /// <summary>
-    /// The claude spawn argv for scenarios that need docketd to see the harness's own stream:
-    /// <c>--output-format stream-json</c> plus <c>--verbose</c> (which is what makes claude emit
-    /// that stream under <c>-p</c>) so an <c>events.source: terminal</c> profile can read the
-    /// <c>system/init</c> session ref (§11) and per-tool-call liveness (§10). Otherwise the
-    /// validated recipe unchanged: strict MCP config, a minimal allow-list, haiku, small turn cap.
-    /// </summary>
-    private static string[] StreamingSpawn(
-        string claudeBin, string prompt, string tools, params string[] extra) =>
-    [
-        claudeBin, "-p", prompt,
-        "--mcp-config", ClaudeMcpPath,
-        "--strict-mcp-config",
-        "--allowedTools", tools,
-        "--output-format", "stream-json",
-        "--verbose",
-        "--model", "haiku",
-        "--max-turns", "8",
-        .. extra,
-    ];
-
-    /// <summary>
-    /// The message-mode stop turn the runner-config reference carried for <c>claude -p</c>
-    /// before #103 (a stream-json user message carrying the disposition), kept verbatim in shape
-    /// so the stop characterization's finding is about the harness rather than about a template
-    /// this test invented. docketd substitutes
-    /// <c>{disposition}</c>/<c>{ttl_seconds}</c>/<c>{reason}</c>.
-    /// </summary>
-    private const string ClaudeStopTurnTemplate =
-        """{"type":"user","message":{"role":"user","content":"Docket is winding this task down (disposition={disposition}, ~{ttl_seconds}s left; reason: {reason}). Immediately call report_result with a reference to your current progress, then stop."}}""";
-
-    // ── §11 park/resume prompts and description ────────────────────────────────
-
-    /// <summary>The docket tools the continuation scenario's worker may call.</summary>
-    private const string ParkTools =
-        "mcp__docket__get_task,mcp__docket__report_result,mcp__docket__request_input";
-
-    // ── §11 permission-bridge prompt and description ───────────────────────────
-
-    /// <summary>
-    /// The docket tools a permission-bridge worker may call. Deliberately <b>no</b>
-    /// <c>Bash</c> and no <c>request_permission</c>: Bash's absence is what makes the harness
-    /// prompt, and the relaying tool is Claude Code's to call, never the agent's.
-    /// </summary>
-    private const string PermissionTools =
-        "mcp__docket__get_task,mcp__docket__report_result";
-
-    /// <summary>
-    /// The permission-bridge worker prompt. Front-loads <c>get_task</c> like every other
-    /// profile here; the shell step it will be stopped on lives in the description.
-    /// </summary>
-    private const string PermissionWorkerPrompt =
-        "You are a Docket worker agent. Your FIRST action must be to call the " +
-        "mcp__docket__get_task tool to read your assignment, then do exactly what its description " +
-        "says. If a tool call is refused, read the refusal and follow it — do not retry the same " +
-        "call." + McpToolsRule;
-
-    /// <summary>
-    /// A task that cannot be finished without a tool the allow-list withholds, so the harness
-    /// must prompt. Reporting the command's own output is what makes the approval load-bearing:
-    /// a worker that was never allowed to run it has nothing to report.
-    /// </summary>
-    private static string ShellThenReportDescription(string token) =>
-        $"""
-         Do these two steps in order:
-
-         1. Use the Bash tool to run exactly: /bin/echo {token}
-         2. Call report_result exactly once, with resultReference set to the exact text the
-            command printed.
-
-         Do not create or edit files. Do not do anything else.
-         """;
-
-    /// <summary>
-    /// The permission-bridge spawn argv (§11). Two differences from every other recipe here,
-    /// and they are the whole point:
-    /// <list type="bullet">
-    /// <item><c>--permission-prompt-tool mcp__docket__request_permission</c> <b>instead of</b>
-    /// <c>--permission-mode bypassPermissions</c> — the approval dialog routes to Docket rather
-    /// than being skipped.</item>
-    /// <item><c>--setting-sources ''</c>, so the run does not inherit the operator's own
-    /// <c>settings.json</c> allow rules. Without it this fact is machine-dependent: on a
-    /// developer box that has already allowed <c>Bash(/bin/echo:*)</c> nothing ever prompts and
-    /// the bridge is never exercised.</item>
-    /// </list>
-    /// </summary>
-    private static string[] PermissionBridgeSpawn(string claudeBin) =>
-    [
-        claudeBin, "-p", PermissionWorkerPrompt,
-        "--mcp-config", ClaudeMcpPath,
-        "--strict-mcp-config",
-        "--allowedTools", PermissionTools,
-        "--permission-prompt-tool", "mcp__docket__request_permission",
-        "--setting-sources", "",
-        "--output-format", "stream-json",
-        "--verbose",
-        "--model", "haiku",
-        "--max-turns", "10",
-    ];
-
     // ── §11 continuation prompts and description ───────────────────────────────
 
     /// <summary>
@@ -617,9 +490,9 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         "mcp__docket__get_task tool and do exactly what its description tells you." + McpToolsRule;
 
     /// <summary>
-    /// The profile's static <c>resume.args</c> prompt for the continuation leg (§11) — generic
-    /// config carrying no task content, and deliberately not the nonce. Worded for a worker
-    /// whose assignment is new but whose conversation is not.
+    /// The follow-up turn for the continuation leg (§11) — generic config carrying no
+    /// task content, and deliberately not the nonce. Worded for a worker whose assignment
+    /// is new but whose conversation is not.
     /// </summary>
     private const string ContinuationReportPrompt =
         "This conversation continues under a new task. FIRST call the mcp__docket__get_task tool " +

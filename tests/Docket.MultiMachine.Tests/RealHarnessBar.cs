@@ -10,10 +10,9 @@ namespace Docket.MultiMachine.Tests;
 /// derived class's <c>[Trait]</c> to methods declared on a base type, so the
 /// wrappers are the load-bearing half of the filter — not decoration.
 ///
-/// <para>Three claims, and only these three, because they are the ones a
-/// <c>resume.args</c> profile plus a terminal stream make generic. Dead-man
-/// hangs, stop delivery, permission, mixed fleets stay per-CLI: their
-/// assertions invert across harnesses.</para>
+/// <para>Three claims, and only these three, because they are the ones an ACP
+/// session plus <c>session/load</c> make generic. Stop delivery and mixed fleets
+/// stay per-CLI.</para>
 /// </summary>
 internal static class RealHarnessBar
 {
@@ -49,8 +48,8 @@ internal static class RealHarnessBar
         Assert.Equal("A", rig.MachineRanOn(task));
         Assert.False(
             string.IsNullOrWhiteSpace(await rig.HarnessSessionRefAsync(task, ct)),
-            $"no harness session ref was stamped for {profile.Name} — events.source: terminal "
-            + "did not carry a session id, so §11 resume would silently cold-start.\n"
+            $"no harness session ref was stamped for {profile.Name} — session/new did not "
+            + "return a sessionId, so §11 resume would silently cold-start.\n"
             + profile.FailureHypotheses + await rig.RealWorkerDiagnosticsAsync(task, ct));
     }
 
@@ -113,11 +112,10 @@ internal static class RealHarnessBar
     }
 
     /// <summary>
-    /// §11 park → resume against whatever CLI declared <c>resume.args</c>: a
-    /// worker asks, the Lead answers, the park record carries the session ref,
-    /// and the resumed instance reports a nonce that existed only in the
-    /// first spawn prompt. Skips when the profile has no resume argv — that
-    /// is the "harness that declares resume.args" gate, not a missing test.
+    /// §11 park → resume via <c>session/load</c>: a worker asks, the Lead
+    /// answers, the park record carries the session ref, and the resumed
+    /// instance reports a nonce that existed only in the first turn. Skips
+    /// when the profile does not support loadSession.
     /// </summary>
     public static async Task ResumesAfterParkAsync(PostgresFixture pg, RealHarnessProfile profile)
     {

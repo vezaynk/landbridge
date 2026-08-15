@@ -77,7 +77,7 @@ internal sealed class FleetRig(
     /// <summary>Whether to drain each machine's worker-supervisor event ring into the
     /// plane's sink. Off for the scripted tier (its serve workers never exit mid-test
     /// and its consume workers report before exiting, so exits carry no signal there),
-    /// ON for the real-<c>claude -p</c> tier — where a worker that ends its turn WITHOUT
+    /// ON for the real-harness tiers — where a worker that ends its turn WITHOUT
     /// reporting must requeue the still-<c>working</c> task so a retry can redispatch it,
     /// exactly as production docketd's socket loop does (§10). Gated on the spawn
     /// override so the scripted suite's behaviour is byte-for-byte unchanged.</summary>
@@ -154,16 +154,24 @@ internal sealed class FleetRig(
     /// <summary>Enroll a machine: its own worker supervisor, its own relay data-plane
     /// daemon, and the registry send delegate that routes commands to the right one.
     ///
-    /// <para><paramref name="spawnArgv"/> overrides <em>this machine's</em> <c>default</c>
-    /// profile spawn, leaving the rest of the profile (stop, resume, events, capture, the
-    /// process gate) as the rig was constructed with. Null — every caller but the
-    /// cross-harness scenario — keeps the fleet-wide profile, so nothing changes for the
-    /// suites that predate it. It exists because §10's promise is that a <em>fleet</em> is
-    /// heterogeneous: two machines can run two different harnesses under one plane, and
-    /// only a per-machine spawn can express that.</para></summary>
-    public async Task AddMachineAsync(string machineId, IReadOnlyList<string>? spawnArgv = null)
+    /// <para><paramref name="spawnArgv"/> / <paramref name="prompt"/> /
+    /// <paramref name="followUp"/> override this machine's <c>default</c> profile
+    /// so a mixed fleet can run two ACP entry points (and two tool spellings)
+    /// under one plane. Null keeps the fleet-wide profile.</para></summary>
+    public async Task AddMachineAsync(
+        string machineId,
+        IReadOnlyList<string>? spawnArgv = null,
+        string? prompt = null,
+        string? followUp = null)
     {
-        var profile = spawnArgv is null ? _profile : _profile with { Spawn = spawnArgv };
+        var profile = spawnArgv is null && prompt is null && followUp is null
+            ? _profile
+            : _profile with
+            {
+                Spawn = spawnArgv ?? _profile.Spawn,
+                Prompt = prompt ?? _profile.Prompt,
+                FollowUp = followUp ?? _profile.FollowUp,
+            };
         var workRoot = NewWorkRoot();
         var ring = new OutboundEventRing(capacity: 256);
         // §12: a real transcript store per machine, so capture writes real files and the

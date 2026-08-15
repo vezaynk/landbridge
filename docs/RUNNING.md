@@ -193,19 +193,14 @@ The dev-loop template is
 (default 15s), and `back_pressure` thresholds (`max_cpu_load` / `max_memory_load`
 / `max_disk_usage` in `[0,1]`).
 
-Each `profile` carries `spawn` (argv), `stop`, `resume`, `events`, `telemetry`,
-`logs`, an optional `max_concurrent`, a `stdin` policy, and an optional
-`processes` block:
+Each `profile` carries `spawn` (the ACP entry point), a required `prompt` (the
+opening `session/prompt`), optional `follow_up`, `stop.wind_down_seconds`,
+`telemetry`, `logs`, an optional `max_concurrent`, and an optional `processes`
+block. There is no `stdin`, `resume`, `events`, or `protocol` key.
 
-- **`stdin`** — `deadman` (the default: `docketd` holds the worker's stdin pipe open
-  for the task's whole life, so the OS closes it and a well-behaved harness tears
-  itself down if `docketd` dies — the §10 dead-man's switch) or `closed` (the pipe
-  gets a deterministic EOF right after spawn). `closed` exists because the switch is
-  not universally survivable: `codex exec` blocks forever reading a held-open pipe and
-  never takes its first turn. The trade is real and `docketd` says so on its startup
-  line — such a worker no longer dies with `docketd`, and the next start's stray sweep
-  is the only thing that collects it. `stdin: closed` with `stop.mode: message` is
-  refused at config load, because a stop turn needs a pipe to arrive on.
+- **stdin** is the JSON-RPC pipe. `docketd` holds the write end for the task's
+  whole life — ACP's shutdown rule and the §10 dead-man's switch are the same
+  fact. There is no `closed` opt-out.
 - **`processes`** — `agent_initiated` (default `false`) is the gate deciding whether
   tasks on this profile may call `start_process` at all, and `max` (default `8`) caps
   how many they may hold at once.
@@ -228,81 +223,39 @@ instead of the no-LLM harness, change the `default` profile's `spawn` argv — n
 code change to `docketd` (spec §10). The dev template's
 
 ```json
-"spawn": ["{worker_harness}", "--mcp-config", "{mcp_config}"]
+"spawn": ["{worker_harness}", "--acp"],
+"prompt": "Do the task you have been assigned."
 ```
 
-becomes a real `claude -p` invocation (abridged from the worked example in the
+becomes a real ACP entry point (abridged from the worked example in the
 runner-config reference):
 
 ```json
-"spawn": [
-  "claude", "-p", "<bootstrap prompt: read get_task, do the work, report_result>",
-  "--mcp-config", "{mcp_config}",
-  "--output-format", "stream-json",
-  "--verbose",
-  "--permission-mode", "bypassPermissions",
-  "--strict-mcp-config",
-  "--allowedTools", "Bash,Edit,Write,Read,Glob,Grep,mcp__docket__get_task,mcp__docket__report_result,mcp__docket__request_input,mcp__docket__register_service"
-]
+"spawn": ["claude-agent-acp"],
+"prompt": "You are a Docket worker. First call mcp__docket__get_task. When done, call mcp__docket__report_result. If blocked, call mcp__docket__request_input.",
+"follow_up": "There is new input on your assignment. Call mcp__docket__get_task to read it, then continue."
 ```
 
-The load-bearing arguments:
+The load-bearing parts:
 
-- **`{mcp_config}`** carries the worker's identity to any harness that takes an MCP
-  config file. `docketd` writes an HTTP MCP config pointing at the plane's public URL
-  with the minted worker-instance bearer token (`Authorization: Bearer dkt_w_…`).
-  It is not the only carrier: the same token also reaches the child as
-  `DOCKET_WORKER_TOKEN` (above), and that is the one that matters on a harness with no
-  `--mcp-config` equivalent. `codex exec` is such a harness — it resolves its bearer
-  from an environment variable named in `config.toml` (`bearer_token_env_var`), so
-  there the env var is the only working route and the generated file is written and
-  ignored. Pass **`--strict-mcp-config`** so the harness uses *only* that file and ignores
-  any ambient user/project MCP config — the worker must be exactly the dispatched
-  instance and nothing more.
-- **`--permission-mode bypassPermissions`** is the headless prerequisite: a worker
-  must run to completion without prompting (spec §10). Managed settings on a
-  corporate machine can forbid bypass outright — confirm it is permitted first.
-  Where it is not permitted, replace this flag with
-  `--permission-prompt-tool mcp__docket__request_permission` and approvals route to
-  the Lead instead (spec §11's permission bridge; the runner-config reference has
-  the worked profile and its caveats). Keep `--allowedTools` as the routine
-  baseline either way, or the machine will ask about every call it makes.
-- **`--verbose`** is what makes `--output-format stream-json` actually stream under
-  `-p`. Without it an `events.source: terminal` profile reads nothing, and the task
-  loses both its session ref and its per-task liveness.
-- **No `--input-format stream-json`.** It looks like the flag that would let a graceful
-  `stop` arrive as a turn, and it is the opposite: paired with a prompt in argv it makes
-  claude ignore the prompt and block on stdin forever, so the worker never runs at all.
-  A `claude -p` worker cannot receive a mid-task turn in any configuration, so its
-  profile takes `stop.mode: "signal"` and a stop means the granted TTL and then a
-  tree-kill — see [Stopping a `claude -p` worker](../ideas/skills/references/runner-config.md#stopping-a-claude--p-worker-10-11).
+- **`prompt` is required.** An ACP agent takes no prompt on argv. Without this
+  field the worker connects, waits, and does nothing.
+- **The plane's MCP server rides `session/new`.** No `{mcp_config}` file, no
+  bearer on disk. Do not put bypass / `--always-approve` / `--auto` on `spawn` —
+  permissions are `session/request_permission` and go through the plane.
+- **Stop is `session/cancel`**, then `stop.wind_down_seconds` before the tree-kill.
+  There is no `stop.mode`.
+- **Resume is `session/load`.** There is no `resume.args`.
 
-### Event sources — what works today
+See [runner-config.md](../ideas/skills/references/runner-config.md) for the four
+worked profiles.
 
-`events.source` selects how harness activity maps to the frozen runner events.
-On this branch only **`terminal`** (drain the harness's NDJSON stdout → `tool-call`,
-capture the session id) and **`none`** (honest degradation: aliveness rides the `alive`
-event `docketd` emits for every live process regardless of source, and progress renders
-as "not reported") are implemented.
+### Progress
 
-`terminal` is not claude-only. `events.mapping` renames the properties it keys off —
-its defaults are Claude Code's `stream-json` names — and it also handles a second
-*shape*: a harness that emits one flat event object per tool call rather than an
-assistant turn wrapping content blocks. That is `tool_event_type` (the `type` value
-that *is* a tool call) plus `tool_name_path` (a dotted path to the string naming it,
-comma-separated alternatives tried in order). It is how a Codex worker reports
-progress at all. Nothing beyond those two shapes is expressible: no wildcards,
-indexes, or filters, so a stream that hides its tool calls anywhere else is a code
-change rather than a config one. A `terminal` profile that parses well-formed lines
-and extracts *neither* a session ref nor a tool call no longer fails silently —
-`docketd` writes one line per task at worker exit naming what the silence cost.
-
-The `hooks` and `otel` sources are valid config values but **not yet wired**, so
-all three non-`terminal` values behave as `none` and `docketd` warns at startup for
-every profile declaring one. Of the frozen event vocabulary, only
-`subagent-spawned` and `auth-failed` still have no producer; `alive` is emitted by
-`docketd`'s own heartbeat loop regardless of the events source, which is what keeps a
-long-running task on a `terminal` profile from being requeued while it is quiet.
+Tool calls arrive as ACP `session/update` notifications. There is no
+`events.source` or `events.mapping` to declare. `alive` is still emitted by
+`docketd`'s own heartbeat so a quiet process is not requeued for silence; the
+no-progress ceiling is what requeues a worker that never emits a tool call.
 
 ## Running `docketd` as a service
 

@@ -6,8 +6,8 @@ using Docket.Runner;
 namespace Docket.MultiMachine.Tests;
 
 /// <summary>
-/// The §10 BYO-harness promise against a <b>second real harness</b>: OpenAI's Codex CLI
-/// (<c>codex exec</c>) driving Docket tasks on the same real plane + relay + docketd rigs
+/// The §10 BYO-harness promise against a <b>second real harness</b>: OpenAI's Codex
+/// (<c>codex-acp</c>) driving Docket tasks on the same real plane + relay + docketd rigs
 /// the <see cref="RealClaudeCollaborationTests"/> tier uses, with no change below the spawn
 /// seam. If Docket's "everything harness-specific is data" claim is true, a Codex worker is
 /// a profile, not a code change — and this tier is where that stops being an assertion in a
@@ -102,44 +102,6 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
     private const int MaxAttempts = 3;
     private static readonly TimeSpan PerLegBudget = TimeSpan.FromMinutes(8);
 
-    /// <summary>
-    /// The docket tools a Codex worker may call. Codex's per-server allow-list is a config
-    /// key rather than a CLI flag — <c>enabled_tools</c> (optional): Tool allow list, per
-    /// <c>developers.openai.com/codex/mcp.md</c> — and takes <b>bare</b> tool names, so this
-    /// is not the <c>mcp__docket__*</c> spelling the claude tier's <c>--allowedTools</c> uses.
-    /// The names the <em>model</em> sees are still <c>mcp__docket__&lt;tool&gt;</c>, which is
-    /// the one piece of Codex's MCP surface that matches Claude Code exactly.
-    /// </summary>
-    private static readonly string[] AllowedDocketTools = RealHarnessProfiles.CodexBareTools;
-
-    /// <summary>
-    /// The standing rule the worker prompt carries, ported from the claude tier where it was a fix
-    /// for a real failure: a prompt that said "call the docket get_task tool" got read as a shell
-    /// command and a worker ran <c>docket get_task</c> instead of calling its MCP tool. The
-    /// spelling here is <c>mcp__docket__*</c> because that is what the <em>model</em> sees on this
-    /// harness (see <see cref="AllowedDocketTools"/>: only Codex's <c>enabled_tools</c> config key
-    /// takes the bare names). Do not "fix" this to bare names to match that key — they are two
-    /// different surfaces, and the OpenCode tier spells its own third way.
-    /// </summary>
-    private const string McpToolsRule =
-        " Docket's tools are MCP tools, named exactly mcp__docket__get_task, " +
-        "mcp__docket__report_result and so on — call them as tools, under those names. There is " +
-        "no `docket` program: no such command exists on this machine, so never run `docket` in a " +
-        "shell, and never try to reach the docket MCP server yourself over HTTP or with curl. (A " +
-        "shell command your assignment explicitly asks for is a different thing, and is fine.) If " +
-        "a docket MCP tool is missing or errors, report that with mcp__docket__report_result " +
-        "instead of working around it.";
-
-    /// <summary>Generic worker prompt (§7), deliberately the same shape as the claude tier's:
-    /// the specifics live in the task's opaque description, read via <c>get_task</c>.</summary>
-    private const string WorkerPrompt =
-        "You are a Docket worker agent. Your FIRST action must be to call the " +
-        "mcp__docket__get_task tool to read your assignment. The assignment's description tells " +
-        "you the exact string to report. Your ONLY other action is to call the " +
-        "mcp__docket__report_result tool once, with that exact string as resultReference. Do not " +
-        "write files, do not explain, do not ask questions. Two tool calls total: " +
-        "mcp__docket__get_task, then mcp__docket__report_result." + McpToolsRule;
-
     public async Task InitializeAsync()
     {
         if (pg.Available) await pg.ResetAsync();
@@ -189,12 +151,15 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(12));
         var ct = cts.Token;
 
+        var profile = RealHarnessProfiles.Codex(codexBin);
         await using var rig = new FleetRig(
             pg,
-            spawnArgv: CodexWorkerSpawn(codexBin, WorkerPrompt),
+            spawnArgv: profile.AcpSpawn,
+            prompt: profile.EchoPrompt,
+            followUp: profile.FollowUpTurn,
             stop: new StopConfig(WindDown: TimeSpan.FromSeconds(5)));
         await rig.StartAsync(ct);
-        using var home = RealHarnessProfiles.CodexHome.Create(rig.McpUrl, AllowedDocketTools);
+        using var home = profile.AttachTo(rig);
         await rig.AddMachineAsync("A");
 
         var task = await rig.CreateTaskAsync(EchoDescription("A", NewToken()), ct);
@@ -215,12 +180,13 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
                 "characterizing real-codex stop delivery", ct),
             "the stop was not delivered to the machine holding the task");
 
-        // A signal-mode stop writes no turn: docketd reports the deadline it armed, which is
-        // the only thing it actually did.
+        // ACP stop is session/cancel, then the deadline kill. The session is open
+        // (we waited for a session ref), so the ack is CancelSent — sent, not
+        // confirmed obeyed.
         var ack = rig.StopAckFor(task);
         Assert.NotNull(ack);
         Assert.True(ack!.Value.Actioned);
-        Assert.Equal(StopDelivery.DeadlineArmed, ack.Value.Delivery);
+        Assert.Equal(StopDelivery.CancelSent, ack.Value.Delivery);
 
         Assert.True(
             await FleetRig.WaitUntilAsync(
@@ -235,10 +201,10 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
     }
 
     /// <summary>
-    /// Docket's whole pitch, as one fact: <b>a fleet of mixed harnesses</b>. Machine A runs a
-    /// real <c>claude -p</c> worker, machine B runs a real <c>codex exec</c> worker, under one
-    /// control plane, and B reports a token that only A could have produced — read off the
-    /// plane, not out of the test's own constant. Two vendors' CLIs, one task graph, and
+    /// Docket's whole pitch, as one fact: <b>a fleet of mixed harnesses</b>. Machine A runs
+    /// <c>claude-agent-acp</c>, machine B runs <c>codex-acp</c>, under one control plane,
+    /// and B reports a token that only A could have produced — read off the plane, not
+    /// out of the test's own constant. Two vendors' ACP agents, one task graph, and
     /// nothing between them but Docket.
     ///
     /// <para>The per-machine spawn override is what makes this expressible: the fleet's
@@ -256,19 +222,21 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
     [SkippableFact]
     public async Task A_claude_worker_and_a_codex_worker_hand_off_a_token_across_one_fleet()
     {
-        var codexBin = RequireRealCodex();
-        var claudeBin = RequireRealClaudeForMixedFleet();
+        var codex = RealHarnessProfiles.Codex(RequireRealCodex());
+        var claude = RealHarnessProfiles.Claude(RequireRealClaudeForMixedFleet());
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(25));
         var ct = cts.Token;
 
         await using var rig = new FleetRig(
             pg,
-            spawnArgv: CodexWorkerSpawn(codexBin, WorkerPrompt)); // the fleet default; A overrides it
+            spawnArgv: codex.AcpSpawn,
+            prompt: codex.EchoPrompt,
+            followUp: codex.FollowUpTurn);
         await rig.StartAsync(ct);
-        using var home = RealHarnessProfiles.CodexHome.Create(rig.McpUrl, AllowedDocketTools);
+        using var home = codex.AttachTo(rig);
 
-        await rig.AddMachineAsync("A", ClaudeWorkerSpawn(claudeBin));  // claude machine
-        await rig.AddMachineAsync("B");                                // codex machine
+        await rig.AddMachineAsync("A", claude.AcpSpawn, prompt: claude.EchoPrompt, followUp: claude.FollowUpTurn);
+        await rig.AddMachineAsync("B");
 
         // Step A, on the claude machine: mint + report an unforgeable token.
         var token = NewToken();
@@ -294,42 +262,7 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
         Assert.Equal("B", rig.MachineRanOn(stepB));
     }
 
-    // ── The Codex recipe (all doc-derived; see the class remarks) ───────────────
-
-    /// <summary>
-    /// The <c>codex exec</c> worker argv. Every flag is quoted from
-    /// <c>developers.openai.com/codex/noninteractive.md</c> and the CLI reference at
-    /// <c>developers.openai.com/codex/cli/reference</c>; none has been run here.
-    ///
-    /// <list type="bullet">
-    ///   <item><c>exec</c> + argv prompt — "Pass a task prompt as a single argument". The
-    ///     prompt MUST be argv, not stdin: stdin is docketd's dead-man pipe (§10).</item>
-    ///   <item><c>--json</c> — "Print newline-delimited JSON events instead of formatted
-    ///     text", the stream <c>events.source: terminal</c> reads. Codex's analogue of
-    ///     claude's <c>--output-format stream-json --verbose</c> pair, and like it, dropping
-    ///     it silently costs the session ref and every progress line.</item>
-    ///   <item><c>--skip-git-repo-check</c> — "Allow running outside a Git repository";
-    ///     required because docketd spawns in <c>{work_root}/{task_id}</c>, which is scratch
-    ///     and not a repo.</item>
-    ///   <item><c>--dangerously-bypass-approvals-and-sandbox</c> — the headless equivalent of
-    ///     claude's <c>--permission-mode bypassPermissions</c>. Needed for two independent
-    ///     reasons: <c>codex exec</c> "runs in a read-only sandbox" by default, which cannot
-    ///     do work; and "By default, the agent runs with network access turned off", which a
-    ///     worker that must reach the plane and forwarded services cannot live with. The
-    ///     narrower alternative is <c>--sandbox workspace-write</c> plus
-    ///     <c>-c sandbox_workspace_write.network_access=true</c>.</item>
-    /// </list>
-    ///
-    /// <para>No MCP flag appears here, and that absence is the finding: Codex has no
-    /// <c>--mcp-config</c>, so the docket server is wired through <see cref="RealHarnessProfiles.CodexHome"/>
-    /// instead and docketd's generated <c>{mcp_config}</c> goes unread.</para>
-    ///
-    /// <para><c>DOCKET_CODEX_MODEL</c> optionally supplies <c>--model</c>. Deliberately unset
-    /// by default: a wrong model id fails every run, and the docs give no stable "cheap model"
-    /// name to hard-code, so the machine's configured default is the safer choice.</para>
-    /// </summary>
-    private static string[] CodexWorkerSpawn(string codexBin, string prompt, params string[] extra) =>
-        RealHarnessProfiles.CodexSpawn(codexBin, prompt, extra);
+    // ── Helpers ────────────────────────────────────────────────────────────────
 
     /// <summary>
     /// The model every fact in this tier pins, and it is pinned rather than left to the
@@ -354,60 +287,8 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
     /// </summary>
     private static string CodexModel => RealHarnessProfiles.CodexModel;
 
-    /// <summary>
-    /// The <c>stdin</c> policy every end-to-end fact in this tier declares (§10, #110), and the
-    /// single line that makes a Codex worker possible at all: docketd closes the write end right
-    /// after spawn, so Codex's unavoidable <c>read_to_end</c> on stdin returns immediately
-    /// instead of never (class remarks; characterized against the real binary by
-    /// the dead-man-hang characterization (removed with stream mode)).
-    ///
-    /// <para><b>What it costs, stated where it is chosen.</b> The §10 dead-man's switch is gone
-    /// for these workers: docketd's own death no longer takes them down, and the
-    /// <c>StrayReaper</c>'s next-start sweep is the backstop. Codex could not use the switch
-    /// anyway — it never reaches the read that would observe EOF-as-death — so this gives up
-    /// nothing that harness ever had, which is exactly why <c>closed</c> is a per-profile
-    /// declaration rather than a machine-wide switch.</para>
-    ///
-    /// <para>It also forces <c>stop.mode: signal</c>, which this tier already declared on its
-    /// own reasoning: a wind-down turn written to a closed stdin has nowhere to land, and
-    /// <c>RunnerConfig</c> refuses the pairing outright rather than letting docketd claim a
-    /// delivery it cannot make.</para>
-    /// </summary>
-
-    /// <summary>
-    /// The <c>events.mapping</c> that lets the terminal reader find Codex's session ref, and
-    /// the only reason §11 works for this harness. Codex emits
-    /// <c>{"type":"thread.started","thread_id":"…"}</c> — no <c>subtype</c> property at all —
-    /// so the sub-discriminator is pointed back at <c>type</c> and matched against the same
-    /// value the outer check already matched, leaving <c>session_id_key</c> to do the real
-    /// work. Established against Codex's documented stream by
-    /// <c>Docket.Runner.Tests/CodexStreamMappingTests</c>, which also pins what this mapping
-    /// canNOT recover: <c>tool-call</c> events, because Codex nests one call per event object
-    /// where the reader requires an array of content blocks.
-    /// </summary>
     private static string EchoDescription(string label, string token) =>
         RealHarnessProfiles.EchoDescription(label, token);
-
-    /// <summary>The claude argv, for the mixed-fleet fact only — the validated recipe from the
-    /// claude tier, trimmed to what an echo task needs.
-    ///
-    /// <para>It shares <see cref="WorkerPrompt"/> with the Codex workers, and that sharing is safe
-    /// for exactly one reason: Codex and claude both spell docket's tools <c>mcp__docket__*</c>, so
-    /// one prompt names real tools on both harnesses. Do not generalise it — the OpenCode tier
-    /// spells them <c>docket_get_task</c> and had to split its shared prompt in two for this same
-    /// mixed-fleet shape. The <c>--allowedTools</c> value just below is the same spelling; Codex's
-    /// own <c>enabled_tools</c> is the bare-name surface, not this one.</para></summary>
-    private static string[] ClaudeWorkerSpawn(string claudeBin) =>
-    [
-        claudeBin, "-p", WorkerPrompt,
-        "--mcp-config", "{mcp_config}",
-        "--strict-mcp-config",
-        "--allowedTools", "mcp__docket__get_task,mcp__docket__report_result",
-        "--output-format", "stream-json",
-        "--verbose",
-        "--model", "haiku",
-        "--max-turns", "8",
-    ];
 
     // ── Gating ────────────────────────────────────────────────────────────────
 

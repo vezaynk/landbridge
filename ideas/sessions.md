@@ -17,11 +17,11 @@ Three choices were made explicitly on 2026-08-15:
    `Docket:WaitTtl` defaults to infinite; the sweeper still requeues a dead machine.
    `park_task` is the deliberate release.
 
-The enabling change is already in: `protocol: acp` (see
-[`runner-config.md`](skills/references/runner-config.md)) makes a worker a live JSON-RPC
-peer rather than a process whose only observable lifecycle event is its own exit. Every
-measured agent declares `loadSession: true`, which is what makes choice 3's recovery real
-rather than aspirational.
+The enabling change is already in: every worker is an ACP peer (see
+[`runner-config.md`](skills/references/runner-config.md)) rather than a process whose only
+observable lifecycle event is its own exit. Every measured agent declares
+`loadSession: true`, which is what makes choice 3's recovery real rather than
+aspirational.
 
 ## What actually changes
 

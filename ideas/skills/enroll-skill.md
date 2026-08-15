@@ -21,16 +21,15 @@ The config must cover:
 
 | Section | What it answers |
 |---|---|
-| Harness invocation | How to start the harness headlessly with a task (`spawn`), and where it reads its MCP config (`{mcp_config}`, `files[]`, or `hooks.before_spawn`) |
-| Process control | How `stop` is delivered (`mode: message` only where the harness demonstrably reads mid-task stdin turns — **not `claude -p`**, which takes `signal`), the message template, and how long wind-down gets before the hard tree-kill |
-| Resume | The argv that reattaches to a parked task's transcript (`resume.args`), which is how a parked task comes back with its context |
-| Event relay | Whether the harness streams structured output docketd can read (`events.source`), and the property names it is keyed by (`events.mapping`) |
+| Harness invocation | The ACP entry point (`spawn`) and the opening turn (`prompt`). An ACP agent takes no prompt on argv. |
+| Follow-up | The wake-up turn (`follow_up`) when there is new input. Names docket tools the way *this* harness spells them. |
+| Process control | `stop.wind_down_seconds` — grace after `session/cancel` before the tree-kill. There is no `mode` or `message`. |
+| Resume | Not a profile field. Redispatch uses `session/load` on the live connection. |
 | Transcript capture | Whether to record this worker's output locally (`logs.capture`) and the caps on it |
 | Back-pressure | Thresholds for when this machine stops accepting dispatch — defaults are sensible (see Concurrency below) |
 
-The full config schema and a worked Claude Code profile — including the exact
-headless `spawn` argv, the `{mcp_config}` injection, and the generated MCP config
-a worker dials the plane with — are in `references/runner-config.md`.
+The full config schema and worked ACP profiles are in `references/runner-config.md`.
+The plane's MCP server is handed over on `session/new` — do not write a bearer file.
 
 **`docketd` reads this file once, at start.** There is no reload, no `SIGHUP`,
 and nothing the plane can push. Adding, renaming, editing, or deleting a
@@ -41,11 +40,14 @@ for routing. Until that beat lands, a task aimed at a new name sits in
 kills every agent on this machine and their tasks requeue; that is the cost of
 a profile change, not a bug. Say so to the human before they edit a live box.
 
-## Wiring the docket MCP server additively
+## Wiring the docket MCP server
 
-A worker must reach the plane as an MCP client. Claude takes `{mcp_config}` in
-argv. Other harnesses do not. Prefer the option that **adds** the docket server
-without hiding the operator's existing MCP servers, skills, or auth.
+A worker must reach the plane as an MCP client. Under ACP that server is a
+**`session/new` parameter** — HTTP, bearer header, no file. Do not write
+`{mcp_config}` or a `files[]` bearer unless this harness ignores
+`mcpServers` on the session (none of the measured agents do).
+
+The older additive-file path is still valid if you need it:
 
 1. **`files[]` under `{work_dir}`** when the harness merges a project-local
    config with the user home. Grok does: `{cwd}/.grok/config.toml` plus
@@ -80,7 +82,7 @@ Two bars, neither negotiable, neither degrading gracefully. Confirm both by runn
 
 **2. Is it an ACP agent?** `docketd` speaks Agent Client Protocol over stdio. Native: `grok agent stdio`, `opencode acp`. Adapters: `claude-agent-acp`, `codex-acp`. A CLI that only has `-p` / `exec` / `run` is not enough.
 
-**3. Do not put bypass / always-approve / yolo in `spawn`.** Permissions are `session/request_permission`. Today the runner auto-selects the agent's allow option so a headless worker can finish; the plane bridge is the next increment. A bypass flag on argv skips a dialog Docket is now the one answering.
+**3. Do not put bypass / always-approve / yolo in `spawn`.** Permissions are `session/request_permission`. docketd posts the worker bearer at `POST /worker/permission` and a Lead or human decides. A bypass flag on argv skips a dialog Docket is now the one answering.
 
 Then test **park**: `park_task` a live task and confirm the process is gone. Wait TTL is off by default — a forgotten question holds the lease until you answer or park.
 
@@ -91,14 +93,12 @@ If either bar fails, stop. Report to the human rather than working around it.
 Do not assume the harness or its version. Find out:
 
 1. Which harness is installed, and its version.
-2. The exact headless invocation, and how it takes a prompt — positional argument, flag value, or stdin.
-3. What structured output it writes to **stdout**, and whether that is one line per event or a single object at exit. This is the only event source `docketd` actually reads, so the answer decides whether this machine can hold a task longer than a minute — read "The event source is not a telemetry preference" below before you settle it.
-4. The property names inside that stream: the top-level discriminator, the value marking an assistant turn, how a tool call appears within a turn, and where the session id is. Those are what `events.mapping` overrides; its defaults are Claude Code's `stream-json` shape.
-5. Whether the session id appears early in the stream rather than at exit, since that is the ref a parked task resumes from.
-6. Whether it can resume a prior session, and how — including whether resume is scoped to the directory that created the session, since parked-task resume depends on returning to it.
-7. Whether a **running** session accepts injected input — a stdin message stream or equivalent, read continuously rather than once at startup — because that is how a graceful `stop` reaches the agent as a turn rather than as a kill deadline. Answer this from an observed run, not from the flag list: `docketd` cannot verify the answer, so declaring `stop.mode: message` on a harness that ignores mid-task stdin makes `preserve` a promise this machine will break. For `claude -p` the answer is already known and it is **no** — declare `signal` (see the runner-config reference).
+2. The ACP entry point (`claude-agent-acp`, `codex-acp`, `opencode acp`, `grok agent stdio`). A CLI that only has `-p` / `exec` / `run` is not enough.
+3. How this harness spells docket's MCP tools (`mcp__docket__get_task` / `docket_get_task` / `docket__get_task`). That spelling is what `prompt` and `follow_up` must use.
+4. Whether `initialize` declares `loadSession` and `mcpCapabilities.http`. Run `tools/acp-probe` against a harness this repo has not measured. `loadSession` defaults to false in the spec; without it every redispatch is a cold start.
+5. Whether the agent asks the client for `fs/*` or `terminal/*`. This client declares those UNSUPPORTED. An agent that routes all I/O through the client cannot work here.
 
-Version matters more than you'd expect. Output shapes and key names change between releases, and `events.mapping` silently falls back to its default for any key it does not recognise — so a config written against last quarter's names produces a machine that looks alive and reports nothing, with no complaint at load time.
+Version matters more than you'd expect. Adapter packages move on their own schedule; pin them the way you pin the harness.
 
 You do not need to find where the harness writes its own log files. Transcript capture tees the stdout stream `docketd` is already reading into a fixed layout under the state dir; it never goes looking for a harness-owned path.
 
@@ -112,25 +112,17 @@ One caveat to pass on: where `docketd` cannot observe CPU on the platform, `max_
 
 If a profile needs a hard cap for reasons unrelated to load — a licence limit, a rate-limited provider, a restricted posture you want singular — that is `max_concurrent` on the profile, not a machine setting.
 
-## The event source is not a telemetry preference
+## Progress comes from the protocol
 
-**Get this one wrong and the machine cannot report progress.** `events.source` looks like a choice about how much detail you get. On this build it decides whether anyone can tell a working agent from a wedged one, so it is worth more care than anything else in the config except the headless posture.
+There is no `events.source` or `events.mapping` to declare. Tool calls arrive as
+ACP `session/update` notifications with fixed field names. A worker that never
+emits one is indistinguishable from a hung one until the no-progress ceiling
+fires. That is a harness or prompt problem, not a mapping problem.
 
-Per-task liveness on the control plane is refreshed **only** by an inbound event. A profile that produces no `tool-call` events emits three: `started` at spawn, `exited` at the end, and the periodic `alive` `docketd` sends for every live process on its own heartbeat timer. `alive` is not gated on `events.source`, so the short aliveness window (60 seconds by default, a control-plane setting rather than anything you declare here) stays satisfied and such a task is **not** requeued merely for being quiet.
-
-What it loses is the progress clock. With no `tool-call` ever arriving, the no-progress ceiling (30 minutes by default) is the only clock governing the task: work that legitimately runs that long without a tool call is requeued, and in the meantime a hung agent is indistinguishable from a busy one — which is the real cost, because it is the cost you cannot see. Such requeues are capped (5 by default): at the cap the task is abandoned as `canceled`, with the reason that reclaimed it recorded and its workspace preserved, rather than being redispatched forever.
-
-If the harness has no readable event stream, say so in the config rather than inventing a mapping — but say it to the human too, because it is a limit on what the machine can be asked to do, not a cosmetic gap. A fabricated mapping produces a machine that appears healthy and isn't.
-
-Three of the four declared `events.source` values are the same answer today:
-
-- **`events.source: terminal`** is the only source `docketd` reads. It drains the harness's stdout line by line, which is what produces `tool-call` events and the liveness refresh that rides them. If the harness can stream NDJSON on stdout, this is the value you want, and you almost certainly want it. For any harness other than Claude Code, treat `events.mapping` as **mandatory rather than optional**: the built-in defaults are claude's `stream-json` property names, and against a different stream they match nothing at all, so `terminal` with no mapping reads a whole task's output and extracts neither the resume ref nor a single `tool-call`. What `mapping` can express is renamed properties plus one alternative shape — a flat event object per tool call, via `tool_event_type` and `tool_name_path` — and nothing beyond that, so a stream that hides its tool calls anywhere else (a nested array of a different arity, a name that must be computed) is a code change, not a config one; check the shapes against a real run before promising the human this machine reports progress.
-- **`hooks` and `otel` parse but are not wired.** Declaring either gets you exactly what `none` gets: `started` at spawn, `exited` at the end, the periodic `alive` in between, and no progress signal at all — the cost described above. Do not write `hooks` because the harness happens to offer hooks; it buys nothing on this build and reads as a progress signal the machine does not have. `docketd` prints a warning at startup for every profile declaring a non-`terminal` source — if you see it, treat it as a defect to fix, not a notice to acknowledge.
-- **The process-alive fallback does exist — it is the `alive` event, and it is the whole safety net.** Spec §10 says liveness degrades to process-alive when there is no event source, and that is what `docketd`'s heartbeat timer does: one `alive` per live process, ungated by `events.source`. So a source-less profile is not requeued merely for being quiet. What it does *not* buy is progress: nothing else refreshes per-task activity — not the machine heartbeat, not the worker's own MCP calls — so the no-progress ceiling above is the only clock left.
-- **`subagent-spawned` has no producer.** It exists in the wire vocabulary, and the dashboard has a slot for it that always reads "no subagents reported." Nothing you put in the config will fill it, so do not spend probe time on subagent attribution.
-- **`telemetry.otel` works, and it is visibility rather than metering.** Turning it on makes docketd set the vendor-neutral `OTEL_*` variables on the spawn and append `docket.task_id`/`docket.machine_id`, so the harness's own token and cost numbers go to **your** collector, attributed per task (`docs/TELEMETRY.md` has the worked block and what Claude Code emits). Two things to say plainly at enrollment. Nothing in Docket ingests any of it yet — the plane never sees a token count, and there is no spend limit anywhere to enforce one against (the dollar ceiling was removed 2026-08-12, spec §9's note). And a harness that exports nothing is normal rather than broken: the variables are set on a process that may ignore all of them, which is the Codex case today.
-
-If the harness genuinely cannot stream anything readable on stdout, the honest declaration is `none` — and then say plainly what that costs. Such a machine is *not* limited to work finishing inside the aliveness window; `alive` covers that. It is limited to work that never goes longer than the no-progress ceiling without a tool call, and to a fleet where nobody can distinguish its hung agents from its busy ones. That is a real constraint on what the human just built, and it belongs in the conversation rather than in a config file nobody rereads.
+`telemetry.otel` is still visibility rather than metering — see `docs/TELEMETRY.md`.
+`subagent-spawned` has no producer. The short aliveness window is satisfied by
+`docketd`'s own `alive` heartbeat; the no-progress ceiling is what requeues a
+worker that never emits a tool call.
 
 ## Registering the daemon — hand this to the human
 
@@ -170,7 +162,7 @@ The failures worth naming, and what each really looks like:
 
 **Then test the kill path, and do not skip it because dispatch worked.** Have the human cancel the task mid-flight (`cancel_task`, disposition `preserve`) and confirm the process is actually gone — that is the assertion that matters, and it holds on every profile. A machine that dispatches but cannot be stopped looks fine right up until someone needs to stop a runaway agent — the worst possible moment to find out.
 
-**What to expect depends on the stop mode, and one of the two expectations is a trap.** On a `signal` profile — which is what `claude -p` gets — the worker is killed at the TTL with no closing `report_result`, and that is correct behaviour, not a failure. Only on a `stop.mode: message` profile should you expect the injected turn to produce a final report before a voluntary exit. `docketd` cannot tell the difference: it reports that it *wrote* the turn, never that the harness read it (the line on its stdout says `written, not confirmed read`). So this run is the only check that a `message` declaration is true, and if you declared `message` and the worker still had to be killed at the deadline, the declaration is wrong — change it to `signal` rather than leaving a profile that promises `preserve` and delivers a kill.
+**What to expect from stop.** A stop is `session/cancel` plus the wind-down deadline. The runner reports that the cancel was *sent*, never that the agent obeyed it (cancel is a notification with no reply). Confirm the process is gone after the deadline. There is no `stop.mode` to choose.
 
 Two things you cannot verify by hand, so do not claim them either way: whether the runner refused a dispatch (it computes `BackPressure` / `UnknownProfile` / `MaxConcurrent` refusals and then discards them — never sent upstream, never logged), and whether events were dropped under load (the outbound ring counts the gap, but the wire has no field to carry it).
 

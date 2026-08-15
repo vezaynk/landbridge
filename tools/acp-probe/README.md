@@ -6,7 +6,7 @@ which decides whether §11 resume (`preserve`, `preserve_and_park`) survives on 
 or degrades to a permanent cold start. The spec defaults it to `false`, and nothing in a
 profile can compensate for an agent that lacks it.
 
-Run it before writing a `protocol: acp` profile for a harness this repo has not measured,
+Run it before writing a profile for a harness this repo has not measured,
 and again when you bump an adapter — an adapter is a second upstream between `docketd` and
 the model, and capabilities are exactly the kind of thing that moves in a minor release.
 
