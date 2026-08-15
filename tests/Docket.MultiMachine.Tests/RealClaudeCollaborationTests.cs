@@ -554,7 +554,21 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
 
         var observed = rig.WorkerObserved(task)!.Value;
         Assert.NotEqual(0, observed.LastExitCode);   // killed at the deadline, not a clean wind-down
-        Assert.NotEqual(TaskState.Verifying, await rig.StateAsync(task, ct)); // it reported nothing
+
+        // The state is deliberately NOT asserted here, and a `Verifying` outcome is not a
+        // failure. <see cref="FleetRig.SendStopAsync"/> sends the StopCommand straight to the
+        // machine through the connection registry; it never applies the plane's
+        // StopPreserveAndPark transition, so nothing revokes the worker instance token and the
+        // task stays Working. A `report_result` arriving before the deadline is therefore
+        // entirely legal, and Working->Verifying is the plane behaving correctly — so a worker
+        // fast enough to finish its two-tool-call assignment inside the 5s wind-down lands in
+        // Verifying legitimately. An earlier `Assert.NotEqual(TaskState.Verifying, …)` here read
+        // that legitimate finish as a defect and made this fact a race against claude's speed.
+        //
+        // It also discriminated nothing: the line above is what proves the stop was ignored. An
+        // agent that HAD read the injected turn would wind down and exit 0, so a non-zero exit
+        // already says it did not. Whether it got as far as report_result first only measures
+        // how fast it was, which is not what this fact is about. Do not reinstate it.
 
         // Preservation is the plane's record, not the agent's cooperation: the ref outlives the
         // kill, so the transcript stays resumable.
