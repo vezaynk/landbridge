@@ -228,6 +228,20 @@ public static class Program
                 await WriteMarkerAtomicAsync(Path.Combine(cwd, "env"), EnvironmentLines());
                 return await WatchStdinAsync(cwd, grandchildren: [], onLine: null);
 
+            case "hook-ok":
+                // Profile hook: record argv and exit 0 immediately (do not watch stdin).
+                await WriteMarkerAtomicAsync(Path.Combine(cwd, "hook"), string.Join('\n', args));
+                return 0;
+
+            case "hook-fail":
+                return 1;
+
+            case "hook-env":
+                // Profile hook: record the environment docketd actually handed us, then
+                // exit. Proves DOCKET_TASK_ID / DOCKET_WORKER_TOKEN were stripped.
+                await WriteMarkerAtomicAsync(Path.Combine(cwd, "hook-env"), EnvironmentLines());
+                return 0;
+
             case "echo-argv":
                 // §11 resume: record the argv we were actually spawned with — one
                 // token per line, this mode word at [0] — so the test can prove the

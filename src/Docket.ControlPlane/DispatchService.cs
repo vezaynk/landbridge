@@ -323,6 +323,10 @@ public sealed class DispatchService : IHostedService
             var minted = await tokens.MintWorkerTokenAsync(task.Team, task.Id, instance, ct);
             var command = new DispatchCommand(
                 task.Id, profile, minted.Token, McpConfigJson: BuildWorkerMcpConfig(minted.Token),
+                // #112 G2: the plane URL as a spawn substitution so a profile can write
+                // a harness-native MCP file without parsing Claude's mcp.json. The runner
+                // already consumes SpawnSubstitutions; this is the first producer.
+                SpawnSubstitutions: new Dictionary<string, string> { ["mcp_url"] = _publicMcpUrl },
                 // §11 resume: pass the prior work session's ref (present when this task
                 // was worked before and parked/requeued) so docketd continues the
                 // transcript. Opaque metadata surfaced by the store; docketd resumes
@@ -420,13 +424,11 @@ public sealed class DispatchService : IHostedService
     /// interprets it, it is transport (§10). Built with the DOM so the token is
     /// escaped correctly and no serializer reflection is needed.
     ///
-    /// <para>The other carrier is <c>DOCKET_WORKER_TOKEN</c>, stamped on every spawn, and it
-    /// is the one that matters on a harness with no <c>--mcp-config</c> equivalent:
-    /// <c>codex exec</c> takes its MCP servers only from a <c>config.toml</c> under
-    /// <c>CODEX_HOME</c> and resolves the bearer from an environment variable that file
-    /// names, so for such a profile this file is written and ignored. Writing it
-    /// unconditionally is deliberate — the plane holds no harness knowledge to branch on
-    /// (§10), and an unread 0600 file costs nothing.</para>
+    /// <para>The other carrier is <c>DOCKET_WORKER_TOKEN</c>, stamped on every spawn.
+    /// The plane still always <em>sends</em> this JSON — it cannot see the profile —
+    /// but docketd writes the file only when spawn/resume argv names
+    /// <c>{mcp_config}</c> (#112 G11). A Grok/Codex/OpenCode profile that never
+    /// references it must not leave a live bearer on disk.</para>
     /// </summary>
     private string BuildWorkerMcpConfig(string workerToken) =>
         new JsonObject

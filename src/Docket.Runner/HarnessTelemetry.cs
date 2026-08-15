@@ -63,20 +63,22 @@ public static class HarnessTelemetry
     private const string HttpProtocol = "http/protobuf";
 
     /// <summary>
-    /// Variables docketd owns and <c>telemetry.env</c> therefore cannot set. §10 fixes
-    /// <c>DOCKET_MACHINE_ID</c>/<c>DOCKET_TASK_ID</c> on every spawn "not configurably"
-    /// — stray-process cleanup scans for them, so a profile that could overwrite one
-    /// would break the restart-equals-reboot guarantee rather than just mislabel a
-    /// metric. The worker token and traceparent are per-spawn secrets/context for the
-    /// same reason.
+    /// Variables docketd owns and neither <c>telemetry.env</c> nor <c>profiles[].env</c>
+    /// can set. §10 fixes <c>DOCKET_MACHINE_ID</c>/<c>DOCKET_TASK_ID</c> on every spawn
+    /// "not configurably" — stray-process cleanup scans for them, so a profile that
+    /// could overwrite one would break the restart-equals-reboot guarantee rather than
+    /// just mislabel a metric. The worker token and traceparent are per-spawn
+    /// secrets/context for the same reason.
     /// </summary>
-    private static readonly HashSet<string> Reserved = new(StringComparer.Ordinal)
+    internal static readonly HashSet<string> Reserved = new(StringComparer.Ordinal)
     {
         "DOCKET_MACHINE_ID",
         "DOCKET_TASK_ID",
         "DOCKET_WORKER_TOKEN",
         "DOCKET_TRACEPARENT",
     };
+
+    internal static bool IsReserved(string key) => Reserved.Contains(key);
 
     /// <summary>
     /// The variables to set on a worker spawn, or empty when this profile asks for

@@ -124,6 +124,15 @@ public sealed class SupervisedTask
     /// </summary>
     public StdinPolicy Stdin { get; init; } = StdinPolicy.Deadman;
 
+    /// <summary>Argv for <c>hooks.after_exit</c>, captured at spawn so OnExited
+    /// does not have to keep the profile. Empty means no hook.</summary>
+    public IReadOnlyList<string> AfterExit { get; init; } = [];
+
+    /// <summary><c>profiles[].env</c> as of spawn, so <c>after_exit</c> sees the
+    /// same map the worker and <c>before_spawn</c> did.</summary>
+    public IReadOnlyDictionary<string, string> ProfileEnv { get; init; } =
+        new Dictionary<string, string>(StringComparer.Ordinal);
+
     /// <summary>
     /// §11 resume: the harness session id captured from the events stream (claude
     /// <c>system/init</c>), set by the <see cref="TerminalEventReader"/> when
@@ -341,6 +350,12 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             ["machine_id"] = machineId,
             ["work_dir"] = workDir,
         };
+        // So a files[] body can write Claude's --mcp-config JSON without the
+        // plane's BuildWorkerMcpConfig helper. Tokens are dkt_<class>_<64 hex>
+        // and are safe to splice into JSON. Empty when the dispatch carries none
+        // (the same tests that omit McpConfigJson).
+        if (dispatch.WorkerToken.Length > 0)
+            substitutions["worker_token"] = dispatch.WorkerToken;
         // §11 resume: the opaque session ref fills the {session_id} placeholder in
         // resume.args (e.g. `--resume {session_id}`). Only present when resuming;
         // a cold-start argv carries no {session_id}.
@@ -350,10 +365,11 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             foreach (var (key, value) in dispatch.SpawnSubstitutions)
                 substitutions[key] = value;
 
-        // §13: the worker token's generated MCP config lives in the task dir, 0600.
-        // A resumed claude still needs its MCP config (and a fresh worker token in
-        // the env below), so {mcp_config} substitutes on the resume path too.
-        if (dispatch.McpConfigJson is not null)
+        // §13 / #112 G11: write Claude's mcp.json only when this argv actually
+        // names {mcp_config}. The plane still sends McpConfigJson on every
+        // dispatch (it cannot see the profile); a Grok/Codex/OpenCode spawn that
+        // never references the token must not leave a live bearer on disk.
+        if (dispatch.McpConfigJson is not null && ArgvReferences(spawnArgv, "mcp_config"))
         {
             // In an inherited dir the plain name is already taken by the task that owns the
             // dir, and that task's own worker may still be running (a continuation of a task
@@ -366,6 +382,10 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             SetOwnerOnly(mcpPath);
             substitutions["mcp_config"] = mcpPath;
         }
+
+        WriteProfileFiles(profile, workDir, substitutions);
+        RunProfileHook(
+            profile.Hooks.BeforeSpawn, substitutions, profile.Env, workDir, machineId, "before_spawn", failClosed: true);
 
         var argv = spawnArgv.Select(a => Substitute(a, substitutions)).ToArray();
 
@@ -418,6 +438,8 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         psi.Environment["DOCKET_TASK_ID"] = dispatch.Task.ToString();
         if (dispatch.WorkerToken.Length > 0)
             psi.Environment["DOCKET_WORKER_TOKEN"] = dispatch.WorkerToken;
+        if (substitutions.TryGetValue("mcp_url", out var mcpUrl) && mcpUrl.Length > 0)
+            psi.Environment["DOCKET_MCP_URL"] = mcpUrl;
 
         // §1 tracing: hand the worker the current handle span's W3C id so its root
         // span — and its MCP calls back to the plane — continue the one trace.
@@ -427,6 +449,11 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         // through unchanged and the worker exports to the same collector.
         if (Activity.Current?.Id is { } traceparent)
             psi.Environment["DOCKET_TRACEPARENT"] = traceparent;
+
+        // #112 G3: the profile's own env, substituted with the same tokens as spawn.
+        // Applied after the reserved DOCKET_* stamps (which it cannot overwrite) and
+        // before telemetry, so telemetry.env still overlays OTEL_* when otel is on.
+        ApplyProfileEnvironment(psi, profile, substitutions);
 
         // §10 telemetry ingest: when this profile opts in, turn the harness's own
         // exporter on and stamp docket.task_id onto everything it emits, so the
@@ -444,6 +471,8 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             WorkDir = workDir,
             Stop = profile.Stop,
             Stdin = profile.Stdin,
+            AfterExit = profile.Hooks.AfterExit,
+            ProfileEnv = profile.Env,
         };
         process.Exited += (_, _) => OnExited(supervised, machineId);
 
@@ -761,6 +790,22 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         // reaping the successor it was replaced by (#102).
         try { _taskReaper?.ReapTask(machineId, supervised.Task.ToString()); }
         catch { /* best effort */ }
+
+        // After reap so a hook that accidentally carried DOCKET_TASK_ID is not
+        // killed mid-run. Best-effort: a failed after_exit must not rewrite the
+        // exit the plane already recorded.
+        try
+        {
+            var afterSubs = new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["task_id"] = supervised.Task.ToString(),
+                ["machine_id"] = machineId,
+                ["work_dir"] = supervised.WorkDir,
+            };
+            RunProfileHook(
+                supervised.AfterExit, afterSubs, supervised.ProfileEnv, supervised.WorkDir, machineId, "after_exit", failClosed: false);
+        }
+        catch { /* best effort */ }
     }
 
     private static void KillTree(SupervisedTask supervised)
@@ -804,6 +849,174 @@ public sealed class ProcessSupervisor : IProcessSupervisor
     }
 
     /// <summary>
+    /// #112 G3: stamp <see cref="ProfileConfig.Env"/> onto the child. Reserved names
+    /// are skipped even if they somehow reached the record — load validation is the
+    /// operator-facing refusal; this is the belt.
+    /// </summary>
+    private static void ApplyProfileEnvironment(
+        ProcessStartInfo psi, ProfileConfig profile, IReadOnlyDictionary<string, string> substitutions)
+        => ApplyProfileEnvironment(psi, profile.Env, substitutions);
+
+    private static void ApplyProfileEnvironment(
+        ProcessStartInfo psi,
+        IReadOnlyDictionary<string, string> env,
+        IReadOnlyDictionary<string, string> substitutions)
+    {
+        foreach (var (key, value) in env)
+        {
+            if (string.IsNullOrWhiteSpace(key) || HarnessTelemetry.IsReserved(key))
+                continue;
+            psi.Environment[key] = Substitute(value, substitutions);
+        }
+    }
+
+    internal static readonly TimeSpan HookTimeout = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// #112 G2: write <see cref="ProfileConfig.Files"/> into the work dir. Paths
+    /// that escape after substitution fail the spawn.
+    /// </summary>
+    private static void WriteProfileFiles(
+        ProfileConfig profile, string workDir, IReadOnlyDictionary<string, string> substitutions)
+    {
+        foreach (var file in profile.Files)
+        {
+            var path = Substitute(file.Path, substitutions);
+            if (!IsUnderWorkDir(workDir, path))
+                throw new InvalidOperationException(
+                    $"profile '{profile.Name}' file '{file.Path}' resolves outside the work dir");
+            var full = ResolveUnderWorkDir(workDir, path);
+            var dir = Path.GetDirectoryName(full);
+            if (!string.IsNullOrEmpty(dir))
+                Directory.CreateDirectory(dir);
+            File.WriteAllText(full, Substitute(file.Contents, substitutions));
+            ApplyDeclaredMode(full, file.Mode);
+        }
+    }
+
+    internal static bool IsUnderWorkDir(string workDir, string path)
+    {
+        var root = Path.GetFullPath(workDir);
+        var full = ResolveUnderWorkDir(workDir, path);
+        if (string.Equals(root, full, StringComparison.Ordinal))
+            return true;
+        var prefix = root.EndsWith(Path.DirectorySeparatorChar)
+            ? root
+            : root + Path.DirectorySeparatorChar;
+        return full.StartsWith(prefix, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// Resolve a <c>files[]</c> path against the work dir so a relative
+    /// <c>.grok/config.toml</c> lands in the clone, not docketd's cwd.
+    /// </summary>
+    internal static string ResolveUnderWorkDir(string workDir, string path)
+        => Path.IsPathRooted(path)
+            ? Path.GetFullPath(path)
+            : Path.GetFullPath(Path.Combine(workDir, path));
+
+    private static void ApplyDeclaredMode(string path, string? mode)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            if (mode is null)
+            {
+                SetOwnerOnly(path);
+                return;
+            }
+
+            var octal = mode.Trim();
+            if (octal.Length == 4 && octal[0] == '0')
+                octal = octal[1..];
+            File.SetUnixFileMode(path, (UnixFileMode)Convert.ToInt32(octal, 8));
+        }
+    }
+
+    /// <summary>
+    /// Run a profile hook as argv (never a shell). <paramref name="failClosed"/> is
+    /// <c>before_spawn</c>: a non-zero, timeout, or start failure throws so the
+    /// harness never starts. <c>after_exit</c> logs and returns.
+    /// </summary>
+    private static void RunProfileHook(
+        IReadOnlyList<string> argv,
+        IReadOnlyDictionary<string, string> substitutions,
+        IReadOnlyDictionary<string, string> profileEnv,
+        string workDir,
+        string machineId,
+        string hookName,
+        bool failClosed)
+    {
+        if (argv.Count == 0)
+            return;
+
+        var resolved = argv.Select(a => Substitute(a, substitutions)).ToArray();
+        if (string.IsNullOrWhiteSpace(resolved[0]))
+        {
+            if (failClosed)
+                throw new InvalidOperationException($"profile hook '{hookName}' has an empty argv[0]");
+            return;
+        }
+
+        var psi = new ProcessStartInfo(resolved[0])
+        {
+            WorkingDirectory = workDir,
+            UseShellExecute = false,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        for (var i = 1; i < resolved.Length; i++)
+            psi.ArgumentList.Add(resolved[i]);
+
+        ApplyProfileEnvironment(psi, profileEnv, substitutions);
+        psi.Environment["DOCKET_MACHINE_ID"] = machineId;
+        psi.Environment["DOCKET_HOOK"] = hookName;
+        psi.Environment.Remove("DOCKET_TASK_ID");
+        psi.Environment.Remove("DOCKET_WORKER_TOKEN");
+
+        using var process = new Process { StartInfo = psi };
+        try
+        {
+            if (!process.Start())
+                throw new InvalidOperationException($"profile hook '{hookName}' Process.Start returned false");
+        }
+        catch (Exception e) when (failClosed)
+        {
+            throw new InvalidOperationException($"profile hook '{hookName}' failed to start: {e.Message}", e);
+        }
+        catch
+        {
+            Console.Error.WriteLine($"docketd: profile hook '{hookName}' failed to start");
+            return;
+        }
+
+        process.StandardInput.Close();
+        var stdout = process.StandardOutput.ReadToEndAsync();
+        var stderr = process.StandardError.ReadToEndAsync();
+
+        if (!process.WaitForExit((int)HookTimeout.TotalMilliseconds))
+        {
+            try { process.Kill(entireProcessTree: true); } catch { /* best effort */ }
+            try { Task.WaitAll([stdout, stderr], TimeSpan.FromSeconds(1)); } catch { /* drain */ }
+            var message = $"profile hook '{hookName}' timed out after {HookTimeout.TotalSeconds:0}s";
+            if (failClosed)
+                throw new InvalidOperationException(message);
+            Console.Error.WriteLine("docketd: " + message);
+            return;
+        }
+
+        try { Task.WaitAll([stdout, stderr], TimeSpan.FromSeconds(1)); } catch { /* drain */ }
+
+        if (process.ExitCode != 0)
+        {
+            var message = $"profile hook '{hookName}' exited {process.ExitCode}";
+            if (failClosed)
+                throw new InvalidOperationException(message);
+            Console.Error.WriteLine("docketd: " + message);
+        }
+    }
+
+    /// <summary>
     /// §10 telemetry ingest: applies the profile's resolved harness-telemetry
     /// variables to the spawn (see <see cref="HarnessTelemetry"/>). A profile that
     /// asks for telemetry with no destination — none configured and none inherited —
@@ -827,6 +1040,15 @@ public sealed class ProcessSupervisor : IProcessSupervisor
                 $"docketd: profile '{profile.Name}' requests harness telemetry (telemetry.otel) but no endpoint " +
                 $"resolved — set telemetry.endpoint or {HarnessTelemetry.EndpointVar} on docketd. No telemetry " +
                 "variables were set on the worker.");
+    }
+
+    internal static bool ArgvReferences(IReadOnlyList<string> argv, string token)
+    {
+        var needle = "{" + token + "}";
+        foreach (var arg in argv)
+            if (arg.Contains(needle, StringComparison.Ordinal))
+                return true;
+        return false;
     }
 
     private static string Substitute(string arg, IReadOnlyDictionary<string, string> substitutions)

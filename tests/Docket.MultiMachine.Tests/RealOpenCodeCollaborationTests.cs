@@ -8,7 +8,10 @@ namespace Docket.MultiMachine.Tests;
 /// <summary>
 /// §10 BYO-harness, <b>third</b> harness: the same fleet driven by OpenCode
 /// (<c>opencode run --format json</c>) instead of <c>claude -p</c> or <c>codex exec</c>.
-/// Opt-in and token-spending, gated exactly like the other two real tiers.
+/// Opt-in and token-spending, gated exactly like the other two real tiers. The portable
+/// bar (verifying + session ref, usage/cost, park → resume via <c>--session</c>) is
+/// <see cref="RealHarnessBar"/>, wrapped below so <c>Category=RealOpenCode</c> still
+/// isolates the job.
 ///
 /// <para><b>Provenance.</b> Everything about the recipe below was established by reading
 /// OpenCode's source at tag <c>v1.18.17</c> (npm <c>opencode-ai@1.18.17</c>, the version the CI
@@ -97,6 +100,18 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
 
     public Task DisposeAsync() => Task.CompletedTask;
 
+    [SkippableFact]
+    public Task Real_worker_drives_a_task_to_verifying_on_the_fleet() =>
+        RealHarnessBar.DriveToVerifyingAsync(pg, RealHarnessProfiles.OpenCode(RequireRealOpenCode()));
+
+    [SkippableFact]
+    public Task Real_worker_reports_usage_the_harness_emits() =>
+        RealHarnessBar.ReportsUsageAsync(pg, RealHarnessProfiles.OpenCode(RequireRealOpenCode()));
+
+    [SkippableFact]
+    public Task Real_worker_resumes_its_transcript_after_a_park_and_reports_a_memory_only_nonce() =>
+        RealHarnessBar.ResumesAfterParkAsync(pg, RealHarnessProfiles.OpenCode(RequireRealOpenCode()));
+
     /// <summary>
     /// Why <c>stdin: closed</c> is not a preference for this harness either, and the cheapest
     /// fact in the tier: a cold <c>opencode run</c> worker under the §10 dead-man pipe
@@ -130,12 +145,12 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
             pg,
             spawnArgv: OpenCodeWorkerSpawn(openCodeBin, WorkerPrompt),
             terminalEvents: true,
-            eventMapping: OpenCodeEventMapping,
+            eventMapping: RealHarnessProfiles.OpenCodeEventMapping,
             // The whole point of this fact. Declared explicitly rather than left to the default
             // so a future change of default cannot quietly turn this into a duplicate.
             stdin: StdinPolicy.Deadman);
         await rig.StartAsync(ct);
-        using var config = OpenCodeConfig.Create(rig.McpUrl);
+        using var config = RealHarnessProfiles.OpenCodeConfig.Create(rig.McpUrl);
         await rig.AddMachineAsync("A");
 
         var task = await rig.CreateTaskAsync(EchoDescription("A", NewToken()), ct);
@@ -170,56 +185,6 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
     }
 
     /// <summary>
-    /// The minimum bar: a REAL <c>opencode run</c> worker, spawned by a real docketd on a
-    /// two-machine fleet, reads its assignment off the wire and drives its task to
-    /// <see cref="TaskState.Verifying"/>, reporting the exact unforgeable token its live
-    /// description carried. Only a worker that really connected to Docket's HTTP MCP —
-    /// authenticated with the per-instance bearer it resolved through <c>{env:...}</c>
-    /// substitution — called <c>get_task</c> and read that description could produce it.
-    ///
-    /// <para>It is also the first real-stream confirmation of the two mapping seams
-    /// <c>OpenCodeStreamMappingTests</c> establishes against source-derived fixtures: the §11
-    /// session ref off <c>step_start</c>/<c>sessionID</c>, and the bearer arriving via the
-    /// static config file rather than docketd's generated <c>{mcp_config}</c>.</para>
-    /// </summary>
-    [SkippableFact]
-    public async Task Real_opencode_worker_drives_a_task_to_verifying_on_the_fleet()
-    {
-        var openCodeBin = RequireRealOpenCode();
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(15));
-        var ct = cts.Token;
-
-        await using var rig = new FleetRig(
-            pg,
-            spawnArgv: OpenCodeWorkerSpawn(openCodeBin, WorkerPrompt),
-            terminalEvents: true,
-            eventMapping: OpenCodeEventMapping,
-            stdin: OpenCodeStdin);
-        await rig.StartAsync(ct);
-        using var config = OpenCodeConfig.Create(rig.McpUrl);
-        await rig.AddMachineAsync("A");
-        await rig.AddMachineAsync("B"); // a real fleet: >1 machine enrolled, dispatch steered to A
-
-        var token = NewToken();
-        var task = await rig.CreateTaskAsync(EchoDescription("A", token), ct);
-
-        Assert.True(
-            await rig.DispatchUntilVerifyingAsync(task, "A", MaxAttempts, PerLegBudget, ct),
-            "the real opencode worker never drove its task to verifying.\n"
-            + OpenCodeFailureHypotheses() + await rig.RealWorkerDiagnosticsAsync(task, ct));
-
-        var reference = await rig.ResultReferenceAsync(task, ct);
-        Assert.Contains(token, reference); // the live-description token round-tripped
-        Assert.Equal("A", rig.MachineRanOn(task));
-
-        Assert.False(
-            string.IsNullOrWhiteSpace(await rig.HarnessSessionRefAsync(task, ct)),
-            "no harness session ref was stamped, so events.mapping did not carry OpenCode's "
-            + "step_start/sessionID — §11 resume would silently cold-start.\n"
-            + await rig.RealWorkerDiagnosticsAsync(task, ct));
-    }
-
-    /// <summary>
     /// What a <c>stop</c> actually is against a real <c>opencode run</c> worker: a TTL'd kill,
     /// declared as <see cref="StopMode.Signal"/> because that is the true claim about this
     /// harness. Two source facts settle it. Stdin is read exactly once, at <c>run.ts:416</c>,
@@ -247,12 +212,12 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
             terminalEvents: true,
             stop: new StopConfig(
                 StopMode.Signal, MessageTemplate: null, WindDown: TimeSpan.FromSeconds(5)),
-            eventMapping: OpenCodeEventMapping,
+            eventMapping: RealHarnessProfiles.OpenCodeEventMapping,
             // signal + closed is the only pairing RunnerConfig accepts for this harness, and it
             // is the honest one twice over — see OpenCodeStdin.
             stdin: OpenCodeStdin);
         await rig.StartAsync(ct);
-        using var config = OpenCodeConfig.Create(rig.McpUrl);
+        using var config = RealHarnessProfiles.OpenCodeConfig.Create(rig.McpUrl);
         await rig.AddMachineAsync("A");
 
         var task = await rig.CreateTaskAsync(EchoDescription("A", NewToken()), ct);
@@ -315,13 +280,13 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
             pg,
             spawnArgv: OpenCodeWorkerSpawn(openCodeBin, WorkerPrompt), // fleet default; A overrides
             terminalEvents: true,
-            eventMapping: OpenCodeEventMapping,
+            eventMapping: RealHarnessProfiles.OpenCodeEventMapping,
             // Fleet-wide, so machine A's claude worker also gets a closed stdin — harmless there
             // (claude -p abandons its stdin read after ~3s) and the same asymmetry the Codex tier
             // papers over. A real mixed fleet declares stdin per profile.
             stdin: OpenCodeStdin);
         await rig.StartAsync(ct);
-        using var config = OpenCodeConfig.Create(rig.McpUrl);
+        using var config = RealHarnessProfiles.OpenCodeConfig.Create(rig.McpUrl);
 
         await rig.AddMachineAsync("A", ClaudeWorkerSpawn(claudeBin));  // claude machine
         await rig.AddMachineAsync("B");                                // opencode machine
@@ -350,109 +315,7 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
         Assert.Equal("B", rig.MachineRanOn(stepB));
     }
 
-    /// <summary>
-    /// <b>The measured-telemetry substrate, anchored against the real binary.</b> Everything
-    /// docketd knows about what an OpenCode task cost comes off the same stdout stream it already
-    /// drains for tool calls — there is no OTLP metrics exporter in OpenCode
-    /// (<c>packages/core/src/observability/otlp.ts:50-77</c> ships logs and traces only), so the
-    /// <c>step_finish</c> line is the whole channel. Every other fact in this tier would pass
-    /// with the usage keys mismapped; this one is why they are right.
-    ///
-    /// <para><b>What makes it worth a real run.</b> The shapes the parser tests use are derived
-    /// from OpenCode's source, not captured — <c>StepFinishPart</c> at
-    /// <c>packages/schema/src/v1/session.ts:240-256</c> and the <c>emit</c> envelope at
-    /// <c>run.ts:678-691</c>. Deriving a wire format from a schema is exactly the step that
-    /// silently goes wrong, and the three nested paths this harness needs
-    /// (<c>part.tokens</c>, <c>cache.read</c>, <c>part.cost</c>) are the most fragile part of the
-    /// whole recipe. A green run here says the reading was right.</para>
-    ///
-    /// <para>Queried plane-side rather than off the transcript deliberately: the row is what the
-    /// §12 measured view actually reads, so asserting there covers the mapping, the wire event,
-    /// the accumulation of per-step deltas, and the upsert in one go. A cost that is present and
-    /// positive is the OpenCode-specific half — claude self-reports USD too, but Codex reports
-    /// none at all, so "this harness states dollars" is a real distinction to pin.</para>
-    ///
-    /// <para><b>The wait is not belt-and-braces.</b> Per <c>ReportedUsageAsync</c>'s contract
-    /// (#145) an empty result is legitimate for a moment: the task reaches <c>verifying</c> on the
-    /// <c>report_result</c> call, while the usage still has to travel the ring, the wire and the
-    /// plane's sink. OpenCode is less exposed to this than claude — its <c>step_finish</c> lines
-    /// arrive per step rather than once at the end, so early rows exist well before the run
-    /// finishes — but it is <em>more</em> exposed to reading a stale one, because docketd
-    /// accumulates per-step deltas and the row is a high-water mark. Polling for a cost rather
-    /// than asserting on the first row is what makes this assert the total instead of a
-    /// prefix.</para>
-    /// </summary>
-    [SkippableFact]
-    public async Task A_real_opencode_worker_reports_its_own_tokens_and_cost_on_the_stream_docketd_reads()
-    {
-        var openCodeBin = RequireRealOpenCode();
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(15));
-        var ct = cts.Token;
-
-        await using var rig = new FleetRig(
-            pg,
-            spawnArgv: OpenCodeWorkerSpawn(openCodeBin, WorkerPrompt),
-            terminalEvents: true,
-            eventMapping: OpenCodeEventMapping,
-            stdin: OpenCodeStdin);
-        await rig.StartAsync(ct);
-        using var config = OpenCodeConfig.Create(rig.McpUrl);
-        await rig.AddMachineAsync("A");
-
-        var token = NewToken();
-        var task = await rig.CreateTaskAsync(EchoDescription("A", token), ct);
-
-        Assert.True(
-            await rig.DispatchUntilVerifyingAsync(task, "A", MaxAttempts, PerLegBudget, ct),
-            "the real opencode worker never drove its task to verifying, so there is no usage to "
-            + "assert on.\n" + OpenCodeFailureHypotheses()
-            + await rig.RealWorkerDiagnosticsAsync(task, ct));
-
-        // Wait for the report to land AND to carry a cost, so this reads the accumulated total
-        // rather than whichever step happened to be committed first.
-        Assert.True(
-            await FleetRig.WaitUntilAsync(
-                async () => await rig.ReportedUsageAsync(task, ct) is [{ CostUsd: not null }, ..],
-                TimeSpan.FromMinutes(2)),
-            "no usage report with a cost ever reached the plane for this task. Either "
-            + "events.mapping never resolved OpenCode's step_finish line, or the usage never "
-            + "crossed the runner->plane leg.\n"
-            + OpenCodeFailureHypotheses() + await rig.RealWorkerDiagnosticsAsync(task, ct));
-
-        var row = Assert.Single(await rig.ReportedUsageAsync(task, ct));
-
-        // OpenCode reports no per-model breakdown, so the row names no model — and docketd does
-        // not substitute one, because a model the plane asserted would not be reported BY the
-        // harness. This is the honest empty, not a mapping failure.
-        //
-        // Null, not "": this reads through TaskUsageView, where the empty string storage uses for
-        // an unnamed model (a composite key cannot hold a NULL) is mapped back exactly once. This
-        // tier is the first to exercise that path end to end — claude and Codex both name models —
-        // and the first dispatch caught the rig handing back the raw row instead, which is why
-        // ReportedUsageAsync now returns the view.
-        Assert.Null(row.Model);
-
-        // Real tokens, not a row of zeros. Input is the one bucket every run must have: the
-        // worker was handed a prompt.
-        Assert.True(
-            row.InputTokens > 0,
-            $"OpenCode reported no input tokens, so events.mapping did not reach part.tokens.input "
-            + $"(row: in={row.InputTokens} out={row.OutputTokens} cr={row.CacheReadTokens} "
-            + $"cw={row.CacheWriteTokens} cost={row.CostUsd?.ToString() ?? "null"})");
-        Assert.True(row.OutputTokens > 0, "OpenCode reported no output tokens.");
-
-        // The cost half: OpenCode computes USD itself, from the models.dev catalog price
-        // (session.ts:382-399), and puts it beside the counters at part.cost. A null here means
-        // usage_cost_key never resolved — the single most likely mapping mistake for this harness,
-        // because cost is the one figure that does NOT live inside the counters object.
-        Assert.NotNull(row.CostUsd);
-        Assert.True(
-            row.CostUsd > 0m,
-            $"OpenCode stated a cost of {row.CostUsd}, which is not a cost. Check that "
-            + "usage_cost_key is the dotted path 'part.cost' and not the bare 'cost' — the bare "
-            + "name resolves against the line root, where OpenCode puts no cost at all.");
-    }
-
+    // ── The OpenCode recipe (all source-derived at v1.18.17; see the class remarks) ──
     // ── The OpenCode recipe (all source-derived at v1.18.17; see the class remarks) ──
 
     /// <summary>
@@ -485,15 +348,10 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
     ///
     /// <para>No MCP flag appears here either, and that absence is the same finding Codex
     /// produced: OpenCode has no <c>--mcp-config</c>, so the docket server is wired through
-    /// <see cref="OpenCodeConfig"/> and docketd's generated <c>{mcp_config}</c> goes unread.</para>
+    /// <see cref="RealHarnessProfiles.OpenCodeConfig"/> and docketd's generated <c>{mcp_config}</c> goes unread.</para>
     /// </summary>
     private static string[] OpenCodeWorkerSpawn(string openCodeBin, string prompt) =>
-    [
-        openCodeBin, "run", prompt,
-        "--format", "json",
-        "--auto",
-        "--model", OpenCodeModel,
-    ];
+        RealHarnessProfiles.OpenCodeSpawn(openCodeBin, prompt);
 
     /// <summary>
     /// The model this tier pins. <c>provider/model</c> is the required spelling
@@ -509,10 +367,7 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
     /// this constant. <c>DOCKET_OPENCODE_MODEL</c> is the escape hatch, and it exists because
     /// exactly this happened to the Codex tier on its first real dispatch.</para>
     /// </summary>
-    private static string OpenCodeModel =>
-        Environment.GetEnvironmentVariable("DOCKET_OPENCODE_MODEL") is { Length: > 0 } m
-            ? m
-            : "anthropic/claude-haiku-4-5-20251001";
+    private static string OpenCodeModel => RealHarnessProfiles.OpenCodeModel;
 
     /// <summary>
     /// The <c>stdin</c> policy every end-to-end fact here declares (§10, #110) — the one line
@@ -527,150 +382,11 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
     /// </summary>
     private const StdinPolicy OpenCodeStdin = StdinPolicy.Closed;
 
-    /// <summary>
-    /// The <c>events.mapping</c> the worked profile in <c>runner-config.md</c> declares, and the
-    /// article <c>Docket.Runner.Tests/OpenCodeStreamMappingTests</c> exercises key-for-key.
-    ///
-    /// <para><b>Session ref.</b> OpenCode emits no init line, but <c>sessionID</c> is top-level on
-    /// <em>every</em> line (<c>run.ts:682-685</c>), so the Codex trick applies: point the
-    /// sub-discriminator back at <c>type</c>, match it against the same value, and let the id key
-    /// work. <c>step_start</c> is the type chosen because it is the earliest line emitted.</para>
-    ///
-    /// <para><b>Usage.</b> Every usage key here is a dotted path, which is what OpenCode forced
-    /// (#142): the counters are two levels down at <c>part.tokens</c>, the cache buckets one
-    /// deeper still, and cost sits beside the counters at <c>part.cost</c> rather than at the line
-    /// root. Note <c>usage_type</c> must differ from <c>system_type</c> — the reader returns early
-    /// on a session-init line — which is why the ref rides <c>step_start</c> and usage rides
-    /// <c>step_finish</c>. <c>RunnerConfig</c> now refuses the collision rather than letting it
-    /// swallow the usage silently.</para>
-    ///
-    /// <para><b>The two semantic booleans, and why they disagree.</b> OpenCode subtracts cache out
-    /// of input (<c>session.ts:366</c>), so its buckets are already disjoint like claude's and
-    /// <c>usage_cached_is_subset</c> stays false. But it <em>also</em> subtracts reasoning out of
-    /// output (<c>session.ts:373</c>), unlike either other harness — so
-    /// <c>usage_reasoning_is_subset</c> is false and the reader folds it back, without which the
-    /// plane's total would silently omit every reasoning token.</para>
-    /// </summary>
-    private static readonly Dictionary<string, string> OpenCodeEventMapping = new()
-    {
-        ["system_type"] = "step_start",
-        ["subtype_key"] = "type",
-        ["init_subtype"] = "step_start",
-        ["session_id_key"] = "sessionID",
-        ["tool_event_type"] = "tool_use",
-        ["tool_name_path"] = "part.tool",
-        ["usage_type"] = "step_finish",
-        ["usage_key"] = "part.tokens",
-        ["usage_input_key"] = "input",
-        ["usage_output_key"] = "output",
-        ["usage_cache_read_key"] = "cache.read",
-        ["usage_cache_write_key"] = "cache.write",
-        ["usage_reasoning_key"] = "reasoning",
-        ["usage_cost_key"] = "part.cost",
-        ["usage_models_key"] = "",
-        ["usage_cached_is_subset"] = "false",
-        ["usage_reasoning_is_subset"] = "false",
-        ["usage_is_cumulative"] = "false",
-    };
-
-    /// <summary>
-    /// A throwaway config file holding the one thing that wires an OpenCode worker to this
-    /// fleet's plane — OpenCode's answer to claude's <c>--mcp-config</c>, which it does not have.
-    /// Published through <c>OPENCODE_CONFIG</c>, a documented path variable
-    /// (<c>flag.ts:21</c>, honoured at <c>config/config.ts:401-403</c>).
-    ///
-    /// <para><b>The per-instance-auth trick, and why one static file is enough.</b> Docket mints a
-    /// fresh worker token per dispatch and docketd injects it as <c>DOCKET_WORKER_TOKEN</c> in the
-    /// spawn environment. OpenCode applies <c>{env:VAR}</c> substitution to the raw config
-    /// <em>text</em> before parsing it, reading <c>process.env</c> at load time
-    /// (<c>packages/opencode/src/config/variable.ts:33-38</c>, called from
-    /// <c>config/config.ts:220</c>) — so this file is correct for every dispatch and the token
-    /// never touches disk. Strictly better than the 0600 JSON docketd writes for claude, and the
-    /// same win Codex's <c>bearer_token_env_var</c> gives, through a generic mechanism rather than
-    /// a special-cased field.</para>
-    ///
-    /// <para><b><c>"oauth": false</c> is load-bearing</b>, not defensive: without it OAuth
-    /// auto-detection can take over a server that was meant to authenticate by bearer header. The
-    /// documented recipe pairs the two exactly this way (<c>opencode.ai/docs/mcp-servers</c>, "API
-    /// key authentication").</para>
-    ///
-    /// <para><b>OC-G6, deliberately not worked around.</b> An unset variable substitutes to the
-    /// empty string rather than erroring (<c>variable.ts:37</c>, <c>|| ""</c>), and the remote
-    /// server schema has no <c>required</c> flag the way Codex's does — so a broken wiring yields
-    /// <c>Authorization: Bearer </c>, a plane 401, and an agent that runs happily with no docket
-    /// tools. Nothing config-side prevents it; this tier failing loudly is the substitute.</para>
-    ///
-    /// <para><b>Known production gap (OC-G4), also not worked around.</b> One config file is
-    /// shared by every worker this test process spawns, because docketd has no per-profile
-    /// environment seam — a test can set <c>OPENCODE_CONFIG</c> process-wide, a real operator
-    /// cannot set it per task. Fine for a rig that runs tasks in sequence; #112's
-    /// <c>profiles[].env</c> is the real fix, and with it this file would not need to exist at all
-    /// (<c>OPENCODE_CONFIG_CONTENT</c> carries a whole config inline, <c>flag.ts:22</c>).</para>
-    ///
-    /// <para><b>Tools are deliberately not gated here.</b> OpenCode's allow-list is a config map
-    /// with wildcards rather than a CLI flag, and narrowing it to the docket tools alone would
-    /// also have to enumerate the built-ins the agent needs — a strictness this tier cannot
-    /// validate locally and does not need. The prompt is what constrains the worker; the
-    /// <c>tools</c> map is documented in <c>runner-config.md</c> for operators who want the
-    /// strict archetype.</para>
-    /// </summary>
-    private sealed class OpenCodeConfig : IDisposable
-    {
-        private readonly string _dir;
-        private readonly string? _previous;
-
-        private OpenCodeConfig(string dir, string? previous)
-        {
-            _dir = dir;
-            _previous = previous;
-        }
-
-        public static OpenCodeConfig Create(string mcpUrl)
-        {
-            var previous = Environment.GetEnvironmentVariable("OPENCODE_CONFIG");
-            var dir = Path.Combine(Path.GetTempPath(), "docket-opencode-" + Guid.NewGuid().ToString("N")[..8]);
-            Directory.CreateDirectory(dir);
-            var file = Path.Combine(dir, "opencode.json");
-
-            File.WriteAllText(
-                file,
-                $$"""
-                  {
-                    "$schema": "https://opencode.ai/config.json",
-                    "mcp": {
-                      "docket": {
-                        "type": "remote",
-                        "url": "{{mcpUrl}}",
-                        "enabled": true,
-                        "headers": { "Authorization": "Bearer {env:DOCKET_WORKER_TOKEN}" },
-                        "oauth": false,
-                        "timeout": 120000
-                      }
-                    }
-                  }
-                  """);
-
-            Environment.SetEnvironmentVariable("OPENCODE_CONFIG", file);
-            return new OpenCodeConfig(dir, previous);
-        }
-
-        public void Dispose()
-        {
-            Environment.SetEnvironmentVariable("OPENCODE_CONFIG", _previous);
-            try { Directory.Delete(_dir, recursive: true); } catch { /* best effort */ }
-        }
-    }
-
     /// <summary>The one description template every role uses (§7) — identical to the other two
     /// tiers', on purpose: a cross-harness comparison is only meaningful if both harnesses are
     /// given the same words.</summary>
     private static string EchoDescription(string label, string token) =>
-        $"""
-         Call report_result exactly once, with its resultReference set to this exact string
-         (no quotes, no other text):
-
-         {label}:{token}
-         """;
+        RealHarnessProfiles.EchoDescription(label, token);
 
     /// <summary>
     /// A prompt that keeps the worker busy long enough to be stopped mid-flight. Deliberately
@@ -742,7 +458,7 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
 
-        var key = FirstNonEmpty("ANTHROPIC_API_KEY", "ANTHROPIC_KEY");
+        var key = RealHarnessProfiles.FirstNonEmpty("ANTHROPIC_API_KEY", "ANTHROPIC_KEY");
         var optedIn = Environment.GetEnvironmentVariable("DOCKET_REAL_OPENCODE") is { Length: > 0 } o
                       && !o.Equals("0", StringComparison.Ordinal)
                       && !o.Equals("false", StringComparison.OrdinalIgnoreCase);
@@ -753,7 +469,7 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
         if (!string.IsNullOrWhiteSpace(key))
             Environment.SetEnvironmentVariable("ANTHROPIC_API_KEY", key);
 
-        var bin = ResolveBin("opencode", "DOCKET_OPENCODE_BIN");
+        var bin = RealHarnessProfiles.ResolveBin("opencode", "DOCKET_OPENCODE_BIN");
         Skip.If(bin is null, "opencode CLI not found (set DOCKET_OPENCODE_BIN or put opencode on PATH)");
         return bin!;
     }
@@ -761,41 +477,11 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
     /// <summary>The mixed-fleet fact needs a real claude too; skip rather than half-test.</summary>
     private static string RequireRealClaudeForMixedFleet()
     {
-        var claudeBin = ResolveBin("claude", "DOCKET_CLAUDE_BIN");
+        var claudeBin = RealHarnessProfiles.ResolveBin("claude", "DOCKET_CLAUDE_BIN");
         Skip.If(claudeBin is null,
             "claude CLI not found — the mixed-harness fleet fact needs BOTH CLIs "
             + "(set DOCKET_CLAUDE_BIN or put claude on PATH)");
         return claudeBin!;
-    }
-
-    private static string? FirstNonEmpty(params string[] names)
-    {
-        foreach (var name in names)
-            if (Environment.GetEnvironmentVariable(name) is { Length: > 0 } v && !string.IsNullOrWhiteSpace(v))
-                return v;
-        return null;
-    }
-
-    /// <summary>Resolve a CLI: an explicit override variable, then PATH, then the common install
-    /// locations — or null when none exists.</summary>
-    private static string? ResolveBin(string name, string overrideVar)
-    {
-        var explicitBin = Environment.GetEnvironmentVariable(overrideVar);
-        if (!string.IsNullOrWhiteSpace(explicitBin) && File.Exists(explicitBin))
-            return explicitBin;
-
-        var exe = OperatingSystem.IsWindows() ? name + ".exe" : name;
-        foreach (var dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator))
-        {
-            if (string.IsNullOrEmpty(dir)) continue;
-            var candidate = Path.Combine(dir, exe);
-            if (File.Exists(candidate)) return candidate;
-        }
-
-        foreach (var fallback in new[] { $"/usr/local/bin/{name}", $"/opt/homebrew/bin/{name}" })
-            if (File.Exists(fallback)) return fallback;
-
-        return null;
     }
 
     /// <summary>
@@ -827,5 +513,5 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
 
          """;
 
-    private static string NewToken() => Guid.NewGuid().ToString("N")[..12];
+    private static string NewToken() => RealHarnessProfiles.NewToken();
 }

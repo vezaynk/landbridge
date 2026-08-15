@@ -186,8 +186,8 @@ public class CiWorkflowPinsTests
                 $"{package.NpmName} is pinned to '{pins[package.NpmName]}', which is not a semver.");
         }
 
-        // The mixed-fleet facts need claude in all three real jobs.
-        Assert.Equal(3, installs.Count(i => i.Package == HarnessPackages.Claude.NpmName));
+        // One claude pin, shared by the mixed-fleet cells via `if:`. Lockstep is structural.
+        Assert.Equal(1, installs.Count(i => i.Package == HarnessPackages.Claude.NpmName));
     }
 
     private static int Occurrences(string haystack, string needle)

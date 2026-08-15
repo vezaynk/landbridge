@@ -137,6 +137,8 @@ public static class DashboardEndpoints
         // requirement it serves is that it takes seconds.
         app.MapPost("/dashboard/machines/revoke", HandleRevokeMachineAsync);
 
+        app.MapConformance();
+
         return app;
     }
 

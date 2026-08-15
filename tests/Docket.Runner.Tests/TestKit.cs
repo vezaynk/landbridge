@@ -111,7 +111,10 @@ internal static class TestKit
         long? maxBytes = null,
         int pruneAfterDays = TranscriptDefaults.PruneAfterDays,
         TelemetryConfig? telemetry = null,
-        StdinPolicy stdin = StdinPolicy.Deadman) =>
+        StdinPolicy stdin = StdinPolicy.Deadman,
+        IReadOnlyDictionary<string, string>? env = null,
+        IReadOnlyList<ProfileFile>? files = null,
+        ProfileHooks? hooks = null) =>
         new(
             name,
             [HarnessPath(), harnessMode],
@@ -123,7 +126,10 @@ internal static class TestKit
                 MaxBytes: maxBytes ?? TranscriptDefaults.MaxBytes, PruneAfterDays: pruneAfterDays),
             MaxConcurrent: null,
             Processes: null,
-            Stdin: stdin);
+            Stdin: stdin,
+            Env: env,
+            Files: files,
+            Hooks: hooks);
 
     /// <summary>
     /// A §11 resume profile: a cold <c>Spawn</c> (the given <paramref name="coldMode"/>)

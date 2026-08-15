@@ -15,11 +15,13 @@ There is no `/docket-enroll` command on this build. No slash command or MCP prom
 
 A `docketd` config that tells a generic daemon how to drive *this* machine's harness. The daemon knows nothing about harnesses, toolchains, or task content — everything specific lives in the config you write.
 
+The first profile — and the one dummy tasks land on — is named `default`. The schema requires exactly one entry with that name: it is the fallback dispatch uses when a task omits `profile`. Extra profiles are fine later (a second harness, a restricted posture); do not invent a machine-specific name for the first one.
+
 The config must cover:
 
 | Section | What it answers |
 |---|---|
-| Harness invocation | How to start the harness headlessly with a task (`spawn`), and where it reads its MCP config |
+| Harness invocation | How to start the harness headlessly with a task (`spawn`), and where it reads its MCP config (`{mcp_config}`, `files[]`, or `hooks.before_spawn`) |
 | Process control | How `stop` is delivered (`mode: message` only where the harness demonstrably reads mid-task stdin turns — **not `claude -p`**, which takes `signal`), the message template, and how long wind-down gets before the hard tree-kill |
 | Resume | The argv that reattaches to a parked task's transcript (`resume.args`), which is how a parked task comes back with its context |
 | Event relay | Whether the harness streams structured output docketd can read (`events.source`), and the property names it is keyed by (`events.mapping`) |
@@ -29,6 +31,46 @@ The config must cover:
 The full config schema and a worked Claude Code profile — including the exact
 headless `spawn` argv, the `{mcp_config}` injection, and the generated MCP config
 a worker dials the plane with — are in `references/runner-config.md`.
+
+**`docketd` reads this file once, at start.** There is no reload, no `SIGHUP`,
+and nothing the plane can push. Adding, renaming, editing, or deleting a
+profile is invisible until you restart the daemon. The next heartbeat is what
+publishes the new names to the Machine Group — the only channel the plane uses
+for routing. Until that beat lands, a task aimed at a new name sits in
+`Submitted` with `Attempt` at 0, the same quiet failure as a typo. A restart
+kills every agent on this machine and their tasks requeue; that is the cost of
+a profile change, not a bug. Say so to the human before they edit a live box.
+
+## Wiring the docket MCP server additively
+
+A worker must reach the plane as an MCP client. Claude takes `{mcp_config}` in
+argv. Other harnesses do not. Prefer the option that **adds** the docket server
+without hiding the operator's existing MCP servers, skills, or auth.
+
+1. **`files[]` under `{work_dir}`** when the harness merges a project-local
+   config with the user home. Grok does: `{cwd}/.grok/config.toml` plus
+   `~/.grok/config.toml`. Write only the docket block; leave `GROK_HOME` unset.
+   Use `{mcp_url}` for the plane URL. For the bearer, prefer the harness's own
+   read-from-env field if it has one (Codex's `bearer_token_env_var =
+   "DOCKET_WORKER_TOKEN"`) — that keeps the token off disk. Grok has no such field
+   and does **not** expand `${DOCKET_WORKER_TOKEN}` in `config.toml`, so it must use
+   the docketd substitution `{worker_token}` (written verbatim). When a live token
+   lands in the file this way, write the file `"mode": "600"`, as Claude's
+   `mcp.json` does. Grok 1.0.4+ gates project-local MCP behind folder trust;
+   a docketd work dir is a throwaway folder, so also set
+   `"env": { "GROK_FOLDER_TRUST": "0" }` or the worker lists the server and
+   never handshakes it.
+2. **`hooks.before_spawn` argv** when the only MCP surface is a user-global
+   file (Codex / `CODEX_HOME`). The program must be idempotent
+   (ensure-if-absent). Never invoke a shell — argv only, same as `spawn`.
+   Omit `after_exit`: removing the block races a sibling worker and leaves
+   interactive use with a 401ing docket server either way.
+3. **`env.GROK_HOME` / `env.CODEX_HOME`** only when the operator asked for a
+   **sealed** home (strict archetype). That replaces the directory; the worker
+   will not see `~/.grok` MCP servers, skills, or `auth.json`.
+
+Probe the harness before choosing. If you cannot tell whether it merges
+project config, treat that as a question for the human, not a guess.
 
 ## Check the prerequisites first
 
@@ -96,20 +138,20 @@ This is a system-level change, which you report rather than perform. Prepare the
 
 ## Smoke-test the machine before real work reaches it
 
-**There is no automated gate.** Spec §11 describes a conformance run — the control plane dispatching trivial work and judging the results — and it is future work. Nothing in the plane probes a new machine, and there is no unclaimable state for it to hold a failure in: a machine that enrolls is simply a machine that connected. Whatever you do not check here, nobody checks.
+**There is no automated gate that judges results.** Spec §11's conformance run would dispatch trivial work *and* decide pass/fail; that judging half is future work. What exists today is `POST /dashboard/conformance`: the plane mints dummy tasks aimed at `default` and reports their states. A machine that enrolls is otherwise simply a machine that connected — no unclaimable state, no probe. Whatever you do not check here, nobody checks.
 
 So check it once, by hand, with the human. The failure you are hunting is the quiet one — a machine that heartbeats, reads as `ready`, accepts a dispatch, and produces nothing.
 
-**Give the test somewhere it can only land.** A task carries a profile name matched by exact string equality, so add a temporary uniquely-named profile alongside `default` (`smoke-<hostname>`) and target that. Aim a task at `default` and it may be served by some other machine in the Group, proving nothing about this one.
+**`default` is shared.** A task aimed at `default` is claimed by any ready machine that declares it. If this is the only ready box, the dummy set lands here. If the Group already has others, drain or pause them first, or the check proves the fleet rather than this enrollment. **Restart `docketd`** (or start it, if it is not running yet) after writing the config — editing the file under a running daemon changes nothing, and the plane will not list the `default` badge until the post-restart heartbeat.
 
 **Run `docketd` in the foreground for this, or tail its journal.** Its stdout is the only place several of these failures appear at all. On start it prints one line — `docketd up: machine=… profiles=[…] strays_reaped=… control=…`. A config that does not parse never gets that far; `docketd` prints the error and exits non-zero before it connects.
 
-Then have the human's Lead create one trivial task against that profile (`create_task`, with `profile` set to the smoke name) — "report this machine's hostname and working directory" is enough — and follow it:
+Then mint the dummy-task set (next section), or have the human's Lead create one trivial task (`create_task`, omit `profile` so it uses `default`) — "report this machine's hostname and working directory" is enough — and follow it:
 
 | Watch | Where | Healthy |
 |---|---|---|
 | The machine is present at all | `/dashboard/machines` | a section for this machine id, `heartbeat Ns ago` inside your `heartbeat_seconds` |
-| It declares the profile | same page, profile badges | the smoke profile is listed; `no profiles declared` means no heartbeat has landed yet |
+| It declares the profile | same page, profile badges | `default` is listed; `no profiles declared` means no heartbeat has landed yet |
 | It will accept work | same page, badge | `ready` — `not ready` or `back-pressure` means nothing will dispatch |
 | The task moves | `/dashboard/teams/{team}`, or the Lead's `get_team_state` | `Submitted` → `Working` → `Verifying`, with `Attempt` reaching 1 and staying there |
 | The work actually happened | the task's report | the value it was asked for, not a restatement of the ask |
@@ -119,8 +161,8 @@ Both views take `?format=json` if you would rather read them structured — the 
 The failures worth naming, and what each really looks like:
 
 - **Nothing dispatches: the task sits in `Submitted` with `Attempt` at 0.** No reason is surfaced anywhere — this is the quietest failure in the system. It is a profile-name mismatch (exact string equality; check the spelling against the badges the machine actually published), or the machine is not `ready`, or it never connected. A machine that is not connected does not show as offline; it is absent from `/dashboard/machines` entirely.
-- **Wrong `spawn` argv, or the harness binary is not on `docketd`'s `PATH`.** `docketd` prints `command handler threw: …` on its own stdout and nothing else happens — no event, no row, no change on any page. The task stays `Working` until the per-task liveness window (60s) expires and requeues it, and the requeue record says nothing about the spawn. An unwritable `work_root` surfaces identically, since `docketd` writes `{work_dir}/mcp.json` itself. **If a task requeues with no explanation, read `docketd`'s stdout before anything else.**
-- **The harness starts and exits immediately** — a rejected flag, a permission mode managed settings forbid, a missing credential. The exit code rides the `exited` event but is stored and displayed nowhere, so a fast crash is indistinguishable from a hang: same liveness timeout, same requeue. Set `logs.capture: true` on the smoke profile; the transcript is the only place the reason exists.
+- **Wrong `spawn` argv, or the harness binary is not on `docketd`'s `PATH`.** `docketd` prints `command handler threw: …` on its own stdout and nothing else happens — no event, no row, no change on any page. The task stays `Working` until the per-task liveness window (60s) expires and requeues it, and the requeue record says nothing about the spawn. An unwritable `work_root` surfaces identically, since `docketd` creates the work dir (and writes `mcp.json` when the profile names `{mcp_config}`). **If a task requeues with no explanation, read `docketd`'s stdout before anything else.**
+- **The harness starts and exits immediately** — a rejected flag, a permission mode managed settings forbid, a missing credential. The exit code rides the `exited` event but is stored and displayed nowhere, so a fast crash is indistinguishable from a hang: same liveness timeout, same requeue. Set `logs.capture: true` on `default`; the transcript is the only place the reason exists.
 - **The worker cannot authenticate to the plane.** Do not wait for an `auth-failed` event. The plane can record one, but `docketd` never emits one, so none will arrive. A rejected worker token appears as a 401 inside the harness's own output and `report_result` simply never lands — the transcript again.
 - **`Attempt` climbing on its own.** The task is being dispatched, failing, and redispatched. Infrastructure requeues are capped (5 by default), so this does not run forever: at the cap the task is abandoned as `canceled` — not `rejected`, since nothing is wrong with the work — with the reason that reclaimed it on the record and the workspace left intact. Read that reason, not the attempt count.
 
@@ -130,13 +172,42 @@ The failures worth naming, and what each really looks like:
 
 Two things you cannot verify by hand, so do not claim them either way: whether the runner refused a dispatch (it computes `BackPressure` / `UnknownProfile` / `MaxConcurrent` refusals and then discards them — never sent upstream, never logged), and whether events were dropped under load (the outbound ring counts the gap, but the wire has no field to carry it).
 
-**Failures here are configuration bugs, and they are worth fixing carefully rather than working around.** Fix the config, restart `docketd`, and run the check again — remembering that a restart kills every agent on this machine. Then delete the temporary smoke profile, so it does not sit in the config as a target a Lead might one day name.
+**Failures here are configuration bugs, and they are worth fixing carefully rather than working around.** Fix the config, restart `docketd`, and run the check again — remembering that a restart kills every agent on this machine, and that the file is not re-read in place.
+
+## Profile check — dummy tasks from the plane
+
+The control plane will mint a fixed set of dummy tasks aimed at `default` and expose their states. This is the stand-in for the unbuilt §11 conformance run. It does **not** judge the answers — a task that reaches `verifying` is a worker that called `report_result`.
+
+After `docketd` is up and `default` is on the Machine Group badges, have the human (operator session, not a Lead token) start a run:
+
+```
+POST /dashboard/conformance
+Origin: <the plane's own origin>
+```
+
+A browser can do the same from `/dashboard/conformance`. Same-origin only, human-only (a Lead token is 403). The tasks are always aimed at `default`. The response is `201` with a `runId`, a `progressUrl`, how many connected machines currently declare `default` (`machinesDeclaring`), and the three tasks:
+
+| kind | What the worker must do |
+|---|---|
+| `identity` | Report hostname, cwd, and the first 8 hex of `$DOCKET_TASK_ID` |
+| `write` | Write `smoke.txt` in the workspace containing only the hostname |
+| `shell` | `echo` a nonce (`dkt-smoke-` plus the run id prefix) and report that line |
+
+Poll progress:
+
+```
+GET /dashboard/conformance/{runId}?format=json
+```
+
+`workerDone` is true when every task is `verifying` or `completed` and none failed. `pending` includes `submitted` (no machine claimed it — usually the profile name is not on a heartbeat yet) and `working`. `failed` is `canceled` or `rejected`. A `machinesDeclaring` of `[]` with tasks stuck in `submitted` is the restart-the-daemon miss from above.
+
+Do not skip the kill-path check above because the dummy set reached `verifying`. Dummy tasks never exercise `stop`.
 
 > **Future work (spec §11).** The conformance run automates the above and goes past it: per declared profile, the control plane would judge event attribution by task id, heartbeat cadence against the config, two concurrent tasks tracked independently, `stop` acknowledgement (and message delivery demonstrably reaching the agent as a turn), `TTL=0` killing one process while its sibling survives, a relay forward round-tripping and its listener closing on release, an approval-prone task completing without hanging, and a parked task resuming from its recorded directory with context intact — admitting the machine as `ready` on a pass, or leaving it registered-but-unclaimable with the failing step named. None of that exists yet. The manual pass above is its stand-in, not a preview of it.
 
 ## After enrollment
 
-Nothing about this setup is meant to be hand-maintained. Re-running this flow — reprobing, rewriting the config, restarting the daemon, smoke-testing again — is the supported way to change it, and it is safe to repeat.
+Nothing about this setup is meant to be hand-maintained. Re-running this flow — reprobing, rewriting the config, restarting the daemon, smoke-testing again — is the supported way to change it, and it is safe to repeat. A rewrite of the file is not enough: `docketd` does not watch `--config`, so wait for the post-restart heartbeat before targeting a new name. The dashboard badges are the check that the plane saw it.
 
 Spec §11 also wants the config stamped with the version of this skill, so the control plane can flag stale machines for a re-run. **That does not exist**: nothing writes a version, nothing serves one, and a `skill_version` key added by hand is silently dropped when the config parses. Until it lands, a machine's config is only as current as whoever last re-ran this — so when you notice a config written against older guidance, say so to the human rather than assuming the plane will catch it.
 

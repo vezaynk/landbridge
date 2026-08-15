@@ -520,6 +520,13 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     /// heartbeat. That is precisely the wedged agent the two clocks exist to separate:
     /// aliveness stays fresh, so only the no-progress ceiling can reclaim it.</item>
     /// </list>
+    /// <para><b>Both profiles name <c>{mcp_config}</c>, and the wedge one must keep doing
+    /// so even though its harness ignores every argument past <c>run</c>.</b> Since #112
+    /// G11 docketd writes the 0600 <c>mcp.json</c> only when spawn or resume argv actually
+    /// references it, so this is what puts a real worker-instance token on disk — the
+    /// credential <see cref="InjectedWorkerTokenAsync"/> reads and the stale-token replay
+    /// scenario (§17.8) presents again after a requeue. Drop it and that scenario stops
+    /// finding a token to replay and fails on the fixture rather than on the behaviour.</para>
     /// The heartbeat is deliberately short — it drives both the <c>alive</c> cadence and
     /// the dispatch signal, and it must stay well inside the plane's aliveness window or
     /// a perfectly healthy task would be requeued.
@@ -543,7 +550,8 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
                 new JsonObject
                 {
                     ["name"] = ChaosProfiles.Wedge,
-                    ["spawn"] = new JsonArray(ChaosBinaries.RunnerTestHarness(), "run"),
+                    ["spawn"] = new JsonArray(
+                        ChaosBinaries.RunnerTestHarness(), "run", "--mcp-config", "{mcp_config}"),
                 }),
         };
         var path = Path.Combine(NewTempDir("config"), "docketd.json");

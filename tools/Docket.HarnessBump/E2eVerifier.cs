@@ -34,9 +34,9 @@ public sealed record E2eOutcome(bool Green, string Summary, IReadOnlyList<string
 /// </remarks>
 public sealed class E2eVerifier(Cli cli, string repository, Action<string> log)
 {
-    /// <summary>The dispatch runs the whole workflow, so these three must all be green.</summary>
+    /// <summary>The dispatch runs the whole workflow, so these must all be green.</summary>
     public static readonly IReadOnlyList<string> RealHarnessJobs =
-        ["real-claude-e2e", "real-codex-e2e", "real-opencode-e2e"];
+        ["real-claude-e2e", "real-codex-e2e", "real-opencode-e2e", "real-grok-e2e"];
 
     public async Task<GhRun> DispatchAsync(
         string workflow,
@@ -105,8 +105,8 @@ public sealed class E2eVerifier(Cli cli, string repository, Action<string> log)
     }
 
     /// <summary>
-    /// Green only when every job succeeded (or was legitimately skipped), all three
-    /// real-harness jobs ran, and each of those actually executed facts rather than skipping
+    /// Green only when every job succeeded (or was legitimately skipped), every
+    /// real-harness job ran, and each of those actually executed facts rather than skipping
     /// them for a missing key.
     /// </summary>
     public async Task<E2eOutcome> EvaluateAsync(long runId, CancellationToken cancellationToken)
@@ -178,7 +178,7 @@ public sealed class E2eVerifier(Cli cli, string repository, Action<string> log)
         }
 
         var headline = green
-            ? "all three real-harness tiers ran and passed"
+            ? "all four real-harness tiers ran and passed"
             : "the real-harness dispatch did not come back clean";
         return new E2eOutcome(green, headline, details);
     }

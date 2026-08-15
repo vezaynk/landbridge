@@ -13,20 +13,26 @@ public class E2eVerifierTests
     [Fact]
     public void Every_job_the_gate_waits_on_really_exists_in_ci_yml()
     {
-        var jobs = TopLevelJobNames(RepoFiles.CiYaml);
+        // Display names are `real-${{ matrix.harness }}-e2e`. The merge gate matches those
+        // names on the GitHub Jobs API, so each waited-on job must have a matrix row.
+        var yaml = RepoFiles.CiYaml;
+        Assert.Contains("name: real-${{ matrix.harness }}-e2e", yaml);
         foreach (var name in E2eVerifier.RealHarnessJobs)
-            Assert.Contains(name, jobs);
+        {
+            Assert.True(name.StartsWith("real-", StringComparison.Ordinal) && name.EndsWith("-e2e", StringComparison.Ordinal),
+                $"RealHarnessJobs entry '{name}' is not real-<harness>-e2e");
+            var harness = name["real-".Length..^"-e2e".Length];
+            Assert.Contains($"harness: {harness}", yaml);
+        }
     }
 
     [Fact]
     public void The_gate_covers_every_real_harness_job_ci_yml_defines()
     {
-        // The other direction: adding a fourth real-* tier to ci.yml without adding it here would
-        // let the bot merge a bump that the new tier had never approved.
-        var realJobs = TopLevelJobNames(RepoFiles.CiYaml)
-            .Where(j => j.StartsWith("real-", StringComparison.Ordinal));
-        foreach (var job in realJobs)
-            Assert.Contains(job, E2eVerifier.RealHarnessJobs);
+        // The other direction: adding a matrix cell without adding it here would let the
+        // bot merge a bump that the new cell had never approved.
+        foreach (var harness in MatrixHarnessNames(RepoFiles.CiYaml))
+            Assert.Contains($"real-{harness}-e2e", E2eVerifier.RealHarnessJobs);
     }
 
     [Fact]
@@ -39,25 +45,20 @@ public class E2eVerifierTests
         Assert.Contains("if: github.event_name == 'workflow_dispatch'", RepoFiles.CiYaml);
     }
 
-    /// <summary>Keys indented exactly two spaces under <c>jobs:</c> — good enough, and no YAML dependency.</summary>
-    private static List<string> TopLevelJobNames(string yaml)
+    /// <summary>
+    /// <c>harness: &lt;name&gt;</c> rows in the real-e2e matrix include. Comments that
+    /// mention the word are skipped. Good enough, and no YAML dependency.
+    /// </summary>
+    private static List<string> MatrixHarnessNames(string yaml)
     {
         var names = new List<string>();
-        var inJobs = false;
         foreach (var raw in yaml.Split('\n'))
         {
             var line = raw.TrimEnd('\r');
-            if (line.StartsWith("jobs:", StringComparison.Ordinal))
-            {
-                inJobs = true;
+            var trimmed = line.Trim();
+            if (trimmed.StartsWith('#'))
                 continue;
-            }
-            if (!inJobs)
-                continue;
-            // A non-indented, non-blank, non-comment line ends the jobs block.
-            if (line.Length > 0 && !char.IsWhiteSpace(line[0]) && !line.StartsWith('#'))
-                break;
-            var match = Regex.Match(line, @"^  (?<name>[A-Za-z0-9_-]+):\s*$");
+            var match = Regex.Match(trimmed, @"^(?:-\s+)?harness:\s+(?<name>[a-z]+)\s*$");
             if (match.Success)
                 names.Add(match.Groups["name"].Value);
         }

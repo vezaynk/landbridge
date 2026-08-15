@@ -518,7 +518,10 @@ Full schema and a worked Claude Code example: `skills/docket-enroll/references/r
 | Section | Covers |
 |---|---|
 | `machine` | `work_root` for per-task scratch directories; back-pressure thresholds |
-| `profiles` | Named configurations, one required to be `default`. Each carries `spawn`, `stdin`, `stop`, `resume`, `events`, `telemetry`, `logs`, and an optional `max_concurrent` cap. |
+| `profiles` | Named configurations, one required to be `default`. Each carries `spawn`, `stdin`, `env`, `files`, `hooks`, `stop`, `resume`, `events`, `telemetry`, `logs`, and an optional `max_concurrent` cap. |
+| `profiles[].env` | Per-spawn environment map. Values take the same `{…}` substitutions `spawn` does. Applied after the reserved `DOCKET_*` stamps and before `telemetry.env`. The four names docketd owns (`DOCKET_MACHINE_ID`, `DOCKET_TASK_ID`, `DOCKET_WORKER_TOKEN`, `DOCKET_TRACEPARENT`) are refused at load. |
+| `profiles[].files` | Files written under `{work_dir}` before spawn. Paths are jailed to the work dir after substitution. Prefer this for additive project-local MCP (Grok merges `{cwd}/.grok/config.toml` with `~/.grok`). |
+| `profiles[].hooks` | Argv hooks, never a shell. `before_spawn` is fail-closed; `after_exit` is best-effort. For a harness whose only MCP surface is a user-global file (Codex). |
 | `profiles[].telemetry` | Per-profile opt-in (off by default) that points a harness's own OTel export at the operator's collector: `otel`, `endpoint`, and `env` for the harness's own enable flag. `docketd` sets only vendor-neutral `OTEL_*` — a harness's telemetry variables are data like everything else. Never enabled without a destination. |
 | `services` | Operator-declared long-lived processes `docketd` supervises: `name`, `spawn` argv, `working_directory`, `env`, `port`, `readiness`, `restart`, `logs`, `backend`, and `enabled`. Optional; absent on most machines. |
 
@@ -715,7 +718,7 @@ Docket does **not** speak A2A internally. It is exposed at the outer boundary fo
    - every declared profile passes the above independently, plus one cross-profile concurrency case
 7. Pass → machine joins the Machine Group as `ready`. Fail → registered but unclaimable, with the failing step named.
 
-**As-built reconciliation (2026-08-03).** Steps 4–7 do not exist. There is no `/docket-enroll` prompt (no MCP prompt is registered at all) and no conformance run: nothing in the plane dispatches trivial work to a new machine or judges it. Nor are `ready` and `unclaimable` machine *states* — there is no machine state enum; readiness is two per-heartbeat booleans, and an enrolled-but-disconnected machine is absent from the Machine Group view rather than shown as unclaimable. Today enrollment yields credentials, the operator authors the runner config with the `docket-enroll` skill, and the skill's manual smoke test stands in for the conformance run. The config-stamping below is likewise unbuilt.
+**As-built reconciliation (2026-08-03).** Steps 4–7 do not exist. There is no `/docket-enroll` prompt (no MCP prompt is registered at all) and no conformance run: nothing in the plane dispatches trivial work to a new machine or judges it. Nor are `ready` and `unclaimable` machine *states* — there is no machine state enum; readiness is two per-heartbeat booleans, and an enrolled-but-disconnected machine is absent from the Machine Group view rather than shown as unclaimable. Today enrollment yields credentials, the operator authors the runner config with the `docket-enroll` skill, and the operator-only `POST /dashboard/conformance` + `GET /dashboard/conformance/{runId}` mint dummy tasks aimed at `default` and report their states. That is a dispatch check, not the plane judging results — `verifying` means the worker called `report_result`. The config-stamping below is likewise unbuilt.
 
 The wizard *displays* results; the control plane *determines* them.
 

@@ -42,10 +42,9 @@ public static class CiWorkflowPins
 
     /// <summary>
     /// The single pinned version per package. Throws when one package is pinned to two
-    /// different versions across its install lines: ci.yml requires the three claude
-    /// installs stay in lockstep (a mixed-fleet fact running a different claude than the
-    /// claude tier would make one tier's green say nothing about the other's), so a split
-    /// pin is a bug to surface, never something to average over or pick a winner from.
+    /// different versions across its install lines. ci.yml now has one claude <c>run:</c>
+    /// shared by mixed-fleet cells via <c>if:</c>, so lockstep is structural; a split pin
+    /// is still a bug to surface if a second line ever appears.
     /// </summary>
     public static IReadOnlyDictionary<string, string?> PinnedVersions(IReadOnlyList<PinnedInstall> installs)
     {
