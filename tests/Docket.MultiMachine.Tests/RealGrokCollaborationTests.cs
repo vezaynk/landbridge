@@ -67,51 +67,12 @@ public sealed class RealGrokCollaborationTests(PostgresFixture pg) : IAsyncLifet
     public Task Real_worker_resumes_its_transcript_after_a_park_and_reports_a_memory_only_nonce() =>
         RealHarnessBar.ResumesAfterParkAsync(pg, RealHarnessProfiles.Grok(RequireRealGrok()));
 
-    /// <summary>
-    /// The Codex/OpenCode contrast: a <c>grok -p</c> worker under the dead-man pipe
-    /// <b>still takes a turn</b> (session ref arrives). Isolation (`sleep | grok`) then
-    /// waits for stdin EOF before exiting; under docketd the process has been observed
-    /// to exit after the turn. <c>stdin: closed</c> is still the profile default so we
-    /// do not depend on that, and so <c>stop.mode: signal</c> stays legal.
-    /// </summary>
-    [SkippableFact]
-    public async Task A_grok_worker_under_deadman_still_takes_a_turn()
-    {
-        var grokBin = RequireRealGrok();
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(8));
-        var ct = cts.Token;
-
-        await using var rig = new FleetRig(
-            pg,
-            spawnArgv: GrokWorkerSpawn(grokBin, WorkerPrompt),
-            terminalEvents: true,
-            stdin: StdinPolicy.Deadman,
-            files: GrokMcpFile,
-            env: new Dictionary<string, string>(StringComparer.Ordinal)
-            {
-                ["GROK_FOLDER_TRUST"] = "0",
-            });
-        await rig.StartAsync(ct);
-        await rig.AddMachineAsync("A");
-
-        var task = await rig.CreateTaskAsync(EchoDescription("A", NewToken()), ct);
-        await rig.DispatchToAsync("A", ct);
-
-        Assert.True(
-            await FleetRig.WaitUntilAsync(
-                async () => await rig.HarnessSessionRefAsync(task, ct) is { Length: > 0 },
-                TimeSpan.FromMinutes(3)),
-            "the grok worker never reported a session ref under deadman — that would make it "
-            + "Codex-shaped (blocked before the first turn). Re-read grok -p stdin handling.\n"
-            + GrokFailureHypotheses() + await rig.RealWorkerDiagnosticsAsync(task, ct));
-    }
 
     private static string[] GrokWorkerSpawn(string grokBin, string prompt) =>
         RealHarnessProfiles.GrokSpawn(grokBin, prompt);
 
     private static string GrokModel => RealHarnessProfiles.GrokModel;
 
-    private const StdinPolicy GrokStdin = StdinPolicy.Closed;
 
     /// <summary>
     /// Project-local Grok MCP file (#112 G2). Grok merges

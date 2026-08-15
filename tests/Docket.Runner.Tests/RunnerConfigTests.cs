@@ -13,9 +13,9 @@ public class RunnerConfigTests
       "profiles": [
         {
           "name": "default",
-          "spawn": ["claude", "-p", "--input-format", "stream-json"],
-          "stop": { "mode": "message", "message": "{disposition}", "wind_down_seconds": 20 },
-          "events": { "source": "hooks", "mapping": { "PostToolUse": "tool-call" } },
+          "spawn": ["claude-agent-acp"], "prompt": "go",
+          "prompt": "Do the task.",
+          "stop": { "wind_down_seconds": 20 },
           "telemetry": {
             "otel": true,
             "endpoint": "http://127.0.0.1:4318",
@@ -26,9 +26,8 @@ public class RunnerConfigTests
         },
         {
           "name": "restricted",
-          "spawn": ["claude", "-p", "--permission-mode", "plan"],
-          "stop": { "mode": "signal" },
-          "events": { "source": "none" }
+          "spawn": ["claude-agent-acp"],
+          "prompt": "Do the task, conservatively."
         }
       ]
     }
@@ -44,11 +43,9 @@ public class RunnerConfigTests
         Assert.Equal(0.85, config.Machine.BackPressure.MaxMemoryLoad);
 
         Assert.Equal(2, config.Profiles.Count);
-        Assert.Equal(StopMode.Message, config.Default.Stop.Mode);
         Assert.Equal(TimeSpan.FromSeconds(20), config.Default.Stop.WindDown);
         Assert.Equal(3, config.Default.MaxConcurrent);
-        Assert.Equal(EventsSource.Hooks, config.Default.Events.Source);
-        Assert.Equal("tool-call", config.Default.Events.Mapping["PostToolUse"]);
+        Assert.Equal("Do the task.", config.Default.Prompt);
 
         Assert.Same(config.Default, config.Resolve(null));               // absent → default (§7)
         Assert.Equal("restricted", config.Resolve("restricted")!.Name);   // exact-match (§7)
@@ -75,9 +72,13 @@ public class RunnerConfigTests
     }
 
     /// <summary>
-    /// The three keys that were parsed into fields nothing ever read — <c>stop.signal</c>,
-    /// <c>logs.path</c>, and <c>logs.format</c> — are gone from the DTOs, and a config still
-    /// declaring all three must load unchanged rather than fail.
+    /// Keys that no longer exist must be <em>skipped</em>, not fatal. Two generations of
+    /// them are pinned here: the three that were always inert (<c>stop.signal</c>,
+    /// <c>logs.path</c>, <c>logs.format</c>), and the whole stream protocol that has since
+    /// been removed (<c>stop.mode</c>, <c>stop.message</c>, <c>events</c>, <c>resume</c>,
+    /// <c>stdin</c>, <c>protocol</c>). A machine must not refuse to start on a config file
+    /// that worked yesterday — the operator's fix is to delete dead keys at leisure, not
+    /// under an outage.
     ///
     /// <para>This pins a compatibility promise the runner-config reference now makes in
     /// three places ("a config still declaring either is accepted unchanged"). It holds
@@ -93,8 +94,13 @@ public class RunnerConfigTests
     {
         var json = """
         { "machine": { "work_root": "/w" },
-          "profiles": [ { "name": "default", "spawn": ["claude", "-p"],
-            "stop": { "mode": "signal", "signal": "SIGTERM", "wind_down_seconds": 12 },
+          "profiles": [ { "name": "default", "spawn": ["opencode", "acp"], "prompt": "go", "prompt": "go",
+            "protocol": "stream",
+            "stdin": "closed",
+            "stop": { "mode": "signal", "signal": "SIGTERM", "message": "{disposition}",
+                      "wind_down_seconds": 12 },
+            "resume": { "args": ["opencode", "run", "--session", "{session_id}"] },
+            "events": { "source": "terminal", "mapping": { "tool_event_type": "tool_use" } },
             "logs": { "path": "/var/log/docket/worker.ndjson", "format": "stream-json",
                       "capture": true, "max_bytes": 4096 } } ] }
         """;
@@ -102,10 +108,9 @@ public class RunnerConfigTests
         var config = RunnerConfig.Load(json);
 
         // The surviving neighbours in each section still parse, so the removed keys were
-        // skipped rather than derailing the object they sat in.
-        Assert.Equal(StopMode.Signal, config.Default.Stop.Mode);
+        // skipped rather than derailing the object they sat in. Note `protocol: stream`
+        // among them: it does not resurrect the mode, it is simply a word nothing reads.
         Assert.Equal(TimeSpan.FromSeconds(12), config.Default.Stop.WindDown);
-        Assert.Null(config.Default.Stop.MessageTemplate);
         Assert.True(config.Default.Logs.Capture);
         Assert.Equal(4096, config.Default.Logs.MaxBytes);
     }
@@ -115,7 +120,7 @@ public class RunnerConfigTests
     {
         var json = """
         { "machine": { "work_root": "/w" },
-          "profiles": [ { "name": "default", "spawn": ["claude", "-p"] } ] }
+          "profiles": [ { "name": "default", "prompt": "go", "spawn": ["claude", "-p"] } ] }
         """;
 
         var logs = RunnerConfig.Load(json).Default.Logs;
@@ -129,7 +134,7 @@ public class RunnerConfigTests
     {
         var json = """
         { "machine": { "work_root": "/w" },
-          "profiles": [ { "name": "default", "spawn": ["claude"],
+          "profiles": [ { "name": "default", "spawn": ["claude-agent-acp"], "prompt": "go", "prompt": "go",
             "logs": { "capture": true, "max_bytes": 0, "prune_after_days": -1 } } ] }
         """;
 
@@ -138,168 +143,12 @@ public class RunnerConfigTests
         Assert.Contains(ex.Errors, e => e.Contains("prune_after_days"));
     }
 
-    // ── Flat tool-call mapping validation (§10, issue #111) ────────────────────
-
-    private static string WithMapping(string mappingJson) => $$"""
-        { "machine": { "work_root": "/w" },
-          "profiles": [ { "name": "default", "spawn": ["codex", "exec"],
-            "events": { "source": "terminal", "mapping": {{mappingJson}} } } ] }
-        """;
-
-    /// <summary>
-    /// The flat mode's two keys are only meaningful together, so a half-declared pair fails
-    /// the load. Left inert it would be the exact failure #111 exists to remove: a profile
-    /// that looks like it maps tool calls and emits none.
-    /// </summary>
-    [Theory]
-    [InlineData("""{ "tool_event_type": "item.started" }""", "without tool_name_path")]
-    [InlineData("""{ "tool_name_path": "item.tool" }""", "without tool_event_type")]
-    public void Rejects_a_half_declared_flat_tool_call_mapping(string mapping, string expected)
-    {
-        var ex = Assert.Throws<RunnerConfigException>(() => RunnerConfig.Load(WithMapping(mapping)));
-
-        Assert.Contains(ex.Errors, e => e.Contains(expected, StringComparison.Ordinal));
-        Assert.Contains(ex.Errors, e => e.Contains("profile 'default'", StringComparison.Ordinal));
-    }
-
-    /// <summary>
-    /// A <c>tool_name_path</c> must be a walkable list of property names. The resolver has no
-    /// wildcards or indexes, so the shapes rejected here are the ones an author would write
-    /// expecting a query language — better a load error than a profile that reads nothing.
-    /// </summary>
-    [Theory]
-    [InlineData("item..tool")]      // empty middle segment
-    [InlineData(".item.tool")]      // empty leading segment
-    [InlineData("item.tool.")]      // empty trailing segment
-    [InlineData("item . tool")]     // padded segments — would look up "item " and " tool"
-    [InlineData("item.tool,,item.command")]  // an empty alternative
-    public void Rejects_an_unwalkable_tool_name_path(string path)
-    {
-        var json = WithMapping($$"""{ "tool_event_type": "item.started", "tool_name_path": "{{path}}" }""");
-
-        var ex = Assert.Throws<RunnerConfigException>(() => RunnerConfig.Load(json));
-
-        Assert.Contains(ex.Errors, e =>
-            e.Contains("tool_name_path", StringComparison.Ordinal)
-            && (e.Contains("unwalkable", StringComparison.Ordinal) || e.Contains("empty alternative", StringComparison.Ordinal)));
-    }
-
-    /// <summary>
-    /// A <c>tool_event_type</c> that collides with the effective <c>system_type</c> or
-    /// <c>assistant_type</c> is rejected: the reader dispatches on the first match, so one of
-    /// the two meanings would be silently shadowed. The Codex mapping is the live example of
-    /// why this is easy to hit — it deliberately points several keys at the one <c>type</c>
-    /// property Codex emits, so the values must still be distinct.
-    /// </summary>
-    [Theory]
-    // Collides with the claude default assistant_type…
-    [InlineData("""{ "tool_event_type": "assistant", "tool_name_path": "item.tool" }""", "assistant_type")]
-    // …with an explicitly remapped system_type (the Codex session-ref trick)…
-    [InlineData("""{ "system_type": "thread.started", "tool_event_type": "thread.started", "tool_name_path": "item.tool" }""", "system_type")]
-    // …and with an explicitly remapped assistant_type.
-    [InlineData("""{ "assistant_type": "item.started", "tool_event_type": "item.started", "tool_name_path": "item.tool" }""", "assistant_type")]
-    public void Rejects_a_tool_event_type_that_collides_with_another_discriminator(string mapping, string expected)
-    {
-        var ex = Assert.Throws<RunnerConfigException>(() => RunnerConfig.Load(WithMapping(mapping)));
-
-        Assert.Contains(ex.Errors, e =>
-            e.Contains("tool_event_type", StringComparison.Ordinal) && e.Contains(expected, StringComparison.Ordinal));
-    }
-
-    /// <summary>
-    /// The worked Codex mapping loads clean, flat keys and all — the config half of the
-    /// recoverability that <c>CodexStreamMappingTests</c> proves against the stream. Unknown
-    /// keys stay tolerated (the seam is a bag of optional overrides, and
-    /// <see cref="ValidJson"/> above carries a leftover hook-name mapping), so validation
-    /// covers only mistakes that make a declared flat mode inert.
-    /// </summary>
-    [Fact]
-    public void Accepts_the_worked_codex_flat_mapping_including_alternatives_and_unknown_keys()
-    {
-        var json = WithMapping("""
-            { "system_type": "thread.started", "subtype_key": "type", "init_subtype": "thread.started",
-              "session_id_key": "thread_id", "tool_event_type": "item.started",
-              "tool_name_path": "item.command, item.tool", "some_future_key": "ignored" }
-            """);
-
-        var mapping = RunnerConfig.Load(json).Default.Events.Mapping;
-
-        Assert.Equal("item.started", mapping["tool_event_type"]);
-        Assert.Equal("item.command, item.tool", mapping["tool_name_path"]);
-    }
-
-    /// <summary>
-    /// The usage keys are dotted paths too (#142), so they can be malformed the same way — and
-    /// the consequence is worse than an inert tool mapping, because a profile that resumes and
-    /// clocks progress correctly while reporting zero spend forever looks healthy.
-    /// </summary>
-    [Theory]
-    [InlineData("usage_key", "part..tokens")]
-    [InlineData("usage_key", "part . tokens")]
-    [InlineData("usage_cache_read_key", "cache.")]
-    [InlineData("usage_cost_key", ".cost")]
-    [InlineData("model_input_key", "a..b")]
-    public void Rejects_an_unwalkable_usage_path(string key, string path)
-    {
-        var ex = Assert.Throws<RunnerConfigException>(
-            () => RunnerConfig.Load(WithMapping($$"""{ "{{key}}": "{{path}}" }""")));
-
-        Assert.Contains(ex.Errors, e =>
-            e.Contains(key, StringComparison.Ordinal) && e.Contains("unwalkable", StringComparison.Ordinal));
-    }
-
-    /// <summary>
-    /// The trap the OpenCode integration surfaced. The reader returns early on a session-init
-    /// line, so usage riding that same stream type is never read — and nothing about the config
-    /// looked wrong. Easy to hit on a harness whose stream has few types to pick from, which is
-    /// exactly OpenCode's situation with six.
-    /// </summary>
-    [Fact]
-    public void Rejects_a_usage_type_that_collides_with_the_session_init_type()
-    {
-        var json = WithMapping("""
-            { "system_type": "step_start", "subtype_key": "type", "init_subtype": "step_start",
-              "session_id_key": "sessionID", "usage_type": "step_start" }
-            """);
-
-        var ex = Assert.Throws<RunnerConfigException>(() => RunnerConfig.Load(json));
-
-        Assert.Contains(ex.Errors, e =>
-            e.Contains("usage_type", StringComparison.Ordinal)
-            && e.Contains("system_type", StringComparison.Ordinal));
-    }
-
-    /// <summary>
-    /// The worked OpenCode mapping loads clean — nested usage paths, both semantic booleans, and
-    /// a deliberately blanked <c>usage_models_key</c> for a harness that reports no model.
-    /// </summary>
-    [Fact]
-    public void Accepts_the_worked_opencode_mapping_including_nested_usage_paths()
-    {
-        var json = WithMapping("""
-            { "system_type": "step_start", "subtype_key": "type", "init_subtype": "step_start",
-              "session_id_key": "sessionID", "tool_event_type": "tool_use", "tool_name_path": "part.tool",
-              "usage_type": "step_finish", "usage_key": "part.tokens", "usage_input_key": "input",
-              "usage_output_key": "output", "usage_cache_read_key": "cache.read",
-              "usage_cache_write_key": "cache.write", "usage_reasoning_key": "reasoning",
-              "usage_cost_key": "part.cost", "usage_models_key": "",
-              "usage_cached_is_subset": "false", "usage_reasoning_is_subset": "false",
-              "usage_is_cumulative": "false" }
-            """);
-
-        var mapping = RunnerConfig.Load(json).Default.Events.Mapping;
-
-        Assert.Equal("part.tokens", mapping["usage_key"]);
-        Assert.Equal("cache.read", mapping["usage_cache_read_key"]);
-        Assert.Equal("part.cost", mapping["usage_cost_key"]);
-    }
-
     [Fact]
     public void Rejects_a_config_with_no_default_profile()
     {
         var json = """
         { "machine": { "work_root": "/w" },
-          "profiles": [ { "name": "primary", "spawn": ["claude"] } ] }
+          "profiles": [ { "name": "primary", "prompt": "go", "spawn": ["claude"] } ] }
         """;
 
         var ex = Assert.Throws<RunnerConfigException>(() => RunnerConfig.Load(json));
@@ -312,8 +161,8 @@ public class RunnerConfigTests
         var json = """
         { "machine": { "work_root": "/w" },
           "profiles": [
-            { "name": "default", "spawn": ["claude"] },
-            { "name": "default", "spawn": ["codex"] }
+            { "name": "default", "prompt": "go", "spawn": ["claude"] },
+            { "name": "default", "prompt": "go", "spawn": ["codex"] }
           ] }
         """;
 
@@ -327,7 +176,7 @@ public class RunnerConfigTests
     {
         var json = """
         { "machine": { "work_root": "/w" },
-          "profiles": [ { "name": "default", "spawn": [] } ] }
+          "profiles": [ { "name": "default", "prompt": "go", "spawn": [] } ] }
         """;
 
         var ex = Assert.Throws<RunnerConfigException>(() => RunnerConfig.Load(json));
@@ -339,7 +188,7 @@ public class RunnerConfigTests
     {
         var json = """
         { "machine": { },
-          "profiles": [ { "name": "default", "spawn": ["claude"] } ] }
+          "profiles": [ { "name": "default", "prompt": "go", "spawn": ["claude"] } ] }
         """;
 
         var ex = Assert.Throws<RunnerConfigException>(() => RunnerConfig.Load(json));
@@ -362,29 +211,18 @@ public class RunnerConfigTests
         // back-pressure have sensible defaults.
         var json = """
         { "machine": { "work_root": "/w" },
-          "profiles": [ { "name": "default", "spawn": ["claude", "-p"] } ] }
+          "profiles": [ { "name": "default", "spawn": ["claude-agent-acp"], "prompt": "go", "prompt": "go" } ] }
         """;
 
         var config = RunnerConfig.Load(json);
         Assert.Equal(TimeSpan.FromSeconds(15), config.Machine.HeartbeatInterval);
         Assert.Equal(BackPressureThresholds.Default, config.Machine.BackPressure);
-        Assert.Equal(EventsSource.None, config.Default.Events.Source);
-        Assert.Equal(StopMode.Signal, config.Default.Stop.Mode);
+        Assert.Equal(TimeSpan.FromSeconds(30), config.Default.Stop.WindDown);
         Assert.Null(config.Default.MaxConcurrent);
+        Assert.Empty(config.Default.Env);
+        Assert.Empty(config.Default.Files);
     }
 
-    [Fact]
-    public void Enum_parsing_is_case_insensitive()
-    {
-        var json = """
-        { "machine": { "work_root": "/w" },
-          "profiles": [ { "name": "default", "spawn": ["x"], "stop": { "mode": "MESSAGE" }, "events": { "source": "OTel" } } ] }
-        """;
-
-        var config = RunnerConfig.Load(json);
-        Assert.Equal(StopMode.Message, config.Default.Stop.Mode);
-        Assert.Equal(EventsSource.Otel, config.Default.Events.Source);
-    }
 
     // §10 event relay: terminal is the only implemented source. hooks/otel parse but
     // are consumed nowhere, so they behave as none — one started event at spawn and
@@ -392,80 +230,9 @@ public class RunnerConfigTests
     // requeue. The warning is the only thing standing between an operator and that
     // trap, so these tests pin both who gets named and that the consequence is stated.
 
-    [Fact]
-    public void Terminal_event_source_warns_nothing()
-    {
-        var json = """
-        { "machine": { "work_root": "/w" },
-          "profiles": [ { "name": "default", "spawn": ["x"], "events": { "source": "terminal" } } ] }
-        """;
 
-        Assert.Empty(RunnerConfig.Load(json).EventRelayWarnings());
-    }
 
-    [Fact]
-    public void Non_terminal_event_sources_are_each_warned_with_the_no_progress_consequence()
-    {
-        // ValidJson declares default=hooks and restricted=none: both are blind.
-        var warnings = RunnerConfig.Load(ValidJson).EventRelayWarnings();
 
-        Assert.Equal(3, warnings.Count);
-
-        var perProfile = warnings.Take(2).ToArray();
-        Assert.Contains(perProfile, w => w.Contains("profile 'default'", StringComparison.Ordinal)
-            && w.Contains("'hooks' is not implemented and behaves as 'none'", StringComparison.Ordinal));
-        Assert.Contains(perProfile, w => w.Contains("profile 'restricted'", StringComparison.Ordinal)
-            && w.Contains("events.source is 'none'", StringComparison.Ordinal));
-        Assert.All(perProfile, w =>
-            Assert.Contains("no progress signal", w, StringComparison.Ordinal));
-
-        // The consequence line is the whole point of the warning, and it must say the ACCURATE
-        // thing: the periodic alive event satisfies the short clock, so what is actually lost is
-        // the progress signal and the no-progress ceiling is what governs. An earlier version of
-        // this test pinned the opposite claim, which went stale the moment the alive emitter
-        // landed — the warning is only useful if its stated reason is true.
-        var consequence = warnings[^1];
-        Assert.Contains("alive", consequence, StringComparison.Ordinal);
-        Assert.Contains("no-progress ceiling", consequence, StringComparison.Ordinal);
-        Assert.Contains("30 minutes", consequence, StringComparison.Ordinal);
-        Assert.Contains("terminal", consequence, StringComparison.Ordinal);
-        Assert.DoesNotContain("60s", consequence, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void Only_the_blind_profiles_are_named_when_sources_are_mixed()
-    {
-        var json = """
-        { "machine": { "work_root": "/w" },
-          "profiles": [
-            { "name": "default", "spawn": ["x"], "events": { "source": "terminal" } },
-            { "name": "legacy", "spawn": ["y"], "events": { "source": "otel" } }
-          ] }
-        """;
-
-        var warnings = RunnerConfig.Load(json).EventRelayWarnings();
-
-        Assert.Equal(2, warnings.Count);
-        Assert.Contains("profile 'legacy'", warnings[0], StringComparison.Ordinal);
-        Assert.Contains("'otel' is not implemented", warnings[0], StringComparison.Ordinal);
-        Assert.DoesNotContain(warnings, w => w.Contains("'default'", StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public void A_profile_that_omits_events_entirely_is_warned_too()
-    {
-        // The parse default is None (see Defaults_apply above), which is just as blind
-        // as an explicit none — an omitted events block must not buy silence.
-        var json = """
-        { "machine": { "work_root": "/w" },
-          "profiles": [ { "name": "default", "spawn": ["claude", "-p"] } ] }
-        """;
-
-        var warnings = RunnerConfig.Load(json).EventRelayWarnings();
-
-        Assert.Equal(2, warnings.Count);
-        Assert.Contains("events.source is 'none'", warnings[0], StringComparison.Ordinal);
-    }
 
     // §10 stdin policy (#110). `deadman` holds the pipe open for the worker's life — the
     // dead-man's switch, and the only behaviour there used to be. `closed` sends EOF right
@@ -473,297 +240,45 @@ public class RunnerConfigTests
     // blocks forever inside prompt resolution. These pin the parse, the strictness, and the
     // one pairing that cannot mean anything.
 
-    [Fact]
-    public void Stdin_defaults_to_deadman_when_the_key_is_absent()
-    {
-        var json = """
-        { "machine": { "work_root": "/w" },
-          "profiles": [ { "name": "default", "spawn": ["claude", "-p"] } ] }
-        """;
 
-        // The pre-#110 behaviour is what an untouched config must still get: every existing
-        // profile in the wild omits this key.
-        Assert.Equal(StdinPolicy.Deadman, RunnerConfig.Load(json).Default.Stdin);
-        Assert.Empty(RunnerConfig.Load(json).StdinPolicyWarnings());
-    }
 
-    [Fact]
-    public void Stdin_closed_parses_and_is_per_profile()
-    {
-        var json = """
-        { "machine": { "work_root": "/w" },
-          "profiles": [
-            { "name": "default", "spawn": ["claude", "-p"] },
-            { "name": "codex", "spawn": ["codex", "exec", "p"], "stdin": "closed" }
-          ] }
-        """;
 
-        var config = RunnerConfig.Load(json);
 
-        // The point of putting this on the profile rather than the machine: one box can run
-        // both a harness that survives the pipe and one that cannot.
-        Assert.Equal(StdinPolicy.Deadman, config.Default.Stdin);
-        Assert.Equal(StdinPolicy.Closed, config.Resolve("codex")!.Stdin);
-    }
 
-    [Theory]
-    [InlineData("deadman", StdinPolicy.Deadman)]
-    [InlineData("DEADMAN", StdinPolicy.Deadman)]
-    [InlineData("closed", StdinPolicy.Closed)]
-    [InlineData("Closed", StdinPolicy.Closed)]
-    [InlineData("  closed  ", StdinPolicy.Closed)]
-    public void Stdin_accepts_either_spelling_case_insensitively(string declared, StdinPolicy expected)
-    {
-        var json = $$"""
-        { "machine": { "work_root": "/w" },
-          "profiles": [ { "name": "default", "spawn": ["x"], "stdin": "{{declared}}" } ] }
-        """;
 
-        Assert.Equal(expected, RunnerConfig.Load(json).Default.Stdin);
-    }
-
-    [Theory]
-    [InlineData("close")]     // the plausible typo
-    [InlineData("dead-man")]  // the plausible other typo
-    [InlineData("open")]
-    [InlineData("0")]         // an enum ordinal is not a config surface
-    [InlineData("true")]
-    public void An_unrecognized_stdin_value_is_refused_rather_than_silently_defaulted(string declared)
-    {
-        var json = $$"""
-        { "machine": { "work_root": "/w" },
-          "profiles": [ { "name": "default", "spawn": ["x"], "stdin": "{{declared}}" } ] }
-        """;
-
-        // Deliberately unlike stop.mode/events.source, which fall back to a documented
-        // default on a typo. Falling back HERE restores the pipe the profile was written to
-        // escape, and the symptom is a worker that hangs before its first turn with nothing
-        // logged anywhere — the exact failure #110 exists to end. So it must be loud, and
-        // the message has to name what to type instead.
-        var ex = Assert.Throws<RunnerConfigException>(() => RunnerConfig.Load(json));
-        var problem = Assert.Single(ex.Errors, e => e.Contains("stdin", StringComparison.Ordinal));
-        Assert.Contains(declared, problem, StringComparison.Ordinal);
-        Assert.Contains("'deadman'", problem, StringComparison.Ordinal);
-        Assert.Contains("'closed'", problem, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void A_message_mode_stop_on_a_closed_stdin_profile_is_refused_as_a_contradiction()
-    {
-        var json = """
-        { "machine": { "work_root": "/w" },
-          "profiles": [ { "name": "codexish", "spawn": ["x"], "stdin": "closed",
-                          "stop": { "mode": "message", "message": "{disposition}" } },
-                        { "name": "default", "spawn": ["y"] } ] }
-        """;
-
-        // A message-mode stop IS a write to the worker's stdin. On a closed-stdin profile
-        // that write has nowhere to land, so the declaration promises a graceful wind-down
-        // the machine can never deliver — and it would degrade silently into the deadline
-        // kill, which is precisely the "declared one thing, did another" shape §10's stop
-        // honesty forbids. Refused at load, where both halves can be named.
-        var ex = Assert.Throws<RunnerConfigException>(() => RunnerConfig.Load(json));
-        var problem = Assert.Single(ex.Errors, e => e.Contains("codexish", StringComparison.Ordinal));
-        Assert.Contains("stop.mode 'message'", problem, StringComparison.Ordinal);
-        Assert.Contains("stdin 'closed'", problem, StringComparison.Ordinal);
-        // Actionable: it must say which way out to take, not merely that this is wrong.
-        Assert.Contains("stop.mode 'signal'", problem, StringComparison.Ordinal);
-        Assert.Contains("stdin 'deadman'", problem, StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void A_signal_mode_stop_on_a_closed_stdin_profile_is_the_supported_pairing()
-    {
-        var json = """
-        { "machine": { "work_root": "/w" },
-          "profiles": [ { "name": "default", "spawn": ["codex", "exec", "p"], "stdin": "closed",
-                          "stop": { "mode": "signal" } } ] }
-        """;
-
-        // The Codex shape, and the only one that is honest: no stdin, so no turn, so the
-        // stop is the granted TTL and then the tree-kill.
-        var config = RunnerConfig.Load(json);
-        Assert.Equal(StdinPolicy.Closed, config.Default.Stdin);
-        Assert.Equal(StopMode.Signal, config.Default.Stop.Mode);
-    }
-
-    [Fact]
-    public void Closing_stdin_is_warned_at_startup_with_the_containment_it_gives_up()
-    {
-        var json = """
-        { "machine": { "work_root": "/w" },
-          "profiles": [
-            { "name": "default", "spawn": ["claude", "-p"] },
-            { "name": "codex", "spawn": ["codex", "exec", "p"], "stdin": "closed" }
-          ] }
-        """;
-
-        var warnings = RunnerConfig.Load(json).StdinPolicyWarnings();
-
-        // Only the profile that opted out is named, and the line states the actual loss —
-        // docketd's own death no longer takes the worker down — rather than just repeating
-        // the setting back. An operator who reads only this line has to come away knowing
-        // that a worker surviving a docketd crash is now expected, not a reaper bug.
-        var warning = Assert.Single(warnings);
-        Assert.Contains("profile 'codex'", warning, StringComparison.Ordinal);
-        Assert.Contains("NO dead-man's switch", warning, StringComparison.Ordinal);
-        Assert.Contains("if docketd dies", warning, StringComparison.Ordinal);
-        Assert.Contains("next docketd start", warning, StringComparison.Ordinal);
-        Assert.DoesNotContain("'default'", warning, StringComparison.Ordinal);
-    }
 
     // ── §10 protocol: acp ───────────────────────────────────────────────────────
 
-    /// <summary>
-    /// The default is unchanged and unstated: every profile written before this key existed
-    /// is a stream profile and stays one. A migration that silently reinterpreted existing
-    /// configs would be the worst possible way to introduce a second protocol.
-    /// </summary>
-    [Fact]
-    public void A_profile_that_declares_no_protocol_is_a_stream_profile()
-    {
-        var config = RunnerConfig.Load(ValidJson);
 
-        Assert.Equal(ProtocolMode.Stream, config.Default.Protocol);
-        Assert.Null(config.Default.Prompt);
-    }
 
-    [Fact]
-    public void An_acp_profile_carries_its_protocol_and_prompt()
-    {
-        var config = RunnerConfig.Load(AcpProfile());
-
-        Assert.Equal(ProtocolMode.Acp, config.Default.Protocol);
-        Assert.Equal("Do the task.", config.Default.Prompt);
-    }
-
-    /// <summary>
-    /// Parsed strictly, exactly as <c>stdin</c> is, and for a sharper version of the same
-    /// reason: the default is the OTHER mode, so a typo would spawn an ACP agent in stream
-    /// mode — where docketd never prompts it, understands nothing it prints, and lets it die
-    /// of the liveness window with no explanation anywhere.
-    /// </summary>
-    [Fact]
-    public void An_unrecognized_protocol_is_refused_rather_than_defaulted()
-    {
-        Assert.False(RunnerConfig.TryLoad(AcpProfile(protocol: "ACP-2"), out _, out var errors));
-
-        Assert.Contains(errors, e => e.Contains("not a protocol") && e.Contains("'stream'") && e.Contains("'acp'"));
-    }
 
     /// <summary>An ACP agent takes no prompt on argv, so a profile without one starts a
     /// worker that connects and waits forever.</summary>
     [Fact]
-    public void An_acp_profile_without_a_prompt_is_refused()
+    public void A_profile_without_a_prompt_is_refused()
     {
         Assert.False(RunnerConfig.TryLoad(AcpProfile(prompt: null), out _, out var errors));
 
-        Assert.Contains(errors, e => e.Contains("without a `prompt`"));
+        Assert.Contains(errors, e => e.Contains("has no `prompt`"));
     }
 
-    /// <summary>
-    /// The exact inverse of the Codex and OpenCode stream profiles, which <em>require</em>
-    /// closed stdin. Under ACP stdin is the request channel, so closing it at spawn ends the
-    /// session before <c>initialize</c> — and the dead-man's switch that closing costs a
-    /// stream profile is here free, because ACP's own shutdown rule is the same mechanism.
-    /// </summary>
-    [Fact]
-    public void An_acp_profile_may_not_close_stdin()
-    {
-        Assert.False(RunnerConfig.TryLoad(AcpProfile(extra: """ "stdin": "closed", """), out _, out var errors));
 
-        Assert.Contains(errors, e => e.Contains("JSON-RPC request channel"));
-    }
 
-    /// <summary>
-    /// Not a missing feature — a renamed one. The transport forbids non-ACP bytes on the
-    /// agent's stdin, so a free-text wind-down turn is a protocol violation here rather than
-    /// merely an unread line, and <c>session/cancel</c> is the replacement.
-    /// </summary>
-    [Fact]
-    public void An_acp_profile_may_not_declare_a_message_mode_stop()
-    {
-        var json = AcpProfile(extra: """ "stop": { "mode": "message" }, """);
 
-        Assert.False(RunnerConfig.TryLoad(json, out _, out var errors));
-        Assert.Contains(errors, e => e.Contains("session/cancel"));
-    }
 
-    /// <summary>
-    /// Each of these keys describes something ACP replaces, and each is refused rather than
-    /// ignored for the reason this whole area keeps relearning: an operator porting a stream
-    /// profile carries them over by hand, and a key that looks like a knob and moves nothing
-    /// is the failure mode. Note what the mapping refusal means in practice — the thirteen
-    /// mapping keys an OpenCode stream profile needs all become nothing to declare.
-    /// </summary>
-    [Theory]
-    [InlineData(""" "events": { "source": "terminal" }, """, "events.source")]
-    [InlineData(""" "events": { "mapping": { "type_key": "kind" } }, """, "events.mapping")]
-    [InlineData(""" "resume": { "args": ["opencode", "run", "--session", "{session_id}"] }, """, "session/load")]
-    public void An_acp_profile_refuses_the_stream_keys_it_replaces(string extra, string expected)
-    {
-        Assert.False(RunnerConfig.TryLoad(AcpProfile(extra: extra), out _, out var errors));
 
-        Assert.Contains(errors, e => e.Contains(expected));
-    }
-
-    /// <summary>
-    /// <c>events.source: none</c> stays legal, because it is what an absent key already
-    /// means — refusing it would fail a config that says nothing new.
-    /// </summary>
-    [Fact]
-    public void An_acp_profile_tolerates_an_explicit_events_source_of_none()
-    {
-        Assert.True(
-            RunnerConfig.TryLoad(AcpProfile(extra: """ "events": { "source": "none" }, """), out _, out var errors),
-            string.Join("; ", errors));
-    }
-
-    /// <summary>
-    /// §10 event-relay warnings exist to say "this profile has no progress signal", and an
-    /// ACP profile has one — tool calls arrive as <c>session/update</c> notifications. Left
-    /// in the sweep it would be warned about for lacking an <c>events.source</c> it is
-    /// forbidden from declaring, which is the machine contradicting itself.
-    /// </summary>
-    [Fact]
-    public void An_acp_profile_is_not_warned_for_having_no_events_source()
-    {
-        var warnings = RunnerConfig.Load(AcpProfile()).EventRelayWarnings();
-
-        Assert.Empty(warnings);
-    }
-
-    /// <summary>An ACP profile alongside a blind stream profile: only the stream one is named.</summary>
-    [Fact]
-    public void An_acp_profile_does_not_suppress_the_warning_for_a_blind_stream_profile()
-    {
-        var json = """
-        { "machine": { "work_root": "/w" },
-          "profiles": [
-            { "name": "default", "protocol": "acp", "prompt": "go", "spawn": ["opencode", "acp"] },
-            { "name": "legacy", "spawn": ["claude", "-p"], "events": { "source": "none" } }
-          ] }
-        """;
-
-        var warnings = RunnerConfig.Load(json).EventRelayWarnings();
-
-        Assert.Contains(warnings, w => w.Contains("profile 'legacy'"));
-        Assert.DoesNotContain(warnings, w => w.Contains("profile 'default'"));
-    }
 
     /// <summary>
     /// A worked ACP profile, shaped like the OpenCode one in the enroll reference:
     /// <c>opencode acp</c>, a prompt on the wire, and none of the stream-mode scaffolding.
     /// </summary>
-    private static string AcpProfile(
-        string? protocol = "acp", string? prompt = "Do the task.", string extra = "") =>
+    private static string AcpProfile(string? prompt = "Do the task.", string extra = "") =>
         $$"""
         {
           "machine": { "work_root": "/var/lib/docketd/work" },
           "profiles": [
             {
               "name": "default",
-              {{(protocol is null ? "" : $"\"protocol\": \"{protocol}\",")}}
               {{(prompt is null ? "" : $"\"prompt\": \"{prompt}\",")}}
               {{extra}}
               "spawn": ["opencode", "acp"]

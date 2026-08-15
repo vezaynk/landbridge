@@ -77,7 +77,7 @@ public sealed class DocketdStrayReapEndToEndTests
             await File.WriteAllTextAsync(configPath, $$"""
                 {
                   "machine": { "work_root": {{JsonSerializer.Serialize(workRoot)}} },
-                  "profiles": [ { "name": "default", "spawn": ["unused-no-dispatch-in-this-test"] } ]
+                  "profiles": [ { "name": "default", "prompt": "go", "spawn": ["unused-no-dispatch-in-this-test"] } ]
                 }
                 """);
 

@@ -63,7 +63,7 @@ namespace Docket.MultiMachine.Tests;
 /// <c>runner-config.md</c>: such a worker no longer dies with docketd, and the
 /// <c>StrayReaper</c>'s next-start sweep is the only thing that collects it.</para>
 ///
-/// <para><see cref="A_cold_codex_worker_hangs_on_docketds_dead_man_stdin_and_never_takes_a_turn"/>
+/// <para>the dead-man-hang characterization (removed with stream mode)
 /// declares <c>stdin: deadman</c> explicitly and keeps documenting the incompatibility, for
 /// $0, because Codex never reaches a model there. It is a <b>permanent characterization</b>
 /// of this harness, not a tripwire waiting to flip — the flip already happened, and the
@@ -159,89 +159,11 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
     public Task Real_worker_resumes_its_transcript_after_a_park_and_reports_a_memory_only_nonce() =>
         RealHarnessBar.ResumesAfterParkAsync(pg, RealHarnessProfiles.Codex(RequireRealCodex()));
 
-    /// <summary>
-    /// Why <c>stdin: closed</c> is not a preference: a cold <c>codex exec</c> worker under the
-    /// §10 dead-man pipe <b>never takes a turn</b>, because it blocks reading the stdin docketd
-    /// holds open for the task's whole life (see the class remarks for the source trace,
-    /// <c>exec/src/lib.rs:1961 → 1888 → 1909</c>). This profile therefore declares
-    /// <c>stdin: deadman</c> — the default, spelled out — so the incompatibility keeps being
-    /// demonstrated rather than described.
-    ///
-    /// <para><b>This is a permanent characterization, not a delete-me tripwire.</b> It used to
-    /// be the latter: while the dead-man pipe was unconditional, this fact's failure would have
-    /// been the signal that docketd had grown a way out. That fix is #110, it has landed, and
-    /// the three facts below now run under <c>stdin: closed</c>. What remains here is the
-    /// <em>reason</em> they must, held against the real binary — cheap to keep (Codex hangs
-    /// before it ever contacts a model, so this spends no tokens) and the only thing standing
-    /// between a future reader and "why does the codex profile close stdin when nothing else
-    /// does?".</para>
-    ///
-    /// <para>The assertions are deliberately about absence, and each rules out a different
-    /// innocent explanation: the process really did start (so this is not a spawn failure); it
-    /// produced no session ref within a window many times longer than a Codex startup (so it is
-    /// not merely slow); and the task never reached <see cref="TaskState.Verifying"/>. Together
-    /// that is "the worker is alive and idle, holding a turn it will never begin".</para>
-    ///
-    /// <para>If this ever fails, the honest reading is that <b>Codex changed</b> — its prompt
-    /// resolution stopped draining stdin — not that Docket did. Re-read the trace at the tag
-    /// the CI job installs before touching anything here; the <c>closed</c> profiles below
-    /// remain correct either way, since an EOF nobody waits for costs nothing.</para>
-    /// </summary>
-    [SkippableFact]
-    public async Task A_cold_codex_worker_hangs_on_docketds_dead_man_stdin_and_never_takes_a_turn()
-    {
-        var codexBin = RequireRealCodex();
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(6));
-        var ct = cts.Token;
-
-        await using var rig = new FleetRig(
-            pg,
-            spawnArgv: CodexWorkerSpawn(codexBin, WorkerPrompt),
-            terminalEvents: true,
-            eventMapping: RealHarnessProfiles.CodexEventMapping,
-            // The whole point of this fact: the §10 dead-man pipe, held open, which is what
-            // codex exec cannot survive. Declared explicitly rather than left to the default,
-            // so a future change of default cannot quietly turn this into a duplicate of the
-            // facts below.
-            stdin: StdinPolicy.Deadman);
-        await rig.StartAsync(ct);
-        using var home = RealHarnessProfiles.CodexHome.Create(rig.McpUrl, AllowedDocketTools);
-        await rig.AddMachineAsync("A");
-
-        var task = await rig.CreateTaskAsync(EchoDescription("A", NewToken()), ct);
-        await rig.DispatchToAsync("A", ct);
-
-        // It really launched: docketd observed a start. Without this the rest would also be
-        // true of a binary that does not exist.
-        Assert.True(
-            await FleetRig.WaitUntilAsync(
-                () => Task.FromResult(rig.WorkerObserved(task) is { Starts: > 0 }),
-                TimeSpan.FromMinutes(1)),
-            "the codex worker never even started, so this run says nothing about stdin.\n"
-            + await rig.RealWorkerDiagnosticsAsync(task, ct));
-
-        // And then nothing happens. A Codex startup that is going to emit `thread.started`
-        // does so in seconds; two minutes of silence is the hang, not slowness.
-        Assert.False(
-            await FleetRig.WaitUntilAsync(
-                async () => await rig.HarnessSessionRefAsync(task, ct) is { Length: > 0 },
-                TimeSpan.FromMinutes(2)),
-            "a codex worker under stdin: deadman DID report a session ref, so it no longer "
-            + "blocks on the held-open pipe. That is a change in CODEX, not in Docket — check "
-            + "whether resolve_root_prompt still calls read_prompt_from_stdin at the tag CI "
-            + "installs (exec/src/lib.rs:1961 -> 1888 -> 1909 at rust-v0.147.0). Nothing below "
-            + "needs to change if so: the other facts declare stdin: closed, and an EOF nobody "
-            + "waits for is harmless. Update this characterization to say what the CLI does "
-            + "now.\n"
-            + await rig.RealWorkerDiagnosticsAsync(task, ct));
-
-        Assert.NotEqual(TaskState.Verifying, await rig.StateAsync(task, ct));
-    }
 
     /// <summary>
     /// What a graceful <c>stop</c> actually is against a real <c>codex exec</c> worker, pinned
     /// the way #103's honesty framework requires: the profile declares
-    /// <see cref="StopMode.Signal"/> because that is the <em>true</em> claim about this
+    /// <c>session/cancel</c> plus the deadline because that is the <em>true</em> claim about this
     /// harness, and the assertions are that docketd armed a deadline and the worker died on
     /// it with its transcript ref intact.
     ///
@@ -270,13 +192,7 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
         await using var rig = new FleetRig(
             pg,
             spawnArgv: CodexWorkerSpawn(codexBin, WorkerPrompt),
-            terminalEvents: true,
-            stop: new StopConfig(
-                StopMode.Signal, MessageTemplate: null, WindDown: TimeSpan.FromSeconds(5)),
-            eventMapping: RealHarnessProfiles.CodexEventMapping,
-            // signal + closed is the only pairing a config validator will accept for this
-            // harness, and it is the honest one twice over — see CodexStdin.
-            stdin: CodexStdin);
+            stop: new StopConfig(WindDown: TimeSpan.FromSeconds(5)));
         await rig.StartAsync(ct);
         using var home = RealHarnessProfiles.CodexHome.Create(rig.McpUrl, AllowedDocketTools);
         await rig.AddMachineAsync("A");
@@ -347,16 +263,7 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
 
         await using var rig = new FleetRig(
             pg,
-            spawnArgv: CodexWorkerSpawn(codexBin, WorkerPrompt), // the fleet default; A overrides it
-            terminalEvents: true,
-            eventMapping: RealHarnessProfiles.CodexEventMapping,
-            // Fleet-wide, so machine A's claude worker also gets a closed stdin. Harmless
-            // there and worth noting as the one asymmetry this fact papers over: `claude -p`
-            // reads stdin once at startup and gives up after ~3s, so an immediate EOF simply
-            // ends that wait sooner. What A gives up is the dead-man switch, which no
-            // assertion here depends on. A real mixed fleet would declare stdin per profile,
-            // exactly as it declares spawn per machine — see AddMachineAsync.
-            stdin: CodexStdin);
+            spawnArgv: CodexWorkerSpawn(codexBin, WorkerPrompt)); // the fleet default; A overrides it
         await rig.StartAsync(ct);
         using var home = RealHarnessProfiles.CodexHome.Create(rig.McpUrl, AllowedDocketTools);
 
@@ -452,7 +359,7 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
     /// single line that makes a Codex worker possible at all: docketd closes the write end right
     /// after spawn, so Codex's unavoidable <c>read_to_end</c> on stdin returns immediately
     /// instead of never (class remarks; characterized against the real binary by
-    /// <see cref="A_cold_codex_worker_hangs_on_docketds_dead_man_stdin_and_never_takes_a_turn"/>).
+    /// the dead-man-hang characterization (removed with stream mode)).
     ///
     /// <para><b>What it costs, stated where it is chosen.</b> The §10 dead-man's switch is gone
     /// for these workers: docketd's own death no longer takes them down, and the
@@ -466,7 +373,6 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
     /// <c>RunnerConfig</c> refuses the pairing outright rather than letting docketd claim a
     /// delivery it cannot make.</para>
     /// </summary>
-    private const StdinPolicy CodexStdin = StdinPolicy.Closed;
 
     /// <summary>
     /// The <c>events.mapping</c> that lets the terminal reader find Codex's session ref, and
@@ -600,7 +506,7 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
                    `profile 'default': stdin is 'closed'` notice — its ABSENCE means the profile
                    did not declare it and the dead-man pipe is still held open; (2) that
                    ProcessSupervisor still closes StandardInput right after Process.Start for
-                   StdinPolicy.Closed; (3) that this rig passed `stdin: CodexStdin`.
+                   StdinPolicy.Closed; (3) that this rig passed ``.
                    A_cold_codex_worker_hangs_on_docketds_dead_man_stdin_and_never_takes_a_turn
                    characterizes exactly this state deliberately, and should be passing.
 

@@ -169,7 +169,7 @@ internal sealed class DaemonHarness : IAsyncDisposable
         Directory.CreateDirectory(_workRoot);
         var config = workerConfig ?? RunnerConfig.Load($$"""
             { "machine": { "work_root": {{JsonSerializer.Serialize(_workRoot)}} },
-              "profiles": [ { "name": "default", "spawn": ["noop"] } ] }
+              "profiles": [ { "name": "default", "prompt": "go", "spawn": ["noop"] } ] }
             """);
         var ring = new OutboundEventRing(256);
         var supervisor = workerSupervisor ?? new ProcessSupervisor(config.Machine, ring, TimeProvider.System);

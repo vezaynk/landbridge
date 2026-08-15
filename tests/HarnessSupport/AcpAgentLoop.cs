@@ -48,12 +48,12 @@ internal static class AcpAgentLoop
     /// artifact either way.
     /// </summary>
     public static async Task<int> RunAsync(
-        string cwd, Func<string, string, string, CancellationToken, Task<int>> work, CancellationToken ct)
+        string cwd, Func<string, string, string, CancellationToken, Task<int>> work, CancellationToken ct,
+        string sessionId = "harness-session-1")
     {
         var stdout = Console.Out;
         string? url = null;
         string? authorization = null;
-        var sessionId = "harness-session-1";
         using var turnCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
 
         string? line;
@@ -119,6 +119,21 @@ internal static class AcpAgentLoop
                             cwd = dir;
 
                         var opened = sessionId;
+
+                        // Test seam: record HOW the session opened. Under stream mode a
+                        // resume was observable in the respawned argv, which a harness could
+                        // simply echo; here it is a method name on a connection nobody else
+                        // sees, so the harness has to say. §11's whole claim — that a resume
+                        // is a resume and not a quiet cold start — is unassertable otherwise.
+                        try
+                        {
+                            await File.WriteAllTextAsync(
+                                Path.Combine(cwd, "acp_session.json"),
+                                $$"""{"method":"{{method}}","session_id":"{{opened}}","cwd":{{JsonSerializer.Serialize(cwd)}}}""",
+                                ct).ConfigureAwait(false);
+                        }
+                        catch { /* best effort, exactly like the other artifacts */ }
+
                         await RespondAsync(stdout, id, w => w.WriteString("sessionId", opened)).ConfigureAwait(false);
                         break;
 

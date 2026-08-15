@@ -417,7 +417,7 @@ public sealed class RelayForwardingTests
     {
         var config = RunnerConfig.Load("""
             { "machine": { "work_root": "/tmp/docketd-forward-test" },
-              "profiles": [ { "name": "default", "spawn": ["noop"] } ] }
+              "profiles": [ { "name": "default", "prompt": "go", "spawn": ["noop"] } ] }
             """);
         var clock = new FakeTimeProvider();
         return new RunnerDaemon(

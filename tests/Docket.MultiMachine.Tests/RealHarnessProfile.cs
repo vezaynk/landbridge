@@ -4,19 +4,16 @@ using Docket.Runner;
 namespace Docket.MultiMachine.Tests;
 
 /// <summary>
-/// The per-CLI fixture the shared real-harness bar is parameterized by. Everything
-/// harness-specific lives here — spawn argv, stdin, event mapping, MCP files, tool
-/// spelling, whether the stream carries a cost — so a new harness is a new fixture
-/// plus a Category-tagged wrapper, not another copy of the verifying/usage/resume
-/// bodies. Characterization facts that invert across CLIs (dead-man hang, stop
-/// delivery, permission) stay in the per-harness files.
+/// The per-CLI fixture the shared real-harness bar is parameterized by. What is left of
+/// "harness-specific" after the ACP migration is mostly naming: the entry point, how this
+/// vendor spells docket's MCP tools, and whether its usage carries a cost. Spawn argv,
+/// stdin policy and event mappings used to live here too — three vendors' worth of them —
+/// and the protocol took all three.
 /// </summary>
 internal sealed class RealHarnessProfile
 {
     public required string Name { get; init; }
     public required string Bin { get; init; }
-    public required StdinPolicy Stdin { get; init; }
-    public IReadOnlyDictionary<string, string>? EventMapping { get; init; }
     public IReadOnlyList<ProfileFile>? Files { get; init; }
     public IReadOnlyDictionary<string, string>? Env { get; init; }
     public required string GetTask { get; init; }
@@ -26,9 +23,6 @@ internal sealed class RealHarnessProfile
     public bool NamesModel { get; init; }
     public required bool SupportsResume { get; init; }
     public string FailureHypotheses { get; init; } = "";
-    public string[] ParkSpawnExtra { get; init; } = [];
-    public required Func<string, string, string[], string[]> Spawn { get; init; }
-    public Func<string, string[]>? Resume { get; init; }
 
     /// <summary>
     /// The ACP entry point: the argv that starts this harness as an Agent Client Protocol
@@ -97,7 +91,7 @@ internal sealed class RealHarnessProfile
     /// </summary>
     public FleetRig OpenEchoRig(PostgresFixture pg) =>
         new(pg, AcpSpawn, env: Env,
-            protocol: ProtocolMode.Acp, prompt: EchoPrompt, followUp: FollowUpTurn);
+            prompt: EchoPrompt, followUp: FollowUpTurn);
 
     /// <summary>
     /// The park/resume rig, on ACP. There is no <c>resume.args</c> here and that is the
@@ -111,7 +105,7 @@ internal sealed class RealHarnessProfile
             throw new InvalidOperationException(Name + " does not support resume — the park bar must skip.");
         return new FleetRig(
             pg, AcpSpawn, env: Env,
-            protocol: ProtocolMode.Acp, prompt: RememberThenAsk(nonce), followUp: FollowUpTurn);
+            prompt: RememberThenAsk(nonce), followUp: FollowUpTurn);
     }
 
     public IDisposable? AttachTo(FleetRig rig) => Attach?.Invoke(rig);
@@ -121,13 +115,9 @@ internal sealed class RealHarnessProfile
     /// <em>harness-side</em> proof of a resume: two instances reporting the same id cannot
     /// be a cold start, independently of what the plane recorded.
     ///
-    /// <para><b>Two shapes, because the transcript is whatever the worker printed.</b> A
-    /// stream-mode profile prints the harness's own NDJSON, read here through that profile's
-    /// <c>events.mapping</c>. An ACP profile's stdout is the agent's half of a JSON-RPC
-    /// conversation, where the id arrives exactly once — in the <em>response</em> to
-    /// <c>session/new</c>, as <c>result.sessionId</c>. That response carries no <c>method</c>
-    /// and no <c>type</c>, so the mapping path below cannot see it at all; without this arm
-    /// the park bar would look like a cold start on every ACP harness.</para>
+    /// <para>A worker's stdout is the agent's half of a JSON-RPC conversation, and the id
+    /// arrives exactly once: in the <em>response</em> to <c>session/new</c>, as
+    /// <c>result.sessionId</c>.</para>
     /// </summary>
     public string? SessionIdFromLine(string line)
     {
@@ -148,29 +138,12 @@ internal sealed class RealHarnessProfile
                 && acpId.ValueKind == System.Text.Json.JsonValueKind.String)
                 return acpId.GetString();
 
-            var typeKey = Map("type_key", "type");
-            var systemType = Map("system_type", "system");
-            var subtypeKey = Map("subtype_key", "subtype");
-            var initSubtype = Map("init_subtype", "init");
-            var sessionKey = Map("session_id_key", "session_id");
-            if (Text(root, typeKey) != systemType) return null;
-            if (Text(root, subtypeKey) != initSubtype) return null;
-            return Text(root, sessionKey);
+            return null;
         }
         catch (System.Text.Json.JsonException)
         {
             return null;
         }
-
-        string Map(string key, string fallback) =>
-            EventMapping is not null && EventMapping.TryGetValue(key, out var v) && v.Length > 0
-                ? v
-                : fallback;
-
-        static string? Text(System.Text.Json.JsonElement o, string key) =>
-            o.TryGetProperty(key, out var v) && v.ValueKind == System.Text.Json.JsonValueKind.String
-                ? v.GetString()
-                : null;
     }
 }
 

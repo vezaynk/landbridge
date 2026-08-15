@@ -8,54 +8,51 @@ using Docket.Core;
 namespace Docket.Runner;
 
 /// <summary>
-/// §10 event relay, <see cref="ProtocolMode.Acp"/>: an Agent Client Protocol client that
-/// <b>drives</b> a worker rather than watching it. Where
-/// <see cref="TerminalEventReader"/> is a one-way drain of whatever shape a harness
-/// happens to print, this speaks a standard — JSON-RPC 2.0, newline-delimited, over the
-/// worker's stdin/stdout — so the discriminators and paths a
-/// <see cref="EventsConfig.Mapping"/> exists to describe are fixed by the protocol and
-/// need no per-harness data at all.
+/// §10: the Agent Client Protocol client that <b>drives</b> a worker. JSON-RPC 2.0,
+/// newline-delimited, over the worker's stdin/stdout — docketd sends <c>initialize</c>,
+/// opens or loads a session, and sends the profile's <c>prompt</c> as the opening turn.
 ///
-/// <para><b>What "drives" means, and why it changes the spawn contract.</b> An ACP agent
-/// spawned and left alone does nothing: the client MUST send <c>initialize</c>, then
-/// <c>session/new</c> (or <c>session/load</c>), then <c>session/prompt</c>. So the task
-/// prompt moves off the spawn argv and onto the wire (<c>profiles[].prompt</c>), stdin
-/// stops being a dead pipe and becomes the request channel, and the session ref arrives as
-/// a JSON-RPC <em>result</em> rather than being fished out of a log line. A profile
-/// declaring <see cref="ProtocolMode.Acp"/> is therefore validated differently — see
-/// <see cref="RunnerConfig"/>.</para>
+/// <para><b>The only way docketd talks to a worker.</b> It previously also read whatever
+/// NDJSON a harness happened to print, with an <c>events.mapping</c> per vendor describing
+/// where that harness kept its session id, its tool names and its token counters — up to
+/// thirteen keys for one CLI, each a fact about someone else's output format. That mode is
+/// gone. The shapes are in a spec now, so there is nothing left to map, and a new harness
+/// is an entry point rather than an archaeology exercise.</para>
 ///
-/// <para><b>The dead-man's switch survives unchanged, and the spec now says so.</b> ACP's
-/// stdio transport defines shutdown as "the client terminates the subprocess after closing
-/// stdin", which is exactly docketd's <see cref="StdinPolicy.Deadman"/> convention: the
-/// held write end means docketd is alive, and its EOF means docketd is gone. The two
-/// mechanisms coincide, so an ACP profile keeps the cooperative kill for free.
-/// <see cref="StdinPolicy.Closed"/> is refused for ACP — stdin is the request channel here,
-/// and closing it at spawn would end the session before it began.</para>
+/// <para><b>An agent must be spoken to.</b> One spawned and left alone does nothing, which
+/// is why the prompt lives on the profile rather than the argv, why stdin is the request
+/// channel rather than a dead pipe, and why the session ref arrives as a JSON-RPC
+/// <em>result</em> rather than being fished out of a log line.</para>
 ///
-/// <para><b>Stop is a real cancel.</b> The transport forbids writing anything to the
-/// agent's stdin that is not an ACP message, so the free-text wind-down turn a
-/// <see cref="StopMode.Message"/> profile writes has no place here. What replaces it is
-/// strictly better: <c>session/cancel</c> is a first-class notification the agent is
-/// specified to honour, ending its turn with a <c>cancelled</c> stop reason. Config
-/// validation refuses <see cref="StopMode.Message"/> on an ACP profile for that reason —
-/// the mechanism is not missing, it is named differently — and
-/// <see cref="ProcessSupervisor.StopAsync"/> routes an ACP stop through
-/// <see cref="CancelAsync"/> before the deadline kill backstops it.</para>
+/// <para><b>The dead-man's switch survives, and the spec agrees with it.</b> ACP's stdio
+/// transport defines shutdown as "the client terminates the subprocess after closing
+/// stdin", which is exactly docketd's convention: the held write end means docketd is
+/// alive, and its EOF means docketd is gone. The two mechanisms coincide, so the switch
+/// costs nothing here — and the per-profile opt-out it used to need is unreachable, because
+/// a harness that blocked reading a held-open pipe was blocking on a <em>prompt</em>, and
+/// stdin no longer carries one.</para>
+///
+/// <para><b>Stop is a real cancel.</b> The transport forbids writing anything to the agent's
+/// stdin that is not an ACP message, so there is no free-text wind-down turn to write —
+/// and nothing lost by that, since <c>session/cancel</c> is a notification the agent is
+/// specified to honour, ending its turn with a <c>cancelled</c> stop reason.
+/// <see cref="ProcessSupervisor.StopAsync"/> sends it before the deadline kill backstops
+/// it.</para>
 ///
 /// <para><b>Resume without a respawn (§11).</b> A dispatch carrying a resume ref takes
 /// <c>session/load</c> instead of <c>session/new</c> — same process, same handshake, no
-/// second spawn and no <c>resume.args</c>. That path is gated on the agent's
-/// <c>loadSession</c> capability, which defaults to false: an agent that does not declare
-/// it cold-starts with a loud line rather than silently discarding the transcript, because
-/// a resume that quietly became a cold start is the §11 failure this whole area exists to
-/// prevent.</para>
+/// second spawn and no resume argv. Gated on the agent's <c>loadSession</c> capability,
+/// which defaults to false in the spec: an agent that does not declare it cold-starts with
+/// a loud line rather than silently discarding the transcript. Every agent measured on
+/// 2026-08-15 declares it (<c>tools/acp-probe</c>).</para>
+///
+/// <para><b>The session outlives the turn</b> (<c>ideas/sessions.md</c>): after a turn ends
+/// this client stays, taking follow-up turns on the same session, so a worker that asks a
+/// question can be answered without a redispatch.</para>
 ///
 /// <para><b>AOT (§10).</b> Reads go through <see cref="JsonDocument"/> and writes through
-/// <see cref="Utf8JsonWriter"/> — both reflection-free — so no
-/// <c>JsonSerializerContext</c> entry is needed and the runner stays clean under
-/// <c>IsAotCompatible</c>. The same reasoning as the terminal reader, for the same
-/// reason.</para>
+/// <see cref="Utf8JsonWriter"/> — both reflection-free — so no <c>JsonSerializerContext</c>
+/// entry is needed and the runner stays clean under <c>IsAotCompatible</c>.</para>
 /// </summary>
 public sealed class AcpClient
 {
@@ -170,10 +167,9 @@ public sealed class AcpClient
     /// Runs one worker's whole ACP conversation: starts the read loop, drives the
     /// handshake and the prompt turn, and returns when the turn ends or the stream does.
     ///
-    /// <para>The read loop is the drain that keeps the worker's stdout pipe from filling,
-    /// exactly as <see cref="TerminalEventReader.ReadToEndAsync"/> is, so it must run for
-    /// the process's whole lifetime and must never throw into its host — a torn-down pipe
-    /// or a cancelled token ends it quietly.</para>
+    /// <para>The read loop is also the drain that keeps the worker's stdout pipe from
+    /// filling, so it must run for the process's whole lifetime and must never throw into
+    /// its host — a torn-down pipe or a cancelled token ends it quietly.</para>
     /// </summary>
     public async Task RunAsync(TextReader stdout, TextWriter stdin, CancellationToken ct)
     {

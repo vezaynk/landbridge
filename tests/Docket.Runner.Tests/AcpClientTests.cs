@@ -7,17 +7,16 @@ using Microsoft.Extensions.Time.Testing;
 namespace Docket.Runner.Tests;
 
 /// <summary>
-/// §10 <see cref="ProtocolMode.Acp"/>: what docketd's Agent Client Protocol client says, and
-/// what it makes of what it hears back.
+/// §10: what docketd's Agent Client Protocol client says, and what it makes of what it
+/// hears back.
 ///
-/// <para><b>Why these are conversation tests, not parser tests.</b> Every other event-relay
-/// suite here (<see cref="TerminalEventReaderTests"/>, <c>CodexStreamMappingTests</c>,
-/// <c>OpenCodeStreamMappingTests</c>) feeds a fixed NDJSON blob to a reader and asserts on
-/// what came out, because in stream mode docketd only ever listens. ACP inverts that: an
-/// agent that is never spoken to produces nothing at all, so the thing under test is a
-/// two-way exchange and the fixture has to be an agent, not a transcript. Hence
-/// <see cref="FakeAgent"/> — a scripted peer that answers requests the way the spec says an
-/// agent must, and can be told to answer them wrongly.</para>
+/// <para><b>Why these are conversation tests, not parser tests.</b> The event-relay suites
+/// this replaced fed a fixed NDJSON blob to a reader and asserted on what came out, because
+/// in stream mode docketd only ever listened. ACP inverts that: an agent that is never
+/// spoken to produces nothing at all, so the thing under test is a two-way exchange and the
+/// fixture has to be an agent, not a transcript. Hence <see cref="FakeAgent"/> — a scripted
+/// peer that answers requests the way the spec says an agent must, and can be told to answer
+/// them wrongly.</para>
 ///
 /// <para><b>Provenance of the shapes.</b> Message framing (newline-delimited JSON-RPC 2.0,
 /// no embedded newlines), the <c>initialize</c>/<c>session/new</c>/<c>session/prompt</c>

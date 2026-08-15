@@ -35,95 +35,6 @@ public sealed record RunnerConfig(
     public IReadOnlySet<string> DeclaredProfiles => new HashSet<string>(Profiles.Keys);
 
     /// <summary>
-    /// §10 event relay: warnings for profiles that will not produce a usable
-    /// per-task liveness signal. <see cref="EventsSource.Terminal"/> is the only
-    /// implemented source (the stdout drain in <see cref="ProcessSupervisor"/>);
-    /// <see cref="EventsSource.Hooks"/> and <see cref="EventsSource.Otel"/> parse
-    /// but are consumed nowhere, so they behave exactly as
-    /// <see cref="EventsSource.None"/>.
-    ///
-    /// <para>What this costs, stated accurately: such a profile has <b>no progress
-    /// signal</b>. It still emits <c>started</c>, <c>exited</c>, and the periodic
-    /// <c>alive</c> — <c>EmitAliveEvents</c> is not gated on the events source — so the
-    /// short aliveness clock is satisfied and a task is not requeued merely for being
-    /// quiet. What it loses is <c>tool-call</c>, and therefore the progress clock: the
-    /// §10 no-progress ceiling (30 minutes by default) is the only thing governing such a
-    /// task, so work that legitimately runs longer than that without a tool call is
-    /// requeued, and a wedged agent cannot be told from a busy one in the meantime.
-    /// Worth a loud startup line, but not the catastrophe an earlier version of this
-    /// comment described — that text predated the <c>alive</c> emitter this repo now has
-    /// (see <c>DefaultNoProgressCeiling</c> and the process-alive half in §10).</para>
-    ///
-    /// <para>Returned rather than logged so it is testable; the daemon prints these
-    /// alongside the <c>max_cpu_load is inert</c> notice.</para>
-    /// </summary>
-    public IReadOnlyList<string> EventRelayWarnings()
-    {
-        // An ACP profile is deliberately exempt: its events do not come from an
-        // events.source at all, they come from the protocol — `session/update` tool_call
-        // notifications, which the AcpClient maps to the same ToolCallEvent this warning
-        // exists to say is missing. Warning about it would be the opposite of true.
-        var blind = Profiles
-            .Where(p => p.Value.Protocol != ProtocolMode.Acp && p.Value.Events.Source != EventsSource.Terminal)
-            .OrderBy(p => p.Key, StringComparer.Ordinal)
-            .ToArray();
-
-        if (blind.Length == 0)
-            return [];
-
-        var warnings = new List<string>(blind.Length + 1);
-        foreach (var (name, profile) in blind)
-        {
-            var declared = profile.Events.Source.ToString().ToLowerInvariant();
-            var unimplemented = profile.Events.Source is EventsSource.Hooks or EventsSource.Otel
-                ? $"events.source '{declared}' is not implemented and behaves as 'none'"
-                : "events.source is 'none'";
-            warnings.Add(
-                $"docketd: profile '{name}': {unimplemented} — no tool-call events, so this " +
-                "profile has no progress signal: a hung agent cannot be told from a busy one.");
-        }
-
-        warnings.Add(
-            "docketd: the periodic alive event still satisfies the short liveness clock, so such a " +
-            "task is not requeued merely for being quiet — but with no progress signal the " +
-            "no-progress ceiling (30 minutes by default) is the only clock governing it, so work " +
-            "that legitimately runs longer than that without a tool call is requeued. Use " +
-            "events.source 'terminal' if the harness can stream structured output on stdout (§10).");
-        return warnings;
-    }
-
-    /// <summary>
-    /// §10 dead-man's switch: warnings for profiles that declared
-    /// <see cref="StdinPolicy.Closed"/> and have therefore given it up. Not a
-    /// misconfiguration — it is the documented trade a harness like <c>codex exec</c>
-    /// requires (it blocks reading a held-open stdin and never reaches its first turn) —
-    /// but it is a real reduction in containment, so the machine says it out loud at
-    /// startup rather than letting an operator believe the cooperative kill is still
-    /// there.
-    ///
-    /// <para>What is actually lost: docketd's own death no longer takes such a worker
-    /// down. Nothing else changes — <see cref="StrayReaper"/> still sweeps it on the next
-    /// docketd start, Windows Job Objects still contain it, and Linux PDEATHSIG still
-    /// fires if the harness arms it. So the window is "docketd is dead and has not
-    /// restarted yet", during which a worker keeps burning tokens on a task the plane has
-    /// already requeued.</para>
-    ///
-    /// <para>Returned rather than logged so it is testable; the daemon prints these
-    /// alongside <see cref="EventRelayWarnings"/> and the <c>max_cpu_load is inert</c>
-    /// notice.</para>
-    /// </summary>
-    public IReadOnlyList<string> StdinPolicyWarnings() =>
-        Profiles
-            .Where(p => p.Value.Stdin == StdinPolicy.Closed)
-            .OrderBy(p => p.Key, StringComparer.Ordinal)
-            .Select(p =>
-                $"docketd: profile '{p.Key}': stdin is 'closed', so the worker sees EOF at once and " +
-                "this profile has NO dead-man's switch — if docketd dies, its workers keep running " +
-                "on already-requeued tasks until the next docketd start sweeps them. That is the " +
-                "declared trade for a harness that blocks reading a held-open stdin (§10).")
-            .ToArray();
-
-    /// <summary>
     /// Parses and validates a config document. Throws
     /// <see cref="RunnerConfigException"/> listing every problem — a config
     /// with zero or multiple <c>default</c> profiles, an empty spawn argv, a
@@ -390,40 +301,15 @@ public sealed record RunnerConfig(
             if (dto.Logs?.PruneAfterDays is { } pd && pd < 0)
                 problems.Add($"profile '{name}' logs.prune_after_days must be >= 0 when set; 0 disables pruning (§12)");
 
-            // §10 events seam: an events.mapping that cannot do anything is the failure mode
-            // this whole area is trying to stamp out, so a half-declared or unwalkable flat
-            // tool-call mapping fails the load instead of going quietly inert.
-            foreach (var problem in EventsMappingProblems(dto.Events?.Mapping))
-                problems.Add($"profile '{name}' {problem}");
-
-            // §10 stdin policy. Parsed STRICTLY, unlike stop.mode and events.source: a
-            // typo in those degrades to a documented default, but a typo here silently
-            // restores the very pipe the profile was written to escape — and for a harness
-            // that blocks reading it (codex exec) that is a worker which hangs forever
-            // before its first turn, with nothing said anywhere. Name the two values
-            // instead of guessing.
-            if (!TryParseStdin(dto.Stdin, out var stdin))
-            {
+            // §10: every profile drives its worker over ACP, and an ACP agent takes no
+            // prompt on argv — the client sends it as `session/prompt`. So a profile without
+            // one spawns an agent that completes the handshake, waits, and does nothing.
+            // Required rather than defaulted: there is no generic text that would be right,
+            // since the prompt has to name the docket tools the way this harness spells them.
+            if (string.IsNullOrWhiteSpace(dto.Prompt))
                 problems.Add(
-                    $"profile '{name}' declares stdin '{dto.Stdin}', which is not a policy — use " +
-                    "'deadman' (hold the pipe open for the worker's life; the §10 dead-man's switch, " +
-                    "and the default) or 'closed' (EOF immediately after spawn, for a harness that " +
-                    "blocks reading piped stdin)");
-            }
-            // A message-mode stop writes its wind-down turn to the worker's stdin, so
-            // declaring it on a closed-stdin profile asks docketd to deliver a turn to a
-            // pipe it closed at spawn. Refused here rather than degrading at stop time: the
-            // stop path would silently fall through to the deadline kill, which is exactly
-            // the "declared one thing, did another" failure §10's stop honesty rules out.
-            else if (stdin == StdinPolicy.Closed && ParseEnum(dto.Stop?.Mode, StopMode.Signal) == StopMode.Message)
-            {
-                problems.Add(
-                    $"profile '{name}' declares stop.mode 'message' with stdin 'closed' — the " +
-                    "wind-down turn is written to the worker's stdin, and a closed stdin gives it " +
-                    "nowhere to land. Declare stop.mode 'signal' (the honest choice for a harness " +
-                    "that does not read stdin turns, and what a closed-stdin harness is by " +
-                    "definition) or stdin 'deadman' (§10)");
-            }
+                    $"profile '{name}' has no `prompt` — an ACP agent takes no prompt on argv, so the " +
+                    "worker's opening turn has to be declared here and sent as session/prompt (§10)");
 
             // #112 G3: reserved names fail the load rather than being dropped at spawn.
             // Silently ignoring DOCKET_WORKER_TOKEN would leave an operator believing
@@ -476,19 +362,6 @@ public sealed record RunnerConfig(
                 && string.IsNullOrWhiteSpace(after[0]))
                 problems.Add($"profile '{name}' hooks.after_exit has an empty argv[0]");
 
-            if (!TryParseProtocol(dto.Protocol, out var protocol))
-            {
-                problems.Add(
-                    $"profile '{name}' declares protocol '{dto.Protocol}', which is not a protocol — use " +
-                    "'stream' (spawn the harness and read its NDJSON stdout; the default and the original " +
-                    "behaviour) or 'acp' (drive it over the Agent Client Protocol)");
-            }
-            else if (protocol == ProtocolMode.Acp)
-            {
-                foreach (var problem in AcpProfileProblems(dto))
-                    problems.Add($"profile '{name}' {problem}");
-            }
-
             built[name] = BuildProfile(dto);
         }
 
@@ -501,250 +374,12 @@ public sealed record RunnerConfig(
         return problems.Count == 0 ? built : null;
     }
 
-    /// <summary>
-    /// §10 validation for a <see cref="ProtocolMode.Acp"/> profile. Every rule here refuses a
-    /// key that ACP <em>replaces</em> rather than one it lacks, and each is refused rather
-    /// than ignored for the reason this file keeps returning to: a config field that looks
-    /// like a knob and moves nothing is the failure mode of this whole area. An operator
-    /// porting a stream profile will carry these keys over by hand, and every one of them
-    /// would otherwise go quietly inert.
-    ///
-    /// <list type="number">
-    ///   <item><c>prompt</c> is <b>required</b>. An ACP agent takes no prompt on argv — the
-    ///     client sends it as <c>session/prompt</c> — so a profile without one spawns a
-    ///     worker that connects, waits, and does nothing.</item>
-    ///   <item><c>stdin: closed</c> is refused. Under ACP stdin is the request channel, so
-    ///     closing it at spawn ends the session before <c>initialize</c>. Note this is the
-    ///     exact inverse of the Codex/OpenCode stream profiles, which <em>require</em>
-    ///     closed stdin — an ACP agent reads stdin as a protocol, not as a prompt, so the
-    ///     blocking read that forced that choice does not exist here.</item>
-    ///   <item><c>stop.mode: message</c> is refused. The transport forbids writing anything
-    ///     to the agent's stdin that is not an ACP message, so a free-text wind-down turn
-    ///     is not merely unread here, it is a protocol violation. <c>session/cancel</c> is
-    ///     the replacement and it is strictly better: the agent is specified to honour it.</item>
-    ///   <item><c>events.source</c> other than <c>none</c> is refused. ACP <em>is</em> the
-    ///     event source; declaring <c>terminal</c> alongside it asks docketd to read one
-    ///     stream two ways.</item>
-    ///   <item><c>events.mapping</c> is refused. Every key in it renames part of a
-    ///     harness-specific stream shape, and ACP fixes those shapes in the spec — there is
-    ///     nothing left to map, which is most of the point.</item>
-    ///   <item><c>resume.args</c> is refused. §11 resume under ACP is <c>session/load</c> on
-    ///     the live connection, so a respawn argv would never be reached.</item>
-    /// </list>
-    /// </summary>
-    private static IReadOnlyList<string> AcpProfileProblems(ProfileDto dto)
-    {
-        var problems = new List<string>();
-
-        if (string.IsNullOrWhiteSpace(dto.Prompt))
-            problems.Add(
-                "declares protocol 'acp' without a `prompt` — an ACP agent takes no prompt on argv, so the " +
-                "worker's opening turn has to be declared here and sent as session/prompt (§10)");
-
-        if (TryParseStdin(dto.Stdin, out var stdin) && stdin == StdinPolicy.Closed)
-            problems.Add(
-                "declares protocol 'acp' with stdin 'closed' — under ACP stdin is the JSON-RPC request " +
-                "channel, so closing it at spawn ends the session before initialize. Leave it 'deadman': " +
-                "ACP's own shutdown rule (the client closes stdin to terminate the agent) IS the dead-man's " +
-                "switch, so an ACP profile keeps it for free (§10)");
-
-        if (ParseEnum(dto.Stop?.Mode, StopMode.Signal) == StopMode.Message)
-            problems.Add(
-                "declares protocol 'acp' with stop.mode 'message' — the ACP transport forbids writing " +
-                "anything to the agent's stdin that is not an ACP message, so a free-text wind-down turn is a " +
-                "protocol violation rather than merely an unread one. Declare 'signal': an ACP stop is sent " +
-                "as session/cancel first, which the agent is specified to honour, with the deadline kill " +
-                "behind it (§10, §11)");
-
-        if (!string.IsNullOrWhiteSpace(dto.Events?.Source)
-            && !string.Equals(dto.Events.Source.Trim(), "none", StringComparison.OrdinalIgnoreCase))
-            problems.Add(
-                $"declares protocol 'acp' with events.source '{dto.Events.Source}' — ACP is itself the event " +
-                "source (tool calls arrive as session/update notifications), so an events.source alongside it " +
-                "asks docketd to read one stream two ways. Drop the key (§10)");
-
-        if (dto.Events?.Mapping is { Count: > 0 })
-            problems.Add(
-                "declares protocol 'acp' with an events.mapping — every mapping key renames part of a " +
-                "harness-specific stdout shape, and ACP fixes those shapes in the spec, so there is nothing " +
-                "left to map and the mapping would be inert. Drop it (§10)");
-
-        if (dto.Resume?.Args is { Count: > 0 })
-            problems.Add(
-                "declares protocol 'acp' with resume.args — §11 resume under ACP is session/load on the live " +
-                "connection, not a respawn, so the argv would never be reached. Drop it; resume needs the " +
-                "agent's 'loadSession' capability instead, and docketd says so per task when it is missing (§11)");
-
-        return problems;
-    }
-
-    /// <summary>
-    /// The two <c>protocol</c> spellings. Parsed strictly, for the same reason
-    /// <see cref="TryParseStdin"/> is: the default is the <em>other</em> mode, so a typo
-    /// would silently spawn an ACP agent in stream mode, where it prints nothing docketd
-    /// understands, is never prompted, and dies of the liveness window with no explanation.
-    /// </summary>
-    private static bool TryParseProtocol(string? raw, out ProtocolMode protocol)
-    {
-        protocol = ProtocolMode.Stream;
-        if (string.IsNullOrWhiteSpace(raw))
-            return true;
-        switch (raw.Trim().ToLowerInvariant())
-        {
-            case "stream": protocol = ProtocolMode.Stream; return true;
-            case "acp": protocol = ProtocolMode.Acp; return true;
-            default: return false;
-        }
-    }
-
-    /// <summary>
-    /// §10 validation for the flat tool-call mapping mode (issue #111). The reader ignores
-    /// unknown mapping keys by design — the seam is a bag of optional overrides — but these
-    /// three mistakes are worth failing the load for, because every one of them produces a
-    /// profile that looks configured and emits nothing:
-    /// <list type="number">
-    ///   <item><c>tool_event_type</c> without <c>tool_name_path</c> or the reverse: neither key
-    ///     does anything alone.</item>
-    ///   <item>a <c>tool_name_path</c> that is not a walkable dotted path of property names —
-    ///     an empty segment (<c>item..tool</c>), or a padded one (<c>item . tool</c>), which
-    ///     would look up a property whose name has a space in it.</item>
-    ///   <item>a <c>tool_event_type</c> equal to the effective <c>system_type</c> or
-    ///     <c>assistant_type</c>: one line cannot be both the session-init line and a tool
-    ///     call, and the reader's dispatch is first-match, so the collision would silently
-    ///     shadow one of them.</item>
-    /// </list>
-    /// Wildcards and array indexes are not rejected specially: they are simply property names
-    /// that no harness emits, so they resolve to nothing and the silent-stream warning reports
-    /// it against the real stream, which is more honest than pretending to validate a syntax
-    /// this resolver does not have.
-    ///
-    /// <para>Two more, both surfaced by the OpenCode integration (#142), both the same class of
-    /// mistake — a profile that parses and reports nothing:
-    /// <list type="number">
-    ///   <item>an unwalkable <b>usage</b> path. The usage keys became dotted paths so a harness
-    ///     that nests its counters is reachable, which means they can now be malformed the same
-    ///     way <c>tool_name_path</c> can. Checked here for the same reason.</item>
-    ///   <item><c>usage_type</c> equal to the effective <c>system_type</c>. This one is a real
-    ///     trap rather than a typo: the reader <c>return</c>s early on a session-init line, so a
-    ///     usage report riding that same type is never read, and the symptom is a profile with a
-    ///     perfect resume ref and permanently empty usage. It bites hardest on a harness whose
-    ///     stream has few distinct types to choose from — OpenCode has six — where reaching for
-    ///     the same one twice is the natural mistake.</item>
-    /// </list></para>
-    /// </summary>
-    private static IReadOnlyList<string> EventsMappingProblems(IReadOnlyDictionary<string, string>? mapping)
-    {
-        if (mapping is null || mapping.Count == 0)
-            return [];
-
-        var problems = new List<string>();
-        var hasEventType = mapping.TryGetValue("tool_event_type", out var toolEventType)
-            && !string.IsNullOrWhiteSpace(toolEventType);
-        var hasNamePath = mapping.TryGetValue("tool_name_path", out var toolNamePath)
-            && !string.IsNullOrWhiteSpace(toolNamePath);
-
-        if (hasEventType != hasNamePath)
-        {
-            var declared = hasEventType ? "tool_event_type" : "tool_name_path";
-            var missing = hasEventType ? "tool_name_path" : "tool_event_type";
-            problems.Add(
-                $"declares events.mapping {declared} without {missing} — the flat tool-call mode needs both keys, " +
-                $"and {declared} alone emits no tool-call at all (§10)");
-        }
-
-        if (hasNamePath)
-        {
-            foreach (var raw in toolNamePath!.Split(','))
-            {
-                var alternative = raw.Trim();
-                if (alternative.Length == 0)
-                {
-                    problems.Add(
-                        $"has an empty alternative in events.mapping tool_name_path '{toolNamePath}' — each " +
-                        "comma-separated entry must be a dotted property path (§10)");
-                    continue;
-                }
-
-                if (Array.Exists(alternative.Split('.'), s => s.Length == 0 || s.Trim() != s))
-                    problems.Add(
-                        $"has an unwalkable events.mapping tool_name_path '{alternative}' — segments are object " +
-                        "property names separated by '.', each non-empty and unpadded; there are no wildcards or " +
-                        "array indexes (§10)");
-            }
-        }
-
-        if (hasEventType)
-        {
-            var collision = toolEventType == TerminalStreamMapping.Pick(mapping, "system_type", "system")
-                ? "system_type"
-                : toolEventType == TerminalStreamMapping.Pick(mapping, "assistant_type", "assistant")
-                    ? "assistant_type"
-                    : null;
-            if (collision is not null)
-                problems.Add(
-                    $"sets events.mapping tool_event_type '{toolEventType}', which is also the effective " +
-                    $"{collision} — one stream line cannot be both, so the flat tool-call mode needs its own " +
-                    "type value (§10)");
-        }
-
-        // The usage keys are dotted paths (#142), so they can be malformed exactly as
-        // tool_name_path can. Only declared keys are checked: every default is a valid
-        // one-segment path, so an absent key cannot be at fault.
-        foreach (var key in UsagePathKeys)
-        {
-            if (!mapping.TryGetValue(key, out var raw) || string.IsNullOrWhiteSpace(raw))
-                continue;
-            if (Array.Exists(raw.Split('.'), s => s.Length == 0 || s.Trim() != s))
-                problems.Add(
-                    $"has an unwalkable events.mapping {key} '{raw}' — segments are object property names " +
-                    "separated by '.', each non-empty and unpadded (§10)");
-        }
-
-        var usageType = TerminalStreamMapping.Pick(mapping, "usage_type", "result");
-        if (usageType == TerminalStreamMapping.Pick(mapping, "system_type", "system"))
-            problems.Add(
-                $"sets events.mapping usage_type '{usageType}', which is also the effective system_type — the " +
-                "reader stops at a session-init line, so usage on that same type is never read and the profile " +
-                "reports none. Point one of the two at a different stream type (§10)");
-
-        return problems;
-    }
-
-    /// <summary>
-    /// The <c>events.mapping</c> keys whose values are dotted paths rather than plain strings
-    /// (#142). Listed once here so validation cannot drift from
-    /// <see cref="TerminalStreamMapping.From"/>; <c>usage_type</c> is deliberately absent because
-    /// it is a stream <em>value</em>, and so is <c>tool_name_path</c>, which is checked above with
-    /// its own comma-alternative rule.
-    /// </summary>
-    private static readonly string[] UsagePathKeys =
-    [
-        "usage_key", "usage_input_key", "usage_output_key", "usage_cache_read_key",
-        "usage_cache_write_key", "usage_reasoning_key", "usage_cost_key", "usage_models_key",
-        "model_input_key", "model_output_key", "model_cache_read_key", "model_cache_write_key",
-        "model_cost_key",
-    ];
-
     private static ProfileConfig BuildProfile(ProfileDto dto)
     {
-        // Validation refused every value this cannot parse, so the out is the declared
-        // policy or — for an absent key — the Deadman default it initialises to.
-        TryParseStdin(dto.Stdin, out var stdin);
-        TryParseProtocol(dto.Protocol, out var protocol);
-
-        var stopMode = ParseEnum(dto.Stop?.Mode, StopMode.Signal);
         var windDown = dto.Stop?.WindDownSeconds is { } w and > 0
             ? TimeSpan.FromSeconds(w)
             : TimeSpan.FromSeconds(30);
-        var stop = new StopConfig(stopMode, dto.Stop?.Message, windDown);
-
-        var resume = dto.Resume?.Args is { Count: > 0 } args
-            ? new ResumeConfig(args)
-            : null;
-
-        var events = new EventsConfig(
-            ParseEnum(dto.Events?.Source, EventsSource.None),
-            dto.Events?.Mapping ?? new Dictionary<string, string>());
+        var stop = new StopConfig(windDown);
 
         var telemetry = new TelemetryConfig(
             dto.Telemetry?.Otel ?? false,
@@ -759,8 +394,6 @@ public sealed record RunnerConfig(
             dto.Name!,
             dto.Spawn ?? [],
             stop,
-            resume,
-            events,
             telemetry,
             logs,
             dto.MaxConcurrent,
@@ -769,13 +402,11 @@ public sealed record RunnerConfig(
                 : new ProfileProcessesConfig(
                     dto.Processes.AgentInitiated ?? false,
                     dto.Processes.Max is { } cap and > 0 ? cap : 8),
-            stdin,
             dto.Env,
             dto.Files?.Select(f => new ProfileFile(f.Path ?? "", f.Contents ?? "", f.Mode)).ToArray(),
             dto.Hooks is null
                 ? null
                 : new ProfileHooks(dto.Hooks.BeforeSpawn, dto.Hooks.AfterExit),
-            protocol,
             dto.Prompt,
             dto.FollowUp);
     }
@@ -791,25 +422,6 @@ public sealed record RunnerConfig(
             if (s[i] is < '0' or > '7')
                 return false;
         return true;
-    }
-
-    /// <summary>
-    /// The two <c>stdin</c> spellings, matched by name only. Deliberately not
-    /// <see cref="Enum.TryParse{TEnum}(string,bool,out TEnum)"/>, which also accepts the
-    /// underlying numbers — <c>"stdin": "0"</c> quietly meaning <c>deadman</c> is not a
-    /// config surface worth having.
-    /// </summary>
-    private static bool TryParseStdin(string? raw, out StdinPolicy policy)
-    {
-        policy = StdinPolicy.Deadman;
-        if (string.IsNullOrWhiteSpace(raw))
-            return true; // absent: the pre-existing behaviour, and the default
-        switch (raw.Trim().ToLowerInvariant())
-        {
-            case "deadman": policy = StdinPolicy.Deadman; return true;
-            case "closed": policy = StdinPolicy.Closed; return true;
-            default: return false;
-        }
     }
 
     private static TEnum ParseEnum<TEnum>(string? raw, TEnum fallback) where TEnum : struct, Enum =>
@@ -839,42 +451,32 @@ public sealed record BackPressureThresholds(double MaxCpuLoad, double MaxMemoryL
 /// never <b>what</b> work it does — profiles are identifiers a human chose, not
 /// a capability manifest (§10, §15).
 ///
-/// <para><b>Dead-man's switch convention (§10), and the per-profile opt-out.</b> Under
-/// the default <see cref="StdinPolicy.Deadman"/>, docketd redirects a worker's stdin to
-/// a pipe and holds the write end for the worker's whole lifetime (see
-/// <see cref="ProcessSupervisor.Spawn"/>). A well-behaved harness must therefore
-/// exit — killing anything it spawned — when it observes EOF on stdin: EOF means
-/// docketd is gone (crashed or SIGKILLed), and the worker is burning tokens
-/// against a task the control plane has already requeued. This is cooperative and
-/// immediate; <see cref="StrayReaper"/> is the non-cooperative backstop that runs
-/// on the next docketd start. <see cref="StdinPolicy.Closed"/> keeps only the
-/// backstop — see <see cref="Stdin"/>.</para>
+/// <para><b>Dead-man's switch convention (§10).</b> docketd redirects a worker's stdin to a
+/// pipe and holds the write end for the worker's whole lifetime (see
+/// <see cref="ProcessSupervisor.Spawn"/>). Under ACP that pipe is also the JSON-RPC request
+/// channel, and the two uses coincide exactly: the protocol defines shutdown as the client
+/// closing stdin, so EOF means docketd is gone (crashed or SIGKILLed) and a well-behaved
+/// agent exits, killing anything it spawned, rather than burning tokens against a task the
+/// control plane has already requeued. This is cooperative and immediate;
+/// <see cref="StrayReaper"/> is the non-cooperative backstop that runs on the next docketd
+/// start.
+///
+/// <para>There is no longer a per-profile opt-out. <c>stdin: closed</c> existed for
+/// harnesses that blocked reading a held-open pipe while resolving an argv prompt — a
+/// stream-mode problem that cannot arise when stdin carries a protocol rather than a
+/// prompt.</para></para>
 /// </summary>
-/// <param name="Stdin">
-/// §10: what the worker's stdin is for this profile. The default
-/// <see cref="StdinPolicy.Deadman"/> is the switch above.
-/// <see cref="StdinPolicy.Closed"/> exists because the switch is not universally
-/// survivable: a harness that blocks reading piped stdin never reaches its first turn
-/// under it (<c>codex exec</c> reads stdin to EOF while resolving its prompt, even with
-/// an argv prompt, and no flag escapes it — issue #110). Such a profile trades the
-/// cooperative kill for the <see cref="StrayReaper"/>'s restart-time sweep alone, and
-/// says so on docketd's startup line (<see cref="RunnerConfig.StdinPolicyWarnings"/>).
-/// </param>
 public sealed record ProfileConfig(
     string Name,
     IReadOnlyList<string> Spawn,
     StopConfig Stop,
-    ResumeConfig? Resume,
-    EventsConfig Events,
     TelemetryConfig Telemetry,
     LogsConfig Logs,
     int? MaxConcurrent,
     ProfileProcessesConfig? Processes = null,
-    StdinPolicy Stdin = StdinPolicy.Deadman,
     IReadOnlyDictionary<string, string>? Env = null,
     IReadOnlyList<ProfileFile>? Files = null,
     ProfileHooks? Hooks = null,
-    ProtocolMode Protocol = ProtocolMode.Stream,
     string? Prompt = null,
     string? FollowUp = null)
 {
@@ -937,102 +539,24 @@ public sealed record ProfileHooks(
 }
 
 /// <summary>
-/// §10 <c>profiles[].protocol</c>: how docketd talks to a worker. The distinction is not
-/// cosmetic — it decides who speaks first, where the prompt lives, what stdin is for, and
-/// how a stop is delivered — which is why it is a profile-level key rather than another
-/// <c>events.source</c> value.
-/// </summary>
-public enum ProtocolMode
-{
-    /// <summary>
-    /// Spawn the harness with its prompt in the argv and read whatever NDJSON it prints
-    /// (<see cref="TerminalEventReader"/>). The original behaviour and the default: every
-    /// profile written before this key existed is a stream profile, and stays one.
-    /// </summary>
-    Stream,
-
-    /// <summary>
-    /// Drive the worker over the Agent Client Protocol (<see cref="AcpClient"/>): JSON-RPC
-    /// 2.0, newline-delimited, over its stdin/stdout. docketd sends <c>initialize</c>, opens
-    /// or loads a session, and sends the profile's <c>prompt</c> as the opening turn.
-    ///
-    /// <para>What this buys, concretely: no <c>events.mapping</c> (the shapes are in the
-    /// spec), the plane's MCP server handed over on <c>session/new</c> instead of through a
-    /// generated file or an operator-written static one, a stop that is a real
-    /// <c>session/cancel</c> rather than a kill, and §11 resume as <c>session/load</c> on
-    /// the live connection instead of a respawn.</para>
-    /// </summary>
-    Acp,
-}
-
-/// <summary>
-/// §10 <c>profiles[].stdin</c>: whether the dead-man's pipe is held open for this
-/// profile's workers. A <b>per-profile</b> decision rather than a machine-wide one
-/// because a fleet is heterogeneous by design — one machine can run a claude profile
-/// that survives the pipe and a codex profile that cannot, and only the profile knows
-/// which harness it spawns.
-/// </summary>
-public enum StdinPolicy
-{
-    /// <summary>Hold the write end open for the worker's whole life: EOF means docketd
-    /// died, and a cooperating harness kills its own tree (§10). The default, and the
-    /// only behaviour before <c>stdin</c> existed.</summary>
-    Deadman,
-
-    /// <summary>Close the write end immediately after spawn, so the worker's first read
-    /// is a deterministic EOF. For a harness that blocks on piped stdin — the same choice
-    /// an agent-started process makes with <c>open_stdin: false</c> (#89). Gives up the
-    /// cooperative kill; keeps the restart-time sweep.</summary>
-    Closed,
-}
-
-/// <summary>
-/// How <c>stop</c> is delivered for this profile (§10). The frozen vocabulary names the
-/// command; the config names the transport.
+/// How a <c>stop</c> is delivered (§10, §11): <c>session/cancel</c> on the live ACP
+/// connection, then a deadline.
 ///
-/// <para>There is deliberately no signal <em>name</em> here. A <c>stop</c> is never
-/// delivered as a signal that carries meaning — a signal cannot carry the disposition, so
-/// signals are reserved for the deadline's own kill, and that kill is always the portable
-/// tree-kill (<see cref="ProcessSupervisor.StopAsync"/>). A <c>stop.signal</c> key was
-/// parsed and stored here for a while and never read by anything; it is gone rather than
-/// left to imply a choice the runner does not offer. An existing config naming one still
-/// loads — unknown keys are ignored — it simply never meant anything.</para>
+/// <para><b>There is no mode and no message template.</b> Both existed to describe how a
+/// stream-mode harness might be told to wind down — <c>message</c> wrote a free-text turn
+/// to the worker's stdin, <c>signal</c> admitted the harness would not read one — and
+/// neither survives the protocol. ACP's transport forbids writing anything to the agent's
+/// stdin that is not an ACP message, so a free-text turn is a protocol violation rather
+/// than merely an unread one, and <c>session/cancel</c> replaces it with something the
+/// agent is <em>specified</em> to honour: it stops its model requests and tool calls and
+/// ends the turn with a <c>cancelled</c> stop reason.</para>
+///
+/// <para><see cref="WindDown"/> is therefore what it always claimed to be and previously
+/// was not: the window an agent gets to wind down cooperatively before the portable
+/// tree-kill backstops it. Under stream mode that window sat behind a turn most harnesses
+/// never read.</para>
 /// </summary>
-public sealed record StopConfig(StopMode Mode, string? MessageTemplate, TimeSpan WindDown);
-
-/// <summary>
-/// §10: <c>message</c> injects a turn the agent reads (Claude Code:
-/// <c>--input-format stream-json</c>) so it can honour the disposition;
-/// <c>signal</c> cannot carry a disposition and is reserved for TTL expiry/kill.
-/// </summary>
-public enum StopMode { Message, Signal }
-
-/// <summary>
-/// §11: how to resume a parked task's transcript (directory-scoped). When a
-/// dispatch carries a <see cref="Docket.Contracts.DispatchCommand.ResumeSessionRef"/> and this
-/// profile declares <see cref="Args"/>, the supervisor spawns
-/// <see cref="Args"/> instead of <see cref="ProfileConfig.Spawn"/>, substituting
-/// two placeholders (the same brace syntax as the spawn argv):
-/// <list type="bullet">
-///   <item><c>{session_id}</c> — the opaque harness session ref to resume.</item>
-///   <item><c>{mcp_config}</c> — the path to the generated MCP config; a resumed
-///     harness still dials the plane, so it needs it exactly as a cold start does.</item>
-/// </list>
-/// A claude example:
-/// <c>["claude","-p","Resume your task.","--resume","{session_id}",
-/// "--mcp-config","{mcp_config}","--strict-mcp-config", ...]</c>. Absent this
-/// config a resume ref is ignored and the task cold-starts (documented fallback).
-/// </summary>
-public sealed record ResumeConfig(IReadOnlyList<string> Args);
-
-/// <summary>§10 event relay: where lifecycle events come from and how names map.</summary>
-public sealed record EventsConfig(EventsSource Source, IReadOnlyDictionary<string, string> Mapping);
-
-/// <summary>
-/// §10: an honest <c>none</c> is supported — liveness degrades to process-alive
-/// and progress renders as "not reported," which beats a fabricated mapping.
-/// </summary>
-public enum EventsSource { Hooks, Otel, Terminal, None }
+public sealed record StopConfig(TimeSpan WindDown);
 
 /// <summary>
 /// §10 telemetry ingest: the per-profile opt-in that sends a harness's own

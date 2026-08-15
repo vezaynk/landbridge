@@ -17,6 +17,7 @@
        exact convention a BYO harness would copy (§10). -->
   <ItemGroup>
     <Compile Include="../HarnessSupport/ParentDeathSignal.cs" Link="ParentDeathSignal.cs" />
+    <Compile Include="../HarnessSupport/AcpAgentLoop.cs" Link="AcpAgentLoop.cs" />
   </ItemGroup>
 
 </Project>

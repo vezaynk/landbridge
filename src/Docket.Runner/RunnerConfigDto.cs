@@ -64,15 +64,9 @@ internal sealed class ProfileDto
     public string? Name { get; set; }
     public List<string>? Spawn { get; set; }
 
-    // §10 how docketd talks to the worker: `stream` (spawn it, read whatever NDJSON it
-    // prints — the original behaviour and the default) or `acp` (drive it over the Agent
-    // Client Protocol). A bare string for the same reason `stdin` is one: there is one
-    // decision here, and `protocol: acp` is what a human types.
-    public string? Protocol { get; set; }
-
-    // §10 the worker's opening turn, for `protocol: acp` only. A stream-mode profile puts
-    // its prompt in the spawn argv; an ACP agent takes no argv prompt, so the text has to
-    // travel over the wire instead. Same `{...}` substitutions as the argv.
+    // §10 the worker's opening turn, sent as `session/prompt`. An ACP agent takes no prompt
+    // on argv, so this is where a worker is told what it is. Same `{...}` substitutions as
+    // the spawn argv. Required.
     public string? Prompt { get; set; }
 
     // §11 / ideas/sessions.md: the turn sent to wake a live session when there is new input
@@ -81,18 +75,9 @@ internal sealed class ProfileDto
     // "go read", and must name the docket tools the way THIS harness spells them.
     public string? FollowUp { get; set; }
     public StopDto? Stop { get; set; }
-    public ResumeDto? Resume { get; set; }
-    public EventsDto? Events { get; set; }
     public TelemetryDto? Telemetry { get; set; }
     public LogsDto? Logs { get; set; }
     public int? MaxConcurrent { get; set; }
-
-    // §10 dead-man switch: `deadman` (hold the stdin pipe open for the worker's whole
-    // life — the default and every profile's behaviour before this key existed) or
-    // `closed` (EOF right after spawn) for a harness that blocks reading piped stdin.
-    // A bare string rather than a block: there is one decision here and no room for a
-    // second, and a `stdin: closed` line is what a human types.
-    public string? Stdin { get; set; }
 
     // §10 agent-started processes: whether a task on this profile may call start_process, and
     // how many the machine may hold. Off by default — enabling it is the machine owner's
@@ -138,24 +123,11 @@ internal sealed class ProfileProcessesDto
 
 internal sealed class StopDto
 {
-    public string? Mode { get; set; }
-    public string? Message { get; set; }
+    // No `mode` and no `message`. A stop is `session/cancel` on the live connection, which
+    // the agent is specified to honour, followed by the deadline's portable tree-kill —
+    // there is nothing left for a mode to select or a template to fill. Configs still
+    // carrying either key parse fine (unknown members are ignored) and now say nothing.
     public double? WindDownSeconds { get; set; }
-
-    // No `signal` property: the deadline's kill is always the portable tree-kill, so a
-    // signal name had nothing to select. A config still carrying the key parses fine —
-    // unknown members are ignored — and now says as little as it always did.
-}
-
-internal sealed class ResumeDto
-{
-    public List<string>? Args { get; set; }
-}
-
-internal sealed class EventsDto
-{
-    public string? Source { get; set; }
-    public Dictionary<string, string>? Mapping { get; set; }
 }
 
 internal sealed class TelemetryDto

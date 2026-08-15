@@ -8,47 +8,33 @@ namespace Docket.Runner;
 
 /// <summary>
 /// What <c>docketd</c> <em>did</em> when it handled a <c>stop</c> (§10) — never what the
-/// agent did about it. §10 makes the runner transport: it can report the bytes it wrote
-/// and the deadline it armed, and it cannot report consumption, because reading a
-/// harness's mind about a line on its stdin takes exactly the harness-specific knowledge
-/// §10 keeps out of the runner's code. So every member below names a runner-side action
-/// with an observable outcome.
-/// <para>The claim "this harness reads stdin turns" lives in the profile's
-/// <c>stop.mode</c> instead, where it belongs: it is the machine operator's declaration
-/// about their own harness, validated by running the stop once (the enroll skill's smoke
-/// test), and the §11 conformance run would automate that. This ack does not corroborate
-/// it and must not be read as if it did — that reading is what made
-/// <c>Delivery == Message</c> a false positive for every <c>claude -p</c> worker, which
-/// never reads stdin at all.</para>
+/// agent did about it. §10 makes the runner transport: it can report the message it sent
+/// and the deadline it armed, and it cannot report what the agent chose to do next.
 /// </summary>
 public enum StopDelivery
 {
     /// <summary>
-    /// A wind-down turn was written to the harness's held-open stdin and flushed, and the
-    /// hard kill armed at <c>min(ttl, wind_down)</c> behind it (§10, §11).
-    /// <para><b>Written, not read.</b> A harness that never reads stdin produces this same
-    /// ack with the bytes sitting unread in the pipe — <c>claude -p "&lt;argv prompt&gt;"</c>
-    /// is precisely that harness, so this is the ack a stopped Claude Code worker yields
-    /// today while dying at the deadline
-    /// (<c>Docket.MultiMachine.Tests</c>' <c>A_stop_reaches_a_real_claude_worker_as_a_kill_deadline_not_as_a_turn_it_reads</c>
-    /// asserts it against the real CLI). Read it as "the turn was offered and the deadline
-    /// backs it either way", not as "the agent was told to wind down".</para>
+    /// <c>session/cancel</c> was sent on the worker's live ACP connection, and the hard kill
+    /// armed at <c>min(ttl, wind_down)</c> behind it (§10, §11).
+    ///
+    /// <para><b>Sent, and specified to be honoured — but still not observed.</b> Cancel is a
+    /// JSON-RPC <em>notification</em>: there is no reply, so nothing on this side sees the
+    /// agent act on it. What differs from the stream mode this replaced is that the agent is
+    /// now obliged to: the spec has it stop its model requests and tool calls and end the
+    /// turn with a <c>cancelled</c> stop reason. The deadline is armed regardless, because
+    /// an obligation is not an observation.</para>
     /// </summary>
-    MessageWritten,
+    CancelSent,
 
     /// <summary>
-    /// No wind-down turn was delivered — the profile declares no message seam
-    /// (<see cref="StopMode.Signal"/>) or the stdin pipe was already gone — and the hard
-    /// kill armed at the plane's full <c>ttl</c> (§10).
-    /// <para>Nothing is signalled at this point either, despite the config mode's name: a
-    /// signal cannot carry the disposition, so signals stay reserved for the deadline's own
-    /// kill. What the worker gets is the whole TTL the Lead granted to notice its own exit
-    /// conditions and leave cleanly first; <c>wind_down</c> is the message-path budget and
-    /// does not apply here.</para>
+    /// No cancel was sent — the session had not opened yet, or the connection was already
+    /// gone — and the hard kill armed at the plane's full <c>ttl</c> (§10). The worker gets
+    /// the whole TTL the Lead granted to notice its own exit conditions and leave cleanly
+    /// first.
     /// </summary>
     DeadlineArmed,
 
-    /// <summary><c>ttl == 0</c>: the process tree was killed outright — nothing written,
+    /// <summary><c>ttl == 0</c>: the process tree was killed outright — nothing sent,
     /// no deadline, no waiting for an ack (§9 check 12).</summary>
     ImmediateKill,
 
@@ -72,26 +58,20 @@ public interface IProcessSupervisor
     TaskId Spawn(DispatchCommand dispatch, ProfileConfig profile, string machineId);
 
     /// <summary>
-    /// Graceful stop (§10, §11). A profile that <em>declares</em> its harness reads
-    /// stream-json turns on the held-open stdin (<see cref="StopMode.Message"/>) has a
-    /// wind-down turn carrying the disposition written to that stdin, and is then given
-    /// <c>min(ttl, wind_down)</c> to persist and exit on its own before a hard tree-kill
-    /// backstops it. A profile with no such seam has nothing written, but the plane's TTL
-    /// grace still stands: the worker gets the full <c>ttl</c> to exit on its own before
-    /// the kill (<c>wind_down</c> is the message-path budget and does not apply).
-    /// <c>ttl == 0</c> kills immediately, writing nothing (§9 check 12).
-    /// <para>The returned <see cref="StopAck"/> reports the runner's own action and
-    /// nothing more — whether the harness actually consumed a written turn is not
-    /// observable here, and the ack does not pretend otherwise. See
-    /// <see cref="StopDelivery"/>.</para>
+    /// Graceful stop (§10, §11). <c>session/cancel</c> goes to the worker's live ACP
+    /// connection, and it is then given <c>min(ttl, wind_down)</c> to end its turn and exit
+    /// before a hard tree-kill backstops it. A task whose session never opened has nothing
+    /// to cancel, but the plane's TTL grace still stands: the full <c>ttl</c> to exit on its
+    /// own before the kill. <c>ttl == 0</c> kills immediately (§9 check 12).
+    /// <para>The returned <see cref="StopAck"/> reports the runner's own action and nothing
+    /// more. See <see cref="StopDelivery"/>.</para>
     /// </summary>
     Task<StopAck> StopAsync(TaskId task, TimeSpan ttl, StopDisposition disposition, string? reason, CancellationToken ct);
 
     /// <summary>
     /// <c>prompt</c> — queue a follow-up turn on a task's live ACP session
     /// (<c>ideas/sessions.md</c> stage 1). False when this machine holds no such session:
-    /// the task is not here, its worker has ended, or it is a stream-mode task, which has
-    /// no channel that accepts a turn at all.
+    /// the task is not here, or its worker has ended.
     /// </summary>
     bool TryPrompt(TaskId task);
 
@@ -122,16 +102,6 @@ public sealed class SupervisedTask
     public required string WorkDir { get; init; }
     public required StopConfig Stop { get; init; }
 
-    /// <summary>
-    /// §10: the stdin policy this instance was spawned under. <see cref="StdinPolicy.Closed"/>
-    /// means the write end was closed right after spawn, so there is no pipe left to write a
-    /// message-mode stop turn to — which is why <see cref="ProcessSupervisor.StopAsync"/>
-    /// gates on this. Config validation refuses the pairing, so a closed-stdin profile
-    /// declaring <see cref="StopMode.Message"/> never loads; this keeps the supervisor
-    /// correct on its own terms regardless (it can be handed a profile directly).
-    /// </summary>
-    public StdinPolicy Stdin { get; init; } = StdinPolicy.Deadman;
-
     /// <summary>Argv for <c>hooks.after_exit</c>, captured at spawn so OnExited
     /// does not have to keep the profile. Empty means no hook.</summary>
     public IReadOnlyList<string> AfterExit { get; init; } = [];
@@ -142,9 +112,8 @@ public sealed class SupervisedTask
         new Dictionary<string, string>(StringComparer.Ordinal);
 
     /// <summary>
-    /// §11 resume: the harness session id captured from the events stream (claude
-    /// <c>system/init</c>), set by the <see cref="TerminalEventReader"/> when
-    /// <see cref="EventsSource.Terminal"/> is configured; null otherwise. On
+    /// §11 resume: the harness session id, taken from the <c>session/new</c> result by
+    /// <see cref="AcpClient"/> — a protocol value, not something fished out of a log line. On
     /// capture the supervisor also emits a <see cref="SessionStartedEvent"/> so the
     /// plane stamps the ref onto the task row (opaque metadata) — a later park
     /// carries it and redispatch resumes the transcript. Also the one-per-task
@@ -166,9 +135,9 @@ public sealed class SupervisedTask
     internal ITimer? TtlTimer { get; set; }
 
     /// <summary>
-    /// §10 <see cref="EventsSource.Terminal"/>: cancels the background stdout
-    /// drain (<see cref="TerminalEventReader"/>) on teardown. Null for every other
-    /// events source, where stdout is left unredirected and no drain runs.
+    /// Cancels the background stdout drain — the <see cref="AcpClient"/> read loop — on
+    /// teardown. Never null: every worker is an ACP conversation and every conversation is
+    /// drained for the process's whole lifetime.
     /// </summary>
     internal CancellationTokenSource? EventReaderCts { get; set; }
 
@@ -176,10 +145,9 @@ public sealed class SupervisedTask
     internal Task? EventReaderTask { get; set; }
 
     /// <summary>
-    /// §10 <see cref="ProtocolMode.Acp"/>: the live conversation with this worker, held so a
-    /// stop can be delivered as <c>session/cancel</c> on the connection that is already
-    /// open. Null for a <see cref="ProtocolMode.Stream"/> profile, which has no channel to
-    /// the agent beyond the stdin pipe and therefore no cooperative stop worth the name.
+    /// The live ACP conversation with this worker, held so a stop can be delivered as
+    /// <c>session/cancel</c> on the connection that is already open, and so a follow-up turn
+    /// can be queued onto it (<c>ideas/sessions.md</c>).
     /// </summary>
     internal AcpClient? Acp { get; set; }
 
@@ -338,22 +306,12 @@ public sealed class ProcessSupervisor : IProcessSupervisor
 
     public TaskId Spawn(DispatchCommand dispatch, ProfileConfig profile, string machineId)
     {
-        var acp = profile.Protocol == ProtocolMode.Acp;
-
-        // §11 resume: continue a parked transcript when the plane hands back a
-        // harness session ref for a task that was worked before AND this profile
-        // declares how to resume (resume.args). A ref with no resume config, or no
-        // ref at all, falls back to a normal spawn — a documented cold start (§11).
-        //
-        // An ACP profile never takes this branch: its resume is `session/load` on the
-        // connection this spawn is about to open, so the argv is the same either way and
-        // the ref travels in the AcpSessionRequest below instead. Config validation refuses
-        // resume.args on an ACP profile, so there is nothing here to choose between.
-        var resuming = !acp && dispatch.ResumeSessionRef is { Length: > 0 } && profile.Resume is not null;
-        var spawnArgv = resuming ? profile.Resume!.Args : profile.Spawn;
+        // §11 resume needs no second argv: the ref travels in the AcpSessionRequest below
+        // and becomes `session/load` on the connection this spawn is about to open. One
+        // argv, cold start or resume.
+        var spawnArgv = profile.Spawn;
         if (spawnArgv.Count == 0)
-            throw new InvalidOperationException(
-                $"profile '{profile.Name}' has an empty {(resuming ? "resume" : "spawn")} argv");
+            throw new InvalidOperationException($"profile '{profile.Name}' has an empty spawn argv");
 
         // §7/§11: the harness runs in the dispatch's named work dir task when there is one,
         // which is how a continuation works where its predecessor worked. Unconditional —
@@ -379,11 +337,11 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         // (the same tests that omit McpConfigJson).
         if (dispatch.WorkerToken.Length > 0)
             substitutions["worker_token"] = dispatch.WorkerToken;
-        // §11 resume: the opaque session ref fills the {session_id} placeholder in
-        // resume.args (e.g. `--resume {session_id}`). Only present when resuming;
-        // a cold-start argv carries no {session_id}.
-        if (resuming)
-            substitutions["session_id"] = dispatch.ResumeSessionRef!;
+        // §11 resume: the ref is still offered as a {session_id} substitution — files[] and
+        // env may legitimately want it — but it no longer selects an argv. What resumes the
+        // transcript is `session/load`, on the connection the spawn below opens.
+        if (dispatch.ResumeSessionRef is { Length: > 0 } resumeRef)
+            substitutions["session_id"] = resumeRef;
         if (dispatch.SpawnSubstitutions is not null)
             foreach (var (key, value) in dispatch.SpawnSubstitutions)
                 substitutions[key] = value;
@@ -422,7 +380,9 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         // An ACP profile always drains: stdout carries the agent's half of the JSON-RPC
         // conversation, so it is not merely a source of events but the only way the
         // handshake completes at all.
-        var drainStdout = acp || profile.Events.Source == EventsSource.Terminal;
+        // Always: stdout carries the agent's half of the JSON-RPC conversation, so draining
+        // it is not merely how events arrive, it is how the handshake completes at all.
+        const bool drainStdout = true;
         var captureEnabled = profile.Logs.Capture && _transcripts is not null;
         var redirectStdout = drainStdout || captureEnabled;
         var redirectStderr = captureEnabled;
@@ -496,7 +456,6 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             Process = process,
             WorkDir = workDir,
             Stop = profile.Stop,
-            Stdin = profile.Stdin,
             AfterExit = profile.Hooks.AfterExit,
             ProfileEnv = profile.Env,
         };
@@ -556,26 +515,6 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             throw;
         }
 
-        // §10 `stdin: closed` — close the write end at once so the child's first read is a
-        // deterministic EOF rather than a wait for input nobody will ever send. The same
-        // idiom, for the same reason, as an agent-started process with `open_stdin: false`
-        // (ServiceSupervisor.TryStartAsync, #89): it fixes BLOCKING, not detection — isatty
-        // is false either way, so a harness that branches on being a terminal still takes
-        // its non-terminal path.
-        //
-        // The cost is stated where an operator reads it (RunnerConfig.StdinPolicyWarnings,
-        // printed at startup): this worker no longer dies with docketd, and the StrayReaper's
-        // next-start sweep is the only thing that will collect it.
-        if (profile.Stdin == StdinPolicy.Closed)
-        {
-            try { process.StandardInput.Close(); }
-            catch (Exception e) when (e is IOException or ObjectDisposedException or InvalidOperationException)
-            {
-                // Already gone — the child exited instantly, or never had a writable pipe.
-                // Either way its stdin is at EOF, which is the whole objective.
-            }
-        }
-
         // §12 capture: open the per-instance writer now that the worker is up (files
         // are created lazily on the first line, so a silent worker leaves none). The
         // stdout tee and the stderr pump feed it; it is flushed and closed once both
@@ -592,8 +531,8 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         // the CTS (teardown) ends it cleanly; OnExited cancels the CTS as a backstop.
         // When §12 capture is also on, the SAME drain tees each verbatim line to the
         // transcript via rawLineSink — one read of stdout serves both.
-        if (acp)
         {
+
             // §10 ACP: the same background drain shape as the terminal reader — it runs for
             // the process's whole lifetime and is what keeps the stdout pipe from filling —
             // except it also WRITES, driving initialize → session → prompt on the stdin the
@@ -633,47 +572,6 @@ public sealed class ProcessSupervisor : IProcessSupervisor
                     cts, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
             if (writer is not null)
                 feeders.Add(supervised.EventReaderTask);
-        }
-        else if (drainStdout)
-        {
-            var cts = new CancellationTokenSource();
-            supervised.EventReaderCts = cts;
-            var reader = new TerminalEventReader(
-                dispatch.Task,
-                _ring,
-                profile.Events.Mapping,
-                _clock,
-                onSessionId: sessionId =>
-                {
-                    // §11 resume: emit the ref to the plane the moment it is captured,
-                    // so the task row carries it before any park. Once per task — the
-                    // reader only fires this on the first system/init, and this guard
-                    // makes a re-emit impossible even if that ever changed.
-                    if (supervised.SessionId is not null)
-                        return;
-                    supervised.SessionId = sessionId;
-                    _ring.Enqueue(new SessionStartedEvent(dispatch.Task, sessionId, _clock.GetUtcNow()));
-                },
-                rawLineSink: writer is null ? null : writer.WriteStdoutLine);
-            // The CTS is disposed by the reader task's own completion, so OnExited's
-            // backstop cancel never races a live-then-freed handle.
-            supervised.EventReaderTask = Task
-                .Run(() => reader.ReadToEndAsync(process.StandardOutput, cts.Token), CancellationToken.None)
-                .ContinueWith(
-                    static (_, state) => ((CancellationTokenSource)state!).Dispose(),
-                    cts, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
-            if (writer is not null)
-                feeders.Add(supervised.EventReaderTask);
-        }
-        else if (captureEnabled)
-        {
-            // §12 capture without event mapping (a non-Terminal profile): drain stdout
-            // straight to the transcript. Same anti-deadlock requirement — this pump IS
-            // the drain that keeps the redirected pipe from filling.
-            var cts = supervised.CaptureCts ??= new CancellationTokenSource();
-            feeders.Add(Task.Run(
-                () => TranscriptCapture.PumpLinesAsync(process.StandardOutput, writer!.WriteStdoutLine, cts.Token),
-                CancellationToken.None));
         }
 
         // §12 capture: stderr is only ever redirected for capture, and when it is it
@@ -723,77 +621,31 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             return new StopAck(true, StopDelivery.ImmediateKill);
         }
 
-        // §10/§11 ACP stop: a real cancel, on the connection already open — and the one
-        // place where the protocol migration changes an outcome rather than a spelling.
-        // Every stream profile in this repo is forced to `stop.mode: signal` because no
-        // harness reads a mid-task turn (see the message-mode gate below and what it is
-        // careful not to claim), so a stop has always meant "the TTL, then a tree-kill, and
-        // no final report". Here the agent is specified to stop its model requests and tool
-        // calls and end its turn with a `cancelled` stop reason, so a worker can genuinely
-        // wind down.
+        // §10/§11 stop: `session/cancel` on the connection already open, then a deadline.
         //
-        // The deadline is still armed behind it, deliberately: cancel is a notification with
-        // no reply, so an agent that ignores it must still stop. That is also why the ack
-        // says only that the cancel was SENT — the same standard of honesty the message-mode
-        // ack below is held to, for the same reason (nothing on this side can observe
-        // consumption without harness knowledge §10 keeps out of this code).
+        // This is the place the protocol change bought the most. The mode it replaced wrote
+        // a free-text wind-down turn to the worker's stdin and could only ever ack that the
+        // bytes were WRITTEN — no harness this repo supports reads a mid-task turn, so every
+        // stream profile ended up declaring `signal` and a stop meant "the TTL, then a
+        // tree-kill, and no final report". Cancel is a message the agent is specified to
+        // honour: stop the model requests and the tool calls, end the turn `cancelled`.
+        //
+        // The deadline is armed behind it regardless, and the ack still says only that the
+        // cancel was SENT. Cancel is a notification with no reply, so an obligation is the
+        // most this side can know about — and an agent that ignores it must still stop.
         if (supervised.Acp is { } acp)
         {
             var sent = await acp.CancelAsync(ct).ConfigureAwait(false);
             var windDown = ttl < supervised.Stop.WindDown ? ttl : supervised.Stop.WindDown;
             supervised.TtlTimer = _clock.CreateTimer(
                 _ => KillTree(supervised), null, sent ? windDown : ttl, Timeout.InfiniteTimeSpan);
-            return new StopAck(true, sent ? StopDelivery.MessageWritten : StopDelivery.DeadlineArmed);
+            return new StopAck(true, sent ? StopDelivery.CancelSent : StopDelivery.DeadlineArmed);
         }
 
-        // §10, §11 graceful wind-down. The gate is the profile's declaration
-        // (StopMode.Message) plus a stdin to write to. Note what the second half is and
-        // is not: a `deadman` profile's stdin is a pipe docketd still holds — that pipe is
-        // the dead-man's switch — so it is a write precondition, not evidence the harness
-        // reads. Nothing here can be evidence of that; a runner that inferred it would
-        // be reasoning about a specific harness, which §10 forbids in code. Hence the
-        // ack below says only "written" (see StopDelivery.MessageWritten), and the
-        // deadline is armed unconditionally so the stop lands either way.
-        //
-        // A `stdin: closed` profile has no pipe at all: docketd closed the write end at
-        // spawn, so there is nothing to write and this falls straight through to the
-        // deadline. Config validation refuses that pairing outright (a message-mode stop
-        // with nowhere to land is a contradiction, not a degradation), so in practice this
-        // arm is unreachable from a loaded config — the check is here because the
-        // supervisor is also driven directly.
-        //
-        // On a successful write, the bounded window — min(ttl, wind_down) — is what the
-        // agent gets to persist and exit on its own before the hard kill backstops it. A
-        // voluntary exit before then disposes the timer in OnExited, so the kill never
-        // fires; that voluntary exit is also the only real-world sign the turn was read.
-        if (supervised.Stop.Mode == StopMode.Message && supervised.Stdin == StdinPolicy.Deadman)
-        {
-            var message = BuildStopMessage(supervised.Stop, disposition, ttl, reason);
-            try
-            {
-                await supervised.Process.StandardInput.WriteLineAsync(message.AsMemory(), ct);
-                await supervised.Process.StandardInput.FlushAsync(ct);
-
-                var windDown = ttl < supervised.Stop.WindDown ? ttl : supervised.Stop.WindDown;
-                // FakeTimeProvider drives this deterministically in tests.
-                supervised.TtlTimer = _clock.CreateTimer(
-                    _ => KillTree(supervised), null, windDown, Timeout.InfiniteTimeSpan);
-                return new StopAck(true, StopDelivery.MessageWritten);
-            }
-            catch (Exception e) when (e is IOException or ObjectDisposedException)
-            {
-                // The stdin pipe is already gone (the worker exited or closed it), so
-                // the wind-down turn cannot be delivered. Fall through to the TTL kill.
-            }
-        }
-
-        // §10, §11: no message seam declared (a signal-mode profile), or the write just
-        // failed. Nothing was written, but the plane granted a TTL>0 grace on the wire —
-        // an explicit window the Lead chose (only ttl=0 is immediate, §9 check 12) — so a
-        // nearly-done worker still gets the full TTL to finish and exit on its own before
-        // the hard kill. wind_down is the message-path budget and does not apply here; the
-        // plane's ttl alone governs this grace. Signals are reserved for exactly this:
-        // TTL expiry and kill.
+        // No live session to cancel — it never opened, or the connection is already gone.
+        // The plane granted a TTL>0 grace on the wire (only ttl=0 is immediate, §9 check 12),
+        // so a nearly-done worker still gets the full TTL to finish and exit on its own
+        // before the hard kill.
         supervised.TtlTimer = _clock.CreateTimer(_ => KillTree(supervised), null, ttl, Timeout.InfiniteTimeSpan);
         return new StopAck(true, StopDelivery.DeadlineArmed);
     }
@@ -1156,30 +1008,6 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         return arg;
     }
 
-    private static string BuildStopMessage(StopConfig stop, StopDisposition disposition, TimeSpan ttl, string? reason)
-    {
-        var dispositionName = disposition switch
-        {
-            StopDisposition.Preserve => "preserve",
-            StopDisposition.Discard => "discard",
-            StopDisposition.PreserveAndPark => "preserve_and_park",
-            _ => "preserve",
-        };
-        if (!string.IsNullOrEmpty(stop.MessageTemplate))
-        {
-            return stop.MessageTemplate
-                .Replace("{disposition}", dispositionName, StringComparison.Ordinal)
-                .Replace("{ttl_seconds}", ((int)ttl.TotalSeconds).ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)
-                .Replace("{reason}", reason ?? "", StringComparison.Ordinal);
-        }
-
-        // Default: a compact JSON stop turn. The frozen vocabulary names the
-        // command; the harness config names the exact transport shape (§10).
-        return System.Text.Json.JsonSerializer.Serialize(
-            new StopMessage("stop", dispositionName, (int)ttl.TotalSeconds, reason),
-            RunnerStopMessageContext.Default.StopMessage);
-    }
-
     private static void SetOwnerOnly(string path)
     {
         if (!OperatingSystem.IsWindows())
@@ -1187,10 +1015,3 @@ public sealed class ProcessSupervisor : IProcessSupervisor
     }
 }
 
-/// <summary>The default injected stop-turn payload (§10, §11).</summary>
-internal sealed record StopMessage(string Type, string Disposition, int TtlSeconds, string? Reason);
-
-[System.Text.Json.Serialization.JsonSourceGenerationOptions(
-    PropertyNamingPolicy = System.Text.Json.Serialization.JsonKnownNamingPolicy.SnakeCaseLower)]
-[System.Text.Json.Serialization.JsonSerializable(typeof(StopMessage))]
-internal sealed partial class RunnerStopMessageContext : System.Text.Json.Serialization.JsonSerializerContext;

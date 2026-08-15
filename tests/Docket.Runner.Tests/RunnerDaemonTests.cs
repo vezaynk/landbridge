@@ -18,7 +18,7 @@ public class RunnerDaemonTests
         return RunnerConfig.Load($$"""
         {
           "machine": { "work_root": "/tmp/docketd-fake", "heartbeat_seconds": {{heartbeatSeconds}} },
-          "profiles": [ { "name": "default", "spawn": ["noop"]{{cap}} } ]
+          "profiles": [ { "name": "default", "prompt": "go", "spawn": ["noop"]{{cap}} } ]
         }
         """);
     }
@@ -351,8 +351,8 @@ public class RunnerDaemonTests
         var config = RunnerConfig.Load("""
         {
           "machine": { "work_root": "/tmp/docketd-fake", "heartbeat_seconds": 5 },
-          "profiles": [ { "name": "default", "spawn": ["noop"] } ],
-          "services": [ { "name": "api", "spawn": ["/bin/echo"], "port": 7101 } ]
+          "profiles": [ { "name": "default", "prompt": "go", "spawn": ["noop"] } ],
+          "services": [ { "name": "api", "prompt": "go", "spawn": ["/bin/echo"], "port": 7101 } ]
         }
         """);
         await using var services = new ServiceSupervisor(
@@ -419,7 +419,7 @@ public class RunnerDaemonTests
             var config = RunnerConfig.Load("""
             {
               "machine": { "work_root": "/tmp/docketd-fake", "heartbeat_seconds": 5 },
-              "profiles": [ { "name": "default", "spawn": ["noop"],
+              "profiles": [ { "name": "default", "spawn": ["noop"], "prompt": "go",
                 "processes": { "agent_initiated": true } } ]
             }
             """);
@@ -493,17 +493,17 @@ public class RunnerDaemonTests
         var task = TaskId.New();
         var ttl = TimeSpan.FromSeconds(45);
 
-        h.Supervisor.StopAckOverride = new StopAck(true, StopDelivery.MessageWritten);
-        var written = Assert.IsType<CommandOutcome.Acknowledged>(
+        h.Supervisor.StopAckOverride = new StopAck(true, StopDelivery.CancelSent);
+        var sent = Assert.IsType<CommandOutcome.Acknowledged>(
             await h.Daemon.HandleAsync(new StopCommand(task, ttl, StopDisposition.Preserve)));
-        Assert.Contains("written", written.Detail, StringComparison.Ordinal);
-        Assert.Contains("not confirmed read", written.Detail, StringComparison.Ordinal);
-        Assert.Contains("ttl=45s", written.Detail, StringComparison.Ordinal);
+        Assert.Contains("session/cancel sent", sent.Detail, StringComparison.Ordinal);
+        Assert.Contains("not confirmed obeyed", sent.Detail, StringComparison.Ordinal);
+        Assert.Contains("ttl=45s", sent.Detail, StringComparison.Ordinal);
 
         h.Supervisor.StopAckOverride = new StopAck(true, StopDelivery.DeadlineArmed);
         var armed = Assert.IsType<CommandOutcome.Acknowledged>(
             await h.Daemon.HandleAsync(new StopCommand(task, ttl, StopDisposition.Preserve)));
-        Assert.Contains("no wind-down turn written", armed.Detail, StringComparison.Ordinal);
+        Assert.Contains("no cancel sent", armed.Detail, StringComparison.Ordinal);
         Assert.Contains("hard kill armed at ttl=45s", armed.Detail, StringComparison.Ordinal);
 
         // A moot stop is said to be moot rather than acknowledged as if it landed.
@@ -692,7 +692,7 @@ internal sealed class FakeProcessSupervisor : IProcessSupervisor
     {
         Stopped.Add(task);
         return Task.FromResult(StopAckOverride
-            ?? new StopAck(true, ttl <= TimeSpan.Zero ? StopDelivery.ImmediateKill : StopDelivery.MessageWritten));
+            ?? new StopAck(true, ttl <= TimeSpan.Zero ? StopDelivery.ImmediateKill : StopDelivery.CancelSent));
     }
 
     /// <summary>Follow-up turns the daemon routed here, and whether a live session took them

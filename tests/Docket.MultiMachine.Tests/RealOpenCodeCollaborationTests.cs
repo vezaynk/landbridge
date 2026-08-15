@@ -112,81 +112,10 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
     public Task Real_worker_resumes_its_transcript_after_a_park_and_reports_a_memory_only_nonce() =>
         RealHarnessBar.ResumesAfterParkAsync(pg, RealHarnessProfiles.OpenCode(RequireRealOpenCode()));
 
-    /// <summary>
-    /// Why <c>stdin: closed</c> is not a preference for this harness either, and the cheapest
-    /// fact in the tier: a cold <c>opencode run</c> worker under the §10 dead-man pipe
-    /// <b>never takes a turn</b>. <c>run.ts:416</c> reads
-    /// <c>const piped = process.stdin.isTTY ? undefined : await Bun.stdin.text()</c> —
-    /// unconditionally, before the empty-prompt check at <c>:420</c> and before any session
-    /// exists. A pipe is not a TTY, <c>Bun.stdin.text()</c> reads to EOF, and a <c>deadman</c>
-    /// profile never sends one.
-    ///
-    /// <para><b>Worse than Codex in two ways</b>, which is why this is worth its own fact rather
-    /// than a footnote on the Codex one. The argv prompt does not short-circuit the read (with
-    /// both present <c>resolveRunInput</c> concatenates, <c>run.ts:40-50</c>), and there is no
-    /// diagnostic: Codex at least announces <c>Reading additional input from stdin...</c> on
-    /// stderr, while OpenCode hangs mutely. An operator who declares the wrong stdin policy here
-    /// gets a worker that starts, produces zero bytes, and dies of the liveness window.</para>
-    ///
-    /// <para>Costs nothing — the worker hangs before it ever contacts a model — and is a
-    /// permanent characterization rather than a delete-me tripwire, for the same reason the Codex
-    /// one is: it holds the <em>reason</em> the profiles below close stdin. If it ever fails,
-    /// OpenCode changed; re-read <c>run.ts</c> at the tag CI installs. The <c>closed</c> profiles
-    /// stay correct either way, because an EOF nobody waits for costs nothing.</para>
-    /// </summary>
-    [SkippableFact]
-    public async Task A_cold_opencode_worker_hangs_on_docketds_dead_man_stdin_and_never_takes_a_turn()
-    {
-        var openCodeBin = RequireRealOpenCode();
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(6));
-        var ct = cts.Token;
-
-        await using var rig = new FleetRig(
-            pg,
-            spawnArgv: OpenCodeWorkerSpawn(openCodeBin, WorkerPrompt),
-            terminalEvents: true,
-            eventMapping: RealHarnessProfiles.OpenCodeEventMapping,
-            // The whole point of this fact. Declared explicitly rather than left to the default
-            // so a future change of default cannot quietly turn this into a duplicate.
-            stdin: StdinPolicy.Deadman);
-        await rig.StartAsync(ct);
-        using var config = RealHarnessProfiles.OpenCodeConfig.Create(rig.McpUrl);
-        await rig.AddMachineAsync("A");
-
-        var task = await rig.CreateTaskAsync(EchoDescription("A", NewToken()), ct);
-        await rig.DispatchToAsync("A", ct);
-
-        Assert.True(
-            await FleetRig.WaitUntilAsync(
-                () => Task.FromResult(rig.WorkerObserved(task) is { Starts: > 0 }),
-                TimeSpan.FromMinutes(1)),
-            "the opencode worker never even started, so this run says nothing about stdin.\n"
-            + await rig.RealWorkerDiagnosticsAsync(task, ct));
-
-        // And then nothing. OpenCode's first JSON line follows its first assistant step, which
-        // on any working run arrives within seconds; two minutes of silence is the hang.
-        Assert.False(
-            await FleetRig.WaitUntilAsync(
-                async () => await rig.HarnessSessionRefAsync(task, ct) is { Length: > 0 },
-                TimeSpan.FromMinutes(2)),
-            "an opencode worker under stdin: deadman DID report a session ref, so it no longer "
-            + "blocks on the held-open pipe. That is a change in OPENCODE, not in Docket — check "
-            + "whether cli/cmd/run.ts still reads Bun.stdin.text() unconditionally when stdin is "
-            + "not a TTY (run.ts:416 at v1.18.17). Nothing below needs to change if so: the other "
-            + "facts declare stdin: closed, and an EOF nobody waits for is harmless. Update this "
-            + "characterization to say what the CLI does now.\n"
-            + await rig.RealWorkerDiagnosticsAsync(task, ct));
-
-        // No session id reached any captured transcript either — the direct, harness-side half of
-        // "it produced nothing", and the part that distinguishes OpenCode's silent hang from a
-        // harness that at least said something before stalling.
-        Assert.Empty(rig.InstanceSessionIdsOn("A", task));
-        Assert.NotEqual(TaskState.Verifying, await rig.StateAsync(task, ct));
-    }
 
     /// <summary>
     /// What a <c>stop</c> actually is against a real <c>opencode run</c> worker: a TTL'd kill,
-    /// declared as <see cref="StopMode.Signal"/> because that is the true claim about this
+    /// declared as <c>session/cancel</c> plus the deadline because that is the true claim about this
     /// harness. Two source facts settle it. Stdin is read exactly once, at <c>run.ts:416</c>,
     /// before the event loop starts, and nothing reads it afterwards — so a wind-down turn
     /// written mid-task has nowhere to land. And the CLI entry point installs no
@@ -209,13 +138,7 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
         await using var rig = new FleetRig(
             pg,
             spawnArgv: OpenCodeWorkerSpawn(openCodeBin, SlowWorkerPrompt),
-            terminalEvents: true,
-            stop: new StopConfig(
-                StopMode.Signal, MessageTemplate: null, WindDown: TimeSpan.FromSeconds(5)),
-            eventMapping: RealHarnessProfiles.OpenCodeEventMapping,
-            // signal + closed is the only pairing RunnerConfig accepts for this harness, and it
-            // is the honest one twice over — see OpenCodeStdin.
-            stdin: OpenCodeStdin);
+            stop: new StopConfig(WindDown: TimeSpan.FromSeconds(5)));
         await rig.StartAsync(ct);
         using var config = RealHarnessProfiles.OpenCodeConfig.Create(rig.McpUrl);
         await rig.AddMachineAsync("A");
@@ -278,13 +201,7 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
 
         await using var rig = new FleetRig(
             pg,
-            spawnArgv: OpenCodeWorkerSpawn(openCodeBin, WorkerPrompt), // fleet default; A overrides
-            terminalEvents: true,
-            eventMapping: RealHarnessProfiles.OpenCodeEventMapping,
-            // Fleet-wide, so machine A's claude worker also gets a closed stdin — harmless there
-            // (claude -p abandons its stdin read after ~3s) and the same asymmetry the Codex tier
-            // papers over. A real mixed fleet declares stdin per profile.
-            stdin: OpenCodeStdin);
+            spawnArgv: OpenCodeWorkerSpawn(openCodeBin, WorkerPrompt)); // fleet default; A overrides
         await rig.StartAsync(ct);
         using var config = RealHarnessProfiles.OpenCodeConfig.Create(rig.McpUrl);
 
@@ -372,7 +289,7 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
     /// <summary>
     /// The <c>stdin</c> policy every end-to-end fact here declares (§10, #110) — the one line
     /// that makes an OpenCode worker possible at all, for the reason
-    /// <see cref="A_cold_opencode_worker_hangs_on_docketds_dead_man_stdin_and_never_takes_a_turn"/>
+    /// the dead-man-hang characterization (removed with stream mode)
     /// characterizes against the real binary.
     ///
     /// <para>The trade is the same as Codex's and costs the same nothing: OpenCode never reaches
@@ -380,7 +297,6 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
     /// never have honoured. What is actually lost is docketd's ability to end a worker by dying;
     /// the <c>StrayReaper</c>'s next-start sweep is the backstop.</para>
     /// </summary>
-    private const StdinPolicy OpenCodeStdin = StdinPolicy.Closed;
 
     /// <summary>The one description template every role uses (§7) — identical to the other two
     /// tiers', on purpose: a cross-harness comparison is only meaningful if both harnesses are

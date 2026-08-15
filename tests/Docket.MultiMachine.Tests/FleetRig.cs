@@ -40,39 +40,25 @@ namespace Docket.MultiMachine.Tests;
 /// validated claude recipe instead (§10 config-only harness seam), so the very same
 /// fleet drives a real agent with no code change on any surface below this line.</para>
 ///
-/// <para>The remaining parameters shape the rest of that one profile, and each exists
-/// because a §10/§11 seam is <em>only</em> reachable when the profile declares it:
-/// <paramref name="resumeArgv"/> is <c>resume.args</c> (without it a session ref is
-/// ignored and the task cold-starts), <paramref name="terminalEvents"/> turns on the
-/// stdout drain that captures the harness session ref at all, <paramref name="stop"/>
-/// chooses how <c>stop</c> is delivered, and <paramref name="agentProcesses"/> is the
-/// per-profile gate the machine applies to <c>start_process</c>. All default to the
-/// scripted tier's existing values, so that suite's behaviour is unchanged.</para>
+/// <para>The remaining parameters shape the rest of that one profile:
+/// <paramref name="prompt"/> is the worker's opening turn (an ACP agent takes none on
+/// argv), <paramref name="followUp"/> the turn that wakes a live session when there is new
+/// input on the assignment, <paramref name="stop"/> the wind-down budget behind
+/// <c>session/cancel</c>, and <paramref name="agentProcesses"/> the per-profile gate the
+/// machine applies to <c>start_process</c>. All default to the scripted tier's values.</para>
 ///
-/// <para><paramref name="eventMapping"/> is <c>events.mapping</c> (§10) — the property-name
-/// overrides the terminal reader keys off. Empty (every tier but the real-Codex one) means
-/// the built-in claude <c>stream-json</c> defaults, so nothing changes for the suites that
-/// predate it; a harness whose stdout names things differently supplies it instead of
-/// needing parser code, which is the seam §10 exists to provide.</para>
-///
-/// <para><paramref name="stdin"/> is <c>profiles[].stdin</c> (§10, #110): whether docketd
-/// holds the dead-man pipe open for the worker's life. Defaults to
-/// <see cref="StdinPolicy.Deadman"/> — every tier but the real-Codex one, whose harness
-/// blocks reading a held-open stdin and needs <see cref="StdinPolicy.Closed"/> to reach its
-/// first turn at all.</para>
+/// <para>Three parameters this rig used to need are gone with the stream protocol:
+/// <c>resumeArgv</c> (resume is <c>session/load</c> on the connection the spawn opens),
+/// <c>terminalEvents</c> plus <c>eventMapping</c> (the shapes are in the spec), and
+/// <c>stdin</c> (stdin is the request channel, so there is no policy to choose).</para>
 /// </summary>
 internal sealed class FleetRig(
     PostgresFixture pg,
     IReadOnlyList<string>? spawnArgv = null,
-    IReadOnlyList<string>? resumeArgv = null,
-    bool terminalEvents = false,
     bool agentProcesses = false,
     StopConfig? stop = null,
-    IReadOnlyDictionary<string, string>? eventMapping = null,
-    StdinPolicy stdin = StdinPolicy.Deadman,
     IReadOnlyList<ProfileFile>? files = null,
     IReadOnlyDictionary<string, string>? env = null,
-    ProtocolMode protocol = ProtocolMode.Acp,
     string? prompt = null,
     string? followUp = null) : IAsyncDisposable
 {
@@ -145,11 +131,7 @@ internal sealed class FleetRig(
         _profile = new ProfileConfig(
             "default",
             spawnArgv ?? [CollabHarnessPath(), "--acp"],
-            stop ?? new StopConfig(StopMode.Signal, MessageTemplate: null, WindDown: TimeSpan.FromSeconds(30)),
-            resumeArgv is null ? null : new ResumeConfig(resumeArgv),
-            new EventsConfig(
-                terminalEvents ? EventsSource.Terminal : EventsSource.None,
-                eventMapping ?? new Dictionary<string, string>()),
+            stop ?? new StopConfig(WindDown: TimeSpan.FromSeconds(30)),
             new TelemetryConfig(Otel: false, Endpoint: null),
             // §12: capture on, so the fleet exercises the real capture → serve path end to
             // end. Pruning disabled (0) — a rig lives seconds and a sweep would only add
@@ -159,15 +141,8 @@ internal sealed class FleetRig(
             // §10: the machine owner's decision, enforced machine-side. Off unless a
             // scenario is about agent-started processes.
             Processes: agentProcesses ? new ProfileProcessesConfig(AgentInitiated: true) : null,
-            // §10 (#110): the dead-man pipe, unless a scenario's harness cannot survive it.
-            Stdin: stdin,
             Env: env,
             Files: files,
-            // ideas/sessions.md: the fleet runs on ACP by default, so the scripted tier
-            // drives docketd's real AcpClient rather than only the token-spending one. A
-            // scenario that is specifically about stream-mode behaviour (a dead-man hang, a
-            // mapping that reads nothing) passes ProtocolMode.Stream and its own argv.
-            Protocol: protocol,
             Prompt: prompt ?? "Do the task you have been assigned.",
             FollowUp: followUp ?? "There is new input on your assignment. Read it, then continue.");
 

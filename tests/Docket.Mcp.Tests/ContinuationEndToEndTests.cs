@@ -20,7 +20,8 @@ namespace Docket.Mcp.Tests;
 /// row + the live machine, defaulting the profile, rejecting cross-Team and
 /// undeclared-profile requests) and the spawn seam — a continuation dispatch that
 /// resumes the inherited session id on its preferred machine, observed as
-/// <c>--resume &lt;id&gt;</c> in the real <see cref="ProcessSupervisor"/> argv,
+/// <c>session/load</c> with the inherited id, driven by the real
+/// <see cref="ProcessSupervisor"/>,
 /// exactly the §11 resume machinery a parked task reuses.
 /// </summary>
 [Collection(PostgresCollection.Name)]
@@ -242,7 +243,7 @@ public sealed class ContinuationEndToEndTests(PostgresFixture pg) : IAsyncLifeti
         var ring = new OutboundEventRing(capacity: 256);
         var supervisor = new ProcessSupervisor(
             new MachineConfig(workRoot, TimeSpan.FromSeconds(15), BackPressureThresholds.Default), ring, clock);
-        var profile = ResumeProfile();
+        var profile = AcpProfile();
         const string inherited = "continued-session-xyz";
 
         try
@@ -273,19 +274,18 @@ public sealed class ContinuationEndToEndTests(PostgresFixture pg) : IAsyncLifeti
 
             // The DispatchCommand DispatchService would build, spawned through the real
             // supervisor: resuming (ref present + profile declares resume.args) rebuilds
-            // the argv from resume.args with --resume <inherited id>.
+            // session/load carrying the inherited id, on the connection the spawn opens.
             var dispatch = new DispatchCommand(
                 taskId, "default", WorkerToken: "worker-1",
                 McpConfigJson: """{"mcpServers":{}}""", ResumeSessionRef: resumeRef);
             supervisor.Spawn(dispatch, profile, "m1");
 
-            var argvPath = Path.Combine(workRoot, taskId.ToString(), "argv");
-            Assert.True(await WaitUntilAsync(() => Task.FromResult(File.Exists(argvPath)), TimeSpan.FromSeconds(15)),
-                "the resumed harness never recorded its argv");
-            var argv = await File.ReadAllLinesAsync(argvPath, ct);
-            var resumeIdx = Array.IndexOf(argv, "--resume");
-            Assert.True(resumeIdx >= 0, $"resumed argv carried no --resume: {string.Join(' ', argv)}");
-            Assert.Equal(inherited, argv[resumeIdx + 1]);
+            var sessionPath = Path.Combine(workRoot, taskId.ToString(), "acp_session.json");
+            Assert.True(await WaitUntilAsync(() => Task.FromResult(File.Exists(sessionPath)), TimeSpan.FromSeconds(15)),
+                "the continuation's harness never recorded how its session opened");
+            var opened = await File.ReadAllTextAsync(sessionPath, ct);
+            Assert.Contains("\"method\":\"session/load\"", opened, StringComparison.Ordinal);
+            Assert.Contains(inherited, opened, StringComparison.Ordinal);
         }
         finally
         {
@@ -306,16 +306,16 @@ public sealed class ContinuationEndToEndTests(PostgresFixture pg) : IAsyncLifeti
         return File.Exists(apphost) ? apphost : dll;
     }
 
-    private static ProfileConfig ResumeProfile() =>
+    private static ProfileConfig AcpProfile() =>
         new(
             "default",
-            [HarnessPath(), "emit-stream"],
-            new StopConfig(StopMode.Signal, MessageTemplate: null, WindDown: TimeSpan.FromSeconds(30)),
-            new ResumeConfig([HarnessPath(), "echo-argv", "--resume", "{session_id}", "--mcp-config", "{mcp_config}"]),
-            new EventsConfig(EventsSource.Terminal, new Dictionary<string, string>()),
+            [HarnessPath(), "--acp"],
+            new StopConfig(WindDown: TimeSpan.FromSeconds(30)),
             new TelemetryConfig(Otel: false, Endpoint: null),
             new LogsConfig(),
-            MaxConcurrent: null);
+            MaxConcurrent: null,
+            Prompt: "Do the task.",
+            FollowUp: "There is new input on your assignment. Read it, then continue.");
 
     private static string NewWorkRoot()
     {

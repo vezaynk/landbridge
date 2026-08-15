@@ -11,7 +11,7 @@ public class ProfileFilesLoadTests
     {
         var json = """
             { "machine": { "work_root": "/w" },
-              "profiles": [ { "name": "default", "spawn": ["grok", "-p"],
+              "profiles": [ { "name": "default", "spawn": ["grok", "-p"], "prompt": "go",
                 "files": [ { "path": "{work_dir}/.grok/config.toml",
                              "contents": "url = \"{mcp_url}\"", "mode": "0600" } ] } ] }
             """;
@@ -27,7 +27,7 @@ public class ProfileFilesLoadTests
     {
         var json = """
             { "machine": { "work_root": "/w" },
-              "profiles": [ { "name": "default", "spawn": ["grok", "-p"],
+              "profiles": [ { "name": "default", "spawn": ["grok", "-p"], "prompt": "go",
                 "files": [ { } ] } ] }
             """;
 
@@ -41,7 +41,7 @@ public class ProfileFilesLoadTests
     {
         var json = """
             { "machine": { "work_root": "/w" },
-              "profiles": [ { "name": "default", "spawn": ["grok", "-p"],
+              "profiles": [ { "name": "default", "spawn": ["grok", "-p"], "prompt": "go",
                 "files": [ { "path": "x", "contents": "y", "mode": "rwx" } ] } ] }
             """;
 

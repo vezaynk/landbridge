@@ -88,71 +88,45 @@ internal static class TestKit
     public static MachineConfig Machine(string workRoot) =>
         new(workRoot, TimeSpan.FromSeconds(15), BackPressureThresholds.Default);
 
-    /// <summary>A profile that runs the test harness in the given mode. Defaults to
-    /// the honest <see cref="EventsSource.None"/>; pass <see cref="EventsSource.Terminal"/>
-    /// (optionally with a mapping) to exercise the stdout event drain. Pass
-    /// <paramref name="capture"/> to turn on §12 transcript capture (with an optional
-    /// <paramref name="maxBytes"/> cap) — the supervisor still needs a
-    /// <see cref="TranscriptStore"/> for anything to be written. Pass
-    /// <paramref name="telemetry"/> to opt the profile into §10 harness telemetry;
-    /// the default is the off-by-default block every other fixture wants. Pass
-    /// <paramref name="stdin"/> to spawn without the held-open dead-man pipe (§10) — the
-    /// default is <see cref="StdinPolicy.Deadman"/>, which every fixture but the
-    /// stdin-policy tests wants, since the harness modes watch stdin for their
-    /// lifetime.</summary>
+    /// <summary>
+    /// A profile that runs the test harness in the given mode. Pass <paramref name="capture"/>
+    /// to turn on §12 transcript capture (with an optional <paramref name="maxBytes"/> cap) —
+    /// the supervisor still needs a <see cref="TranscriptStore"/> for anything to be written.
+    /// Pass <paramref name="telemetry"/> to opt into §10 harness telemetry; the default is
+    /// the off-by-default block every other fixture wants.
+    ///
+    /// <para>No events source and no stdin policy: every worker is an ACP conversation, so
+    /// events come from the protocol and stdin is the request channel. Most harness modes
+    /// here never speak ACP — they exercise process supervision, capture, hooks and
+    /// containment, where what matters is that a child was spawned, held and killed, not
+    /// what it said. Those spawn, produce no JSON-RPC, and are reported as such by the
+    /// client's silent-stream line.</para>
+    /// </summary>
     public static ProfileConfig Profile(
         string harnessMode,
-        StopMode stopMode = StopMode.Signal,
         string name = "default",
-        EventsSource events = EventsSource.None,
-        IReadOnlyDictionary<string, string>? mapping = null,
         TimeSpan? windDown = null,
         bool capture = false,
         long? maxBytes = null,
         int pruneAfterDays = TranscriptDefaults.PruneAfterDays,
         TelemetryConfig? telemetry = null,
-        StdinPolicy stdin = StdinPolicy.Deadman,
         IReadOnlyDictionary<string, string>? env = null,
         IReadOnlyList<ProfileFile>? files = null,
-        ProfileHooks? hooks = null) =>
+        ProfileHooks? hooks = null,
+        string prompt = "Do the task.") =>
         new(
             name,
             [HarnessPath(), harnessMode],
-            new StopConfig(stopMode, MessageTemplate: null, WindDown: windDown ?? TimeSpan.FromSeconds(30)),
-            Resume: null,
-            new EventsConfig(events, mapping ?? new Dictionary<string, string>()),
+            new StopConfig(windDown ?? TimeSpan.FromSeconds(30)),
             telemetry ?? new TelemetryConfig(Otel: false, Endpoint: null),
             new LogsConfig(Capture: capture,
                 MaxBytes: maxBytes ?? TranscriptDefaults.MaxBytes, PruneAfterDays: pruneAfterDays),
             MaxConcurrent: null,
             Processes: null,
-            Stdin: stdin,
             Env: env,
             Files: files,
-            Hooks: hooks);
-
-    /// <summary>
-    /// A §11 resume profile: a cold <c>Spawn</c> (the given <paramref name="coldMode"/>)
-    /// and a <c>Resume</c> argv that re-runs the harness in <c>echo-argv</c> mode with
-    /// the <c>{session_id}</c>/<c>{mcp_config}</c> placeholders the supervisor
-    /// substitutes when a dispatch carries a resume session ref. Both modes write the
-    /// argv they received, so a test can read the marker either way.
-    /// </summary>
-    public static ProfileConfig ResumeProfile(
-        string coldMode = "echo-argv",
-        string name = "default",
-        StdinPolicy stdin = StdinPolicy.Deadman) =>
-        new(
-            name,
-            [HarnessPath(), coldMode],
-            new StopConfig(StopMode.Signal, MessageTemplate: null, WindDown: TimeSpan.FromSeconds(30)),
-            new ResumeConfig([HarnessPath(), "echo-argv", "--resume", "{session_id}", "--mcp-config", "{mcp_config}"]),
-            new EventsConfig(EventsSource.None, new Dictionary<string, string>()),
-            new TelemetryConfig(Otel: false, Endpoint: null),
-            new LogsConfig(),
-            MaxConcurrent: null,
-            Processes: null,
-            Stdin: stdin);
+            Hooks: hooks,
+            Prompt: prompt);
 }
 
 /// <summary>A back-pressure reader the tests flip to simulate load (§10 concurrency).</summary>

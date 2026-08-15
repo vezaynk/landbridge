@@ -75,7 +75,7 @@ public class WebSocketControlPlaneChannelTests
         var supervisor = new FakeProcessSupervisor();
         var config = RunnerConfig.Load("""
             { "machine": { "work_root": "/tmp/docketd-ws-test" },
-              "profiles": [ { "name": "default", "spawn": ["noop"] } ] }
+              "profiles": [ { "name": "default", "prompt": "go", "spawn": ["noop"] } ] }
             """);
         var clock = TimeProvider.System;
         await using var channel = new WebSocketControlPlaneChannel(wsUrl, "test-machine-token", clock);

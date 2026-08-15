@@ -81,7 +81,6 @@ internal static class RealHarnessProfiles
         // protocol 1, loadSession true, mcpCapabilities.http true, ambient auth.
         AcpSpawn = ["claude-agent-acp"],
         Bin = bin,
-        Stdin = StdinPolicy.Deadman,
         Files = ClaudeMcpFile,
         GetTask = "mcp__docket__get_task",
         ReportResult = "mcp__docket__report_result",
@@ -89,10 +88,6 @@ internal static class RealHarnessProfiles
         Usage = UsageExpectation.Cost,
         NamesModel = true,
         SupportsResume = true,
-        ParkSpawnExtra = ["--max-turns", "14"],
-        Spawn = (prompt, tools, extra) => ClaudeSpawn(bin, prompt, tools, extra),
-        Resume = prompt => ClaudeSpawn(bin, prompt, "mcp__docket__get_task,mcp__docket__report_result,mcp__docket__request_input",
-            ["--resume", "{session_id}", "--max-turns", "14"]),
     };
 
     public static RealHarnessProfile Codex(string bin) => new()
@@ -103,16 +98,12 @@ internal static class RealHarnessProfiles
         // codex exec needs stdin: closed to start at all, and codex-acp does not.
         AcpSpawn = ["codex-acp"],
         Bin = bin,
-        Stdin = StdinPolicy.Closed,
-        EventMapping = CodexEventMapping,
         GetTask = "mcp__docket__get_task",
         ReportResult = "mcp__docket__report_result",
         RequestInput = "mcp__docket__request_input",
         Usage = UsageExpectation.Tokens,
         SupportsResume = true,
         FailureHypotheses = CodexHypotheses(),
-        Spawn = (prompt, _, extra) => CodexSpawn(bin, prompt, extra),
-        Resume = prompt => CodexResume(bin, prompt),
         Attach = rig => CodexHome.Create(rig.McpUrl, CodexBareTools),
     };
 
@@ -122,16 +113,12 @@ internal static class RealHarnessProfiles
         // Native. Measured 2026-08-15: protocol 1, loadSession true, mcp.http true.
         AcpSpawn = [bin, "acp"],
         Bin = bin,
-        Stdin = StdinPolicy.Closed,
-        EventMapping = OpenCodeEventMapping,
         GetTask = "docket_get_task",
         ReportResult = "docket_report_result",
         RequestInput = "docket_request_input",
         Usage = UsageExpectation.Cost,
         SupportsResume = true,
         FailureHypotheses = OpenCodeHypotheses(),
-        Spawn = (prompt, _, extra) => OpenCodeSpawn(bin, prompt, extra),
-        Resume = prompt => OpenCodeResume(bin, prompt),
         Attach = rig => OpenCodeConfig.Create(rig.McpUrl),
     };
 
@@ -143,7 +130,6 @@ internal static class RealHarnessProfiles
         // `-p --output-format streaming-json`, which is an output shape not the protocol.
         AcpSpawn = [bin, "agent", "stdio"],
         Bin = bin,
-        Stdin = StdinPolicy.Closed,
         Files = GrokMcpFile,
         // 1.0.4 gates project-local MCP (the files[] config.toml) behind folder
         // trust. A docketd work dir is a throwaway temp folder, so disable the
@@ -158,8 +144,6 @@ internal static class RealHarnessProfiles
         Usage = UsageExpectation.Cost,
         SupportsResume = true,
         FailureHypotheses = GrokHypotheses(),
-        Spawn = (prompt, _, extra) => GrokSpawn(bin, prompt, extra),
-        Resume = prompt => GrokResume(bin, prompt),
     };
 
     public static string[] ClaudeSpawn(string bin, string prompt, string tools, params string[] extra) =>
