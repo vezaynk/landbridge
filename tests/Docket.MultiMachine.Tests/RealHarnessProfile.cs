@@ -117,10 +117,17 @@ internal sealed class RealHarnessProfile
     public IDisposable? AttachTo(FleetRig rig) => Attach?.Invoke(rig);
 
     /// <summary>
-    /// Pull a session id off one captured stdout line using this profile's
-    /// <c>events.mapping</c> (or the claude defaults). The bar uses this as the
-    /// harness-side proof of a resume: two instances reporting the same id cannot
-    /// be a cold start.
+    /// Pull a session id off one captured stdout line. The bar uses this as the
+    /// <em>harness-side</em> proof of a resume: two instances reporting the same id cannot
+    /// be a cold start, independently of what the plane recorded.
+    ///
+    /// <para><b>Two shapes, because the transcript is whatever the worker printed.</b> A
+    /// stream-mode profile prints the harness's own NDJSON, read here through that profile's
+    /// <c>events.mapping</c>. An ACP profile's stdout is the agent's half of a JSON-RPC
+    /// conversation, where the id arrives exactly once — in the <em>response</em> to
+    /// <c>session/new</c>, as <c>result.sessionId</c>. That response carries no <c>method</c>
+    /// and no <c>type</c>, so the mapping path below cannot see it at all; without this arm
+    /// the park bar would look like a cold start on every ACP harness.</para>
     /// </summary>
     public string? SessionIdFromLine(string line)
     {
@@ -130,6 +137,17 @@ internal sealed class RealHarnessProfile
             using var doc = System.Text.Json.JsonDocument.Parse(line);
             var root = doc.RootElement;
             if (root.ValueKind != System.Text.Json.JsonValueKind.Object) return null;
+
+            // ACP: a JSON-RPC response whose result names a session. Checked first and
+            // guarded on `jsonrpc` so it can never match a harness stream line that happens
+            // to carry a sessionId of its own.
+            if (root.TryGetProperty("jsonrpc", out _)
+                && root.TryGetProperty("result", out var result)
+                && result.ValueKind == System.Text.Json.JsonValueKind.Object
+                && result.TryGetProperty("sessionId", out var acpId)
+                && acpId.ValueKind == System.Text.Json.JsonValueKind.String)
+                return acpId.GetString();
+
             var typeKey = Map("type_key", "type");
             var systemType = Map("system_type", "system");
             var subtypeKey = Map("subtype_key", "subtype");
