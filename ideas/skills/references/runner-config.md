@@ -1045,13 +1045,58 @@ defaults read nothing from that shape — no session ref, no progress clock — 
 
 ## Protocol: `acp` (§10)
 
-> **Status: the client is implemented and tested against a scripted peer, not against a
-> real agent.** `Docket.Runner.Tests/AcpClientTests` drives the whole conversation —
-> handshake, session, prompt turn, tool calls, permissions, cancel, resume — against a fake
-> agent built from the published spec. No ACP agent binary was available here, so every
-> claim below about *the protocol* is as trustworthy as the spec and no more; claims about
-> *`docketd`'s* side are pinned by tests. `opencode acp` is the intended first real target
-> (see the worked example), and confirming these facts against it is the next step.
+> **Status: capabilities measured against real agent binaries on 2026-08-15; sessions not
+> run.** The `initialize` handshake below was driven against each agent for real and the
+> capability table is what they answered. What was *not* done here is an authenticated
+> session — no provider credentials were available — so `session/prompt`, tool-call
+> reporting and `session/load` are still spec-and-test claims rather than observed ones.
+> `Docket.Runner.Tests/AcpClientTests` pins docketd's whole half of the conversation against
+> a scripted peer. The `RealOpenCode`/`RealCodex`/`RealClaude` opt-in tiers are where the
+> rest gets confirmed.
+
+### The one thing worth measuring first, measured
+
+`loadSession` decides whether §11 resume survives the migration, and it defaults to
+**false** in the spec — so the honest expectation was that some harnesses would lose
+`preserve`/`preserve_and_park`. They do not. Every agent answers `initialize` like this:
+
+| Agent | Entry point | ver | `loadSession` | `mcp.http` | Auth |
+|---|---|:--:|:--:|:--:|---|
+| Claude Agent 0.68.0 | `claude-agent-acp` (adapter) | 1 | ✅ | ✅ | ambient (`authMethods: []`) |
+| Claude Code 0.16.2 | `claude-code-acp` (**deprecated**) | 1 | ✅ | ✅ | `claude /login` |
+| Codex 1.3.0 | `codex-acp` (adapter) | 1 | ✅ | ✅ | API key or ChatGPT |
+| OpenCode 1.18.18 | `opencode acp` (native) | 1 | ✅ | ✅ | `opencode auth login` |
+| Grok Build | `grok agent stdio` (native) | ? | ? | ? | `XAI_API_KEY` / `grok login` |
+
+All four measured agents also declare `sessionCapabilities` well beyond the base spec —
+`resume`, `fork`, `list`, `close`, and on the two newest `delete` and
+`additionalDirectories`. Nothing here uses them yet; a §11 fork/chain is the obvious future
+customer.
+
+Two things to take from the table. **Every agent negotiates protocol version 1**, not 2 —
+so 1 is what this client actually speaks, and negotiating it is deliberately not warned
+about (a warning that fires on every task is one an operator learns to skip). And
+`@zed-industries/claude-code-acp` is **deprecated**, renamed to
+`@agentclientprotocol/claude-agent-acp`; use the new one, which is also the only agent that
+needed no interactive login.
+
+Grok's row is unmeasured: its installer resolves releases through the GitHub API, which this
+environment blocks. `grok agent stdio` is documented as its ACP entry point, so the profile
+below is written from that and marked accordingly.
+
+### Installing the adapters
+
+Two of the five entry points are adapters and have to be on every machine that runs the
+profile, alongside the harness itself:
+
+```bash
+npm install -g @agentclientprotocol/claude-agent-acp   # NOT @zed-industries/claude-code-acp
+npm install -g @agentclientprotocol/codex-acp
+```
+
+OpenCode and Grok need nothing extra — their ACP server is a subcommand of the CLI you
+already installed. Pin the versions the way you pin the harnesses: an adapter is a second
+upstream between `docketd` and the model, and it moves on its own schedule.
 
 The four worked examples above are all the same exercise: read a vendor's NDJSON, guess
 which key holds the session id, discover the hard way that a counter is nested one level
@@ -1084,12 +1129,24 @@ free, and the whole `stdin: closed` trade-off that Codex and OpenCode force in s
 simply does not arise: an ACP agent reads stdin as a protocol, not as a prompt, so the
 blocking read that caused it never happens.
 
+### The prompt is the only harness-specific text left
+
+One thing ACP does **not** standardize: what the agent calls docket's MCP tools. ACP is the
+client↔agent channel; tool naming belongs to the agent↔MCP one, so each harness keeps its
+own spelling and each `prompt` below differs only in that.
+
+| Harness | Docket tool spelling |
+|---|---|
+| Claude, Codex | `mcp__docket__get_task` |
+| OpenCode | `docket_get_task` |
+| Grok | `docket__get_task` |
+
+Everything else in these four profiles is the same profile.
+
 ### Worked example — OpenCode over ACP
 
-OpenCode is the first target because it is **natively** an ACP agent (`opencode acp`), so
-this profile exercises the protocol with no adapter in the picture. Claude Code and Codex
-both need one (`@zed-industries/claude-code-acp`, `@agentclientprotocol/codex-acp`), which
-is a separate variable and deliberately not mixed into the first increment.
+Native (`opencode acp`), so no adapter. This is the reference ACP profile; the three that
+follow differ only in the spawn argv and the tool spelling.
 
 ```jsonc
 {
@@ -1128,6 +1185,129 @@ narrower and still real: the server is a **session parameter**, so there is no f
 write, no mode to get right, and **no live bearer token sitting on disk** for the length of
 the task. `files[]` closed the capability gap; ACP removes the artifact.
 
+### Worked example — Claude Code over ACP
+
+Needs the adapter, and specifically the **renamed** one: `@zed-industries/claude-code-acp`
+still works but is deprecated. Claude Agent 0.68.0 is also the only agent measured that
+declared no auth methods at all — it uses whatever credentials the machine already has, so
+there is no interactive login step in the enroll path.
+
+```jsonc
+{
+  "profiles": [
+    {
+      "name": "default",
+      "protocol": "acp",
+      // The adapter, not `claude`. It spawns claude itself.
+      "spawn": ["claude-agent-acp"],
+      "prompt": "You are a Docket worker running headless under docketd. You have been dispatched exactly one task. First call the mcp__docket__get_task MCP tool to read your assignment (namespace, description, completion_criteria, workspace, attempt). Read the docket-worker skill. Do the work inside the assigned workspace. When done, call mcp__docket__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call mcp__docket__request_input instead of guessing. You do not verify or complete the task yourself.",
+      // Model and turn caps are the adapter's business, not a docketd key — it reads the
+      // same environment claude does. `--max-turns` has no ACP equivalent, so on this
+      // profile the bound is the model plus the §10 no-progress ceiling. See the cost note.
+      "env": { "ANTHROPIC_MODEL": "claude-haiku-4-5-20251001" },
+      "stop": { "mode": "signal", "wind_down_seconds": 30 },
+      "telemetry": { "otel": true, "env": { "CLAUDE_CODE_ENABLE_TELEMETRY": "1" } },
+      "logs": { "capture": true }
+    }
+  ]
+}
+```
+
+Note what this profile does *not* need, against the `claude -p` one at the top of this file:
+no `--permission-mode bypassPermissions` (permissions arrive as
+`session/request_permission`), no `--output-format stream-json --verbose` pair, no
+`--mcp-config`, no `--allowedTools` list, and no `resume.args`. The single most important
+line in the stream profile — the bypass flag — has no counterpart here because the decision
+moved onto the protocol.
+
+### Worked example — Codex over ACP
+
+Needs `@agentclientprotocol/codex-acp`. This is the profile that changes most, because
+almost everything hard about the stream-mode Codex profile was a workaround for something
+ACP simply has.
+
+```jsonc
+{
+  "profiles": [
+    {
+      "name": "default",
+      "protocol": "acp",
+      "spawn": ["codex-acp"],
+      "prompt": "You are a Docket worker running headless under docketd. You have been dispatched exactly one task. First call the mcp__docket__get_task MCP tool to read your assignment. Do the work inside the assigned workspace. When done, call mcp__docket__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call mcp__docket__request_input instead of guessing.",
+      // codex-acp authenticates from the environment (API Key) or a cached ChatGPT login,
+      // both of which it declares as authMethods at initialize.
+      "env": { "CODEX_API_KEY": "{env:CODEX_API_KEY}" },
+      "stop": { "mode": "signal", "wind_down_seconds": 30 },
+      "logs": { "capture": true }
+    }
+  ]
+}
+```
+
+**Four stream-mode problems that stop existing.** `stdin: closed` — gone, and this is the
+sharpest reversal in the file: `codex exec` blocks forever on a held-open stdin pipe, which
+is why its stream profile *must* close stdin and give up the dead-man's switch, whereas
+`codex-acp` reads stdin as a protocol and keeps the switch. The mandatory six-key
+`events.mapping` — gone. The static `~/.codex/config.toml` with `bearer_token_env_var` —
+gone, along with its side effect of declaring a docket MCP server for every interactive
+`codex` on the machine. And `resume.args` — gone; `codex-acp` declares `loadSession: true`.
+
+### Worked example — Grok Build over ACP
+
+> **Unmeasured.** Every other row in the capability table was driven for real; Grok's
+> installer resolves releases through the GitHub API, which this environment blocks, so
+> `grok agent stdio` here is from xAI's documentation rather than from a handshake. Run the
+> probe against it before trusting this profile — in particular, confirm `loadSession`, and
+> confirm the agent does not want a client-side `terminal/*` (Grok's ACP integration is
+> documented as implementing client-side `terminal/`, `fs/` and `request_permission`, which
+> is a strong hint that it may **expect** its client to provide them — see the caveat below).
+
+```jsonc
+{
+  "profiles": [
+    {
+      "name": "default",
+      "protocol": "acp",
+      // `grok agent stdio`, NOT `grok -p --output-format streaming-json`. The latter is an
+      // output shape that merely resembles ACP; the former is the protocol.
+      "spawn": ["grok", "agent", "stdio"],
+      "prompt": "You are a Docket worker running headless under docketd. You have been dispatched exactly one task. First call the docket__get_task MCP tool to read your assignment (namespace, description, completion_criteria, workspace, attempt). Do the work inside the assigned workspace. When done, call docket__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call docket__request_input instead of guessing.",
+      // 1.0.4+ gates project-local config behind folder trust and a work dir is a
+      // throwaway folder. Carried over from the stream profile; re-confirm under ACP.
+      "env": { "GROK_FOLDER_TRUST": "0" },
+      "stop": { "mode": "signal", "wind_down_seconds": 30 },
+      "logs": { "capture": true }
+    }
+  ]
+}
+```
+
+If Grok turns out to require a client-side terminal, it cannot run under this client today
+and stays on its `streaming-messages-json` stream profile — which is a perfectly good
+profile and the only one of the four whose stream mapping needed no `events.mapping` at all.
+
+### The caveat that could make an ACP worker useless
+
+This client declares the ACP `fs` and `terminal` capabilities **UNSUPPORTED**. Those exist
+so an editor can hand an agent its unsaved buffers and its terminal panel; a Docket worker
+has its own work dir and its own shell, so an agent doing that I/O itself is the
+arrangement, not a degradation. All three measured agents carry their own tools.
+
+But an agent that routes *all* its shell and file access through the client would, under
+that declaration, be unable to do anything — and the symptom is a task that starts, calls
+no tools, and reports nothing, which reads exactly like a lazy model. So a refused request
+is reported, once per method per task:
+
+```
+docketd: task <id>: the agent asked docketd to perform 'terminal/create' and was refused —
+this client declares the ACP fs and terminal capabilities UNSUPPORTED […] check whether this
+harness needs a client-side terminal (§10).
+```
+
+If you see that line, the harness needs a client-side terminal and this profile will not
+work until docketd grows one. It is the first thing to look for when an ACP worker does
+nothing.
+
 ### What `wind_down_seconds` means here
 
 More than it did. A stream-mode stop writes a turn nobody reads (or, honestly, declares
@@ -1155,6 +1335,20 @@ COLD START. Every redispatch of this task will be one (§11).
 This is the single most important thing to verify against a real agent before moving a
 production profile to ACP — `preserve` and `preserve_and_park` are worth much less without
 it.
+
+### Cost bounds get weaker, and this one is not a footnote
+
+Stream profiles bound a runaway with harness flags on the argv: `claude -p` has
+`--max-turns` and `--max-budget-usd`, `grok -p` has `--max-turns`. **ACP has no equivalent
+for either**, and the adapters expose no flag surface at all — they are stdio servers, not
+CLIs (`--help` on `claude-agent-acp` and `codex-acp` just waits on stdin). What survives is
+the pinned model, via the harness's own environment variable, and the §10 no-progress
+ceiling.
+
+For `codex exec` and `opencode run` that is no change — neither ever had a turn cap. For
+`claude -p` and `grok -p` it is a real loss: those two profiles go from a bounded runaway
+to an unbounded one. Weigh that per profile before migrating, and note it compounds with
+the usage gap below — you lose the cap and the meter in the same move.
 
 ### Two things this increment does not do yet
 

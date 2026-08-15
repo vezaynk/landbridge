@@ -68,6 +68,19 @@ public sealed class AcpClient
     public const int LatestProtocolVersion = 2;
 
     /// <summary>
+    /// The oldest version this client can hold a session over. Every shipping agent
+    /// measured on 2026-08-15 — <c>claude-agent-acp</c> 0.68.0, <c>codex-acp</c> 1.3.0,
+    /// <c>opencode</c> 1.18.18 — negotiates <b>1</b>, so 1 is the version this actually
+    /// speaks in practice and must not be treated as a degradation. The spec still requires
+    /// the client to <em>offer</em> its latest, which is why
+    /// <see cref="LatestProtocolVersion"/> is what goes on the wire; the methods this client
+    /// uses (<c>session/new</c>, <c>session/load</c>, <c>session/prompt</c>,
+    /// <c>session/update</c>, <c>session/cancel</c>, <c>session/request_permission</c>) are
+    /// common to both, so anything in this range is silently fine.
+    /// </summary>
+    public const int OldestProtocolVersion = 1;
+
+    /// <summary>
     /// What docketd calls itself in <c>clientInfo</c>. Read from the assembly rather than
     /// written as a constant so it cannot drift; agents log it, and a wrong version in
     /// someone else's log is a wasted afternoon.
@@ -94,6 +107,13 @@ public sealed class AcpClient
     /// <c>item.started</c>. Touched only by the single-threaded read loop.
     /// </summary>
     private readonly HashSet<string> _reported = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Agent-request methods already refused and reported, so the operator-facing line is
+    /// once per method per task rather than once per call. Touched only by the
+    /// single-threaded read loop.
+    /// </summary>
+    private readonly HashSet<string> _declined = new(StringComparer.Ordinal);
 
     private TextWriter? _stdin;
     private long _nextId;
@@ -320,12 +340,20 @@ public sealed class AcpClient
     {
         w.WriteNumber("protocolVersion", LatestProtocolVersion);
 
-        // Declared honestly, which for docketd means declaring almost nothing. The spec
-        // says an omitted capability is UNSUPPORTED, and every one of these would be the
-        // client doing work on the agent's behalf — reading files, running terminals — that
-        // a Docket worker does for itself inside its own work dir. Nothing here is a
-        // limitation to fix later: a headless worker with a shell does not need its
-        // supervisor to hold the filesystem for it.
+        // Declared honestly, which for docketd means declaring almost nothing. These
+        // capabilities exist for an EDITOR: they let an agent see a file as it sits in an
+        // unsaved buffer, and run a command in the user's terminal panel. A Docket worker
+        // has neither — it has its own work dir and its own shell — so the agent doing its
+        // own file and process I/O is not a degradation, it is the arrangement.
+        //
+        // The risk this takes, stated plainly because it is the one that could make an ACP
+        // worker useless: an agent that routes ALL its shell and file access through the
+        // client rather than performing it itself would, under this declaration, be unable
+        // to do anything at all — and the symptom would read as a lazy model rather than a
+        // wiring fault. That is why an incoming request for a declined capability is
+        // reported (see AnswerAgentRequestAsync) instead of only being refused on the wire.
+        // The three agents measured on 2026-08-15 all carry their own tools, so none of
+        // them needs this; a fourth might.
         w.WriteStartObject("clientCapabilities");
         w.WriteStartObject("fs");
         w.WriteBoolean("readTextFile", false);
@@ -347,11 +375,19 @@ public sealed class AcpClient
             && v.TryGetInt32(out var version))
         {
             NegotiatedProtocolVersion = version;
-            if (version != LatestProtocolVersion)
+
+            // Deliberately NOT "anything but the latest is a warning". Every agent in the
+            // wild answers 1, so that rule would put a line on every task of every ACP
+            // profile — and a warning that fires always is a warning an operator learns to
+            // scroll past, which costs more than it can ever report. Only a version outside
+            // the range this client can actually hold a session over is worth saying.
+            if (version < OldestProtocolVersion || version > LatestProtocolVersion)
                 _warn(
-                    $"docketd: task {_task.Value}: the agent negotiated ACP protocol version {version}, not " +
-                    $"{LatestProtocolVersion}. Proceeding — the session methods this client uses are stable " +
-                    "across both — but a mismatch is worth knowing when something later reads oddly.");
+                    $"docketd: task {_task.Value}: the agent negotiated ACP protocol version {version}, which " +
+                    $"is outside the {OldestProtocolVersion}–{LatestProtocolVersion} range this client speaks. " +
+                    "Continuing on the assumption that the session methods are unchanged, but if this task " +
+                    "reads oddly — no session ref, no tool calls — that assumption is the first thing to " +
+                    "doubt (§10).");
         }
 
         if (!init.Value.TryGetProperty("agentCapabilities", out var caps) || caps.ValueKind != JsonValueKind.Object)
@@ -546,6 +582,19 @@ public sealed class AcpClient
         }
 
         await SendErrorAsync(id, -32601, $"docketd does not implement '{method}'", ct).ConfigureAwait(false);
+
+        // Once per method per task. A refusal the agent swallows is the quietest way for a
+        // worker to end up unable to touch the filesystem or run a command, and the
+        // resulting task — started, no tool calls, nothing reported — looks exactly like a
+        // model that could not be bothered. Naming the method turns that into a five-second
+        // diagnosis.
+        if (_declined.Add(method))
+            _warn(
+                $"docketd: task {_task.Value}: the agent asked docketd to perform '{method}' and was refused — " +
+                "this client declares the ACP fs and terminal capabilities UNSUPPORTED, because a Docket " +
+                "worker is expected to use its own work dir and its own shell. An agent that delegates all " +
+                "of its file or command access to the client cannot work under that declaration, and this " +
+                "line is the only sign of it: check whether this harness needs a client-side terminal (§10).");
     }
 
     /// <summary>

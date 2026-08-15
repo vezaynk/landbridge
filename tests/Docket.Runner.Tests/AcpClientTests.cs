@@ -230,6 +230,52 @@ public sealed class AcpClientTests
         Assert.Contains("fs/read_text_file", error.GetProperty("message").GetString());
     }
 
+    /// <summary>
+    /// And the refusal is reported, not just sent. This is the quietest severe failure the
+    /// mode has: an agent that delegates its shell or file access to the client gets -32601
+    /// for everything, does no work, and produces a task that looks like a lazy model rather
+    /// than a wiring fault. The three agents measured for the migration all carry their own
+    /// tools, so this should never fire — which is exactly why it must be loud when it does.
+    /// </summary>
+    [Fact]
+    public async Task Reports_that_it_declined_a_capability_the_agent_wanted()
+    {
+        var agent = new FakeAgent { RequestDuringPrompt = "terminal/create" };
+        var run = await RunAsync(agent, Request("go"));
+
+        Assert.Contains(
+            run.Warnings,
+            w => w.Contains("terminal/create") && w.Contains("client-side terminal"));
+    }
+
+    // ── protocol version ────────────────────────────────────────────────────────
+
+    /// <summary>
+    /// Measured 2026-08-15: <c>claude-agent-acp</c> 0.68.0, <c>codex-acp</c> 1.3.0 and
+    /// <c>opencode</c> 1.18.18 all answer <b>1</b>. So negotiating 1 is the normal case, and
+    /// warning about it would put a line on every task of every ACP profile — training
+    /// operators to scroll past the channel the real diagnostics use.
+    /// </summary>
+    [Fact]
+    public async Task Negotiating_the_version_every_real_agent_speaks_is_not_a_warning()
+    {
+        var agent = new FakeAgent { ProtocolVersion = AcpClient.OldestProtocolVersion };
+        var run = await RunAsync(agent, Request("go"));
+
+        Assert.Equal(AcpClient.OldestProtocolVersion, run.Client.NegotiatedProtocolVersion);
+        Assert.DoesNotContain(run.Warnings, w => w.Contains("protocol version"));
+    }
+
+    /// <summary>A version outside the range this client can hold a session over is worth saying.</summary>
+    [Fact]
+    public async Task Negotiating_a_version_outside_the_supported_range_is_a_warning()
+    {
+        var agent = new FakeAgent { ProtocolVersion = 99 };
+        var run = await RunAsync(agent, Request("go"));
+
+        Assert.Contains(run.Warnings, w => w.Contains("protocol version 99"));
+    }
+
     // ── §11 resume ──────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -496,6 +542,7 @@ public sealed class AcpClientTests
 
         public bool LoadSession { get; init; }
         public bool HttpMcp { get; init; } = true;
+        public int ProtocolVersion { get; init; } = AcpClient.LatestProtocolVersion;
         public bool FailInitialize { get; init; }
         public bool Mute { get; init; }
         public bool HoldPromptOpen { get; init; }
@@ -598,7 +645,7 @@ public sealed class AcpClientTests
                         : """
                           {"jsonrpc":"2.0","id":%id%,"result":{"protocolVersion":%version%,"agentCapabilities":{"loadSession":%load%,"mcpCapabilities":{"http":%http%}},"agentInfo":{"name":"fake","version":"1"}}}
                           """
-                            .Replace("%version%", AcpClient.LatestProtocolVersion.ToString())
+                            .Replace("%version%", ProtocolVersion.ToString())
                             .Replace("%load%", Lower(LoadSession))
                             .Replace("%http%", Lower(HttpMcp)),
                         id);
