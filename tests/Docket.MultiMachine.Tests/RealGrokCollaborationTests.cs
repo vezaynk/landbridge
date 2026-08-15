@@ -171,8 +171,13 @@ public sealed class RealGrokCollaborationTests(PostgresFixture pg) : IAsyncLifet
     /// <summary>
     /// Project-local Grok MCP file (#112 G2). Grok merges
     /// <c>{cwd}/.grok/config.toml</c> with <c>~/.grok</c>, so this keeps operator
-    /// auth/skills/MCPs and does not set <c>GROK_HOME</c>. <c>{mcp_url}</c> comes
-    /// from the plane; the bearer stays a literal <c>${DOCKET_WORKER_TOKEN}</c>.
+    /// auth/skills/MCPs and does not set <c>GROK_HOME</c>. Both <c>{mcp_url}</c> and
+    /// <c>{worker_token}</c> are docketd file-substitutions (§13), written verbatim,
+    /// so the bearer is a concrete token grok sends as-is — <em>not</em> a
+    /// <c>${ENV}</c> reference grok would have to expand itself (it does not, so the
+    /// earlier form produced an empty Bearer and a 401). The file therefore carries
+    /// the token and is written owner-only (0600), the same posture as Claude's
+    /// <c>mcp.json</c>.
     /// </summary>
     private static readonly ProfileFile[] GrokMcpFile =
     [
@@ -182,8 +187,9 @@ public sealed class RealGrokCollaborationTests(PostgresFixture pg) : IAsyncLifet
             [mcp_servers.docket]
             url = "{mcp_url}"
             enabled = true
-            headers = { "Authorization" = "Bearer ${DOCKET_WORKER_TOKEN}" }
-            """),
+            headers = { "Authorization" = "Bearer {worker_token}" }
+            """,
+            "600"),
     ];
 
     private static string EchoDescription(string label, string token) =>
@@ -253,8 +259,10 @@ public sealed class RealGrokCollaborationTests(PostgresFixture pg) : IAsyncLifet
          Suspect, in order:
            1. MODEL SLUG. This tier pins '{{GrokModel}}'. Override with DOCKET_GROK_MODEL.
            2. MCP WIRING. files[] writes {work_dir}/.grok/config.toml with {mcp_url}
-              and Bearer ${DOCKET_WORKER_TOKEN}. An unset token becomes an empty Bearer
-              and the plane 401s; the worker then invents a docket CLI.
+              and Bearer {worker_token}, both docketd file-substitutions written
+              verbatim (grok does NOT expand ${ENV} in config.toml). A 401 here means
+              the minted token or url is wrong; a stale docket CLI means grok never
+              loaded the file at all.
            3. TOOL NAMES. Grok spells MCP tools <server>__<tool>, so docket__get_task, NOT
               mcp__docket__get_task and NOT docket_get_task.
            4. STDIN. A deadman profile starts then never exits. This file's closed facts are

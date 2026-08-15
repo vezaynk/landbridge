@@ -39,8 +39,13 @@ without hiding the operator's existing MCP servers, skills, or auth.
 1. **`files[]` under `{work_dir}`** when the harness merges a project-local
    config with the user home. Grok does: `{cwd}/.grok/config.toml` plus
    `~/.grok/config.toml`. Write only the docket block; leave `GROK_HOME` unset.
-   Use `{mcp_url}` for the plane URL and a literal `${DOCKET_WORKER_TOKEN}` (or
-   the harness's own env syntax) for the bearer. Never write a live token.
+   Use `{mcp_url}` for the plane URL. For the bearer, prefer the harness's own
+   read-from-env field if it has one (Codex's `bearer_token_env_var =
+   "DOCKET_WORKER_TOKEN"`) — that keeps the token off disk. Grok has no such field
+   and does **not** expand `${DOCKET_WORKER_TOKEN}` in `config.toml`, so it must use
+   the docketd substitution `{worker_token}` (written verbatim). When a live token
+   lands in the file this way, write the file `"mode": "600"`, as Claude's
+   `mcp.json` does.
 2. **`hooks.before_spawn` argv** when the only MCP surface is a user-global
    file (Codex / `CODEX_HOME`). The program must be idempotent
    (ensure-if-absent). Never invoke a shell — argv only, same as `spawn`.

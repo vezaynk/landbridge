@@ -946,7 +946,8 @@ What it did force is `stdin: closed`, for a reason Codex and OpenCode do not sha
       // GROK_HOME — that replaces the operator's auth, skills, and MCP servers.
       "files": [{
         "path": "{work_dir}/.grok/config.toml",
-        "contents": "[mcp_servers.docket]\nurl = \"{mcp_url}\"\nenabled = true\nheaders = { \"Authorization\" = \"Bearer ${DOCKET_WORKER_TOKEN}\" }\n"
+        "contents": "[mcp_servers.docket]\nurl = \"{mcp_url}\"\nenabled = true\nheaders = { \"Authorization\" = \"Bearer {worker_token}\" }\n",
+        "mode": "600"
       }],
       "stop": { "mode": "signal" },
       "resume": {
@@ -986,7 +987,7 @@ so we do not depend on that, and so `stop.mode: signal` stays legal.
 `RealGrokCollaborationTests` keeps both halves: a deadman fact that asserts the session
 ref still arrives (Grok is not Codex-shaped), and the closed-stdin facts that complete.
 
-### The MCP wiring: a project file, `${DOCKET_WORKER_TOKEN}`
+### The MCP wiring: a project file, `{worker_token}`
 
 Grok has no `--mcp-config`. It **merges** MCP servers from `{cwd}/.grok/config.toml`
 and `~/.grok/config.toml` (cwd wins on a name clash). Write only the docket
@@ -996,9 +997,14 @@ memory, and the operator's other MCP servers stay in `~/.grok`.
 Do **not** set `GROK_HOME` unless the operator asked for a sealed home. That
 replaces the whole directory, not just MCP.
 
-`${DOCKET_WORKER_TOKEN}` in the file is a literal; Grok expands it at load.
-`{mcp_url}` is substituted by docketd. An unset token becomes an empty Bearer
-and the plane 401s — same silent toolless-agent failure as OpenCode.
+Both `{mcp_url}` and `{worker_token}` are docketd `files[]` substitutions (§13),
+written **verbatim** into the file. Grok does **not** expand `${DOCKET_WORKER_TOKEN}`
+(or any `${ENV}`) in `config.toml` — an earlier `${…}` bearer produced an empty
+Bearer and a plane 401, the same silent toolless-agent failure as OpenCode. So the
+bearer must be the concrete `{worker_token}`, exactly as Claude's `mcp.json` embeds
+it. Because the file then carries a live token, write it `"mode": "600"` (owner-only),
+matching Claude's `mcp.json`. If a future grok gains a bearer-from-env field (as Codex
+has `bearer_token_env_var`), prefer that — it keeps the token off disk.
 
 Tool names are `server__tool` → **`docket__get_task`**. A prompt that says
 `mcp__docket__get_task` or `docket_get_task` sends the agent hunting a tool it does
