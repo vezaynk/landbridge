@@ -520,13 +520,19 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     /// heartbeat. That is precisely the wedged agent the two clocks exist to separate:
     /// aliveness stays fresh, so only the no-progress ceiling can reclaim it.</item>
     /// </list>
-    /// <para><b>Both profiles name <c>{mcp_config}</c>, and the wedge one must keep doing
-    /// so even though its harness ignores every argument past <c>run</c>.</b> Since #112
-    /// G11 docketd writes the 0600 <c>mcp.json</c> only when spawn or resume argv actually
-    /// references it, so this is what puts a real worker-instance token on disk — the
-    /// credential <see cref="InjectedWorkerTokenAsync"/> reads and the stale-token replay
-    /// scenario (§17.8) presents again after a requeue. Drop it and that scenario stops
-    /// finding a token to replay and fails on the fixture rather than on the behaviour.</para>
+    /// <para><b>Only the wedge profile names <c>{mcp_config}</c>, and it must keep doing so
+    /// even though its harness ignores every argument past <c>run</c>.</b> Since #112 G11
+    /// docketd writes the 0600 <c>mcp.json</c> only when the argv references it, so this is
+    /// what puts a real worker-instance token on disk — the credential
+    /// <see cref="InjectedWorkerTokenAsync"/> reads and the stale-token replay scenario
+    /// (§17.8) presents again after a requeue. Drop it and that scenario stops finding a
+    /// token to replay and fails on the fixture rather than on the behaviour.</para>
+    ///
+    /// <para>The <c>default</c> profile deliberately does <em>not</em>: a real ACP worker
+    /// takes the plane's MCP server as a <c>session/new</c> parameter, so no config file is
+    /// written and no live bearer token sits in the work dir for the length of the task.
+    /// That asymmetry is the point — the fixture buys a credential on the one profile that
+    /// runs no real agent, and the production path keeps the property.</para>
     /// The heartbeat is deliberately short — it drives both the <c>alive</c> cadence and
     /// the dispatch signal, and it must stay well inside the plane's aliveness window or
     /// a perfectly healthy task would be requeued.
@@ -544,14 +550,30 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
                 new JsonObject
                 {
                     ["name"] = "default",
-                    ["spawn"] = new JsonArray(
-                        ChaosBinaries.WorkerHarness(), "--mcp-config", "{mcp_config}"),
+                    // The worker harness as an ACP agent: it takes the plane's MCP server
+                    // from session/new rather than a --mcp-config path, so the chaos fleet
+                    // exercises the same protocol every other tier does.
+                    ["spawn"] = new JsonArray(ChaosBinaries.WorkerHarness(), "--acp"),
+                    ["prompt"] = "Do the task you have been dispatched.",
                 },
                 new JsonObject
                 {
+                    // The wedge profile spawns a harness mode that deliberately says nothing
+                    // — that is the point of it — so it speaks no ACP either. A prompt is
+                    // still required to load, and is simply never answered.
+                    //
+                    // It DOES still name {mcp_config}, and alone in this file. The harness
+                    // ignores every argument past `run`, so the path is never read; what the
+                    // reference does is make docketd write the 0600 file (#112 G11 gates that
+                    // write on the argv asking for it), which is the only way the stale-token
+                    // replay scenario can get hold of a real worker-instance credential —
+                    // tokens are hashed at rest, so the plane's own tables cannot give one
+                    // back. A test fixture buying a credential it needs, on the one profile
+                    // that runs no real agent.
                     ["name"] = ChaosProfiles.Wedge,
                     ["spawn"] = new JsonArray(
                         ChaosBinaries.RunnerTestHarness(), "run", "--mcp-config", "{mcp_config}"),
+                    ["prompt"] = "Do the task you have been dispatched.",
                 }),
         };
         var path = Path.Combine(NewTempDir("config"), "docketd.json");
