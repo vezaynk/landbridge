@@ -71,7 +71,10 @@ internal sealed class FleetRig(
     IReadOnlyDictionary<string, string>? eventMapping = null,
     StdinPolicy stdin = StdinPolicy.Deadman,
     IReadOnlyList<ProfileFile>? files = null,
-    IReadOnlyDictionary<string, string>? env = null) : IAsyncDisposable
+    IReadOnlyDictionary<string, string>? env = null,
+    ProtocolMode protocol = ProtocolMode.Acp,
+    string? prompt = null,
+    string? followUp = null) : IAsyncDisposable
 {
     private const string RelayBearer = "multimachine-relay-shared-secret-under-test";
 
@@ -141,7 +144,7 @@ internal sealed class FleetRig(
 
         _profile = new ProfileConfig(
             "default",
-            spawnArgv ?? [CollabHarnessPath(), "--mcp-config", "{mcp_config}"],
+            spawnArgv ?? [CollabHarnessPath(), "--acp"],
             stop ?? new StopConfig(StopMode.Signal, MessageTemplate: null, WindDown: TimeSpan.FromSeconds(30)),
             resumeArgv is null ? null : new ResumeConfig(resumeArgv),
             new EventsConfig(
@@ -159,7 +162,14 @@ internal sealed class FleetRig(
             // §10 (#110): the dead-man pipe, unless a scenario's harness cannot survive it.
             Stdin: stdin,
             Env: env,
-            Files: files);
+            Files: files,
+            // ideas/sessions.md: the fleet runs on ACP by default, so the scripted tier
+            // drives docketd's real AcpClient rather than only the token-spending one. A
+            // scenario that is specifically about stream-mode behaviour (a dead-man hang, a
+            // mapping that reads nothing) passes ProtocolMode.Stream and its own argv.
+            Protocol: protocol,
+            Prompt: prompt ?? "Do the task you have been assigned.",
+            FollowUp: followUp ?? "There is new input on your assignment. Read it, then continue.");
 
         Team = TeamId.New();
         await using (var db = pg.NewContext())

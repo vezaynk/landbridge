@@ -121,8 +121,11 @@ internal static class RealHarnessBar
     /// </summary>
     public static async Task ResumesAfterParkAsync(PostgresFixture pg, RealHarnessProfile profile)
     {
-        Skip.If(profile.Resume is null,
-            profile.Name + " does not declare resume.args — park/resume is not this harness's bar");
+        // Under ACP the gate is the agent's own loadSession capability, not a resume argv.
+        // Every agent measured on 2026-08-15 declares it, so this skip should now be dead —
+        // tools/acp-probe is how you check before adding a fifth harness.
+        Skip.If(!profile.SupportsResume,
+            profile.Name + " does not support session/load — park/resume is not this harness's bar");
 
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(20));
         var ct = cts.Token;

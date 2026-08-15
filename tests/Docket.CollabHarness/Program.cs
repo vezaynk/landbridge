@@ -78,24 +78,66 @@ public static class Program
         // so EOF means docketd is gone — watch it and cancel the run.
         if (ParentDeathSignal.ArmAndParentAlreadyDead())
             return 1;
+
+        // ACP mode: stdin is the JSON-RPC request channel, so the EOF watch must not run —
+        // it would eat docketd's requests. The read loop's own EOF is the dead-man's switch,
+        // which is also ACP's own shutdown rule. The scripted work below is unchanged.
+        if (args.Contains("--acp", StringComparer.Ordinal))
+            return await AcpAgentLoop.RunAsync(
+                cwd,
+                async (url, auth, dir, token) =>
+                {
+                    await using var client = await ConnectAsync(url, auth, token);
+                    return await RunWorkAsync(client, dir, token);
+                },
+                ct);
+
         _ = WatchStdinForEofAsync(cts);
 
         try
         {
             var (url, authorization) = ResolveConnection(args);
+            await using var client = await ConnectAsync(url, authorization, ct);
+            return await RunWorkAsync(client, cwd, ct);
+        }
+        catch (Exception e)
+        {
+            try { await File.WriteAllTextAsync(Path.Combine(cwd, "harness_error.txt"), e.ToString(), CancellationToken.None); }
+            catch { /* best effort */ }
+            return 1;
+        }
+    }
 
-            var transport = new HttpClientTransport(new HttpClientTransportOptions
-            {
-                Endpoint = new Uri(url),
-                TransportMode = HttpTransportMode.StreamableHttp,
-                AdditionalHeaders = new Dictionary<string, string> { ["Authorization"] = authorization },
-            });
+    /// <summary>
+    /// Connects to the plane as the dispatched worker instance (§13). Shared by both
+    /// protocols: a stream-mode harness gets these credentials from the <c>--mcp-config</c>
+    /// file on its argv, an ACP one from <c>session/new</c>, and from here on they are the
+    /// same collaborator.
+    /// </summary>
+    internal static async Task<McpClient> ConnectAsync(string url, string authorization, CancellationToken ct)
+    {
+        var transport = new HttpClientTransport(new HttpClientTransportOptions
+        {
+            Endpoint = new Uri(url),
+            TransportMode = HttpTransportMode.StreamableHttp,
+            AdditionalHeaders = new Dictionary<string, string> { ["Authorization"] = authorization },
+        });
 
-            // Bound the connect + get_task handshake so a stuck setup fails hard
-            // rather than hanging; the per-mode work below sets its own bounds.
+        using var connectCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        connectCts.CancelAfter(TimeSpan.FromSeconds(60));
+        return await McpClient.CreateAsync(transport, cancellationToken: connectCts.Token);
+    }
+
+    /// <summary>
+    /// The scripted collaboration itself, identical under both protocols by construction —
+    /// one copy, so an ACP E2E tests the transport rather than a second collaborator.
+    /// </summary>
+    internal static async Task<int> RunWorkAsync(McpClient client, string cwd, CancellationToken ct)
+    {
+        try
+        {
             using var setupCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
             setupCts.CancelAfter(TimeSpan.FromSeconds(60));
-            await using var client = await McpClient.CreateAsync(transport, cancellationToken: setupCts.Token);
 
             var assignment = await client.CallToolAsync(
                 "get_task", new Dictionary<string, object?>(), cancellationToken: setupCts.Token);

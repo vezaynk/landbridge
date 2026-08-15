@@ -29,6 +29,13 @@ internal sealed class RealHarnessProfile
     public string[] ParkSpawnExtra { get; init; } = [];
     public required Func<string, string, string[], string[]> Spawn { get; init; }
     public Func<string, string[]>? Resume { get; init; }
+
+    /// <summary>
+    /// The ACP entry point: the argv that starts this harness as an Agent Client Protocol
+    /// agent over stdio. Natively a subcommand for OpenCode and Grok, an adapter binary for
+    /// Claude and Codex. Carries no prompt — an ACP agent takes none on argv.
+    /// </summary>
+    public required string[] AcpSpawn { get; init; }
     public Func<FleetRig, IDisposable?>? Attach { get; init; }
 
     public string EchoTools => $"{GetTask},{ReportResult}";
@@ -72,19 +79,39 @@ internal sealed class RealHarnessProfile
         edit files.
         """;
 
-    public FleetRig OpenEchoRig(PostgresFixture pg) =>
-        new(pg, Spawn(EchoPrompt, EchoTools, []),
-            terminalEvents: true, eventMapping: EventMapping, stdin: Stdin, files: Files, env: Env);
+    /// <summary>
+    /// The wake-up turn for a live ACP session. Says only "read your assignment" — the
+    /// answer itself is pulled over the authenticated MCP call, and that pull is the read
+    /// receipt (§11). Names the tools the way this harness spells them.
+    /// </summary>
+    public string FollowUpTurn =>
+        "There is new input on your assignment. Call the " + GetTask + " tool to read it, " +
+        "then continue." + McpToolsRule;
 
+    /// <summary>
+    /// The echo rig, on ACP. Note what is gone against the stream construction it replaces:
+    /// no <c>events.mapping</c> (the shapes are in the spec), no <c>stdin</c> policy (stdin
+    /// is the request channel and <c>closed</c> is refused), and no <c>files</c> (the plane's
+    /// MCP server rides <c>session/new</c> instead of a config file with a live token in it).
+    /// <c>env</c> stays: it configures the process, not the protocol.
+    /// </summary>
+    public FleetRig OpenEchoRig(PostgresFixture pg) =>
+        new(pg, AcpSpawn, env: Env,
+            protocol: ProtocolMode.Acp, prompt: EchoPrompt, followUp: FollowUpTurn);
+
+    /// <summary>
+    /// The park/resume rig, on ACP. There is no <c>resume.args</c> here and that is the
+    /// point: a resumed dispatch takes <c>session/load</c> on the connection docketd opens,
+    /// gated on the agent's <c>loadSession</c> capability — which every agent measured on
+    /// 2026-08-15 declares true.
+    /// </summary>
     public FleetRig OpenParkRig(PostgresFixture pg, string nonce)
     {
-        if (Resume is null)
-            throw new InvalidOperationException(Name + " has no resume.args — the park bar must skip.");
+        if (!SupportsResume)
+            throw new InvalidOperationException(Name + " does not support resume — the park bar must skip.");
         return new FleetRig(
-            pg,
-            Spawn(RememberThenAsk(nonce), ParkTools, ParkSpawnExtra),
-            Resume(ResumeAndReport),
-            terminalEvents: true, eventMapping: EventMapping, stdin: Stdin, files: Files, env: Env);
+            pg, AcpSpawn, env: Env,
+            protocol: ProtocolMode.Acp, prompt: RememberThenAsk(nonce), followUp: FollowUpTurn);
     }
 
     public IDisposable? AttachTo(FleetRig rig) => Attach?.Invoke(rig);

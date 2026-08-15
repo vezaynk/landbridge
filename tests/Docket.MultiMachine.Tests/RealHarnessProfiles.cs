@@ -76,6 +76,10 @@ internal static class RealHarnessProfiles
     public static RealHarnessProfile Claude(string bin) => new()
     {
         Name = "claude",
+        // The adapter, not `claude`: @agentclientprotocol/claude-agent-acp (the
+        // @zed-industries/claude-code-acp name is deprecated). Measured 2026-08-15:
+        // protocol 1, loadSession true, mcpCapabilities.http true, ambient auth.
+        AcpSpawn = ["claude-agent-acp"],
         Bin = bin,
         Stdin = StdinPolicy.Deadman,
         Files = ClaudeMcpFile,
@@ -94,6 +98,10 @@ internal static class RealHarnessProfiles
     public static RealHarnessProfile Codex(string bin) => new()
     {
         Name = "codex",
+        // @agentclientprotocol/codex-acp. Measured 2026-08-15: protocol 1, loadSession
+        // true, mcp.http true. Note what this removes against the stream profile —
+        // codex exec needs stdin: closed to start at all, and codex-acp does not.
+        AcpSpawn = ["codex-acp"],
         Bin = bin,
         Stdin = StdinPolicy.Closed,
         EventMapping = CodexEventMapping,
@@ -111,6 +119,8 @@ internal static class RealHarnessProfiles
     public static RealHarnessProfile OpenCode(string bin) => new()
     {
         Name = "opencode",
+        // Native. Measured 2026-08-15: protocol 1, loadSession true, mcp.http true.
+        AcpSpawn = [bin, "acp"],
         Bin = bin,
         Stdin = StdinPolicy.Closed,
         EventMapping = OpenCodeEventMapping,
@@ -128,6 +138,10 @@ internal static class RealHarnessProfiles
     public static RealHarnessProfile Grok(string bin) => new()
     {
         Name = "grok",
+        // Native, per xAI docs — the one entry point in this file NOT measured, because
+        // grok installs through the GitHub API. `grok agent stdio`, NOT
+        // `-p --output-format streaming-json`, which is an output shape not the protocol.
+        AcpSpawn = [bin, "agent", "stdio"],
         Bin = bin,
         Stdin = StdinPolicy.Closed,
         Files = GrokMcpFile,
