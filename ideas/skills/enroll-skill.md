@@ -78,9 +78,11 @@ Two bars, neither negotiable, neither degrading gracefully. Confirm both by runn
 
 **1. Is it an MCP client?** A worker's only channel to Docket is `docket-mcp` — claiming, reporting, blockers, service registration all happen there. A harness without MCP cannot participate at all, no matter how good it is. Most current agents qualify; Aider is the notable exception.
 
-**2. Does it run to completion without asking permission?** A headless agent that waits for approval hangs until the liveness timeout, which is the most expensive way to find a misconfiguration — it looks like a hung task, not a bad config. The bypass flag differs per harness and is the most important line in `spawn`. Find it, and check what else it disables while you are there; several bypass sandboxing along with approvals.
+**2. Is it an ACP agent?** `docketd` speaks Agent Client Protocol over stdio. Native: `grok agent stdio`, `opencode acp`. Adapters: `claude-agent-acp`, `codex-acp`. A CLI that only has `-p` / `exec` / `run` is not enough.
 
-Three sharp edges to check at the same time: managed settings on corporate machines can forbid the bypass mode outright — confirm it is actually permitted before writing it into `spawn`; "don't ask" postures typically *deny* tools that require user interaction rather than prompting, which silently removes capabilities instead of hanging; and where the harness supports a permission-prompt tool, that is the middle path — approvals become `request_input` escalations to the Lead instead of hangs or a blanket bypass. Docket implements that path (`--permission-prompt-tool mcp__docket__request_permission` in place of the bypass flag); the runner-config reference has the worked profile and the caveats, the main one being that `--allowedTools` still has to carry the routine baseline or the machine will ask about everything.
+**3. Do not put bypass / always-approve / yolo in `spawn`.** Permissions are `session/request_permission`. Today the runner auto-selects the agent's allow option so a headless worker can finish; the plane bridge is the next increment. A bypass flag on argv skips a dialog Docket is now the one answering.
+
+Then test **park**: `park_task` a live task and confirm the process is gone. Wait TTL is off by default — a forgotten question holds the lease until you answer or park.
 
 If either bar fails, stop. Report to the human rather than working around it.
 

@@ -537,7 +537,7 @@ this branch.
 | `ConnectionStrings:Docket` (or env `DOCKET_DB`) | `Host=localhost;Database=docket;Username=docket` | Postgres connection string. |
 | `Docket:PublicMcpUrl` (or env `DOCKET_PUBLIC_MCP_URL`) | `http://127.0.0.1:5000` | The plane's public MCP endpoint dialed by workers; also the OAuth 2.1 canonical resource id / issuer. Set to the real public **https** URL in production. |
 | `Docket:Operator:PassphraseHash` | *(empty → fail-closed)* | SHA-256 hex of the operator passphrase gating `/oauth/authorize` and dashboard login. Store the hash, never the plaintext. |
-| `Docket:WaitTtl` | `00:30:00` | How long a `blocked_on_input` task waits before parking (spec §11). |
+| `Docket:WaitTtl` | infinite | How long a `blocked_on_input` task waits before parking (spec §11). Off by default; a live ACP session is held until a Lead answers or `park_task`. Set a TimeSpan (e.g. `00:30:00`) to restore a timer. |
 | `Docket:MachineLivenessTtl` | `00:01:30` | Heartbeat-age window past which a machine is treated as rebooted and its waiting tasks requeue (≈ six missed 15s heartbeats). |
 | `Docket:WaitTtlSweepInterval` | `00:01:00` | How often the `WaitTtlSweeper` background loop runs. |
 | `Docket:PerTaskLivenessWindow` | `00:01:00` | §10 clock one (**aliveness**): how long `docketd` may go without asserting a task's harness process is alive before the task is requeued. `docketd` asserts every heartbeat, so this is not gated on `events.source`. |

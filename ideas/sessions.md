@@ -13,7 +13,9 @@ Three choices were made explicitly on 2026-08-15:
 2. **A worker that asks a question ends its turn; its session stays alive.** The answer
    arrives as a fresh `session/prompt` on the same connection, not as a redispatch.
 3. **A session is held indefinitely**, not evicted on a TTL. If the process dies anyway, the
-   next invocation resumes it from the transcript via `session/load`.
+   next invocation resumes it from the transcript via `session/load`. **Implemented:**
+   `Docket:WaitTtl` defaults to infinite; the sweeper still requeues a dead machine.
+   `park_task` is the deliberate release.
 
 The enabling change is already in: `protocol: acp` (see
 [`runner-config.md`](skills/references/runner-config.md)) makes a worker a live JSON-RPC
@@ -48,6 +50,7 @@ hang off, and the work is simply lost.
 So the plane still records, durably: the session's harness ref, its workspace and work dir,
 its profile and machine, and its message history. What goes away is the *TTL sweeper that
 proactively converts a live session into a parked row* — not the row.
+That sweeper is now off by default. `park_task` is how a Lead frees the machine.
 
 `session/load` also constrains recovery: the spec requires the same `cwd` and `mcpServers`
 as the original `session/new`. Work dirs already persist, so this is satisfiable, but it
@@ -136,7 +139,8 @@ Closes the session only on stop/kill.
 
 **Stage 2 — a question stops suspending.** `request_input` no longer parks: the session goes
 idle-awaiting-input and the Lead's answer is delivered as a follow-up prompt. The wait-TTL
-sweeper becomes recovery-only. Liveness grows its third state.
+sweeper is recovery-only (implemented: TTL off by default; machine-death still requeues).
+`park_task` closes a session on purpose. Liveness grows its third state.
 
 **Stage 3 — the session becomes the record.** Message history persisted; session states
 replace task states; migrations; dashboard reoriented. **This is where the properties above
@@ -156,8 +160,8 @@ on next invocation, replacing the park/redispatch path entirely.
   sessions accumulate context until they hit the window and get worse at their jobs.
 - **What closes a session?** `session/close` is declared by every measured agent. Completion
   is the obvious trigger; cancellation is the other. An idle session that will never be
-  spoken to again is the hard case, and it is the one "hold indefinitely" is least
-  opinionated about.
+  spoken to again is `park_task`: `session/cancel`, token revoked, later wake is
+  `session/load`.
 - **Does the §7 profile still describe how to *launch*?** Under sessions it increasingly
   describes how to *reach* — which is a different thing, and may want a different key than
   `spawn`.

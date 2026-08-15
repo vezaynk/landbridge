@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using Docket.Contracts;
 using Docket.ControlPlane;
 using Docket.ControlPlane.Auth;
 using Docket.Core;
@@ -213,6 +214,28 @@ public sealed class LeadTools(
             throw new McpException("disposition must be 'preserve' or 'discard'.");
 
         return Describe(await store.ApplyAsync(id, new Cancel(Lead, parsed), ct));
+    }
+
+    [McpServerTool(Name = "park_task"),
+     Description("Release a live ACP session on purpose. The worker is cancelled and the task " +
+                 "parks; it is not a timer. Use this to free the machine. Answering a still-live " +
+                 "wait is answer_input_request, not this. Wake later is session/load (or a " +
+                 "follow-up prompt if the process is somehow still up).")]
+    public async Task<string> ParkTask(
+        [Description("The working or blocked task to park.")] string taskId,
+        CancellationToken ct)
+    {
+        var id = ParseTaskId(taskId);
+        var machine = registry.MachineFor(id) ?? "unknown";
+        var result = await store.ApplyAsync(id, new Park(Lead, new ParkRecord(machine)), ct);
+        if (result is StoreResult.Applied && machine != "unknown")
+        {
+            await registry.SendAsync(
+                machine,
+                new StopCommand(id, TimeSpan.FromSeconds(30), StopDisposition.PreserveAndPark, "park"),
+                ct);
+        }
+        return Describe(result);
     }
 
     [McpServerTool(Name = "answer_input_request"),

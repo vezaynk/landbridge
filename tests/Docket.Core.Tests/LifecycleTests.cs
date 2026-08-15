@@ -162,6 +162,38 @@ public class LifecycleTests
     }
 
     [Fact]
+    public void Park_from_working_releases_the_session_and_revokes_the_instance()
+    {
+        var task = Given.Task(TaskState.Working);
+        var incumbent = task.CurrentInstance!.Value;
+
+        var result = TaskStateMachine.Apply(task, new Park(Given.Lead, Given.Park));
+
+        var next = Expect.Transitioned(result, TaskState.Parked);
+        Assert.Equal(Given.Park, next.Park);
+        var effects = Expect.Effects(result);
+        Assert.Contains(new RevokeWorkerInstanceToken(incumbent), effects);
+        Assert.Contains(new ClearServicesAndForwards(), effects);
+        Assert.Contains(new WriteParkRecord(Given.Park), effects);
+    }
+
+    [Fact]
+    public void Park_from_blocked_on_input_does_not_clear_services()
+    {
+        var task = Given.Task(TaskState.BlockedOnInput);
+        var incumbent = task.CurrentInstance!.Value;
+
+        var result = TaskStateMachine.Apply(task, new Park(Given.Lead, Given.Park));
+
+        var next = Expect.Transitioned(result, TaskState.Parked);
+        Assert.Equal(Given.Park, next.Park);
+        var effects = Expect.Effects(result);
+        Assert.Contains(new RevokeWorkerInstanceToken(incumbent), effects);
+        Assert.Contains(new WriteParkRecord(Given.Park), effects);
+        Assert.DoesNotContain(effects, e => e is ClearServicesAndForwards);
+    }
+
+    [Fact]
     public void Stop_with_preserve_and_park_parks_a_working_task()
     {
         var task = Given.Task(TaskState.Working);

@@ -205,7 +205,7 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
         var registry = LiveMachine(clock, "m1", id);
 
         var sweeper = NewSweeper(clock, registry,
-            waitTtl: TimeSpan.Zero,                    // already expired the instant it blocked
+            waitTtl: TimeSpan.FromMilliseconds(1),     // already expired the instant it blocked
             machineWindow: TimeSpan.FromHours(1),      // machine stays live → parks, not requeues
             sweepInterval: TimeSpan.FromMilliseconds(100));
 

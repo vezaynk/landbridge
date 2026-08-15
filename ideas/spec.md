@@ -218,7 +218,7 @@ submitted ──► working ──► verifying ──► completed
                   parked ────┘
 ```
 
-Additional states: `blocked_on_input`, `parked`, `canceled`. `blocked_on_input` and `parked` hold a task whose harness process is *expected* to be gone — per-task liveness is suspended there, and process exit is not a failure (§11).
+Additional states: `blocked_on_input`, `parked`, `canceled`. A **permission** wait is live: the ACP session stays up inside `session/request_permission`, and process exit there *is* a failure. A prose question may end the turn while the ACP process stays idle for a follow-up `session/prompt`. `parked` is a deliberate `park_task` (or an explicit wait-TTL expiry when a TTL is configured — off by default); the process is gone, liveness is suspended, and later dispatch is `session/load`.
 
 | Transition | Triggered by | Control plane checks |
 |---|---|---|
@@ -231,10 +231,10 @@ Additional states: `blocked_on_input`, `parked`, `canceled`. `blocked_on_input` 
 | `verifying` → `submitted` | Lead or human | verdict is `fail` and verification retries remain |
 | `verifying` → `rejected` | Lead or human | verdict is `fail` and verification retries exhausted |
 | `working` → `blocked_on_input` | working agent | typed request kind present; caller is the incumbent worker instance |
-| `blocked_on_input` → `submitted` | Lead or human | answer landed; a park record is written (preferring the held-lease machine and the stamped harness session ref) and redispatch resumes the transcript (§11). The worker process is gone the moment the task blocked, so there is no in-place resume. Does **not** touch the infrastructure counter — a Lead answering is not an infrastructure requeue |
-| `blocked_on_input` → `parked` | control plane | wait TTL expired; lease released; park record written (§11) |
+| `blocked_on_input` → `submitted` | Lead or human | prose answer landed. A permission verdict returns in place to `working` and is a different tool. A live ACP session is woken with `prompt` (no content — the worker pulls `get_task`). Does **not** touch the infrastructure counter |
+| `blocked_on_input` → `parked` | Lead or human, or control plane | `park_task` (deliberate), or wait TTL expired when a TTL is configured (off by default) |
 | `blocked_on_input` → `submitted` | control plane | machine liveness lost while waiting; infrastructure counter |
-| `working` → `parked` | Lead | `stop` with disposition `preserve_and_park`; park record written after the agent's wind-down |
+| `working` → `parked` | Lead or human | `park_task`, or `stop` with disposition `preserve_and_park`. The ACP host gets `session/cancel`; the instance token is revoked |
 | `parked` → `submitted` | control plane | the awaited answer or endpoint landed; redispatch runs the full `submitted → working` checks, preferring the park record's machine and directory for transcript resume (§11) |
 | any → `canceled` | Lead or human | disposition enum present (`preserve` \| `discard`). Not the control plane's: cancelling is a judgement about the work, and the plane's own giving-up path is check 7's requeue cap, which reaches `canceled` from inside `LivenessLost` rather than by command. A third `budget` disposition existed for the removed dollar ceiling and was never sent — that sweep chose `stop(preserve)` precisely so a raised ceiling could resume the task (§9's note) |
 
@@ -441,7 +441,7 @@ Bytes kept their own table rather than sitting beside the removed check 9 ceilin
 
 ### Agent → control plane (MCP)
 
-**Lead:** `create_task` · `answer_input_request` · `submit_review` (lead-adjudicated; human-confirmed in `review` mode, §7) · `cancel_task` · `get_team_state` · `get_task_report` · `get_task_question` · `list_profiles` (the routing read: which profiles exist and where they can run, §7) · `bind_machine` · `unbind_machine` · `open_lead_forward` (§8.3 human path)
+**Lead:** `create_task` · `answer_input_request` · `submit_review` (lead-adjudicated; human-confirmed in `review` mode, §7) · `cancel_task` · `park_task` (deliberate release of a live ACP session) · `get_team_state` · `get_task_report` · `get_task_question` · `list_profiles` (the routing read: which profiles exist and where they can run, §7) · `bind_machine` · `unbind_machine` · `open_lead_forward` (§8.3 human path)
 **Worker:** `get_task` · `report_result` · `request_input` · `start_process` / `stop_process` / `write_process` (§10) · `register_service` · `open_forward` · `open_preview` (§8.4)
 
 There is no `claim_task`. Workers are dispatched, never claimants (§5, §6) — the first thing a worker does with its minted token is work, and its calls identify it.
@@ -745,7 +745,7 @@ Preservation is the agent's job — persist work in progress to the workspace su
 | `unreachable` | human | artifact or forward could not be reached |
 | `permission` | Lead, or human on escalation | verdict (`allow`/`deny`) returned to the still-running worker |
 
-Threaded on the originating task, provenance-tagged. A wait TTL prevents indefinite lease holding: on expiry the task parks and is redispatched when the answer lands. This is what lets a Team survive its Lead's session ending.
+Threaded on the originating task, provenance-tagged. Wait TTL is **off by default** (indefinite). A Lead who wants the machine back uses `park_task`. When a TTL is configured and expires, the task parks and is redispatched when the answer lands.
 
 **The request carries its question and the answer carries its text.** The `kind` above only *routes* a request — who may answer it — so a request that carried nothing else would be a doorbell: an answerer would see that a task needs attention but not what for, and a resumed worker would know it had been unblocked but not with what. So `request_input` takes a bounded opaque `question` and `answer_input_request` a bounded opaque `answer` (§10), both stored verbatim on the task row beside the live `kind` and never parsed. **The answer reaches the resumed worker on its opening `get_task`, not through the resume prompt** — the profile's `resume.args` stays generic config, because argv is readable by any local process through `ps` and `/proc/<pid>/cmdline`, the same reason enrollment tokens never ride it (§13). `get_task` returns the question alongside the answer, which is what makes the pair legible after a cold start, where the transcript that held the question is on a machine that is gone. A *new* question overwrites the stored pair, so a task never presents one question next to the previous one's answer. Both are size-capped like the worker's report, over-cap is refused rather than truncated (a truncated question is a different question), and the refusal leaves the task where it was — `working` for a question, `blocked_on_input` for an answer — so the asker or answerer simply goes again, shorter.
 

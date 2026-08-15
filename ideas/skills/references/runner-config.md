@@ -599,6 +599,17 @@ It is a like-for-like port, chosen so the protocol change was not also a silent 
 was built against: the request arrives structured, and the agent supplies the options rather
 than the profile having to describe them. See `ideas/sessions.md`.
 
+## Park vs wait
+
+A live ACP session is held **indefinitely**. `Docket:WaitTtl` is off by default (infinite).
+The sweeper still requeues a task whose machine died while waiting.
+
+**`park_task` is the release.** A Lead or human who wants the machine back sends it; the
+runner `session/cancel`s, the instance token is revoked, and a later wake is `session/load`.
+Answering a still-live wait is `answer_input_request`, which delivers the profile's
+`follow_up` turn so the worker pulls `get_task`. Do not put bypass / `--always-approve` /
+`--auto` in `spawn` — permissions are protocol, not argv.
+
 
 ## Transcript capture (§12)
 
