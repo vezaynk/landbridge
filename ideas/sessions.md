@@ -54,6 +54,40 @@ as the original `session/new`. Work dirs already persist, so this is satisfiable
 means **the work dir is part of the session's identity** and can no longer be treated as
 scratch that any cleanup may reclaim.
 
+## The pull stays: an MCP read is a read receipt
+
+**A constraint on every stage below, and the one most easily lost by accident.** The session
+model makes it cheap to *push* a message at a worker. It must not, because the push is not
+the delivery — the worker's own `get_task` is.
+
+Today the answer to an input request waits on the assignment and reaches the worker on its
+next `get_task` (`WorkerAssignment`, §11). Three properties ride on that being a pull:
+
+1. **It is a receipt.** A pulled answer is one the worker demonstrably received, because it
+   asked for it. A pushed one is *delivered to a queue* — the same gap between "written" and
+   "read" that `StopDelivery.MessageWritten` exists to be honest about, and which made
+   `Delivery == Message` a false positive for every `claude -p` worker. The plane must be
+   able to tell a worker that acted on an answer from one that never saw it.
+2. **It is confidential.** Answer content deliberately never travels as spawn argv, which is
+   world-readable through `ps` and `/proc/<pid>/cmdline` — the same reason §13 keeps
+   enrollment tokens out of argv. A live session must not become a second path out of the
+   authenticated MCP channel.
+3. **Config stays config.** The turn text has to name the docket tools the way *this* harness
+   spells them (`mcp__docket__get_task` / `docket_get_task` / `docket__get_task`), so it is
+   profile configuration. Per-message content in a profile-shaped turn mixes the two.
+
+So the §10 `prompt` command carries **no message**: it names a task, the runner sends that
+profile's `follow_up` turn ("there is new input, go read it"), and the worker pulls. The
+session is what makes the wake-up cheap — no respawn, no cold start, no replay — not what
+carries the payload. Stage 4's Lead-to-worker messages take the same route.
+
+One thing this does *not* yet do: the receipt is **inferable but not recorded**.
+`GetAssignmentAsync` is a pure read and stamps nothing, so today the plane knows an answer
+was fetched only in the sense that a worker which acted on it must have fetched it. Making
+the receipt observable — a read timestamp on the assignment, so an unanswered-but-woken
+session is distinguishable from an unwoken one — belongs to stage 3, where the session
+becomes the record.
+
 ## Properties that must be re-derived, not dropped
 
 The task model carries correctness properties that are currently expressed in terms of

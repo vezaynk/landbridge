@@ -266,7 +266,7 @@ public sealed class AcpClientTests
         // The turn is over and reported, and the conversation is still there to talk to.
         Assert.Equal(1, client.Turns);
         Assert.Equal("end_turn", client.StopReason);
-        Assert.True(client.TryQueueFollowUp("still there?"));
+        Assert.True(client.TryQueueFollowUp());
 
         await agent.WaitForTurnsAsync(2);
         agent.EndSession();
@@ -285,13 +285,14 @@ public sealed class AcpClientTests
         var (client, drain) = Start(agent, Request("first"));
 
         await agent.WaitForTurnsAsync(1);
-        Assert.True(client.TryQueueFollowUp("second"));
+        Assert.True(client.TryQueueFollowUp());
         await agent.WaitForTurnsAsync(2);
         agent.EndSession();
         var run = await drain;
 
-        var prompts = agent.PromptTexts;
-        Assert.Equal(["first", "second"], prompts);
+        // The follow-up is the profile's wake-up text, NOT a payload: the answer itself is
+        // pulled by the worker over MCP, and that pull is the read receipt (§11).
+        Assert.Equal(["first", "Read your assignment again."], agent.PromptTexts);
 
         // One session throughout: no second session/new, and the ref never changed.
         Assert.Single(agent.MethodsReceived, m => m == "session/new");
@@ -312,7 +313,7 @@ public sealed class AcpClientTests
         var (client, drain) = Start(agent, Request("first"));
 
         await agent.WaitForTurnsAsync(1);
-        client.TryQueueFollowUp("second");
+        client.TryQueueFollowUp();
         await agent.WaitForTurnsAsync(2);
         agent.EndSession();
         var run = await drain;
@@ -332,7 +333,7 @@ public sealed class AcpClientTests
         var (client, drain) = Start(agent, Request("first"));
 
         await agent.WaitForAsync("session/prompt");
-        Assert.True(client.TryQueueFollowUp("second"));
+        Assert.True(client.TryQueueFollowUp());
 
         // The first turn has not returned, so the second prompt must not have been sent.
         Assert.Single(agent.MethodsReceived, m => m == "session/prompt");
@@ -342,7 +343,7 @@ public sealed class AcpClientTests
         agent.EndSession();
         await drain;
 
-        Assert.Equal(["first", "second"], agent.PromptTexts);
+        Assert.Equal(["first", "Read your assignment again."], agent.PromptTexts);
     }
 
     /// <summary>A cancelled session takes no more messages: the conversation is over by
@@ -356,7 +357,7 @@ public sealed class AcpClientTests
 
         await agent.WaitForTurnsAsync(1);
         Assert.True(await client.CancelAsync(CancellationToken.None));
-        Assert.False(client.TryQueueFollowUp("too late"));
+        Assert.False(client.TryQueueFollowUp());
 
         agent.EndSession();
         await drain;
@@ -595,8 +596,8 @@ public sealed class AcpClientTests
         "headers":{"Authorization":"Bearer dkt_w_token"}}}}
         """;
 
-    private static AcpSessionRequest Request(string prompt) => new(
-        "/work/task-1", prompt, AcpMcpServers.FromGeneratedConfig(GeneratedMcpConfig));
+    private static AcpSessionRequest Request(string prompt, string followUp = "Read your assignment again.") =>
+        new("/work/task-1", prompt, followUp, AcpMcpServers.FromGeneratedConfig(GeneratedMcpConfig));
 
     // These fixtures are written as literal JSON with placeholders rather than as
     // interpolated raw strings: ACP payloads nest three and four braces deep, which fights

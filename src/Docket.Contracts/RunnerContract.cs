@@ -120,29 +120,41 @@ public sealed record StopCommand(
 public sealed record KillCommand(TaskId Task) : RunnerCommand;
 
 /// <summary>
-/// <c>prompt</c> — deliver a follow-up turn to a worker whose session is <b>still open</b>
-/// (<c>ideas/sessions.md</c> stage 1). The first command in this vocabulary that assumes a
-/// worker is something you talk to rather than something you launch.
+/// <c>prompt</c> — wake a worker whose session is <b>still open</b> so it re-reads its
+/// assignment (<c>ideas/sessions.md</c> stage 1). The first command in this vocabulary that
+/// assumes a worker is something you talk to rather than something you launch.
 ///
-/// <para><b>Why this is not <c>dispatch</c> again.</b> A dispatch starts a process, mints a
-/// token, writes an MCP config and opens a session; this reaches a conversation that already
-/// has all four and adds one message to it. Under the task model the distinction could not
-/// arise — a worker that had finished a turn had also exited, so the only way to say
-/// anything more to it was to start a new one, cold or resumed. An ACP worker outlives its
-/// turn, so "continue" and "begin" stop being the same act.</para>
+/// <para><b>It carries no message, and that is the whole design.</b> The content a worker is
+/// being woken for — an answered question, and later a Lead's message — stays where §11 put
+/// it: on the assignment, fetched by the worker's own authenticated <c>get_task</c> call.
+/// Three properties depend on that pull, and pushing the text in this envelope would cost
+/// all three:
+/// <list type="number">
+///   <item><b>The read receipt.</b> A pulled answer is one the worker demonstrably received,
+///     because it asked for it. A pushed one is only <em>delivered to a queue</em> — the same
+///     gap between "written" and "read" that the runner's <c>StopDelivery.MessageWritten</c>
+///     ack exists to be honest about, and the plane would have no way to tell a worker that
+///     acted on an answer from one that never saw it.</item>
+///   <item><b>Confidentiality.</b> Answer content deliberately does not travel as spawn argv,
+///     which is world-readable through <c>ps</c> and <c>/proc/&lt;pid&gt;/cmdline</c> (§13
+///     keeps enrollment tokens out of argv for the same reason). It should not gain a second
+///     path out of the authenticated MCP channel just because the session is now live.</item>
+///   <item><b>Config stays config.</b> The turn text is profile configuration — and must be,
+///     since it has to name the docket tools the way <em>this</em> harness spells them. Per-
+///     message content in a profile-shaped turn would mix the two.</item>
+/// </list>
+/// So the runner sends the profile's <c>follow_up</c> turn, the worker calls
+/// <c>get_task</c>, and the pull is the receipt exactly as it was under the task model. The
+/// session is what makes the wake-up cheap — no respawn, no cold start, no replay — not what
+/// carries the payload.</para>
 ///
 /// <para><b>Only meaningful for a <c>protocol: acp</c> profile.</b> A stream-mode worker has
 /// no channel that accepts a turn: its stdin is a dead-man's pipe, not a request channel,
 /// and the harnesses this repo supports do not read mid-task turns off it (the reason every
-/// stream profile is forced to <c>stop.mode: signal</c>). A runner that receives this for a
-/// stream task refuses it rather than writing bytes nobody reads.</para>
-///
-/// <para>Best-effort like every §10 command: the runner acks that the turn was
-/// <em>delivered to the agent</em>, which — unlike the stream mode's message stop — is a
-/// claim the protocol actually supports, because an ACP agent is specified to consume
-/// <c>session/prompt</c>.</para>
+/// stream profile is forced to <c>stop.mode: signal</c>). Such a task is woken the old way,
+/// by redispatch.</para>
 /// </summary>
-public sealed record PromptCommand(TaskId Task, string Text) : RunnerCommand;
+public sealed record PromptCommand(TaskId Task) : RunnerCommand;
 
 /// <summary>
 /// <c>open-forward</c> — the control plane asks this runner to stand up one end

@@ -93,7 +93,7 @@ public interface IProcessSupervisor
     /// the task is not here, its worker has ended, or it is a stream-mode task, which has
     /// no channel that accepts a turn at all.
     /// </summary>
-    bool TryPrompt(TaskId task, string text);
+    bool TryPrompt(TaskId task);
 
     /// <summary>Immediate group/tree kill of one task (§10).</summary>
     bool Kill(TaskId task);
@@ -607,6 +607,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
                 new AcpSessionRequest(
                     workDir,
                     Substitute(profile.Prompt ?? "", substitutions),
+                    Substitute(profile.FollowUpTurn, substitutions),
                     AcpMcpServers.FromGeneratedConfig(dispatch.McpConfigJson),
                     dispatch.ResumeSessionRef),
                 onSessionId: sessionId =>
@@ -797,10 +798,10 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         return new StopAck(true, StopDelivery.DeadlineArmed);
     }
 
-    public bool TryPrompt(TaskId task, string text) =>
+    public bool TryPrompt(TaskId task) =>
         _tasks.TryGetValue(task, out var supervised)
         && supervised.Acp is { } acp
-        && acp.TryQueueFollowUp(text);
+        && acp.TryQueueFollowUp();
 
     public bool Kill(TaskId task)
     {

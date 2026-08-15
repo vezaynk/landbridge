@@ -15,6 +15,7 @@ argv a worker is launched with.
 | `profiles[]` | `name` | Profile identifier. `profiles` is a JSON **array**; exactly one entry MUST be named `default` (§10). |
 | `profiles[]` | `spawn` | argv passed to `execve` — **never a shell** (§10). Substitutions below. |
 | `profiles[]` | `protocol` | `stream` (default) \| `acp` — **how `docketd` talks to the worker**, which is a bigger choice than it looks: it decides who speaks first, where the prompt lives, what stdin is for, and how a stop is delivered. `stream` spawns the harness with its prompt in the argv and reads whatever NDJSON it prints; `acp` drives it over the [Agent Client Protocol](https://agentclientprotocol.com). Everything written before this key existed is a `stream` profile and stays one. A typo is **refused**, not defaulted, for the same reason `stdin`'s is: the default is the other mode, and an ACP agent left in stream mode is never prompted, prints nothing `docketd` reads, and dies of the liveness window. See [Protocol: `acp`](#protocol-acp-10) below. |
+| `profiles[]` | `follow_up` | The turn sent to **wake a live ACP session** when there is new input on the assignment — an answered question today, a Lead's message later (`ideas/sessions.md`). **Configuration, never content**: the input itself stays on the assignment and is pulled by the worker's own authenticated `get_task`, which is what makes that read a *receipt*. Pushing the text here instead would reduce delivery to "queued", put answer content on a second path out of the MCP channel, and mix per-message content into profile config. Name the docket tools the way *this* harness spells them; the default names none. Only meaningful for `protocol: acp`. |
 | `profiles[]` | `prompt` | The worker's opening turn. **Required for `protocol: acp` and meaningless without it** — an ACP agent takes no prompt on argv, so the text travels as `session/prompt` instead. Same `{...}` substitutions as the spawn argv. |
 | `profiles[]` | `stop` | `mode` (`message` \| `signal`), `message`, `wind_down_seconds` (default `30`). **`mode: message` is a declaration about your harness** — that a running session reads turns off stdin — and docketd takes it at its word: it writes the turn, then waits `min(ttl, wind_down_seconds)` for a voluntary exit before a hard tree-kill backstops it. It cannot check the claim, so declaring it for a harness that does not read stdin buys nothing and makes `preserve` a promise the machine will break. **`claude -p` is such a harness — use `signal` there** ([Stopping a `claude -p` worker](#stopping-a-claude--p-worker-10-11)). A `signal` profile writes nothing, and the worker gets the full `ttl` the plane granted to exit on its own before the kill (`wind_down_seconds` does not apply). Only `ttl=0` is killed immediately (§10, §11). There is no `signal` **key**: the deadline's kill is always the portable tree-kill, so a signal name had nothing to select. A config still declaring one is accepted unchanged — unknown keys are ignored — and means exactly what it always meant, which is nothing. |
 | `profiles[]` | `stdin` | `deadman` (default) \| `closed` — what the worker's stdin is. `deadman` holds the pipe's write end open for the worker's whole life; that pipe **is** the §10 dead-man's switch. `closed` sends EOF right after the spawn, for a harness that blocks reading piped stdin — **`codex exec` requires it**, and gives up nothing, because it never reaches the read that would observe EOF-as-death. Two things behave unlike the other enums here: a **typo is refused** rather than defaulted (defaulting would silently restore the pipe a profile was written to escape), and `closed` is **refused together with `stop.mode: message`**, whose wind-down turn would have nowhere to land. See [Closing the worker's stdin](#closing-the-workers-stdin-10). |
@@ -1163,6 +1164,10 @@ follow differ only in the spawn argv and the tool spelling.
       // still harness-specific: ACP standardizes the CLIENT-agent channel, not the
       // agent-MCP one, so OpenCode still spells docket's tools `docket_<name>`.
       "prompt": "You are a Docket worker running headless under docketd. You have been dispatched exactly one task. First call the docket_get_task MCP tool to read your assignment (namespace, description, completion_criteria, workspace, attempt). Do the work inside the assigned workspace. When done, call docket_report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call docket_request_input instead of guessing.",
+      // The wake-up turn, sent when there is new input on the assignment (an answered
+      // question). Configuration, never content: the answer is pulled by the worker over
+      // MCP, and that pull is the read receipt (§11).
+      "follow_up": "There is new input on your assignment. Call docket_get_task to read it, then continue.",
       // No events block: ACP is the event source. No resume block: resume is session/load.
       // No stdin key: deadman is correct and `closed` is refused.
       "stop": { "mode": "signal", "wind_down_seconds": 30 },
@@ -1201,6 +1206,7 @@ there is no interactive login step in the enroll path.
       // The adapter, not `claude`. It spawns claude itself.
       "spawn": ["claude-agent-acp"],
       "prompt": "You are a Docket worker running headless under docketd. You have been dispatched exactly one task. First call the mcp__docket__get_task MCP tool to read your assignment (namespace, description, completion_criteria, workspace, attempt). Read the docket-worker skill. Do the work inside the assigned workspace. When done, call mcp__docket__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call mcp__docket__request_input instead of guessing. You do not verify or complete the task yourself.",
+      "follow_up": "There is new input on your assignment. Call mcp__docket__get_task to read it, then continue.",
       // Model and turn caps are the adapter's business, not a docketd key — it reads the
       // same environment claude does. `--max-turns` has no ACP equivalent, so on this
       // profile the bound is the model plus the §10 no-progress ceiling. See the cost note.
@@ -1234,6 +1240,7 @@ ACP simply has.
       "protocol": "acp",
       "spawn": ["codex-acp"],
       "prompt": "You are a Docket worker running headless under docketd. You have been dispatched exactly one task. First call the mcp__docket__get_task MCP tool to read your assignment. Do the work inside the assigned workspace. When done, call mcp__docket__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call mcp__docket__request_input instead of guessing.",
+      "follow_up": "There is new input on your assignment. Call mcp__docket__get_task to read it, then continue.",
       // codex-acp authenticates from the environment (API Key) or a cached ChatGPT login,
       // both of which it declares as authMethods at initialize.
       "env": { "CODEX_API_KEY": "{env:CODEX_API_KEY}" },
@@ -1272,6 +1279,7 @@ gone, along with its side effect of declaring a docket MCP server for every inte
       // output shape that merely resembles ACP; the former is the protocol.
       "spawn": ["grok", "agent", "stdio"],
       "prompt": "You are a Docket worker running headless under docketd. You have been dispatched exactly one task. First call the docket__get_task MCP tool to read your assignment (namespace, description, completion_criteria, workspace, attempt). Do the work inside the assigned workspace. When done, call docket__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call docket__request_input instead of guessing.",
+      "follow_up": "There is new input on your assignment. Call docket__get_task to read it, then continue.",
       // 1.0.4+ gates project-local config behind folder trust and a work dir is a
       // throwaway folder. Carried over from the stream profile; re-confirm under ACP.
       "env": { "GROK_FOLDER_TRUST": "0" },

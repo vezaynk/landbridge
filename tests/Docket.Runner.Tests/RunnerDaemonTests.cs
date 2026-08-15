@@ -698,12 +698,12 @@ internal sealed class FakeProcessSupervisor : IProcessSupervisor
     /// <summary>Follow-up turns the daemon routed here, and whether a live session took them
     /// (<c>ideas/sessions.md</c> stage 1). Null keeps the "no live session" default, which is
     /// what every stream-mode task answers.</summary>
-    public List<(TaskId Task, string Text)> Prompted { get; } = [];
+    public List<TaskId> Prompted { get; } = [];
     public bool? PromptAccepted { get; set; }
 
-    public bool TryPrompt(TaskId task, string text)
+    public bool TryPrompt(TaskId task)
     {
-        Prompted.Add((task, text));
+        Prompted.Add(task);
         return PromptAccepted ?? false;
     }
 

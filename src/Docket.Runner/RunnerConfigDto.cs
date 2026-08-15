@@ -74,6 +74,12 @@ internal sealed class ProfileDto
     // its prompt in the spawn argv; an ACP agent takes no argv prompt, so the text has to
     // travel over the wire instead. Same `{...}` substitutions as the argv.
     public string? Prompt { get; set; }
+
+    // §11 / ideas/sessions.md: the turn sent to wake a live session when there is new input
+    // on the assignment. Configuration, never content — the answer itself stays on the
+    // assignment and is pulled over the authenticated MCP call, so this text only ever says
+    // "go read", and must name the docket tools the way THIS harness spells them.
+    public string? FollowUp { get; set; }
     public StopDto? Stop { get; set; }
     public ResumeDto? Resume { get; set; }
     public EventsDto? Events { get; set; }

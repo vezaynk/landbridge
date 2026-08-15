@@ -625,16 +625,21 @@ public class RunnerWireTests
     /// <summary>
     /// <c>prompt</c> round-trips (<c>ideas/sessions.md</c> stage 1) — the first command that
     /// assumes a worker is something you talk to rather than something you launch.
+    ///
+    /// <para>It names a task and nothing else, and the emptiness is the point: the input the
+    /// worker is being woken for stays on the assignment and is pulled over the authenticated
+    /// MCP call, so the read is a receipt (§11). A payload here would have been a message the
+    /// plane could only report as <em>queued</em>.</para>
     /// </summary>
     [Fact]
-    public void Prompt_command_round_trips()
+    public void Prompt_command_round_trips_and_carries_no_message()
     {
         var task = TaskId.New();
-        var encoded = RunnerWire.EncodeCommand(new PromptCommand(task, "Use schema B."));
+        var encoded = RunnerWire.EncodeCommand(new PromptCommand(task));
 
         var decoded = Assert.IsType<PromptCommand>(RunnerWire.DecodeCommand(encoded, out _));
         Assert.Equal(task, decoded.Task);
-        Assert.Equal("Use schema B.", decoded.Text);
+        Assert.Equal(new PromptCommand(task), decoded);
     }
 
     /// <summary>

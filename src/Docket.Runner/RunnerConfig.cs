@@ -776,7 +776,8 @@ public sealed record RunnerConfig(
                 ? null
                 : new ProfileHooks(dto.Hooks.BeforeSpawn, dto.Hooks.AfterExit),
             protocol,
-            dto.Prompt);
+            dto.Prompt,
+            dto.FollowUp);
     }
 
     internal static bool IsOctalFileMode(string raw)
@@ -874,8 +875,25 @@ public sealed record ProfileConfig(
     IReadOnlyList<ProfileFile>? Files = null,
     ProfileHooks? Hooks = null,
     ProtocolMode Protocol = ProtocolMode.Stream,
-    string? Prompt = null)
+    string? Prompt = null,
+    string? FollowUp = null)
 {
+    /// <summary>
+    /// §11 / <c>ideas/sessions.md</c>: the turn that wakes this profile's live session when
+    /// there is new input on the assignment. Never the input itself — the answer is pulled
+    /// over the authenticated MCP call, which is what makes the read a receipt (see
+    /// <see cref="Docket.Contracts.PromptCommand"/>).
+    ///
+    /// <para>The default names no tool, because the spelling is per-harness: claude and
+    /// Codex see <c>mcp__docket__get_task</c>, OpenCode <c>docket_get_task</c>, Grok
+    /// <c>docket__get_task</c>. A profile should say the right one — a worker that was told
+    /// to call a tool it does not have goes hunting, and one that was told nothing specific
+    /// has been observed reaching for a shell instead.</para>
+    /// </summary>
+    public string FollowUpTurn => FollowUp is { Length: > 0 } text
+        ? text
+        : "There is new input on your assignment. Read your assignment again before continuing.";
+
     /// <summary>This profile's agent-process policy; the closed default when unstated.</summary>
     public ProfileProcessesConfig ProcessPolicy => Processes ?? new ProfileProcessesConfig();
 

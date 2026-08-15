@@ -197,7 +197,7 @@ public sealed class RunnerDaemon
                 // nowhere must not read as delivered — and the two reasons it can go nowhere
                 // (the session ended; this is a stream profile with no channel that accepts
                 // a turn) have completely different fixes.
-                var queued = _supervisor.TryPrompt(prompt.Task, prompt.Text);
+                var queued = _supervisor.TryPrompt(prompt.Task);
                 var promptDetail = queued
                     ? "queued for the live session"
                     : "not delivered: no live ACP session for this task — it has ended, or this is a " +

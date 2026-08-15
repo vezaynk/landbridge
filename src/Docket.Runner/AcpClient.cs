@@ -357,20 +357,26 @@ public sealed class AcpClient
     }
 
     /// <summary>
-    /// Queues a follow-up turn for this session — the runner's half of the §10
+    /// Queues the profile's follow-up turn for this session — the runner's half of the §10
     /// <c>prompt</c> command. Returns false when the session cannot take one: it never
     /// opened, or it has been cancelled and is winding down.
+    ///
+    /// <para>Takes no text, deliberately. The turn is the profile's configured wake-up and
+    /// says only "go read your assignment"; the input itself is pulled by the worker over
+    /// the authenticated MCP call, which is what makes that read a receipt. See
+    /// <see cref="Docket.Contracts.PromptCommand"/> for the three properties this
+    /// protects.</para>
     ///
     /// <para>Deliberately a queue rather than a direct send. The plane's commands are
     /// best-effort and unordered with respect to a turn in flight, so a <c>prompt</c> that
     /// lands while the agent is mid-turn must wait for that turn rather than interleave
     /// with it.</para>
     /// </summary>
-    public bool TryQueueFollowUp(string text)
+    public bool TryQueueFollowUp()
     {
         if (_sessionId is not { Length: > 0 } || _cancelSent)
             return false;
-        return _followUps.Writer.TryWrite(text);
+        return _followUps.Writer.TryWrite(_request.FollowUp);
     }
 
     private async Task<string?> NewSessionAsync(CancellationToken ct)
@@ -920,11 +926,17 @@ public sealed class AcpClient
 /// substitutions applied. In stream mode this text lives in the spawn argv; ACP agents take
 /// no prompt on argv, so it moves here.
 /// </param>
+/// <param name="FollowUp">
+/// The turn sent to wake this session when there is new input on the assignment
+/// (<c>profiles[].follow_up</c>). Configuration, not content: it tells the worker to read,
+/// and the reading is what the plane treats as delivery.
+/// </param>
 /// <param name="McpServers">The plane's MCP server, translated from the generated config.</param>
 /// <param name="ResumeSessionRef">§11: the session to <c>session/load</c>, when the plane has one.</param>
 public sealed record AcpSessionRequest(
     string WorkDir,
     string Prompt,
+    string FollowUp,
     IReadOnlyList<AcpMcpServer> McpServers,
     string? ResumeSessionRef = null);
 
