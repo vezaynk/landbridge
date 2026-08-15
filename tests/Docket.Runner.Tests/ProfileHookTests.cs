@@ -122,7 +122,9 @@ public sealed class ProfileHookSpawnTests : IDisposable
         Assert.True(await TestKit.WaitUntilAsync(() => File.Exists(path), TimeSpan.FromSeconds(10)));
         var env = await File.ReadAllTextAsync(path);
         var workDir = Path.Combine(_workRoot, task.ToString());
-        Assert.Contains($"CODEX_HOME={Path.Combine(workDir, ".codex")}", env, StringComparison.Ordinal);
+        // Verbatim substitution — same rule as ProfileEnvSpawnTests. Path.Combine
+        // on Windows would look for a backslash the config never wrote.
+        Assert.Contains($"CODEX_HOME={workDir}/.codex", env, StringComparison.Ordinal);
         Assert.Contains("DOCKET_PROFILE_ENV_MARKER=from-profile", env, StringComparison.Ordinal);
         Assert.DoesNotContain("DOCKET_TASK_ID=", env, StringComparison.Ordinal);
         Assert.DoesNotContain("DOCKET_WORKER_TOKEN=", env, StringComparison.Ordinal);
