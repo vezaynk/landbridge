@@ -95,7 +95,13 @@ public sealed class ProfileEnvSpawnTests : IDisposable
         var workDir = Path.Combine(_workRoot, task.ToString());
 
         Assert.Equal("from-profile", env["DOCKET_PROFILE_ENV_MARKER"]);
-        Assert.Equal(Path.Combine(workDir, ".grok"), env["GROK_HOME"]);
+        // Verbatim substitution, so the expectation is verbatim too: the declared value is
+        // "{work_dir}/.grok" and `Substitute` only replaces the token, leaving the operator's
+        // own separator alone. NOT Path.Combine — on Windows that builds an all-backslash
+        // string while the actual keeps the config's forward slash before `.grok`, which is
+        // exactly how this failed the Windows leg of #164. docketd must not silently rewrite
+        // a value the operator wrote; spawn argv and files[] paths substitute the same way.
+        Assert.Equal($"{workDir}/.grok", env["GROK_HOME"]);
         Assert.Equal(task.ToString(), env["DOCKET_TASK_ID"]);
         Assert.Equal("machine-42", env["DOCKET_MACHINE_ID"]);
 
