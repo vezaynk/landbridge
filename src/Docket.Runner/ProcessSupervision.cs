@@ -128,6 +128,11 @@ public sealed class SupervisedTask
     /// does not have to keep the profile. Empty means no hook.</summary>
     public IReadOnlyList<string> AfterExit { get; init; } = [];
 
+    /// <summary><c>profiles[].env</c> as of spawn, so <c>after_exit</c> sees the
+    /// same map the worker and <c>before_spawn</c> did.</summary>
+    public IReadOnlyDictionary<string, string> ProfileEnv { get; init; } =
+        new Dictionary<string, string>(StringComparer.Ordinal);
+
     /// <summary>
     /// §11 resume: the harness session id captured from the events stream (claude
     /// <c>system/init</c>), set by the <see cref="TerminalEventReader"/> when
@@ -380,7 +385,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
 
         WriteProfileFiles(profile, workDir, substitutions);
         RunProfileHook(
-            profile.Hooks.BeforeSpawn, substitutions, workDir, machineId, "before_spawn", failClosed: true);
+            profile.Hooks.BeforeSpawn, substitutions, profile.Env, workDir, machineId, "before_spawn", failClosed: true);
 
         var argv = spawnArgv.Select(a => Substitute(a, substitutions)).ToArray();
 
@@ -467,6 +472,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             Stop = profile.Stop,
             Stdin = profile.Stdin,
             AfterExit = profile.Hooks.AfterExit,
+            ProfileEnv = profile.Env,
         };
         process.Exited += (_, _) => OnExited(supervised, machineId);
 
@@ -797,7 +803,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
                 ["work_dir"] = supervised.WorkDir,
             };
             RunProfileHook(
-                supervised.AfterExit, afterSubs, supervised.WorkDir, machineId, "after_exit", failClosed: false);
+                supervised.AfterExit, afterSubs, supervised.ProfileEnv, supervised.WorkDir, machineId, "after_exit", failClosed: false);
         }
         catch { /* best effort */ }
     }
@@ -849,8 +855,14 @@ public sealed class ProcessSupervisor : IProcessSupervisor
     /// </summary>
     private static void ApplyProfileEnvironment(
         ProcessStartInfo psi, ProfileConfig profile, IReadOnlyDictionary<string, string> substitutions)
+        => ApplyProfileEnvironment(psi, profile.Env, substitutions);
+
+    private static void ApplyProfileEnvironment(
+        ProcessStartInfo psi,
+        IReadOnlyDictionary<string, string> env,
+        IReadOnlyDictionary<string, string> substitutions)
     {
-        foreach (var (key, value) in profile.Env)
+        foreach (var (key, value) in env)
         {
             if (string.IsNullOrWhiteSpace(key) || HarnessTelemetry.IsReserved(key))
                 continue;
@@ -873,7 +885,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             if (!IsUnderWorkDir(workDir, path))
                 throw new InvalidOperationException(
                     $"profile '{profile.Name}' file '{file.Path}' resolves outside the work dir");
-            var full = Path.GetFullPath(path);
+            var full = ResolveUnderWorkDir(workDir, path);
             var dir = Path.GetDirectoryName(full);
             if (!string.IsNullOrEmpty(dir))
                 Directory.CreateDirectory(dir);
@@ -885,7 +897,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
     internal static bool IsUnderWorkDir(string workDir, string path)
     {
         var root = Path.GetFullPath(workDir);
-        var full = Path.GetFullPath(path);
+        var full = ResolveUnderWorkDir(workDir, path);
         if (string.Equals(root, full, StringComparison.Ordinal))
             return true;
         var prefix = root.EndsWith(Path.DirectorySeparatorChar)
@@ -893,6 +905,15 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             : root + Path.DirectorySeparatorChar;
         return full.StartsWith(prefix, StringComparison.Ordinal);
     }
+
+    /// <summary>
+    /// Resolve a <c>files[]</c> path against the work dir so a relative
+    /// <c>.grok/config.toml</c> lands in the clone, not docketd's cwd.
+    /// </summary>
+    internal static string ResolveUnderWorkDir(string workDir, string path)
+        => Path.IsPathRooted(path)
+            ? Path.GetFullPath(path)
+            : Path.GetFullPath(Path.Combine(workDir, path));
 
     private static void ApplyDeclaredMode(string path, string? mode)
     {
@@ -919,6 +940,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
     private static void RunProfileHook(
         IReadOnlyList<string> argv,
         IReadOnlyDictionary<string, string> substitutions,
+        IReadOnlyDictionary<string, string> profileEnv,
         string workDir,
         string machineId,
         string hookName,
@@ -946,6 +968,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         for (var i = 1; i < resolved.Length; i++)
             psi.ArgumentList.Add(resolved[i]);
 
+        ApplyProfileEnvironment(psi, profileEnv, substitutions);
         psi.Environment["DOCKET_MACHINE_ID"] = machineId;
         psi.Environment["DOCKET_HOOK"] = hookName;
         psi.Environment.Remove("DOCKET_TASK_ID");

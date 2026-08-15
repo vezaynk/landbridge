@@ -58,7 +58,10 @@ public class ProfileFilesLoadTests
             Assert.True(ProcessSupervisor.IsUnderWorkDir(workDir, Path.Combine(workDir, ".grok", "config.toml")));
             Assert.True(ProcessSupervisor.IsUnderWorkDir(workDir, workDir));
             Assert.True(ProcessSupervisor.IsUnderWorkDir(workDir, Path.Combine(workDir, "..", Path.GetFileName(workDir), "x")));
+            Assert.True(ProcessSupervisor.IsUnderWorkDir(workDir, ".grok/config.toml"));
+            Assert.True(ProcessSupervisor.IsUnderWorkDir(workDir, "nested/file.txt"));
             Assert.False(ProcessSupervisor.IsUnderWorkDir(workDir, Path.Combine(workDir, "..", "secret")));
+            Assert.False(ProcessSupervisor.IsUnderWorkDir(workDir, "../secret"));
             Assert.False(ProcessSupervisor.IsUnderWorkDir(workDir, Path.Combine(Path.GetTempPath(), "not-this")));
         }
         finally
@@ -136,6 +139,24 @@ public sealed class ProfileFilesSpawnTests : IDisposable
         var body = await File.ReadAllTextAsync(path);
         Assert.Contains("\"url\":\"http://plane.test/mcp\"", body, StringComparison.Ordinal);
         Assert.Contains("\"Authorization\":\"Bearer dkt_w_abc\"", body, StringComparison.Ordinal);
+        Assert.True(_supervisor!.Kill(task));
+    }
+
+    [Fact]
+    public async Task A_relative_file_path_is_written_under_the_work_dir()
+    {
+        var task = TaskId.New();
+        Supervisor().Spawn(
+            TestKit.Dispatch(task),
+            TestKit.Profile("echo-env", files:
+            [
+                new ProfileFile(".grok/config.toml", "relative = true\n"),
+            ]),
+            "m");
+
+        var path = Path.Combine(_workRoot, task.ToString(), ".grok", "config.toml");
+        Assert.True(await TestKit.WaitUntilAsync(() => File.Exists(path), TimeSpan.FromSeconds(5)));
+        Assert.Contains("relative = true", await File.ReadAllTextAsync(path), StringComparison.Ordinal);
         Assert.True(_supervisor!.Kill(task));
     }
 
