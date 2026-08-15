@@ -259,9 +259,28 @@ jobs:
         if: matrix.harness != 'grok'
         run: npm install -g @anthropic-ai/claude-code@2.1.232
 
+      # The ACP adapters. Claude and Codex have no native ACP server, so the shared
+      # real-harness bar — which now builds its rigs on `protocol: acp` — spawns these
+      # instead of the CLI directly. OpenCode and Grok need nothing: their ACP entry
+      # point is a subcommand of the CLI installed above (`opencode acp`,
+      # `grok agent stdio`).
+      #
+      # Pinned like the CLIs, and deliberately NOT registered with the bump bot
+      # (HarnessPackages.All): an adapter is a second upstream between docketd and the
+      # model, and auto-bumping one out of step with its harness is exactly the kind of
+      # break that would first surface as a paid run failing. Capability drift is what
+      # tools/acp-probe is for.
+      - name: Install claude ACP adapter
+        if: matrix.harness != 'grok'
+        run: npm install -g @agentclientprotocol/claude-agent-acp@0.68.0
+
       - name: Install codex CLI
         if: matrix.harness == 'codex'
         run: npm install -g @openai/codex@0.147.0
+
+      - name: Install codex ACP adapter
+        if: matrix.harness == 'codex'
+        run: npm install -g @agentclientprotocol/codex-acp@1.3.0
 
       - name: Install opencode CLI
         if: matrix.harness == 'opencode'
