@@ -611,4 +611,164 @@ public class RunnerConfigTests
         Assert.Contains("next docketd start", warning, StringComparison.Ordinal);
         Assert.DoesNotContain("'default'", warning, StringComparison.Ordinal);
     }
+
+    // ── §10 protocol: acp ───────────────────────────────────────────────────────
+
+    /// <summary>
+    /// The default is unchanged and unstated: every profile written before this key existed
+    /// is a stream profile and stays one. A migration that silently reinterpreted existing
+    /// configs would be the worst possible way to introduce a second protocol.
+    /// </summary>
+    [Fact]
+    public void A_profile_that_declares_no_protocol_is_a_stream_profile()
+    {
+        var config = RunnerConfig.Load(ValidJson);
+
+        Assert.Equal(ProtocolMode.Stream, config.Default.Protocol);
+        Assert.Null(config.Default.Prompt);
+    }
+
+    [Fact]
+    public void An_acp_profile_carries_its_protocol_and_prompt()
+    {
+        var config = RunnerConfig.Load(AcpProfile());
+
+        Assert.Equal(ProtocolMode.Acp, config.Default.Protocol);
+        Assert.Equal("Do the task.", config.Default.Prompt);
+    }
+
+    /// <summary>
+    /// Parsed strictly, exactly as <c>stdin</c> is, and for a sharper version of the same
+    /// reason: the default is the OTHER mode, so a typo would spawn an ACP agent in stream
+    /// mode — where docketd never prompts it, understands nothing it prints, and lets it die
+    /// of the liveness window with no explanation anywhere.
+    /// </summary>
+    [Fact]
+    public void An_unrecognized_protocol_is_refused_rather_than_defaulted()
+    {
+        Assert.False(RunnerConfig.TryLoad(AcpProfile(protocol: "ACP-2"), out _, out var errors));
+
+        Assert.Contains(errors, e => e.Contains("not a protocol") && e.Contains("'stream'") && e.Contains("'acp'"));
+    }
+
+    /// <summary>An ACP agent takes no prompt on argv, so a profile without one starts a
+    /// worker that connects and waits forever.</summary>
+    [Fact]
+    public void An_acp_profile_without_a_prompt_is_refused()
+    {
+        Assert.False(RunnerConfig.TryLoad(AcpProfile(prompt: null), out _, out var errors));
+
+        Assert.Contains(errors, e => e.Contains("without a `prompt`"));
+    }
+
+    /// <summary>
+    /// The exact inverse of the Codex and OpenCode stream profiles, which <em>require</em>
+    /// closed stdin. Under ACP stdin is the request channel, so closing it at spawn ends the
+    /// session before <c>initialize</c> — and the dead-man's switch that closing costs a
+    /// stream profile is here free, because ACP's own shutdown rule is the same mechanism.
+    /// </summary>
+    [Fact]
+    public void An_acp_profile_may_not_close_stdin()
+    {
+        Assert.False(RunnerConfig.TryLoad(AcpProfile(extra: """ "stdin": "closed", """), out _, out var errors));
+
+        Assert.Contains(errors, e => e.Contains("JSON-RPC request channel"));
+    }
+
+    /// <summary>
+    /// Not a missing feature — a renamed one. The transport forbids non-ACP bytes on the
+    /// agent's stdin, so a free-text wind-down turn is a protocol violation here rather than
+    /// merely an unread line, and <c>session/cancel</c> is the replacement.
+    /// </summary>
+    [Fact]
+    public void An_acp_profile_may_not_declare_a_message_mode_stop()
+    {
+        var json = AcpProfile(extra: """ "stop": { "mode": "message" }, """);
+
+        Assert.False(RunnerConfig.TryLoad(json, out _, out var errors));
+        Assert.Contains(errors, e => e.Contains("session/cancel"));
+    }
+
+    /// <summary>
+    /// Each of these keys describes something ACP replaces, and each is refused rather than
+    /// ignored for the reason this whole area keeps relearning: an operator porting a stream
+    /// profile carries them over by hand, and a key that looks like a knob and moves nothing
+    /// is the failure mode. Note what the mapping refusal means in practice — the thirteen
+    /// mapping keys an OpenCode stream profile needs all become nothing to declare.
+    /// </summary>
+    [Theory]
+    [InlineData(""" "events": { "source": "terminal" }, """, "events.source")]
+    [InlineData(""" "events": { "mapping": { "type_key": "kind" } }, """, "events.mapping")]
+    [InlineData(""" "resume": { "args": ["opencode", "run", "--session", "{session_id}"] }, """, "session/load")]
+    public void An_acp_profile_refuses_the_stream_keys_it_replaces(string extra, string expected)
+    {
+        Assert.False(RunnerConfig.TryLoad(AcpProfile(extra: extra), out _, out var errors));
+
+        Assert.Contains(errors, e => e.Contains(expected));
+    }
+
+    /// <summary>
+    /// <c>events.source: none</c> stays legal, because it is what an absent key already
+    /// means — refusing it would fail a config that says nothing new.
+    /// </summary>
+    [Fact]
+    public void An_acp_profile_tolerates_an_explicit_events_source_of_none()
+    {
+        Assert.True(
+            RunnerConfig.TryLoad(AcpProfile(extra: """ "events": { "source": "none" }, """), out _, out var errors),
+            string.Join("; ", errors));
+    }
+
+    /// <summary>
+    /// §10 event-relay warnings exist to say "this profile has no progress signal", and an
+    /// ACP profile has one — tool calls arrive as <c>session/update</c> notifications. Left
+    /// in the sweep it would be warned about for lacking an <c>events.source</c> it is
+    /// forbidden from declaring, which is the machine contradicting itself.
+    /// </summary>
+    [Fact]
+    public void An_acp_profile_is_not_warned_for_having_no_events_source()
+    {
+        var warnings = RunnerConfig.Load(AcpProfile()).EventRelayWarnings();
+
+        Assert.Empty(warnings);
+    }
+
+    /// <summary>An ACP profile alongside a blind stream profile: only the stream one is named.</summary>
+    [Fact]
+    public void An_acp_profile_does_not_suppress_the_warning_for_a_blind_stream_profile()
+    {
+        var json = """
+        { "machine": { "work_root": "/w" },
+          "profiles": [
+            { "name": "default", "protocol": "acp", "prompt": "go", "spawn": ["opencode", "acp"] },
+            { "name": "legacy", "spawn": ["claude", "-p"], "events": { "source": "none" } }
+          ] }
+        """;
+
+        var warnings = RunnerConfig.Load(json).EventRelayWarnings();
+
+        Assert.Contains(warnings, w => w.Contains("profile 'legacy'"));
+        Assert.DoesNotContain(warnings, w => w.Contains("profile 'default'"));
+    }
+
+    /// <summary>
+    /// A worked ACP profile, shaped like the OpenCode one in the enroll reference:
+    /// <c>opencode acp</c>, a prompt on the wire, and none of the stream-mode scaffolding.
+    /// </summary>
+    private static string AcpProfile(
+        string? protocol = "acp", string? prompt = "Do the task.", string extra = "") =>
+        $$"""
+        {
+          "machine": { "work_root": "/var/lib/docketd/work" },
+          "profiles": [
+            {
+              "name": "default",
+              {{(protocol is null ? "" : $"\"protocol\": \"{protocol}\",")}}
+              {{(prompt is null ? "" : $"\"prompt\": \"{prompt}\",")}}
+              {{extra}}
+              "spawn": ["opencode", "acp"]
+            }
+          ]
+        }
+        """;
 }

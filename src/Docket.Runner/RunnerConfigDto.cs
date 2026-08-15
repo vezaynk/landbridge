@@ -63,6 +63,17 @@ internal sealed class ProfileDto
 {
     public string? Name { get; set; }
     public List<string>? Spawn { get; set; }
+
+    // §10 how docketd talks to the worker: `stream` (spawn it, read whatever NDJSON it
+    // prints — the original behaviour and the default) or `acp` (drive it over the Agent
+    // Client Protocol). A bare string for the same reason `stdin` is one: there is one
+    // decision here, and `protocol: acp` is what a human types.
+    public string? Protocol { get; set; }
+
+    // §10 the worker's opening turn, for `protocol: acp` only. A stream-mode profile puts
+    // its prompt in the spawn argv; an ACP agent takes no argv prompt, so the text has to
+    // travel over the wire instead. Same `{...}` substitutions as the argv.
+    public string? Prompt { get; set; }
     public StopDto? Stop { get; set; }
     public ResumeDto? Resume { get; set; }
     public EventsDto? Events { get; set; }

@@ -59,8 +59,12 @@ public sealed record RunnerConfig(
     /// </summary>
     public IReadOnlyList<string> EventRelayWarnings()
     {
+        // An ACP profile is deliberately exempt: its events do not come from an
+        // events.source at all, they come from the protocol — `session/update` tool_call
+        // notifications, which the AcpClient maps to the same ToolCallEvent this warning
+        // exists to say is missing. Warning about it would be the opposite of true.
         var blind = Profiles
-            .Where(p => p.Value.Events.Source != EventsSource.Terminal)
+            .Where(p => p.Value.Protocol != ProtocolMode.Acp && p.Value.Events.Source != EventsSource.Terminal)
             .OrderBy(p => p.Key, StringComparer.Ordinal)
             .ToArray();
 
@@ -472,6 +476,19 @@ public sealed record RunnerConfig(
                 && string.IsNullOrWhiteSpace(after[0]))
                 problems.Add($"profile '{name}' hooks.after_exit has an empty argv[0]");
 
+            if (!TryParseProtocol(dto.Protocol, out var protocol))
+            {
+                problems.Add(
+                    $"profile '{name}' declares protocol '{dto.Protocol}', which is not a protocol — use " +
+                    "'stream' (spawn the harness and read its NDJSON stdout; the default and the original " +
+                    "behaviour) or 'acp' (drive it over the Agent Client Protocol)");
+            }
+            else if (protocol == ProtocolMode.Acp)
+            {
+                foreach (var problem in AcpProfileProblems(dto))
+                    problems.Add($"profile '{name}' {problem}");
+            }
+
             built[name] = BuildProfile(dto);
         }
 
@@ -482,6 +499,102 @@ public sealed record RunnerConfig(
             problems.Add("more than one 'default' profile declared — exactly one is required (§10)");
 
         return problems.Count == 0 ? built : null;
+    }
+
+    /// <summary>
+    /// §10 validation for a <see cref="ProtocolMode.Acp"/> profile. Every rule here refuses a
+    /// key that ACP <em>replaces</em> rather than one it lacks, and each is refused rather
+    /// than ignored for the reason this file keeps returning to: a config field that looks
+    /// like a knob and moves nothing is the failure mode of this whole area. An operator
+    /// porting a stream profile will carry these keys over by hand, and every one of them
+    /// would otherwise go quietly inert.
+    ///
+    /// <list type="number">
+    ///   <item><c>prompt</c> is <b>required</b>. An ACP agent takes no prompt on argv — the
+    ///     client sends it as <c>session/prompt</c> — so a profile without one spawns a
+    ///     worker that connects, waits, and does nothing.</item>
+    ///   <item><c>stdin: closed</c> is refused. Under ACP stdin is the request channel, so
+    ///     closing it at spawn ends the session before <c>initialize</c>. Note this is the
+    ///     exact inverse of the Codex/OpenCode stream profiles, which <em>require</em>
+    ///     closed stdin — an ACP agent reads stdin as a protocol, not as a prompt, so the
+    ///     blocking read that forced that choice does not exist here.</item>
+    ///   <item><c>stop.mode: message</c> is refused. The transport forbids writing anything
+    ///     to the agent's stdin that is not an ACP message, so a free-text wind-down turn
+    ///     is not merely unread here, it is a protocol violation. <c>session/cancel</c> is
+    ///     the replacement and it is strictly better: the agent is specified to honour it.</item>
+    ///   <item><c>events.source</c> other than <c>none</c> is refused. ACP <em>is</em> the
+    ///     event source; declaring <c>terminal</c> alongside it asks docketd to read one
+    ///     stream two ways.</item>
+    ///   <item><c>events.mapping</c> is refused. Every key in it renames part of a
+    ///     harness-specific stream shape, and ACP fixes those shapes in the spec — there is
+    ///     nothing left to map, which is most of the point.</item>
+    ///   <item><c>resume.args</c> is refused. §11 resume under ACP is <c>session/load</c> on
+    ///     the live connection, so a respawn argv would never be reached.</item>
+    /// </list>
+    /// </summary>
+    private static IReadOnlyList<string> AcpProfileProblems(ProfileDto dto)
+    {
+        var problems = new List<string>();
+
+        if (string.IsNullOrWhiteSpace(dto.Prompt))
+            problems.Add(
+                "declares protocol 'acp' without a `prompt` — an ACP agent takes no prompt on argv, so the " +
+                "worker's opening turn has to be declared here and sent as session/prompt (§10)");
+
+        if (TryParseStdin(dto.Stdin, out var stdin) && stdin == StdinPolicy.Closed)
+            problems.Add(
+                "declares protocol 'acp' with stdin 'closed' — under ACP stdin is the JSON-RPC request " +
+                "channel, so closing it at spawn ends the session before initialize. Leave it 'deadman': " +
+                "ACP's own shutdown rule (the client closes stdin to terminate the agent) IS the dead-man's " +
+                "switch, so an ACP profile keeps it for free (§10)");
+
+        if (ParseEnum(dto.Stop?.Mode, StopMode.Signal) == StopMode.Message)
+            problems.Add(
+                "declares protocol 'acp' with stop.mode 'message' — the ACP transport forbids writing " +
+                "anything to the agent's stdin that is not an ACP message, so a free-text wind-down turn is a " +
+                "protocol violation rather than merely an unread one. Declare 'signal': an ACP stop is sent " +
+                "as session/cancel first, which the agent is specified to honour, with the deadline kill " +
+                "behind it (§10, §11)");
+
+        if (!string.IsNullOrWhiteSpace(dto.Events?.Source)
+            && !string.Equals(dto.Events.Source.Trim(), "none", StringComparison.OrdinalIgnoreCase))
+            problems.Add(
+                $"declares protocol 'acp' with events.source '{dto.Events.Source}' — ACP is itself the event " +
+                "source (tool calls arrive as session/update notifications), so an events.source alongside it " +
+                "asks docketd to read one stream two ways. Drop the key (§10)");
+
+        if (dto.Events?.Mapping is { Count: > 0 })
+            problems.Add(
+                "declares protocol 'acp' with an events.mapping — every mapping key renames part of a " +
+                "harness-specific stdout shape, and ACP fixes those shapes in the spec, so there is nothing " +
+                "left to map and the mapping would be inert. Drop it (§10)");
+
+        if (dto.Resume?.Args is { Count: > 0 })
+            problems.Add(
+                "declares protocol 'acp' with resume.args — §11 resume under ACP is session/load on the live " +
+                "connection, not a respawn, so the argv would never be reached. Drop it; resume needs the " +
+                "agent's 'loadSession' capability instead, and docketd says so per task when it is missing (§11)");
+
+        return problems;
+    }
+
+    /// <summary>
+    /// The two <c>protocol</c> spellings. Parsed strictly, for the same reason
+    /// <see cref="TryParseStdin"/> is: the default is the <em>other</em> mode, so a typo
+    /// would silently spawn an ACP agent in stream mode, where it prints nothing docketd
+    /// understands, is never prompted, and dies of the liveness window with no explanation.
+    /// </summary>
+    private static bool TryParseProtocol(string? raw, out ProtocolMode protocol)
+    {
+        protocol = ProtocolMode.Stream;
+        if (string.IsNullOrWhiteSpace(raw))
+            return true;
+        switch (raw.Trim().ToLowerInvariant())
+        {
+            case "stream": protocol = ProtocolMode.Stream; return true;
+            case "acp": protocol = ProtocolMode.Acp; return true;
+            default: return false;
+        }
     }
 
     /// <summary>
@@ -617,6 +730,7 @@ public sealed record RunnerConfig(
         // Validation refused every value this cannot parse, so the out is the declared
         // policy or — for an absent key — the Deadman default it initialises to.
         TryParseStdin(dto.Stdin, out var stdin);
+        TryParseProtocol(dto.Protocol, out var protocol);
 
         var stopMode = ParseEnum(dto.Stop?.Mode, StopMode.Signal);
         var windDown = dto.Stop?.WindDownSeconds is { } w and > 0
@@ -660,7 +774,9 @@ public sealed record RunnerConfig(
             dto.Files?.Select(f => new ProfileFile(f.Path ?? "", f.Contents ?? "", f.Mode)).ToArray(),
             dto.Hooks is null
                 ? null
-                : new ProfileHooks(dto.Hooks.BeforeSpawn, dto.Hooks.AfterExit));
+                : new ProfileHooks(dto.Hooks.BeforeSpawn, dto.Hooks.AfterExit),
+            protocol,
+            dto.Prompt);
     }
 
     internal static bool IsOctalFileMode(string raw)
@@ -756,7 +872,9 @@ public sealed record ProfileConfig(
     StdinPolicy Stdin = StdinPolicy.Deadman,
     IReadOnlyDictionary<string, string>? Env = null,
     IReadOnlyList<ProfileFile>? Files = null,
-    ProfileHooks? Hooks = null)
+    ProfileHooks? Hooks = null,
+    ProtocolMode Protocol = ProtocolMode.Stream,
+    string? Prompt = null)
 {
     /// <summary>This profile's agent-process policy; the closed default when unstated.</summary>
     public ProfileProcessesConfig ProcessPolicy => Processes ?? new ProfileProcessesConfig();
@@ -798,6 +916,35 @@ public sealed record ProfileHooks(
 {
     public IReadOnlyList<string> BeforeSpawn { get; init; } = BeforeSpawn ?? [];
     public IReadOnlyList<string> AfterExit { get; init; } = AfterExit ?? [];
+}
+
+/// <summary>
+/// §10 <c>profiles[].protocol</c>: how docketd talks to a worker. The distinction is not
+/// cosmetic — it decides who speaks first, where the prompt lives, what stdin is for, and
+/// how a stop is delivered — which is why it is a profile-level key rather than another
+/// <c>events.source</c> value.
+/// </summary>
+public enum ProtocolMode
+{
+    /// <summary>
+    /// Spawn the harness with its prompt in the argv and read whatever NDJSON it prints
+    /// (<see cref="TerminalEventReader"/>). The original behaviour and the default: every
+    /// profile written before this key existed is a stream profile, and stays one.
+    /// </summary>
+    Stream,
+
+    /// <summary>
+    /// Drive the worker over the Agent Client Protocol (<see cref="AcpClient"/>): JSON-RPC
+    /// 2.0, newline-delimited, over its stdin/stdout. docketd sends <c>initialize</c>, opens
+    /// or loads a session, and sends the profile's <c>prompt</c> as the opening turn.
+    ///
+    /// <para>What this buys, concretely: no <c>events.mapping</c> (the shapes are in the
+    /// spec), the plane's MCP server handed over on <c>session/new</c> instead of through a
+    /// generated file or an operator-written static one, a stop that is a real
+    /// <c>session/cancel</c> rather than a kill, and §11 resume as <c>session/load</c> on
+    /// the live connection instead of a respawn.</para>
+    /// </summary>
+    Acp,
 }
 
 /// <summary>

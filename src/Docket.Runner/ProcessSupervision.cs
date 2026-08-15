@@ -168,6 +168,14 @@ public sealed class SupervisedTask
     internal Task? EventReaderTask { get; set; }
 
     /// <summary>
+    /// §10 <see cref="ProtocolMode.Acp"/>: the live conversation with this worker, held so a
+    /// stop can be delivered as <c>session/cancel</c> on the connection that is already
+    /// open. Null for a <see cref="ProtocolMode.Stream"/> profile, which has no channel to
+    /// the agent beyond the stdin pipe and therefore no cooperative stop worth the name.
+    /// </summary>
+    internal AcpClient? Acp { get; set; }
+
+    /// <summary>
     /// §12 transcript capture: the per-instance writer teeing this worker's stdout and
     /// stderr to <c>&lt;state&gt;/transcripts</c>. Null when capture is off for the
     /// profile or the supervisor has no <see cref="TranscriptStore"/>. Flushed and
@@ -322,11 +330,18 @@ public sealed class ProcessSupervisor : IProcessSupervisor
 
     public TaskId Spawn(DispatchCommand dispatch, ProfileConfig profile, string machineId)
     {
+        var acp = profile.Protocol == ProtocolMode.Acp;
+
         // §11 resume: continue a parked transcript when the plane hands back a
         // harness session ref for a task that was worked before AND this profile
         // declares how to resume (resume.args). A ref with no resume config, or no
         // ref at all, falls back to a normal spawn — a documented cold start (§11).
-        var resuming = dispatch.ResumeSessionRef is { Length: > 0 } && profile.Resume is not null;
+        //
+        // An ACP profile never takes this branch: its resume is `session/load` on the
+        // connection this spawn is about to open, so the argv is the same either way and
+        // the ref travels in the AcpSessionRequest below instead. Config validation refuses
+        // resume.args on an ACP profile, so there is nothing here to choose between.
+        var resuming = !acp && dispatch.ResumeSessionRef is { Length: > 0 } && profile.Resume is not null;
         var spawnArgv = resuming ? profile.Resume!.Args : profile.Spawn;
         if (spawnArgv.Count == 0)
             throw new InvalidOperationException(
@@ -396,7 +411,10 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         // blocks the worker's writes. Hooks/Otel still arrive out-of-band; a
         // non-Terminal, non-capturing profile leaves both streams inherited exactly as
         // before.
-        var drainStdout = profile.Events.Source == EventsSource.Terminal;
+        // An ACP profile always drains: stdout carries the agent's half of the JSON-RPC
+        // conversation, so it is not merely a source of events but the only way the
+        // handshake completes at all.
+        var drainStdout = acp || profile.Events.Source == EventsSource.Terminal;
         var captureEnabled = profile.Logs.Capture && _transcripts is not null;
         var redirectStdout = drainStdout || captureEnabled;
         var redirectStderr = captureEnabled;
@@ -566,7 +584,48 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         // the CTS (teardown) ends it cleanly; OnExited cancels the CTS as a backstop.
         // When §12 capture is also on, the SAME drain tees each verbatim line to the
         // transcript via rawLineSink — one read of stdout serves both.
-        if (drainStdout)
+        if (acp)
+        {
+            // §10 ACP: the same background drain shape as the terminal reader — it runs for
+            // the process's whole lifetime and is what keeps the stdout pipe from filling —
+            // except it also WRITES, driving initialize → session → prompt on the stdin the
+            // deadman policy is already holding open. One task, one conversation.
+            var cts = new CancellationTokenSource();
+            supervised.EventReaderCts = cts;
+            var client = new AcpClient(
+                dispatch.Task,
+                _ring,
+                _clock,
+                new AcpSessionRequest(
+                    workDir,
+                    Substitute(profile.Prompt ?? "", substitutions),
+                    AcpMcpServers.FromGeneratedConfig(dispatch.McpConfigJson),
+                    dispatch.ResumeSessionRef),
+                onSessionId: sessionId =>
+                {
+                    // Same one-per-task guard and the same reason as the stream path: the
+                    // plane needs the ref on the task row before any park can carry it.
+                    if (supervised.SessionId is not null)
+                        return;
+                    supervised.SessionId = sessionId;
+                    _ring.Enqueue(new SessionStartedEvent(dispatch.Task, sessionId, _clock.GetUtcNow()));
+                },
+                rawLineSink: writer is null ? null : writer.WriteStdoutLine);
+
+            // Held so StopAsync can send session/cancel: an ACP stop is a protocol message
+            // on this connection, not a signal and not a line of free text.
+            supervised.Acp = client;
+            supervised.EventReaderTask = Task
+                .Run(
+                    () => client.RunAsync(process.StandardOutput, process.StandardInput, cts.Token),
+                    CancellationToken.None)
+                .ContinueWith(
+                    static (_, state) => ((CancellationTokenSource)state!).Dispose(),
+                    cts, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
+            if (writer is not null)
+                feeders.Add(supervised.EventReaderTask);
+        }
+        else if (drainStdout)
         {
             var cts = new CancellationTokenSource();
             supervised.EventReaderCts = cts;
@@ -653,6 +712,29 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         {
             KillTree(supervised);
             return new StopAck(true, StopDelivery.ImmediateKill);
+        }
+
+        // §10/§11 ACP stop: a real cancel, on the connection already open — and the one
+        // place where the protocol migration changes an outcome rather than a spelling.
+        // Every stream profile in this repo is forced to `stop.mode: signal` because no
+        // harness reads a mid-task turn (see the message-mode gate below and what it is
+        // careful not to claim), so a stop has always meant "the TTL, then a tree-kill, and
+        // no final report". Here the agent is specified to stop its model requests and tool
+        // calls and end its turn with a `cancelled` stop reason, so a worker can genuinely
+        // wind down.
+        //
+        // The deadline is still armed behind it, deliberately: cancel is a notification with
+        // no reply, so an agent that ignores it must still stop. That is also why the ack
+        // says only that the cancel was SENT — the same standard of honesty the message-mode
+        // ack below is held to, for the same reason (nothing on this side can observe
+        // consumption without harness knowledge §10 keeps out of this code).
+        if (supervised.Acp is { } acp)
+        {
+            var sent = await acp.CancelAsync(ct).ConfigureAwait(false);
+            var windDown = ttl < supervised.Stop.WindDown ? ttl : supervised.Stop.WindDown;
+            supervised.TtlTimer = _clock.CreateTimer(
+                _ => KillTree(supervised), null, sent ? windDown : ttl, Timeout.InfiniteTimeSpan);
+            return new StopAck(true, sent ? StopDelivery.MessageWritten : StopDelivery.DeadlineArmed);
         }
 
         // §10, §11 graceful wind-down. The gate is the profile's declaration

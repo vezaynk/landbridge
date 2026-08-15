@@ -14,6 +14,8 @@ argv a worker is launched with.
 | `machine` | `back_pressure` | `max_cpu_load` / `max_memory_load` / `max_disk_usage` in [0,1]; defaults `0.90` / `0.90` / `0.95`, tune per box (§10). CPU is not yet observed cross-platform, so `max_cpu_load` is currently inert — memory and disk carry the signal (§10). |
 | `profiles[]` | `name` | Profile identifier. `profiles` is a JSON **array**; exactly one entry MUST be named `default` (§10). |
 | `profiles[]` | `spawn` | argv passed to `execve` — **never a shell** (§10). Substitutions below. |
+| `profiles[]` | `protocol` | `stream` (default) \| `acp` — **how `docketd` talks to the worker**, which is a bigger choice than it looks: it decides who speaks first, where the prompt lives, what stdin is for, and how a stop is delivered. `stream` spawns the harness with its prompt in the argv and reads whatever NDJSON it prints; `acp` drives it over the [Agent Client Protocol](https://agentclientprotocol.com). Everything written before this key existed is a `stream` profile and stays one. A typo is **refused**, not defaulted, for the same reason `stdin`'s is: the default is the other mode, and an ACP agent left in stream mode is never prompted, prints nothing `docketd` reads, and dies of the liveness window. See [Protocol: `acp`](#protocol-acp-10) below. |
+| `profiles[]` | `prompt` | The worker's opening turn. **Required for `protocol: acp` and meaningless without it** — an ACP agent takes no prompt on argv, so the text travels as `session/prompt` instead. Same `{...}` substitutions as the spawn argv. |
 | `profiles[]` | `stop` | `mode` (`message` \| `signal`), `message`, `wind_down_seconds` (default `30`). **`mode: message` is a declaration about your harness** — that a running session reads turns off stdin — and docketd takes it at its word: it writes the turn, then waits `min(ttl, wind_down_seconds)` for a voluntary exit before a hard tree-kill backstops it. It cannot check the claim, so declaring it for a harness that does not read stdin buys nothing and makes `preserve` a promise the machine will break. **`claude -p` is such a harness — use `signal` there** ([Stopping a `claude -p` worker](#stopping-a-claude--p-worker-10-11)). A `signal` profile writes nothing, and the worker gets the full `ttl` the plane granted to exit on its own before the kill (`wind_down_seconds` does not apply). Only `ttl=0` is killed immediately (§10, §11). There is no `signal` **key**: the deadline's kill is always the portable tree-kill, so a signal name had nothing to select. A config still declaring one is accepted unchanged — unknown keys are ignored — and means exactly what it always meant, which is nothing. |
 | `profiles[]` | `stdin` | `deadman` (default) \| `closed` — what the worker's stdin is. `deadman` holds the pipe's write end open for the worker's whole life; that pipe **is** the §10 dead-man's switch. `closed` sends EOF right after the spawn, for a harness that blocks reading piped stdin — **`codex exec` requires it**, and gives up nothing, because it never reaches the read that would observe EOF-as-death. Two things behave unlike the other enums here: a **typo is refused** rather than defaulted (defaulting would silently restore the pipe a profile was written to escape), and `closed` is **refused together with `stop.mode: message`**, whose wind-down turn would have nowhere to land. See [Closing the worker's stdin](#closing-the-workers-stdin-10). |
 | `profiles[]` | `env` | String map stamped on every spawn (and resume) of this profile. Values take the same `{task_id}` / `{machine_id}` / `{work_dir}` / `{mcp_config}` / `{session_id}` / `{mcp_url}` substitutions `spawn` does. Applied after the reserved `DOCKET_*` stamps and before `telemetry.env`. The four names docketd owns — `DOCKET_MACHINE_ID`, `DOCKET_TASK_ID`, `DOCKET_WORKER_TOKEN`, `DOCKET_TRACEPARENT` — are **refused at load**, not silently dropped. Use this to isolate a home (`GROK_HOME` / `CODEX_HOME`) only when the operator asked for a sealed box. Prefer `files[]` for additive project-local MCP. |
@@ -1031,12 +1033,145 @@ not have.
 
 ### Do not pick `streaming-json`
 
-That is the ACP shape (`tool_call` / `end`). The Claude defaults read nothing from it —
-no session ref, no progress clock. `GrokStreamMappingTests` pins that miss. The profile
-above uses `streaming-messages-json` on purpose.
+That is the ACP shape (`tool_call` / `end`) — and as of `protocol: acp` below, that is
+no longer a dead end so much as the wrong half of a choice: read Grok's ACP output by
+speaking ACP to it, not by pointing a stream profile's mapping at it. The Claude
+defaults read nothing from that shape — no session ref, no progress clock — and
+`GrokStreamMappingTests` pins the miss. A **stream** profile uses
+`streaming-messages-json`, as the one above does.
 
 `--resume {session_id}` works from a different cwd (confirmed 2026-08-14). Never
 `-c/--continue`: that is "latest session in this directory."
+
+## Protocol: `acp` (§10)
+
+> **Status: the client is implemented and tested against a scripted peer, not against a
+> real agent.** `Docket.Runner.Tests/AcpClientTests` drives the whole conversation —
+> handshake, session, prompt turn, tool calls, permissions, cancel, resume — against a fake
+> agent built from the published spec. No ACP agent binary was available here, so every
+> claim below about *the protocol* is as trustworthy as the spec and no more; claims about
+> *`docketd`'s* side are pinned by tests. `opencode acp` is the intended first real target
+> (see the worked example), and confirming these facts against it is the next step.
+
+The four worked examples above are all the same exercise: read a vendor's NDJSON, guess
+which key holds the session id, discover the hard way that a counter is nested one level
+deeper than the last vendor put it. `protocol: acp` is the alternative — the agent speaks a
+standard, so the shapes are in a spec instead of in your `events.mapping`.
+
+**What changes, key for key:**
+
+| Stream mode | ACP mode |
+|---|---|
+| prompt in the `spawn` argv | `prompt`, sent as `session/prompt` |
+| `events.source` + `events.mapping` (up to 13 keys for OpenCode) | nothing — tool calls arrive as `session/update` notifications with fixed field names |
+| session ref scraped from a log line | `session/new` returns `sessionId` as a JSON-RPC result |
+| `resume.args`, a whole second spawn | `session/load` on the connection already open |
+| `{mcp_config}` file, or a `files[]`-written `config.toml`/`opencode.json` carrying a live token | `mcpServers` handed over on `session/new`, bearer header and all — no file, no token on disk |
+| `stop.mode: signal`, i.e. a tree-kill | `session/cancel`, which the agent is specified to honour |
+| `stdin: closed` for harnesses that block on the pipe | not applicable — stdin is the request channel |
+
+Six keys are **refused** on an ACP profile rather than ignored: `events.source` (other than
+`none`), `events.mapping`, `resume.args`, `stop.mode: message`, `stdin: closed`, and a
+missing `prompt`. Every one of them describes something ACP replaces, and an operator
+porting a stream profile will carry them over by hand — a key that looks like a knob and
+moves nothing is the failure mode this file keeps returning to.
+
+**The dead-man's switch survives, and for once the spec agrees with us.** ACP's stdio
+transport defines shutdown as *"the client terminates the subprocess after closing stdin"* —
+which is exactly what `stdin: deadman` already means. The held write end says `docketd` is
+alive; its EOF says `docketd` is gone. So an ACP profile keeps the cooperative kill for
+free, and the whole `stdin: closed` trade-off that Codex and OpenCode force in stream mode
+simply does not arise: an ACP agent reads stdin as a protocol, not as a prompt, so the
+blocking read that caused it never happens.
+
+### Worked example — OpenCode over ACP
+
+OpenCode is the first target because it is **natively** an ACP agent (`opencode acp`), so
+this profile exercises the protocol with no adapter in the picture. Claude Code and Codex
+both need one (`@zed-industries/claude-code-acp`, `@agentclientprotocol/codex-acp`), which
+is a separate variable and deliberately not mixed into the first increment.
+
+```jsonc
+{
+  "machine": { "work_root": "/var/lib/docketd/work" },
+  "profiles": [
+    {
+      "name": "default",
+      "protocol": "acp",
+      // `opencode acp` starts OpenCode as an ACP agent over stdio. NOT `opencode run` —
+      // that is the stream-mode command, and pointing an acp profile at it produces a
+      // worker that never answers `initialize`. docketd reports exactly that, per task.
+      "spawn": ["opencode", "acp", "--model", "anthropic/claude-haiku-4-5-20251001"],
+      // The opening turn, on the wire instead of in the argv. Note the tool names are
+      // still harness-specific: ACP standardizes the CLIENT-agent channel, not the
+      // agent-MCP one, so OpenCode still spells docket's tools `docket_<name>`.
+      "prompt": "You are a Docket worker running headless under docketd. You have been dispatched exactly one task. First call the docket_get_task MCP tool to read your assignment (namespace, description, completion_criteria, workspace, attempt). Do the work inside the assigned workspace. When done, call docket_report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call docket_request_input instead of guessing.",
+      // No events block: ACP is the event source. No resume block: resume is session/load.
+      // No stdin key: deadman is correct and `closed` is refused.
+      "stop": { "mode": "signal", "wind_down_seconds": 30 },
+      "logs": { "capture": true }
+    }
+  ]
+}
+```
+
+Note what is **not** here: no `--format json`, no `--auto`, no thirteen-key `events.mapping`,
+and no `--session` resume argv. Compare against the `opencode run` profile above — that is
+the same harness, doing the same work.
+
+**And no MCP file of any kind**, which is worth separating from the rest. `profiles[].env`
+and `files[]` (#112 G2/G3) already solved the per-dispatch config problem for stream
+profiles — a Codex, OpenCode or Grok profile can now write its own `config.toml` into the
+work dir with a real `{worker_token}` in it, and the Grok example above does exactly that.
+So the ACP win here is no longer "this is the only way to wire MCP per dispatch"; it is
+narrower and still real: the server is a **session parameter**, so there is no file to
+write, no mode to get right, and **no live bearer token sitting on disk** for the length of
+the task. `files[]` closed the capability gap; ACP removes the artifact.
+
+### What `wind_down_seconds` means here
+
+More than it did. A stream-mode stop writes a turn nobody reads (or, honestly, declares
+`signal` and skips the pretence), so the wind-down was only ever the gap before the kill.
+An ACP stop sends `session/cancel` first, the agent is specified to stop its model requests
+and tool calls and end the turn with a `cancelled` stop reason, and *then* the deadline
+kills if it did not. The ack still says only that the cancel was **sent** — cancel is a
+notification with no reply, so nothing on this side can honestly claim it was honoured —
+but for the first time the thing being reported is a mechanism the agent is obliged to
+implement.
+
+### Resume, and the one capability to check
+
+§11 resume is `session/load` on the live connection: no respawn, no argv, and no replay
+cost paid twice. It is gated on the agent's `loadSession` capability, which **defaults to
+false** in the spec. An agent that does not declare it cold-starts, and `docketd` says so
+per task rather than letting a resume quietly become one:
+
+```
+docketd: task <id>: the plane handed back a resume ref but this agent does not declare the
+ACP 'loadSession' capability, so the transcript cannot be reloaded and this dispatch is a
+COLD START. Every redispatch of this task will be one (§11).
+```
+
+This is the single most important thing to verify against a real agent before moving a
+production profile to ACP — `preserve` and `preserve_and_park` are worth much less without
+it.
+
+### Two things this increment does not do yet
+
+**Permissions are auto-allowed, not bridged.** ACP delivers a permission request
+structured, with the agent's own options attached, which is a far better fit for §11's
+permission bridge than the per-harness prompt-tool it was built on. This increment answers
+with the agent's own always-allow option — a like-for-like port of what
+`bypassPermissions`/`--auto` buy a stream profile, chosen so the protocol change is not
+also a silent policy change. Routing it into the plane is the next increment.
+
+**Token accounting is not carried over.** ACP's accepted usage surface (`usage_update`) is
+context-window utilization plus an optional cumulative cost, not the four disjoint token
+buckets `UsageReportedEvent` carries today, and per-turn token accounting is still a
+separate RFD. So an ACP profile currently reports **no usage at all** — it does not report
+zeros, and it does not fabricate buckets from a context gauge. Reshaping the measured view
+around `used`/`size`/`cost` is tracked separately; until then, a profile whose spend you
+need to see should stay on `stream`.
 
 ## Profile archetypes — open vs. strict
 
