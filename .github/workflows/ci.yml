@@ -13,8 +13,8 @@ on:
     branches: [master]
   pull_request:
     branches: [master]
-  # Manual opt-in trigger for the token-spending real-claude E2E job below. It is
-  # NOT part of the per-push/PR matrix — GitHub forbids referencing secrets in a
+  # Manual opt-in trigger for the token-spending real-harness E2E matrix below. It
+  # is NOT part of the per-push/PR matrix — GitHub forbids referencing secrets in a
   # job-level `if:`, so gating the job on workflow_dispatch (rather than the secret)
   # is what keeps every ordinary push from ever spending API tokens.
   workflow_dispatch:
@@ -174,19 +174,56 @@ jobs:
         env:
           DOCKET_TEST_PG: Host=localhost;Port=5432;Username=docket;Password=docket;Database=docket_chaos
 
-  # ── Opt-in real-claude multi-machine E2E (spec §8.3 real tier, task #57) ────────
+  # ── Opt-in real-harness multi-machine E2E ──────────────────────────────────
   #
-  # Spawns REAL `claude -p` workers across a two-machine fleet and drives a task —
-  # and a two-machine handoff — to completion through the live plane + relay. This
-  # spends Anthropic tokens, so it is DELIBERATELY isolated from the per-push matrix:
-  #   * it runs ONLY on a manual workflow_dispatch (never push/PR), and
-  #   * it runs ONLY the RealClaude trait (`--filter Category=RealClaude`).
-  # If the ANTHROPIC_KEY repo secret is unset, the tests SKIP cleanly (SkippableFact),
-  # so a dispatch without the secret still passes without spending anything. The
-  # secret is mapped to ANTHROPIC_API_KEY, which the spawned claude inherits.
-  real-claude-e2e:
+  # Four cells, one job. Token-spending, so workflow_dispatch only (GitHub forbids
+  # referencing secrets in a job-level `if:`, so the event gate is what keeps an
+  # ordinary push from ever spending). Display names stay `real-<harness>-e2e` so
+  # the bump bot's merge gate (`E2eVerifier.RealHarnessJobs`) still matches.
+  # `fail-fast: false` — one red CLI must not cancel the other three.
+  #
+  # Each cell runs only its own trait (`Category=RealClaude` / RealCodex /
+  # RealOpenCode / RealGrok) and has its own database, so one cell's ResetAsync
+  # cannot truncate another's fleet. Codex and OpenCode also install claude: the
+  # mixed-fleet facts need both binaries. That claude pin is ONE `run:` line
+  # shared via `if:` — lockstep is structural.
+  #
+  # PINS, and the versions are findings. `latest` moved mid-day on 2026-08-13:
+  # one run installed claude 2.1.229 and went 9/9, another installed 2.1.231 and
+  # went 7/2 on identical test code. npm prints no version. Do not go back to
+  # `latest`; the daily bump bot carries these pins forward on evidence.
+  #   * claude-code 2.1.232 — the stopgap after 2.1.231 read "call the docket
+  #     get_task tool" as a shell command. Prompt clarity (#150) is the durable fix.
+  #   * @openai/codex 0.147.0 — rust-v0.147.0, the source citations and the green
+  #     baseline. latest is the release line; 0.148.0-alpha.* sit under `alpha`.
+  #   * opencode-ai 1.18.18 — green on dispatch 31740997672. npm, not the vendor
+  #     installer (this repo runs no shell scripts). 0.0.0-dev-* have their own tags.
+  #   * grok 1.0.3 via install.sh — no npm package, so the bump bot never rewrites
+  #     this pin. The merge gate still waits on the cell.
+  #
+  # Models are dispatch inputs, not PRs: the catalogs are server-side (Codex 404'd
+  # gpt-5.1-codex-mini then gpt-5.1-codex; OpenCode fetches too). Forks without
+  # the matching secret skip cleanly.
+  real-e2e:
     if: github.event_name == 'workflow_dispatch'
+    name: real-${{ matrix.harness }}-e2e
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - harness: claude
+            category: RealClaude
+            db: docket_realclaude
+          - harness: codex
+            category: RealCodex
+            db: docket_realcodex
+          - harness: opencode
+            category: RealOpenCode
+            db: docket_realopencode
+          - harness: grok
+            category: RealGrok
+            db: docket_realgrok
     env:
       DOTNET_CLI_TELEMETRY_OPTOUT: 1
       DOTNET_NOLOGO: 1
@@ -212,342 +249,26 @@ jobs:
           dotnet-version: 10.0.x
 
       - uses: actions/setup-node@v4
+        if: matrix.harness != 'grok'
         with:
           node-version: 20
 
-      # The worker binary docketd spawns. Installed to PATH as `claude`; the test
-      # resolves it via PATH (or DOCKET_CLAUDE_BIN) and skips if it is missing.
-      #
-      # PINNED, and the version is the finding rather than a preference. This install used
-      # to take `latest`, and `latest` moved under us mid-day on 2026-08-13: run 31653004962
-      # (00:02Z) installed 2.1.229 and went 9/9 green, run 31732739610 (18:50Z) installed
-      # 2.1.231 — published 08:27Z that morning — and went 7/2 on IDENTICAL test code. npm
-      # prints no version, so the versions are read off the registry's publish times against
-      # each step's own timestamp; 2.1.230 was never published.
-      #
-      # This is NOT a permission-routing bug, though it looks like one at first: the failing
-      # fact is `_without_bypass_` and the bridge is the thing it exercises. The bridge worked.
-      # It recorded a real pending request and blocked the task `blocked_on_input`, so
-      # request_permission fired exactly as designed; what it recorded was the wrong command —
-      # `{"command":"docket get_task"}` as BASH. There is no `docket` CLI (this repo builds
-      # `docketd` and nothing else), and `mcp__docket__get_task` was already in --allowedTools,
-      # i.e. pre-approved, so no permission gate was ever involved.
-      #
-      # The worker invented a phantom CLI out of its own prompt. The prompt says "call the
-      # docket get_task tool"; 2.1.231 read that as a shell command and shelled out, then tried
-      # curl against the MCP server when that failed. 2.1.229 reads the same words and calls
-      # `mcp__docket__get_task`. The park/resume fact failed on its COLD leg the same way, for
-      # the same phrase. So the prompt phrasing is a latent trap that has been here all along,
-      # and the version bump is only what finally triggered it.
-      #
-      # Which is why THIS PIN IS A STOPGAP, NOT THE FIX. The durable fix is prompt clarity —
-      # name `mcp__docket__get_task` explicitly, say there is no `docket` CLI, and forbid
-      # shelling or curling to the MCP server — in the shipped worker skill and in the
-      # RealClaudeCollaborationTests recipe prompts — which #150 has since done.
-      #
-      # Do NOT go back to installing `latest`, though: the daily bump bot
-      # (.github/workflows/harness-bump.yml) is what carries this pin forward now. It opens a PR
-      # per newer `latest`, dispatches this workflow against it, and merges only if all three real
-      # tiers pass — so the pin moves on evidence rather than on whatever npm served that hour,
-      # which is the failure this pin exists to record. The bot keeps no list of bad versions, so
-      # if a claude bump does go red its PR simply sits open for a human, costing nothing.
-      #
-      # Two dead ends recorded so nobody re-derives them: 2.1.231's changelog has exactly one
-      # entry and it is about MCP OAuth, nothing about permissions; and the auto-mode default
-      # rollout of 2026-08-14 (anthropics/claude-code#86451, #86478) was live during the red run
-      # but is not needed to explain any of this, because the tools were pre-approved.
+      # Mixed-fleet cells (codex, opencode) and the claude cell share this pin.
+      # One line, so a bump rewrites every cell that needs claude.
       - name: Install claude CLI
+        if: matrix.harness != 'grok'
         run: npm install -g @anthropic-ai/claude-code@2.1.232
 
-      - name: Restore
-        run: dotnet restore
-
-      - name: Build (Release)
-        run: dotnet build tests/Docket.MultiMachine.Tests --no-restore -c Release
-
-      # Only the real-claude trait — the scripted tier is already covered per-push.
-      - name: Test - real claude -p multi-machine E2E
-        run: dotnet test tests/Docket.MultiMachine.Tests --no-build -c Release --filter "Category=RealClaude"
-        env:
-          DOCKET_TEST_PG: Host=localhost;Port=5432;Username=docket;Password=docket;Database=docket_realclaude
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_KEY }}
-
-  # The §10 BYO-harness tier: the same fleet driven by OpenAI's Codex CLI instead of
-  # claude. Gated exactly like real-claude-e2e and for the same reasons — it spends
-  # tokens, so it runs ONLY on a manual workflow_dispatch and ONLY the RealCodex trait.
-  #
-  # The `OPENAI_KEY` repo secret exists and is mapped to CODEX_API_KEY. That mapping is not a
-  # guess: `codex exec` runs its auth manager with `enable_codex_api_key_env: true`
-  # (codex-rs/exec/src/lib.rs:541) and CODEX_API_KEY_ENV_VAR is "CODEX_API_KEY"
-  # (codex-rs/login/src/auth/manager.rs:841), whereas OPENAI_API_KEY is read only by the TUI
-  # onboarding prefill and the realtime-conversation path — NOT by exec. The job still skips
-  # cleanly and passes when the secret is absent (fork PRs), by design.
-  #
-  # WHY ALL FOUR FACTS RUN HERE: reading the Codex CLI source at rust-v0.147.0 established
-  # that `codex exec` blocks forever reading a held-open stdin pipe before it takes its first
-  # turn (exec/src/lib.rs:1961 -> 1888 -> 1909); docketd's dead-man pipe used to be
-  # unconditional, so a Codex worker could not run here at all. #110 made it the per-profile
-  # `stdin` policy, the end-to-end facts declare `stdin: closed`, and the
-  # DOCKET_CODEX_STDIN_FIXED gate that held them back is gone. The fourth fact keeps
-  # characterizing the hang under an explicit `stdin: deadman` and still spends nothing.
-  #
-  # STATUS: green. Run 31430436700 (e6fbae8, 2026-08-10) executed all four against the real
-  # binary — 4 passed, 0 skipped, a few cents — so this tier is a regression check now rather
-  # than an experiment. A red run still leads with a hypothesis chosen from what the ring
-  # observed (never spawned / spawned and still running / spawned and exited non-zero / exited
-  # cleanly without reporting); the causes worth suspecting first are auth (CODEX_API_KEY,
-  # below), the `required = true` MCP table in the generated CODEX_HOME, and a server-side
-  # retired model slug. That last one is not hypothetical: it is what the first dispatch hit,
-  # and DOCKET_CODEX_MODEL overrides it with no code change.
-  #
-  # `npm install -g @openai/codex@0.147.0` is PINNED, reversing this job's original argument that
-  # taking `latest` was a feature because a changed stdin behaviour would fail the
-  # characterization fact loudly. It does fail loudly — but into whichever tier happens to be
-  # dispatched next, at a version nobody chose, which is how real-claude-e2e lost two facts to a
-  # mid-day `latest` move on 2026-08-13. Reproducibility first: a tier's red should mean our code
-  # changed, not that npm served a different binary this hour. Drift is still wanted, just
-  # controlled — a daily bump bot (built separately) proposes the version bump, runs the e2e, and
-  # auto-merges only on green, so an upstream behaviour change arrives as a failing PR instead of
-  # silently breaking a tier.
-  #
-  # 0.147.0 is the version this tier is actually green on: it has been `latest` since
-  # 2026-08-07T01:47Z, so every green codex dispatch since already installed it, and pinning is
-  # behaviour-neutral rather than a bet. It is also the version every source citation above is
-  # against. Note `latest` is the RELEASE line — the newer-by-timestamp 0.148.0-alpha.* sit under
-  # the `alpha` dist-tag and were never what this step installed.
-  #
-  # Cost: the tasks are single-echo, so a full run is cents rather than dollars. Note the slug
-  # this job actually uses is NOT the tests' own code default (gpt-5.1-codex-mini): the input
-  # below overrides it. That input keeps drifting with the server-side catalog — first
-  # gpt-5.1-codex-mini, then gpt-5.1-codex, both 404'd ("Model not found") — so it now defaults
-  # to gpt-5.3-codex. When that drifts too, pass codex_model to override; a slug bump is not a PR.
-  real-codex-e2e:
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    env:
-      DOTNET_CLI_TELEMETRY_OPTOUT: 1
-      DOTNET_NOLOGO: 1
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: docket
-          POSTGRES_PASSWORD: docket
-          POSTGRES_DB: docket
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U docket"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 10.0.x
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      # The worker binary docketd spawns. Installed to PATH as `codex`; the test resolves it
-      # via PATH (or DOCKET_CODEX_BIN) and skips if it is missing. Pinned for reproducibility —
-      # the argument, and why it reverses this job's original one, is in the header above.
       - name: Install codex CLI
+        if: matrix.harness == 'codex'
         run: npm install -g @openai/codex@0.147.0
 
-      # The claude CLI too: the mixed claude+codex fleet fact needs BOTH binaries and
-      # skips when either is missing. Installing it is what un-skipped the fact that is the
-      # whole BYO-harness pitch — which then passed, so this step is load-bearing, not
-      # preparatory.
-      #
-      # Pinned to the same version as real-claude-e2e's install, and for the reasons written
-      # out there. Kept in lockstep deliberately: a mixed-fleet fact that ran a different
-      # claude than the claude tier would make one tier's green say nothing about the other's.
-      - name: Install claude CLI
-        run: npm install -g @anthropic-ai/claude-code@2.1.232
-
-      - name: Restore
-        run: dotnet restore
-
-      - name: Build (Release)
-        run: dotnet build tests/Docket.MultiMachine.Tests --no-restore -c Release
-
-      # Only the real-codex trait. Its own database, so a dispatch that runs both real tiers
-      # cannot have one tier's reset truncate the other's fleet mid-run.
-      - name: Test - real codex exec multi-machine E2E
-        run: dotnet test tests/Docket.MultiMachine.Tests --no-build -c Release --filter "Category=RealCodex"
-        env:
-          DOCKET_TEST_PG: Host=localhost;Port=5432;Username=docket;Password=docket;Database=docket_realcodex
-          CODEX_API_KEY: ${{ secrets.OPENAI_KEY }}
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_KEY }}
-          # First dispatch: the pinned gpt-5.1-codex-mini 404'd on the API-key path
-          # (Responses API, "Model not found"), while auth, MCP init and the closed-stdin
-          # spawn all worked. The tier reads DOCKET_CODEX_MODEL precisely for
-          # server-side catalog drift, so the slug is a dispatch input, not a PR.
-          DOCKET_CODEX_MODEL: ${{ inputs.codex_model || 'gpt-5.3-codex' }}
-
-  # The §10 BYO-harness tier, THIRD harness: the same fleet driven by OpenCode
-  # (`opencode run --format json`). Gated exactly like real-claude-e2e and real-codex-e2e and
-  # for the same reason — it spends tokens, so it runs ONLY on a manual workflow_dispatch and
-  # ONLY the RealOpenCode trait.
-  #
-  # AUTH IS THE SIMPLEST OF THE THREE, and reuses a secret that already exists. OpenCode
-  # resolves a provider key by mapping its catalog's per-provider `env` list over the process
-  # environment (packages/opencode/src/provider/provider.ts:1527-1531, tagged source: "env"), so
-  # ANTHROPIC_API_KEY is read directly — no harness-specific spelling like Codex's CODEX_API_KEY,
-  # and no login step. The pinned model is therefore an Anthropic one. The job still skips
-  # cleanly and passes when the secret is absent (fork PRs), by design.
-  #
-  # WHY `npm install -g opencode-ai` AND NOT THE VENDOR'S INSTALLER: OpenCode's primary install
-  # path is `curl -fsSL https://opencode.ai/install | bash`, and this repo does not run shell
-  # scripts. The npm package is an official path, not a guess — the project's own README at
-  # v1.18.17 carries the npmjs.com/package/opencode-ai badge (README.md:13) and documents
-  # `npm i -g opencode-ai@latest` (README.md:53). Verified read-only against the registry:
-  # opencode-ai is maintained by `thdxr` and ships bin `opencode` with the per-platform binaries
-  # as optionalDependencies.
-  #
-  # PINNED to 1.18.18, reversing the "deliberately unpinned so a stdin-behaviour change fails
-  # loudly" argument this job inherited from the codex tier — see that tier's header for why
-  # reproducibility wins and how the daily bump bot keeps the drift signal without letting an
-  # unchosen version break a tier.
-  #
-  # 1.18.18 is the version this tier is green on, not merely today's `latest`: it published
-  # 2026-08-13T01:13Z and the 5/5 dispatch (run 31740997672, job 94584059538) installed at
-  # 20:29Z that evening, so it ran 1.18.18. Worth stating because `latest` had ALREADY moved off
-  # the 1.18.17 this comment originally named — pinning what a header says rather than what a
-  # green run installed is exactly the mistake this whole PR exists to stop. The `0.0.0-dev-*`
-  # and `snapshot-*` builds carry their own dist-tags and were never what this step installed.
-  #
-  # WHAT THE FIVE FACTS COVER: the silent dead-man hang under an explicit `stdin: deadman`
-  # (spends nothing — OpenCode blocks at cli/cmd/run.ts:416 before contacting a model); a real
-  # worker driving a task to verifying; a stop landing as a kill deadline with the session ref
-  # preserved; a mixed claude+opencode fleet handing a token across the harness boundary; and the
-  # measured-telemetry fact, which asserts the plane's usage row carries real tokens AND a
-  # non-null USD cost. That last one is the reason this tier matters beyond parity: OpenCode has
-  # no OTLP metrics exporter, so its stdout stream is the whole cost channel, and the three nested
-  # usage paths that read it (part.tokens / cache.read / part.cost) are the most fragile part of
-  # the recipe. It is also the only one of the three harnesses whose numbers were derived from a
-  # schema rather than captured from a run — this job is where that reading gets checked.
-  #
-  # STATUS: never run. Unlike the codex tier this has no green baseline, so treat the first red
-  # run as information rather than a regression. The hypotheses the test prints on failure are
-  # ordered by likelihood for a NEW harness — model slug first (OpenCode resolves models through
-  # a fetched catalog, so DOCKET_OPENCODE_MODEL is a dispatch input, not a PR), then the MCP
-  # bearer, then tool naming.
-  real-opencode-e2e:
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    env:
-      DOTNET_CLI_TELEMETRY_OPTOUT: 1
-      DOTNET_NOLOGO: 1
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: docket
-          POSTGRES_PASSWORD: docket
-          POSTGRES_DB: docket
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U docket"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 10.0.x
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      # The worker binary docketd spawns. Installed to PATH as `opencode`; the test resolves it
-      # via PATH (or DOCKET_OPENCODE_BIN) and skips if it is missing. Pinned for reproducibility —
-      # the argument, and the evidence for this exact version, is in the header above.
       - name: Install opencode CLI
+        if: matrix.harness == 'opencode'
         run: npm install -g opencode-ai@1.18.18
 
-      # The claude CLI too: the mixed claude+opencode fleet fact needs BOTH binaries and skips
-      # when either is missing. Same reasoning as the codex job — installing the second binary is
-      # what un-skips the fact that is the whole BYO-harness pitch.
-      #
-      # Pinned in lockstep with the other two claude installs; the reasoning is written out at
-      # real-claude-e2e's. Same lockstep argument as the codex job: a mixed-fleet fact running a
-      # different claude than the claude tier would make one tier's green say nothing about the
-      # other's.
-      - name: Install claude CLI
-        run: npm install -g @anthropic-ai/claude-code@2.1.232
-
-      - name: Restore
-        run: dotnet restore
-
-      - name: Build (Release)
-        run: dotnet build tests/Docket.MultiMachine.Tests --no-restore -c Release
-
-      # Only the real-opencode trait. Its own database, so a dispatch that runs several real
-      # tiers cannot have one tier's reset truncate another's fleet mid-run.
-      - name: Test - real opencode run multi-machine E2E
-        run: dotnet test tests/Docket.MultiMachine.Tests --no-build -c Release --filter "Category=RealOpenCode"
-        env:
-          DOCKET_TEST_PG: Host=localhost;Port=5432;Username=docket;Password=docket;Database=docket_realopencode
-          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_KEY }}
-          # OpenCode resolves models through a fetched catalog, so a slug can be retired
-          # server-side. The tier reads DOCKET_OPENCODE_MODEL for exactly that drift — which is
-          # what bit the codex tier on its first dispatch.
-          DOCKET_OPENCODE_MODEL: ${{ inputs.opencode_model || 'anthropic/claude-haiku-4-5-20251001' }}
-
-  # The §10 BYO-harness tier, FOURTH harness: Grok Build (`grok -p --output-format
-  # streaming-messages-json`). Gated exactly like the other real tiers — it spends tokens, so
-  # it runs ONLY on a manual workflow_dispatch and ONLY the RealGrok trait.
-  #
-  # AUTH: Grok reads XAI_API_KEY (headless-mode.md). The repo secret is XAI_KEY (the name
-  # that was created first); this job maps it. Forks without the secret skip cleanly.
-  #
-  # INSTALL: Grok has no npm package. The documented path is
-  # `curl -fsSL https://x.ai/cli/install.sh | bash -s <version>` (user-guide 01-getting-started).
-  # Pinned to 1.0.3 — the version the recipe and GrokStreamMappingTests were captured against.
-  # This is not in the harness-bump bot (that bot only knows npm dist-tags).
-  #
-  # WHAT THE THREE FACTS COVER: deadman still takes a turn (session ref arrives — Grok is
-  # not Codex-shaped; isolation then waits for EOF, which is why stdin is closed);
-  # a real worker driving a task to verifying (MCP bearer via ${DOCKET_WORKER_TOKEN} +
-  # docket__get_task naming); and usage+cost on the streaming-messages-json result line
-  # (no events.mapping — Claude defaults).
-  real-grok-e2e:
-    if: github.event_name == 'workflow_dispatch'
-    runs-on: ubuntu-latest
-    env:
-      DOTNET_CLI_TELEMETRY_OPTOUT: 1
-      DOTNET_NOLOGO: 1
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: docket
-          POSTGRES_PASSWORD: docket
-          POSTGRES_DB: docket
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd "pg_isready -U docket"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 10
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: 10.0.x
-
       - name: Install grok CLI
+        if: matrix.harness == 'grok'
         run: |
           curl -fsSL https://x.ai/cli/install.sh | bash -s 1.0.3
           echo "$HOME/.grok/bin" >> "$GITHUB_PATH"
@@ -558,9 +279,16 @@ jobs:
       - name: Build (Release)
         run: dotnet build tests/Docket.MultiMachine.Tests --no-restore -c Release
 
-      - name: Test - real grok -p multi-machine E2E
-        run: dotnet test tests/Docket.MultiMachine.Tests --no-build -c Release --filter "Category=RealGrok"
+      # Only this cell's trait. Secrets for every vendor are present on every cell
+      # — Category= is what stops one cell lighting up another class. Mixed-fleet
+      # facts need ANTHROPIC_KEY in the codex/opencode cells.
+      - name: Test - real ${{ matrix.harness }} multi-machine E2E
+        run: dotnet test tests/Docket.MultiMachine.Tests --no-build -c Release --filter "Category=${{ matrix.category }}"
         env:
-          DOCKET_TEST_PG: Host=localhost;Port=5432;Username=docket;Password=docket;Database=docket_realgrok
+          DOCKET_TEST_PG: Host=localhost;Port=5432;Username=docket;Password=docket;Database=${{ matrix.db }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_KEY }}
+          CODEX_API_KEY: ${{ secrets.OPENAI_KEY }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY || secrets.XAI_KEY }}
+          DOCKET_CODEX_MODEL: ${{ inputs.codex_model || 'gpt-5.3-codex' }}
+          DOCKET_OPENCODE_MODEL: ${{ inputs.opencode_model || 'anthropic/claude-haiku-4-5-20251001' }}
           DOCKET_GROK_MODEL: ${{ inputs.grok_model || 'grok-4.6' }}

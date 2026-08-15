@@ -99,12 +99,13 @@ hand-audit an entirely green run to discover the bot was fine and the reader was
 
 ## Adding another harness
 
-An npm-packaged CLI needs an entry in `HarnessPackages.All` and a pinned `npm install -g` line in
-ci.yml. A non-npm CLI (Grok's `install.sh`) is not a pin this bot can move — leave it out of
-`HarnessPackages.All`. Either way the job name goes in `E2eVerifier.RealHarnessJobs`: a test fails
-if ci.yml gains a `real-*` job the merge gate does not wait on. The tool tracks only pinned
-installs: an unpinned one is reported, not bumped, because choosing the first known-good version
-to pin at is a judgement that belongs in a human's PR.
+An npm-packaged CLI needs an entry in `HarnessPackages.All`, a pinned `npm install -g` line in
+ci.yml's `real-e2e` matrix, and a `harness:` include row. A non-npm CLI (Grok's `install.sh`) is
+not a pin this bot can move — leave it out of `HarnessPackages.All`. Either way the display name
+`real-<harness>-e2e` goes in `E2eVerifier.RealHarnessJobs`: a test fails if the matrix gains a
+cell the merge gate does not wait on. The tool tracks only pinned installs: an unpinned one is
+reported, not bumped, because choosing the first known-good version to pin at is a judgement that
+belongs in a human's PR.
 
 ## Exit codes
 

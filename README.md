@@ -104,20 +104,20 @@ CI runs in **four workflows** because they have different needs:
   (`docket_cp`, `docket_mcp`, `docket_meta`, `docket_multimachine`). GitHub-hosted
   service containers are Linux-only. `Meta`'s Docker-gated E2E genuinely runs here:
   it publishes both images, provisions a real Instance, hits its health endpoint,
-  and destroys it. Three more jobs live in this workflow. The **`chaos` job** runs the
+  and destroys it. Two more jobs live in this workflow. The **`chaos` job** runs the
   §17.8 suite on every push, isolated from the matrix above because it is the one suite
   that SIGKILLs real processes — it spawns the real plane, the real `docketd` and real
   worker binaries and kills them mid-task; ubuntu-only, because stray discovery is a
   documented deferral on Windows and the scenarios would assert nothing there. The
-  **`real-claude-e2e`**, **`real-codex-e2e`**, **`real-opencode-e2e`** and **`real-grok-e2e`**
-  jobs are the token-spending real-harness tiers, all gated to `workflow_dispatch` so an
-  ordinary push can never spend: each takes its own database and runs only its own trait
+  **`real-e2e`** matrix is the token-spending real-harness tier, gated to `workflow_dispatch`
+  so an ordinary push can never spend. Four cells (`claude` / `codex` / `opencode` / `grok`)
+  share the job body; display names stay **`real-claude-e2e`** etc. so the bump bot's merge
+  gate still matches. Each cell has its own database and runs only its own trait
   (`Category=RealClaude` / `Category=RealCodex` / `Category=RealOpenCode` / `Category=RealGrok`),
-  and each skips cleanly when its key is absent. The codex and opencode jobs each install
-  **both** their own CLI and claude, because the mixed-fleet facts — the whole BYO-harness
-  pitch — need two binaries present. `real-grok-e2e` maps `XAI_KEY` → `XAI_API_KEY` (Grok's
-  name). Grok has no npm package, so the bump bot never rewrites its install.sh pin, but a
-  dispatch of this workflow still runs the job and the merge gate waits for it.
+  and skips cleanly when its key is absent. Codex and OpenCode also install claude (one shared
+  pin, `if:`-gated) because the mixed-fleet facts need two binaries. The Grok cell maps
+  `XAI_KEY` → `XAI_API_KEY`. Grok has no npm package, so the bump bot never rewrites its
+  install.sh pin, but a dispatch still runs that cell and the merge gate waits for it.
 - **`.github/workflows/harness-bump.yml`** (daily cron) keeps the three harness-CLI pins
   current. See below.
 - **`.github/workflows/os-matrix.yml`** runs the platform-sensitive suites — Core,

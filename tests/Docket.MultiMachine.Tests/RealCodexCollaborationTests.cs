@@ -21,6 +21,11 @@ namespace Docket.MultiMachine.Tests;
 /// dedicated CI job (<c>.github/workflows/ci.yml</c>, <c>real-codex-e2e</c>) sets the key
 /// and runs only this trait.</para>
 ///
+/// <para>The portable minimum bar — verifying + session ref, tokens (Codex computes no
+/// cost), park → resume via <c>codex exec resume</c> — lives in <see cref="RealHarnessBar"/>
+/// and is wrapped below so <c>Category=RealCodex</c> still isolates the job. Dead-man hang,
+/// stop-as-signal, and the mixed claude+codex fleet stay in this file.</para>
+///
 /// <para><b>This tier has now run, and it passes.</b> A <c>workflow_dispatch</c> on
 /// 2026-08-10 (CI run 31430436700, <c>e6fbae8</c>) executed all four facts against the real
 /// binary: <b>4 passed, 0 skipped</b> — including the mixed claude+codex fleet handoff, which
@@ -28,7 +33,8 @@ namespace Docket.MultiMachine.Tests;
 /// it was not Docket: the pinned <c>gpt-5.1-codex-mini</c> 404'd on the API-key path
 /// (Responses API, "Model not found") while auth, MCP init and the closed-stdin spawn all
 /// worked, so the model slug became the <c>DOCKET_CODEX_MODEL</c> dispatch input rather than
-/// a code change.</para>
+/// a code change. The bar facts (usage + park/resume) were added later and have not
+/// themselves got a green dispatch yet.</para>
 ///
 /// <para><b>Source reading is still the authority for every claim below</b>, and that is
 /// deliberate rather than leftover: <c>codex</c> is not installed on the machine where this
@@ -72,7 +78,7 @@ namespace Docket.MultiMachine.Tests;
 /// <para><b>MCP reachability — confirmed workable.</b> Codex has no
 /// <c>--mcp-config &lt;file&gt;</c>; its only client surface is a <c>config.toml</c> under
 /// <c>CODEX_HOME</c>, so the injected <c>{mcp_config}</c> is unusable and
-/// <see cref="CodexHome"/> writes a TOML table instead. The per-instance bearer rides
+/// <see cref="RealHarnessProfiles.CodexHome"/> writes a TOML table instead. The per-instance bearer rides
 /// <c>bearer_token_env_var = "DOCKET_WORKER_TOKEN"</c>, and
 /// <c>resolve_bearer_token</c> (<c>codex-rs/codex-mcp/src/rmcp_client.rs:822</c>) reads that
 /// variable from the <em>live process environment</em> at connect time — which is exactly
@@ -104,7 +110,7 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
     /// The names the <em>model</em> sees are still <c>mcp__docket__&lt;tool&gt;</c>, which is
     /// the one piece of Codex's MCP surface that matches Claude Code exactly.
     /// </summary>
-    private static readonly string[] AllowedDocketTools = ["get_task", "report_result"];
+    private static readonly string[] AllowedDocketTools = RealHarnessProfiles.CodexBareTools;
 
     /// <summary>
     /// The standing rule the worker prompt carries, ported from the claude tier where it was a fix
@@ -140,6 +146,18 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
     }
 
     public Task DisposeAsync() => Task.CompletedTask;
+
+    [SkippableFact]
+    public Task Real_worker_drives_a_task_to_verifying_on_the_fleet() =>
+        RealHarnessBar.DriveToVerifyingAsync(pg, RealHarnessProfiles.Codex(RequireRealCodex()));
+
+    [SkippableFact]
+    public Task Real_worker_reports_usage_the_harness_emits() =>
+        RealHarnessBar.ReportsUsageAsync(pg, RealHarnessProfiles.Codex(RequireRealCodex()));
+
+    [SkippableFact]
+    public Task Real_worker_resumes_its_transcript_after_a_park_and_reports_a_memory_only_nonce() =>
+        RealHarnessBar.ResumesAfterParkAsync(pg, RealHarnessProfiles.Codex(RequireRealCodex()));
 
     /// <summary>
     /// Why <c>stdin: closed</c> is not a preference: a cold <c>codex exec</c> worker under the
@@ -180,14 +198,14 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
             pg,
             spawnArgv: CodexWorkerSpawn(codexBin, WorkerPrompt),
             terminalEvents: true,
-            eventMapping: CodexEventMapping,
+            eventMapping: RealHarnessProfiles.CodexEventMapping,
             // The whole point of this fact: the §10 dead-man pipe, held open, which is what
             // codex exec cannot survive. Declared explicitly rather than left to the default,
             // so a future change of default cannot quietly turn this into a duplicate of the
             // facts below.
             stdin: StdinPolicy.Deadman);
         await rig.StartAsync(ct);
-        using var home = CodexHome.Create(rig.McpUrl, AllowedDocketTools);
+        using var home = RealHarnessProfiles.CodexHome.Create(rig.McpUrl, AllowedDocketTools);
         await rig.AddMachineAsync("A");
 
         var task = await rig.CreateTaskAsync(EchoDescription("A", NewToken()), ct);
@@ -218,60 +236,6 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
             + await rig.RealWorkerDiagnosticsAsync(task, ct));
 
         Assert.NotEqual(TaskState.Verifying, await rig.StateAsync(task, ct));
-    }
-
-    /// <summary>
-    /// The minimum bar, and the fact that decides whether the rest of this tier means
-    /// anything: a REAL <c>codex exec</c> worker, spawned by a real docketd on a two-machine
-    /// fleet, reads its assignment off the wire and drives its task to
-    /// <see cref="TaskState.Verifying"/>, reporting back the exact unforgeable token its live
-    /// description carried. Only a worker that really connected to the plane over Docket's
-    /// HTTP MCP — authenticated with the per-instance bearer it resolved from
-    /// <c>DOCKET_WORKER_TOKEN</c> — called <c>get_task</c>, and read that description could
-    /// produce it.
-    ///
-    /// <para>It also asserts the §11 session ref landed, because the same run is the first
-    /// real-stream confirmation of what
-    /// <c>Docket.Runner.Tests/CodexStreamMappingTests</c> establishes against the documented
-    /// shapes: Codex's <c>thread.started</c> line reaches the plane as a session ref through
-    /// <c>events.mapping</c> alone.</para>
-    /// </summary>
-    [SkippableFact]
-    public async Task Real_codex_worker_drives_a_task_to_verifying_on_the_fleet()
-    {
-        var codexBin = RequireRealCodex();
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(15));
-        var ct = cts.Token;
-
-        await using var rig = new FleetRig(
-            pg,
-            spawnArgv: CodexWorkerSpawn(codexBin, WorkerPrompt),
-            terminalEvents: true,
-            eventMapping: CodexEventMapping,
-            stdin: CodexStdin);
-        await rig.StartAsync(ct);
-        using var home = CodexHome.Create(rig.McpUrl, AllowedDocketTools);
-        await rig.AddMachineAsync("A");
-        await rig.AddMachineAsync("B"); // a real fleet: >1 machine enrolled, dispatch steered to A
-
-        var token = NewToken();
-        var task = await rig.CreateTaskAsync(EchoDescription("A", token), ct);
-
-        Assert.True(
-            await rig.DispatchUntilVerifyingAsync(task, "A", MaxAttempts, PerLegBudget, ct),
-            "the real codex worker never drove its task to verifying.\n"
-            + CodexFailureHypotheses(rig, task) + await rig.RealWorkerDiagnosticsAsync(task, ct));
-
-        var reference = await rig.ResultReferenceAsync(task, ct);
-        Assert.Contains(token, reference); // the live-description token round-tripped through the real agent
-        Assert.Equal("A", rig.MachineRanOn(task));
-
-        // The §11 ref, off the real stream this time rather than the documented fixture.
-        Assert.False(
-            string.IsNullOrWhiteSpace(await rig.HarnessSessionRefAsync(task, ct)),
-            "no harness session ref was stamped, so events.mapping did not carry Codex's "
-            + "thread.started/thread_id — §11 resume would silently cold-start.\n"
-            + await rig.RealWorkerDiagnosticsAsync(task, ct));
     }
 
     /// <summary>
@@ -309,12 +273,12 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
             terminalEvents: true,
             stop: new StopConfig(
                 StopMode.Signal, MessageTemplate: null, WindDown: TimeSpan.FromSeconds(5)),
-            eventMapping: CodexEventMapping,
+            eventMapping: RealHarnessProfiles.CodexEventMapping,
             // signal + closed is the only pairing a config validator will accept for this
             // harness, and it is the honest one twice over — see CodexStdin.
             stdin: CodexStdin);
         await rig.StartAsync(ct);
-        using var home = CodexHome.Create(rig.McpUrl, AllowedDocketTools);
+        using var home = RealHarnessProfiles.CodexHome.Create(rig.McpUrl, AllowedDocketTools);
         await rig.AddMachineAsync("A");
 
         var task = await rig.CreateTaskAsync(EchoDescription("A", NewToken()), ct);
@@ -385,7 +349,7 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
             pg,
             spawnArgv: CodexWorkerSpawn(codexBin, WorkerPrompt), // the fleet default; A overrides it
             terminalEvents: true,
-            eventMapping: CodexEventMapping,
+            eventMapping: RealHarnessProfiles.CodexEventMapping,
             // Fleet-wide, so machine A's claude worker also gets a closed stdin. Harmless
             // there and worth noting as the one asymmetry this fact papers over: `claude -p`
             // reads stdin once at startup and gives up after ~3s, so an immediate EOF simply
@@ -394,7 +358,7 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
             // exactly as it declares spawn per machine — see AddMachineAsync.
             stdin: CodexStdin);
         await rig.StartAsync(ct);
-        using var home = CodexHome.Create(rig.McpUrl, AllowedDocketTools);
+        using var home = RealHarnessProfiles.CodexHome.Create(rig.McpUrl, AllowedDocketTools);
 
         await rig.AddMachineAsync("A", ClaudeWorkerSpawn(claudeBin));  // claude machine
         await rig.AddMachineAsync("B");                                // codex machine
@@ -450,27 +414,15 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
     /// </list>
     ///
     /// <para>No MCP flag appears here, and that absence is the finding: Codex has no
-    /// <c>--mcp-config</c>, so the docket server is wired through <see cref="CodexHome"/>
+    /// <c>--mcp-config</c>, so the docket server is wired through <see cref="RealHarnessProfiles.CodexHome"/>
     /// instead and docketd's generated <c>{mcp_config}</c> goes unread.</para>
     ///
     /// <para><c>DOCKET_CODEX_MODEL</c> optionally supplies <c>--model</c>. Deliberately unset
     /// by default: a wrong model id fails every run, and the docs give no stable "cheap model"
     /// name to hard-code, so the machine's configured default is the safer choice.</para>
     /// </summary>
-    private static string[] CodexWorkerSpawn(string codexBin, string prompt, params string[] extra)
-    {
-        var argv = new List<string>
-        {
-            codexBin, "exec", prompt,
-            "--json",
-            "--skip-git-repo-check",
-            "--dangerously-bypass-approvals-and-sandbox",
-        };
-        argv.Add("--model");
-        argv.Add(CodexModel);
-        argv.AddRange(extra);
-        return [.. argv];
-    }
+    private static string[] CodexWorkerSpawn(string codexBin, string prompt, params string[] extra) =>
+        RealHarnessProfiles.CodexSpawn(codexBin, prompt, extra);
 
     /// <summary>
     /// The model every fact in this tier pins, and it is pinned rather than left to the
@@ -493,10 +445,7 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
     /// cheapest slug on purpose: it is the right default for a local run, and the override is
     /// the documented way past a catalog that disagrees.</para>
     /// </summary>
-    private static string CodexModel =>
-        Environment.GetEnvironmentVariable("DOCKET_CODEX_MODEL") is { Length: > 0 } m
-            ? m
-            : "gpt-5.1-codex-mini";
+    private static string CodexModel => RealHarnessProfiles.CodexModel;
 
     /// <summary>
     /// The <c>stdin</c> policy every end-to-end fact in this tier declares (§10, #110), and the
@@ -530,114 +479,8 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
     /// canNOT recover: <c>tool-call</c> events, because Codex nests one call per event object
     /// where the reader requires an array of content blocks.
     /// </summary>
-    private static readonly Dictionary<string, string> CodexEventMapping = new()
-    {
-        ["system_type"] = "thread.started",
-        ["subtype_key"] = "type",
-        ["init_subtype"] = "thread.started",
-        ["session_id_key"] = "thread_id",
-    };
-
-    /// <summary>
-    /// A throwaway <c>CODEX_HOME</c> holding the one file that wires a Codex worker to this
-    /// fleet's plane — Codex's answer to claude's <c>--mcp-config</c>, which it does not have.
-    ///
-    /// <para><b>The per-instance-auth trick, and why one static file is enough.</b> Docket
-    /// mints a fresh worker token per dispatch and docketd injects it as
-    /// <c>DOCKET_WORKER_TOKEN</c> in the spawn environment. Codex's
-    /// <c>bearer_token_env_var</c> is documented as an environment variable <em>name</em>
-    /// whose value is sent as <c>Authorization: Bearer &lt;token&gt;</c>, so naming
-    /// <c>DOCKET_WORKER_TOKEN</c> here resolves to whatever that spawn's token is. The file
-    /// never needs regenerating per task, and the token never touches disk — which is
-    /// strictly better than the JSON config docketd writes for claude.</para>
-    ///
-    /// <para><c>required = true</c> is deliberate: per the MCP docs, a required server that
-    /// fails to initialize makes <c>codex exec</c> exit with an error instead of continuing —
-    /// so a broken wiring is a loud failure rather than a toolless agent that cheerfully
-    /// reports nothing.</para>
-    ///
-    /// <para><b>Auth.</b> <c>CODEX_HOME</c> is where Codex keeps credentials under file-based
-    /// storage, so a fresh directory has none. When the run supplied a key that is fine —
-    /// <c>CODEX_API_KEY</c> in the environment covers <c>codex exec</c>. On an
-    /// already-logged-in machine (the <c>DOCKET_REAL_CODEX=1</c> path) the operator's
-    /// <c>auth.json</c> is copied in, which is the documented headless fallback; note the docs
-    /// warn that Codex rewrites refresh tokens in place, so a copy can go stale against the
-    /// original.</para>
-    ///
-    /// <para>A real operator now sets this via <c>profiles[].env</c> (#112 G3). The rig
-    /// still publishes it process-wide because one home is shared across sequential
-    /// facts and the profile is built before this directory exists. Per-task
-    /// <c>{work_dir}/.codex</c> still needs the file to exist in that directory (G2).</para>
-    /// </summary>
-    private sealed class CodexHome : IDisposable
-    {
-        private readonly string _dir;
-        private readonly string? _previous;
-
-        private CodexHome(string dir, string? previous)
-        {
-            _dir = dir;
-            _previous = previous;
-        }
-
-        /// <summary>Create the directory (Codex requires <c>CODEX_HOME</c> to already exist),
-        /// write the docket MCP server table, seed auth if needed, and publish the variable so
-        /// spawned workers inherit it from docketd's environment.</summary>
-        public static CodexHome Create(string mcpUrl, IReadOnlyList<string> allowedTools)
-        {
-            var previous = Environment.GetEnvironmentVariable("CODEX_HOME");
-            var dir = Path.Combine(Path.GetTempPath(), "docket-codex-home-" + Guid.NewGuid().ToString("N")[..8]);
-            Directory.CreateDirectory(dir);
-
-            var tools = string.Join(", ", allowedTools.Select(t => $"\"{t}\""));
-            File.WriteAllText(
-                Path.Combine(dir, "config.toml"),
-                $"""
-                 [mcp_servers.docket]
-                 url = "{mcpUrl}"
-                 bearer_token_env_var = "DOCKET_WORKER_TOKEN"
-                 enabled_tools = [{tools}]
-                 required = true
-                 startup_timeout_sec = 30.0
-                 tool_timeout_sec = 120.0
-
-                 """);
-
-            // No key in the environment means this is the already-logged-in path; carry the
-            // operator's credentials across so a fresh CODEX_HOME is not an instant auth
-            // failure. Copy only when absent, per the docs' warning about refresh rewrites.
-            if (Environment.GetEnvironmentVariable("CODEX_API_KEY") is not { Length: > 0 })
-            {
-                var operatorAuth = Path.Combine(
-                    Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".codex", "auth.json");
-                var seeded = Path.Combine(dir, "auth.json");
-                if (File.Exists(operatorAuth) && !File.Exists(seeded))
-                    try { File.Copy(operatorAuth, seeded); } catch { /* best effort; the run will report auth */ }
-            }
-
-            Environment.SetEnvironmentVariable("CODEX_HOME", dir);
-            return new CodexHome(dir, previous);
-        }
-
-        public void Dispose()
-        {
-            Environment.SetEnvironmentVariable("CODEX_HOME", _previous);
-            try { Directory.Delete(_dir, recursive: true); } catch { /* best effort */ }
-        }
-    }
-
-    /// <summary>The one description template both roles use (§7) — identical to the claude
-    /// tier's, on purpose: a cross-harness comparison is only meaningful if both harnesses are
-    /// given the same words.</summary>
     private static string EchoDescription(string label, string token) =>
-        $"""
-         Call report_result exactly once, with its resultReference set to this exact string
-         (no quotes, no other text):
-
-         {label}:{token}
-
-         That is the entire task. Do not create or edit files. Do not do anything else.
-         """;
+        RealHarnessProfiles.EchoDescription(label, token);
 
     /// <summary>The claude argv, for the mixed-fleet fact only — the validated recipe from the
     /// claude tier, trimmed to what an echo task needs.
@@ -673,14 +516,14 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
     /// <c>codex exec</c>"). <c>OPENAI_API_KEY</c> is <em>not</em> documented as a variable
     /// Codex itself reads, so it is treated as a source to map from, never relied on directly.
     /// <c>DOCKET_REAL_CODEX=1</c> is the path for a machine whose CLI is already logged in;
-    /// no key is published there, and <see cref="CodexHome"/> carries the existing
+    /// no key is published there, and <see cref="RealHarnessProfiles.CodexHome"/> carries the existing
     /// credentials instead.</para>
     /// </summary>
     private string RequireRealCodex()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
 
-        var key = FirstNonEmpty("CODEX_API_KEY", "OPENAI_API_KEY", "OPENAI_KEY");
+        var key = RealHarnessProfiles.FirstNonEmpty("CODEX_API_KEY", "OPENAI_API_KEY", "OPENAI_KEY");
         var optedIn = Environment.GetEnvironmentVariable("DOCKET_REAL_CODEX") is { Length: > 0 } o
                       && !o.Equals("0", StringComparison.Ordinal)
                       && !o.Equals("false", StringComparison.OrdinalIgnoreCase);
@@ -691,9 +534,9 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
         if (!string.IsNullOrWhiteSpace(key))
             Environment.SetEnvironmentVariable("CODEX_API_KEY", key);
 
-        var codexBin = ResolveBin("codex", "DOCKET_CODEX_BIN");
+        var codexBin = RealHarnessProfiles.ResolveBin("codex", "DOCKET_CODEX_BIN");
         Skip.If(codexBin is null, "codex CLI not found (set DOCKET_CODEX_BIN or put codex on PATH)");
-        ScrubInheritedSessionMarkers();
+        RealHarnessProfiles.ScrubInheritedSessionMarkers();
         return codexBin!;
     }
 
@@ -703,68 +546,12 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
     /// opted-in real run.</summary>
     private static string RequireRealClaudeForMixedFleet()
     {
-        var claudeBin = ResolveBin("claude", "DOCKET_CLAUDE_BIN");
+        var claudeBin = RealHarnessProfiles.ResolveBin("claude", "DOCKET_CLAUDE_BIN");
         Skip.If(claudeBin is null,
             "claude CLI not found — the mixed-harness fleet fact needs BOTH CLIs "
             + "(set DOCKET_CLAUDE_BIN or put claude on PATH)");
         return claudeBin!;
     }
-
-    private static string? FirstNonEmpty(params string[] names)
-    {
-        foreach (var name in names)
-            if (Environment.GetEnvironmentVariable(name) is { Length: > 0 } v && !string.IsNullOrWhiteSpace(v))
-                return v;
-        return null;
-    }
-
-    /// <summary>Resolve a CLI: an explicit override variable, then PATH, then the common
-    /// install locations — or null when none exists.</summary>
-    private static string? ResolveBin(string name, string overrideVar)
-    {
-        var explicitBin = Environment.GetEnvironmentVariable(overrideVar);
-        if (!string.IsNullOrWhiteSpace(explicitBin) && File.Exists(explicitBin))
-            return explicitBin;
-
-        var exe = OperatingSystem.IsWindows() ? name + ".exe" : name;
-        foreach (var dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator))
-        {
-            if (string.IsNullOrEmpty(dir)) continue;
-            var candidate = Path.Combine(dir, exe);
-            if (File.Exists(candidate)) return candidate;
-        }
-
-        foreach (var fallback in new[] { $"/usr/local/bin/{name}", $"/opt/homebrew/bin/{name}" })
-            if (File.Exists(fallback)) return fallback;
-
-        return null;
-    }
-
-    /// <summary>
-    /// Remove the "you are running inside a Claude Code session" markers from this process's
-    /// environment, because the worker inherits it (docketd's environment is the child's base,
-    /// §10) and in production docketd is a daemon rather than a child of somebody's editor.
-    /// Kept for the Codex tier too: the markers are inherited by <em>any</em> child, and a
-    /// Codex worker that finds them has no more business acting on them than a claude one.
-    /// Auth and routing variables are deliberately left alone.
-    /// </summary>
-    private static void ScrubInheritedSessionMarkers()
-    {
-        foreach (var name in InheritedSessionMarkers)
-            Environment.SetEnvironmentVariable(name, null);
-    }
-
-    private static readonly string[] InheritedSessionMarkers =
-    [
-        "CLAUDECODE",
-        "CLAUDE_CODE_ENTRYPOINT",
-        "CLAUDE_CODE_SESSION_ID",
-        "CLAUDE_CODE_CHILD_SESSION",
-        "CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS",
-        "CLAUDE_PID",
-        "CLAUDE_EFFORT",
-        "AI_AGENT",
-    ];
 
     /// <summary>
     /// The diagnostic that earns its keep on a red run of this tier, and it earned it on the
@@ -862,5 +649,5 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
 
     /// <summary>A short unforgeable token the worker can only report if it really read the
     /// live task description — the proof a real agent, not a fake, closed the loop.</summary>
-    private static string NewToken() => Guid.NewGuid().ToString("N")[..12];
+    private static string NewToken() => RealHarnessProfiles.NewToken();
 }

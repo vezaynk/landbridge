@@ -13,6 +13,11 @@ namespace Docket.MultiMachine.Tests;
 /// <c>~/.grok/docs/user-guide/14-headless-mode.md</c>. The $0 parser half is
 /// <c>GrokStreamMappingTests</c> against a captured <c>streaming-messages-json</c> stream.</para>
 ///
+/// <para>The portable bar (verifying + session ref, usage/cost, park → resume via
+/// <c>--resume</c>) is <see cref="RealHarnessBar"/>, wrapped below so
+/// <c>Category=RealGrok</c> still isolates the job. Dead-man-still-takes-a-turn stays
+/// here — it is the Codex/OpenCode contrast, not a portable claim.</para>
+///
 /// <para><b>Why this harness is cheap.</b> The Messages-shaped stream matches Claude's
 /// defaults — no <c>events.mapping</c>. What it did force is <c>stdin: closed</c>, for a
 /// different reason than Codex/OpenCode: <c>grok -p</c> starts immediately with a held-open
@@ -50,6 +55,18 @@ public sealed class RealGrokCollaborationTests(PostgresFixture pg) : IAsyncLifet
 
     public Task DisposeAsync() => Task.CompletedTask;
 
+    [SkippableFact]
+    public Task Real_worker_drives_a_task_to_verifying_on_the_fleet() =>
+        RealHarnessBar.DriveToVerifyingAsync(pg, RealHarnessProfiles.Grok(RequireRealGrok()));
+
+    [SkippableFact]
+    public Task Real_worker_reports_usage_the_harness_emits() =>
+        RealHarnessBar.ReportsUsageAsync(pg, RealHarnessProfiles.Grok(RequireRealGrok()));
+
+    [SkippableFact]
+    public Task Real_worker_resumes_its_transcript_after_a_park_and_reports_a_memory_only_nonce() =>
+        RealHarnessBar.ResumesAfterParkAsync(pg, RealHarnessProfiles.Grok(RequireRealGrok()));
+
     /// <summary>
     /// The Codex/OpenCode contrast: a <c>grok -p</c> worker under the dead-man pipe
     /// <b>still takes a turn</b> (session ref arrives). Isolation (`sleep | grok`) then
@@ -69,7 +86,11 @@ public sealed class RealGrokCollaborationTests(PostgresFixture pg) : IAsyncLifet
             spawnArgv: GrokWorkerSpawn(grokBin, WorkerPrompt),
             terminalEvents: true,
             stdin: StdinPolicy.Deadman,
-            files: GrokMcpFile);
+            files: GrokMcpFile,
+            env: new Dictionary<string, string>(StringComparer.Ordinal)
+            {
+                ["GROK_FOLDER_TRUST"] = "0",
+            });
         await rig.StartAsync(ct);
         await rig.AddMachineAsync("A");
 
@@ -85,86 +106,10 @@ public sealed class RealGrokCollaborationTests(PostgresFixture pg) : IAsyncLifet
             + GrokFailureHypotheses() + await rig.RealWorkerDiagnosticsAsync(task, ct));
     }
 
-    [SkippableFact]
-    public async Task Real_grok_worker_drives_a_task_to_verifying_on_the_fleet()
-    {
-        var grokBin = RequireRealGrok();
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(15));
-        var ct = cts.Token;
-
-        await using var rig = new FleetRig(
-            pg,
-            spawnArgv: GrokWorkerSpawn(grokBin, WorkerPrompt),
-            terminalEvents: true,
-            stdin: GrokStdin,
-            files: GrokMcpFile);
-        await rig.StartAsync(ct);
-        await rig.AddMachineAsync("A");
-        await rig.AddMachineAsync("B");
-
-        var token = NewToken();
-        var task = await rig.CreateTaskAsync(EchoDescription("A", token), ct);
-
-        Assert.True(
-            await rig.DispatchUntilVerifyingAsync(task, "A", MaxAttempts, PerLegBudget, ct),
-            "the real grok worker never drove its task to verifying.\n"
-            + GrokFailureHypotheses() + await rig.RealWorkerDiagnosticsAsync(task, ct));
-
-        Assert.Contains(token, await rig.ResultReferenceAsync(task, ct));
-        Assert.Equal("A", rig.MachineRanOn(task));
-        Assert.False(
-            string.IsNullOrWhiteSpace(await rig.HarnessSessionRefAsync(task, ct)),
-            "no harness session ref — streaming-messages-json init/session_id did not map.\n"
-            + await rig.RealWorkerDiagnosticsAsync(task, ct));
-    }
-
-    [SkippableFact]
-    public async Task A_real_grok_worker_reports_its_own_tokens_and_cost_on_the_stream()
-    {
-        var grokBin = RequireRealGrok();
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(15));
-        var ct = cts.Token;
-
-        await using var rig = new FleetRig(
-            pg,
-            spawnArgv: GrokWorkerSpawn(grokBin, WorkerPrompt),
-            terminalEvents: true,
-            stdin: GrokStdin,
-            files: GrokMcpFile);
-        await rig.StartAsync(ct);
-        await rig.AddMachineAsync("A");
-
-        var token = NewToken();
-        var task = await rig.CreateTaskAsync(EchoDescription("A", token), ct);
-
-        Assert.True(
-            await rig.DispatchUntilVerifyingAsync(task, "A", MaxAttempts, PerLegBudget, ct),
-            "no verifying task, so no usage to assert on.\n"
-            + GrokFailureHypotheses() + await rig.RealWorkerDiagnosticsAsync(task, ct));
-
-        Assert.True(
-            await FleetRig.WaitUntilAsync(
-                async () => await rig.ReportedUsageAsync(task, ct) is [{ CostUsd: not null }, ..],
-                TimeSpan.FromMinutes(2)),
-            "no usage report with a cost reached the plane. Check that the profile uses "
-            + "--output-format streaming-messages-json (not streaming-json).\n"
-            + await rig.RealWorkerDiagnosticsAsync(task, ct));
-    }
-
     private static string[] GrokWorkerSpawn(string grokBin, string prompt) =>
-    [
-        grokBin, "-p", prompt,
-        "--output-format", "streaming-messages-json",
-        "--always-approve",
-        "--no-auto-update",
-        "--max-turns", "8",
-        "-m", GrokModel,
-    ];
+        RealHarnessProfiles.GrokSpawn(grokBin, prompt);
 
-    private static string GrokModel =>
-        Environment.GetEnvironmentVariable("DOCKET_GROK_MODEL") is { Length: > 0 } m
-            ? m
-            : "grok-4.6";
+    private static string GrokModel => RealHarnessProfiles.GrokModel;
 
     private const StdinPolicy GrokStdin = StdinPolicy.Closed;
 
@@ -179,32 +124,16 @@ public sealed class RealGrokCollaborationTests(PostgresFixture pg) : IAsyncLifet
     /// the token and is written owner-only (0600), the same posture as Claude's
     /// <c>mcp.json</c>.
     /// </summary>
-    private static readonly ProfileFile[] GrokMcpFile =
-    [
-        new(
-            "{work_dir}/.grok/config.toml",
-            """
-            [mcp_servers.docket]
-            url = "{mcp_url}"
-            enabled = true
-            headers = { "Authorization" = "Bearer {worker_token}" }
-            """,
-            "600"),
-    ];
+    private static readonly ProfileFile[] GrokMcpFile = RealHarnessProfiles.GrokMcpFile;
 
     private static string EchoDescription(string label, string token) =>
-        $"""
-         Call report_result exactly once, with its resultReference set to this exact string
-         (no quotes, no other text):
-
-         {label}:{token}
-         """;
+        RealHarnessProfiles.EchoDescription(label, token);
 
     private string RequireRealGrok()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
 
-        var key = FirstNonEmpty("XAI_API_KEY", "XAI_KEY");
+        var key = RealHarnessProfiles.FirstNonEmpty("XAI_API_KEY", "XAI_KEY");
         var optedIn = Environment.GetEnvironmentVariable("DOCKET_REAL_GROK") is { Length: > 0 } o
                       && !o.Equals("0", StringComparison.Ordinal)
                       && !o.Equals("false", StringComparison.OrdinalIgnoreCase);
@@ -214,43 +143,9 @@ public sealed class RealGrokCollaborationTests(PostgresFixture pg) : IAsyncLifet
         if (!string.IsNullOrWhiteSpace(key))
             Environment.SetEnvironmentVariable("XAI_API_KEY", key);
 
-        var bin = ResolveBin("grok", "DOCKET_GROK_BIN");
+        var bin = RealHarnessProfiles.ResolveBin("grok", "DOCKET_GROK_BIN");
         Skip.If(bin is null, "grok CLI not found (set DOCKET_GROK_BIN or put grok on PATH)");
         return bin!;
-    }
-
-    private static string? FirstNonEmpty(params string[] names)
-    {
-        foreach (var name in names)
-            if (Environment.GetEnvironmentVariable(name) is { Length: > 0 } v && !string.IsNullOrWhiteSpace(v))
-                return v;
-        return null;
-    }
-
-    private static string? ResolveBin(string name, string overrideVar)
-    {
-        var explicitBin = Environment.GetEnvironmentVariable(overrideVar);
-        if (!string.IsNullOrWhiteSpace(explicitBin) && File.Exists(explicitBin))
-            return explicitBin;
-
-        var exe = OperatingSystem.IsWindows() ? name + ".exe" : name;
-        foreach (var dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator))
-        {
-            if (string.IsNullOrEmpty(dir)) continue;
-            var candidate = Path.Combine(dir, exe);
-            if (File.Exists(candidate)) return candidate;
-        }
-
-        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        foreach (var fallback in new[]
-                 {
-                     $"/usr/local/bin/{name}",
-                     $"/opt/homebrew/bin/{name}",
-                     Path.Combine(home, ".grok", "bin", exe),
-                 })
-            if (File.Exists(fallback)) return fallback;
-
-        return null;
     }
 
     private static string GrokFailureHypotheses() =>
@@ -272,5 +167,5 @@ public sealed class RealGrokCollaborationTests(PostgresFixture pg) : IAsyncLifet
 
          """;
 
-    private static string NewToken() => Guid.NewGuid().ToString("N")[..12];
+    private static string NewToken() => RealHarnessProfiles.NewToken();
 }

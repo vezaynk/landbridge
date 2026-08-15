@@ -70,7 +70,8 @@ internal sealed class FleetRig(
     StopConfig? stop = null,
     IReadOnlyDictionary<string, string>? eventMapping = null,
     StdinPolicy stdin = StdinPolicy.Deadman,
-    IReadOnlyList<ProfileFile>? files = null) : IAsyncDisposable
+    IReadOnlyList<ProfileFile>? files = null,
+    IReadOnlyDictionary<string, string>? env = null) : IAsyncDisposable
 {
     private const string RelayBearer = "multimachine-relay-shared-secret-under-test";
 
@@ -157,6 +158,7 @@ internal sealed class FleetRig(
             Processes: agentProcesses ? new ProfileProcessesConfig(AgentInitiated: true) : null,
             // §10 (#110): the dead-man pipe, unless a scenario's harness cannot survive it.
             Stdin: stdin,
+            Env: env,
             Files: files);
 
         Team = TeamId.New();
@@ -398,8 +400,10 @@ internal sealed class FleetRig(
     /// Two instances reporting the <em>same</em> id can only happen if the second really resumed
     /// the first's transcript — a cold start mints a new one.</para>
     /// </summary>
-    public IReadOnlyList<string> InstanceSessionIdsOn(string machineId, TaskId task)
+    public IReadOnlyList<string> InstanceSessionIdsOn(
+        string machineId, TaskId task, Func<string, string?>? sessionIdOfLine = null)
     {
+        var extract = sessionIdOfLine ?? SessionIdOfInitLine;
         var dir = System.IO.Path.Combine(
             _machines[machineId].WorkRoot, TranscriptDefaults.DirName, task.ToString());
         if (!System.IO.Directory.Exists(dir))
@@ -411,7 +415,7 @@ internal sealed class FleetRig(
         {
             foreach (var line in ReadLinesOrEmpty(file))
             {
-                if (SessionIdOfInitLine(line) is not { Length: > 0 } id)
+                if (extract(line) is not { Length: > 0 } id)
                     continue;
                 ids.Add(id);
                 break; // the init line is the first one that carries it; the id is stable per run
