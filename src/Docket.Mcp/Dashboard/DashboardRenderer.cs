@@ -929,6 +929,65 @@ internal static class DashboardRenderer
         return Page("Preview created", "teams", sb.ToString(), autoRefresh: false);
     }
 
+    public static string ConformanceForm()
+    {
+        var sb = new StringBuilder();
+        sb.Append("<h1>Profile check</h1>");
+        sb.Append("<p class=\"sub\">Mint dummy tasks aimed at <span class=\"mono\">default</span>. " +
+                  "A worker that reaches <span class=\"mono\">verifying</span> called " +
+                  "<span class=\"mono\">report_result</span> — the plane does not judge the answers. " +
+                  "Any ready machine that declares <span class=\"mono\">default</span> may claim them.</p>");
+        sb.Append("<form class=\"card\" method=\"post\" action=\"/dashboard/conformance\">");
+        sb.Append("<button type=\"submit\">Start check</button>");
+        sb.Append("</form>");
+        return Page("Profile check", "conformance", sb.ToString(), autoRefresh: false);
+    }
+
+    public static string ConformanceRun(ConformanceRunView run)
+    {
+        var sb = new StringBuilder();
+        sb.Append("<h1>Profile check</h1>");
+        sb.Append($"<p class=\"sub\">Profile <span class=\"mono\">{E(run.Profile)}</span> — " +
+                  $"{run.Verifying + run.Completed}/{run.Total} workers reported. " +
+                  $"This page refreshes.</p>");
+        if (run.MachinesDeclaring.Count == 0)
+            sb.Append("<p class=\"err\">No connected machine currently declares this profile. " +
+                      "Tasks will sit in Submitted until one does.</p>");
+        else
+            sb.Append($"<p>Declared by {run.MachinesDeclaring.Count} machine(s): " +
+                      string.Join(", ", run.MachinesDeclaring.Select(id => $"<span class=\"mono\">{E(id)}</span>")) +
+                      ".</p>");
+        sb.Append("<div class=\"metrics\">");
+        sb.Append(Metric(run.Pending.ToString(), "pending"));
+        sb.Append(Metric(run.Verifying.ToString(), "verifying"));
+        sb.Append(Metric(run.Completed.ToString(), "completed"));
+        sb.Append(Metric(run.Failed.ToString(), "failed"));
+        sb.Append("</div>");
+        sb.Append("<table><thead><tr><th>Kind</th><th>State</th><th>Attempt</th><th>Result</th></tr></thead><tbody>");
+        foreach (var t in run.Tasks)
+        {
+            sb.Append("<tr>");
+            sb.Append($"<td class=\"mono\">{E(t.Kind)}</td>");
+            sb.Append($"<td>{E(t.State.ToString())}</td>");
+            sb.Append($"<td>{t.Attempt}</td>");
+            sb.Append($"<td class=\"mono\">{E(t.ResultReference ?? t.LastRequeueReason ?? "—")}</td>");
+            sb.Append("</tr>");
+        }
+        sb.Append("</tbody></table>");
+        sb.Append($"<p><a href=\"/dashboard/teams/{run.RunId}\">Team view</a> · " +
+                  "<a href=\"/dashboard/conformance\">Start another</a></p>");
+        return Page("Profile check", "conformance", sb.ToString());
+    }
+
+    public static string ConformanceMissing()
+    {
+        var sb = new StringBuilder();
+        sb.Append("<h1>Profile check</h1>");
+        sb.Append("<p class=\"err\">No such run.</p>");
+        sb.Append("<p><a href=\"/dashboard/conformance\">Start a check</a></p>");
+        return Page("Profile check", "conformance", sb.ToString(), autoRefresh: false);
+    }
+
     /// <summary>The gated-browser-flow confirm error page (§8.4): a bad label, expired preview, or wrong Team.</summary>
     public static string PreviewAuthError(string message)
     {

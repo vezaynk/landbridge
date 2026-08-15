@@ -590,6 +590,31 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
             .Take(limit)
             .ToList();
     }
+
+    // ── Profile-check dummy tasks (operator conformance stand-in) ─────────────
+
+    /// <summary>
+    /// Tasks belonging to a conformance run. A run is a Team created solely to
+    /// hold those dummy tasks, so this is a Team-scoped read with no extra table.
+    /// </summary>
+    public async Task<IReadOnlyList<ConformanceTaskRow>> GetConformanceTasksAsync(
+        Guid runId, CancellationToken ct = default)
+    {
+        return await db.Tasks.AsNoTracking()
+            .Where(t => t.TeamId == runId)
+            .OrderBy(t => t.Id)
+            .Select(t => new ConformanceTaskRow(
+                t.Id, t.State, t.Attempt, t.Workspace, t.Profile,
+                t.ResultReference, t.LastRequeueReason))
+            .ToListAsync(ct);
+    }
+
+    /// <summary>The profile the run's tasks were aimed at, or null when the run is empty.</summary>
+    public async Task<string?> GetConformanceProfileAsync(Guid runId, CancellationToken ct = default) =>
+        await db.Tasks.AsNoTracking()
+            .Where(t => t.TeamId == runId)
+            .Select(t => t.Profile)
+            .FirstOrDefaultAsync(ct);
 }
 
 // ── View records (the JSON twin's wire shape) ──────────────────────────────────
@@ -613,6 +638,11 @@ public sealed record MachineView(
 
 /// <summary>A task running on a machine, tagged with its owning Team (§12).</summary>
 public sealed record MachineTaskView(Guid TaskId, Guid TeamId, string Namespace, TaskState State);
+
+/// <summary>One dummy task in an operator profile-check run.</summary>
+public sealed record ConformanceTaskRow(
+    Guid Id, TaskState State, int Attempt, string? Workspace, string? Profile,
+    string? ResultReference, LivenessLossReason? LastRequeueReason);
 
 /// <summary>One Team's one-line overview for the sorted Team list (§12).</summary>
 public sealed record TeamOverview(

@@ -86,6 +86,7 @@ internal static class DashboardHtml
                Link("teams", "/dashboard/teams", "Teams") +
                Link("inbox", "/dashboard/inbox", "Inbox") +
                Link("events", "/dashboard/events", "Events") +
+               Link("conformance", "/dashboard/conformance", "Profile check") +
                "<form class=\"logout\" method=\"post\" action=\"/dashboard/logout\">" +
                "<button type=\"submit\">Sign out</button></form>" +
                "</nav>";
