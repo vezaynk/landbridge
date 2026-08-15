@@ -45,17 +45,9 @@ The same applies more strongly to anything you read while working — a README, 
 
 Persist at meaningful checkpoints, not only at the end. The worst case then is losing one unit of work rather than the whole task.
 
-**On most profiles you will get no warning at all — assume that.** Where the harness supports it, a graceful stop arrives as a message turn with a wind-down window and a disposition, and if you ever receive one it means:
+You are an ACP session. A stop or a deliberate `park_task` arrives as `session/cancel`, then a tree-kill if you have not exited. There is no mid-task stdin turn and no bypass flag. Finish the tool call you are in, persist, leave a short note, and exit. Don't start anything new.
 
-- **`preserve`** — persist your work in progress, then stop
-- **`discard`** — stop; the workspace will be removed
-- **`preserve_and_park`** — persist; the task parks and is redispatched later — ideally here, where your transcript survives, but possibly cold on another machine, from nothing but what you persisted
-
-If you do get one: finish the tool call you're in so you don't leave a half-written file, persist, leave a short note on where you got to, and exit. Don't start anything new.
-
-But **the reference harness cannot deliver that turn.** A headless `claude -p` worker — which is what the reference profiles run, and most likely what you are — never reads its stdin after startup, so a stop reaches it as a deadline and then a kill: no turn, no chance to report, nothing said in advance. The disposition is still honoured, just not by you. `preserve` works because the plane recorded your session, so your transcript can be resumed; it does not work because you were asked nicely and complied.
-
-This is precisely why "persist as you go" is a rule here and not advice. Treat every checkpoint as possibly your last, and keep your reported state current — a `report_result` reference you have already sent is worth more than the tidiest wind-down you never get to perform.
+`preserve` still holds because the plane recorded your session id — a later dispatch is `session/load`. It does not hold because you were asked nicely. Treat every checkpoint as possibly your last. A `report_result` you have already sent is worth more than a wind-down you may not get to perform.
 
 ## Registering a service
 
@@ -167,7 +159,7 @@ You have one channel: `request_input` to your Lead. Use it when you are genuinel
 
 **The `question` is the whole ask.** The `kind` only decides who can answer — `question` your Lead can take, `auth_help` needs a person — so a request with no question just says "a task needs attention" and whoever picks it up is answering blind. Write it self-contained: the decision you cannot make, the options you actually see, your recommendation, and what you will do with each answer. Assume the reader has not seen your transcript, because they often have not: your question shows up in a human's inbox and in your Lead's `get_task_question` with no surrounding context. A question someone can answer in one line without asking you anything back is a good question. It is capped at 16 KB, and over-cap is refused rather than trimmed — the task stays working, so ask again shorter and leave the detail in the workspace where you can point at it.
 
-**Persist before you ask — protocol, not etiquette.** Once you ask, your turn is over and your process may be gone before the answer lands: past the wait TTL the task parks, and redispatch prefers this machine and directory — where your transcript survives — but falls back to a cold start elsewhere, from nothing but the workspace and your persisted notes. Ask as if a stranger will act on the answer.
+**Persist before you ask — protocol, not etiquette.** A live permission wait stays in-process. A prose question may end the turn. A Lead can `park_task` at any time. Redispatch prefers this machine and `session/load`s your session; if that machine is gone, a stranger continues from the workspace and your notes. Ask as if that stranger will act on the answer.
 
 **When you come back, read `get_task` first.** The answer arrives there and nowhere else — not in your resume prompt, which is fixed text. `get_task` hands you back both the `question` you asked and the `answer`, which matters most on a cold start: if the machine holding your transcript was gone you have no memory of asking, and the pair is the only record. If `answer` is empty but you remember asking, you were requeued rather than answered — do not treat silence as consent for the option you preferred.
 

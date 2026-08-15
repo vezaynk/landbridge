@@ -13,14 +13,12 @@ namespace Docket.Mcp.Tests;
 
 /// <summary>
 /// §11 resume crown, skeleton-style (a real spawned harness, no LLM): proves the
-/// opaque harness session ref round-trips <b>row → park → dispatch → resume argv</b>
+/// opaque harness session ref round-trips <b>row → park → dispatch → session/load</b>
 /// through the real plane pieces wired together —
-/// <see cref="ProcessSupervisor"/> spawns a real harness, the
-/// <see cref="RunnerEventSink"/> stamps the ref the harness reports, the
+/// <see cref="ProcessSupervisor"/> handshakes a real ACP agent, the
+/// <see cref="RunnerEventSink"/> stamps the session id, the
 /// <see cref="WaitTtlSweeper"/> parks with it, and redispatch hands it back so the
-/// supervisor rebuilds the spawn argv from <c>resume.args</c> with
-/// <c>--resume &lt;that id&gt;</c>. The one thing left to an operator spike (§17.0)
-/// is a real <c>claude -p --resume</c>; everything up to the resumed argv is here.
+/// supervisor <c>session/load</c>s that id.
 ///
 /// <para>Deviations from a live docketd, called out where they matter: the pieces
 /// are wired directly rather than over the <c>/runner</c> WebSocket (the wire is
@@ -111,8 +109,9 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
 
             // ── The harness reports its session id → sink stamps the row ────────
             Assert.True(
-                await WaitUntilAsync(async () => await HarnessSessionRefAsync(clock, taskId) == HarnessProgram.EmitStreamSessionId, TimeSpan.FromSeconds(30)),
+                await WaitUntilAsync(async () => !string.IsNullOrWhiteSpace(await HarnessSessionRefAsync(clock, taskId)), TimeSpan.FromSeconds(30)),
                 "the harness session ref never reached the task row");
+            var stampedRef = await HarnessSessionRefAsync(clock, taskId);
 
             // ── Block on input, then let the wait TTL expire → park ─────────────
             await using (var db = pg.NewContext())
@@ -136,7 +135,7 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
                 Assert.Equal("m1", row.ParkMachine);
                 // The crown's spine: the harness session ref survives the park on the row
                 // dispatch reads it from.
-                Assert.Equal(HarnessProgram.EmitStreamSessionId, row.HarnessSessionRef);
+                Assert.Equal(stampedRef, row.HarnessSessionRef);
             }
 
             // ── The awaited answer lands → wake to submitted ────────────────────
@@ -168,7 +167,7 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
                 var applied = (StoreResult.Applied)await store.DispatchNextAsync(snapshot, instance2, ct);
                 resumeRef = applied.HarnessSessionRef;
                 // Dispatch surfaces the ref the first session reported.
-                Assert.Equal(HarnessProgram.EmitStreamSessionId, resumeRef);
+                Assert.Equal(stampedRef, resumeRef);
 
                 // §11: the successor's own get_task read carries the answer it was
                 // resumed FOR, and the question that gives it meaning — the whole point
@@ -185,26 +184,12 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
                 McpConfigJson: """{"mcpServers":{}}""", ResumeSessionRef: resumeRef);
             supervisor.Spawn(resumeDispatch, profile, "m1");
 
-            // ── The resumed spawn argv is built from resume.args with --resume <id> ─
-            var argvPath = Path.Combine(workRoot, taskId.ToString(), "argv");
-            Assert.True(await WaitUntilAsync(() => Task.FromResult(File.Exists(argvPath)), TimeSpan.FromSeconds(15)),
-                "the resumed harness never recorded its argv");
-            var argv = await File.ReadAllLinesAsync(argvPath, ct);
-            var resumeIdx = Array.IndexOf(argv, "--resume");
-            Assert.True(resumeIdx >= 0, $"resumed argv carried no --resume: {string.Join(' ', argv)}");
-            Assert.Equal(HarnessProgram.EmitStreamSessionId, argv[resumeIdx + 1]);
-            // …and the resumed harness still got its MCP config path substituted.
-            var mcpIdx = Array.IndexOf(argv, "--mcp-config");
-            Assert.True(mcpIdx >= 0 && argv[mcpIdx + 1].EndsWith("mcp.json", StringComparison.Ordinal),
-                $"resumed argv carried no --mcp-config path: {string.Join(' ', argv)}");
-
-            // §13: the answer reached the worker over the authenticated MCP read, and
-            // NOT through argv — argv is readable by any local process via ps and
-            // /proc/<pid>/cmdline, the same reason enrollment tokens never ride it. The
-            // resume prompt stays generic config; the content stays on the plane.
-            var wholeArgv = string.Join(' ', argv);
-            Assert.DoesNotContain(Answer, wholeArgv, StringComparison.Ordinal);
-            Assert.DoesNotContain(Question, wholeArgv, StringComparison.Ordinal);
+            var loadedPath = Path.Combine(workRoot, taskId.ToString(), "acp-loaded");
+            Assert.True(await WaitUntilAsync(() => Task.FromResult(File.Exists(loadedPath)), TimeSpan.FromSeconds(15)),
+                "the resumed harness never recorded session/load");
+            Assert.Equal(stampedRef, (await File.ReadAllTextAsync(loadedPath, ct)).Trim());
+            Assert.DoesNotContain(Answer, await File.ReadAllTextAsync(loadedPath, ct), StringComparison.Ordinal);
+            Assert.DoesNotContain(Question, await File.ReadAllTextAsync(loadedPath, ct), StringComparison.Ordinal);
         }
         finally
         {
@@ -248,17 +233,13 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
         return File.Exists(apphost) ? apphost : dll;
     }
 
-    /// <summary>A profile whose cold spawn is <c>emit-stream</c> under
-    /// EventsSource.Terminal (so the reader captures + emits the session id) and
-    /// whose resume argv re-runs the harness in <c>echo-argv</c> mode with the
-    /// resume placeholders the supervisor substitutes.</summary>
     private static ProfileConfig ResumeProfile() =>
         new(
             "default",
-            [HarnessPath(), "emit-stream"],
+            [HarnessPath(), "acp", "emit-stream"],
             new StopConfig(StopMode.Signal, MessageTemplate: null, WindDown: TimeSpan.FromSeconds(30)),
-            new ResumeConfig([HarnessPath(), "echo-argv", "--resume", "{session_id}", "--mcp-config", "{mcp_config}"]),
-            new EventsConfig(EventsSource.Terminal, new Dictionary<string, string>()),
+            Resume: null,
+            new EventsConfig(EventsSource.None, new Dictionary<string, string>()),
             new TelemetryConfig(Otel: false, Endpoint: null),
             new LogsConfig(),
             MaxConcurrent: null);

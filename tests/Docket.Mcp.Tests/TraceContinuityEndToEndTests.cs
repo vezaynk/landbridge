@@ -109,7 +109,7 @@ public sealed class TraceContinuityEndToEndTests(PostgresFixture pg, ITestOutput
 
         var profile = new ProfileConfig(
             "default",
-            [WorkerHarnessPath(), "--mcp-config", "{mcp_config}"],
+            [WorkerHarnessPath()],
             new StopConfig(StopMode.Signal, MessageTemplate: null, WindDown: TimeSpan.FromSeconds(30)),
             Resume: null,
             new EventsConfig(EventsSource.None, new Dictionary<string, string>()),

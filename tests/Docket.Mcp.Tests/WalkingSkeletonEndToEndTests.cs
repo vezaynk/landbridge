@@ -23,9 +23,9 @@ namespace Docket.Mcp.Tests;
 /// proven end to end with a REAL spawned worker process speaking REAL MCP — no
 /// LLM. A Lead creates a task <em>with a description</em> over the wire; the real
 /// <see cref="DispatchService"/> claims it, mints the worker token, and builds
-/// the worker's <c>--mcp-config</c> (§13); the real <see cref="ProcessSupervisor"/>
+/// the worker's ACP <c>session/new</c> MCP server (§13); the real <see cref="ProcessSupervisor"/>
 /// spawns the fake worker harness, writing that config to
-/// <c>{work_dir}/mcp.json</c> (0600) and substituting its path into the argv; the
+/// ACP <c>session/new</c>; the
 /// harness authenticates back to the real <c>/mcp</c> endpoint with the
 /// dispatched token, calls <c>get_task</c> to read its assignment, then
 /// <c>report_result</c> — driving the task working → verifying.
@@ -94,10 +94,10 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
             new MachineConfig(workRoot, TimeSpan.FromSeconds(15), BackPressureThresholds.Default),
             ring, TimeProvider.System);
 
-        // The profile runs the harness with the injected --mcp-config path (§13).
+        // The profile is the ACP agent. session/new injects the plane MCP server.
         var profile = new ProfileConfig(
             "default",
-            [WorkerHarnessPath(), "--mcp-config", "{mcp_config}"],
+            [WorkerHarnessPath()],
             new StopConfig(StopMode.Signal, MessageTemplate: null, WindDown: TimeSpan.FromSeconds(30)),
             Resume: null,
             new EventsConfig(EventsSource.None, new Dictionary<string, string>()),
@@ -147,15 +147,8 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
 
             Assert.NotNull(seen);
             Assert.Equal(baseUrl, seen!.SpawnSubstitutions?["mcp_url"]);
-
-            // ── §13: docketd wrote the generated MCP config, owner-only ──
-            var mcpPath = Path.Combine(workDir, "mcp.json");
-            Assert.True(File.Exists(mcpPath), "docketd did not write the injected mcp.json");
-            var mcpJson = await File.ReadAllTextAsync(mcpPath, ct);
-            Assert.Contains("\"type\":\"http\"", mcpJson);
-            Assert.Contains("Bearer dkt_w_", mcpJson); // the minted worker token
-            if (!OperatingSystem.IsWindows())
-                Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(mcpPath));
+            Assert.False(File.Exists(Path.Combine(workDir, "mcp.json")),
+                "ACP injects MCP on session/new; mcp.json must not be written");
 
             // ── get_task delivered the assignment over the wire (§7) ──
             var assignmentPath = Path.Combine(workDir, "get_task.json");

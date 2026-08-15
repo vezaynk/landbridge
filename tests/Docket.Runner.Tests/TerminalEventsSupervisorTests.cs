@@ -5,12 +5,9 @@ using HarnessProgram = Docket.Runner.TestHarness.Program;
 namespace Docket.Runner.Tests;
 
 /// <summary>
-/// §10 event relay end-to-end through <see cref="ProcessSupervisor"/>: a real
-/// spawned harness in <c>emit-stream</c> mode writes a claude-style stream-json
-/// transcript to stdout, the supervisor redirects and drains it under
-/// <see cref="EventsSource.Terminal"/>, and the drain maps it to ToolCallEvents
-/// and per-task liveness. Also pins the redirect behaviour: only Terminal
-/// redirects stdout; every other source leaves it alone.
+/// ACP session/update end-to-end through <see cref="ProcessSupervisor"/>: a real
+/// spawned agent emits <c>tool_call</c> updates, and the handshake stamps a
+/// session id.
 /// </summary>
 public sealed class TerminalEventsSupervisorTests : IDisposable
 {
@@ -22,17 +19,12 @@ public sealed class TerminalEventsSupervisorTests : IDisposable
     private ProcessSupervisor Supervisor() =>
         _supervisor ??= new ProcessSupervisor(TestKit.Machine(_workRoot), _ring, _clock);
 
-    private static ProfileConfig TerminalProfile() =>
-        TestKit.Profile("emit-stream", events: EventsSource.Terminal);
-
     [Fact]
-    public async Task Terminal_source_drains_stdout_into_tool_call_events_and_captures_session_id()
+    public async Task Acp_tool_calls_drain_into_events_and_the_handshake_stamps_a_session_id()
     {
         var task = TaskId.New();
         var supervisor = Supervisor();
 
-        // A background drain — the ring is single-reader, so this loop is the one
-        // consumer while the harness stays alive on stdin.
         var drained = new List<RunnerEvent>();
         using var drainCts = new CancellationTokenSource();
         var drainLoop = Task.Run(async () =>
@@ -41,23 +33,18 @@ public sealed class TerminalEventsSupervisorTests : IDisposable
                 lock (drained) drained.Add(item.Event);
         });
 
-        supervisor.Spawn(TestKit.Dispatch(task), TerminalProfile(), "machine-term");
+        supervisor.Spawn(TestKit.Dispatch(task), TestKit.Profile("emit-stream"), "machine-term");
 
-        // The transcript's two tool_use blocks map to ToolCallEvents in order. These events
-        // ARE the reader's liveness contribution: a `tool-call` on the ring is what moves the
-        // plane's progress clock (§10). There is no runner-local liveness stamp to check —
-        // the supervisor keeps no activity clock, because nothing on the plane could read one.
         Assert.True(
             await TestKit.WaitUntilAsync(() => ToolNames(drained).Count >= 2, TimeSpan.FromSeconds(20)),
-            "terminal reader never drained the expected tool-call events");
+            "ACP session/update never produced the expected tool-call events");
         Assert.Equal(HarnessProgram.EmitStreamToolNames, ToolNames(drained));
 
-        // system/init session id was captured onto the task (reserved for §11 resume).
         Assert.True(
             await TestKit.WaitUntilAsync(
-                () => supervisor.TryGet(task, out var s) && s.SessionId == HarnessProgram.EmitStreamSessionId,
+                () => supervisor.TryGet(task, out var s) && !string.IsNullOrWhiteSpace(s.SessionId),
                 TimeSpan.FromSeconds(10)),
-            "terminal reader never captured the harness session id");
+            "ACP handshake never stamped a session id");
 
         supervisor.Kill(task);
         _ring.Complete();
@@ -65,34 +52,30 @@ public sealed class TerminalEventsSupervisorTests : IDisposable
     }
 
     [Fact]
-    public async Task Terminal_source_redirects_stdout_other_sources_do_not()
+    public async Task Every_worker_redirects_stdio_for_the_acp_pipe()
     {
         var supervisor = Supervisor();
 
-        var terminalTask = TaskId.New();
-        supervisor.Spawn(TestKit.Dispatch(terminalTask), TerminalProfile(), "m");
-        Assert.True(supervisor.TryGet(terminalTask, out var terminal));
-        Assert.True(terminal.Process.StartInfo.RedirectStandardOutput);
-        Assert.NotNull(terminal.EventReaderTask);
+        var a = TaskId.New();
+        supervisor.Spawn(TestKit.Dispatch(a), TestKit.Profile("emit-stream"), "m");
+        Assert.True(supervisor.TryGet(a, out var first));
+        Assert.True(first.Process.StartInfo.RedirectStandardOutput);
+        Assert.True(first.Process.StartInfo.RedirectStandardInput);
+        Assert.Null(first.EventReaderTask);
 
-        // A non-terminal (default None) profile spawns exactly as before: stdout
-        // unredirected, no drain task.
-        var plainTask = TaskId.New();
-        supervisor.Spawn(TestKit.Dispatch(plainTask), TestKit.Profile("run"), "m");
-        Assert.True(supervisor.TryGet(plainTask, out var plain));
-        Assert.False(plain.Process.StartInfo.RedirectStandardOutput);
-        Assert.Null(plain.EventReaderTask);
+        var b = TaskId.New();
+        supervisor.Spawn(TestKit.Dispatch(b), TestKit.Profile("run"), "m");
+        Assert.True(supervisor.TryGet(b, out var second));
+        Assert.True(second.Process.StartInfo.RedirectStandardOutput);
+        Assert.Null(second.EventReaderTask);
 
-        supervisor.Kill(terminalTask);
-        supervisor.Kill(plainTask);
+        supervisor.Kill(a);
+        supervisor.Kill(b);
     }
 
     [Fact]
-    public async Task Terminal_source_emits_exactly_one_session_started_event_from_system_init()
+    public async Task Handshake_emits_exactly_one_session_started_event()
     {
-        // §11 resume: the supervisor emits ONE SessionStartedEvent carrying the
-        // harness session ref the moment the terminal reader captures system/init —
-        // so the plane can stamp it on the task row before any park.
         var task = TaskId.New();
         var supervisor = Supervisor();
 
@@ -104,7 +87,7 @@ public sealed class TerminalEventsSupervisorTests : IDisposable
                 lock (drained) drained.Add(item.Event);
         });
 
-        supervisor.Spawn(TestKit.Dispatch(task), TerminalProfile(), "machine-term");
+        supervisor.Spawn(TestKit.Dispatch(task), TestKit.Profile("emit-stream"), "machine-term");
 
         Assert.True(
             await TestKit.WaitUntilAsync(() => SessionEvents(drained).Count >= 1, TimeSpan.FromSeconds(20)),
@@ -114,10 +97,9 @@ public sealed class TerminalEventsSupervisorTests : IDisposable
         _ring.Complete();
         await drainLoop;
 
-        // Exactly one, carrying the fixture's known session id and the task id.
         var evt = Assert.Single(SessionEvents(drained));
         Assert.Equal(task, evt.Task);
-        Assert.Equal(HarnessProgram.EmitStreamSessionId, evt.SessionRef);
+        Assert.False(string.IsNullOrWhiteSpace(evt.SessionRef));
     }
 
     private static List<string> ToolNames(List<RunnerEvent> drained)

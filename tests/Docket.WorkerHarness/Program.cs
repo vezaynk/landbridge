@@ -18,13 +18,11 @@ namespace Docket.WorkerHarness;
 /// for <c>claude -p</c> in the automated proof: it does exactly what a dispatched
 /// worker's opening moves are and nothing else.
 ///
-/// It reads the MCP client config <c>docketd</c> injected (§13) — the
-/// <c>--mcp-config</c> path <c>ProcessSupervisor</c> substituted into its
-/// argv, pointing at <c>{work_dir}/mcp.json</c> — connects to the plane with the
-/// dispatched worker token as a bearer credential, and calls <c>get_task</c> to
-/// learn its assignment. The raw <c>get_task</c> response is written to
-/// <c>./get_task.json</c> in the work dir so the harnessing test can assert the
-/// assignment crossed the wire intact.
+/// It speaks ACP on stdin/stdout. <c>docketd</c> is the Client: after
+/// <c>session/new</c> (HTTP MCP + Bearer) it sends <c>session/prompt</c>, and
+/// this process then calls <c>get_task</c> to learn its assignment. The raw
+/// <c>get_task</c> response is written to <c>./get_task.json</c> in the work dir
+/// so the harnessing test can assert the assignment crossed the wire intact.
 ///
 /// <para>What it does next is driven by the task's opaque prose <b>description</b>
 /// (§7) — the natural channel for telling a worker what to do without new protocol:
@@ -55,22 +53,12 @@ public static class Program
     public static async Task<int> Main(string[] args)
     {
         var cwd = Directory.GetCurrentDirectory();
-        // No fixed run deadline: relay-serve mode stays up for the life of the task
-        // (until the parent dies or it is killed), so the only lifetime bound is the
-        // stdin-EOF watch + PDEATHSIG below. The short-lived default/consume flows
-        // bound their own MCP calls.
         using var cts = new CancellationTokenSource();
-        var ct = cts.Token;
 
         // Dead-man's switch (§10). Linux: SIGKILL us if docketd (our parent) dies.
+        // Portable half: ACP owns stdin, so EOF on the JSON-RPC pipe is docketd gone.
         if (ParentDeathSignal.ArmAndParentAlreadyDead())
             return 1;
-        // Portable: docketd holds the write end of our stdin for our lifetime, so
-        // EOF means docketd is gone. Watch it in the background and cancel the run —
-        // the worker's only channel to the plane is MCP, so stdin carries no data,
-        // just liveness. Cancellation unwinds the work below into a non-zero exit.
-        // This is what bounds relay-serve mode's otherwise-open lifetime.
-        _ = WatchStdinForEofAsync(cts);
 
         // §1 tracing: root the worker's span on the traceparent docketd injected
         // (DOCKET_TRACEPARENT), so this process — and its MCP calls back to the
@@ -79,58 +67,49 @@ public static class Program
         // a collector is configured, the export) flushes before the process exits.
         using var telemetry = WorkerTelemetry.Start(cwd);
 
-        try
+        return await AcpStdio.RunAsync(
+            (session, ct) => RunAssignmentAsync(session, cwd, ct),
+            cts);
+    }
+
+    private static async Task<int> RunAssignmentAsync(
+        AcpStdio.Session session, string cwd, CancellationToken ct)
+    {
+        var (url, authorization) = AcpStdio.RequireConnection(session);
+
+        var transport = new HttpClientTransport(new HttpClientTransportOptions
         {
-            var (url, authorization) = ResolveConnection(args);
+            Endpoint = new Uri(url),
+            TransportMode = HttpTransportMode.StreamableHttp,
+            AdditionalHeaders = new Dictionary<string, string> { ["Authorization"] = authorization },
+        });
 
-            var transport = new HttpClientTransport(new HttpClientTransportOptions
-            {
-                Endpoint = new Uri(url),
-                TransportMode = HttpTransportMode.StreamableHttp,
-                AdditionalHeaders = new Dictionary<string, string> { ["Authorization"] = authorization },
-            });
+        using var setupCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        setupCts.CancelAfter(TimeSpan.FromSeconds(60));
+        await using var client = await McpClient.CreateAsync(transport, cancellationToken: setupCts.Token);
 
-            // Bound the connect + get_task handshake so a stuck setup fails hard
-            // rather than hanging; the per-mode work below sets its own bounds.
-            using var setupCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            setupCts.CancelAfter(TimeSpan.FromSeconds(60));
-            await using var client = await McpClient.CreateAsync(transport, cancellationToken: setupCts.Token);
+        var assignment = await client.CallToolAsync(
+            "get_task", new Dictionary<string, object?>(), cancellationToken: setupCts.Token);
+        if (assignment.IsError == true)
+            throw new InvalidOperationException("get_task returned an error: " + TextOf(assignment));
 
-            // ── Learn the assignment (§7): namespace, description, criteria, workspace, attempt.
-            var assignment = await client.CallToolAsync(
-                "get_task", new Dictionary<string, object?>(), cancellationToken: setupCts.Token);
-            if (assignment.IsError == true)
-                throw new InvalidOperationException("get_task returned an error: " + TextOf(assignment));
+        var assignmentJson = TextOf(assignment);
+        await File.WriteAllTextAsync(Path.Combine(cwd, "get_task.json"), assignmentJson, ct);
 
-            var assignmentJson = TextOf(assignment);
-            await File.WriteAllTextAsync(Path.Combine(cwd, "get_task.json"), assignmentJson, ct);
+        var description = DescriptionOf(assignmentJson);
+        if (description is not null && description.StartsWith(ServePrefix, StringComparison.Ordinal))
+            return await RunServeModeAsync(client, cwd, description[ServePrefix.Length..].Trim(), ct);
+        if (description is not null && description.StartsWith(ConsumePrefix, StringComparison.Ordinal))
+            return await RunConsumeModeAsync(client, cwd, description[ConsumePrefix.Length..].Trim(), ct);
 
-            // ── Branch on the description (§7): the opaque prose is the channel that
-            //    tells the worker what to do, so one 'default' profile drives a whole
-            //    fleet — a serving producer and a forwarding consumer — off the wire.
-            var description = DescriptionOf(assignmentJson);
-            if (description is not null && description.StartsWith(ServePrefix, StringComparison.Ordinal))
-                return await RunServeModeAsync(client, cwd, description[ServePrefix.Length..].Trim(), ct);
-            if (description is not null && description.StartsWith(ConsumePrefix, StringComparison.Ordinal))
-                return await RunConsumeModeAsync(client, cwd, description[ConsumePrefix.Length..].Trim(), ct);
+        var reported = await client.CallToolAsync(
+            "report_result",
+            new Dictionary<string, object?> { ["resultReference"] = "docket-worker-harness:done" },
+            cancellationToken: setupCts.Token);
+        if (reported.IsError == true)
+            throw new InvalidOperationException("report_result returned an error: " + TextOf(reported));
 
-            // ── Default (§10) — report a result, driving working → verifying. No real
-            //    work; a reference is all the state machine requires (verification is separate).
-            var reported = await client.CallToolAsync(
-                "report_result",
-                new Dictionary<string, object?> { ["resultReference"] = "docket-worker-harness:done" },
-                cancellationToken: setupCts.Token);
-            if (reported.IsError == true)
-                throw new InvalidOperationException("report_result returned an error: " + TextOf(reported));
-
-            return 0;
-        }
-        catch (Exception e)
-        {
-            try { await File.WriteAllTextAsync(Path.Combine(cwd, "harness_error.txt"), e.ToString(), CancellationToken.None); }
-            catch { /* best effort */ }
-            return 1;
-        }
+        return 0;
     }
 
     /// <summary>
@@ -316,73 +295,6 @@ public static class Program
         var tmp = path + ".tmp";
         await File.WriteAllTextAsync(tmp, content);
         File.Move(tmp, path, overwrite: true);
-    }
-
-    /// <summary>
-    /// Portable dead-man watch: reads stdin to EOF and cancels <paramref name="cts"/>
-    /// when it arrives. docketd holds the write end for our lifetime, so EOF is its
-    /// death; any bytes are ignored (MCP, not stdin, is the worker's channel). On a
-    /// normal run the process exits before this ever completes.
-    /// </summary>
-    private static async Task WatchStdinForEofAsync(CancellationTokenSource cts)
-    {
-        try
-        {
-            using var stdin = Console.OpenStandardInput();
-            using var reader = new StreamReader(stdin);
-            while (await reader.ReadLineAsync(cts.Token) is not null) { }
-        }
-        catch (OperationCanceledException)
-        {
-            return; // the run finished and cancelled us — not a dead-man event
-        }
-        catch
-        {
-            // fall through: a read failure is treated the same as EOF
-        }
-
-        if (!cts.IsCancellationRequested)
-            cts.Cancel();
-    }
-
-    /// <summary>
-    /// Resolves the plane URL and Authorization header. Primary source is the
-    /// injected <c>--mcp-config</c> file (proves the §13 injection path); falls
-    /// back to <c>DOCKET_WORKER_TOKEN</c> + <c>DOCKET_MCP_URL</c> if no config
-    /// path was passed.
-    /// </summary>
-    private static (string Url, string Authorization) ResolveConnection(string[] args)
-    {
-        var configPath = FlagValue(args, "--mcp-config");
-        if (configPath is not null)
-        {
-            var root = JsonNode.Parse(File.ReadAllText(configPath))
-                ?? throw new InvalidOperationException($"empty mcp config at {configPath}");
-            // The first server under mcpServers — the plane, named "docket" by docketd.
-            var servers = root["mcpServers"]?.AsObject()
-                ?? throw new InvalidOperationException("mcp config has no mcpServers");
-            var server = servers.First().Value
-                ?? throw new InvalidOperationException("mcp config has no server entry");
-            var url = (string?)server["url"]
-                ?? throw new InvalidOperationException("mcp config server has no url");
-            var authorization = (string?)server["headers"]?["Authorization"]
-                ?? throw new InvalidOperationException("mcp config server has no Authorization header");
-            return (url, authorization);
-        }
-
-        var token = Environment.GetEnvironmentVariable("DOCKET_WORKER_TOKEN")
-            ?? throw new InvalidOperationException("no --mcp-config and no DOCKET_WORKER_TOKEN");
-        var mcpUrl = Environment.GetEnvironmentVariable("DOCKET_MCP_URL")
-            ?? throw new InvalidOperationException("no --mcp-config and no DOCKET_MCP_URL");
-        return (mcpUrl, $"Bearer {token}");
-    }
-
-    private static string? FlagValue(string[] args, string flag)
-    {
-        for (var i = 0; i < args.Length - 1; i++)
-            if (string.Equals(args[i], flag, StringComparison.Ordinal))
-                return args[i + 1];
-        return null;
     }
 
     private static string TextOf(CallToolResult result)

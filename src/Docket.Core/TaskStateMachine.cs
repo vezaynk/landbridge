@@ -77,6 +77,7 @@ public static class TaskStateMachine
             AnswerPermission c => ApplyAnswerPermission(task, c),
             EscalatePermission c => ApplyEscalatePermission(task, c),
             WaitTtlExpired c => ApplyWaitTtlExpired(task, c),
+            Park c => ApplyPark(task, c),
             WakeParked c => ApplyWakeParked(task, c),
             StopPreserveAndPark c => ApplyStopPreserveAndPark(task, c),
             Cancel c => ApplyCancel(task, c),
@@ -451,6 +452,37 @@ public static class TaskStateMachine
                 State = TaskState.Parked,
                 CurrentInstance = null,
                 Park = c.Park,
+            },
+            effects.ToArray());
+    }
+
+    private static TransitionResult ApplyPark(TaskRecord task, Park c)
+    {
+        if (task.State is not (TaskState.Working or TaskState.BlockedOnInput))
+            return WrongState(task, TaskState.Working);
+
+        var authorized = c.Actor switch
+        {
+            HumanSession => true,
+            LeadClaim lead => lead.Team == task.Team,
+            _ => false,
+        };
+        if (!authorized)
+            return TransitionResult.Reject(Rule.ActorLacksAuthority,
+                "park is for the Lead of this Team or a human");
+
+        var effects = new List<Effect> { new WriteParkRecord(c.Record) };
+        if (task.CurrentInstance is { } instance)
+            effects.Insert(0, new RevokeWorkerInstanceToken(instance));
+        if (task.State == TaskState.Working)
+            effects.Add(new ClearServicesAndForwards());
+
+        return TransitionResult.Ok(
+            task with
+            {
+                State = TaskState.Parked,
+                CurrentInstance = null,
+                Park = c.Record,
             },
             effects.ToArray());
     }

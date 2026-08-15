@@ -82,7 +82,7 @@ public sealed class MultiMachineTranscriptTests(PostgresFixture pg) : IAsyncLife
         var inventory = Assert.IsType<TranscriptResult.Inventory>(await relay.ListAsync(task, "A", ct));
         var instance = Assert.Single(inventory.Instances);
         Assert.Equal(1, instance.Ordinal);
-        Assert.True(instance.StdoutBytes > 0, "the worker's stdout should have been captured");
+        Assert.True(instance.StderrBytes > 0, "the worker's stderr should have been captured");
 
         // Drain it the way the dashboard does: follow the cursor, one small range at a time,
         // so reassembly across many ranges is what is actually proven.
@@ -107,7 +107,7 @@ public sealed class MultiMachineTranscriptTests(PostgresFixture pg) : IAsyncLife
         for (var guard = 0; guard < 10_000; guard++)
         {
             var result = await relay.ReadAsync(
-                task, machine, ordinal, Docket.Contracts.TranscriptStreams.Stdout, offset, maxBytes, ct);
+                task, machine, ordinal, Docket.Contracts.TranscriptStreams.Stderr, offset, maxBytes, ct);
             var range = Assert.IsType<TranscriptResult.Range>(result);
             text.Append(range.Text);
             if (range.Eof)

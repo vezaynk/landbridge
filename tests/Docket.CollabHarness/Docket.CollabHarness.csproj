@@ -18,6 +18,7 @@
        (§10). Linked (not copied), so there is one source of truth. -->
   <ItemGroup>
     <Compile Include="../HarnessSupport/ParentDeathSignal.cs" Link="ParentDeathSignal.cs" />
+    <Compile Include="../HarnessSupport/AcpStdio.cs" Link="AcpStdio.cs" />
   </ItemGroup>
 
   <!-- A real MCP client, because the whole point of the scripted tier is a REAL

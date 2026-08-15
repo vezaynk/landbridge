@@ -39,6 +39,14 @@ public sealed class WorkDirectoryTests : IDisposable
         return await File.ReadAllLinesAsync(path);
     }
 
+    private async Task<string> MarkerIn(TaskId dirTask, string name)
+    {
+        var path = Path.Combine(_workRoot, dirTask.ToString(), name);
+        Assert.True(await TestKit.WaitUntilAsync(() => File.Exists(path), TimeSpan.FromSeconds(15)),
+            $"harness never recorded {name} in {dirTask}'s dir");
+        return (await File.ReadAllTextAsync(path)).Trim();
+    }
+
     /// <summary>
     /// The whole point: a resumed continuation runs in the named task's dir, and the
     /// substituted <c>{mcp_config}</c> lands there too, so <c>--resume</c> is issued from the
@@ -55,25 +63,12 @@ public sealed class WorkDirectoryTests : IDisposable
             new DispatchCommand(
                 continuation, "default", McpConfigJson: """{"mcpServers":{}}""",
                 ResumeSessionRef: "sess-abc", WorkDirTask: predecessor),
-            TestKit.ResumeProfile(), "m");
+            TestKit.Profile("echo-argv"), "m");
 
-        // The harness ran in the PREDECESSOR's dir — it wrote its argv marker there…
+        // The harness ran in the PREDECESSOR's dir and loaded the parked session there.
         var argv = await ArgvIn(predecessor);
-        var resumeIdx = Array.IndexOf(argv, "--resume");
-        Assert.True(resumeIdx >= 0, "resume argv did not carry --resume");
-        Assert.Equal("sess-abc", argv[resumeIdx + 1]);
-
-        // …and its config was written there under a task-scoped name, because the plain one
-        // belongs to the task that owns the dir and its worker may still be running.
-        var mcpIdx = Array.IndexOf(argv, "--mcp-config");
-        Assert.True(mcpIdx >= 0, "resume argv did not carry --mcp-config");
-        Assert.Equal(
-            Path.Combine(_workRoot, predecessor.ToString(), $"mcp-{continuation}.json"),
-            argv[mcpIdx + 1]);
-        Assert.True(File.Exists(argv[mcpIdx + 1]));
-        // Nothing was written into the continuation's own dir, and nothing clobbered the
-        // predecessor's own config name.
-        Assert.False(File.Exists(Path.Combine(_workRoot, predecessor.ToString(), "mcp.json")));
+        Assert.Equal(["echo-argv"], argv);
+        Assert.Equal("sess-abc", await MarkerIn(predecessor, "acp-loaded"));
         Assert.False(Directory.Exists(Path.Combine(_workRoot, continuation.ToString())));
 
         supervisor.Kill(continuation);
@@ -103,7 +98,7 @@ public sealed class WorkDirectoryTests : IDisposable
             new DispatchCommand(
                 task, "default", McpConfigJson: """{"mcpServers":{}}""",
                 WorkDirTask: predecessor),
-            TestKit.ResumeProfile(), "m");
+            TestKit.Profile("echo-argv"), "m");
 
         var argv = await ArgvIn(predecessor);          // it ran in the predecessor's dir…
         Assert.DoesNotContain("--resume", argv);        // …on the cold argv, with no resume
@@ -131,12 +126,11 @@ public sealed class WorkDirectoryTests : IDisposable
         supervisor.Spawn(
             new DispatchCommand(
                 task, "default", McpConfigJson: """{"mcpServers":{}}""", ResumeSessionRef: "sess-abc"),
-            TestKit.ResumeProfile(), "m");
+            TestKit.Profile("echo-argv"), "m");
 
         var argv = await ArgvIn(task);
-        Assert.Contains("--resume", argv);
-        var mcpIdx = Array.IndexOf(argv, "--mcp-config");
-        Assert.Equal(Path.Combine(_workRoot, task.ToString(), "mcp.json"), argv[mcpIdx + 1]);
+        Assert.Equal(["echo-argv"], argv);
+        Assert.Equal("sess-abc", await MarkerIn(task, "acp-loaded"));
 
         supervisor.Kill(task);
     }

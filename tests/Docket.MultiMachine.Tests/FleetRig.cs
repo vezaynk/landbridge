@@ -141,7 +141,7 @@ internal sealed class FleetRig(
 
         _profile = new ProfileConfig(
             "default",
-            spawnArgv ?? [CollabHarnessPath(), "--mcp-config", "{mcp_config}"],
+            spawnArgv ?? [CollabHarnessPath()],
             stop ?? new StopConfig(StopMode.Signal, MessageTemplate: null, WindDown: TimeSpan.FromSeconds(30)),
             resumeArgv is null ? null : new ResumeConfig(resumeArgv),
             new EventsConfig(

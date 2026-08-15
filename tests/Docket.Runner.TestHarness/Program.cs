@@ -117,6 +117,9 @@ public static class Program
 
         switch (mode)
         {
+            case "acp":
+                return await AcpServer.RunAsync(args.Length > 1 ? args[1..] : []);
+
             case "echo-stdin":
                 // §10 write_process: echo each stdin line to stdout, so a test can prove a write
                 // reached the pipe by reading the captured log — which is exactly the loop an
@@ -342,7 +345,7 @@ public static class Program
     /// but the inherited environment is the operator's) would break the one-per-line
     /// shape, so those collapse to spaces.
     /// </summary>
-    private static string EnvironmentLines()
+    internal static string EnvironmentLines()
     {
         var lines = new List<string>();
         foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables())
@@ -441,7 +444,7 @@ public static class Program
         }
     }
 
-    private static async Task WriteStartedAsync(string cwd)
+    internal static async Task WriteStartedAsync(string cwd)
     {
         var taskId = Environment.GetEnvironmentVariable("DOCKET_TASK_ID") ?? "none";
         var machineId = Environment.GetEnvironmentVariable("DOCKET_MACHINE_ID") ?? "none";
@@ -468,7 +471,7 @@ public static class Program
     /// and Windows (same directory = same volume), so a visible marker is always
     /// whole. Keep marker writes going through here.
     /// </summary>
-    private static async Task WriteMarkerAtomicAsync(string path, string content)
+    internal static async Task WriteMarkerAtomicAsync(string path, string content)
     {
         var tmp = path + ".tmp";
         await File.WriteAllTextAsync(tmp, content);
@@ -483,7 +486,7 @@ public static class Program
     /// working directory unless <paramref name="cwd"/> is given, so an inner harness
     /// writes its markers where the test is watching.
     /// </summary>
-    private static Process SpawnSelf(string mode, string? cwd = null, bool holdStdin = false)
+    internal static Process SpawnSelf(string mode, string? cwd = null, bool holdStdin = false)
     {
         var self = Environment.ProcessPath
             ?? throw new InvalidOperationException("cannot resolve own binary path");

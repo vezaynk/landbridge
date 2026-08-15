@@ -267,8 +267,16 @@ public sealed record AnswerPermission(
 public sealed record EscalatePermission(
     Actor Actor, InputRequestKind? PendingKind, string Reason) : TaskCommand(Actor);
 
-/// <summary>blocked_on_input → parked: wait TTL expired, lease released (§6, §11).</summary>
+/// <summary>blocked_on_input → parked: wait TTL expired, lease released (§6, §11).
+/// Off by default under ACP (wait is indefinite); kept for explicit config.</summary>
 public sealed record WaitTtlExpired(ParkRecord Park) : TaskCommand(ControlPlaneActor.Instance);
+
+/// <summary>
+/// working | blocked_on_input → parked: a Lead or human released the session on
+/// purpose. Not a timer. The ACP host gets session/cancel; the instance token
+/// is revoked; redispatch later is session/load.
+/// </summary>
+public sealed record Park(Actor Actor, ParkRecord Record) : TaskCommand(Actor);
 
 /// <summary>
 /// parked → submitted: the awaited answer or endpoint landed. Redispatch then

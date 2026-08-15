@@ -121,8 +121,8 @@ internal static class RealHarnessBar
     /// </summary>
     public static async Task ResumesAfterParkAsync(PostgresFixture pg, RealHarnessProfile profile)
     {
-        Skip.If(profile.Resume is null,
-            profile.Name + " does not declare resume.args — park/resume is not this harness's bar");
+        Skip.If(!profile.SupportsResume,
+            profile.Name + " does not support ACP session/load — park/resume is not this harness's bar");
 
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(20));
         var ct = cts.Token;
@@ -134,7 +134,7 @@ internal static class RealHarnessBar
         using var attach = profile.AttachTo(rig);
         await rig.AddMachineAsync("A");
 
-        var task = await rig.CreateTaskAsync(RealHarnessProfile.AskThenStopDescription, ct);
+        var task = await rig.CreateTaskAsync(RealHarnessProfile.AskThenStop(nonce), ct);
 
         Assert.True(
             await rig.DispatchUntilAsync(
@@ -173,14 +173,6 @@ internal static class RealHarnessBar
             + profile.FailureHypotheses + await rig.RealWorkerDiagnosticsAsync(task, ct));
 
         Assert.Contains(remembered, await rig.ResultReferenceAsync(task, ct));
-
-        var instanceSessions = rig.InstanceSessionIdsOn("A", task, profile.SessionIdFromLine);
-        Assert.True(
-            instanceSessions.Count >= 2,
-            $"resume of {profile.Name} did not produce a second captured instance — the successor "
-            + "may have cold-started without a transcript file, or SessionIdFromLine missed the stream.\n"
-            + profile.FailureHypotheses + await rig.RealWorkerDiagnosticsAsync(task, ct));
-        Assert.All(instanceSessions, id => Assert.Equal(sessionRef, id));
         Assert.Equal("A", rig.MachineRanOn(task));
         Assert.Equal(sessionRef, await rig.HarnessSessionRefAsync(task, ct));
     }

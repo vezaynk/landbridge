@@ -138,7 +138,7 @@ builder.Services.AddHostedService(sp => new WaitTtlSweeper(
     sp.GetRequiredService<RunnerConnectionRegistry>(),
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILogger<WaitTtlSweeper>>(),
-    waitTtl: builder.Configuration.GetValue<TimeSpan?>("Docket:WaitTtl"),
+    waitTtl: builder.Configuration.GetValue<TimeSpan?>("Docket:WaitTtl") ?? Timeout.InfiniteTimeSpan,
     machineLivenessWindow: builder.Configuration.GetValue<TimeSpan?>("Docket:MachineLivenessTtl"),
     sweepInterval: builder.Configuration.GetValue<TimeSpan?>("Docket:WaitTtlSweepInterval")));
 

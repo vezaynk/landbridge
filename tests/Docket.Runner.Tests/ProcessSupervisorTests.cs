@@ -71,35 +71,25 @@ public sealed class ProcessSupervisorTests : IDisposable
     /// never the ack.
     /// </summary>
     [Fact]
-    public async Task Stop_message_mode_reaches_the_agent_as_a_turn_and_it_winds_down_without_being_killed()
+    public async Task Stop_cancels_the_acp_session_and_the_agent_exits()
     {
         var task = TaskId.New();
         var supervisor = Supervisor();
-        supervisor.Spawn(TestKit.Dispatch(task), TestKit.Profile("stdin-stop", StopMode.Message), "m");
-        // Hold the supervised handle so its exit code is still readable after OnExited
-        // removes it from the running set (below).
+        supervisor.Spawn(TestKit.Dispatch(task), TestKit.Profile("stdin-stop"), "m");
         supervisor.TryGet(task, out var supervised);
 
-        // Wait for the harness to be reading stdin.
         var marker = Path.Combine(_workRoot, task.ToString(), "started");
         Assert.True(await TestKit.WaitUntilAsync(() => File.Exists(marker), TimeSpan.FromSeconds(15)));
 
         var ack = await supervisor.StopAsync(task, TimeSpan.FromSeconds(30), StopDisposition.Preserve, "wind down", CancellationToken.None);
 
-        // §10: docketd wrote the wind-down turn to the harness's stdin. Written is all the ack
-        // asserts — the wind-down below is what shows this harness also read it.
         Assert.True(ack.Actioned);
         Assert.Equal(StopDelivery.MessageWritten, ack.Delivery);
 
         var stopped = Path.Combine(_workRoot, task.ToString(), "stopped");
         Assert.True(await TestKit.WaitUntilAsync(() => File.Exists(stopped), TimeSpan.FromSeconds(15)),
-            "harness did not wind down from the injected stop turn");
+            "harness did not record session/cancel");
         Assert.True(await TestKit.WaitUntilAsync(() => !supervised.ProcessAlive, TimeSpan.FromSeconds(15)));
-
-        // §11: it exited on its own from the injected turn (exit 0), never hard-killed
-        // — the FakeTimeProvider wind-down timer was never advanced, so a voluntary
-        // graceful exit is the only way it is gone. A tree-kill would surface a
-        // non-zero (signalled) exit code.
         Assert.Equal(0, supervised.Process.ExitCode);
         Assert.Equal(0, supervisor.RunningTotal);
     }
@@ -115,7 +105,7 @@ public sealed class ProcessSupervisorTests : IDisposable
         // not the TTL — is exactly what this asserts (§10, §11).
         supervisor.Spawn(
             TestKit.Dispatch(task),
-            TestKit.Profile("run", StopMode.Message, windDown: TimeSpan.FromSeconds(30)), "m");
+            TestKit.Profile("ignore-cancel", windDown: TimeSpan.FromSeconds(30)), "m");
         supervisor.TryGet(task, out var supervised);
         Assert.True(await TestKit.WaitUntilAsync(() => supervised.ProcessAlive, TimeSpan.FromSeconds(5)));
 
@@ -134,7 +124,7 @@ public sealed class ProcessSupervisorTests : IDisposable
         var supervisor = Supervisor();
         // A message-mode profile whose harness WOULD wind down on a "stop" line — but
         // TTL=0 must kill outright without injecting anything, so it never gets one.
-        supervisor.Spawn(TestKit.Dispatch(task), TestKit.Profile("stdin-stop", StopMode.Message), "m");
+        supervisor.Spawn(TestKit.Dispatch(task), TestKit.Profile("stdin-stop"), "m");
         supervisor.TryGet(task, out var supervised);
         var marker = Path.Combine(_workRoot, task.ToString(), "started");
         Assert.True(await TestKit.WaitUntilAsync(() => File.Exists(marker), TimeSpan.FromSeconds(15)));
@@ -163,18 +153,15 @@ public sealed class ProcessSupervisorTests : IDisposable
         // key off the ttl, NOT wind_down, which is the message-path budget alone.
         supervisor.Spawn(
             TestKit.Dispatch(task),
-            TestKit.Profile("run", StopMode.Signal, windDown: TimeSpan.FromSeconds(10)), "m");
+            TestKit.Profile("ignore-cancel", windDown: TimeSpan.FromSeconds(10)), "m");
         supervisor.TryGet(task, out var supervised);
         Assert.True(await TestKit.WaitUntilAsync(() => supervised.ProcessAlive, TimeSpan.FromSeconds(5)));
 
         var ack = await supervisor.StopAsync(task, TimeSpan.FromSeconds(30), StopDisposition.Preserve, null, CancellationToken.None);
-        Assert.Equal(StopDelivery.DeadlineArmed, ack.Delivery);
-        Assert.True(supervised.ProcessAlive); // not killed immediately — the ttl grace holds
+        Assert.Equal(StopDelivery.MessageWritten, ack.Delivery);
+        Assert.True(supervised.ProcessAlive);
 
-        _clock.Advance(TimeSpan.FromSeconds(10)); // wind_down would fire here, but must NOT apply
-        Assert.True(supervised.ProcessAlive, "a signal-mode stop must wait the full ttl, not wind_down");
-
-        _clock.Advance(TimeSpan.FromSeconds(20)); // reaches the ttl deadline → hard kill
+        _clock.Advance(TimeSpan.FromSeconds(10));
         Assert.True(await TestKit.WaitUntilAsync(() => !supervised.ProcessAlive, TimeSpan.FromSeconds(10)));
     }
 
@@ -190,16 +177,14 @@ public sealed class ProcessSupervisorTests : IDisposable
     /// the actual CLI.</para>
     /// </summary>
     [Fact]
-    public async Task The_same_ack_covers_a_harness_that_reads_the_turn_and_one_that_never_will()
+    public async Task Session_cancel_is_the_same_ack_whether_the_agent_exits_or_ignores_it()
     {
         var reader = TaskId.New();
         var deaf = TaskId.New();
         var supervisor = Supervisor();
 
-        // "stdin-stop" reads stdin and winds down on a stop line; "run" holds stdin open and
-        // never reads it — the dead-man pipe only. Both profiles declare mode: message.
-        supervisor.Spawn(TestKit.Dispatch(reader), TestKit.Profile("stdin-stop", StopMode.Message, name: "reads"), "m");
-        supervisor.Spawn(TestKit.Dispatch(deaf), TestKit.Profile("run", StopMode.Message, name: "deaf"), "m");
+        supervisor.Spawn(TestKit.Dispatch(reader), TestKit.Profile("stdin-stop", name: "reads"), "m");
+        supervisor.Spawn(TestKit.Dispatch(deaf), TestKit.Profile("ignore-cancel", name: "deaf"), "m");
         supervisor.TryGet(reader, out var readerTask);
         supervisor.TryGet(deaf, out var deafTask);
 
@@ -212,57 +197,17 @@ public sealed class ProcessSupervisorTests : IDisposable
         var readerAck = await supervisor.StopAsync(reader, ttl, StopDisposition.Preserve, "wind down", CancellationToken.None);
         var deafAck = await supervisor.StopAsync(deaf, ttl, StopDisposition.Preserve, "wind down", CancellationToken.None);
 
-        // Indistinguishable — which is the whole finding.
         Assert.Equal(StopDelivery.MessageWritten, readerAck.Delivery);
         Assert.Equal(readerAck, deafAck);
 
-        // And yet: one honoured the turn on its own, the other is still running and will only
-        // stop because the wind-down deadline kills it.
         Assert.True(await TestKit.WaitUntilAsync(
-            () => File.Exists(Path.Combine(_workRoot, reader.ToString(), "stopped")), TimeSpan.FromSeconds(15)),
-            "the stdin-reading harness did not wind down from the written turn");
+            () => File.Exists(Path.Combine(_workRoot, reader.ToString(), "stopped")), TimeSpan.FromSeconds(15)));
         Assert.True(await TestKit.WaitUntilAsync(() => !readerTask.ProcessAlive, TimeSpan.FromSeconds(15)));
-        Assert.Equal(0, readerTask.Process.ExitCode); // voluntary, never killed
+        Assert.Equal(0, readerTask.Process.ExitCode);
 
         Assert.True(deafTask.ProcessAlive);
-        _clock.Advance(TimeSpan.FromSeconds(30)); // wind_down (< ttl) → the backstop kill
-        Assert.True(await TestKit.WaitUntilAsync(() => !deafTask.ProcessAlive, TimeSpan.FromSeconds(10)));
-        Assert.False(File.Exists(Path.Combine(_workRoot, deaf.ToString(), "stopped")),
-            "the harness that never reads stdin cannot have wound down");
-    }
-
-    /// <summary>
-    /// The other half of the gate: a profile that does <em>not</em> declare a message seam has
-    /// nothing written to it, and the ack says so — even though this particular harness would
-    /// have honoured a turn had it received one. The declaration, not the harness's actual
-    /// appetite for stdin, is what docketd acts on, because the declaration is the only thing
-    /// it can read (§10 — everything harness-specific is data). That is also why a reference
-    /// profile declaring <c>message</c> for a harness that cannot honour it was a real bug and
-    /// not a cosmetic one.
-    /// </summary>
-    [Fact]
-    public async Task A_profile_declaring_no_message_seam_has_nothing_written_even_to_a_harness_that_would_read_it()
-    {
-        var task = TaskId.New();
-        var supervisor = Supervisor();
-        supervisor.Spawn(TestKit.Dispatch(task), TestKit.Profile("stdin-stop", StopMode.Signal), "m");
-        supervisor.TryGet(task, out var supervised);
-
-        var marker = Path.Combine(_workRoot, task.ToString(), "started");
-        Assert.True(await TestKit.WaitUntilAsync(() => File.Exists(marker), TimeSpan.FromSeconds(15)));
-
-        var ack = await supervisor.StopAsync(task, TimeSpan.FromSeconds(30), StopDisposition.Preserve, null, CancellationToken.None);
-
-        Assert.True(ack.Actioned);
-        Assert.Equal(StopDelivery.DeadlineArmed, ack.Delivery);
-
-        // Nothing was written, so the harness — which reads stdin and would have wound down —
-        // stays mid-task until the ttl deadline takes it.
-        Assert.True(supervised.ProcessAlive);
         _clock.Advance(TimeSpan.FromSeconds(30));
-        Assert.True(await TestKit.WaitUntilAsync(() => !supervised.ProcessAlive, TimeSpan.FromSeconds(10)));
-        Assert.False(File.Exists(Path.Combine(_workRoot, task.ToString(), "stopped")),
-            "a signal-mode profile must have no turn written for its harness to read");
+        Assert.True(await TestKit.WaitUntilAsync(() => !deafTask.ProcessAlive, TimeSpan.FromSeconds(10)));
     }
 
     [Fact]
@@ -360,72 +305,52 @@ public sealed class ProcessSupervisorTests : IDisposable
     // ── §11 resume: spawn argv selection ────────────────────────────────────────
 
     [Fact]
-    public async Task Resume_spawns_from_resume_args_substituting_session_id_and_mcp_config()
+    public async Task Resume_loads_the_acp_session_on_the_same_spawn()
     {
         var task = TaskId.New();
         var supervisor = Supervisor();
 
-        // A dispatch that carries a resume ref against a profile that declares
-        // resume.args → the supervisor builds the argv from resume.args, filling
-        // {session_id} with the ref and {mcp_config} with the written config path.
         var dispatch = new DispatchCommand(
             task, "default", McpConfigJson: """{"mcpServers":{}}""", ResumeSessionRef: "sess-abc");
-        supervisor.Spawn(dispatch, TestKit.ResumeProfile(), "m");
-
-        var argv = await ReadArgvMarker(task);
-        Assert.Equal("echo-argv", argv[0]); // resume.args re-runs the harness in echo mode
-        var resumeIdx = Array.IndexOf(argv, "--resume");
-        Assert.True(resumeIdx >= 0, "resume argv did not carry --resume");
-        Assert.Equal("sess-abc", argv[resumeIdx + 1]); // {session_id} substituted
-        var mcpIdx = Array.IndexOf(argv, "--mcp-config");
-        Assert.True(mcpIdx >= 0, "resume argv did not carry --mcp-config");
-        Assert.Equal(Path.Combine(_workRoot, task.ToString(), "mcp.json"), argv[mcpIdx + 1]); // {mcp_config} substituted
-
-        supervisor.Kill(task);
-    }
-
-    [Fact]
-    public async Task A_resume_ref_with_no_resume_config_cold_starts()
-    {
-        var task = TaskId.New();
-        var supervisor = Supervisor();
-
-        // The profile has NO resume config, so even a dispatch carrying a resume ref
-        // spawns the normal (cold) argv — the documented fallback (§11).
-        supervisor.Spawn(
-            new DispatchCommand(task, "default", ResumeSessionRef: "sess-abc"),
-            TestKit.Profile("echo-argv"), "m");
-
-        var argv = await ReadArgvMarker(task);
-        Assert.Equal(["echo-argv"], argv);          // just the cold spawn argv…
-        Assert.DoesNotContain("--resume", argv);     // …no resume flag, no {session_id}
-
-        supervisor.Kill(task);
-    }
-
-    [Fact]
-    public async Task A_resume_config_with_no_ref_cold_starts()
-    {
-        var task = TaskId.New();
-        var supervisor = Supervisor();
-
-        // The profile declares resume.args, but this dispatch carries no ref (a first
-        // dispatch), so the supervisor spawns the cold argv, not resume.args (§11).
-        supervisor.Spawn(new DispatchCommand(task, "default"), TestKit.ResumeProfile(), "m");
+        supervisor.Spawn(dispatch, TestKit.Profile("echo-argv"), "m");
 
         var argv = await ReadArgvMarker(task);
         Assert.Equal(["echo-argv"], argv);
-        Assert.DoesNotContain("--resume", argv);
+        var loaded = await ReadMarker(task, "acp-loaded");
+        Assert.Equal("sess-abc", loaded);
+
+        supervisor.Kill(task);
+    }
+
+    [Fact]
+    public async Task A_cold_dispatch_opens_a_new_acp_session()
+    {
+        var task = TaskId.New();
+        var supervisor = Supervisor();
+
+        supervisor.Spawn(new DispatchCommand(task, "default"), TestKit.Profile("echo-argv"), "m");
+
+        var argv = await ReadArgvMarker(task);
+        Assert.Equal(["echo-argv"], argv);
+        var path = Path.Combine(_workRoot, task.ToString(), "acp-session");
+        Assert.True(await TestKit.WaitUntilAsync(() => File.Exists(path), TimeSpan.FromSeconds(15)));
+        Assert.False(File.Exists(Path.Combine(_workRoot, task.ToString(), "acp-loaded")));
 
         supervisor.Kill(task);
     }
 
     private async Task<string[]> ReadArgvMarker(TaskId task)
     {
-        var path = Path.Combine(_workRoot, task.ToString(), "argv");
+        var raw = await ReadMarker(task, "argv");
+        return raw.Split('\n', StringSplitOptions.None);
+    }
+
+    private async Task<string> ReadMarker(TaskId task, string name)
+    {
+        var path = Path.Combine(_workRoot, task.ToString(), name);
         Assert.True(await TestKit.WaitUntilAsync(() => File.Exists(path), TimeSpan.FromSeconds(15)),
-            "harness never recorded its argv");
-        return await File.ReadAllLinesAsync(path);
+            "harness never recorded " + name);
+        return (await File.ReadAllTextAsync(path)).Trim();
     }
 
     private async Task<int> ReadChildPid(TaskId task)

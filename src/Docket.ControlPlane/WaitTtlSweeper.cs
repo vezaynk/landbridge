@@ -168,7 +168,9 @@ public sealed class WaitTtlSweeper : IHostedService
                 continue;
             }
 
-            if (b.BlockedAt is { } since && now - since >= _waitTtl)
+            if (_waitTtl > TimeSpan.Zero
+                && _waitTtl != Timeout.InfiniteTimeSpan
+                && b.BlockedAt is { } since && now - since >= _waitTtl)
             {
                 // §6/§11: blocked_on_input → parked, wait TTL expired. The park record is
                 // the machine, which is the one fact of it the plane holds and redispatch

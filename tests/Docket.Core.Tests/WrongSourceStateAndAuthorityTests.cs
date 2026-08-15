@@ -166,6 +166,7 @@ public class WrongSourceStateAndAuthorityTests
                      new VerdictFail(Given.Lead),
                      new AnswerInput(Given.Lead, Given.Park),
                      new StopPreserveAndPark(Given.Lead, Given.Park),
+                     new Park(Given.Lead, Given.Park),
                      new Cancel(Given.Lead, CancelDisposition.Preserve),
                      new WakeParked(),
                  })
@@ -214,6 +215,23 @@ public class WrongSourceStateAndAuthorityTests
                 TaskStateMachine.Apply(task, new Cancel(incumbent, disposition)),
                 Rule.ActorLacksAuthority);
         }
+    }
+
+    [Fact]
+    public void Park_refuses_a_worker_parking_its_own_task()
+    {
+        var task = Given.Task(TaskState.Working);
+        Expect.Rejected(
+            TaskStateMachine.Apply(task, new Park(Given.IncumbentOf(task), Given.Park)),
+            Rule.ActorLacksAuthority);
+    }
+
+    [Fact]
+    public void Park_refuses_a_foreign_lead()
+    {
+        Expect.Rejected(
+            TaskStateMachine.Apply(Given.Task(TaskState.Working), new Park(Given.ForeignLead, Given.Park)),
+            Rule.ActorLacksAuthority);
     }
 
     [Fact]

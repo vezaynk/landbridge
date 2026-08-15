@@ -115,7 +115,7 @@ public sealed class DeadMansSwitchTests : IDisposable
     /// Supervisor integration: docketd redirects and HOLDS the worker's stdin, so a
     /// live supervisor must NOT let the harness trip its switch. (Message-mode stop
     /// still working over that same held pipe is proven by
-    /// <see cref="ProcessSupervisorTests.Stop_message_mode_reaches_the_agent_as_a_turn_and_it_winds_down_without_being_killed"/>.)
+    /// <see cref="ProcessSupervisorTests.Stop_cancels_the_acp_session_and_the_agent_exits"/>.)
     /// </summary>
     [Fact]
     public async Task Supervisor_holds_stdin_so_the_harness_does_not_trip_while_docketd_lives()

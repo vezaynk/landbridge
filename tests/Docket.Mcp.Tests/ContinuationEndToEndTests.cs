@@ -279,13 +279,10 @@ public sealed class ContinuationEndToEndTests(PostgresFixture pg) : IAsyncLifeti
                 McpConfigJson: """{"mcpServers":{}}""", ResumeSessionRef: resumeRef);
             supervisor.Spawn(dispatch, profile, "m1");
 
-            var argvPath = Path.Combine(workRoot, taskId.ToString(), "argv");
-            Assert.True(await WaitUntilAsync(() => Task.FromResult(File.Exists(argvPath)), TimeSpan.FromSeconds(15)),
-                "the resumed harness never recorded its argv");
-            var argv = await File.ReadAllLinesAsync(argvPath, ct);
-            var resumeIdx = Array.IndexOf(argv, "--resume");
-            Assert.True(resumeIdx >= 0, $"resumed argv carried no --resume: {string.Join(' ', argv)}");
-            Assert.Equal(inherited, argv[resumeIdx + 1]);
+            var loadedPath = Path.Combine(workRoot, taskId.ToString(), "acp-loaded");
+            Assert.True(await WaitUntilAsync(() => Task.FromResult(File.Exists(loadedPath)), TimeSpan.FromSeconds(15)),
+                "the resumed harness never recorded session/load");
+            Assert.Equal(inherited, (await File.ReadAllTextAsync(loadedPath, ct)).Trim());
         }
         finally
         {
@@ -309,10 +306,10 @@ public sealed class ContinuationEndToEndTests(PostgresFixture pg) : IAsyncLifeti
     private static ProfileConfig ResumeProfile() =>
         new(
             "default",
-            [HarnessPath(), "emit-stream"],
+            [HarnessPath(), "acp", "emit-stream"],
             new StopConfig(StopMode.Signal, MessageTemplate: null, WindDown: TimeSpan.FromSeconds(30)),
-            new ResumeConfig([HarnessPath(), "echo-argv", "--resume", "{session_id}", "--mcp-config", "{mcp_config}"]),
-            new EventsConfig(EventsSource.Terminal, new Dictionary<string, string>()),
+            Resume: null,
+            new EventsConfig(EventsSource.None, new Dictionary<string, string>()),
             new TelemetryConfig(Otel: false, Endpoint: null),
             new LogsConfig(),
             MaxConcurrent: null);

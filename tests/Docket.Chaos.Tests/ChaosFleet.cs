@@ -545,13 +545,13 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
                 {
                     ["name"] = "default",
                     ["spawn"] = new JsonArray(
-                        ChaosBinaries.WorkerHarness(), "--mcp-config", "{mcp_config}"),
+                        ChaosBinaries.WorkerHarness()),
                 },
                 new JsonObject
                 {
                     ["name"] = ChaosProfiles.Wedge,
                     ["spawn"] = new JsonArray(
-                        ChaosBinaries.RunnerTestHarness(), "run", "--mcp-config", "{mcp_config}"),
+                        ChaosBinaries.RunnerTestHarness(), "acp", "run"),
                 }),
         };
         var path = Path.Combine(NewTempDir("config"), "docketd.json");

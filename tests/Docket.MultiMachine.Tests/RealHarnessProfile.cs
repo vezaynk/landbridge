@@ -61,6 +61,18 @@ internal sealed class RealHarnessProfile
         "resultReference set to the exact value you were asked to remember earlier in this " +
         "conversation, and nothing else. Two tool calls total." + McpToolsRule;
 
+    public static string AskThenStop(string nonce) =>
+        $"""
+         Remember this value for the rest of this conversation: {nonce}. Do not write it
+         to any file. Call request_input exactly once, with kind 'question' and question
+         set to this exact text (no quotes, no other text):
+
+         may I report the remembered value now?
+
+         Then stop and end your turn. Do NOT call report_result on this turn. Do not create or
+         edit files.
+         """;
+
     public const string AskThenStopDescription =
         """
         Call request_input exactly once, with kind 'question' and question set to this exact
@@ -76,16 +88,11 @@ internal sealed class RealHarnessProfile
         new(pg, Spawn(EchoPrompt, EchoTools, []),
             terminalEvents: true, eventMapping: EventMapping, stdin: Stdin, files: Files, env: Env);
 
-    public FleetRig OpenParkRig(PostgresFixture pg, string nonce)
-    {
-        if (Resume is null)
-            throw new InvalidOperationException(Name + " has no resume.args — the park bar must skip.");
-        return new FleetRig(
+    public FleetRig OpenParkRig(PostgresFixture pg, string nonce) =>
+        new(
             pg,
             Spawn(RememberThenAsk(nonce), ParkTools, ParkSpawnExtra),
-            Resume(ResumeAndReport),
-            terminalEvents: true, eventMapping: EventMapping, stdin: Stdin, files: Files, env: Env);
-    }
+            terminalEvents: false, eventMapping: EventMapping, stdin: Stdin, files: Files, env: Env);
 
     public IDisposable? AttachTo(FleetRig rig) => Attach?.Invoke(rig);
 

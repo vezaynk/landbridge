@@ -78,17 +78,13 @@ internal static class RealHarnessProfiles
         Name = "claude",
         Bin = bin,
         Stdin = StdinPolicy.Deadman,
-        Files = ClaudeMcpFile,
         GetTask = "mcp__docket__get_task",
         ReportResult = "mcp__docket__report_result",
         RequestInput = "mcp__docket__request_input",
         Usage = UsageExpectation.Cost,
         NamesModel = true,
         SupportsResume = true,
-        ParkSpawnExtra = ["--max-turns", "14"],
-        Spawn = (prompt, tools, extra) => ClaudeSpawn(bin, prompt, tools, extra),
-        Resume = prompt => ClaudeSpawn(bin, prompt, "mcp__docket__get_task,mcp__docket__report_result,mcp__docket__request_input",
-            ["--resume", "{session_id}", "--max-turns", "14"]),
+        Spawn = (_, _, _) => ClaudeAcp(bin),
     };
 
     public static RealHarnessProfile Codex(string bin) => new()
@@ -103,9 +99,7 @@ internal static class RealHarnessProfiles
         Usage = UsageExpectation.Tokens,
         SupportsResume = true,
         FailureHypotheses = CodexHypotheses(),
-        Spawn = (prompt, _, extra) => CodexSpawn(bin, prompt, extra),
-        Resume = prompt => CodexResume(bin, prompt),
-        Attach = rig => CodexHome.Create(rig.McpUrl, CodexBareTools),
+        Spawn = (_, _, _) => CodexAcp(bin),
     };
 
     public static RealHarnessProfile OpenCode(string bin) => new()
@@ -120,9 +114,7 @@ internal static class RealHarnessProfiles
         Usage = UsageExpectation.Cost,
         SupportsResume = true,
         FailureHypotheses = OpenCodeHypotheses(),
-        Spawn = (prompt, _, extra) => OpenCodeSpawn(bin, prompt, extra),
-        Resume = prompt => OpenCodeResume(bin, prompt),
-        Attach = rig => OpenCodeConfig.Create(rig.McpUrl),
+        Spawn = (_, _, _) => OpenCodeAcp(bin),
     };
 
     public static RealHarnessProfile Grok(string bin) => new()
@@ -144,84 +136,40 @@ internal static class RealHarnessProfiles
         Usage = UsageExpectation.Cost,
         SupportsResume = true,
         FailureHypotheses = GrokHypotheses(),
-        Spawn = (prompt, _, extra) => GrokSpawn(bin, prompt, extra),
-        Resume = prompt => GrokResume(bin, prompt),
+        Spawn = (_, _, _) => GrokAcp(bin),
     };
 
+    public static string[] ClaudeAcp(string bin) =>
+        LooksLikeAcp(bin)
+            ? [bin]
+            : FirstNonEmpty("DOCKET_CLAUDE_ACP") is { } acp
+                ? [acp]
+                : ["npx", "-y", "@zed-industries/claude-agent-acp"];
+
+    public static string[] CodexAcp(string bin) =>
+        LooksLikeAcp(bin)
+            ? [bin]
+            : FirstNonEmpty("DOCKET_CODEX_ACP") is { } acp
+                ? [acp]
+                : ["npx", "-y", "@zed-industries/codex-acp"];
+
+    public static string[] OpenCodeAcp(string bin) => [bin, "acp"];
+
+    public static string[] GrokAcp(string bin) => [bin, "agent", "stdio"];
+
+    // Compat names used by per-harness characterization files. Prompt is ignored:
+    // ACP session/prompt is the assignment, not argv.
     public static string[] ClaudeSpawn(string bin, string prompt, string tools, params string[] extra) =>
-    [
-        bin, "-p", prompt,
-        "--mcp-config", ClaudeMcpPath,
-        "--strict-mcp-config",
-        "--allowedTools", tools,
-        "--output-format", "stream-json",
-        "--verbose",
-        "--model", "haiku",
-        "--max-turns", "8",
-        .. extra,
-    ];
+        ClaudeAcp(bin);
 
-    public static string[] CodexSpawn(string bin, string prompt, params string[] extra)
-    {
-        var argv = new List<string>
-        {
-            bin, "exec", prompt,
-            "--json",
-            "--skip-git-repo-check",
-            "--dangerously-bypass-approvals-and-sandbox",
-            "--model", CodexModel,
-        };
-        argv.AddRange(extra);
-        return [.. argv];
-    }
+    public static string[] CodexSpawn(string bin, string prompt, params string[] extra) => CodexAcp(bin);
 
-    public static string[] CodexResume(string bin, string prompt) =>
-    [
-        bin, "exec", "resume", "{session_id}", prompt,
-        "--json",
-        "--skip-git-repo-check",
-        "--dangerously-bypass-approvals-and-sandbox",
-        "--model", CodexModel,
-    ];
+    public static string[] OpenCodeSpawn(string bin, string prompt, params string[] extra) => OpenCodeAcp(bin);
 
-    public static string[] OpenCodeSpawn(string bin, string prompt, params string[] extra) =>
-    [
-        bin, "run", prompt,
-        "--format", "json",
-        "--auto",
-        "--model", OpenCodeModel,
-        .. extra,
-    ];
+    public static string[] GrokSpawn(string bin, string prompt, params string[] extra) => GrokAcp(bin);
 
-    public static string[] OpenCodeResume(string bin, string prompt) =>
-    [
-        bin, "run", prompt,
-        "--session", "{session_id}",
-        "--format", "json",
-        "--auto",
-        "--model", OpenCodeModel,
-    ];
-
-    public static string[] GrokSpawn(string bin, string prompt, params string[] extra) =>
-    [
-        bin, "-p", prompt,
-        "--output-format", "streaming-messages-json",
-        "--always-approve",
-        "--no-auto-update",
-        "--max-turns", "8",
-        "-m", GrokModel,
-        .. extra,
-    ];
-
-    public static string[] GrokResume(string bin, string prompt) =>
-    [
-        bin, "-p", prompt,
-        "--resume", "{session_id}",
-        "--output-format", "streaming-messages-json",
-        "--always-approve",
-        "--no-auto-update",
-        "-m", GrokModel,
-    ];
+    private static bool LooksLikeAcp(string bin) =>
+        Path.GetFileNameWithoutExtension(bin).Contains("acp", StringComparison.OrdinalIgnoreCase);
 
     public static string CodexModel =>
         Environment.GetEnvironmentVariable("DOCKET_CODEX_MODEL") is { Length: > 0 } m ? m : "gpt-5.1-codex-mini";

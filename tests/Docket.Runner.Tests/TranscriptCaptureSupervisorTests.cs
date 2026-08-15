@@ -45,36 +45,19 @@ public sealed class TranscriptCaptureSupervisorTests : IDisposable
                 lock (drained) drained.Add(item.Event);
         });
 
-        // Terminal events + capture on: one stdout read maps events AND tees the
-        // transcript; stderr is captured on its own drain.
         supervisor.Spawn(
             TestKit.Dispatch(task),
-            TestKit.Profile("emit-both", events: EventsSource.Terminal, capture: true),
+            TestKit.Profile("emit-both", capture: true),
             "machine-cap");
 
-        // Tee, not divert: the same stdout still drains into ToolCallEvents in order.
         Assert.True(
             await TestKit.WaitUntilAsync(() => ToolNames(drained).Count >= 2, TimeSpan.FromSeconds(20)),
-            "event mapping stopped firing while capturing");
+            "ACP tool-call events stopped firing while capturing");
         Assert.Equal(HarnessProgram.EmitStreamToolNames, ToolNames(drained));
 
-        var ndjson = Path.Combine(TaskDir(task), "0001.ndjson");
         var stderr = Path.Combine(TaskDir(task), "0001.stderr");
-
-        // The full stream-json transcript is captured verbatim: all seven fixture lines,
-        // including the session-init line and the stray non-JSON banner the event
-        // mapper skips (capture is verbatim, mapping is selective). This reads the
-        // transcript WHILE the worker (and the writer) is still alive — live-tailing is
-        // a product behavior, so the read uses FileShare.ReadWrite (see ReadLinesShared)
-        // and must work on every OS, Windows included.
-        Assert.True(
-            await TestKit.WaitUntilAsync(
-                () => File.Exists(ndjson) && TestKit.ReadLinesShared(ndjson).Length >= 7, TimeSpan.FromSeconds(20)),
-            "stdout transcript never reached the expected line count");
-        var stdoutLines = TestKit.ReadLinesShared(ndjson);
-        Assert.Equal(7, stdoutLines.Length);
-        Assert.Contains(stdoutLines, l => l.Contains(HarnessProgram.EmitStreamSessionId));
-        Assert.Contains(stdoutLines, l => l.Contains("a stray non-JSON banner"));
+        Assert.False(File.Exists(Path.Combine(TaskDir(task), "0001.ndjson")),
+            "ACP stdout is the JSON-RPC pipe and must not be teed");
 
         // stderr is captured verbatim to its own file.
         Assert.True(
@@ -124,29 +107,32 @@ public sealed class TranscriptCaptureSupervisorTests : IDisposable
         // First instance.
         supervisor.Spawn(
             TestKit.Dispatch(task),
-            TestKit.Profile("emit-stream", events: EventsSource.Terminal, capture: true),
+            TestKit.Profile("emit-both", capture: true),
             "machine-cap");
-        var first = Path.Combine(TaskDir(task), "0001.ndjson");
+        var first = Path.Combine(TaskDir(task), "0001.stderr");
         Assert.True(
-            await TestKit.WaitUntilAsync(() => File.Exists(first) && TestKit.ReadLinesShared(first).Length >= 7, TimeSpan.FromSeconds(20)),
-            "first instance never wrote its transcript");
+            await TestKit.WaitUntilAsync(
+                () => File.Exists(first)
+                      && TestKit.ReadLinesShared(first).Length >= HarnessProgram.EmitBothStderrLines.Length,
+                TimeSpan.FromSeconds(20)),
+            "first instance never wrote its stderr transcript");
         var firstContent = TestKit.ReadLinesShared(first);
 
-        // Tear it down and wait for the supervisor to let go (a requeue/resume is a new
-        // instance from the supervisor's view).
         supervisor.Kill(task);
         Assert.True(await TestKit.WaitUntilAsync(() => supervisor.RunningTotal == 0, TimeSpan.FromSeconds(15)),
             "first instance never exited");
 
-        // Second instance of the SAME task id → the next ordinal, predecessor untouched.
         supervisor.Spawn(
             TestKit.Dispatch(task),
-            TestKit.Profile("emit-stream", events: EventsSource.Terminal, capture: true),
+            TestKit.Profile("emit-both", capture: true),
             "machine-cap");
-        var second = Path.Combine(TaskDir(task), "0002.ndjson");
+        var second = Path.Combine(TaskDir(task), "0002.stderr");
         Assert.True(
-            await TestKit.WaitUntilAsync(() => File.Exists(second) && TestKit.ReadLinesShared(second).Length >= 7, TimeSpan.FromSeconds(20)),
-            "second instance never wrote its own transcript");
+            await TestKit.WaitUntilAsync(
+                () => File.Exists(second)
+                      && TestKit.ReadLinesShared(second).Length >= HarnessProgram.EmitBothStderrLines.Length,
+                TimeSpan.FromSeconds(20)),
+            "second instance never wrote its own stderr transcript");
 
         Assert.True(File.Exists(first), "the first instance's transcript was clobbered");
         Assert.Equal(firstContent, TestKit.ReadLinesShared(first));
@@ -164,20 +150,19 @@ public sealed class TranscriptCaptureSupervisorTests : IDisposable
         // a marker, but the worker keeps running — logging never kills the process.
         supervisor.Spawn(
             TestKit.Dispatch(task),
-            TestKit.Profile("emit-both", events: EventsSource.Terminal, capture: true, maxBytes: 200),
+            TestKit.Profile("emit-both", capture: true, maxBytes: 20),
             "machine-cap");
         Assert.True(supervisor.TryGet(task, out var supervised));
 
-        var ndjson = Path.Combine(TaskDir(task), "0001.ndjson");
+        var stderr = Path.Combine(TaskDir(task), "0001.stderr");
         Assert.True(
             await TestKit.WaitUntilAsync(
-                () => File.Exists(ndjson) && TestKit.ReadLinesShared(ndjson).Any(l => l.Contains("transcript_truncated")),
+                () => File.Exists(stderr) && TestKit.ReadLinesShared(stderr).Any(l => l.Contains("transcript_truncated")),
                 TimeSpan.FromSeconds(20)),
-            "the transcript never hit its truncation marker");
+            "the stderr transcript never hit its truncation marker");
 
-        var lines = TestKit.ReadLinesShared(ndjson);
-        Assert.Contains("transcript_truncated", lines[^1]); // the marker is the final line
-        Assert.True(lines.Length < 7, "capture did not stop before the end of the stream");
+        var lines = TestKit.ReadLinesShared(stderr);
+        Assert.Contains("transcript_truncated", lines[^1]);
 
         // The worker is unaffected by the cap: still alive, reading stdin.
         Assert.True(supervised.ProcessAlive, "reaching the size cap must not kill the worker");
@@ -195,17 +180,17 @@ public sealed class TranscriptCaptureSupervisorTests : IDisposable
         // solely to capture the transcript (the capture-only drain path).
         supervisor.Spawn(
             TestKit.Dispatch(task),
-            TestKit.Profile("emit-stream", events: EventsSource.None, capture: true),
+            TestKit.Profile("emit-both", capture: true),
             "machine-cap");
 
-        var ndjson = Path.Combine(TaskDir(task), "0001.ndjson");
+        var stderr = Path.Combine(TaskDir(task), "0001.stderr");
         Assert.True(
             await TestKit.WaitUntilAsync(
-                () => File.Exists(ndjson) && TestKit.ReadLinesShared(ndjson).Length >= 7, TimeSpan.FromSeconds(20)),
-            "capture-only stdout drain never recorded the transcript");
-        var stdoutLines = TestKit.ReadLinesShared(ndjson);
-        Assert.Equal(7, stdoutLines.Length);
-        Assert.Contains(stdoutLines, l => l.Contains(HarnessProgram.EmitStreamSessionId));
+                () => File.Exists(stderr)
+                      && TestKit.ReadLinesShared(stderr).Length >= HarnessProgram.EmitBothStderrLines.Length,
+                TimeSpan.FromSeconds(20)),
+            "stderr capture never recorded the harness output");
+        Assert.Equal(HarnessProgram.EmitBothStderrLines, TestKit.ReadLinesShared(stderr));
 
         supervisor.Kill(task);
     }

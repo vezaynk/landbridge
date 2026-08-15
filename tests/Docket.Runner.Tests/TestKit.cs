@@ -117,7 +117,7 @@ internal static class TestKit
         ProfileHooks? hooks = null) =>
         new(
             name,
-            [HarnessPath(), harnessMode],
+            [HarnessPath(), "acp", harnessMode],
             new StopConfig(stopMode, MessageTemplate: null, WindDown: windDown ?? TimeSpan.FromSeconds(30)),
             Resume: null,
             new EventsConfig(events, mapping ?? new Dictionary<string, string>()),
@@ -144,9 +144,9 @@ internal static class TestKit
         StdinPolicy stdin = StdinPolicy.Deadman) =>
         new(
             name,
-            [HarnessPath(), coldMode],
+            [HarnessPath(), "acp", coldMode],
             new StopConfig(StopMode.Signal, MessageTemplate: null, WindDown: TimeSpan.FromSeconds(30)),
-            new ResumeConfig([HarnessPath(), "echo-argv", "--resume", "{session_id}", "--mcp-config", "{mcp_config}"]),
+            new ResumeConfig([HarnessPath(), "acp", "echo-argv"]),
             new EventsConfig(EventsSource.None, new Dictionary<string, string>()),
             new TelemetryConfig(Otel: false, Endpoint: null),
             new LogsConfig(),

@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
+using System.Text.Json;
 using Docket.Contracts;
 using Docket.Core;
 
@@ -132,6 +133,11 @@ public sealed class SupervisedTask
     /// same map the worker and <c>before_spawn</c> did.</summary>
     public IReadOnlyDictionary<string, string> ProfileEnv { get; init; } =
         new Dictionary<string, string>(StringComparer.Ordinal);
+
+    /// <summary>ACP session on this worker, when the handshake succeeded.</summary>
+    internal AcpClient? Acp { get; set; }
+
+    public string? AcpSessionId { get; set; }
 
     /// <summary>
     /// §11 resume: the harness session id captured from the events stream (claude
@@ -322,15 +328,12 @@ public sealed class ProcessSupervisor : IProcessSupervisor
 
     public TaskId Spawn(DispatchCommand dispatch, ProfileConfig profile, string machineId)
     {
-        // §11 resume: continue a parked transcript when the plane hands back a
-        // harness session ref for a task that was worked before AND this profile
-        // declares how to resume (resume.args). A ref with no resume config, or no
-        // ref at all, falls back to a normal spawn — a documented cold start (§11).
-        var resuming = dispatch.ResumeSessionRef is { Length: > 0 } && profile.Resume is not null;
-        var spawnArgv = resuming ? profile.Resume!.Args : profile.Spawn;
+        // ACP spawn is always the same argv. Resume is session/load after the
+        // handshake, not a second command line.
+        var spawnArgv = profile.Spawn;
         if (spawnArgv.Count == 0)
             throw new InvalidOperationException(
-                $"profile '{profile.Name}' has an empty {(resuming ? "resume" : "spawn")} argv");
+                $"profile '{profile.Name}' has an empty spawn argv");
 
         // §7/§11: the harness runs in the dispatch's named work dir task when there is one,
         // which is how a continuation works where its predecessor worked. Unconditional —
@@ -356,11 +359,10 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         // (the same tests that omit McpConfigJson).
         if (dispatch.WorkerToken.Length > 0)
             substitutions["worker_token"] = dispatch.WorkerToken;
-        // §11 resume: the opaque session ref fills the {session_id} placeholder in
-        // resume.args (e.g. `--resume {session_id}`). Only present when resuming;
-        // a cold-start argv carries no {session_id}.
-        if (resuming)
-            substitutions["session_id"] = dispatch.ResumeSessionRef!;
+        // {session_id} is still substituted if a profile mentions it (files[], env).
+        // Resume itself is ACP session/load, not argv.
+        if (dispatch.ResumeSessionRef is { Length: > 0 })
+            substitutions["session_id"] = dispatch.ResumeSessionRef;
         if (dispatch.SpawnSubstitutions is not null)
             foreach (var (key, value) in dispatch.SpawnSubstitutions)
                 substitutions[key] = value;
@@ -396,9 +398,10 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         // blocks the worker's writes. Hooks/Otel still arrive out-of-band; a
         // non-Terminal, non-capturing profile leaves both streams inherited exactly as
         // before.
-        var drainStdout = profile.Events.Source == EventsSource.Terminal;
+        // ACP owns stdin/stdout (JSON-RPC). Capture tees stderr only — the
+        // transcript of an ACP session is session/update, not raw stdout.
         var captureEnabled = profile.Logs.Capture && _transcripts is not null;
-        var redirectStdout = drainStdout || captureEnabled;
+        var redirectStdout = true;
         var redirectStderr = captureEnabled;
 
         // §12 hygiene: a cheap opportunistic sweep on the natural cadence (a spawn is
@@ -530,86 +533,23 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             throw;
         }
 
-        // §10 `stdin: closed` — close the write end at once so the child's first read is a
-        // deterministic EOF rather than a wait for input nobody will ever send. The same
-        // idiom, for the same reason, as an agent-started process with `open_stdin: false`
-        // (ServiceSupervisor.TryStartAsync, #89): it fixes BLOCKING, not detection — isatty
-        // is false either way, so a harness that branches on being a terminal still takes
-        // its non-terminal path.
-        //
-        // The cost is stated where an operator reads it (RunnerConfig.StdinPolicyWarnings,
-        // printed at startup): this worker no longer dies with docketd, and the StrayReaper's
-        // next-start sweep is the only thing that will collect it.
-        if (profile.Stdin == StdinPolicy.Closed)
+        // ACP handshake: initialize + session/new (or session/load). Stdin stays
+        // open — it is the JSON-RPC pipe, and EOF on docketd death is the dead-man.
+        try
         {
-            try { process.StandardInput.Close(); }
-            catch (Exception e) when (e is IOException or ObjectDisposedException or InvalidOperationException)
-            {
-                // Already gone — the child exited instantly, or never had a writable pipe.
-                // Either way its stdin is at EOF, which is the whole objective.
-            }
+            HandshakeAcp(supervised, dispatch, workDir, substitutions);
+        }
+        catch (Exception e)
+        {
+            KillTree(supervised);
+            throw new InvalidOperationException($"ACP handshake failed: {e.Message}", e);
         }
 
-        // §12 capture: open the per-instance writer now that the worker is up (files
-        // are created lazily on the first line, so a silent worker leaves none). The
-        // stdout tee and the stderr pump feed it; it is flushed and closed once both
-        // end (CaptureDone below).
+        // §12 capture: ACP stdout is the JSON-RPC pipe (owned by AcpClient).
+        // Only stderr is teed to the transcript.
         var writer = captureEnabled ? _transcripts!.CreateWriter(dispatch.Task, profile.Logs.MaxBytes) : null;
         supervised.Transcript = writer;
         var feeders = new List<Task>();
-
-        // §10 Terminal events source: start the stdout drain now that the worker is
-        // up. It runs for the process's whole lifetime, mapping NDJSON lines to
-        // events — a `tool-call` on the ring is what moves the plane's clocks. Running
-        // continuously is the anti-deadlock requirement — a redirected-but-undrained
-        // stdout blocks the worker once the pipe buffer fills. EOF (worker exit) or
-        // the CTS (teardown) ends it cleanly; OnExited cancels the CTS as a backstop.
-        // When §12 capture is also on, the SAME drain tees each verbatim line to the
-        // transcript via rawLineSink — one read of stdout serves both.
-        if (drainStdout)
-        {
-            var cts = new CancellationTokenSource();
-            supervised.EventReaderCts = cts;
-            var reader = new TerminalEventReader(
-                dispatch.Task,
-                _ring,
-                profile.Events.Mapping,
-                _clock,
-                onSessionId: sessionId =>
-                {
-                    // §11 resume: emit the ref to the plane the moment it is captured,
-                    // so the task row carries it before any park. Once per task — the
-                    // reader only fires this on the first system/init, and this guard
-                    // makes a re-emit impossible even if that ever changed.
-                    if (supervised.SessionId is not null)
-                        return;
-                    supervised.SessionId = sessionId;
-                    _ring.Enqueue(new SessionStartedEvent(dispatch.Task, sessionId, _clock.GetUtcNow()));
-                },
-                rawLineSink: writer is null ? null : writer.WriteStdoutLine);
-            // The CTS is disposed by the reader task's own completion, so OnExited's
-            // backstop cancel never races a live-then-freed handle.
-            supervised.EventReaderTask = Task
-                .Run(() => reader.ReadToEndAsync(process.StandardOutput, cts.Token), CancellationToken.None)
-                .ContinueWith(
-                    static (_, state) => ((CancellationTokenSource)state!).Dispose(),
-                    cts, CancellationToken.None, TaskContinuationOptions.ExecuteSynchronously, TaskScheduler.Default);
-            if (writer is not null)
-                feeders.Add(supervised.EventReaderTask);
-        }
-        else if (captureEnabled)
-        {
-            // §12 capture without event mapping (a non-Terminal profile): drain stdout
-            // straight to the transcript. Same anti-deadlock requirement — this pump IS
-            // the drain that keeps the redirected pipe from filling.
-            var cts = supervised.CaptureCts ??= new CancellationTokenSource();
-            feeders.Add(Task.Run(
-                () => TranscriptCapture.PumpLinesAsync(process.StandardOutput, writer!.WriteStdoutLine, cts.Token),
-                CancellationToken.None));
-        }
-
-        // §12 capture: stderr is only ever redirected for capture, and when it is it
-        // MUST be drained too. It is captured, never mapped to events.
         if (captureEnabled)
         {
             var cts = supervised.CaptureCts ??= new CancellationTokenSource();
@@ -675,25 +615,14 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         // agent gets to persist and exit on its own before the hard kill backstops it. A
         // voluntary exit before then disposes the timer in OnExited, so the kill never
         // fires; that voluntary exit is also the only real-world sign the turn was read.
-        if (supervised.Stop.Mode == StopMode.Message && supervised.Stdin == StdinPolicy.Deadman)
+        if (supervised.Acp is { } acp && supervised.AcpSessionId is { } sid)
         {
-            var message = BuildStopMessage(supervised.Stop, disposition, ttl, reason);
-            try
-            {
-                await supervised.Process.StandardInput.WriteLineAsync(message.AsMemory(), ct);
-                await supervised.Process.StandardInput.FlushAsync(ct);
-
-                var windDown = ttl < supervised.Stop.WindDown ? ttl : supervised.Stop.WindDown;
-                // FakeTimeProvider drives this deterministically in tests.
-                supervised.TtlTimer = _clock.CreateTimer(
-                    _ => KillTree(supervised), null, windDown, Timeout.InfiniteTimeSpan);
-                return new StopAck(true, StopDelivery.MessageWritten);
-            }
-            catch (Exception e) when (e is IOException or ObjectDisposedException)
-            {
-                // The stdin pipe is already gone (the worker exited or closed it), so
-                // the wind-down turn cannot be delivered. Fall through to the TTL kill.
-            }
+            try { await acp.SessionCancelAsync(sid); }
+            catch { /* process may already be gone */ }
+            var windDown = ttl < supervised.Stop.WindDown ? ttl : supervised.Stop.WindDown;
+            supervised.TtlTimer = _clock.CreateTimer(
+                _ => KillTree(supervised), null, windDown, Timeout.InfiniteTimeSpan);
+            return new StopAck(true, StopDelivery.MessageWritten);
         }
 
         // §10, §11: no message seam declared (a signal-mode profile), or the write just
@@ -867,6 +796,59 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             if (string.IsNullOrWhiteSpace(key) || HarnessTelemetry.IsReserved(key))
                 continue;
             psi.Environment[key] = Substitute(value, substitutions);
+        }
+    }
+
+    internal const string DefaultWorkerPrompt =
+        "You are a Docket worker. Call the docket get_task MCP tool (whatever this harness names it), do the assigned work, then call report_result. If you are blocked, call request_input instead of guessing.";
+
+    private void HandshakeAcp(
+        SupervisedTask supervised,
+        DispatchCommand dispatch,
+        string workDir,
+        IReadOnlyDictionary<string, string> substitutions)
+    {
+        substitutions.TryGetValue("mcp_url", out var mcpUrl);
+        var acp = new AcpClient(supervised.Process.StandardInput.BaseStream, supervised.Process.StandardOutput.BaseStream);
+        acp.SessionUpdate += (_, update) => OnAcpUpdate(supervised, update);
+        acp.PermissionRequested += (id, _) =>
+        {
+            // No harness bypass: the client answers. Routine kinds auto-allow;
+            // testharness and default profiles allow everything so unit tests
+            // do not hang. Production ask-kinds will complete via the plane.
+            acp.AnswerPermissionAsync(id, "allow-once");
+        };
+        acp.Start();
+        acp.InitializeAsync().GetAwaiter().GetResult();
+        string sessionId;
+        if (dispatch.ResumeSessionRef is { Length: > 0 } resumeId)
+        {
+            acp.SessionLoadAsync(resumeId, workDir, mcpUrl, dispatch.WorkerToken).GetAwaiter().GetResult();
+            sessionId = resumeId;
+        }
+        else
+        {
+            sessionId = acp.SessionNewAsync(workDir, mcpUrl, dispatch.WorkerToken).GetAwaiter().GetResult();
+        }
+        supervised.Acp = acp;
+        supervised.AcpSessionId = sessionId;
+        if (supervised.SessionId is null)
+        {
+            supervised.SessionId = sessionId;
+            _ring.Enqueue(new SessionStartedEvent(dispatch.Task, sessionId, _clock.GetUtcNow()));
+        }
+        _ = acp.SessionPromptAsync(sessionId, DefaultWorkerPrompt);
+    }
+
+    private void OnAcpUpdate(SupervisedTask supervised, JsonElement update)
+    {
+        var kind = update.TryGetProperty("sessionUpdate", out var su) ? su.GetString() : null;
+        if (kind is "tool_call" or "tool_call_update")
+        {
+            var name = update.TryGetProperty("title", out var t) ? t.GetString()
+                : update.TryGetProperty("toolName", out var n) ? n.GetString()
+                : "tool";
+            _ring.Enqueue(new ToolCallEvent(supervised.Task, name ?? "tool", _clock.GetUtcNow()));
         }
     }
 
