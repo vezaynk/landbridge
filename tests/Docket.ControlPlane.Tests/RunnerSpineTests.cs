@@ -314,6 +314,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         // skipped it — MachineFor was null).
         Assert.Equal(TaskState.BlockedOnInput, await StateAsync(clock, id));
         Assert.Equal("m1", registry.MachineFor(id));
+        Assert.False(registry.HasLiveProcess(id));
 
         // Wait TTL elapses with the machine still heartbeating → the sweeper parks.
         var sweeper = NewSweeper(clock, registry,

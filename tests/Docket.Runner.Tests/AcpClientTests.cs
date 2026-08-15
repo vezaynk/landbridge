@@ -180,22 +180,44 @@ public sealed class AcpClientTests
     // ── permissions ─────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// §11 permission bridge, first half: the agent asks, and this increment answers with
-    /// the agent's own always-allow option — a like-for-like port of what
-    /// <c>bypassPermissions</c>/<c>--auto</c> buy a stream profile, not a policy change.
-    /// Always-allow is preferred over allow-once deliberately: the same question asked forty
-    /// times is forty round trips, and once this routes through the plane instead of
-    /// auto-allowing, it will be forty interruptions for a Lead.
+    /// §11 permission bridge: a plane allow maps onto the agent's <c>allow_once</c>, never
+    /// <c>allow_always</c>. A standing bypass is not a Lead decision.
     /// </summary>
     [Fact]
-    public async Task Answers_a_permission_request_with_the_agents_allow_option()
+    public async Task Answers_a_permission_request_with_the_agents_allow_once_option()
+    {
+        var agent = new FakeAgent { AskPermissionDuringPrompt = true };
+        await RunAsync(agent, Request("go"), (_, _) => Task.FromResult(new AcpPermissionDecision(true, null)));
+
+        var outcome = agent.PermissionResponse!.Value.GetProperty("result").GetProperty("outcome");
+        Assert.Equal("selected", outcome.GetProperty("outcome").GetString());
+        Assert.Equal("allow-once", outcome.GetProperty("optionId").GetString());
+    }
+
+    [Fact]
+    public async Task Answers_a_denied_permission_request_with_the_agents_reject_option()
+    {
+        var agent = new FakeAgent
+        {
+            AskPermissionDuringPrompt = true,
+            PermissionOptions =
+                """[{"optionId":"allow-once","name":"Allow once","kind":"allow_once"},{"optionId":"reject-once","name":"Reject","kind":"reject_once"}]""",
+        };
+        await RunAsync(agent, Request("go"), (_, _) => Task.FromResult(new AcpPermissionDecision(false, "no")));
+
+        var outcome = agent.PermissionResponse!.Value.GetProperty("result").GetProperty("outcome");
+        Assert.Equal("selected", outcome.GetProperty("outcome").GetString());
+        Assert.Equal("reject-once", outcome.GetProperty("optionId").GetString());
+    }
+
+    [Fact]
+    public async Task Cancels_a_permission_request_when_the_plane_is_not_wired()
     {
         var agent = new FakeAgent { AskPermissionDuringPrompt = true };
         await RunAsync(agent, Request("go"));
 
         var outcome = agent.PermissionResponse!.Value.GetProperty("result").GetProperty("outcome");
-        Assert.Equal("selected", outcome.GetProperty("outcome").GetString());
-        Assert.Equal("allow-always", outcome.GetProperty("optionId").GetString());
+        Assert.Equal("cancelled", outcome.GetProperty("outcome").GetString());
     }
 
     /// <summary>
@@ -207,7 +229,7 @@ public sealed class AcpClientTests
     public async Task Answers_an_optionless_permission_request_with_cancelled()
     {
         var agent = new FakeAgent { AskPermissionDuringPrompt = true, PermissionOptions = "[]" };
-        await RunAsync(agent, Request("go"));
+        await RunAsync(agent, Request("go"), (_, _) => Task.FromResult(new AcpPermissionDecision(true, null)));
 
         var outcome = agent.PermissionResponse!.Value.GetProperty("result").GetProperty("outcome");
         Assert.Equal("cancelled", outcome.GetProperty("outcome").GetString());
@@ -612,7 +634,10 @@ public sealed class AcpClientTests
             .Replace("%kind%", kind)
             .Replace("%status%", status);
 
-    private static (AcpClient Client, Task<Run> Drain) Start(FakeAgent agent, AcpSessionRequest request)
+    private static (AcpClient Client, Task<Run> Drain) Start(
+        FakeAgent agent,
+        AcpSessionRequest request,
+        Func<AcpPermissionAsk, CancellationToken, Task<AcpPermissionDecision>>? requestPermission = null)
     {
         var ring = new OutboundEventRing(capacity: 256);
         string? session = null;
@@ -624,7 +649,8 @@ public sealed class AcpClientTests
             new FakeTimeProvider(),
             request,
             onSessionId: id => session = id,
-            warn: warnings.Add);
+            warn: warnings.Add,
+            requestPermission: requestPermission);
 
         agent.Bind(client);
 
@@ -643,9 +669,12 @@ public sealed class AcpClientTests
         return (client, drain);
     }
 
-    private static async Task<Run> RunAsync(FakeAgent agent, AcpSessionRequest request)
+    private static async Task<Run> RunAsync(
+        FakeAgent agent,
+        AcpSessionRequest request,
+        Func<AcpPermissionAsk, CancellationToken, Task<AcpPermissionDecision>>? requestPermission = null)
     {
-        var (_, drain) = Start(agent, request);
+        var (_, drain) = Start(agent, request, requestPermission);
         return await drain.WaitAsync(TimeSpan.FromSeconds(20));
     }
 

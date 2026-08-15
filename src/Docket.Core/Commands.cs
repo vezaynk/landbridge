@@ -280,6 +280,23 @@ public sealed record WaitTtlExpired(ParkRecord Park) : TaskCommand(ControlPlaneA
 public sealed record Park(Actor Actor, ParkRecord Record) : TaskCommand(Actor);
 
 /// <summary>
+/// blocked_on_input → working: a Lead or human answered a still-live ACP
+/// session. The process is idle waiting for a follow-up prompt, so this keeps
+/// the incumbent instance, revokes nothing, and writes no park record. The
+/// plane then sends <c>PromptCommand</c>; the worker pulls the answer on
+/// <c>get_task</c> (ideas/sessions.md).
+///
+/// <para><see cref="PendingKind"/> is the live kind of the request being
+/// answered, supplied by the store off the task row. A
+/// <see cref="InputRequestKind.Permission"/> request must never be answered
+/// this way (<see cref="Rule.PermissionVerdictAnswersPermissionRequests"/>) —
+/// that worker is blocked inside a tool call and needs a verdict, not a
+/// follow-up turn.</para>
+/// </summary>
+public sealed record ContinueSession(
+    Actor Actor, string? Answer = null, InputRequestKind? PendingKind = null) : TaskCommand(Actor);
+
+/// <summary>
 /// parked → submitted: the awaited answer or endpoint landed. Redispatch then
 /// runs the full submitted → working checks, preferring the park record's
 /// machine (§6, §11).

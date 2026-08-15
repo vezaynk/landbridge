@@ -539,6 +539,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             // deadman policy is already holding open. One task, one conversation.
             var cts = new CancellationTokenSource();
             supervised.EventReaderCts = cts;
+            var mcpServers = AcpMcpServers.FromGeneratedConfig(dispatch.McpConfigJson);
             var client = new AcpClient(
                 dispatch.Task,
                 _ring,
@@ -547,7 +548,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
                     workDir,
                     Substitute(profile.Prompt ?? "", substitutions),
                     Substitute(profile.FollowUpTurn, substitutions),
-                    AcpMcpServers.FromGeneratedConfig(dispatch.McpConfigJson),
+                    mcpServers,
                     dispatch.ResumeSessionRef),
                 onSessionId: sessionId =>
                 {
@@ -558,7 +559,9 @@ public sealed class ProcessSupervisor : IProcessSupervisor
                     supervised.SessionId = sessionId;
                     _ring.Enqueue(new SessionStartedEvent(dispatch.Task, sessionId, _clock.GetUtcNow()));
                 },
-                rawLineSink: writer is null ? null : writer.WriteStdoutLine);
+                rawLineSink: writer is null ? null : writer.WriteStdoutLine,
+                requestPermission: (ask, permissionCt) =>
+                    PlanePermissionClient.AskAsync(mcpServers, ask, permissionCt));
 
             // Held so StopAsync can send session/cancel: an ACP stop is a protocol message
             // on this connection, not a signal and not a line of free text.

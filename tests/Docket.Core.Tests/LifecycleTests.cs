@@ -105,7 +105,8 @@ public class LifecycleTests
             new RequestInput(Given.IncumbentOf(task), InputRequestKind.Question));
 
         Expect.Transitioned(result, TaskState.BlockedOnInput);
-        Assert.Contains(new ClearServicesAndForwards(), Expect.Effects(result));
+        // ACP sessions stay up through a question, so services stay with the instance.
+        Assert.DoesNotContain(Expect.Effects(result), e => e is ClearServicesAndForwards);
     }
 
     [Theory]
@@ -132,6 +133,36 @@ public class LifecycleTests
         var effects = Expect.Effects(result);
         Assert.Contains(new WriteParkRecord(Given.Park), effects);
         Assert.Contains(new RevokeWorkerInstanceToken(incumbent), effects);
+        Assert.Contains(new ClearServicesAndForwards(), effects);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Continue_session_resumes_a_live_wait_in_place(bool byLead)
+    {
+        var task = Given.Task(TaskState.BlockedOnInput);
+        var incumbent = task.CurrentInstance!.Value;
+
+        var result = TaskStateMachine.Apply(
+            task,
+            new ContinueSession(byLead ? Given.Lead : Given.Human, "use staging-pg"));
+
+        var next = Expect.Transitioned(result, TaskState.Working);
+        Assert.Equal(incumbent, next.CurrentInstance);
+        Assert.Null(next.Park);
+        Assert.Empty(Expect.Effects(result));
+    }
+
+    [Fact]
+    public void Continue_session_refuses_a_permission_request()
+    {
+        var task = Given.Task(TaskState.BlockedOnInput);
+        Expect.Rejected(
+            TaskStateMachine.Apply(
+                task,
+                new ContinueSession(Given.Lead, "go ahead", InputRequestKind.Permission)),
+            Rule.PermissionVerdictAnswersPermissionRequests);
     }
 
     [Fact]
@@ -148,6 +179,7 @@ public class LifecycleTests
         var effects = Expect.Effects(result);
         Assert.Contains(new WriteParkRecord(Given.Park), effects);
         Assert.Contains(new RevokeWorkerInstanceToken(incumbent), effects);
+        Assert.Contains(new ClearServicesAndForwards(), effects);
     }
 
     [Fact]
@@ -178,8 +210,9 @@ public class LifecycleTests
     }
 
     [Fact]
-    public void Park_from_blocked_on_input_does_not_clear_services()
+    public void Park_from_blocked_on_input_clears_services()
     {
+        // A question no longer tears services down, so park is the first time they go.
         var task = Given.Task(TaskState.BlockedOnInput);
         var incumbent = task.CurrentInstance!.Value;
 
@@ -190,7 +223,7 @@ public class LifecycleTests
         var effects = Expect.Effects(result);
         Assert.Contains(new RevokeWorkerInstanceToken(incumbent), effects);
         Assert.Contains(new WriteParkRecord(Given.Park), effects);
-        Assert.DoesNotContain(effects, e => e is ClearServicesAndForwards);
+        Assert.Contains(new ClearServicesAndForwards(), effects);
     }
 
     [Fact]

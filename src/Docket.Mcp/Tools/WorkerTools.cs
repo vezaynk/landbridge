@@ -5,6 +5,7 @@ using Docket.ControlPlane;
 using Docket.ControlPlane.Auth;
 using Docket.Core;
 using Docket.Mcp.Auth;
+using Docket.Mcp;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
 using ModelContextProtocol;
@@ -147,10 +148,10 @@ public sealed class WorkerTools(
     private const string BehaviorDeny = "deny";
 
     [McpServerTool(Name = "request_permission"),
-     Description("NOT FOR AGENTS TO CALL. This is the harness's permission-prompt hook: Docket " +
-                 "answers the approval dialog that would otherwise have gone to a person, by " +
-                 "routing it to your Lead and, when the Lead escalates it, to a human. Wired with " +
-                 "--permission-prompt-tool; calling it yourself does nothing useful.")]
+     Description("NOT FOR AGENTS TO CALL. This is the plane half of the permission bridge: ACP " +
+                 "session/request_permission is answered by docketd via POST /worker/permission, " +
+                 "which runs the same code. The MCP tool remains for a harness that still hooks " +
+                 "a prompt tool. Calling it yourself does nothing useful.")]
     public async Task<string> RequestPermission(
         [Description("The tool awaiting approval, as the harness names it.")]
         string tool_name,
@@ -167,43 +168,13 @@ public sealed class WorkerTools(
         // or prettifies it. The surfaces that render it escape and fence it (§13).
         var proposed = input.ValueKind == JsonValueKind.Undefined ? "{}" : input.GetRawText();
 
-        var opened = await store.ApplyAsync(
-            caller.Task,
-            new RequestInput(caller, InputRequestKind.Permission, proposed, tool_name),
-            ct);
+        var result = await PermissionRelay.OpenAndAwaitAsync(
+            store, caller, tool_name, proposed, PermissionPollInterval, TimeProvider.System, ct);
 
-        // A refused open still owes the harness a well-formed verdict. Throwing here would
-        // leave the harness with an errored prompt tool rather than a decision, so every
-        // refusal becomes a deny that says what actually happened — including the useful
-        // one: the engine's state gate means a second concurrent prompt on the same task is
-        // refused while the first is pending, which serializes them for free.
-        if (opened is not StoreResult.Applied)
-            return Deny(
-                "Docket could not put this permission request to your Lead: "
-                + Reason(opened)
-                + ". Do not retry the same call; if you cannot proceed without it, stop and "
-                + "say so in your report.");
-
-        var outcome = await store.AwaitPermissionVerdictAsync(caller, PermissionPollInterval, TimeProvider.System, ct);
-
-        // No verdict: the wait TTL expired and the sweeper parked the task, or this worker
-        // stopped being the incumbent. The harness side never times out on its own — a
-        // permission prompt waits forever — so returning a deny is what keeps an
-        // unanswered request from wedging the process until something kills it.
-        if (outcome is null)
-            return Deny(
-                "Nobody answered this permission request in time, so Docket stopped waiting and "
-                + "the task was parked for a person to pick up. Stop here: do not retry the call "
-                + "and do not work around it.");
-
-        return outcome.Verdict switch
-        {
-            // v1 passes the proposed input through unchanged. An answerer who wanted a
-            // different call would deny and say so, which is legible to the agent; silently
-            // rewriting its arguments would not be.
-            PermissionVerdict.Allow => Allow(proposed),
-            _ => Deny(outcome.Message ?? "Denied, with no reason recorded."),
-        };
+        // v1 passes the proposed input through unchanged. An answerer who wanted a
+        // different call would deny and say so, which is legible to the agent; silently
+        // rewriting its arguments would not be.
+        return result.Allow ? Allow(proposed) : Deny(result.Message);
     }
 
     /// <summary>An <c>allow</c> permission result carrying the harness's own proposed input back.</summary>
@@ -220,15 +191,6 @@ public sealed class WorkerTools(
             ["behavior"] = BehaviorDeny,
             ["message"] = message,
         });
-
-    /// <summary>The store's own words for a refusal, for a message an agent has to act on.</summary>
-    private static string Reason(StoreResult result) => result switch
-    {
-        StoreResult.Rejected r => $"{r.Reason} ({r.Rule})",
-        StoreResult.NotFound n => n.Reason,
-        StoreResult.Conflict c => c.Reason,
-        _ => "unknown store result",
-    };
 
     [McpServerTool(Name = "start_process"),
      Description("Start a background process that keeps running after your turn ends — a build, a dev " +

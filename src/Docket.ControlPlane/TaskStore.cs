@@ -150,14 +150,21 @@ public sealed class TaskStore(
     /// transition.
     ///
     /// <para><paramref name="answer"/> is the answer's <em>content</em> (§10/§11), and it
-    /// rides both branches for the same reason the routing exists: the caller does not
-    /// know which one it is taking, so the text must land either way. Both commands cap
-    /// it at the engine, and the row keeps it for the redispatched worker's opening
-    /// <c>get_task</c>. Null answers nothing in words — the transition still unblocks
-    /// the task, which is what an <c>endpoint_wait</c> wake or a bare unblock wants.</para>
+    /// rides every branch for the same reason the routing exists: the caller does not
+    /// know which one it is taking, so the text must land either way. All commands cap
+    /// it at the engine, and the row keeps it for the worker's next <c>get_task</c>.
+    /// Null answers nothing in words — the transition still unblocks the task, which is
+    /// what an <c>endpoint_wait</c> wake or a bare unblock wants.</para>
+    ///
+    /// <para><paramref name="sessionLive"/> is whether the asking ACP process is still
+    /// up on the held-lease machine. True continues the same session
+    /// (<see cref="ContinueSession"/> → working, same instance). False is the
+    /// process-gone path: park and requeue for redispatch. A parked row still wakes
+    /// regardless — the session was already released.</para>
     /// </summary>
     public async Task<StoreResult> AnswerOrWakeAsync(
         LeadClaim lead, TaskId id, string? leaseMachine, string? answer = null,
+        bool sessionLive = false,
         CancellationToken ct = default)
     {
         var row = await db.Tasks.FirstOrDefaultAsync(t => t.Id == id.Value, ct);
@@ -171,6 +178,12 @@ public sealed class TaskStore(
                     "input requests are answered by the Lead or a human");
             return await RunTransition(row, new WakeParked(answer), ct);
         }
+
+        // A live ACP session takes the in-place path: same instance, same process,
+        // a follow-up prompt after this commit. Permission stays on the verdict
+        // path — ContinueSession refuses it the same way AnswerInput does.
+        if (sessionLive)
+            return await RunTransition(row, new ContinueSession(lead, answer, row.InputKind), ct);
 
         // §11: the redispatch park record is the machine still holding the lease, preferred
         // for transcript resume. Same shape the wait-TTL sweeper writes. Null when that
@@ -1020,6 +1033,7 @@ public sealed class TaskStore(
         var answerText = command switch
         {
             AnswerInput answered => answered.Answer,
+            ContinueSession continued => continued.Answer,
             WakeParked woken => woken.Answer,
             _ => null,
         };

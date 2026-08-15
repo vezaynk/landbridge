@@ -775,7 +775,7 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         await using (var db = pg.NewContext())
         {
             var applied = Assert.IsType<StoreResult.Applied>(
-                await NewStore(db).AnswerOrWakeAsync(Lead, id, leaseMachine: "m1"));
+                await NewStore(db).AnswerOrWakeAsync(Lead, id, leaseMachine: "m1", sessionLive: false));
             Assert.Equal(TaskState.Submitted, applied.Task.State);
         }
 
@@ -799,6 +799,27 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
             Assert.Equal("sess-answer", dispatched.HarnessSessionRef);
             Assert.Equal(2, dispatched.Task.Attempt);
         }
+    }
+
+    [SkippableFact]
+    public async Task Answering_a_live_session_keeps_the_incumbent_and_lands_the_answer()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await SeedBlocked(store);
+
+        var applied = Assert.IsType<StoreResult.Applied>(
+            await store.AnswerOrWakeAsync(Lead, id, leaseMachine: "m1", answer: "use staging-pg", sessionLive: true));
+        Assert.Equal(TaskState.Working, applied.Task.State);
+        Assert.NotNull(applied.Task.CurrentInstance);
+
+        await using var v = pg.NewContext();
+        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(TaskState.Working, row.State);
+        Assert.NotNull(row.CurrentInstanceId);
+        Assert.Equal("use staging-pg", row.InputAnswer);
+        Assert.Null(row.ParkMachine);
     }
 
     [SkippableFact]

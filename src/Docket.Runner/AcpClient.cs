@@ -93,6 +93,7 @@ public sealed class AcpClient
     private readonly Action<string>? _onSessionId;
     private readonly Action<string>? _rawLineSink;
     private readonly Action<string> _warn;
+    private readonly Func<AcpPermissionAsk, CancellationToken, Task<AcpPermissionDecision>>? _requestPermission;
 
     private readonly ConcurrentDictionary<long, TaskCompletionSource<AcpResult>> _pending = new();
     private readonly SemaphoreSlim _writeLock = new(1, 1);
@@ -137,7 +138,8 @@ public sealed class AcpClient
         AcpSessionRequest request,
         Action<string>? onSessionId = null,
         Action<string>? rawLineSink = null,
-        Action<string>? warn = null)
+        Action<string>? warn = null,
+        Func<AcpPermissionAsk, CancellationToken, Task<AcpPermissionDecision>>? requestPermission = null)
     {
         _task = task;
         _ring = ring;
@@ -146,6 +148,7 @@ public sealed class AcpClient
         _onSessionId = onSessionId;
         _rawLineSink = rawLineSink;
         _warn = warn ?? Console.Error.WriteLine;
+        _requestPermission = requestPermission;
     }
 
     /// <summary>The protocol version the agent agreed to, or null before the handshake.</summary>
@@ -647,7 +650,7 @@ public sealed class AcpClient
     {
         if (method == "session/request_permission")
         {
-            var option = ChoosePermissionOption(root);
+            var option = await ResolvePermissionOptionAsync(root, ct).ConfigureAwait(false);
             await SendResponseAsync(
                 id,
                 w =>
@@ -688,56 +691,90 @@ public sealed class AcpClient
     }
 
     /// <summary>
-    /// §11 permission bridge, ACP edition — <b>and deliberately only half of it in this
-    /// increment.</b> This picks the agent's own "allow" option, which reproduces exactly
-    /// what today's profiles buy with <c>--permission-mode bypassPermissions</c>,
-    /// <c>--dangerously-bypass-approvals-and-sandbox</c> and <c>--auto</c>: a headless
-    /// worker that runs to completion without a human.
+    /// §11 permission bridge, ACP edition. The agent asks via
+    /// <c>session/request_permission</c>; this client puts the same
+    /// <see cref="InputRequestKind.Permission"/> request on the plane that the
+    /// old harness prompt-tool did, waits for a Lead or human verdict, and maps
+    /// it onto the agent's own options.
     ///
-    /// <para>What it is <em>not</em> yet is the bridge. Docket already has a
-    /// <see cref="InputRequestKind.Permission"/> flow that relays a harness's permission
-    /// prompt to a Lead and answers it with a <see cref="PermissionVerdict"/>, and ACP is a
-    /// far better fit for it than the per-harness prompt-tool it was built on — the request
-    /// arrives structured, with the agent's own options attached. Routing this into the
-    /// plane instead of auto-allowing is the next increment; auto-allow is what keeps this
-    /// one honest about being a like-for-like port rather than a silent policy change.</para>
-    ///
-    /// <para>Preference order: an always-allow option beats a once-only one, because a
-    /// worker asked the same question forty times is forty round trips through the plane
-    /// for a decision already made. Ordering is by the option's declared <c>kind</c>, never
-    /// by its human-readable name.</para>
+    /// <para>Allow picks <c>allow_once</c>, never <c>allow_always</c> — a standing
+    /// bypass is not a plane decision. Deny picks a reject option when the agent
+    /// offered one, otherwise <c>cancelled</c>. A missing plane callback (tests
+    /// that did not wire one) is also cancelled rather than auto-allowed.</para>
     /// </summary>
-    private static string? ChoosePermissionOption(JsonElement root)
+    private async Task<string?> ResolvePermissionOptionAsync(JsonElement root, CancellationToken ct)
     {
         if (!root.TryGetProperty("params", out var p) || p.ValueKind != JsonValueKind.Object)
             return null;
-        if (!p.TryGetProperty("options", out var options) || options.ValueKind != JsonValueKind.Array)
+
+        var options = ReadPermissionOptions(p);
+        if (options.Count == 0)
             return null;
 
-        string? allowOnce = null;
-        string? first = null;
+        if (_requestPermission is null)
+            return null;
 
+        var ask = new AcpPermissionAsk(ToolOf(p), InputOf(p));
+        AcpPermissionDecision decision;
+        try
+        {
+            decision = await _requestPermission(ask, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _warn(
+                $"docketd: task {_task.Value}: the plane permission bridge failed ({ex.GetType().Name}: {ex.Message}); " +
+                "answering the agent with cancelled so it is not wedged inside the tool call.");
+            return null;
+        }
+
+        return decision.Allow
+            ? FirstOfKind(options, "allow_once") ?? FirstOfKind(options, "allow_always")
+            : FirstOfKind(options, "reject_once") ?? FirstOfKind(options, "reject_always");
+    }
+
+    private static string ToolOf(JsonElement p)
+    {
+        if (p.TryGetProperty("toolCall", out var call) && call.ValueKind == JsonValueKind.Object)
+            return StringOf(call, "title") ?? StringOf(call, "kind") ?? "tool";
+        return StringOf(p, "title") ?? "tool";
+    }
+
+    private static string InputOf(JsonElement p)
+    {
+        if (p.TryGetProperty("toolCall", out var call) && call.ValueKind == JsonValueKind.Object
+            && call.TryGetProperty("rawInput", out var raw) && raw.ValueKind is not JsonValueKind.Undefined
+            && raw.ValueKind is not JsonValueKind.Null)
+            return raw.GetRawText();
+        return "{}";
+    }
+
+    private static List<(string Id, string? Kind)> ReadPermissionOptions(JsonElement p)
+    {
+        var list = new List<(string, string?)>();
+        if (!p.TryGetProperty("options", out var options) || options.ValueKind != JsonValueKind.Array)
+            return list;
         foreach (var option in options.EnumerateArray())
         {
             if (option.ValueKind != JsonValueKind.Object)
                 continue;
             if (StringOf(option, "optionId") is not { Length: > 0 } id)
                 continue;
-
-            first ??= id;
-            switch (StringOf(option, "kind"))
-            {
-                case "allow_always":
-                    return id;
-                case "allow_once":
-                    allowOnce ??= id;
-                    break;
-            }
+            list.Add((id, StringOf(option, "kind")));
         }
+        return list;
+    }
 
-        // Nothing the agent labelled as an allow: fall back to its first option rather than
-        // cancelling, since an agent that offers only bespoke options still needs an answer.
-        return allowOnce ?? first;
+    private static string? FirstOfKind(List<(string Id, string? Kind)> options, string kind)
+    {
+        foreach (var option in options)
+            if (option.Kind == kind)
+                return option.Id;
+        return null;
     }
 
     private void CompletePending(JsonElement id, JsonElement root)
@@ -937,6 +974,12 @@ public sealed record AcpSessionRequest(
     string? ResumeSessionRef = null);
 
 /// <summary>One MCP server as ACP's <c>session/new</c> wants it: HTTP, named, with headers.</summary>
+/// <summary>What the agent is asking the plane to decide.</summary>
+public readonly record struct AcpPermissionAsk(string Tool, string InputJson);
+
+/// <summary>The plane's verdict, before it is mapped onto the agent's options.</summary>
+public readonly record struct AcpPermissionDecision(bool Allow, string? Message);
+
 public sealed record AcpMcpServer(
     string Name,
     string Url,

@@ -177,22 +177,15 @@ public sealed class RunnerEventSink(
                 await store.ApplyAsync(e.Task, new LivenessLost(LivenessLossReason.ProcessExited), ct);
         });
 
-        // §6/§11: blocked_on_input holds a task whose harness process is *expected*
-        // to be gone — a headless worker that asks a question ends its turn and its
-        // process exits, and per-task liveness is suspended there. That exit is not
-        // a failure and it is not a disconnect: the machine still holds the lease
-        // until the wait-TTL sweeper parks it (blocked_on_input → parked) or the
-        // machine itself dies (blocked_on_input → submitted). The sweeper resolves a
-        // blocked task's machine through RunnerConnectionRegistry.MachineFor, so
-        // untracking here would hide the task from it — stranding the task in
-        // blocked_on_input forever (never parked on TTL, never requeued on machine
-        // death). So leave a blocked task tracked: the sweeper untracks on its own
-        // park/requeue transition (WaitTtlSweeper.TryApplyAsync), and a
-        // wake→redispatch re-tracks it, so this is consistent, not a leak. Every
-        // other state is done here or already handled — working just requeued;
-        // verifying/terminal are moot; a parked task's affinity lives in its park
-        // record — so untrack as before.
-        if (state != TaskState.BlockedOnInput)
+        // §6/§11: blocked_on_input keeps the lease on this machine so the sweeper
+        // can still find it (MachineFor). The process itself may have exited — an
+        // ACP session that crashed, or a worker that asked and then died — and that
+        // is not a failure: mark the process gone so an answer redispatches instead
+        // of sending PromptCommand into a dead session. A still-up session never
+        // reaches this handler. Every other state is done here or already handled.
+        if (state == TaskState.BlockedOnInput)
+            registry.MarkProcessGone(e.Task);
+        else
             registry.Untrack(e.Task);
     }
 

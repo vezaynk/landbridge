@@ -147,7 +147,8 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
             {
                 var store = new TaskStore(db, clock);
                 Assert.IsType<StoreResult.Applied>(
-                    await store.AnswerOrWakeAsync(new LeadClaim(team), taskId, leaseMachine: null, Answer, ct));
+                    await store.AnswerOrWakeAsync(
+                        new LeadClaim(team), taskId, leaseMachine: null, Answer, sessionLive: false, ct));
             }
 
             // Stop routing events, then retire the first harness. With the drain

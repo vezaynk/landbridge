@@ -360,8 +360,8 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         var caller = await SeedWorkingTask();
         var pending = await AskPermissionAsync(caller);
 
-        // The sweeper's own path, with a zero TTL so the wait it measures has already
-        // elapsed. A live machine tracking the task is what lets it park rather than requeue.
+        // Zero TTL now means "do not auto-park". A 1ms TTL plus a short wait is
+        // "already expired" without disabling the sweeper.
         var registry = new RunnerConnectionRegistry(TimeProvider.System);
         registry.Register("m1", new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
         registry.ApplyHeartbeat("m1", new MachineHeartbeat(
@@ -370,8 +370,10 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         registry.TrackDispatch("m1", caller.Task);
         var sweeper = new WaitTtlSweeper(
             ScopeFactory(), registry, TimeProvider.System, NullLogger<WaitTtlSweeper>.Instance,
-            waitTtl: TimeSpan.Zero, machineLivenessWindow: TimeSpan.FromHours(1), sweepInterval: null);
+            waitTtl: TimeSpan.FromMilliseconds(1), machineLivenessWindow: TimeSpan.FromHours(1),
+            sweepInterval: null);
 
+        await Task.Delay(5);
         await sweeper.SweepAsync(CancellationToken.None);
         Assert.Equal(TaskState.Parked, await StateOf(caller.Task));
 

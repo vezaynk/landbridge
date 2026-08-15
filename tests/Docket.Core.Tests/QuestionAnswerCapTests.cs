@@ -62,6 +62,15 @@ public class QuestionAnswerCapTests
         // the same way either way — otherwise the cap depends on a race.
         Expect.Transitioned(Wake(new string('x', AnswerInput.MaxAnswerBytes)), TaskState.Submitted);
         Expect.Rejected(Wake(new string('x', AnswerInput.MaxAnswerBytes + 1)), Rule.AnswerWithinSizeCap);
+
+        var continueAt = TaskStateMachine.Apply(
+            Given.Task(TaskState.BlockedOnInput),
+            new ContinueSession(Given.Lead, new string('x', AnswerInput.MaxAnswerBytes)));
+        Expect.Transitioned(continueAt, TaskState.Working);
+        var continueOver = TaskStateMachine.Apply(
+            Given.Task(TaskState.BlockedOnInput),
+            new ContinueSession(Given.Lead, new string('x', AnswerInput.MaxAnswerBytes + 1)));
+        Expect.Rejected(continueOver, Rule.AnswerWithinSizeCap);
     }
 
     [Fact]

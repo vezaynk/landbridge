@@ -141,6 +141,9 @@ Closes the session only on stop/kill.
 idle-awaiting-input and the Lead's answer is delivered as a follow-up prompt. The wait-TTL
 sweeper is recovery-only (implemented: TTL off by default; machine-death still requeues).
 `park_task` closes a session on purpose. Liveness grows its third state.
+**Implemented:** `answer_input_request` on a live process is `ContinueSession` +
+`PromptCommand`; a gone process still redispatches. ACP `session/request_permission`
+routes through `POST /worker/permission` onto the existing permission tools.
 
 **Stage 3 — the session becomes the record.** Message history persisted; session states
 replace task states; migrations; dashboard reoriented. **This is where the properties above

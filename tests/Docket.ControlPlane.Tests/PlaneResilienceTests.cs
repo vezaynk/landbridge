@@ -134,11 +134,13 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(1, await NewDispatch(clock, registry).RehydrateMachineAsync("m1", default));
         Assert.Equal("m1", registry.MachineFor(seeded.Task));
 
-        // And the sweeper now does its job: the wait TTL lapses on a live machine, so the
-        // task parks rather than sitting blocked forever.
-        clock.Advance(WaitTtlSweeper.DefaultWaitTtl + TimeSpan.FromMinutes(1));
+        // Auto-park is off by default; this test turns a 30-minute TTL on so the
+        // sweeper still has a job. The wait lapses on a live machine, so the task
+        // parks rather than sitting blocked forever.
+        var waitTtl = TimeSpan.FromMinutes(30);
+        clock.Advance(waitTtl + TimeSpan.FromMinutes(1));
         registry.ApplyHeartbeat("m1", Heartbeat("m1", "default")); // still live at the new now
-        await NewSweeper(clock, registry).SweepAsync(default);
+        await NewSweeper(clock, registry, waitTtl).SweepAsync(default);
 
         Assert.Equal(TaskState.Parked, await StateAsync(clock, seeded.Task));
     }
@@ -1017,8 +1019,9 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         new(ScopeFactory(clock), registry, new ForwardWaiters(), new TranscriptWaiters(),
             new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
 
-    private WaitTtlSweeper NewSweeper(TimeProvider clock, RunnerConnectionRegistry registry) =>
-        new(ScopeFactory(clock), registry, clock, NullLogger<WaitTtlSweeper>.Instance);
+    private WaitTtlSweeper NewSweeper(
+        TimeProvider clock, RunnerConnectionRegistry registry, TimeSpan? waitTtl = null) =>
+        new(ScopeFactory(clock), registry, clock, NullLogger<WaitTtlSweeper>.Instance, waitTtl);
 
     private static void StayAliveFor(
         FakeTimeProvider clock, RunnerConnectionRegistry registry, TaskId task, TimeSpan total)

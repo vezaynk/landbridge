@@ -239,14 +239,14 @@ public sealed class LeadTools(
     }
 
     [McpServerTool(Name = "answer_input_request"),
-     Description("Answer a task blocked on input, returning it to the dispatch queue. Read the question " +
-                 "first with get_task_question, then pass your answer as 'answer' — that text is the only " +
-                 "thing the resumed worker receives, and without it the worker comes back knowing it was " +
-                 "unblocked but not with what, so it guesses or asks again. The answered task is " +
-                 "redispatched with its transcript resumed; if its wait TTL already expired it will have " +
-                 "parked, and answering wakes it the same way.")]
+     Description("Answer a task blocked on input. Read the question first with get_task_question, then " +
+                 "pass your answer as 'answer' — that text is the only thing the worker receives, and " +
+                 "without it the worker comes back knowing it was unblocked but not with what, so it " +
+                 "guesses or asks again. A still-live ACP session gets a follow-up prompt and stays on " +
+                 "the same instance; a dead session (or a parked task) is redispatched with its " +
+                 "transcript resumed.")]
     public async Task<string> AnswerInputRequest(
-        [Description("The task id that is blocked on input (or already parked, if its wait TTL expired first).")]
+        [Description("The task id that is blocked on input (or already parked).")]
         string taskId,
         [Description("Your answer, in prose: the decision, and enough of why for the worker to apply it to cases " +
                      "you did not enumerate. It reaches the worker on its next get_task. Capped at 16 KB; " +
@@ -257,18 +257,26 @@ public sealed class LeadTools(
     {
         var id = ParseTaskId(taskId);
         // The store routes on the task's current state so this one call is correct
-        // whether or not the wait-TTL sweeper (§11) parked the task first: a task
-        // still blocked_on_input is requeued for redispatch-with-resume, a task
-        // already parked is woken the same way (§6, §11). A worker that chose to ask has
-        // ended its turn and its process is gone (§11), so there is no in-place resume on
-        // this path — a permission request is the exception and belongs to
-        // answer_permission_request below, which the store refuses to confuse with this. The
+        // whether the session is still up, the process has exited, or park_task /
+        // the sweeper already parked it. A live ACP process continues in place
+        // (ContinueSession) and is then doorbell'd with PromptCommand — the answer
+        // itself never rides that command; the worker pulls it on get_task. A gone
+        // process (or a parked row) redispatches. Permission stays on
+        // answer_permission_request: both continue and redispatch refuse it. The
         // machine still holding the lease is a control-plane fact read from the
         // connection registry (null if it is gone) and becomes the park record's
-        // preferred machine; redispatch cold-starts elsewhere when it is null. The
-        // answer text rides both branches and is persisted for the worker's get_task;
-        // it deliberately never enters the resume argv, which leaks via ps (§13).
-        return Describe(await store.AnswerOrWakeAsync(Lead, id, registry.MachineFor(id), answer, ct));
+        // preferred machine on the redispatch branch.
+        var machine = registry.MachineFor(id);
+        var live = registry.HasLiveProcess(id);
+        var result = await store.AnswerOrWakeAsync(Lead, id, machine, answer, live, ct);
+        if (result is StoreResult.Applied applied
+            && applied.Task.State == TaskState.Working
+            && live
+            && machine is { } dest)
+        {
+            await registry.SendAsync(dest, new PromptCommand(id), ct);
+        }
+        return Describe(result);
     }
 
     [McpServerTool(Name = "answer_permission_request"),

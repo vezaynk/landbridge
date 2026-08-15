@@ -177,6 +177,9 @@ public class InstanceFencingAndParkTests
         Expect.Rejected(
             TaskStateMachine.Apply(task, new AnswerInput(Given.IncumbentOf(task), Given.Park)),
             Rule.ActorLacksAuthority);
+        Expect.Rejected(
+            TaskStateMachine.Apply(task, new ContinueSession(Given.IncumbentOf(task), "no")),
+            Rule.ActorLacksAuthority);
     }
 
     [Fact]

@@ -207,6 +207,11 @@ app.UseAuthorization();
 // caller from it.
 app.MapMcp().RequireAuthorization();
 
+// ACP session/request_permission lands in docketd, which is not an MCP client.
+// POST /worker/permission is the same PermissionRelay the MCP request_permission
+// tool runs, authenticated with the worker bearer.
+app.MapWorkerPermissionEndpoint();
+
 // The control plane ↔ runner WebSocket (machine-only, §10).
 app.MapRunnerEndpoint();
 

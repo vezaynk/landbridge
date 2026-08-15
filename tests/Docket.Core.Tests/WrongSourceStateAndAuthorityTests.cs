@@ -165,6 +165,7 @@ public class WrongSourceStateAndAuthorityTests
                      new VerdictAccept(Given.Lead),
                      new VerdictFail(Given.Lead),
                      new AnswerInput(Given.Lead, Given.Park),
+                     new ContinueSession(Given.Lead, "use staging"),
                      new StopPreserveAndPark(Given.Lead, Given.Park),
                      new Park(Given.Lead, Given.Park),
                      new Cancel(Given.Lead, CancelDisposition.Preserve),
