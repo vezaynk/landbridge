@@ -89,10 +89,10 @@ public class RunnerWireTests
     public void Vocabulary_sets_are_the_closed_frozen_lists()
     {
         Assert.Equal(
-            new HashSet<string> { "dispatch", "stop", "kill", "open-forward", "close-forward", "read-transcript", "start-process", "stop-process", "write-process" },
+            new HashSet<string> { "dispatch", "stop", "kill", "prompt", "open-forward", "close-forward", "read-transcript", "start-process", "stop-process", "write-process" },
             new HashSet<string>(RunnerWire.Commands));
         Assert.Equal(
-            new HashSet<string> { "started", "session-started", "alive", "tool-call", "usage-reported", "subagent-spawned", "exited", "auth-failed", "forward-opened", "forward-closed", "rebooted", "transcript-chunk", "process-started", "process-stopped", "process-written" },
+            new HashSet<string> { "started", "session-started", "alive", "tool-call", "usage-reported", "subagent-spawned", "turn-ended", "exited", "auth-failed", "forward-opened", "forward-closed", "rebooted", "transcript-chunk", "process-started", "process-stopped", "process-written" },
             new HashSet<string>(RunnerWire.Events));
     }
 }

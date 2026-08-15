@@ -1,6 +1,7 @@
 using System.Buffers;
 using System.Collections.Concurrent;
 using System.Text.Json;
+using System.Threading.Channels;
 using Docket.Contracts;
 using Docket.Core;
 
@@ -115,6 +116,15 @@ public sealed class AcpClient
     /// </summary>
     private readonly HashSet<string> _declined = new(StringComparer.Ordinal);
 
+    /// <summary>
+    /// Follow-up turns waiting to be sent (<c>ideas/sessions.md</c> stage 1). Unbounded and
+    /// never dropped: a queued follow-up is usually the answer a worker is blocked on, and
+    /// silently discarding one would strand the session waiting for something that already
+    /// arrived. Depth is bounded in practice by the plane, which sends one message at a time.
+    /// </summary>
+    private readonly Channel<string> _followUps = Channel.CreateUnbounded<string>(
+        new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
+
     private TextWriter? _stdin;
     private long _nextId;
     private string? _sessionId;
@@ -150,8 +160,11 @@ public sealed class AcpClient
     /// <summary>The agent's declared <c>mcpCapabilities.http</c>, which is what carries the plane.</summary>
     public bool AgentSupportsHttpMcp { get; private set; }
 
-    /// <summary>The stop reason from <c>session/prompt</c>, or null if the turn never returned.</summary>
+    /// <summary>The stop reason from the most recent turn, or null if none has ended.</summary>
     public string? StopReason { get; private set; }
+
+    /// <summary>Turns completed on this session — one for the opening prompt, one per follow-up.</summary>
+    public int Turns { get; private set; }
 
     /// <summary>
     /// Runs one worker's whole ACP conversation: starts the read loop, drives the
@@ -183,6 +196,16 @@ public sealed class AcpClient
                 {
                     FailPending(new AcpProtocolException(
                         "the agent's stdout ended before this request was answered"));
+
+                    // The session dies with the stream. Both unblocks below are load-bearing
+                    // and for the same reason: when the worker's process ends, DriveAsync is
+                    // waiting on something that will never arrive — either a response to a
+                    // turn in flight, or the next follow-up on an idle session. Neither wait
+                    // can be broken from anywhere downstream of DriveAsync, because RunAsync
+                    // awaits DriveAsync first, so it has to happen here, on the read loop's
+                    // own completion. Getting this wrong hangs the drive loop for the life of
+                    // the daemon, with no event and no diagnosis.
+                    _followUps.Writer.TryComplete();
                 }
             },
             CancellationToken.None);
@@ -224,6 +247,13 @@ public sealed class AcpClient
             return false;
 
         _cancelSent = true;
+
+        // Ends the follow-up wait in DriveAsync. Without this a cancelled session would sit
+        // blocked on a queue nobody will write to again, holding the drive loop open until
+        // the kill deadline tore the pipe down underneath it — the stop would still land,
+        // but by the ugliest available route.
+        _followUps.Writer.TryComplete();
+
         try
         {
             await SendAsync(
@@ -266,6 +296,44 @@ public sealed class AcpClient
         if (_cancelSent)
             return;
 
+        // The session outlives the turn (ideas/sessions.md stage 1). The opening prompt is
+        // the profile's; every one after it arrives through PromptAsync — a `prompt` command
+        // from the plane carrying, for instance, the answer to a question this worker asked.
+        //
+        // This loop is the whole shape change. Under the task model there was nothing to
+        // loop over: a worker that finished a turn had also exited, so "the turn ended" and
+        // "the conversation ended" were one observation. Here they are two, and only the
+        // second ends this method.
+        await PromptAsync(_request.Prompt, ct).ConfigureAwait(false);
+
+        try
+        {
+            while (!_cancelSent)
+            {
+                var next = await _followUps.Reader.ReadAsync(ct).ConfigureAwait(false);
+                await PromptAsync(next, ct).ConfigureAwait(false);
+            }
+        }
+        catch (ChannelClosedException)
+        {
+            // CancelAsync completed the queue: the conversation is over by request.
+        }
+    }
+
+    /// <summary>
+    /// Sends one turn and waits for it to end, reporting the agent's own reason for ending
+    /// it (<see cref="TurnEndedEvent"/>).
+    ///
+    /// <para>Serialized by construction: only <see cref="DriveAsync"/> calls this, one turn
+    /// at a time, and a follow-up that arrives mid-turn waits in
+    /// <see cref="_followUps"/> rather than racing the turn in flight. ACP does allow
+    /// queued prompts on agents that declare it, but a second concurrent
+    /// <c>session/prompt</c> against an agent that does not is undefined, and the queue
+    /// costs nothing.</para>
+    /// </summary>
+    private async Task PromptAsync(string text, CancellationToken ct)
+    {
+        var session = _sessionId!;
         var result = await RequestAsync(
             "session/prompt",
             w =>
@@ -274,7 +342,7 @@ public sealed class AcpClient
                 w.WriteStartArray("prompt");
                 w.WriteStartObject();
                 w.WriteString("type", "text");
-                w.WriteString("text", _request.Prompt);
+                w.WriteString("text", text);
                 w.WriteEndObject();
                 w.WriteEndArray();
             },
@@ -283,6 +351,26 @@ public sealed class AcpClient
         StopReason = result.Value.TryGetProperty("stopReason", out var sr) && sr.ValueKind == JsonValueKind.String
             ? sr.GetString()
             : null;
+        Turns++;
+
+        _ring.Enqueue(new TurnEndedEvent(_task, StopReason, _clock.GetUtcNow()));
+    }
+
+    /// <summary>
+    /// Queues a follow-up turn for this session — the runner's half of the §10
+    /// <c>prompt</c> command. Returns false when the session cannot take one: it never
+    /// opened, or it has been cancelled and is winding down.
+    ///
+    /// <para>Deliberately a queue rather than a direct send. The plane's commands are
+    /// best-effort and unordered with respect to a turn in flight, so a <c>prompt</c> that
+    /// lands while the agent is mid-turn must wait for that turn rather than interleave
+    /// with it.</para>
+    /// </summary>
+    public bool TryQueueFollowUp(string text)
+    {
+        if (_sessionId is not { Length: > 0 } || _cancelSent)
+            return false;
+        return _followUps.Writer.TryWrite(text);
     }
 
     private async Task<string?> NewSessionAsync(CancellationToken ct)

@@ -695,6 +695,18 @@ internal sealed class FakeProcessSupervisor : IProcessSupervisor
             ?? new StopAck(true, ttl <= TimeSpan.Zero ? StopDelivery.ImmediateKill : StopDelivery.MessageWritten));
     }
 
+    /// <summary>Follow-up turns the daemon routed here, and whether a live session took them
+    /// (<c>ideas/sessions.md</c> stage 1). Null keeps the "no live session" default, which is
+    /// what every stream-mode task answers.</summary>
+    public List<(TaskId Task, string Text)> Prompted { get; } = [];
+    public bool? PromptAccepted { get; set; }
+
+    public bool TryPrompt(TaskId task, string text)
+    {
+        Prompted.Add((task, text));
+        return PromptAccepted ?? false;
+    }
+
     public bool Kill(TaskId task)
     {
         Killed.Add(task);

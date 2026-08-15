@@ -248,6 +248,136 @@ public sealed class AcpClientTests
             w => w.Contains("terminal/create") && w.Contains("client-side terminal"));
     }
 
+    // ── the session outlives the turn (ideas/sessions.md stage 1) ───────────────
+
+    /// <summary>
+    /// The shape change, stated as a fact: the turn ending is not the conversation ending.
+    /// Under the task model these were one observation — a worker that finished a turn had
+    /// also exited — which is exactly why a question had to become a park and a redispatch.
+    /// </summary>
+    [Fact]
+    public async Task A_finished_turn_does_not_end_the_session()
+    {
+        var agent = new FakeAgent { HoldOpenAfterTurn = true };
+        var (client, drain) = Start(agent, Request("go"));
+
+        await agent.WaitForTurnsAsync(1);
+
+        // The turn is over and reported, and the conversation is still there to talk to.
+        Assert.Equal(1, client.Turns);
+        Assert.Equal("end_turn", client.StopReason);
+        Assert.True(client.TryQueueFollowUp("still there?"));
+
+        await agent.WaitForTurnsAsync(2);
+        agent.EndSession();
+        await drain;
+    }
+
+    /// <summary>
+    /// A follow-up is a real second turn on the same session — same sessionId, no respawn,
+    /// no <c>session/load</c>, and the agent keeps whatever context it had. This is what
+    /// "conversations that don't suspend on every message" buys.
+    /// </summary>
+    [Fact]
+    public async Task A_follow_up_becomes_another_turn_on_the_same_session()
+    {
+        var agent = new FakeAgent { HoldOpenAfterTurn = true };
+        var (client, drain) = Start(agent, Request("first"));
+
+        await agent.WaitForTurnsAsync(1);
+        Assert.True(client.TryQueueFollowUp("second"));
+        await agent.WaitForTurnsAsync(2);
+        agent.EndSession();
+        var run = await drain;
+
+        var prompts = agent.PromptTexts;
+        Assert.Equal(["first", "second"], prompts);
+
+        // One session throughout: no second session/new, and the ref never changed.
+        Assert.Single(agent.MethodsReceived, m => m == "session/new");
+        Assert.DoesNotContain("session/load", agent.MethodsReceived);
+        Assert.Equal("sess_1", run.SessionId);
+    }
+
+    /// <summary>
+    /// §10 vocabulary: every turn reports why it ended. The task model could not carry this
+    /// — a token ceiling, a refusal and a clean finish all arrived as "exited 0 without
+    /// reporting" — and it matters more since ACP took away <c>--max-turns</c>, because
+    /// <c>max_tokens</c> is now one of the few bounds that announces itself.
+    /// </summary>
+    [Fact]
+    public async Task Each_turn_reports_the_agents_own_reason_for_ending()
+    {
+        var agent = new FakeAgent { HoldOpenAfterTurn = true, StopReasons = ["end_turn", "max_tokens"] };
+        var (client, drain) = Start(agent, Request("first"));
+
+        await agent.WaitForTurnsAsync(1);
+        client.TryQueueFollowUp("second");
+        await agent.WaitForTurnsAsync(2);
+        agent.EndSession();
+        var run = await drain;
+
+        Assert.Equal(
+            ["end_turn", "max_tokens"],
+            run.Events.OfType<TurnEndedEvent>().Select(e => e.StopReason).ToList());
+    }
+
+    /// <summary>A queued follow-up waits for the turn in flight rather than racing it: two
+    /// concurrent <c>session/prompt</c>s against an agent that has not declared prompt
+    /// queueing are undefined, and the queue costs nothing.</summary>
+    [Fact]
+    public async Task A_follow_up_queued_mid_turn_waits_for_the_turn_in_flight()
+    {
+        var agent = new FakeAgent { HoldOpenAfterTurn = true, HoldPromptOpen = true };
+        var (client, drain) = Start(agent, Request("first"));
+
+        await agent.WaitForAsync("session/prompt");
+        Assert.True(client.TryQueueFollowUp("second"));
+
+        // The first turn has not returned, so the second prompt must not have been sent.
+        Assert.Single(agent.MethodsReceived, m => m == "session/prompt");
+
+        agent.ReleasePrompt();
+        await agent.WaitForTurnsAsync(2);
+        agent.EndSession();
+        await drain;
+
+        Assert.Equal(["first", "second"], agent.PromptTexts);
+    }
+
+    /// <summary>A cancelled session takes no more messages: the conversation is over by
+    /// request, and a follow-up accepted after it would be a Lead's message delivered into
+    /// a session that is winding down.</summary>
+    [Fact]
+    public async Task A_cancelled_session_refuses_follow_ups()
+    {
+        var agent = new FakeAgent { HoldOpenAfterTurn = true };
+        var (client, drain) = Start(agent, Request("go"));
+
+        await agent.WaitForTurnsAsync(1);
+        Assert.True(await client.CancelAsync(CancellationToken.None));
+        Assert.False(client.TryQueueFollowUp("too late"));
+
+        agent.EndSession();
+        await drain;
+    }
+
+    /// <summary>And cancelling ends the wait rather than leaving the drive loop blocked on a
+    /// queue nobody will write to again.</summary>
+    [Fact]
+    public async Task Cancelling_an_idle_session_ends_it_without_waiting_for_the_kill()
+    {
+        var agent = new FakeAgent { HoldOpenAfterTurn = true };
+        var (client, drain) = Start(agent, Request("go"));
+
+        await agent.WaitForTurnsAsync(1);
+        await client.CancelAsync(CancellationToken.None);
+        agent.EndSession();
+
+        // Completes on the cancel path alone — no kill, no torn-down pipe.
+        await drain.WaitAsync(TimeSpan.FromSeconds(10));
+    }
+
     // ── protocol version ────────────────────────────────────────────────────────
 
     /// <summary>
@@ -539,6 +669,8 @@ public sealed class AcpClientTests
         private readonly Channel<string> _methodSeen = Channel.CreateUnbounded<string>();
         private readonly TaskCompletionSource _promptHeld = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly Lock _gate = new();
+        private readonly Channel<int> _turnsSeen = Channel.CreateUnbounded<int>();
+        private int _turns;
 
         public bool LoadSession { get; init; }
         public bool HttpMcp { get; init; } = true;
@@ -546,6 +678,14 @@ public sealed class AcpClientTests
         public bool FailInitialize { get; init; }
         public bool Mute { get; init; }
         public bool HoldPromptOpen { get; init; }
+
+        /// <summary>Keep the session open after a turn ends, the way a real ACP agent does —
+        /// it is a server, not a one-shot. Without this the fake completes its stdout after
+        /// the first turn, which is the old task-model shape.</summary>
+        public bool HoldOpenAfterTurn { get; init; }
+
+        /// <summary>Stop reason per turn, in order; the last repeats once exhausted.</summary>
+        public IReadOnlyList<string> StopReasons { get; init; } = ["end_turn"];
         public bool AskPermissionDuringPrompt { get; init; }
         public string PermissionOptions { get; init; } =
             """[{"optionId":"allow-once","name":"Allow once","kind":"allow_once"},{"optionId":"allow-always","name":"Always allow","kind":"allow_always"}]""";
@@ -557,6 +697,20 @@ public sealed class AcpClientTests
         public TextWriter ClientToAgent { get; }
 
         public JsonElement? PermissionResponse { get; private set; }
+
+        /// <summary>The text of every session/prompt received, in order.</summary>
+        public List<string> PromptTexts
+        {
+            get
+            {
+                lock (_gate)
+                    return _received
+                        .Where(m => m.TryGetProperty("method", out var x) && x.GetString() == "session/prompt")
+                        .Select(m => m.GetProperty("params").GetProperty("prompt")
+                            .EnumerateArray().First().GetProperty("text").GetString() ?? "")
+                        .ToList();
+            }
+        }
         public JsonElement? UnsupportedResponse { get; private set; }
 
         public FakeAgent()
@@ -695,12 +849,31 @@ public sealed class AcpClientTests
             if (HoldPromptOpen)
                 await _promptHeld.Task;
 
-            Send("""{"jsonrpc":"2.0","id":%id%,"result":{"stopReason":"end_turn"}}""", id);
+            var turn = Interlocked.Increment(ref _turns);
+            var reason = StopReasons[Math.Min(turn - 1, StopReasons.Count - 1)];
+            Send(
+                """{"jsonrpc":"2.0","id":%id%,"result":{"stopReason":"%reason%"}}"""
+                    .Replace("%reason%", reason),
+                id);
+            _turnsSeen.Writer.TryWrite(turn);
 
-            // The agent's stdout ends when its process would: that EOF is what ends the
-            // client's read loop, exactly as a real worker's exit does.
-            _toClient.Writer.TryComplete();
+            // A real ACP agent is a server: answering a prompt does not end it, and its
+            // stdout stays open for the next one. HoldOpenAfterTurn models that. Without it
+            // the fake ends its stdout here, which is the old one-turn-per-process shape and
+            // is what the single-turn tests above still exercise.
+            if (!HoldOpenAfterTurn)
+                _toClient.Writer.TryComplete();
         }
+
+        /// <summary>Blocks until the agent has completed <paramref name="count"/> turns.</summary>
+        public async Task WaitForTurnsAsync(int count)
+        {
+            while (Volatile.Read(ref _turns) < count)
+                await _turnsSeen.Reader.ReadAsync().AsTask().WaitAsync(TimeSpan.FromSeconds(20));
+        }
+
+        /// <summary>Ends the agent's stdout, the way its process exiting would.</summary>
+        public void EndSession() => _toClient.Writer.TryComplete();
 
         private void Noise()
         {

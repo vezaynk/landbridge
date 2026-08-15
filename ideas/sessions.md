@@ -1,0 +1,132 @@
+# Sessions
+
+A design note for the move from **tasks** to **sessions** as Docket's primary domain object.
+Not a spec change yet — §6, §7 and §11 still describe the task model, and they stay
+authoritative until the ladder at the bottom of this file has actually been climbed.
+
+## The decision
+
+Three choices were made explicitly on 2026-08-15:
+
+1. **Sessions replace tasks in the domain model.** Not "sessions as a mechanism, tasks as the
+   ledger" — the conversation becomes the primary object, and §6/§7/§11 reorient around it.
+2. **A worker that asks a question ends its turn; its session stays alive.** The answer
+   arrives as a fresh `session/prompt` on the same connection, not as a redispatch.
+3. **A session is held indefinitely**, not evicted on a TTL. If the process dies anyway, the
+   next invocation resumes it from the transcript via `session/load`.
+
+The enabling change is already in: `protocol: acp` (see
+[`runner-config.md`](skills/references/runner-config.md)) makes a worker a live JSON-RPC
+peer rather than a process whose only observable lifecycle event is its own exit. Every
+measured agent declares `loadSession: true`, which is what makes choice 3's recovery real
+rather than aspirational.
+
+## What actually changes
+
+The task model fuses three things that are separate under ACP:
+
+| | Task model | Session model |
+|---|---|---|
+| unit of work | task | session |
+| unit of conversation | one turn | many turns |
+| unit of process | one spawn per turn | one process per session |
+| a question | park → redispatch → cold start or replay | a turn ends; next message continues |
+| a rejection | a new continuation task | a message on the same session |
+| the record | task row + a transcript on a machine | the conversation is the record |
+
+The single sentence version: **a worker stops being something you launch and becomes
+something you talk to.**
+
+### "Hold indefinitely" still needs durable state
+
+Worth stating early because it is the most likely thing to be got wrong. Choosing not to
+evict is not the same as choosing not to persist. If a machine dies while a session sits
+waiting on a human, something has to know that session existed, what it was for, and how to
+bring it back — otherwise "resume from transcript on next invocation" has no invocation to
+hang off, and the work is simply lost.
+
+So the plane still records, durably: the session's harness ref, its workspace and work dir,
+its profile and machine, and its message history. What goes away is the *TTL sweeper that
+proactively converts a live session into a parked row* — not the row.
+
+`session/load` also constrains recovery: the spec requires the same `cwd` and `mcpServers`
+as the original `session/new`. Work dirs already persist, so this is satisfiable, but it
+means **the work dir is part of the session's identity** and can no longer be treated as
+scratch that any cleanup may reclaim.
+
+## Properties that must be re-derived, not dropped
+
+The task model carries correctness properties that are currently expressed in terms of
+tasks. Each needs a home on the new primitive. This list is the actual risk of the
+migration — the plumbing is easy by comparison.
+
+**The doer/judge split (§9 check 4).** Today: a task's own worker can never complete it;
+completion is a Lead-session or human verdict, and provenance is recorded. Under a session
+model where the Lead and the worker exchange messages *on the same session*, "who is
+speaking" stops being implied by the credential that opened the object. The split has to
+become explicit — a message carries an authorship class, and a verdict is only accepted from
+a Lead or human author. Spec §2's note that this "holds structurally regardless of who is
+watching" is exactly what must not weaken.
+
+**The requeue cap (§9 check 7).** Today the infrastructure counter counts *dispatches*. A
+session that never redispatches has no natural counter, so a wedged session could be
+nursed forever by follow-up messages. The cap needs re-expressing — most likely as
+recoveries (process deaths the plane recovered from), which is the same thing the counter
+was really measuring.
+
+**Liveness.** Today: process-alive plus a progress clock, with liveness suspended while
+blocked. A held-idle session is a third state the clocks have never had to represent —
+process alive, no progress expected, and that is *correct* rather than a symptom. The
+existing `InputRequestKind.Permission` live wait is the one precedent in the codebase.
+
+**Concurrency.** `max_concurrent` counts dispatched tasks. Under indefinite holding, a fleet
+where many sessions await humans consumes every seat while doing nothing. Sessions awaiting
+input must either not count, or count against a separate ceiling.
+
+**Token lifetime.** The worker-instance token dies with the instance (§9 check 14), and the
+park path explicitly revokes it. A session held across a long wait keeps its credential live
+for that whole period, which is a real change in exposure and should be a deliberate one.
+
+## Staged ladder
+
+Each stage is shippable and the system works at the end of it. The ordering is chosen so the
+state machine — 175 core tests and the properties above — is touched last, once the
+mechanism underneath it is known to work.
+
+**Stage 1 — a session that outlives a turn.** *Runner only, no plane changes.* `AcpClient`
+goes idle after `session/prompt` returns instead of finishing, and accepts follow-up prompts
+on the live connection. Adds two members to the §10 vocabulary: a command to deliver a
+follow-up prompt, and a turn-ended event carrying `stopReason` (information the task model
+never had — today a token-limit stop, a refusal and a clean finish are indistinguishable).
+Closes the session only on stop/kill.
+
+**Stage 2 — a question stops suspending.** `request_input` no longer parks: the session goes
+idle-awaiting-input and the Lead's answer is delivered as a follow-up prompt. The wait-TTL
+sweeper becomes recovery-only. Liveness grows its third state.
+
+**Stage 3 — the session becomes the record.** Message history persisted; session states
+replace task states; migrations; dashboard reoriented. **This is where the properties above
+get re-derived**, and it is the stage that deserves its own design pass.
+
+**Stage 4 — the Lead can talk back.** A rejection becomes a message rather than a
+continuation task. Requires the doer/judge authorship rule from stage 3 to already hold.
+
+**Stage 5 — recovery.** A dead session is resumed from its persisted ref via `session/load`
+on next invocation, replacing the park/redispatch path entirely.
+
+## Open questions
+
+- **Does a session span more than one piece of work?** If a Lead can keep talking to a
+  worker, the boundary that made a task a unit of accountability becomes a convention rather
+  than a mechanism. Something has to say when a session is *done* — otherwise long-lived
+  sessions accumulate context until they hit the window and get worse at their jobs.
+- **What closes a session?** `session/close` is declared by every measured agent. Completion
+  is the obvious trigger; cancellation is the other. An idle session that will never be
+  spoken to again is the hard case, and it is the one "hold indefinitely" is least
+  opinionated about.
+- **Does the §7 profile still describe how to *launch*?** Under sessions it increasingly
+  describes how to *reach* — which is a different thing, and may want a different key than
+  `spawn`.
+- **Cost.** The migration already gave up `--max-turns` and per-turn token accounting
+  (see runner-config.md). Indefinite sessions with unbounded follow-ups remove the last
+  implicit bound, which was "a dispatch eventually exits". Something has to replace it.

@@ -120,6 +120,31 @@ public sealed record StopCommand(
 public sealed record KillCommand(TaskId Task) : RunnerCommand;
 
 /// <summary>
+/// <c>prompt</c> — deliver a follow-up turn to a worker whose session is <b>still open</b>
+/// (<c>ideas/sessions.md</c> stage 1). The first command in this vocabulary that assumes a
+/// worker is something you talk to rather than something you launch.
+///
+/// <para><b>Why this is not <c>dispatch</c> again.</b> A dispatch starts a process, mints a
+/// token, writes an MCP config and opens a session; this reaches a conversation that already
+/// has all four and adds one message to it. Under the task model the distinction could not
+/// arise — a worker that had finished a turn had also exited, so the only way to say
+/// anything more to it was to start a new one, cold or resumed. An ACP worker outlives its
+/// turn, so "continue" and "begin" stop being the same act.</para>
+///
+/// <para><b>Only meaningful for a <c>protocol: acp</c> profile.</b> A stream-mode worker has
+/// no channel that accepts a turn: its stdin is a dead-man's pipe, not a request channel,
+/// and the harnesses this repo supports do not read mid-task turns off it (the reason every
+/// stream profile is forced to <c>stop.mode: signal</c>). A runner that receives this for a
+/// stream task refuses it rather than writing bytes nobody reads.</para>
+///
+/// <para>Best-effort like every §10 command: the runner acks that the turn was
+/// <em>delivered to the agent</em>, which — unlike the stream mode's message stop — is a
+/// claim the protocol actually supports, because an ACP agent is specified to consume
+/// <c>session/prompt</c>.</para>
+/// </summary>
+public sealed record PromptCommand(TaskId Task, string Text) : RunnerCommand;
+
+/// <summary>
 /// <c>open-forward</c> — the control plane asks this runner to stand up one end
 /// of a relay forward (§8.3). In this deployment the plane (not the relay, which
 /// holds no docketd channel of its own) sends this to <em>both</em> ends over the
@@ -506,6 +531,25 @@ public sealed record UsageReportedEvent(
 /// it; progressive enhancement, not a given (§10 telemetry ingest).</summary>
 public sealed record SubagentSpawnedEvent(
     TaskId Task, string? AgentId, string? ParentAgentId, DateTimeOffset At) : RunnerEvent;
+
+/// <summary>
+/// <c>turn-ended</c> — an ACP worker finished a turn and its session is still open
+/// (<c>ideas/sessions.md</c> stage 1). The event the task model could not have: there, a
+/// finished turn and a dead process were the same observation, so <c>exited</c> carried
+/// both meanings and neither precisely.
+///
+/// <para><see cref="StopReason"/> is the agent's own word for why the turn ended —
+/// <c>end_turn</c>, <c>max_tokens</c>, <c>max_turn_requests</c>, <c>refusal</c> or
+/// <c>cancelled</c>. Under the task model all five arrived as "the process exited 0 without
+/// reporting a result", which is why a worker that hit a token ceiling looked exactly like a
+/// lazy one. That distinction matters more since the ACP migration, not less: ACP has no
+/// <c>--max-turns</c> or budget flag, so <c>max_tokens</c> is now one of the few bounds that
+/// announces itself.</para>
+///
+/// <para>Null when the turn ended without the agent saying why — a stream that died
+/// mid-turn, or an agent that omits the field. Not invented, per §2 principle 2.</para>
+/// </summary>
+public sealed record TurnEndedEvent(TaskId Task, string? StopReason, DateTimeOffset At) : RunnerEvent;
 
 /// <summary><c>exited</c> — the harness process ended (§10). Observed directly
 /// by process supervision, not inferred.</summary>

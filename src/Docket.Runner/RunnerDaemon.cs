@@ -190,6 +190,21 @@ public sealed class RunnerDaemon
                 var killed = _supervisor.Kill(kill.Task);
                 return new CommandOutcome.Acknowledged(killed ? "killed" : "not running");
 
+            case PromptCommand prompt:
+                // ideas/sessions.md stage 1. Best-effort and acked either way, like
+                // close-forward: §10 commands do not fail, they report what happened. But
+                // the two outcomes are named apart, because a Lead's message that went
+                // nowhere must not read as delivered — and the two reasons it can go nowhere
+                // (the session ended; this is a stream profile with no channel that accepts
+                // a turn) have completely different fixes.
+                var queued = _supervisor.TryPrompt(prompt.Task, prompt.Text);
+                var promptDetail = queued
+                    ? "queued for the live session"
+                    : "not delivered: no live ACP session for this task — it has ended, or this is a " +
+                      "stream profile, whose worker has no channel that accepts a turn (§10)";
+                _log?.Invoke($"prompt {prompt.Task}: {promptDetail}");
+                return new CommandOutcome.Acknowledged(promptDetail);
+
             case OpenForwardCommand forward:
                 return HandleOpenForward(forward);
 

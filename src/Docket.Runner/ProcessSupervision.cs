@@ -87,6 +87,14 @@ public interface IProcessSupervisor
     /// </summary>
     Task<StopAck> StopAsync(TaskId task, TimeSpan ttl, StopDisposition disposition, string? reason, CancellationToken ct);
 
+    /// <summary>
+    /// <c>prompt</c> — queue a follow-up turn on a task's live ACP session
+    /// (<c>ideas/sessions.md</c> stage 1). False when this machine holds no such session:
+    /// the task is not here, its worker has ended, or it is a stream-mode task, which has
+    /// no channel that accepts a turn at all.
+    /// </summary>
+    bool TryPrompt(TaskId task, string text);
+
     /// <summary>Immediate group/tree kill of one task (§10).</summary>
     bool Kill(TaskId task);
 
@@ -788,6 +796,11 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         supervised.TtlTimer = _clock.CreateTimer(_ => KillTree(supervised), null, ttl, Timeout.InfiniteTimeSpan);
         return new StopAck(true, StopDelivery.DeadlineArmed);
     }
+
+    public bool TryPrompt(TaskId task, string text) =>
+        _tasks.TryGetValue(task, out var supervised)
+        && supervised.Acp is { } acp
+        && acp.TryQueueFollowUp(text);
 
     public bool Kill(TaskId task)
     {
