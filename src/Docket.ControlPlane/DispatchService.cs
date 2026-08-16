@@ -534,6 +534,14 @@ public sealed class DispatchService : IHostedService
                         break;
                     }
 
+                    if (await store.IsAwaitingLeadAsync(tracked.Task, ct))
+                    {
+                        _logger.LogDebug(
+                            "task {Task} on {Machine} is awaiting a Lead follow-up; not requeued",
+                            tracked.Task, tracked.Machine);
+                        break;
+                    }
+
                     // Which clock fired IS the reason, and it is persisted with the
                     // requeue now (§6, #73) rather than surviving only in this log line:
                     // aliveness loss is a machine/daemon problem, no-progress is a wedged

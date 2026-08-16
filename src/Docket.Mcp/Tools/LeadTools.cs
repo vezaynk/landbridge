@@ -239,12 +239,12 @@ public sealed class LeadTools(
     }
 
     [McpServerTool(Name = "answer_input_request"),
-     Description("Answer a task blocked on input. Read the question first with get_task_question, then " +
-                 "pass your answer as 'answer' — that text is the only thing the worker receives, and " +
+     Description("Talk to a live worker, or answer a question it asked. Read first with get_task_question. " +
+                 "Pass your words as 'answer' — that text is the only thing the worker receives, and " +
                  "without it the worker comes back knowing it was unblocked but not with what, so it " +
                  "guesses or asks again. A still-live ACP session gets a follow-up prompt and stays on " +
-                 "the same instance; a dead session (or a parked task) is redispatched with its " +
-                 "transcript resumed.")]
+                 "the same instance (a pending question, or an unsolicited follow-up); a dead session " +
+                 "(or a parked task) is redispatched with its transcript resumed.")]
     public async Task<string> AnswerInputRequest(
         [Description("The task id that is blocked on input (or already parked).")]
         string taskId,
@@ -533,7 +533,8 @@ public sealed class LeadTools(
             return DescribePermissionRequest(view);
 
         if (view.Question is not { Length: > 0 } question)
-            return view.State == TaskState.BlockedOnInput || view.State == TaskState.Parked
+            return view.State is TaskState.BlockedOnInput or TaskState.Parked or TaskState.Working
+                && view.Kind is not null
                 ? $"Task {view.Namespace} is waiting on input ({KindLabel(view.Kind)}) but its worker left " +
                   "no question — you are answering blind. Prefer cancelling and re-briefing over guessing."
                 : $"Task {view.Namespace} has asked nothing (state {view.State}).";

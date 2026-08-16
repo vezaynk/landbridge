@@ -98,15 +98,38 @@ public class LifecycleTests
     }
 
     [Fact]
-    public void Request_input_moves_working_to_blocked_with_a_typed_kind()
+    public void Request_input_of_a_question_stays_working()
     {
         var task = Given.Task(TaskState.Working);
         var result = TaskStateMachine.Apply(task,
             new RequestInput(Given.IncumbentOf(task), InputRequestKind.Question));
 
-        Expect.Transitioned(result, TaskState.BlockedOnInput);
-        // ACP sessions stay up through a question, so services stay with the instance.
+        Expect.Transitioned(result, TaskState.Working);
         Assert.DoesNotContain(Expect.Effects(result), e => e is ClearServicesAndForwards);
+    }
+
+    [Fact]
+    public void Request_input_of_permission_still_blocks()
+    {
+        var task = Given.Task(TaskState.Working);
+        var result = TaskStateMachine.Apply(task,
+            new RequestInput(Given.IncumbentOf(task), InputRequestKind.Permission, PermissionTool: "Bash"));
+
+        Expect.Transitioned(result, TaskState.BlockedOnInput);
+    }
+
+    [Fact]
+    public void Lead_can_message_a_working_session_without_a_pending_question()
+    {
+        var task = Given.Task(TaskState.Working);
+        var incumbent = task.CurrentInstance!.Value;
+
+        var next = Expect.Transitioned(
+            TaskStateMachine.Apply(task, new LeadMessage(Given.Lead, "keep going on the tests")),
+            TaskState.Working);
+        Assert.Equal(incumbent, next.CurrentInstance);
+        Assert.Empty(Expect.Effects(
+            TaskStateMachine.Apply(Given.Task(TaskState.Working), new LeadMessage(Given.Lead, "ok"))));
     }
 
     [Theory]

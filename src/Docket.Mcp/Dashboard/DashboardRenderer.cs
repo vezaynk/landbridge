@@ -1036,7 +1036,8 @@ internal static class DashboardRenderer
         // just blocked/parked), alongside the state-specific detail below.
         if (t.ContinuesTaskId is { } prior)
             parts.Add($"<span class=\"nt\">continues <span class=\"mono\">{E(ShortId(prior))}</span></span>");
-        if (t.State == TaskState.BlockedOnInput)
+        if (t.State == TaskState.BlockedOnInput
+            || (t.State == TaskState.Working && t.BlockedAt is not null && t.InputKind is not InputRequestKind.Permission))
             parts.Add($"<span class=\"nt\">blocked {E(Age(t.BlockedAt, now))}</span>");
         else if (t.State == TaskState.Parked && t.ParkMachine is not null)
             parts.Add($"<span class=\"nt\">parked on <span class=\"mono\">{E(t.ParkMachine)}</span></span>");

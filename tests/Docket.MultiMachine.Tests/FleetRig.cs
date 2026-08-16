@@ -404,6 +404,17 @@ internal sealed class FleetRig(
     }
 
     /// <summary>
+    /// A live session that asked a question and is idle for the Lead. Questions
+    /// no longer leave <c>working</c>.
+    /// </summary>
+    public async Task<bool> HasPendingQuestionAsync(TaskId task, CancellationToken ct)
+    {
+        await using var db = pg.NewContext();
+        var row = await db.Tasks.AsNoTracking().SingleOrDefaultAsync(t => t.Id == task.Value, ct);
+        return row is { State: TaskState.Working, InputKind: InputRequestKind.Question, BlockedAt: not null };
+    }
+
+    /// <summary>
     /// Decide a pending permission request over the real Lead MCP surface (§11 permission
     /// bridge). Unlike <see cref="AnswerAsync"/> this does not requeue anything: the worker is
     /// still running, blocked inside the tool call the harness relayed, and the verdict resumes

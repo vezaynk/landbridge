@@ -150,9 +150,12 @@ Closes the session only on stop/kill.
 idle-awaiting-input and the Lead's answer is delivered as a follow-up prompt. The wait-TTL
 sweeper is recovery-only (implemented: TTL off by default; machine-death still requeues).
 `park_task` closes a session on purpose. Liveness grows its third state.
-**Implemented:** `answer_input_request` on a live process is `ContinueSession` +
-`PromptCommand`; a gone process still redispatches. ACP `session/request_permission`
-routes through `POST /worker/permission` onto the existing permission tools.
+**Implemented:** a question stays `working` (permission is still the one
+`blocked_on_input` live wait). `answer_input_request` on a live process is
+`ContinueSession` or `LeadMessage` + `PromptCommand`; a gone process still
+redispatches. ACP `session/request_permission` routes through
+`POST /worker/permission` onto the existing permission tools. A turn that
+ends while a question is pending is idle, not `TurnEndedWithoutResult`.
 
 **Stage 3 — the session becomes the record.** Message history persisted; session states
 replace task states; migrations; dashboard reoriented. **This is where the properties above
@@ -160,6 +163,10 @@ get re-derived**, and it is the stage that deserves its own design pass.
 
 **Stage 4 — the Lead can talk back.** A rejection becomes a message rather than a
 continuation task. Requires the doer/judge authorship rule from stage 3 to already hold.
+**Started:** `LeadMessage` is working → working on a live session with no
+pending question. The plane doorbells; the worker pulls the text on
+`get_task`. A pending permission still needs a verdict. Full
+replacement of continuation tasks waits on stage 3's authorship rule.
 
 **Stage 5 — recovery.** A dead session is resumed from its persisted ref via `session/load`
 on next invocation, replacing the park/redispatch path entirely.

@@ -715,7 +715,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
 
         await using var v = pg.NewContext();
         var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == taskId.Value);
-        Assert.Equal(TaskState.BlockedOnInput, row.State);
+        Assert.Equal(TaskState.Working, row.State);
         Assert.Null(row.InputAnswer);
     }
 

@@ -177,7 +177,7 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             }, cancellationToken: ct);
 
             Assert.NotEqual(true, asked.IsError);
-            Assert.Contains("BlockedOnInput", Assert.Single(asked.Content.OfType<TextContentBlock>()).Text);
+            Assert.Contains("Working", Assert.Single(asked.Content.OfType<TextContentBlock>()).Text);
         }
 
         // ── Lead: see it in the poll, read it, answer it ─────────────────────

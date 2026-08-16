@@ -146,19 +146,14 @@ internal static class RealHarnessBar
                     var state = await rig.StateAsync(task, ct);
                     if (state is TaskState.Verifying or TaskState.Completed)
                         return true;
-                    if (state != TaskState.BlockedOnInput)
-                        return false;
-                    // Permission-kind is auto-allowed by the fleet pump; only a
-                    // question is the park the rest of this bar drives.
-                    return await rig.PendingPermissionAsync(task, ct) is null;
+                    return await rig.HasPendingQuestionAsync(task, ct);
                 },
                 MaxAttempts, PerLegBudget, ct),
-            $"the real {profile.Name} worker neither blocked on a question nor finished.\n"
+            $"the real {profile.Name} worker neither asked a question nor finished.\n"
             + profile.FailureHypotheses + await rig.RealWorkerDiagnosticsAsync(task, ct));
-        var blockedState = await rig.StateAsync(task, ct);
         Assert.True(
-            blockedState == TaskState.BlockedOnInput,
-            $"the {profile.Name} worker reached {blockedState} without ever asking, so there is "
+            await rig.HasPendingQuestionAsync(task, ct),
+            $"the {profile.Name} worker reached {await rig.StateAsync(task, ct)} without ever asking, so there is "
             + "no park to resume.\n"
             + profile.FailureHypotheses + await rig.RealWorkerDiagnosticsAsync(task, ct));
 

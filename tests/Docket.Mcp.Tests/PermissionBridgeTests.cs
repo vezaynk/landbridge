@@ -275,7 +275,7 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
                 .AnswerPermissionRequest(caller.Task.ToString(), "allow", null, CancellationToken.None));
 
         Assert.Contains(Rule.PermissionVerdictAnswersPermissionRequests.ToString(), refused.Message);
-        Assert.Equal(TaskState.BlockedOnInput, await StateOf(caller.Task));
+        Assert.Equal(TaskState.Working, await StateOf(caller.Task));
     }
 
     // ── Escalation ────────────────────────────────────────────────────────────

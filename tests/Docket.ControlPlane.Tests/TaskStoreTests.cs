@@ -303,7 +303,7 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         // The Lead's deliberate per-task fetch carries the text.
         var fetched = await vstore.GetTaskQuestionAsync(Team, id);
         Assert.Equal(question, fetched!.Question);
-        Assert.Equal(TaskState.BlockedOnInput, fetched.State);
+        Assert.Equal(TaskState.Working, fetched.State);
         Assert.Null(fetched.Answer);
 
         // And the incumbent's own get_task read.
@@ -519,7 +519,7 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
 
         await using var v = pg.NewContext();
         var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
-        Assert.Equal(TaskState.BlockedOnInput, row.State); // still waiting; re-answerable
+        Assert.Equal(TaskState.Working, row.State); // still waiting; re-answerable
         Assert.Null(row.InputAnswer);
     }
 
@@ -820,6 +820,30 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         Assert.NotNull(row.CurrentInstanceId);
         Assert.Equal("use staging-pg", row.InputAnswer);
         Assert.Null(row.ParkMachine);
+    }
+
+    [SkippableFact]
+    public async Task A_lead_follow_up_on_a_working_session_with_no_question_stays_working()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await CreateSubmitted(db);
+        var instance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), instance);
+
+        var applied = Assert.IsType<StoreResult.Applied>(
+            await store.AnswerOrWakeAsync(Lead, id, leaseMachine: "m1", answer: "keep going on the tests", sessionLive: true));
+        Assert.Equal(TaskState.Working, applied.Task.State);
+        Assert.Equal(instance, applied.Task.CurrentInstance);
+
+        await using var v = pg.NewContext();
+        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(TaskState.Working, row.State);
+        Assert.Equal(instance.Value, row.CurrentInstanceId);
+        Assert.Equal("keep going on the tests", row.InputAnswer);
+        Assert.Null(row.ParkMachine);
+        Assert.Null(row.BlockedAt);
     }
 
     [SkippableFact]

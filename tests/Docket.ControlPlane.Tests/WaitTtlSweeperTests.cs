@@ -28,7 +28,7 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
     public Task DisposeAsync() => Task.CompletedTask;
 
     [SkippableFact]
-    public async Task Wait_ttl_not_yet_expired_leaves_the_task_blocked()
+    public async Task Wait_ttl_not_yet_expired_leaves_the_waiting_task()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
@@ -42,7 +42,7 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
         clock.Advance(TimeSpan.FromMinutes(29));
         await sweeper.SweepAsync(CancellationToken.None);
 
-        Assert.Equal(TaskState.BlockedOnInput, await StateAsync(clock, id));
+        Assert.Equal(TaskState.Working, await StateAsync(clock, id));
         Assert.Contains(id, registry.TasksOn("m1"));
     }
 
