@@ -103,6 +103,7 @@ public sealed class AcpClient
     private readonly Action<string>? _rawLineSink;
     private readonly Action<string> _warn;
     private readonly Func<AcpPermissionAsk, CancellationToken, Task<AcpPermissionDecision>>? _requestPermission;
+    private AcpResult? _lastSessionResult;
 
     private readonly ConcurrentDictionary<long, TaskCompletionSource<AcpResult>> _pending = new();
     private readonly SemaphoreSlim _writeLock = new(1, 1);
@@ -316,6 +317,7 @@ public sealed class AcpClient
 
         _sessionId = session;
         _onSessionId?.Invoke(session);
+        await MaybePinModelAsync(session, ct).ConfigureAwait(false);
 
         // A cancel that arrived between the spawn and here has nothing to cancel yet; now
         // that a session exists, honour it instead of prompting into a stop already asked for.
@@ -449,6 +451,7 @@ public sealed class AcpClient
                 WriteMcpServers(w);
             },
             ct).ConfigureAwait(false);
+        _lastSessionResult = result;
 
         return SessionIdOf(result);
     }
@@ -472,11 +475,61 @@ public sealed class AcpClient
                 WriteMcpServers(w);
             },
             ct).ConfigureAwait(false);
+        _lastSessionResult = result;
 
         // session/load's result carries no sessionId of its own — the ref we asked for IS
         // the session — so an agent that echoes one is honoured and one that does not is
         // not an error.
         return SessionIdOf(result) ?? sessionRef;
+    }
+
+    /// <summary>
+    /// OpenCode ACP defaults every session to <c>opencode/big-pickle</c> and
+    /// ignores <c>opencode.json</c> (measured 2026-08-16: session/new returns
+    /// that as <c>configOptions.model.currentValue</c> and then never turns).
+    /// ACP <c>session/set_config_option</c> is the pin. No-op when the profile
+    /// named no model, or the agent did not advertise that value.
+    /// </summary>
+    private async Task MaybePinModelAsync(string sessionId, CancellationToken ct)
+    {
+        if (_request.Model is not { Length: > 0 } model)
+            return;
+        if (_lastSessionResult is not { } result || !AdvertisesSelectValue(result.Value, "model", model))
+            return;
+
+        await RequestAsync(
+            "session/set_config_option",
+            w =>
+            {
+                w.WriteString("sessionId", sessionId);
+                w.WriteString("configId", "model");
+                w.WriteString("value", model);
+            },
+            ct).ConfigureAwait(false);
+    }
+
+    private static bool AdvertisesSelectValue(JsonElement session, string configId, string value)
+    {
+        if (!session.TryGetProperty("configOptions", out var options)
+            || options.ValueKind != JsonValueKind.Array)
+            return false;
+        foreach (var opt in options.EnumerateArray())
+        {
+            if (opt.ValueKind != JsonValueKind.Object)
+                continue;
+            if (!opt.TryGetProperty("id", out var id) || id.GetString() != configId)
+                continue;
+            if (!opt.TryGetProperty("options", out var choices) || choices.ValueKind != JsonValueKind.Array)
+                return false;
+            foreach (var choice in choices.EnumerateArray())
+            {
+                if (choice.ValueKind == JsonValueKind.Object
+                    && choice.TryGetProperty("value", out var v)
+                    && v.GetString() == value)
+                    return true;
+            }
+        }
+        return false;
     }
 
     private static string? SessionIdOf(AcpResult result) =>
@@ -1249,7 +1302,8 @@ public sealed record AcpSessionRequest(
     string FollowUp,
     IReadOnlyList<AcpMcpServer> McpServers,
     string? ResumeSessionRef = null,
-    string? AuthMethod = null);
+    string? AuthMethod = null,
+    string? Model = null);
 
 /// <summary>One MCP server as ACP's <c>session/new</c> wants it: HTTP, named, with headers.</summary>
 /// <summary>What the agent is asking the plane to decide.</summary>

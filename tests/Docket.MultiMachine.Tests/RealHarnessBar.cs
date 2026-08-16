@@ -117,7 +117,10 @@ internal static class RealHarnessBar
         Assert.True(
             tokens.Sum(u => u.InputTokens + u.OutputTokens + u.CacheReadTokens + u.CacheWriteTokens) > 0,
             $"a usage row landed for {profile.Name} but every token bucket was zero");
-        Assert.DoesNotContain(tokens, u => u.CostUsd is not null);
+        // A real dollar figure is fine (OpenCode + Anthropic reports one). A
+        // $0.00 is the adapter not computing cost and must not be stored as
+        // "this dispatch was free".
+        Assert.DoesNotContain(tokens, u => u.CostUsd is 0m);
     }
 
     /// <summary>
@@ -145,7 +148,7 @@ internal static class RealHarnessBar
         using var attach = profile.AttachTo(rig);
         await rig.AddMachineAsync("A");
 
-        var task = await rig.CreateTaskAsync(RealHarnessProfile.AskThenStopDescription, ct);
+        var task = await rig.CreateTaskAsync(profile.AskThenStopDescription, ct);
 
         Assert.True(
             await rig.DispatchUntilAsync(

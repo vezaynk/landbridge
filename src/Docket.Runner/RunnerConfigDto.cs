@@ -83,6 +83,11 @@ internal sealed class ProfileDto
     // offers `api-key` and `chat-gpt`, and only the first works unattended.
     public string? AuthMethod { get; set; }
 
+    // Which model the agent should use for this profile. Consulted after
+    // session/new when the agent advertises a `model` config option — OpenCode
+    // ACP otherwise defaults to opencode/big-pickle and ignores opencode.json.
+    public string? Model { get; set; }
+
     public StopDto? Stop { get; set; }
     public TelemetryDto? Telemetry { get; set; }
     public LogsDto? Logs { get; set; }

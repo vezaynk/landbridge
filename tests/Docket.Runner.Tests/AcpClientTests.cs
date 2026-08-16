@@ -77,6 +77,31 @@ public sealed class AcpClientTests
     /// write and nothing to smuggle.
     /// </summary>
     [Fact]
+    public async Task Pins_an_advertised_model_after_session_new()
+    {
+        // OpenCode ACP defaults to opencode/big-pickle. The pin is a
+        // session/set_config_option after the agent has advertised the value.
+        var agent = new FakeAgent { AdvertiseModel = "anthropic/claude-haiku-4-5-20251001" };
+        var request = Request("go") with { Model = "anthropic/claude-haiku-4-5-20251001" };
+        await RunAsync(agent, request);
+
+        Assert.Equal("anthropic/claude-haiku-4-5-20251001", agent.PinnedModel);
+        Assert.Equal(
+            ["initialize", "session/new", "session/set_config_option", "session/prompt"],
+            agent.MethodsReceived);
+    }
+
+    [Fact]
+    public async Task Does_not_pin_a_model_the_agent_did_not_advertise()
+    {
+        var agent = new FakeAgent();
+        await RunAsync(agent, Request("go") with { Model = "anthropic/claude-haiku-4-5-20251001" });
+
+        Assert.Null(agent.PinnedModel);
+        Assert.DoesNotContain("session/set_config_option", agent.MethodsReceived);
+    }
+
+    [Fact]
     public async Task Hands_the_planes_mcp_server_over_on_session_new()
     {
         var agent = new FakeAgent();
@@ -988,6 +1013,12 @@ public sealed class AcpClientTests
         /// <summary>The method id the client chose, or null if it never authenticated.</summary>
         public string? AuthenticatedWith { get; private set; }
 
+        /// <summary>When set, session/new advertises this model on a select option.</summary>
+        public string? AdvertiseModel { get; init; }
+
+        /// <summary>The value the client pinned via session/set_config_option.</summary>
+        public string? PinnedModel { get; private set; }
+
         private string AuthMethodsJson =>
             "[" + string.Join(",", AuthMethods.Select(m => $$"""{"id":"{{m}}","name":"{{m}}"}""")) + "]";
 
@@ -1135,7 +1166,17 @@ public sealed class AcpClientTests
                             id);
                         break;
                     }
-                    Send("""{"jsonrpc":"2.0","id":%id%,"result":{"sessionId":"sess_1"}}""", id);
+                    Send(
+                        AdvertiseModel is { } model
+                            ? """{"jsonrpc":"2.0","id":%id%,"result":{"sessionId":"sess_1","configOptions":[{"id":"model","type":"select","currentValue":"opencode/big-pickle","options":[{"value":"%model%","name":"pinned"}]}]}}"""
+                                .Replace("%model%", model)
+                            : """{"jsonrpc":"2.0","id":%id%,"result":{"sessionId":"sess_1"}}""",
+                        id);
+                    break;
+
+                case "session/set_config_option":
+                    PinnedModel = message.GetProperty("params").GetProperty("value").GetString();
+                    Send("""{"jsonrpc":"2.0","id":%id%,"result":{"configOptions":[]}}""", id);
                     break;
 
                 case "session/load":

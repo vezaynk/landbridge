@@ -35,6 +35,11 @@ internal sealed class RealHarnessProfile
     /// Codex offers <c>api-key</c> and <c>chat-gpt</c>; only the first works unattended.
     /// </summary>
     public string? AuthMethod { get; init; }
+    /// <summary>
+    /// ACP <c>session/set_config_option</c> model id, when the agent advertises one.
+    /// OpenCode ACP otherwise sits on <c>opencode/big-pickle</c> and never turns.
+    /// </summary>
+    public string? Model { get; init; }
     public Func<FleetRig, IDisposable?>? Attach { get; init; }
 
     public string EchoTools => $"{GetTask},{ReportResult}";
@@ -60,25 +65,29 @@ internal sealed class RealHarnessProfile
         "You are a Docket worker agent. Remember this test nonce for the rest of this conversation: " +
         nonce + ". Do not write it to any file, and do not put it in any tool call yet. Now call " +
         "the " + GetTask + " tool and do exactly what its description tells you. On this first " +
-        "turn that means request_input, then stop — do not call " + ReportResult + " yet." +
+        "turn that means " + RequestInput + ", then stop — do not call " + ReportResult + " yet." +
         McpToolsRule;
 
+    /// <summary>
+    /// Wake after <c>session/load</c>. Must work for two different redispatches:
+    /// a first-leg retry that never asked (no answer on get_task — ask, then stop)
+    /// and a park/resume (answer is there — report the nonce). Sending only
+    /// "report now" made OpenCode's silent first turn skip the ask on retry.
+    /// </summary>
     public string ResumeAndReport =>
-        "Your task has resumed. FIRST call the " + GetTask + " tool — it carries the answer " +
-        "you were waiting for. Then call the " + ReportResult + " tool exactly once, with " +
-        "resultReference set to the exact value you were asked to remember earlier in this " +
-        "conversation, and nothing else. Two tool calls total." + McpToolsRule;
+        "Your session resumed. FIRST call " + GetTask + ". " +
+        "If the assignment has no answer yet, call " + RequestInput + " exactly once as " +
+        "the assignment describes, then stop — do not call " + ReportResult + ". " +
+        "If the assignment already has an answer, call " + ReportResult + " exactly once, " +
+        "with resultReference set to the exact nonce you were asked to remember, and nothing else." +
+        McpToolsRule;
 
-    public const string AskThenStopDescription =
-        """
-        Call request_input exactly once, with kind 'question' and question set to this exact
-        text (no quotes, no other text):
-
-        may I report the remembered value now?
-
-        Then stop and end your turn. Do NOT call report_result on this turn. Do not create or
-        edit files.
-        """;
+    public string AskThenStopDescription =>
+        "Call " + RequestInput + " exactly once, with kind 'question' and question set to this exact " +
+        "text (no quotes, no other text):\n\n" +
+        "may I report the remembered value now?\n\n" +
+        "Then stop and end your turn. Do NOT call " + ReportResult + " on this turn. Do not create or " +
+        "edit files.";
 
     /// <summary>
     /// The wake-up turn for a live ACP session. Says only "read your assignment" — the
@@ -98,7 +107,7 @@ internal sealed class RealHarnessProfile
     /// </summary>
     public FleetRig OpenEchoRig(PostgresFixture pg) =>
         new(pg, AcpSpawn, env: Env,
-            prompt: EchoPrompt, followUp: FollowUpTurn, authMethod: AuthMethod);
+            prompt: EchoPrompt, followUp: FollowUpTurn, authMethod: AuthMethod, model: Model);
 
     /// <summary>
     /// The park/resume rig, on ACP. There is no <c>resume.args</c> here and that is the
@@ -112,7 +121,8 @@ internal sealed class RealHarnessProfile
             throw new InvalidOperationException(Name + " does not support resume — the park bar must skip.");
         return new FleetRig(
             pg, AcpSpawn, env: Env,
-            prompt: RememberThenAsk(nonce), followUp: ResumeAndReport, authMethod: AuthMethod);
+            prompt: RememberThenAsk(nonce), followUp: ResumeAndReport, authMethod: AuthMethod,
+            model: Model);
     }
 
     public IDisposable? AttachTo(FleetRig rig) => Attach?.Invoke(rig);

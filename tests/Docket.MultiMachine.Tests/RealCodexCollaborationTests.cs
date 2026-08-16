@@ -26,15 +26,10 @@ namespace Docket.MultiMachine.Tests;
 /// and is wrapped below so <c>Category=RealCodex</c> still isolates the job. Dead-man hang,
 /// stop-as-signal, and the mixed claude+codex fleet stay in this file.</para>
 ///
-/// <para><b>This tier has now run, and it passes.</b> A <c>workflow_dispatch</c> on
-/// 2026-08-10 (CI run 31430436700, <c>e6fbae8</c>) executed all four facts against the real
-/// binary: <b>4 passed, 0 skipped</b> — including the mixed claude+codex fleet handoff, which
-/// is the fact the whole BYO-harness claim rests on. One thing needed fixing to get there and
-/// it was not Docket: the pinned <c>gpt-5.1-codex-mini</c> 404'd on the API-key path
-/// (Responses API, "Model not found") while auth, MCP init and the closed-stdin spawn all
-/// worked, so the model slug became the <c>DOCKET_CODEX_MODEL</c> dispatch input rather than
-/// a code change. The bar facts (usage + park/resume) were added later and have not
-/// themselves got a green dispatch yet.</para>
+/// <para>The API-key catalog does not serve every slug the CLI lists.
+/// <c>gpt-5.1-codex-mini</c> and an unpinned <c>gpt-5.6-sol</c> 404 on
+/// <c>/v1/responses</c> for this project. The pin is <c>gpt-5.3-codex</c>,
+/// matching the CI dispatch default. <c>DOCKET_CODEX_MODEL</c> overrides it.</para>
 ///
 /// <para><b>Source reading is still the authority for every claim below</b>, and that is
 /// deliberate rather than leftover: <c>codex</c> is not installed on the machine where this
@@ -271,21 +266,12 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
     /// machine's default deliberately: the default is whatever the operator or the server-side
     /// catalog says, which for a token-spending CI job is an open cheque.
     ///
-    /// <para><c>gpt-5.1-codex-mini</c> is the cheapest codex-family model the pinned CLI knows
-    /// about — the source describes it as "Optimized for codex. Cheaper, faster, but less
-    /// capable." (<c>codex-rs/tui/src/model_migration.rs:520-525</c>), where it is also the
-    /// <em>migration target</em> for the retired <c>gpt-5-codex-mini</c>, so it is the current
-    /// slug and not a legacy alias. Note the model catalog is fetched server-side rather than
-    /// hard-coded in the CLI, so a slug can be retired out from under this constant —
-    /// <c>DOCKET_CODEX_MODEL</c> overrides it without a code change when that happens.</para>
-    ///
-    /// <para><b>And that is exactly what happened.</b> On the first real dispatch this slug
-    /// returned "Model not found" from the Responses API on the API-key path, while auth, MCP
-    /// init and the closed-stdin spawn all worked — so the CLI knowing a slug is not the same
-    /// as the account's catalog serving it. The CI job therefore passes
-    /// <c>DOCKET_CODEX_MODEL=gpt-5.1-codex</c> and the tier went green. This constant stays the
-    /// cheapest slug on purpose: it is the right default for a local run, and the override is
-    /// the documented way past a catalog that disagrees.</para>
+    /// <para><c>gpt-5.3-codex</c> is the slug the API-key catalog actually serves. Cheaper
+    /// names the CLI still lists (<c>gpt-5.1-codex-mini</c>, the adapter's fallback) 404 on
+    /// <c>/v1/responses</c> for this project, and an unpinned <c>CODEX_HOME</c> then
+    /// defaults to <c>gpt-5.6-sol</c>, which this key also cannot call. Measured
+    /// 2026-08-16, twice. <c>DOCKET_CODEX_MODEL</c> overrides without a code change if
+    /// the catalog moves again. The CI dispatch default is the same slug.</para>
     /// </summary>
     private static string CodexModel => RealHarnessProfiles.CodexModel;
 

@@ -54,16 +54,14 @@ internal static class RealHarnessProfiles
         Name = "opencode",
         // Native. Measured 2026-08-15: protocol 1, loadSession true, mcp.http true.
         AcpSpawn = [bin, "acp"],
+        Model = OpenCodeModel,
         Bin = bin,
         GetTask = "docket_get_task",
         ReportResult = "docket_report_result",
         RequestInput = "docket_request_input",
-        // Tokens, not Cost, and this is a real difference from the stream profile rather
-        // than a relaxed assertion. `opencode run` emitted a priced `part.cost` per step;
-        // `opencode acp` reports {"amount":0} — measured 2026-08-16 on a turn that burned
-        // 14,321 tokens on the same model and the same key. A zero there is the adapter not
-        // computing cost, so the client records no cost at all rather than claiming the
-        // dispatch was free (§2 principle 2, the same reason Codex asserts tokens only).
+        // Tokens required. Cost is optional: Anthropic-pinned ACP reports one,
+        // the previous big-pickle default reported none. A stored $0.00 is still
+        // forbidden — that would claim the dispatch was free.
         Usage = UsageExpectation.Tokens,
         SupportsResume = true,
         FailureHypotheses = OpenCodeHypotheses(),
@@ -96,7 +94,7 @@ internal static class RealHarnessProfiles
     };
 
     public static string CodexModel =>
-        Environment.GetEnvironmentVariable("DOCKET_CODEX_MODEL") is { Length: > 0 } m ? m : "gpt-5.1-codex-mini";
+        Environment.GetEnvironmentVariable("DOCKET_CODEX_MODEL") is { Length: > 0 } m ? m : "gpt-5.3-codex";
 
     public static string OpenCodeModel =>
         Environment.GetEnvironmentVariable("DOCKET_OPENCODE_MODEL") is { Length: > 0 } m
@@ -254,6 +252,7 @@ internal static class RealHarnessProfiles
                 $$"""
                   {
                     "$schema": "https://opencode.ai/config.json",
+                    "model": "{{OpenCodeModel}}",
                     "mcp": {
                       "docket": {
                         "type": "remote",
@@ -279,10 +278,11 @@ internal static class RealHarnessProfiles
     }
 
     private static string CodexHypotheses() =>
-        """
+        $"""
 
         Suspect, in order:
-          1. MODEL SLUG. Override with DOCKET_CODEX_MODEL.
+          1. MODEL SLUG. This tier pins '{CodexModel}'. gpt-5.1-codex-mini 404s on
+             the API-key catalog; override with DOCKET_CODEX_MODEL.
           2. MCP WIRING. CODEX_HOME/config.toml uses bearer_token_env_var = DOCKET_WORKER_TOKEN
              and required = true. A plane 401 or a missing table fails the run.
           3. STDIN. A deadman profile hangs before the first turn. Bar facts declare closed.
