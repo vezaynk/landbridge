@@ -888,9 +888,27 @@ public sealed class AcpClient
             return null;
         }
 
-        return decision.Allow
-            ? FirstOfKind(options, "allow_once") ?? FirstOfKind(options, "allow_always")
-            : FirstOfKind(options, "reject_once") ?? FirstOfKind(options, "reject_always");
+        if (decision.Allow)
+            return FirstOfKind(options, "allow_once") ?? FirstOfKind(options, "allow_always");
+
+        // Once per task, and it earns its place. A refused tool call is invisible from
+        // everywhere else: the agent absorbs the refusal, writes a paragraph about why it
+        // could not proceed, and ends its turn — which on the plane looks exactly like a
+        // model that ignored its instructions. Measured 2026-08-16: seven real claude
+        // dispatches ended that way, ~400-800 output tokens each, no tool calls, and nothing
+        // anywhere said "denied". A session runs in the agent's DEFAULT permission mode
+        // unless a profile says otherwise, and for claude-agent-acp that mode prompts before
+        // every MCP tool call — so on a fleet with no Lead watching, the first `get_task` is
+        // the call that gets refused and the worker never starts.
+        if (_declined.Add("session/request_permission"))
+            _warn(
+                $"docketd: task {_task.Value}: the plane DENIED this worker's permission request for " +
+                $"'{ask.Tool}'{(decision.Message is { Length: > 0 } why ? $" ({why})" : "")}. A worker whose " +
+                "docket tools are denied cannot call get_task or report_result, so it will end its turn " +
+                "having done nothing — check that a Lead is answering permission requests, or set this " +
+                "profile to a permission mode that does not prompt (§10, §11).");
+
+        return FirstOfKind(options, "reject_once") ?? FirstOfKind(options, "reject_always");
     }
 
     /// <summary>
