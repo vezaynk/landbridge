@@ -637,6 +637,36 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     }
 
     /// <summary>
+    /// The same question as <see cref="ConsumeCommandedExit"/> without consuming the answer:
+    /// is a kill the plane ordered for <paramref name="task"/> still outstanding?
+    ///
+    /// <para>Exists because a killed ACP session produces <em>two</em> signals, not one — the
+    /// turn ends (<c>session/cancel</c> answered) and then the process exits — and the
+    /// expectation has to survive the first to still be there for the second. So
+    /// <c>turn-ended</c> peeks and <c>exited</c> consumes; the ordering is guaranteed by
+    /// docketd, which cancels before it kills. Reading it the other way round would leave the
+    /// genuine exit looking like news and requeue a task twice for one death.</para>
+    ///
+    /// <para>Do not reach for the agent's own <c>stopReason</c> instead. Measured 2026-08-16:
+    /// <c>grok agent stdio</c> answers <c>cancelled</c> on turns the plane never touched, so
+    /// that word identifies who reported the stop and not who ordered it — and a worker that
+    /// wedges itself would be read as a kill the plane is already handling.</para>
+    /// </summary>
+    public bool HasCommandedExit(TaskId task)
+    {
+        var now = clock.GetUtcNow();
+        foreach (var conn in _connections.Values)
+        {
+            lock (conn.Gate)
+            {
+                if (conn.CommandedExits.TryGetValue(task, out var until))
+                    return now <= until;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
     /// The identity of one accepted <c>/runner</c> connection (#94): the machine that
     /// authenticated, plus the generation this registry minted for the connection itself.
     /// Held by the endpoint serving that socket and presented at teardown, so cleanup can

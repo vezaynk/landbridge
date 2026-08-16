@@ -408,7 +408,8 @@ public sealed record RunnerConfig(
                 ? null
                 : new ProfileHooks(dto.Hooks.BeforeSpawn, dto.Hooks.AfterExit),
             dto.Prompt,
-            dto.FollowUp);
+            dto.FollowUp,
+            dto.AuthMethod);
     }
 
     internal static bool IsOctalFileMode(string raw)
@@ -478,7 +479,8 @@ public sealed record ProfileConfig(
     IReadOnlyList<ProfileFile>? Files = null,
     ProfileHooks? Hooks = null,
     string? Prompt = null,
-    string? FollowUp = null)
+    string? FollowUp = null,
+    string? AuthMethod = null)
 {
     /// <summary>
     /// §11 / <c>ideas/sessions.md</c>: the turn that wakes this profile's live session when

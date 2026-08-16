@@ -149,10 +149,10 @@ internal sealed class RealHarnessProfile
 
 internal enum UsageExpectation
 {
-    /// <summary>The stream carries no usage the bar can assert on.</summary>
+    /// <summary>The agent reports no usage the bar can assert on.</summary>
     None,
-    /// <summary>Tokens land, but the harness computes no cost (Codex).</summary>
+    /// <summary>Tokens land, but the agent computes no cost (Codex, OpenCode).</summary>
     Tokens,
-    /// <summary>The harness self-reports a positive USD cost (Claude, OpenCode, Grok).</summary>
+    /// <summary>The agent self-reports a positive USD cost (Claude, Grok).</summary>
     Cost,
 }

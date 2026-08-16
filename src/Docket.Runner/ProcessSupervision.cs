@@ -549,7 +549,8 @@ public sealed class ProcessSupervisor : IProcessSupervisor
                     Substitute(profile.Prompt ?? "", substitutions),
                     Substitute(profile.FollowUpTurn, substitutions),
                     mcpServers,
-                    dispatch.ResumeSessionRef),
+                    dispatch.ResumeSessionRef,
+                    profile.AuthMethod),
                 onSessionId: sessionId =>
                 {
                     // Same one-per-task guard and the same reason as the stream path: the

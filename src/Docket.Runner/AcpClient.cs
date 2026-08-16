@@ -79,6 +79,15 @@ public sealed class AcpClient
     public const int OldestProtocolVersion = 1;
 
     /// <summary>
+    /// ACP's "authenticate first" refusal. An agent that answers this to <c>session/new</c>
+    /// is not broken and is not misconfigured — it is asking for the handshake step
+    /// <see cref="AuthenticateAsync"/> exists to run. Matched on the code rather than the
+    /// message, which is the agent's own prose (<c>codex-acp</c> says "Authentication
+    /// required").
+    /// </summary>
+    public const int AuthRequiredCode = -32000;
+
+    /// <summary>
     /// What docketd calls itself in <c>clientInfo</c>. Read from the assembly rather than
     /// written as a constant so it cannot drift; agents log it, and a wrong version in
     /// someone else's log is a wasted afternoon.
@@ -122,6 +131,26 @@ public sealed class AcpClient
     /// </summary>
     private readonly Channel<string> _followUps = Channel.CreateUnbounded<string>(
         new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
+
+    /// <summary>
+    /// Running totals for the whole session, in the four disjoint buckets §12 measures.
+    /// Cumulative rather than per-turn on purpose: <c>TaskStore.RecordUsageAsync</c> keeps a
+    /// high-water mark per bucket, so a client that reported each turn separately would
+    /// leave the row holding the <em>largest</em> turn instead of the session's spend.
+    /// Feeding it a monotonically rising total makes the max a no-op and the last report the
+    /// truth. Touched only by the single-threaded read loop and the turn it drives.
+    /// </summary>
+    private long _inputTokens, _outputTokens, _cacheReadTokens, _cacheWriteTokens;
+
+    /// <summary>
+    /// The most recent dollar figure the agent put on this session, or null if it has never
+    /// named one. See <see cref="RecordUsageUpdate"/> for why an explicit zero counts as
+    /// "never".
+    /// </summary>
+    private decimal? _costUsd;
+
+    /// <summary>Method ids the agent declared at <c>initialize</c>, in its own order.</summary>
+    private readonly List<string> _authMethods = [];
 
     private TextWriter? _stdin;
     private long _nextId;
@@ -280,9 +309,7 @@ public sealed class AcpClient
         var init = await RequestAsync("initialize", WriteInitializeParams, ct).ConfigureAwait(false);
         ReadAgentCapabilities(init);
 
-        var session = _request.ResumeSessionRef is { Length: > 0 } resume && AgentSupportsLoadSession
-            ? await LoadSessionAsync(resume, ct).ConfigureAwait(false)
-            : await NewSessionAsync(ct).ConfigureAwait(false);
+        var session = await OpenSessionAsync(ct).ConfigureAwait(false);
 
         if (session is not { Length: > 0 })
             throw new AcpProtocolException("the agent returned no sessionId");
@@ -351,6 +378,28 @@ public sealed class AcpClient
             ? sr.GetString()
             : null;
         Turns++;
+
+        // §10 telemetry ingest, before the turn-ended event rather than after: turn-ended is
+        // what the plane may act on (a turn that ended with nothing reported requeues), and
+        // accounting for a dispatch should already be in when its fate is decided.
+        //
+        // No model name. Nothing in ACP attributes usage to a model — not the usage buckets,
+        // not `usage_update` — so the report is deliberately unattributed rather than guessing
+        // from the profile's argv, which names a CLI and not the model it happened to route to.
+        var reportedTokens = AddTurnUsage(result.Value);
+        if (reportedTokens || _costUsd is not null)
+        {
+            _ring.Enqueue(new UsageReportedEvent(
+                _task,
+                Model: null,
+                _inputTokens,
+                _outputTokens,
+                _cacheReadTokens,
+                _cacheWriteTokens,
+                ReasoningOutputTokens: null,
+                _costUsd,
+                _clock.GetUtcNow()));
+        }
 
         _ring.Enqueue(new TurnEndedEvent(_task, StopReason, _clock.GetUtcNow()));
     }
@@ -462,6 +511,95 @@ public sealed class AcpClient
         w.WriteEndObject();
     }
 
+    /// <summary>
+    /// Opens the session, authenticating first if the agent insists on it.
+    ///
+    /// <para><b>Lazily, on the agent's own signal</b>, rather than eagerly whenever
+    /// <c>authMethods</c> is non-empty. A declared method means authentication is
+    /// <em>available</em>, not that it is required — an agent already holding a valid
+    /// credential accepts <c>session/new</c> straight away, and authenticating it anyway
+    /// would be a round trip that can only fail. So the session request goes first and
+    /// <see cref="AuthRequiredCode"/> is the agent asking; nothing else triggers this.</para>
+    ///
+    /// <para>Measured 2026-08-16: <c>codex-acp</c> 1.3.0 declares <c>api-key</c> and
+    /// <c>chat-gpt</c> and refuses <c>session/new</c> with
+    /// <c>-32000 "Authentication required"</c> until one is chosen;
+    /// <c>claude-agent-acp</c> declares none and needs none. Before this the codex tier
+    /// could not open a session at all — two transcript lines, initialize then the refusal.
+    /// </para>
+    ///
+    /// <para>Retries exactly once. A second refusal is the credential being wrong rather
+    /// than missing, and re-authenticating in a loop would turn a bad key into a spin.</para>
+    /// </summary>
+    private async Task<string?> OpenSessionAsync(CancellationToken ct)
+    {
+        try
+        {
+            return await RequestSessionAsync(ct).ConfigureAwait(false);
+        }
+        catch (AcpProtocolException e) when (e.Code == AuthRequiredCode)
+        {
+            await AuthenticateAsync(e, ct).ConfigureAwait(false);
+            return await RequestSessionAsync(ct).ConfigureAwait(false);
+        }
+
+        Task<string?> RequestSessionAsync(CancellationToken token) =>
+            _request.ResumeSessionRef is { Length: > 0 } resume && AgentSupportsLoadSession
+                ? LoadSessionAsync(resume, token)
+                : NewSessionAsync(token);
+    }
+
+    /// <summary>
+    /// Runs ACP <c>authenticate</c> with one of the methods the agent declared at
+    /// <c>initialize</c>.
+    ///
+    /// <para>The request carries a method id and nothing else — by design, in the spec: the
+    /// credential itself is the agent's business, read from its own environment or config.
+    /// That is the same split §13 already keeps for MCP, and it is why the fix here is a
+    /// handshake step rather than anything that handles a secret.</para>
+    ///
+    /// <para>Which method: the profile's <c>auth_method</c> when it names one, otherwise the
+    /// first the agent declared. Ordering as preference is the only signal ACP gives —
+    /// nothing marks a method as non-interactive — so an agent whose first choice needs a
+    /// browser has to be told, and the failure below says so by name.</para>
+    /// </summary>
+    private async Task AuthenticateAsync(AcpProtocolException refusal, CancellationToken ct)
+    {
+        var method = _request.AuthMethod is { Length: > 0 } configured
+            ? configured
+            : _authMethods.FirstOrDefault();
+
+        if (method is not { Length: > 0 })
+        {
+            _ring.Enqueue(new AuthFailedEvent(
+                _task, "authenticate", "acp", refusal.Message, null));
+            throw new AcpProtocolException(
+                "the agent requires authentication but declared no authMethods at initialize, so "
+                + "there is nothing to authenticate with — this harness expects to be logged in "
+                + "out of band (§10)",
+                AuthRequiredCode);
+        }
+
+        try
+        {
+            await RequestAsync("authenticate", w => w.WriteString("methodId", method), ct)
+                .ConfigureAwait(false);
+        }
+        catch (AcpProtocolException e)
+        {
+            // Named, because the operator's next move depends on which method was tried:
+            // a wrong key is a different fix from a method that wanted a browser.
+            _ring.Enqueue(new AuthFailedEvent(
+                _task, "authenticate", method, e.Message, null));
+            throw new AcpProtocolException(
+                $"the agent refused ACP authenticate with method '{method}' ({e.Message}). "
+                + $"Declared methods: {(_authMethods.Count == 0 ? "(none)" : string.Join(", ", _authMethods))}. "
+                + "Set the profile's `auth_method` to pick a different one, or give the harness "
+                + "its credential in the profile's `env` (§10).",
+                e.Code);
+        }
+    }
+
     private void ReadAgentCapabilities(AcpResult init)
     {
         if (init.Value.TryGetProperty("protocolVersion", out var v) && v.ValueKind == JsonValueKind.Number
@@ -481,6 +619,17 @@ public sealed class AcpClient
                     "Continuing on the assumption that the session methods are unchanged, but if this task " +
                     "reads oddly — no session ref, no tool calls — that assumption is the first thing to " +
                     "doubt (§10).");
+        }
+
+        // Every method the agent will accept at `authenticate`, in the order it listed them.
+        // Order is the only preference signal ACP offers — nothing marks a method as
+        // non-interactive — so it is preserved verbatim and the first is the default pick.
+        if (init.Value.TryGetProperty("authMethods", out var methods) && methods.ValueKind == JsonValueKind.Array)
+        {
+            _authMethods.Clear();
+            foreach (var m in methods.EnumerateArray())
+                if (m.ValueKind == JsonValueKind.Object && StringOf(m, "id") is { Length: > 0 } id)
+                    _authMethods.Add(id);
         }
 
         if (!init.Value.TryGetProperty("agentCapabilities", out var caps) || caps.ValueKind != JsonValueKind.Object)
@@ -602,10 +751,11 @@ public sealed class AcpClient
     }
 
     /// <summary>
-    /// The only notification that carries anything docketd's event vocabulary has a place
-    /// for. Everything else ACP streams — message chunks, thoughts, plans, mode changes —
-    /// is conversation content, which §12 captures verbatim through the transcript tee and
-    /// which the frozen runner vocabulary deliberately has no member for.
+    /// The two notifications that carry something docketd's event vocabulary has a place for:
+    /// tool calls (progress) and <c>usage_update</c> (§12 accounting). Everything else ACP
+    /// streams — message chunks, thoughts, plans, mode changes — is conversation content,
+    /// which §12 captures verbatim through the transcript tee and which the frozen runner
+    /// vocabulary deliberately has no member for.
     /// </summary>
     private void HandleNotification(string method, JsonElement root)
     {
@@ -619,6 +769,12 @@ public sealed class AcpClient
         var kind = update.TryGetProperty("sessionUpdate", out var k) && k.ValueKind == JsonValueKind.String
             ? k.GetString()
             : null;
+
+        if (kind == "usage_update")
+        {
+            RecordUsageUpdate(update);
+            return;
+        }
 
         // `tool_call` announces a call; `tool_call_update` reports its progress through
         // pending → in_progress → completed. Both are accepted because an agent may skip
@@ -732,9 +888,85 @@ public sealed class AcpClient
             return null;
         }
 
-        return decision.Allow
-            ? FirstOfKind(options, "allow_once") ?? FirstOfKind(options, "allow_always")
-            : FirstOfKind(options, "reject_once") ?? FirstOfKind(options, "reject_always");
+        if (decision.Allow)
+            return FirstOfKind(options, "allow_once") ?? FirstOfKind(options, "allow_always");
+
+        // Once per task, and it earns its place. A refused tool call is invisible from
+        // everywhere else: the agent absorbs the refusal, writes a paragraph about why it
+        // could not proceed, and ends its turn — which on the plane looks exactly like a
+        // model that ignored its instructions. Measured 2026-08-16: seven real claude
+        // dispatches ended that way, ~400-800 output tokens each, no tool calls, and nothing
+        // anywhere said "denied". A session runs in the agent's DEFAULT permission mode
+        // unless a profile says otherwise, and for claude-agent-acp that mode prompts before
+        // every MCP tool call — so on a fleet with no Lead watching, the first `get_task` is
+        // the call that gets refused and the worker never starts.
+        if (_declined.Add("session/request_permission"))
+            _warn(
+                $"docketd: task {_task.Value}: the plane DENIED this worker's permission request for " +
+                $"'{ask.Tool}'{(decision.Message is { Length: > 0 } why ? $" ({why})" : "")}. A worker whose " +
+                "docket tools are denied cannot call get_task or report_result, so it will end its turn " +
+                "having done nothing — check that a Lead is answering permission requests, or set this " +
+                "profile to a permission mode that does not prompt (§10, §11).");
+
+        return FirstOfKind(options, "reject_once") ?? FirstOfKind(options, "reject_always");
+    }
+
+    /// <summary>
+    /// Takes the dollar figure off a <c>usage_update</c>. The rest of that notification —
+    /// <c>used</c> and <c>size</c> — is a context-window gauge, not spend, and §12's measured
+    /// view has nowhere honest to put it; a gauge written into a cumulative column would read
+    /// as consumption that never happened.
+    ///
+    /// <para><b>An explicit zero is treated as no cost at all</b>, not as a free dispatch.
+    /// Measured on 2026-08-16: <c>claude-agent-acp</c> priced a turn at $0.0949, and
+    /// <c>opencode acp</c> reported <c>{"amount":0}</c> for a turn that plainly burned 14,321
+    /// tokens — so a zero here means "this adapter does not compute cost", and recording
+    /// $0.00 would assert the dispatch was free. That is the same mislabelling §2 principle 2
+    /// forbids, and the reason the real-harness bar refuses to derive a cost for Codex.</para>
+    /// </summary>
+    private void RecordUsageUpdate(JsonElement update)
+    {
+        if (!update.TryGetProperty("cost", out var cost) || cost.ValueKind != JsonValueKind.Object)
+            return;
+        if (!cost.TryGetProperty("amount", out var amount) || amount.ValueKind != JsonValueKind.Number)
+            return;
+        if (!amount.TryGetDecimal(out var value) || value <= 0m)
+            return;
+        _costUsd = value;
+    }
+
+    /// <summary>
+    /// Adds a finished turn's token buckets to the session totals, and answers whether the
+    /// agent reported any.
+    ///
+    /// <para>ACP's <c>PromptResponse.usage</c> buckets are <b>disjoint</b>, which is what lets
+    /// them map onto §12's four columns without a subset correction — the per-harness
+    /// <c>usage_cached_is_subset</c> knob the stream mapping needed has no ACP equivalent
+    /// because there is nothing to correct. Both agents measured on 2026-08-16 reconcile
+    /// exactly: claude reported 6 + 866 + 61,019 + 6,701 = 68,592 = <c>totalTokens</c>, and
+    /// opencode 99 + 14 + 14,208 = 14,321 = <c>totalTokens</c>. <c>totalTokens</c> is therefore
+    /// derivable and is deliberately not stored.</para>
+    /// </summary>
+    private bool AddTurnUsage(JsonElement result)
+    {
+        if (!result.TryGetProperty("usage", out var usage) || usage.ValueKind != JsonValueKind.Object)
+            return false;
+
+        var any = false;
+        any |= Add(usage, "inputTokens", ref _inputTokens);
+        any |= Add(usage, "outputTokens", ref _outputTokens);
+        any |= Add(usage, "cachedReadTokens", ref _cacheReadTokens);
+        any |= Add(usage, "cachedWriteTokens", ref _cacheWriteTokens);
+        return any;
+
+        static bool Add(JsonElement o, string key, ref long total)
+        {
+            if (!o.TryGetProperty(key, out var v) || v.ValueKind != JsonValueKind.Number
+                || !v.TryGetInt64(out var n) || n < 0)
+                return false;
+            total += n;
+            return true;
+        }
     }
 
     private static string ToolOf(JsonElement p)
@@ -788,7 +1020,7 @@ public sealed class AcpClient
             var code = error.TryGetProperty("code", out var c) && c.ValueKind == JsonValueKind.Number
                 ? c.GetInt32()
                 : 0;
-            pending.TrySetException(new AcpProtocolException($"{message} (JSON-RPC {code})"));
+            pending.TrySetException(new AcpProtocolException($"{message} (JSON-RPC {code})", code));
             return;
         }
 
@@ -971,7 +1203,8 @@ public sealed record AcpSessionRequest(
     string Prompt,
     string FollowUp,
     IReadOnlyList<AcpMcpServer> McpServers,
-    string? ResumeSessionRef = null);
+    string? ResumeSessionRef = null,
+    string? AuthMethod = null);
 
 /// <summary>One MCP server as ACP's <c>session/new</c> wants it: HTTP, named, with headers.</summary>
 /// <summary>What the agent is asking the plane to decide.</summary>
@@ -1060,4 +1293,13 @@ public readonly record struct AcpResult(JsonElement Value);
 /// stream that ended mid-request. Distinct from an I/O failure, which means the worker
 /// died and is the supervisor's story to tell.
 /// </summary>
-public sealed class AcpProtocolException(string message) : Exception(message);
+public sealed class AcpProtocolException(string message, int code = 0) : Exception(message)
+{
+    /// <summary>
+    /// The JSON-RPC error code the agent sent, or 0 when the failure was not a JSON-RPC
+    /// error. Carried rather than folded into the message because one code is load-bearing:
+    /// ACP's <see cref="AcpClient.AuthRequiredCode"/> is how an agent asks to be
+    /// authenticated, and it has to be matched on rather than string-sniffed.
+    /// </summary>
+    public int Code { get; } = code;
+}

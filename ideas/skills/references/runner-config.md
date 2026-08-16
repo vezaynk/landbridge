@@ -23,6 +23,7 @@ one shape and an entry point per harness.
 | `profiles[]` | `spawn` | argv passed to `execve` — **never a shell** (§10). Substitutions below. |
 | `profiles[]` | `follow_up` | The turn sent to **wake a live session** when there is new input on the assignment — an answered question today, a Lead's message later (`ideas/sessions.md`). **Configuration, never content**: the input itself stays on the assignment and is pulled by the worker's own authenticated `get_task`, which is what makes that read a *receipt*. Pushing the text here instead would reduce delivery to "queued", put answer content on a second path out of the MCP channel, and mix per-message content into profile config. Name the docket tools the way *this* harness spells them; the default names none. |
 | `profiles[]` | `prompt` | The worker's opening turn, sent as `session/prompt`. **Required**: an ACP agent takes no prompt on argv, so a profile without one spawns an agent that completes the handshake, waits, and does nothing. No default is possible — the text has to name the docket tools the way *this* harness spells them. Same `{...}` substitutions as the spawn argv. |
+| `profiles[]` | `auth_method` | Which of the agent's declared ACP `authMethods` to use. Consulted **only** when the agent refuses `session/new` with `-32000 "authentication required"` — a declared method means authentication is *available*, not required, so an agent already holding a credential is never authenticated. Unset picks the first method the agent declared, which is the only preference signal ACP gives. Name one when that guess is wrong: `codex-acp` offers `api-key` and `chat-gpt`, and only the first works unattended. The request carries a method id and nothing else — the credential is the agent's own business, read from its environment (see `env`), so this key never holds a secret. `claude-agent-acp` declares no methods and needs none. |
 | `profiles[]` | `stop` | `wind_down_seconds` (default `30`) — the window an agent gets to end its turn after `session/cancel` before the portable tree-kill backstops it. No `mode` and no `message`: a stop is a cancel the agent is *specified* to honour, so there is nothing left for a mode to select. `ttl=0` kills immediately (§9 check 12). |
 | `profiles[]` | `env` | String map stamped on every spawn (and resume) of this profile. Values take the same `{task_id}` / `{machine_id}` / `{work_dir}` / `{session_id}` / `{mcp_url}` / `{worker_token}` substitutions `spawn` does. Applied after the reserved `DOCKET_*` stamps and before `telemetry.env`. The four names docketd owns — `DOCKET_MACHINE_ID`, `DOCKET_TASK_ID`, `DOCKET_WORKER_TOKEN`, `DOCKET_TRACEPARENT` — are **refused at load**, not silently dropped. Use this to isolate a home (`GROK_HOME` / `CODEX_HOME`) only when the operator asked for a sealed box. Prefer `files[]` for additive project-local MCP. |
 | `profiles[]` | `files` | Files written into `{work_dir}` **before** the harness starts (#112 G2). Each entry is `path` + `contents` (both substituted) and optional `mode` (octal, default `0600`). A relative path is resolved against the work dir (so `.grok/config.toml` and `{work_dir}/.grok/config.toml` land in the same place). After substitution the path must stay under the work dir — `..` that escapes fails the spawn. Parent directories are created. This is how a Grok profile drops `{work_dir}/.grok/config.toml` so Grok **merges** docket with `~/.grok` instead of replacing it. |
@@ -362,8 +363,11 @@ ACP simply has.
       "spawn": ["codex-acp"],
       "prompt": "You are a Docket worker running headless under docketd. You have been dispatched exactly one task. First call the mcp__docket__get_task MCP tool to read your assignment. Do the work inside the assigned workspace. When done, call mcp__docket__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call mcp__docket__request_input instead of guessing.",
       "follow_up": "There is new input on your assignment. Call mcp__docket__get_task to read it, then continue.",
-      // codex-acp authenticates from the environment (API Key) or a cached ChatGPT login,
-      // both of which it declares as authMethods at initialize.
+      // codex-acp refuses session/new until ACP `authenticate` has run, and declares two
+      // methods: `api-key` (from the environment) and `chat-gpt` (a cached login). docketd
+      // runs the step on the refusal and takes the first declared method, which is `api-key`
+      // — so `auth_method` is only needed here if that order ever changes. Measured
+      // 2026-08-16: codex-acp 1.3.0 accepts the key from CODEX_API_KEY or OPENAI_API_KEY.
       "env": { "CODEX_API_KEY": "{env:CODEX_API_KEY}" },
       "stop": { "wind_down_seconds": 30 },
       "logs": { "capture": true }
@@ -473,16 +477,42 @@ ceiling.
 
 For `codex exec` and `opencode run` that is no change — neither ever had a turn cap. For
 `claude -p` and `grok -p` it is a real loss: those two profiles go from a bounded runaway
-to an unbounded one. Weigh that per profile before migrating, and note it compounds with
-the usage gap below — you lose the cap and the meter in the same move.
+to an unbounded one. Weigh that per profile before migrating. You keep the meter (below) —
+what you lose is the cap.
 
-### What this increment still does not do
+### Token accounting: better than the docs suggested
 
-**Token accounting is not carried over.** ACP's accepted usage surface (`usage_update`) is
-context-window utilization plus an optional cumulative cost, not the four disjoint token
-buckets `UsageReportedEvent` carries today. An ACP profile currently reports **no usage
-at all** — it does not report zeros, and it does not fabricate buckets from a context
-gauge. Reshaping the measured view is tracked separately.
+This section used to say usage was not carried over, on the reading that ACP's only usage
+surface is `usage_update` — context-window utilization plus an optional cost, and not the
+four disjoint buckets `UsageReportedEvent` carries. **Real transcripts say otherwise**, and
+the correction is worth stating plainly because a real decision was taken on the old claim.
+
+Measured 2026-08-16 against live workers, `PromptResponse` carries per-turn buckets:
+
+| Agent | `inputTokens` | `outputTokens` | `cachedReadTokens` | `cachedWriteTokens` | `totalTokens` | cost |
+|---|--:|--:|--:|--:|--:|--:|
+| `claude-agent-acp` 0.68.0 | 6 | 866 | 61,019 | 6,701 | 68,592 | $0.09490875 |
+| `opencode acp` 1.18.18 | 99 | 14 | 14,208 | — | 14,321 | `{"amount":0}` |
+
+Both reconcile exactly against `totalTokens`, so the buckets are **disjoint** — they map
+onto §12's four columns with no subset correction, which is the per-harness
+`usage_cached_is_subset` knob the stream mapping needed and ACP does not. `totalTokens` is
+derivable and deliberately not stored.
+
+Three things the mapping does deliberately:
+
+- **Reports cumulative totals, not per-turn ones.** `TaskStore.RecordUsageAsync` keeps a
+  high-water mark per bucket, so per-turn reports would leave the row holding the largest
+  single turn rather than the dispatch's spend.
+- **Treats an explicit zero cost as no cost.** OpenCode priced a 14,321-token turn at
+  `{"amount":0}`; recording $0.00 would assert the dispatch was free. Same rule as Codex,
+  same §2 principle 2.
+- **Records no model.** Nothing in ACP attributes usage to a model, and the profile's argv
+  names a CLI rather than whatever it routed to.
+
+What is still open: `usage_update`'s `used`/`size` context gauge has nowhere honest to go in
+a cumulative column, and reshaping the §12 measured view to hold a gauge is tracked
+separately.
 
 ## Profile archetypes — open vs. strict
 

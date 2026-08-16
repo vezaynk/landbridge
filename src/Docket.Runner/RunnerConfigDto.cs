@@ -74,6 +74,15 @@ internal sealed class ProfileDto
     // assignment and is pulled over the authenticated MCP call, so this text only ever says
     // "go read", and must name the docket tools the way THIS harness spells them.
     public string? FollowUp { get; set; }
+
+    // §10: which of the agent's declared ACP authMethods to use when it refuses session/new
+    // with "authentication required". Only consulted on that refusal, so a profile whose
+    // agent needs no authentication (claude-agent-acp declares none) leaves it unset. Unset
+    // on an agent that DOES need it picks the first method the agent declared, which is the
+    // only preference signal ACP gives; name one here when that guess is wrong — codex-acp
+    // offers `api-key` and `chat-gpt`, and only the first works unattended.
+    public string? AuthMethod { get; set; }
+
     public StopDto? Stop { get; set; }
     public TelemetryDto? Telemetry { get; set; }
     public LogsDto? Logs { get; set; }

@@ -22,8 +22,12 @@ internal static class RealHarnessProfiles
         GetTask = "mcp__docket__get_task",
         ReportResult = "mcp__docket__report_result",
         RequestInput = "mcp__docket__request_input",
-        Usage = UsageExpectation.None,
-        NamesModel = true,
+        Usage = UsageExpectation.Cost,
+        // NamesModel deliberately off under ACP, unlike the stream profile. Nothing in the
+        // protocol attributes usage to a model — not PromptResponse.usage, not usage_update
+        // — so the plane records the spend unattributed rather than guessing from argv that
+        // names an adapter. Measured 2026-08-16 on a real turn: cost $0.09490875 arrived, a
+        // model name did not.
         SupportsResume = true,
     };
 
@@ -38,7 +42,7 @@ internal static class RealHarnessProfiles
         GetTask = "mcp__docket__get_task",
         ReportResult = "mcp__docket__report_result",
         RequestInput = "mcp__docket__request_input",
-        Usage = UsageExpectation.None,
+        Usage = UsageExpectation.Tokens,
         SupportsResume = true,
         FailureHypotheses = CodexHypotheses(),
         Attach = rig => CodexHome.Create(rig.McpUrl, CodexBareTools),
@@ -53,7 +57,13 @@ internal static class RealHarnessProfiles
         GetTask = "docket_get_task",
         ReportResult = "docket_report_result",
         RequestInput = "docket_request_input",
-        Usage = UsageExpectation.None,
+        // Tokens, not Cost, and this is a real difference from the stream profile rather
+        // than a relaxed assertion. `opencode run` emitted a priced `part.cost` per step;
+        // `opencode acp` reports {"amount":0} — measured 2026-08-16 on a turn that burned
+        // 14,321 tokens on the same model and the same key. A zero there is the adapter not
+        // computing cost, so the client records no cost at all rather than claiming the
+        // dispatch was free (§2 principle 2, the same reason Codex asserts tokens only).
+        Usage = UsageExpectation.Tokens,
         SupportsResume = true,
         FailureHypotheses = OpenCodeHypotheses(),
         Attach = rig => OpenCodeConfig.Create(rig.McpUrl),
@@ -76,7 +86,7 @@ internal static class RealHarnessProfiles
         GetTask = "docket__get_task",
         ReportResult = "docket__report_result",
         RequestInput = "docket__request_input",
-        Usage = UsageExpectation.None,
+        Usage = UsageExpectation.Cost,
         SupportsResume = true,
         FailureHypotheses = GrokHypotheses(),
     };

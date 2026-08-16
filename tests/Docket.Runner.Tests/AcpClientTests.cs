@@ -344,6 +344,226 @@ public sealed class AcpClientTests
             run.Events.OfType<TurnEndedEvent>().Select(e => e.StopReason).ToList());
     }
 
+    // ── ACP authenticate ────────────────────────────────────────────────────────
+    //
+    // Measured 2026-08-16: codex-acp 1.3.0 declares authMethods [api-key, chat-gpt] and
+    // answers session/new with -32000 "Authentication required" until one is chosen. Before
+    // this the whole codex tier produced two transcript lines — initialize, then the refusal
+    // — and every codex cell failed identically. claude-agent-acp declares no methods and
+    // needs none, which is why the step has to be conditional rather than part of every
+    // handshake.
+
+    /// <summary>
+    /// The refusal is the trigger, not the capability list. An agent that asks for
+    /// authentication gets it and the session opens on the retry.
+    /// </summary>
+    [Fact]
+    public async Task An_agent_that_demands_authentication_gets_it_and_the_session_opens()
+    {
+        var agent = new FakeAgent { AuthMethods = ["api-key", "chat-gpt"], RequireAuthentication = true };
+        var run = await RunAsync(agent, Request("go"));
+
+        Assert.Equal(
+            ["initialize", "session/new", "authenticate", "session/new", "session/prompt"],
+            agent.MethodsReceived);
+        // First declared wins by default: ordering is the only preference signal ACP gives,
+        // and codex-acp puts the unattended method first.
+        Assert.Equal("api-key", agent.AuthenticatedWith);
+        Assert.Equal("sess_1", run.SessionId);
+    }
+
+    /// <summary>
+    /// A profile that names <c>auth_method</c> overrides the guess — the escape hatch for an
+    /// agent whose first-listed method wants a browser.
+    /// </summary>
+    [Fact]
+    public async Task A_profile_can_name_which_auth_method_to_use()
+    {
+        var agent = new FakeAgent { AuthMethods = ["chat-gpt", "api-key"], RequireAuthentication = true };
+        await RunAsync(agent, Request("go") with { AuthMethod = "api-key" });
+
+        Assert.Equal("api-key", agent.AuthenticatedWith);
+    }
+
+    /// <summary>
+    /// An agent that never asks is never authenticated. This is the claude case, and the
+    /// reason the step is lazy: a declared method means authentication is <em>available</em>,
+    /// not required, so authenticating eagerly would be a round trip that can only fail
+    /// against an agent already holding a credential.
+    /// </summary>
+    [Fact]
+    public async Task An_agent_that_does_not_ask_is_never_authenticated()
+    {
+        var agent = new FakeAgent { AuthMethods = ["api-key"] };
+        await RunAsync(agent, Request("go"));
+
+        Assert.DoesNotContain("authenticate", agent.MethodsReceived);
+        Assert.Null(agent.AuthenticatedWith);
+    }
+
+    /// <summary>
+    /// A rejected credential fails the dispatch with the method named, and files the §11
+    /// auth-failed event — it does not retry. A second refusal is the credential being wrong
+    /// rather than missing, and re-authenticating on that would turn a bad key into a spin.
+    /// </summary>
+    [Fact]
+    public async Task A_rejected_credential_names_the_method_and_does_not_spin()
+    {
+        var agent = new FakeAgent
+        {
+            AuthMethods = ["api-key", "chat-gpt"],
+            RequireAuthentication = true,
+            AuthenticateFails = true,
+        };
+        var run = await RunAsync(agent, Request("go"));
+
+        Assert.Single(agent.MethodsReceived, m => m == "authenticate");
+        Assert.DoesNotContain("session/prompt", agent.MethodsReceived);
+
+        var failure = Assert.Single(run.Events.OfType<AuthFailedEvent>());
+        Assert.Equal("authenticate", failure.Operation);
+        Assert.Equal("api-key", failure.Target);
+
+        // The operator-facing line has to carry both what was tried and what else was on
+        // offer, or the fix is a guess.
+        var warning = Assert.Single(run.Warnings, w => w.Contains("authenticate"));
+        Assert.Contains("api-key", warning);
+        Assert.Contains("chat-gpt", warning);
+        Assert.Contains("auth_method", warning);
+    }
+
+    // ── §10 telemetry ingest / §12 accounting ───────────────────────────────────
+    //
+    // The migration was accepted on the understanding that ACP traded the four disjoint
+    // token buckets for a context-window gauge. A real turn says otherwise: the buckets are
+    // on PromptResponse.usage, and they reconcile against totalTokens exactly. The fixtures
+    // below are verbatim from claude-agent-acp 0.68.0 and opencode 1.18.18 on 2026-08-16 —
+    // copied rather than invented, because the point of these tests is that docketd reads
+    // what real agents actually send.
+
+    /// <summary>
+    /// A turn's usage lands as one report with the buckets it named and the cost the session
+    /// priced. Both come from the same real turn: the four buckets off the prompt response,
+    /// the dollar figure off the <c>usage_update</c> that preceded it.
+    /// </summary>
+    [Fact]
+    public async Task A_turns_token_buckets_and_the_sessions_cost_reach_the_plane()
+    {
+        var agent = new FakeAgent
+        {
+            DuringPrompt =
+            [
+                """{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess_1","update":{"sessionUpdate":"usage_update","used":23569,"size":1000000,"cost":{"amount":0.09490875,"currency":"USD"}}}}""",
+            ],
+            TurnUsage =
+            [
+                """{"inputTokens":6,"outputTokens":866,"cachedReadTokens":61019,"cachedWriteTokens":6701,"totalTokens":68592}""",
+            ],
+        };
+        var (_, drain) = Start(agent, Request("go"));
+        var run = await drain;
+
+        var usage = Assert.Single(run.Events.OfType<UsageReportedEvent>());
+        Assert.Equal(6, usage.InputTokens);
+        Assert.Equal(866, usage.OutputTokens);
+        Assert.Equal(61019, usage.CacheReadTokens);
+        Assert.Equal(6701, usage.CacheWriteTokens);
+        Assert.Equal(0.09490875m, usage.CostUsd);
+
+        // The buckets are disjoint — 6 + 866 + 61019 + 6701 is exactly the totalTokens the
+        // agent reported — which is why they need no subset correction and why totalTokens
+        // is derivable rather than stored.
+        Assert.Equal(
+            68592,
+            usage.InputTokens + usage.OutputTokens + usage.CacheReadTokens + usage.CacheWriteTokens);
+
+        // Nothing in ACP attributes usage to a model, and guessing one from the profile's
+        // argv would name a CLI rather than the model it routed to.
+        Assert.Null(usage.Model);
+    }
+
+    /// <summary>
+    /// An agent that prices a turn at exactly zero is one that does not compute cost, not one
+    /// that ran for free — <c>opencode acp</c> sent this alongside 14,321 real tokens. §2
+    /// principle 2: recording $0.00 would assert something untrue about the dispatch, so the
+    /// tokens land and the cost stays absent.
+    /// </summary>
+    [Fact]
+    public async Task An_explicit_zero_cost_is_recorded_as_no_cost_at_all()
+    {
+        var agent = new FakeAgent
+        {
+            DuringPrompt =
+            [
+                """{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess_1","update":{"sessionUpdate":"usage_update","used":14307,"size":200000,"cost":{"amount":0,"currency":"USD"}}}}""",
+            ],
+            TurnUsage =
+            [
+                """{"inputTokens":99,"outputTokens":14,"totalTokens":14321,"cachedReadTokens":14208}""",
+            ],
+        };
+        var (_, drain) = Start(agent, Request("go"));
+        var run = await drain;
+
+        var usage = Assert.Single(run.Events.OfType<UsageReportedEvent>());
+        Assert.Null(usage.CostUsd);
+        Assert.Equal(99, usage.InputTokens);
+        Assert.Equal(14, usage.OutputTokens);
+        Assert.Equal(14208, usage.CacheReadTokens);
+        Assert.Equal(0, usage.CacheWriteTokens); // the agent named no write bucket
+    }
+
+    /// <summary>
+    /// Each report is the session's running total, not the turn's own. That is a deliberate
+    /// fit to the store: <c>TaskStore.RecordUsageAsync</c> keeps a high-water mark per bucket,
+    /// so per-turn reports would leave the row holding the single largest turn instead of what
+    /// the dispatch actually spent. Cumulative numbers make the max a no-op.
+    /// </summary>
+    [Fact]
+    public async Task Usage_accumulates_across_the_turns_of_one_session()
+    {
+        var agent = new FakeAgent
+        {
+            HoldOpenAfterTurn = true,
+            TurnUsage =
+            [
+                """{"inputTokens":10,"outputTokens":100,"cachedReadTokens":1000,"cachedWriteTokens":5}""",
+                """{"inputTokens":20,"outputTokens":200,"cachedReadTokens":2000,"cachedWriteTokens":7}""",
+            ],
+        };
+        var (client, drain) = Start(agent, Request("first"));
+
+        await agent.WaitForTurnsAsync(1);
+        client.TryQueueFollowUp();
+        await agent.WaitForTurnsAsync(2);
+        agent.EndSession();
+        var run = await drain;
+
+        var reports = run.Events.OfType<UsageReportedEvent>().ToList();
+        Assert.Equal(2, reports.Count);
+        Assert.Equal((10, 100, 1000, 5), Buckets(reports[0]));
+        Assert.Equal((30, 300, 3000, 12), Buckets(reports[1]));
+
+        static (long, long, long, long) Buckets(UsageReportedEvent u) =>
+            (u.InputTokens, u.OutputTokens, u.CacheReadTokens, u.CacheWriteTokens);
+    }
+
+    /// <summary>
+    /// An agent that reports neither buckets nor a cost produces no accounting line at all.
+    /// <c>usage</c> on the prompt response is an unstable ACP feature and several agents omit
+    /// it; a row of zeroes would claim a free dispatch, which is the same mislabelling as a
+    /// $0.00 cost.
+    /// </summary>
+    [Fact]
+    public async Task An_agent_that_reports_no_usage_produces_no_accounting_line()
+    {
+        var (_, drain) = Start(new FakeAgent(), Request("go"));
+        var run = await drain;
+
+        Assert.Empty(run.Events.OfType<UsageReportedEvent>());
+        Assert.Single(run.Events.OfType<TurnEndedEvent>());
+    }
+
     /// <summary>A queued follow-up waits for the turn in flight rather than racing it: two
     /// concurrent <c>session/prompt</c>s against an agent that has not declared prompt
     /// queueing are undefined, and the queue costs nothing.</summary>
@@ -715,6 +935,29 @@ public sealed class AcpClientTests
 
         /// <summary>Stop reason per turn, in order; the last repeats once exhausted.</summary>
         public IReadOnlyList<string> StopReasons { get; init; } = ["end_turn"];
+
+        /// <summary>The <c>usage</c> object to hang off each turn's <c>PromptResponse</c>, as
+        /// raw JSON; a null entry omits it entirely, which is what an agent that does not
+        /// implement the feature sends. The last entry repeats once exhausted.</summary>
+        public IReadOnlyList<string?> TurnUsage { get; init; } = [null];
+        /// <summary>Method ids to declare at <c>initialize</c>, in order — the only preference
+        /// signal ACP gives. Empty is what claude-agent-acp sends.</summary>
+        public IReadOnlyList<string> AuthMethods { get; init; } = [];
+
+        /// <summary>Refuse <c>session/new</c> with ACP's auth-required code until
+        /// <c>authenticate</c> has run, the way codex-acp 1.3.0 does.</summary>
+        public bool RequireAuthentication { get; init; }
+
+        /// <summary>Reject <c>authenticate</c> itself — a credential that is wrong rather
+        /// than missing.</summary>
+        public bool AuthenticateFails { get; init; }
+
+        /// <summary>The method id the client chose, or null if it never authenticated.</summary>
+        public string? AuthenticatedWith { get; private set; }
+
+        private string AuthMethodsJson =>
+            "[" + string.Join(",", AuthMethods.Select(m => $$"""{"id":"{{m}}","name":"{{m}}"}""")) + "]";
+
         public bool AskPermissionDuringPrompt { get; init; }
         public string PermissionOptions { get; init; } =
             """[{"optionId":"allow-once","name":"Allow once","kind":"allow_once"},{"optionId":"allow-always","name":"Always allow","kind":"allow_always"}]""";
@@ -826,11 +1069,12 @@ public sealed class AcpClientTests
                     Send(FailInitialize
                         ? """{"jsonrpc":"2.0","id":%id%,"error":{"code":-32603,"message":"no"}}"""
                         : """
-                          {"jsonrpc":"2.0","id":%id%,"result":{"protocolVersion":%version%,"agentCapabilities":{"loadSession":%load%,"mcpCapabilities":{"http":%http%}},"agentInfo":{"name":"fake","version":"1"}}}
+                          {"jsonrpc":"2.0","id":%id%,"result":{"protocolVersion":%version%,"agentCapabilities":{"loadSession":%load%,"mcpCapabilities":{"http":%http%}},"authMethods":%auth%,"agentInfo":{"name":"fake","version":"1"}}}
                           """
                             .Replace("%version%", ProtocolVersion.ToString())
                             .Replace("%load%", Lower(LoadSession))
-                            .Replace("%http%", Lower(HttpMcp)),
+                            .Replace("%http%", Lower(HttpMcp))
+                            .Replace("%auth%", AuthMethodsJson),
                         id);
                     // An agent that refuses the handshake has nothing further to say and
                     // exits; the EOF is what the client sees next.
@@ -838,7 +1082,26 @@ public sealed class AcpClientTests
                         _toClient.Writer.TryComplete();
                     break;
 
+                case "authenticate":
+                    AuthenticatedWith = message.GetProperty("params").GetProperty("methodId").GetString();
+                    Send(AuthenticateFails
+                        ? """{"jsonrpc":"2.0","id":%id%,"error":{"code":-32000,"message":"bad credential"}}"""
+                        : """{"jsonrpc":"2.0","id":%id%,"result":{}}""",
+                        id);
+                    // A rejected credential leaves the agent with nothing to do; it exits and
+                    // the EOF is what the client sees next, exactly as with FailInitialize.
+                    if (AuthenticateFails)
+                        _toClient.Writer.TryComplete();
+                    break;
+
                 case "session/new":
+                    if (RequireAuthentication && AuthenticatedWith is null)
+                    {
+                        Send(
+                            """{"jsonrpc":"2.0","id":%id%,"error":{"code":-32000,"message":"Authentication required"}}""",
+                            id);
+                        break;
+                    }
                     Send("""{"jsonrpc":"2.0","id":%id%,"result":{"sessionId":"sess_1"}}""", id);
                     break;
 
@@ -880,9 +1143,11 @@ public sealed class AcpClientTests
 
             var turn = Interlocked.Increment(ref _turns);
             var reason = StopReasons[Math.Min(turn - 1, StopReasons.Count - 1)];
+            var usage = TurnUsage[Math.Min(turn - 1, TurnUsage.Count - 1)];
             Send(
-                """{"jsonrpc":"2.0","id":%id%,"result":{"stopReason":"%reason%"}}"""
-                    .Replace("%reason%", reason),
+                """{"jsonrpc":"2.0","id":%id%,"result":{"stopReason":"%reason%"%usage%}}"""
+                    .Replace("%reason%", reason)
+                    .Replace("%usage%", usage is null ? "" : ",\"usage\":" + usage),
                 id);
             _turnsSeen.Writer.TryWrite(turn);
 
