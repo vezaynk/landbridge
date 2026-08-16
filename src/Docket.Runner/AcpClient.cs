@@ -79,6 +79,15 @@ public sealed class AcpClient
     public const int OldestProtocolVersion = 1;
 
     /// <summary>
+    /// ACP's "authenticate first" refusal. An agent that answers this to <c>session/new</c>
+    /// is not broken and is not misconfigured — it is asking for the handshake step
+    /// <see cref="AuthenticateAsync"/> exists to run. Matched on the code rather than the
+    /// message, which is the agent's own prose (<c>codex-acp</c> says "Authentication
+    /// required").
+    /// </summary>
+    public const int AuthRequiredCode = -32000;
+
+    /// <summary>
     /// What docketd calls itself in <c>clientInfo</c>. Read from the assembly rather than
     /// written as a constant so it cannot drift; agents log it, and a wrong version in
     /// someone else's log is a wasted afternoon.
@@ -139,6 +148,9 @@ public sealed class AcpClient
     /// "never".
     /// </summary>
     private decimal? _costUsd;
+
+    /// <summary>Method ids the agent declared at <c>initialize</c>, in its own order.</summary>
+    private readonly List<string> _authMethods = [];
 
     private TextWriter? _stdin;
     private long _nextId;
@@ -297,9 +309,7 @@ public sealed class AcpClient
         var init = await RequestAsync("initialize", WriteInitializeParams, ct).ConfigureAwait(false);
         ReadAgentCapabilities(init);
 
-        var session = _request.ResumeSessionRef is { Length: > 0 } resume && AgentSupportsLoadSession
-            ? await LoadSessionAsync(resume, ct).ConfigureAwait(false)
-            : await NewSessionAsync(ct).ConfigureAwait(false);
+        var session = await OpenSessionAsync(ct).ConfigureAwait(false);
 
         if (session is not { Length: > 0 })
             throw new AcpProtocolException("the agent returned no sessionId");
@@ -501,6 +511,95 @@ public sealed class AcpClient
         w.WriteEndObject();
     }
 
+    /// <summary>
+    /// Opens the session, authenticating first if the agent insists on it.
+    ///
+    /// <para><b>Lazily, on the agent's own signal</b>, rather than eagerly whenever
+    /// <c>authMethods</c> is non-empty. A declared method means authentication is
+    /// <em>available</em>, not that it is required — an agent already holding a valid
+    /// credential accepts <c>session/new</c> straight away, and authenticating it anyway
+    /// would be a round trip that can only fail. So the session request goes first and
+    /// <see cref="AuthRequiredCode"/> is the agent asking; nothing else triggers this.</para>
+    ///
+    /// <para>Measured 2026-08-16: <c>codex-acp</c> 1.3.0 declares <c>api-key</c> and
+    /// <c>chat-gpt</c> and refuses <c>session/new</c> with
+    /// <c>-32000 "Authentication required"</c> until one is chosen;
+    /// <c>claude-agent-acp</c> declares none and needs none. Before this the codex tier
+    /// could not open a session at all — two transcript lines, initialize then the refusal.
+    /// </para>
+    ///
+    /// <para>Retries exactly once. A second refusal is the credential being wrong rather
+    /// than missing, and re-authenticating in a loop would turn a bad key into a spin.</para>
+    /// </summary>
+    private async Task<string?> OpenSessionAsync(CancellationToken ct)
+    {
+        try
+        {
+            return await RequestSessionAsync(ct).ConfigureAwait(false);
+        }
+        catch (AcpProtocolException e) when (e.Code == AuthRequiredCode)
+        {
+            await AuthenticateAsync(e, ct).ConfigureAwait(false);
+            return await RequestSessionAsync(ct).ConfigureAwait(false);
+        }
+
+        Task<string?> RequestSessionAsync(CancellationToken token) =>
+            _request.ResumeSessionRef is { Length: > 0 } resume && AgentSupportsLoadSession
+                ? LoadSessionAsync(resume, token)
+                : NewSessionAsync(token);
+    }
+
+    /// <summary>
+    /// Runs ACP <c>authenticate</c> with one of the methods the agent declared at
+    /// <c>initialize</c>.
+    ///
+    /// <para>The request carries a method id and nothing else — by design, in the spec: the
+    /// credential itself is the agent's business, read from its own environment or config.
+    /// That is the same split §13 already keeps for MCP, and it is why the fix here is a
+    /// handshake step rather than anything that handles a secret.</para>
+    ///
+    /// <para>Which method: the profile's <c>auth_method</c> when it names one, otherwise the
+    /// first the agent declared. Ordering as preference is the only signal ACP gives —
+    /// nothing marks a method as non-interactive — so an agent whose first choice needs a
+    /// browser has to be told, and the failure below says so by name.</para>
+    /// </summary>
+    private async Task AuthenticateAsync(AcpProtocolException refusal, CancellationToken ct)
+    {
+        var method = _request.AuthMethod is { Length: > 0 } configured
+            ? configured
+            : _authMethods.FirstOrDefault();
+
+        if (method is not { Length: > 0 })
+        {
+            _ring.Enqueue(new AuthFailedEvent(
+                _task, "authenticate", "acp", refusal.Message, null));
+            throw new AcpProtocolException(
+                "the agent requires authentication but declared no authMethods at initialize, so "
+                + "there is nothing to authenticate with — this harness expects to be logged in "
+                + "out of band (§10)",
+                AuthRequiredCode);
+        }
+
+        try
+        {
+            await RequestAsync("authenticate", w => w.WriteString("methodId", method), ct)
+                .ConfigureAwait(false);
+        }
+        catch (AcpProtocolException e)
+        {
+            // Named, because the operator's next move depends on which method was tried:
+            // a wrong key is a different fix from a method that wanted a browser.
+            _ring.Enqueue(new AuthFailedEvent(
+                _task, "authenticate", method, e.Message, null));
+            throw new AcpProtocolException(
+                $"the agent refused ACP authenticate with method '{method}' ({e.Message}). "
+                + $"Declared methods: {(_authMethods.Count == 0 ? "(none)" : string.Join(", ", _authMethods))}. "
+                + "Set the profile's `auth_method` to pick a different one, or give the harness "
+                + "its credential in the profile's `env` (§10).",
+                e.Code);
+        }
+    }
+
     private void ReadAgentCapabilities(AcpResult init)
     {
         if (init.Value.TryGetProperty("protocolVersion", out var v) && v.ValueKind == JsonValueKind.Number
@@ -520,6 +619,17 @@ public sealed class AcpClient
                     "Continuing on the assumption that the session methods are unchanged, but if this task " +
                     "reads oddly — no session ref, no tool calls — that assumption is the first thing to " +
                     "doubt (§10).");
+        }
+
+        // Every method the agent will accept at `authenticate`, in the order it listed them.
+        // Order is the only preference signal ACP offers — nothing marks a method as
+        // non-interactive — so it is preserved verbatim and the first is the default pick.
+        if (init.Value.TryGetProperty("authMethods", out var methods) && methods.ValueKind == JsonValueKind.Array)
+        {
+            _authMethods.Clear();
+            foreach (var m in methods.EnumerateArray())
+                if (m.ValueKind == JsonValueKind.Object && StringOf(m, "id") is { Length: > 0 } id)
+                    _authMethods.Add(id);
         }
 
         if (!init.Value.TryGetProperty("agentCapabilities", out var caps) || caps.ValueKind != JsonValueKind.Object)
@@ -892,7 +1002,7 @@ public sealed class AcpClient
             var code = error.TryGetProperty("code", out var c) && c.ValueKind == JsonValueKind.Number
                 ? c.GetInt32()
                 : 0;
-            pending.TrySetException(new AcpProtocolException($"{message} (JSON-RPC {code})"));
+            pending.TrySetException(new AcpProtocolException($"{message} (JSON-RPC {code})", code));
             return;
         }
 
@@ -1075,7 +1185,8 @@ public sealed record AcpSessionRequest(
     string Prompt,
     string FollowUp,
     IReadOnlyList<AcpMcpServer> McpServers,
-    string? ResumeSessionRef = null);
+    string? ResumeSessionRef = null,
+    string? AuthMethod = null);
 
 /// <summary>One MCP server as ACP's <c>session/new</c> wants it: HTTP, named, with headers.</summary>
 /// <summary>What the agent is asking the plane to decide.</summary>
@@ -1164,4 +1275,13 @@ public readonly record struct AcpResult(JsonElement Value);
 /// stream that ended mid-request. Distinct from an I/O failure, which means the worker
 /// died and is the supervisor's story to tell.
 /// </summary>
-public sealed class AcpProtocolException(string message) : Exception(message);
+public sealed class AcpProtocolException(string message, int code = 0) : Exception(message)
+{
+    /// <summary>
+    /// The JSON-RPC error code the agent sent, or 0 when the failure was not a JSON-RPC
+    /// error. Carried rather than folded into the message because one code is load-bearing:
+    /// ACP's <see cref="AcpClient.AuthRequiredCode"/> is how an agent asks to be
+    /// authenticated, and it has to be matched on rather than string-sniffed.
+    /// </summary>
+    public int Code { get; } = code;
+}
