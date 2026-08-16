@@ -7,7 +7,7 @@ namespace Docket.MultiMachine.Tests;
 
 /// <summary>
 /// §10 BYO-harness, <b>third</b> harness: the same fleet driven by OpenCode
-/// (<c>opencode run --format json</c>) instead of <c>claude -p</c> or <c>codex exec</c>.
+/// (<c>opencode acp</c>) instead of <c>claude-agent-acp</c> or <c>codex-acp</c>.
 /// Opt-in and token-spending, gated exactly like the other two real tiers. The portable
 /// bar (verifying + session ref, usage/cost, park → resume via <c>--session</c>) is
 /// <see cref="RealHarnessBar"/>, wrapped below so <c>Category=RealOpenCode</c> still
@@ -51,8 +51,8 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
     /// <summary>Trait value the opt-in CI job filters on so it runs <em>only</em> this tier.</summary>
     public const string RealOpenCode = "RealOpenCode";
 
-    private const int MaxAttempts = 3;
-    private static readonly TimeSpan PerLegBudget = TimeSpan.FromMinutes(8);
+    private const int MaxAttempts = RealHarnessBar.MaxAttempts;
+    private static readonly TimeSpan PerLegBudget = RealHarnessBar.PerLegBudget;
 
     /// <summary>
     /// The standing rule both prompts here carry, ported from the claude tier where it fixed a real
@@ -80,19 +80,6 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
         "explicitly asks for is a different thing, and is fine.) If a docket MCP tool is missing " +
         "or errors, report that with docket_report_result instead of working around it.";
 
-    /// <summary>
-    /// Generic worker prompt (§7), deliberately the same shape as the other two tiers' so a
-    /// cross-harness comparison means something — differing only in how it spells the tools, for
-    /// the reason given on <see cref="McpToolsRule"/>.
-    /// </summary>
-    private const string WorkerPrompt =
-        "You are a Docket worker agent. Your FIRST action must be to call the docket_get_task " +
-        "tool to read your assignment. The assignment's description tells you the exact string " +
-        "to report. Your ONLY other action is to call the docket_report_result tool once, with " +
-        "that exact string as resultReference. Do not write files, do not explain, do not ask " +
-        "questions. Two tool calls total: docket_get_task, then docket_report_result." +
-        McpToolsRule;
-
     public async Task InitializeAsync()
     {
         if (pg.Available) await pg.ResetAsync();
@@ -100,93 +87,22 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
 
     public Task DisposeAsync() => Task.CompletedTask;
 
-    [SkippableFact]
+    [SkippableFact(Timeout = RealHarnessBar.EchoTimeoutMs)]
     public Task Real_worker_drives_a_task_to_verifying_on_the_fleet() =>
         RealHarnessBar.DriveToVerifyingAsync(pg, RealHarnessProfiles.OpenCode(RequireRealOpenCode()));
 
-    [SkippableFact]
+    [SkippableFact(Timeout = RealHarnessBar.EchoTimeoutMs)]
     public Task Real_worker_reports_usage_the_harness_emits() =>
         RealHarnessBar.ReportsUsageAsync(pg, RealHarnessProfiles.OpenCode(RequireRealOpenCode()));
 
-    [SkippableFact]
+    [SkippableFact(Timeout = RealHarnessBar.TwoLegTimeoutMs)]
     public Task Real_worker_resumes_its_transcript_after_a_park_and_reports_a_memory_only_nonce() =>
         RealHarnessBar.ResumesAfterParkAsync(pg, RealHarnessProfiles.OpenCode(RequireRealOpenCode()));
 
-    /// <summary>
-    /// Why <c>stdin: closed</c> is not a preference for this harness either, and the cheapest
-    /// fact in the tier: a cold <c>opencode run</c> worker under the §10 dead-man pipe
-    /// <b>never takes a turn</b>. <c>run.ts:416</c> reads
-    /// <c>const piped = process.stdin.isTTY ? undefined : await Bun.stdin.text()</c> —
-    /// unconditionally, before the empty-prompt check at <c>:420</c> and before any session
-    /// exists. A pipe is not a TTY, <c>Bun.stdin.text()</c> reads to EOF, and a <c>deadman</c>
-    /// profile never sends one.
-    ///
-    /// <para><b>Worse than Codex in two ways</b>, which is why this is worth its own fact rather
-    /// than a footnote on the Codex one. The argv prompt does not short-circuit the read (with
-    /// both present <c>resolveRunInput</c> concatenates, <c>run.ts:40-50</c>), and there is no
-    /// diagnostic: Codex at least announces <c>Reading additional input from stdin...</c> on
-    /// stderr, while OpenCode hangs mutely. An operator who declares the wrong stdin policy here
-    /// gets a worker that starts, produces zero bytes, and dies of the liveness window.</para>
-    ///
-    /// <para>Costs nothing — the worker hangs before it ever contacts a model — and is a
-    /// permanent characterization rather than a delete-me tripwire, for the same reason the Codex
-    /// one is: it holds the <em>reason</em> the profiles below close stdin. If it ever fails,
-    /// OpenCode changed; re-read <c>run.ts</c> at the tag CI installs. The <c>closed</c> profiles
-    /// stay correct either way, because an EOF nobody waits for costs nothing.</para>
-    /// </summary>
-    [SkippableFact]
-    public async Task A_cold_opencode_worker_hangs_on_docketds_dead_man_stdin_and_never_takes_a_turn()
-    {
-        var openCodeBin = RequireRealOpenCode();
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(6));
-        var ct = cts.Token;
-
-        await using var rig = new FleetRig(
-            pg,
-            spawnArgv: OpenCodeWorkerSpawn(openCodeBin, WorkerPrompt),
-            terminalEvents: true,
-            eventMapping: RealHarnessProfiles.OpenCodeEventMapping,
-            // The whole point of this fact. Declared explicitly rather than left to the default
-            // so a future change of default cannot quietly turn this into a duplicate.
-            stdin: StdinPolicy.Deadman);
-        await rig.StartAsync(ct);
-        using var config = RealHarnessProfiles.OpenCodeConfig.Create(rig.McpUrl);
-        await rig.AddMachineAsync("A");
-
-        var task = await rig.CreateTaskAsync(EchoDescription("A", NewToken()), ct);
-        await rig.DispatchToAsync("A", ct);
-
-        Assert.True(
-            await FleetRig.WaitUntilAsync(
-                () => Task.FromResult(rig.WorkerObserved(task) is { Starts: > 0 }),
-                TimeSpan.FromMinutes(1)),
-            "the opencode worker never even started, so this run says nothing about stdin.\n"
-            + await rig.RealWorkerDiagnosticsAsync(task, ct));
-
-        // And then nothing. OpenCode's first JSON line follows its first assistant step, which
-        // on any working run arrives within seconds; two minutes of silence is the hang.
-        Assert.False(
-            await FleetRig.WaitUntilAsync(
-                async () => await rig.HarnessSessionRefAsync(task, ct) is { Length: > 0 },
-                TimeSpan.FromMinutes(2)),
-            "an opencode worker under stdin: deadman DID report a session ref, so it no longer "
-            + "blocks on the held-open pipe. That is a change in OPENCODE, not in Docket — check "
-            + "whether cli/cmd/run.ts still reads Bun.stdin.text() unconditionally when stdin is "
-            + "not a TTY (run.ts:416 at v1.18.17). Nothing below needs to change if so: the other "
-            + "facts declare stdin: closed, and an EOF nobody waits for is harmless. Update this "
-            + "characterization to say what the CLI does now.\n"
-            + await rig.RealWorkerDiagnosticsAsync(task, ct));
-
-        // No session id reached any captured transcript either — the direct, harness-side half of
-        // "it produced nothing", and the part that distinguishes OpenCode's silent hang from a
-        // harness that at least said something before stalling.
-        Assert.Empty(rig.InstanceSessionIdsOn("A", task));
-        Assert.NotEqual(TaskState.Verifying, await rig.StateAsync(task, ct));
-    }
 
     /// <summary>
     /// What a <c>stop</c> actually is against a real <c>opencode run</c> worker: a TTL'd kill,
-    /// declared as <see cref="StopMode.Signal"/> because that is the true claim about this
+    /// declared as <c>session/cancel</c> plus the deadline because that is the true claim about this
     /// harness. Two source facts settle it. Stdin is read exactly once, at <c>run.ts:416</c>,
     /// before the event loop starts, and nothing reads it afterwards — so a wind-down turn
     /// written mid-task has nowhere to land. And the CLI entry point installs no
@@ -199,25 +115,23 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
     /// takes, and it outlives the kill — so <c>preserve</c> means something without anything
     /// having been negotiated.</para>
     /// </summary>
-    [SkippableFact]
+    [SkippableFact(Timeout = RealHarnessBar.EchoTimeoutMs)]
     public async Task A_stop_reaches_a_real_opencode_worker_as_a_kill_deadline_with_its_session_ref_preserved()
     {
         var openCodeBin = RequireRealOpenCode();
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(12));
+        using var cts = new CancellationTokenSource(RealHarnessBar.EchoTimeout);
         var ct = cts.Token;
 
+        var profile = RealHarnessProfiles.OpenCode(openCodeBin);
         await using var rig = new FleetRig(
             pg,
-            spawnArgv: OpenCodeWorkerSpawn(openCodeBin, SlowWorkerPrompt),
-            terminalEvents: true,
-            stop: new StopConfig(
-                StopMode.Signal, MessageTemplate: null, WindDown: TimeSpan.FromSeconds(5)),
-            eventMapping: RealHarnessProfiles.OpenCodeEventMapping,
-            // signal + closed is the only pairing RunnerConfig accepts for this harness, and it
-            // is the honest one twice over — see OpenCodeStdin.
-            stdin: OpenCodeStdin);
+            spawnArgv: profile.AcpSpawn,
+            prompt: SlowWorkerPrompt,
+            followUp: profile.FollowUpTurn,
+            stop: new StopConfig(WindDown: TimeSpan.FromSeconds(5)),
+            configOptions: profile.ConfigOptions);
         await rig.StartAsync(ct);
-        using var config = RealHarnessProfiles.OpenCodeConfig.Create(rig.McpUrl);
+        using var config = profile.AttachTo(rig);
         await rig.AddMachineAsync("A");
 
         var task = await rig.CreateTaskAsync(EchoDescription("A", NewToken()), ct);
@@ -228,7 +142,7 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
         Assert.True(
             await FleetRig.WaitUntilAsync(
                 async () => await rig.HarnessSessionRefAsync(task, ct) is { Length: > 0 },
-                TimeSpan.FromMinutes(5)),
+                RealHarnessBar.PerLegBudget),
             "the opencode worker never reported a session ref, so there was nothing to stop.\n"
             + OpenCodeFailureHypotheses() + await rig.RealWorkerDiagnosticsAsync(task, ct));
 
@@ -241,19 +155,18 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
             "the stop was not delivered to the machine holding the task.\n"
             + await rig.RealWorkerDiagnosticsAsync(task, ct));
 
-        // A signal-mode stop writes no turn: docketd reports the deadline it armed, which is the
-        // only thing it actually did. OpenCode installs no SIGTERM handler (index.ts:136-142), so
-        // there is nothing on the other side to negotiate with even in principle.
+        // ACP stop is session/cancel, then the deadline. The session is open (we waited
+        // for a session ref), so the ack is CancelSent — sent, not confirmed obeyed.
         var ack = rig.StopAckFor(task);
         Assert.NotNull(ack);
         Assert.True(ack!.Value.Actioned);
-        Assert.Equal(StopDelivery.DeadlineArmed, ack.Value.Delivery);
+        Assert.Equal(StopDelivery.CancelSent, ack.Value.Delivery);
 
         // The kill really landed: the process is gone, and it did not exit cleanly on its own.
         Assert.True(
             await FleetRig.WaitUntilAsync(
                 () => Task.FromResult(rig.WorkerObserved(task) is { Exits: > 0 }),
-                TimeSpan.FromMinutes(3)),
+                TimeSpan.FromSeconds(30)),
             "the stopped opencode worker never exited, so the deadline kill did not reach it.\n"
             + await rig.RealWorkerDiagnosticsAsync(task, ct));
 
@@ -268,28 +181,25 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
     /// <c>opencode run</c>, and B reports back a value only A could have produced — so the two
     /// harnesses collaborated through Docket without either knowing the other existed.
     /// </summary>
-    [SkippableFact]
+    [SkippableFact(Timeout = RealHarnessBar.TwoLegTimeoutMs)]
     public async Task A_claude_worker_and_an_opencode_worker_hand_off_a_token_across_one_fleet()
     {
-        var openCodeBin = RequireRealOpenCode();
-        var claudeBin = RequireRealClaudeForMixedFleet();
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(25));
+        var openCode = RealHarnessProfiles.OpenCode(RequireRealOpenCode());
+        var claude = RealHarnessProfiles.Claude(RequireRealClaudeForMixedFleet());
+        using var cts = new CancellationTokenSource(RealHarnessBar.TwoLegTimeout);
         var ct = cts.Token;
 
         await using var rig = new FleetRig(
             pg,
-            spawnArgv: OpenCodeWorkerSpawn(openCodeBin, WorkerPrompt), // fleet default; A overrides
-            terminalEvents: true,
-            eventMapping: RealHarnessProfiles.OpenCodeEventMapping,
-            // Fleet-wide, so machine A's claude worker also gets a closed stdin — harmless there
-            // (claude -p abandons its stdin read after ~3s) and the same asymmetry the Codex tier
-            // papers over. A real mixed fleet declares stdin per profile.
-            stdin: OpenCodeStdin);
+            spawnArgv: openCode.AcpSpawn,
+            prompt: openCode.EchoPrompt,
+            followUp: openCode.FollowUpTurn,
+            configOptions: openCode.ConfigOptions);
         await rig.StartAsync(ct);
-        using var config = RealHarnessProfiles.OpenCodeConfig.Create(rig.McpUrl);
+        using var config = openCode.AttachTo(rig);
 
-        await rig.AddMachineAsync("A", ClaudeWorkerSpawn(claudeBin));  // claude machine
-        await rig.AddMachineAsync("B");                                // opencode machine
+        await rig.AddMachineAsync("A", claude.AcpSpawn, prompt: claude.EchoPrompt, followUp: claude.FollowUpTurn);
+        await rig.AddMachineAsync("B");
 
         // Step A, on the claude machine: mint + report an unforgeable token.
         var token = NewToken();
@@ -315,43 +225,7 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
         Assert.Equal("B", rig.MachineRanOn(stepB));
     }
 
-    // ── The OpenCode recipe (all source-derived at v1.18.17; see the class remarks) ──
-    // ── The OpenCode recipe (all source-derived at v1.18.17; see the class remarks) ──
-
-    /// <summary>
-    /// The <c>opencode run</c> worker argv.
-    /// <list type="bullet">
-    ///   <item><c>run</c> + argv prompt — the non-interactive mode, which "sends a single prompt,
-    ///     streams events to stdout, and exits when the session goes idle"
-    ///     (<c>run.ts:3-11</c>; the idle exit is the <c>break</c> at <c>run.ts:788-794</c>). The
-    ///     prompt MUST be argv: stdin is docketd's dead-man pipe (§10).</item>
-    ///   <item><c>--format json</c> — the NDJSON stream <c>events.source: terminal</c> reads
-    ///     (<c>run.ts:174-179</c>, emitter at <c>:678-691</c>). Needs no companion flag, unlike
-    ///     <c>claude -p</c>, which also wants <c>--verbose</c>.</item>
-    ///   <item><c>--auto</c> — the <c>bypassPermissions</c> equivalent
-    ///     (<c>run.ts:274</c>, <c>:800-804</c>). <b>Not optional:</b> without it a headless
-    ///     worker <em>auto-rejects</em> every permission ask (<c>run.ts:806-815</c>) and fails
-    ///     the task rather than hanging, which is a quieter failure than it sounds.</item>
-    ///   <item><c>--model</c> — pinned, because there is no turn cap to bound a runaway and
-    ///     because the stream carries no model field, so this argv is the only record of what
-    ///     produced the tokens.</item>
-    /// </list>
-    ///
-    /// <para>No git flag is needed — unlike <c>codex exec</c>, OpenCode has no
-    /// <c>--skip-git-repo-check</c> and needs none: a directory with no repository resolves to a
-    /// project rooted at the filesystem root rather than failing
-    /// (<c>packages/core/src/project.ts:111-112</c>). That fallback is also OC-G5: every non-git
-    /// scratch dir collapses into <em>one</em> project, so concurrent workers share a session
-    /// store. This tier runs its tasks in sequence, and the profile never uses
-    /// <c>--continue</c> — which would find another task's session — so nothing here depends on
-    /// the isolation that a per-task <c>OPENCODE_CONFIG_DIR</c> would provide.</para>
-    ///
-    /// <para>No MCP flag appears here either, and that absence is the same finding Codex
-    /// produced: OpenCode has no <c>--mcp-config</c>, so the docket server is wired through
-    /// <see cref="RealHarnessProfiles.OpenCodeConfig"/> and docketd's generated <c>{mcp_config}</c> goes unread.</para>
-    /// </summary>
-    private static string[] OpenCodeWorkerSpawn(string openCodeBin, string prompt) =>
-        RealHarnessProfiles.OpenCodeSpawn(openCodeBin, prompt);
+    // ── Helpers ────────────────────────────────────────────────────────────────
 
     /// <summary>
     /// The model this tier pins. <c>provider/model</c> is the required spelling
@@ -368,19 +242,6 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
     /// exactly this happened to the Codex tier on its first real dispatch.</para>
     /// </summary>
     private static string OpenCodeModel => RealHarnessProfiles.OpenCodeModel;
-
-    /// <summary>
-    /// The <c>stdin</c> policy every end-to-end fact here declares (§10, #110) — the one line
-    /// that makes an OpenCode worker possible at all, for the reason
-    /// <see cref="A_cold_opencode_worker_hangs_on_docketds_dead_man_stdin_and_never_takes_a_turn"/>
-    /// characterizes against the real binary.
-    ///
-    /// <para>The trade is the same as Codex's and costs the same nothing: OpenCode never reaches
-    /// a read that would observe EOF-as-death, so the dead-man switch it gives up is one it could
-    /// never have honoured. What is actually lost is docketd's ability to end a worker by dying;
-    /// the <c>StrayReaper</c>'s next-start sweep is the backstop.</para>
-    /// </summary>
-    private const StdinPolicy OpenCodeStdin = StdinPolicy.Closed;
 
     /// <summary>The one description template every role uses (§7) — identical to the other two
     /// tiers', on purpose: a cross-harness comparison is only meaningful if both harnesses are
@@ -399,45 +260,6 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
         + "number on its own line with a short remark about it. Only after finishing the count "
         + "may you call the docket_report_result tool with the exact string from the description."
         + McpToolsRule;
-
-    /// <summary>
-    /// The mixed-fleet fact's claude worker needs the SAME words as <see cref="WorkerPrompt"/> but
-    /// its own tool spelling, and that is the whole reason this constant exists. Claude names
-    /// docket's tools <c>mcp__docket__get_task</c>; OpenCode names them <c>docket_get_task</c>. One
-    /// prompt cannot serve both once each names its real tool, so the mixed fact carries two — the
-    /// coupling that the old bare spelling hid, and the trap it hid it at.
-    ///
-    /// <para>This is the sharp edge of dropping the portable bare form: the mixed fleet is the one
-    /// place a single prompt was handed to two different harnesses. Sharing it again, in either
-    /// spelling, sends one of the two workers hunting a tool that does not exist on its harness.</para>
-    /// </summary>
-    private const string ClaudeWorkerPrompt =
-        "You are a Docket worker agent. Your FIRST action must be to call the " +
-        "mcp__docket__get_task tool to read your assignment. The assignment's description tells " +
-        "you the exact string to report. Your ONLY other action is to call the " +
-        "mcp__docket__report_result tool once, with that exact string as resultReference. Do not " +
-        "write files, do not explain, do not ask questions. Two tool calls total: " +
-        "mcp__docket__get_task, then mcp__docket__report_result." +
-        " Docket's tools are MCP tools, named exactly mcp__docket__get_task, " +
-        "mcp__docket__report_result and so on — call them as tools, under those names. There is " +
-        "no `docket` program: no such command exists on this machine, so never run `docket` in a " +
-        "shell, and never try to reach the docket MCP server yourself over HTTP or with curl. (A " +
-        "shell command your assignment explicitly asks for is a different thing, and is fine.) If " +
-        "a docket MCP tool is missing or errors, report that with mcp__docket__report_result " +
-        "instead of working around it.";
-
-    /// <summary>The claude argv for the mixed-fleet fact's machine A. Kept minimal and
-    /// independent of the claude tier's own recipe so this file has no cross-tier
-    /// dependency.</summary>
-    private static string[] ClaudeWorkerSpawn(string claudeBin) =>
-    [
-        claudeBin, "-p", ClaudeWorkerPrompt,
-        "--mcp-config", "{mcp_config}",
-        "--output-format", "stream-json",
-        "--verbose",
-        "--permission-mode", "bypassPermissions",
-        "--max-turns", "6",
-    ];
 
     /// <summary>
     /// Skip unless this run is a real, opted-in OpenCode run: Postgres up, an explicit opt-in, and
@@ -506,8 +328,7 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
            3. TOOL NAMES. OpenCode spells MCP tools <server>_<tool>, so the worker is looking for
               docket_get_task, NOT mcp__docket__get_task (mcp/catalog.ts:119). A prompt that
               names the qualified form will have the agent hunting a tool that does not exist.
-           4. PERMISSIONS. Without --auto a headless worker AUTO-REJECTS every permission ask
-              (run.ts:806-815) and fails rather than hangs.
+           4. PERMISSIONS. session/request_permission is answered by the plane, not --auto.
            5. AUTH. ANTHROPIC_API_KEY must be in the environment, or the machine's opencode must
               already be logged in.
 

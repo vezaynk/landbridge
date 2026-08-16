@@ -40,38 +40,29 @@ namespace Docket.MultiMachine.Tests;
 /// validated claude recipe instead (§10 config-only harness seam), so the very same
 /// fleet drives a real agent with no code change on any surface below this line.</para>
 ///
-/// <para>The remaining parameters shape the rest of that one profile, and each exists
-/// because a §10/§11 seam is <em>only</em> reachable when the profile declares it:
-/// <paramref name="resumeArgv"/> is <c>resume.args</c> (without it a session ref is
-/// ignored and the task cold-starts), <paramref name="terminalEvents"/> turns on the
-/// stdout drain that captures the harness session ref at all, <paramref name="stop"/>
-/// chooses how <c>stop</c> is delivered, and <paramref name="agentProcesses"/> is the
-/// per-profile gate the machine applies to <c>start_process</c>. All default to the
-/// scripted tier's existing values, so that suite's behaviour is unchanged.</para>
+/// <para>The remaining parameters shape the rest of that one profile:
+/// <paramref name="prompt"/> is the worker's opening turn (an ACP agent takes none on
+/// argv), <paramref name="followUp"/> the turn that wakes a live session when there is new
+/// input on the assignment, <paramref name="stop"/> the wind-down budget behind
+/// <c>session/cancel</c>, and <paramref name="agentProcesses"/> the per-profile gate the
+/// machine applies to <c>start_process</c>. All default to the scripted tier's values.</para>
 ///
-/// <para><paramref name="eventMapping"/> is <c>events.mapping</c> (§10) — the property-name
-/// overrides the terminal reader keys off. Empty (every tier but the real-Codex one) means
-/// the built-in claude <c>stream-json</c> defaults, so nothing changes for the suites that
-/// predate it; a harness whose stdout names things differently supplies it instead of
-/// needing parser code, which is the seam §10 exists to provide.</para>
-///
-/// <para><paramref name="stdin"/> is <c>profiles[].stdin</c> (§10, #110): whether docketd
-/// holds the dead-man pipe open for the worker's life. Defaults to
-/// <see cref="StdinPolicy.Deadman"/> — every tier but the real-Codex one, whose harness
-/// blocks reading a held-open stdin and needs <see cref="StdinPolicy.Closed"/> to reach its
-/// first turn at all.</para>
+/// <para>Three parameters this rig used to need are gone with the stream protocol:
+/// <c>resumeArgv</c> (resume is <c>session/load</c> on the connection the spawn opens),
+/// <c>terminalEvents</c> plus <c>eventMapping</c> (the shapes are in the spec), and
+/// <c>stdin</c> (stdin is the request channel, so there is no policy to choose).</para>
 /// </summary>
 internal sealed class FleetRig(
     PostgresFixture pg,
     IReadOnlyList<string>? spawnArgv = null,
-    IReadOnlyList<string>? resumeArgv = null,
-    bool terminalEvents = false,
     bool agentProcesses = false,
     StopConfig? stop = null,
-    IReadOnlyDictionary<string, string>? eventMapping = null,
-    StdinPolicy stdin = StdinPolicy.Deadman,
     IReadOnlyList<ProfileFile>? files = null,
-    IReadOnlyDictionary<string, string>? env = null) : IAsyncDisposable
+    IReadOnlyDictionary<string, string>? env = null,
+    string? prompt = null,
+    string? followUp = null,
+    string? authMethod = null,
+    IReadOnlyDictionary<string, string>? configOptions = null) : IAsyncDisposable
 {
     private const string RelayBearer = "multimachine-relay-shared-secret-under-test";
 
@@ -88,7 +79,7 @@ internal sealed class FleetRig(
     /// <summary>Whether to drain each machine's worker-supervisor event ring into the
     /// plane's sink. Off for the scripted tier (its serve workers never exit mid-test
     /// and its consume workers report before exiting, so exits carry no signal there),
-    /// ON for the real-<c>claude -p</c> tier — where a worker that ends its turn WITHOUT
+    /// ON for the real-harness tiers — where a worker that ends its turn WITHOUT
     /// reporting must requeue the still-<c>working</c> task so a retry can redispatch it,
     /// exactly as production docketd's socket loop does (§10). Gated on the spawn
     /// override so the scripted suite's behaviour is byte-for-byte unchanged.</summary>
@@ -141,12 +132,8 @@ internal sealed class FleetRig(
 
         _profile = new ProfileConfig(
             "default",
-            spawnArgv ?? [CollabHarnessPath(), "--mcp-config", "{mcp_config}"],
-            stop ?? new StopConfig(StopMode.Signal, MessageTemplate: null, WindDown: TimeSpan.FromSeconds(30)),
-            resumeArgv is null ? null : new ResumeConfig(resumeArgv),
-            new EventsConfig(
-                terminalEvents ? EventsSource.Terminal : EventsSource.None,
-                eventMapping ?? new Dictionary<string, string>()),
+            spawnArgv ?? [CollabHarnessPath(), "--acp"],
+            stop ?? new StopConfig(WindDown: TimeSpan.FromSeconds(30)),
             new TelemetryConfig(Otel: false, Endpoint: null),
             // §12: capture on, so the fleet exercises the real capture → serve path end to
             // end. Pruning disabled (0) — a rig lives seconds and a sweep would only add
@@ -156,10 +143,12 @@ internal sealed class FleetRig(
             // §10: the machine owner's decision, enforced machine-side. Off unless a
             // scenario is about agent-started processes.
             Processes: agentProcesses ? new ProfileProcessesConfig(AgentInitiated: true) : null,
-            // §10 (#110): the dead-man pipe, unless a scenario's harness cannot survive it.
-            Stdin: stdin,
             Env: env,
-            Files: files);
+            Files: files,
+            Prompt: prompt ?? "Do the task you have been assigned.",
+            FollowUp: followUp ?? "There is new input on your assignment. Read it, then continue.",
+            AuthMethod: authMethod,
+            ConfigOptions: configOptions);
 
         Team = TeamId.New();
         await using (var db = pg.NewContext())
@@ -169,16 +158,24 @@ internal sealed class FleetRig(
     /// <summary>Enroll a machine: its own worker supervisor, its own relay data-plane
     /// daemon, and the registry send delegate that routes commands to the right one.
     ///
-    /// <para><paramref name="spawnArgv"/> overrides <em>this machine's</em> <c>default</c>
-    /// profile spawn, leaving the rest of the profile (stop, resume, events, capture, the
-    /// process gate) as the rig was constructed with. Null — every caller but the
-    /// cross-harness scenario — keeps the fleet-wide profile, so nothing changes for the
-    /// suites that predate it. It exists because §10's promise is that a <em>fleet</em> is
-    /// heterogeneous: two machines can run two different harnesses under one plane, and
-    /// only a per-machine spawn can express that.</para></summary>
-    public async Task AddMachineAsync(string machineId, IReadOnlyList<string>? spawnArgv = null)
+    /// <para><paramref name="spawnArgv"/> / <paramref name="prompt"/> /
+    /// <paramref name="followUp"/> override this machine's <c>default</c> profile
+    /// so a mixed fleet can run two ACP entry points (and two tool spellings)
+    /// under one plane. Null keeps the fleet-wide profile.</para></summary>
+    public async Task AddMachineAsync(
+        string machineId,
+        IReadOnlyList<string>? spawnArgv = null,
+        string? prompt = null,
+        string? followUp = null)
     {
-        var profile = spawnArgv is null ? _profile : _profile with { Spawn = spawnArgv };
+        var profile = spawnArgv is null && prompt is null && followUp is null
+            ? _profile
+            : _profile with
+            {
+                Spawn = spawnArgv ?? _profile.Spawn,
+                Prompt = prompt ?? _profile.Prompt,
+                FollowUp = followUp ?? _profile.FollowUp,
+            };
         var workRoot = NewWorkRoot();
         var ring = new OutboundEventRing(capacity: 256);
         // §12: a real transcript store per machine, so capture writes real files and the
@@ -214,8 +211,13 @@ internal sealed class FleetRig(
         if (RealWorkerMode)
         {
             _pumps.Add(Task.Run(() => PumpSupervisorRingAsync(ring, _pumpCts.Token)));
-            if (_pumps.Count == 1) // one heartbeat pump for the whole fleet, on the first machine
+            if (_pumps.Count == 1)
+            {
+                // One heartbeat pump and one permission pump for the whole fleet,
+                // started with the first machine.
                 _pumps.Add(Task.Run(() => PumpHeartbeatsAsync(_pumpCts.Token)));
+                _pumps.Add(Task.Run(() => PumpPermissionsAsync(_pumpCts.Token)));
+            }
         }
 
         // The §10 socket seam: dispatch → the real spawn, open-/close-forward → the real
@@ -233,6 +235,9 @@ internal sealed class FleetRig(
             // held-open stdin where the profile declares a message seam, otherwise the
             // bounded TTL kill. The ack is kept for the scenario that measures it.
             StopCommand s => StopOnMachineAsync(machine, s, sendCt),
+            // Live-session wake: the plane doorbells the held ACP process. Same
+            // supervisor that spawned it, so TryPrompt lands on the right session.
+            PromptCommand p => PromptOnMachineAsync(machine, p),
             // §10 process commands go to the real daemon, which applies the profile gate on
             // the machine and replies on the shared ring.
             StartProcessCommand or StopProcessCommand or WriteProcessCommand =>
@@ -248,6 +253,12 @@ internal sealed class FleetRig(
     {
         var ack = await machine.Supervisor.StopAsync(stop.Task, stop.Ttl, stop.Disposition, stop.Reason, ct);
         _stopAcks[stop.Task] = ack;
+    }
+
+    private static Task PromptOnMachineAsync(MachineRig machine, PromptCommand prompt)
+    {
+        machine.Supervisor.TryPrompt(prompt.Task);
+        return Task.CompletedTask;
     }
 
     /// <summary>
@@ -331,10 +342,42 @@ internal sealed class FleetRig(
     }
 
     /// <summary>
-    /// Answer a blocked task over the real Lead MCP surface (§11), which requeues it for
-    /// redispatch <em>with its transcript resumed</em> and writes the park record carrying
-    /// the harness session ref. The answer itself reaches the worker on its next
-    /// <c>get_task</c> and never through the resume argv (§13).
+    /// Release a live ACP session on purpose over the real Lead MCP surface
+    /// (<c>park_task</c>, §11): the task parks, its worker-instance token is revoked and the
+    /// machine gets a <c>preserve_and_park</c> stop. Waits for the process to actually go,
+    /// because the park record commits before the stop is even sent — answering while the
+    /// old session is still winding down would race a redispatch against its predecessor.
+    ///
+    /// <para>The counterpart to <see cref="AnswerAsync"/>, not a variant of it: since
+    /// <c>ideas/sessions.md</c> stage 2 an answer to a <em>live</em> session continues it in
+    /// place, so this is the only route left to the §11 park → <c>session/load</c> path.</para>
+    /// </summary>
+    public async Task ParkTaskAsync(TaskId task, CancellationToken ct)
+    {
+        var exitsBefore = WorkerObserved(task)?.Exits ?? 0;
+        await using (var lead = await PlaneProbe.ConnectMcpAsync(new Uri(_baseUrl + "/"), _leadToken, ct))
+        {
+            var parked = await lead.CallToolAsync("park_task", new Dictionary<string, object?>
+            {
+                ["taskId"] = task.Value.ToString(),
+            }, cancellationToken: ct);
+            Assert.NotEqual(true, parked.IsError);
+        }
+
+        Assert.True(
+            await WaitUntilAsync(
+                () => Task.FromResult((WorkerObserved(task)?.Exits ?? 0) > exitsBefore),
+                TimeSpan.FromSeconds(60)),
+            $"park_task did not bring down the worker for {task} within 60s — a redispatch from "
+            + "here would race the session it is meant to replace.");
+    }
+
+    /// <summary>
+    /// Answer a blocked task over the real Lead MCP surface (§11). A still-live ACP session
+    /// continues in place on the same instance; a task whose session is gone — or one
+    /// <see cref="ParkTaskAsync"/> already parked — is requeued for redispatch <em>with its
+    /// transcript resumed</em>. The answer itself reaches the worker on its next
+    /// <c>get_task</c> and never through spawn argv (§13).
     /// </summary>
     public async Task AnswerAsync(TaskId task, string answer, CancellationToken ct)
     {
@@ -360,6 +403,17 @@ internal sealed class FleetRig(
         return row is { State: TaskState.BlockedOnInput, InputKind: InputRequestKind.Permission }
             ? (row.PermissionTool, row.InputQuestion)
             : null;
+    }
+
+    /// <summary>
+    /// A live session that asked a question and is idle for the Lead. Questions
+    /// no longer leave <c>working</c>.
+    /// </summary>
+    public async Task<bool> HasPendingQuestionAsync(TaskId task, CancellationToken ct)
+    {
+        await using var db = pg.NewContext();
+        var row = await db.Tasks.AsNoTracking().SingleOrDefaultAsync(t => t.Id == task.Value, ct);
+        return row is { State: TaskState.Working, InputKind: InputRequestKind.Question, BlockedAt: not null };
     }
 
     /// <summary>
@@ -533,6 +587,46 @@ internal sealed class FleetRig(
         catch (OperationCanceledException) { /* disposing */ }
     }
 
+    /// <summary>
+    /// Auto-allow ACP <c>session/request_permission</c> on this fleet. Real workers
+    /// block inside the tool call until a Lead verdict; without this pump the
+    /// first MCP tool hangs the turn. Questions are left for the scenario to
+    /// answer — only <see cref="InputRequestKind.Permission"/> is decided here.
+    /// </summary>
+    private async Task PumpPermissionsAsync(CancellationToken ct)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                try
+                {
+                    await using var db = pg.NewContext();
+                    var pending = await db.Tasks.AsNoTracking()
+                        .Where(t => t.TeamId == Team.Value
+                            && t.State == TaskState.BlockedOnInput
+                            && t.InputKind == InputRequestKind.Permission)
+                        .Select(t => t.Id)
+                        .ToListAsync(ct);
+                    foreach (var id in pending)
+                    {
+                        try
+                        {
+                            await AnswerPermissionAsync(new TaskId(id), "allow", "e2e auto-allow", ct);
+                        }
+                        catch (OperationCanceledException) { throw; }
+                        catch { /* already answered, parked, or tearing down */ }
+                    }
+                }
+                catch (OperationCanceledException) { break; }
+                catch { /* plane teardown / scope disposed */ }
+
+                await Task.Delay(TimeSpan.FromMilliseconds(50), ct);
+            }
+        }
+        catch (OperationCanceledException) { /* disposing */ }
+    }
+
     // ── Bounded reads of committed control-plane state ──────────────────────────
 
     public async Task<bool> ServiceExistsAsync(string name, CancellationToken ct)
@@ -690,9 +784,22 @@ internal sealed class FleetRig(
             string[] lines;
             try { lines = System.IO.File.ReadAllLines(file); }
             catch (IOException) { continue; } // being written; the rest of the dump still stands
-            var tail = lines.Reverse().Take(4).Reverse()
-                .Select(l => l.Length > 240 ? l[..240] + "…" : l);
-            sb.AppendLine($"  transcript[{machineId}] {System.IO.Path.GetFileName(file)} ({lines.Length} lines, last 4):");
+            // Deliberately generous, and it was not always. Four 240-char lines was the right
+            // budget for a stream transcript, where the last few NDJSON records held the whole
+            // story. An ACP transcript is a conversation: the reason a turn went wrong is a
+            // refused client request, a tool call that never happened, or a capability missing
+            // from the handshake — none of which are in the last four lines, and one of which
+            // (grok returning `cancelled` after 11k tokens, 2026-08-16) cost a 24-minute paid
+            // run that produced no diagnosis at all. A whole ACP turn is tens of lines, so a
+            // dump that covers one costs nothing and is the difference between reading the
+            // failure and re-running it.
+            const int TailLines = 60;
+            const int LineBudget = 2000;
+            var tail = lines.Reverse().Take(TailLines).Reverse()
+                .Select(l => l.Length > LineBudget ? l[..LineBudget] + "…" : l);
+            sb.AppendLine(
+                $"  transcript[{machineId}] {System.IO.Path.GetFileName(file)} "
+                + $"({lines.Length} lines, last {Math.Min(lines.Length, TailLines)}):");
             foreach (var line in tail)
                 sb.AppendLine($"    {line}");
         }

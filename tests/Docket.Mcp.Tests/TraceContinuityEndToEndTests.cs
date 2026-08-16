@@ -109,13 +109,13 @@ public sealed class TraceContinuityEndToEndTests(PostgresFixture pg, ITestOutput
 
         var profile = new ProfileConfig(
             "default",
-            [WorkerHarnessPath(), "--mcp-config", "{mcp_config}"],
-            new StopConfig(StopMode.Signal, MessageTemplate: null, WindDown: TimeSpan.FromSeconds(30)),
-            Resume: null,
-            new EventsConfig(EventsSource.None, new Dictionary<string, string>()),
+            [WorkerHarnessPath(), "--acp"],
+            new StopConfig(WindDown: TimeSpan.FromSeconds(30)),
             new TelemetryConfig(Otel: false, Endpoint: null),
             new LogsConfig(),
-            MaxConcurrent: null);
+            MaxConcurrent: null,
+            Prompt: "Do the task.",
+            FollowUp: "There is new input on your assignment. Read it, then continue.");
 
         try
         {

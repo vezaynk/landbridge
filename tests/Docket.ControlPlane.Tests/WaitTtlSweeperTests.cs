@@ -28,7 +28,7 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
     public Task DisposeAsync() => Task.CompletedTask;
 
     [SkippableFact]
-    public async Task Wait_ttl_not_yet_expired_leaves_the_task_blocked()
+    public async Task Wait_ttl_not_yet_expired_leaves_the_waiting_task()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
@@ -42,7 +42,7 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
         clock.Advance(TimeSpan.FromMinutes(29));
         await sweeper.SweepAsync(CancellationToken.None);
 
-        Assert.Equal(TaskState.BlockedOnInput, await StateAsync(clock, id));
+        Assert.Equal(TaskState.Working, await StateAsync(clock, id));
         Assert.Contains(id, registry.TasksOn("m1"));
     }
 
@@ -81,8 +81,8 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
         // §5/§11: the predecessor worker-instance token is revoked before any resume.
         Assert.True((await v.WorkerInstances.AsNoTracking().SingleAsync(w => w.Id == instance.Value)).Revoked);
 
-        // Services were cleared on the working→blocked edge (ClearServicesAndForwards);
-        // a parked task has none, which the sweep preserves.
+        // Services are cleared on the park itself (a question no longer tears them
+        // down — the session stays). A parked task has none.
         Assert.Empty(await v.RegisteredServices.AsNoTracking().Where(s => s.TaskId == id.Value).ToListAsync());
 
         // The old dispatch is untracked so a later wake/redispatch starts clean.
@@ -205,7 +205,7 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
         var registry = LiveMachine(clock, "m1", id);
 
         var sweeper = NewSweeper(clock, registry,
-            waitTtl: TimeSpan.Zero,                    // already expired the instant it blocked
+            waitTtl: TimeSpan.FromMilliseconds(1),     // already expired the instant it blocked
             machineWindow: TimeSpan.FromHours(1),      // machine stays live → parks, not requeues
             sweepInterval: TimeSpan.FromMilliseconds(100));
 

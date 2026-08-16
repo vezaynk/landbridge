@@ -212,11 +212,12 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         var registry = new RunnerConnectionRegistry(_clock);
         registry.Register("m1", new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
         registry.TrackDispatch("m1", taskId);
+        registry.MarkProcessGone(taskId);
         var tools = LeadFor(new Principal.Lead(Team), registry);
 
-        // m1 still holds the lease, so the park record prefers it — but the task
-        // still requeues for redispatch (→ submitted), never resumes in place: the
-        // worker process is gone and resume must go back through dispatch (§11).
+        // m1 still holds the lease, so the park record prefers it — but the process
+        // is gone, so the answer redispatches (→ submitted) rather than prompting
+        // a dead session. Resume goes back through dispatch (§11).
         var msg = await tools.AnswerInputRequest(taskId.ToString(), "staging-pg, not docker", CancellationToken.None);
         Assert.Contains("Submitted", msg);
 
@@ -225,6 +226,33 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(TaskState.Submitted, row.State);
         Assert.Equal("m1", row.ParkMachine); // held-lease machine preferred (§11)
         Assert.Equal("staging-pg, not docker", row.InputAnswer);
+    }
+
+    [SkippableFact]
+    public async Task Answer_input_request_continues_a_live_session_and_sends_prompt()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var taskId = await SeedBlockedOnInputTask();
+        var sent = new List<RunnerCommand>();
+        var registry = new RunnerConnectionRegistry(_clock);
+        registry.Register("m1", new HashSet<string> { "default" }, (cmd, _) =>
+        {
+            sent.Add(cmd);
+            return Task.CompletedTask;
+        });
+        registry.TrackDispatch("m1", taskId);
+        var tools = LeadFor(new Principal.Lead(Team), registry);
+
+        var msg = await tools.AnswerInputRequest(taskId.ToString(), "use staging-pg", CancellationToken.None);
+        Assert.Contains("Working", msg);
+
+        await using var v = pg.NewContext();
+        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == taskId.Value);
+        Assert.Equal(TaskState.Working, row.State);
+        Assert.NotNull(row.CurrentInstanceId);
+        Assert.Equal("use staging-pg", row.InputAnswer);
+        var prompt = Assert.IsType<PromptCommand>(Assert.Single(sent));
+        Assert.Equal(taskId, prompt.Task);
     }
 
     [SkippableFact]
@@ -687,7 +715,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
 
         await using var v = pg.NewContext();
         var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == taskId.Value);
-        Assert.Equal(TaskState.BlockedOnInput, row.State);
+        Assert.Equal(TaskState.Working, row.State);
         Assert.Null(row.InputAnswer);
     }
 

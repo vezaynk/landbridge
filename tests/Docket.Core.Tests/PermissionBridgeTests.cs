@@ -58,15 +58,12 @@ public class PermissionBridgeTests
     [Fact]
     public void A_permission_request_keeps_the_task_services_and_forwards()
     {
-        // Every other kind ends the worker's turn, so leaving working releases what it
-        // registered. This one does not end the turn, so tearing them down would break a
-        // live worker for the crime of asking.
+        // ACP sessions stay up through a question, so neither kind tears services down
+        // here. Park / AnswerInput / wait-TTL are the edges that release them.
         Assert.Empty(Expect.Effects(Ask(Given.Task(TaskState.Working))));
 
-        // The contrast, so this is pinned as a difference between the kinds rather than as
-        // a property of RequestInput generally.
         var ordinary = Given.Task(TaskState.Working);
-        Assert.Single(Expect.Effects(TaskStateMachine.Apply(ordinary,
+        Assert.Empty(Expect.Effects(TaskStateMachine.Apply(ordinary,
             new RequestInput(Given.IncumbentOf(ordinary), InputRequestKind.Question, "which database?"))));
     }
 

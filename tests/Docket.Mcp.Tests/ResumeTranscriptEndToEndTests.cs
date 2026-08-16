@@ -46,7 +46,7 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
     private const string Answer = "target staging-pg; the docker one has no seed data.";
 
     [SkippableFact]
-    public async Task Session_ref_round_trips_from_row_through_park_to_the_resumed_spawn_argv()
+    public async Task Session_ref_round_trips_from_row_through_park_to_the_resumed_session_load()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
@@ -60,7 +60,7 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
         var supervisor = new ProcessSupervisor(
             new MachineConfig(workRoot, TimeSpan.FromSeconds(15), BackPressureThresholds.Default), ring, clock);
         var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
-        var profile = ResumeProfile(); // emit-stream (Terminal) cold + echo-argv resume
+        var profile = AcpProfile();
 
         // A drain loop routes the supervisor's outbound events into the sink exactly
         // as the socket loop would in production. Stopped before the resume spawn.
@@ -147,7 +147,8 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
             {
                 var store = new TaskStore(db, clock);
                 Assert.IsType<StoreResult.Applied>(
-                    await store.AnswerOrWakeAsync(new LeadClaim(team), taskId, leaseMachine: null, Answer, ct));
+                    await store.AnswerOrWakeAsync(
+                        new LeadClaim(team), taskId, leaseMachine: null, Answer, sessionLive: false, ct));
             }
 
             // Stop routing events, then retire the first harness. With the drain
@@ -183,26 +184,40 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
             var resumeDispatch = new DispatchCommand(
                 taskId, "default", WorkerToken: "worker-2",
                 McpConfigJson: """{"mcpServers":{}}""", ResumeSessionRef: resumeRef);
+            // The cold spawn already wrote acp_session.json in this same work dir, so clear
+            // it first: otherwise the wait below is satisfied by the previous instance's
+            // record and the assertion reads a session/new that has nothing to do with the
+            // resume under test.
+            var sessionRecord = Path.Combine(workRoot, taskId.ToString(), "acp_session.json");
+            File.Delete(sessionRecord);
             supervisor.Spawn(resumeDispatch, profile, "m1");
 
-            // ── The resumed spawn argv is built from resume.args with --resume <id> ─
-            var argvPath = Path.Combine(workRoot, taskId.ToString(), "argv");
-            Assert.True(await WaitUntilAsync(() => Task.FromResult(File.Exists(argvPath)), TimeSpan.FromSeconds(15)),
-                "the resumed harness never recorded its argv");
-            var argv = await File.ReadAllLinesAsync(argvPath, ct);
-            var resumeIdx = Array.IndexOf(argv, "--resume");
-            Assert.True(resumeIdx >= 0, $"resumed argv carried no --resume: {string.Join(' ', argv)}");
-            Assert.Equal(HarnessProgram.EmitStreamSessionId, argv[resumeIdx + 1]);
-            // …and the resumed harness still got its MCP config path substituted.
-            var mcpIdx = Array.IndexOf(argv, "--mcp-config");
-            Assert.True(mcpIdx >= 0 && argv[mcpIdx + 1].EndsWith("mcp.json", StringComparison.Ordinal),
-                $"resumed argv carried no --mcp-config path: {string.Join(' ', argv)}");
+            // ── The resumed worker opened its session with session/load, not session/new ─
+            //
+            // This is the same claim the old argv assertion made, at the place it now lives.
+            // A resume that silently became a cold start is the §11 failure this whole area
+            // exists to prevent, and under ACP the only difference between the two is a
+            // method name on a connection nobody else sees — so the harness records it.
+            Assert.True(
+                await WaitUntilAsync(
+                    () => Task.FromResult(
+                        File.Exists(sessionRecord)
+                        && File.ReadAllText(sessionRecord).Contains("\"method\":\"session/load\"", StringComparison.Ordinal)),
+                    TimeSpan.FromSeconds(15)),
+                "the resumed harness never recorded how its session opened");
+            var opened = await File.ReadAllTextAsync(sessionRecord, ct);
+            Assert.Contains("\"method\":\"session/load\"", opened, StringComparison.Ordinal);
+            Assert.Contains(HarnessProgram.EmitStreamSessionId, opened, StringComparison.Ordinal);
 
-            // §13: the answer reached the worker over the authenticated MCP read, and
-            // NOT through argv — argv is readable by any local process via ps and
-            // /proc/<pid>/cmdline, the same reason enrollment tokens never ride it. The
-            // resume prompt stays generic config; the content stays on the plane.
-            var wholeArgv = string.Join(' ', argv);
+            // §13: the answer reached the worker over the authenticated MCP read, and NOT
+            // through argv — argv is readable by any local process via ps and
+            // /proc/<pid>/cmdline, the same reason enrollment tokens never ride it. Under
+            // ACP this is stronger than it was: the argv is now just an entry point, so
+            // there is no per-dispatch content on it to leak in the first place.
+            var argvPath = Path.Combine(workRoot, taskId.ToString(), "argv");
+            var wholeArgv = File.Exists(argvPath)
+                ? string.Join(' ', await File.ReadAllLinesAsync(argvPath, ct))
+                : "";
             Assert.DoesNotContain(Answer, wholeArgv, StringComparison.Ordinal);
             Assert.DoesNotContain(Question, wholeArgv, StringComparison.Ordinal);
         }
@@ -252,16 +267,21 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
     /// EventsSource.Terminal (so the reader captures + emits the session id) and
     /// whose resume argv re-runs the harness in <c>echo-argv</c> mode with the
     /// resume placeholders the supervisor substitutes.</summary>
-    private static ProfileConfig ResumeProfile() =>
+    /// <summary>
+    /// One profile, both legs. §11 resume needs no second argv now: the ref rides the
+    /// dispatch into <c>session/load</c> on the connection the spawn opens, so what used to
+    /// be a cold argv plus a resume argv is a single entry point.
+    /// </summary>
+    private static ProfileConfig AcpProfile() =>
         new(
             "default",
-            [HarnessPath(), "emit-stream"],
-            new StopConfig(StopMode.Signal, MessageTemplate: null, WindDown: TimeSpan.FromSeconds(30)),
-            new ResumeConfig([HarnessPath(), "echo-argv", "--resume", "{session_id}", "--mcp-config", "{mcp_config}"]),
-            new EventsConfig(EventsSource.Terminal, new Dictionary<string, string>()),
+            [HarnessPath(), "--acp"],
+            new StopConfig(WindDown: TimeSpan.FromSeconds(30)),
             new TelemetryConfig(Otel: false, Endpoint: null),
             new LogsConfig(),
-            MaxConcurrent: null);
+            MaxConcurrent: null,
+            Prompt: "Do the task.",
+            FollowUp: "There is new input on your assignment. Read it, then continue.");
 
     private static string NewWorkRoot()
     {

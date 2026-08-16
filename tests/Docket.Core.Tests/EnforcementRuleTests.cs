@@ -201,7 +201,7 @@ public class EnforcementRuleTests
     }
 
     private static readonly string[] CommandNames =
-        ["dispatch", "liveness", "report", "accept", "fail", "request", "answer", "ttl", "wake", "stop-park", "cancel"];
+        ["dispatch", "liveness", "report", "accept", "fail", "request", "answer", "continue", "message", "ttl", "wake", "stop-park", "park", "cancel"];
 
     private static TaskCommand CommandByName(string name, TaskRecord task) => name switch
     {
@@ -212,9 +212,12 @@ public class EnforcementRuleTests
         "fail" => new VerdictFail(Given.Lead),
         "request" => new RequestInput(new WorkerCaller(task.Team, task.Id, WorkerInstanceId.New()), InputRequestKind.Question),
         "answer" => new AnswerInput(Given.Lead, Given.Park),
+        "continue" => new ContinueSession(Given.Lead, "use staging"),
+        "message" => new LeadMessage(Given.Lead, "keep going"),
         "ttl" => new WaitTtlExpired(Given.Park),
         "wake" => new WakeParked(),
         "stop-park" => new StopPreserveAndPark(Given.Lead, Given.Park),
+        "park" => new Park(Given.Lead, Given.Park),
         "cancel" => new Cancel(Given.Lead, CancelDisposition.Preserve),
         _ => throw new ArgumentOutOfRangeException(nameof(name)),
     };

@@ -106,7 +106,7 @@ Do not use profiles to express what kind of work a task is. They describe how an
 
 **You drive the loop; nothing wakes you.** There is no wait or long-poll tool — by design. Poll `get_team_state` on your own pacing to see what's changed: which tasks moved, which are blocked on you (`blocked_on_input`, with `input_kind` telling you what sort of attention it wants and `has_question` that there are words to read), which now show `has_report`. Poll more often when work is in flight and you're the bottleneck, less when the Team is quiet. `get_team_state` stays counts-and-flags (never prose); the text is pulled deliberately, one task at a time — `get_task_report` for a report, `get_task_question` for a question — and treated as untrusted claims (both come back delimited that way). A worker that needs you either blocks (`request_input`) or leaves it in its report for you to pick up on your next poll — the blocking channel for "I can't proceed without you", the report for "here's what I did and what I'd suggest next".
 
-**Answer input requests promptly, and answer them in words.** A worker in `blocked_on_input` occupies a machine and does nothing. If you can't answer quickly, it parks and is redispatched later — at best a resume on the machine that held it, at worst a cold start elsewhere from whatever it persisted. Parks-per-task in the Team view is the number that says whether the Team is starving on your attention.
+**Answer input requests promptly, and answer them in words.** A worker in `blocked_on_input` occupies a machine. Permission waits stay live inside the ACP session. Prose questions may have ended the turn; the process stays for a follow-up `prompt` so the worker can pull `get_task`. Wait TTL is off by default — a forgotten question holds the lease until you answer or you `park_task`. `park_task` is the deliberate release: the session is cancelled and later wake is `session/load`.
 
 The loop is: `get_task_question` to read the ask, then `answer_input_request(task, answer)` with your decision. **Pass the `answer`.** Without it the task is merely unblocked, and the worker resumes knowing it was answered but not with what — so it guesses (a likely failed verification) or asks the same question again (a second park). Answer the question that was asked, and include enough of *why* that the worker can apply your reasoning to the adjacent cases you didn't enumerate; it is capped at 16 KB, so point at a reference rather than pasting. One call handles either state — if the wait TTL already parked the task, answering wakes it the same way. `get_task_question` also shows any answer already given, which is what to check first after reattaching or a takeover, so you don't answer the same question twice with two different decisions.
 
@@ -121,9 +121,9 @@ A request with no question is a worker that told you nothing. You can't answer i
 
 ### Permission requests
 
-On machines whose operator opted into the permission bridge, workers run without `bypassPermissions`, and a tool call their profile doesn't pre-approve comes to you as an approval request instead of a dialog nobody is there to answer. Two things make these unlike every other blocked task:
+Permissions arrive as ACP `session/request_permission`. There is no bypass / always-approve flag on a Docket worker spawn. Today the runner auto-selects the agent's allow option so a headless worker can finish; routing those requests to you (the existing permission-bridge tools) is the next increment. Two things already make a live wait unlike every other blocked task:
 
-**The worker is still running, blocked inside that tool call.** It hasn't parked and won't be redispatched — your verdict resumes it where it stands. So these are the requests to answer first: a slow answer here is a process sitting idle on a machine, not a task waiting in a queue. The wait TTL still applies, and if it expires the worker is told to stop and the task parks.
+**The worker is still running, blocked inside that tool call.** It hasn't parked and won't be redispatched — a verdict (once the bridge is wired) resumes it where it stands. Wait TTL is off by default; use `park_task` if you mean to release the machine.
 
 **You answer with a verdict, not prose.** `get_task_question` shows the tool name and the arguments the harness proposed; then `answer_permission_request(task, 'allow'|'deny', message)`. `answer_input_request` is refused on these — it would requeue a worker that is still alive.
 
@@ -179,9 +179,11 @@ The same rules as any forward apply: only services registered by a currently-wor
 
 - **`preserve`** — persist work in progress, then stop. The default, and correct unless you are certain the work is worthless.
 - **`discard`** — stop and remove the task's workspace. Only for work you know is wrong, and only safe because isolation is task-scoped.
-- **`preserve_and_park`** — persist and park. The task lands in `parked` and is redispatched when you wake it. Resume prefers the machine and directory that held it, where the harness transcript survives; if that machine is gone, the successor cold-starts from whatever was persisted — the disposition is only as good as the worker's last persist.
+- **`preserve_and_park`** — persist and park. Prefer `park_task` when you only mean to release the session: that is the Lead command, not a stop disposition.
 
-The TTL is how long the worker gets before it is killed. Set it to the situation: a worker mid-push needs more than one mid-thought. `TTL=0` kills immediately without waiting, and **the kill path is lossy** — uncommitted work dies. Use it when an agent has stopped being trustworthy, not as a fast default.
+`park_task` cancels the live ACP session (`session/cancel`) and parks. Wake later is `session/load`. Answering a still-live wait is `answer_input_request`, which delivers a follow-up `prompt` so the worker pulls `get_task`.
+
+The TTL on a stop is how long the worker gets after `session/cancel` before it is killed. `TTL=0` kills immediately. **The kill path is lossy** — uncommitted work dies. Use it when an agent has stopped being trustworthy, not as a fast default.
 
 **Do not count on the worker being told.** On the reference `claude -p` profiles the TTL is a kill deadline, not a wind-down window the agent participates in: it is never handed the stop turn, so it will not persist on request or file a closing report. What you get back is whatever it had already reported, plus — for `preserve` and `preserve_and_park` — a resumable transcript, because the plane recorded the session before the kill. So a generous TTL buys the chance that the worker finishes and exits on its own, which is worth buying; it does not buy a graceful handover. If you need to know where a long task stands before you stop it, ask while it is still working (`request_input` answers, its reported progress) rather than expecting the stop to elicit it.
 

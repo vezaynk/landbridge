@@ -77,6 +77,9 @@ public static class TaskStateMachine
             AnswerPermission c => ApplyAnswerPermission(task, c),
             EscalatePermission c => ApplyEscalatePermission(task, c),
             WaitTtlExpired c => ApplyWaitTtlExpired(task, c),
+            Park c => ApplyPark(task, c),
+            ContinueSession c => ApplyContinueSession(task, c),
+            LeadMessage c => ApplyLeadMessage(task, c),
             WakeParked c => ApplyWakeParked(task, c),
             StopPreserveAndPark c => ApplyStopPreserveAndPark(task, c),
             Cancel c => ApplyCancel(task, c),
@@ -286,22 +289,21 @@ public static class TaskStateMachine
             return TransitionResult.Reject(Rule.PermissionRequestNamesItsTool,
                 "a permission request must name the tool it is asking about");
 
-        // A permission request is the one blocked_on_input flavor the asking process
-        // survives (§11): it is parked inside a live tool call, not gone. So it keeps its
-        // registered services and relay forwards — tearing them down here would break a
-        // worker mid-turn for asking a question, and it is about to return to working with
-        // the same instance. Every other kind ends the turn, so leaving working releases
-        // them as it always has.
-        return c.Kind == InputRequestKind.Permission
-            ? TransitionResult.Ok(task with { State = TaskState.BlockedOnInput })
-            : TransitionResult.Ok(
-                task with { State = TaskState.BlockedOnInput },
-                new ClearServicesAndForwards());
+        // Permission is the one live wait inside a tool call: the process cannot
+        // take another turn until a verdict, so it leaves working. A question is
+        // a turn, not a phase — the ACP session stays in working, idle for a
+        // Lead follow-up (ideas/sessions.md stage 3). Services and the instance
+        // stay either way. Park / wait-TTL / a dead-session AnswerInput are the
+        // edges that release them.
+        if (c.Kind == InputRequestKind.Permission)
+            return TransitionResult.Ok(task with { State = TaskState.BlockedOnInput });
+
+        return TransitionResult.Ok(task);
     }
 
     private static TransitionResult ApplyAnswerInput(TaskRecord task, AnswerInput c)
     {
-        if (task.State != TaskState.BlockedOnInput)
+        if (task.State is not (TaskState.BlockedOnInput or TaskState.Working))
             return WrongState(task, TaskState.BlockedOnInput);
 
         if (!IsLeadOrHuman(task, c.Actor))
@@ -334,7 +336,7 @@ public static class TaskStateMachine
         // counter untouched — a Lead answering is not an infrastructure requeue (§6,
         // two counters). A null park means the dispatched machine is gone; the task
         // still requeues and redispatch cold-starts elsewhere.
-        var effects = new List<Effect>();
+        var effects = new List<Effect> { new ClearServicesAndForwards() };
         if (task.CurrentInstance is { } instance)
             effects.Add(new RevokeWorkerInstanceToken(instance));
         if (c.Park is { } park)
@@ -359,7 +361,15 @@ public static class TaskStateMachine
     private static TransitionResult ApplyAnswerPermission(TaskRecord task, AnswerPermission c)
     {
         if (task.State != TaskState.BlockedOnInput)
+        {
+            // A question stays working; a verdict on it is the crossed-path
+            // refusal, not a wrong-state one.
+            if (task.State == TaskState.Working && c.PendingKind != InputRequestKind.Permission)
+                return TransitionResult.Reject(Rule.PermissionVerdictAnswersPermissionRequests,
+                    "a permission verdict answers a permission request; this task is waiting on "
+                    + (c.PendingKind is { } kind ? $"{kind} input" : "input of no recorded kind"));
             return WrongState(task, TaskState.BlockedOnInput);
+        }
 
         if (c.PendingKind != InputRequestKind.Permission)
             return TransitionResult.Reject(Rule.PermissionVerdictAnswersPermissionRequests,
@@ -438,10 +448,10 @@ public static class TaskStateMachine
 
     private static TransitionResult ApplyWaitTtlExpired(TaskRecord task, WaitTtlExpired c)
     {
-        if (task.State != TaskState.BlockedOnInput)
+        if (task.State is not (TaskState.BlockedOnInput or TaskState.Working))
             return WrongState(task, TaskState.BlockedOnInput);
 
-        var effects = new List<Effect> { new WriteParkRecord(c.Park) };
+        var effects = new List<Effect> { new WriteParkRecord(c.Park), new ClearServicesAndForwards() };
         if (task.CurrentInstance is { } instance)
             effects.Insert(0, new RevokeWorkerInstanceToken(instance));
 
@@ -453,6 +463,92 @@ public static class TaskStateMachine
                 Park = c.Park,
             },
             effects.ToArray());
+    }
+
+    private static TransitionResult ApplyPark(TaskRecord task, Park c)
+    {
+        if (task.State is not (TaskState.Working or TaskState.BlockedOnInput))
+            return WrongState(task, TaskState.Working);
+
+        var authorized = c.Actor switch
+        {
+            HumanSession => true,
+            LeadClaim lead => lead.Team == task.Team,
+            _ => false,
+        };
+        if (!authorized)
+            return TransitionResult.Reject(Rule.ActorLacksAuthority,
+                "park is for the Lead of this Team or a human");
+
+        var effects = new List<Effect> { new WriteParkRecord(c.Record), new ClearServicesAndForwards() };
+        if (task.CurrentInstance is { } instance)
+            effects.Insert(0, new RevokeWorkerInstanceToken(instance));
+
+        return TransitionResult.Ok(
+            task with
+            {
+                State = TaskState.Parked,
+                CurrentInstance = null,
+                Park = c.Record,
+            },
+            effects.ToArray());
+    }
+
+    private static TransitionResult ApplyContinueSession(TaskRecord task, ContinueSession c)
+    {
+        if (task.State is not (TaskState.BlockedOnInput or TaskState.Working))
+            return WrongState(task, TaskState.BlockedOnInput);
+
+        if (!IsLeadOrHuman(task, c.Actor))
+            return TransitionResult.Reject(Rule.ActorLacksAuthority,
+                "input requests are answered by the Lead or a human");
+
+        if (c.PendingKind == InputRequestKind.Permission)
+            return TransitionResult.Reject(Rule.PermissionVerdictAnswersPermissionRequests,
+                "this task is waiting on a permission verdict, not prose; answer it with allow or deny");
+
+        if (OverCap(c.Answer, AnswerInput.MaxAnswerBytes, Rule.AnswerWithinSizeCap,
+                "answer",
+                "answer the decision and point at a reference for the detail")
+            is { } tooLong)
+            return tooLong;
+
+        if (task.CurrentInstance is null)
+            return TransitionResult.Reject(Rule.InvalidSourceState,
+                "continue-session needs the incumbent still on the row");
+
+        return TransitionResult.Ok(task with { State = TaskState.Working });
+    }
+
+    /// <summary>
+    /// working → working: the Lead spoke without being asked. The session is
+    /// live; this writes the words and doorbells. Not a dispatch and not a
+    /// park. Permission still needs a verdict, not prose.
+    /// </summary>
+    private static TransitionResult ApplyLeadMessage(TaskRecord task, LeadMessage c)
+    {
+        if (task.State != TaskState.Working)
+            return WrongState(task, TaskState.Working);
+
+        if (!IsLeadOrHuman(task, c.Actor))
+            return TransitionResult.Reject(Rule.ActorLacksAuthority,
+                "only the Lead of this Team or a human can message a live worker");
+
+        if (c.PendingKind == InputRequestKind.Permission)
+            return TransitionResult.Reject(Rule.PermissionVerdictAnswersPermissionRequests,
+                "this task is waiting on a permission verdict, not prose; answer it with allow or deny");
+
+        if (task.CurrentInstance is null)
+            return TransitionResult.Reject(Rule.InvalidSourceState,
+                "lead-message needs the incumbent still on the row");
+
+        if (OverCap(c.Text, AnswerInput.MaxAnswerBytes, Rule.AnswerWithinSizeCap,
+                "message",
+                "say what the worker should do and point at a reference for the detail")
+            is { } tooLong)
+            return tooLong;
+
+        return TransitionResult.Ok(task);
     }
 
     private static TransitionResult ApplyWakeParked(TaskRecord task, WakeParked c)

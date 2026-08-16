@@ -63,19 +63,38 @@ internal sealed class ProfileDto
 {
     public string? Name { get; set; }
     public List<string>? Spawn { get; set; }
+
+    // §10 the worker's opening turn, sent as `session/prompt`. An ACP agent takes no prompt
+    // on argv, so this is where a worker is told what it is. Same `{...}` substitutions as
+    // the spawn argv. Required.
+    public string? Prompt { get; set; }
+
+    // §11 / ideas/sessions.md: the turn sent to wake a live session when there is new input
+    // on the assignment. Configuration, never content — the answer itself stays on the
+    // assignment and is pulled over the authenticated MCP call, so this text only ever says
+    // "go read", and must name the docket tools the way THIS harness spells them.
+    public string? FollowUp { get; set; }
+
+    // §10: which of the agent's declared ACP authMethods to use when it refuses session/new
+    // with "authentication required". Only consulted on that refusal, so a profile whose
+    // agent needs no authentication (claude-agent-acp declares none) leaves it unset. Unset
+    // on an agent that DOES need it picks the first method the agent declared, which is the
+    // only preference signal ACP gives; name one here when that guess is wrong — codex-acp
+    // offers `api-key` and `chat-gpt`, and only the first works unattended.
+    public string? AuthMethod { get; set; }
+
+    // ACP session/set_config_option pins, keyed by the agent's advertised
+    // configId. Consulted after session/new (or session/load): each pair is sent
+    // only when that session advertised a select listing the exact value.
+    // OpenCode ACP otherwise defaults to opencode/big-pickle and ignores
+    // opencode.json — `{ "model": "anthropic/claude-haiku-4-5-20251001" }` is
+    // the pin. An unadvertised key is skipped, not an error.
+    public Dictionary<string, string>? ConfigOptions { get; set; }
+
     public StopDto? Stop { get; set; }
-    public ResumeDto? Resume { get; set; }
-    public EventsDto? Events { get; set; }
     public TelemetryDto? Telemetry { get; set; }
     public LogsDto? Logs { get; set; }
     public int? MaxConcurrent { get; set; }
-
-    // §10 dead-man switch: `deadman` (hold the stdin pipe open for the worker's whole
-    // life — the default and every profile's behaviour before this key existed) or
-    // `closed` (EOF right after spawn) for a harness that blocks reading piped stdin.
-    // A bare string rather than a block: there is one decision here and no room for a
-    // second, and a `stdin: closed` line is what a human types.
-    public string? Stdin { get; set; }
 
     // §10 agent-started processes: whether a task on this profile may call start_process, and
     // how many the machine may hold. Off by default — enabling it is the machine owner's
@@ -121,24 +140,11 @@ internal sealed class ProfileProcessesDto
 
 internal sealed class StopDto
 {
-    public string? Mode { get; set; }
-    public string? Message { get; set; }
+    // No `mode` and no `message`. A stop is `session/cancel` on the live connection, which
+    // the agent is specified to honour, followed by the deadline's portable tree-kill —
+    // there is nothing left for a mode to select or a template to fill. Configs still
+    // carrying either key parse fine (unknown members are ignored) and now say nothing.
     public double? WindDownSeconds { get; set; }
-
-    // No `signal` property: the deadline's kill is always the portable tree-kill, so a
-    // signal name had nothing to select. A config still carrying the key parses fine —
-    // unknown members are ignored — and now says as little as it always did.
-}
-
-internal sealed class ResumeDto
-{
-    public List<string>? Args { get; set; }
-}
-
-internal sealed class EventsDto
-{
-    public string? Source { get; set; }
-    public Dictionary<string, string>? Mapping { get; set; }
 }
 
 internal sealed class TelemetryDto

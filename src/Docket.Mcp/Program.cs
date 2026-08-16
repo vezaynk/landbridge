@@ -128,11 +128,9 @@ builder.Services.AddSingleton(sp => new DispatchService(
     noProgressCeiling: builder.Configuration.GetValue<TimeSpan?>("Docket:NoProgressCeiling")));
 builder.Services.AddHostedService(sp => sp.GetRequiredService<DispatchService>());
 
-// §11 wait-TTL sweeper: parks a task whose Lead never answered (wait TTL) and
-// requeues one whose machine went silent while it waited. A hosted service on a
-// TimeProvider timer, mirroring DispatchService; the intervals are configurable
-// (TimeSpan format, e.g. "00:30:00") and fall back to the sweeper's documented
-// defaults when unset.
+// §11 wait-TTL sweeper: requeues a task whose machine went silent while it
+// waited. Auto-park on wait TTL is off by default (a live ACP session is held
+// until a Lead answers or park_task); set Docket:WaitTtl to restore a timer.
 builder.Services.AddHostedService(sp => new WaitTtlSweeper(
     sp.GetRequiredService<IServiceScopeFactory>(),
     sp.GetRequiredService<RunnerConnectionRegistry>(),
@@ -208,6 +206,11 @@ app.UseAuthorization();
 // The MCP endpoint requires an authenticated principal; tools resolve their
 // caller from it.
 app.MapMcp().RequireAuthorization();
+
+// ACP session/request_permission lands in docketd, which is not an MCP client.
+// POST /worker/permission is the same PermissionRelay the MCP request_permission
+// tool runs, authenticated with the worker bearer.
+app.MapWorkerPermissionEndpoint();
 
 // The control plane ↔ runner WebSocket (machine-only, §10).
 app.MapRunnerEndpoint();

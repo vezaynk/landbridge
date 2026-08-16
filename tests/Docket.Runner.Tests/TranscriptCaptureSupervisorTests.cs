@@ -45,18 +45,18 @@ public sealed class TranscriptCaptureSupervisorTests : IDisposable
                 lock (drained) drained.Add(item.Event);
         });
 
-        // Terminal events + capture on: one stdout read maps events AND tees the
-        // transcript; stderr is captured on its own drain.
+        // Capture on: stdout is teed to the transcript, stderr captured on its own drain.
         supervisor.Spawn(
             TestKit.Dispatch(task),
-            TestKit.Profile("emit-both", events: EventsSource.Terminal, capture: true),
+            TestKit.Profile("emit-both", capture: true),
             "machine-cap");
 
-        // Tee, not divert: the same stdout still drains into ToolCallEvents in order.
-        Assert.True(
-            await TestKit.WaitUntilAsync(() => ToolNames(drained).Count >= 2, TimeSpan.FromSeconds(20)),
-            "event mapping stopped firing while capturing");
-        Assert.Equal(HarnessProgram.EmitStreamToolNames, ToolNames(drained));
+        // No event assertion here any more. Capture and event-mapping were two consumers of
+        // one stdout read under stream mode, and this fact guarded against capture starving
+        // the reader. Under ACP the drain IS the protocol client and this harness mode speaks
+        // no ACP, so what remains to prove is the tee — which the transcript assertions below
+        // do. That the ACP drain also tees while conversing is covered by the E2E tier, where
+        // a real agent and real capture run together.
 
         var ndjson = Path.Combine(TaskDir(task), "0001.ndjson");
         var stderr = Path.Combine(TaskDir(task), "0001.stderr");
@@ -100,7 +100,7 @@ public sealed class TranscriptCaptureSupervisorTests : IDisposable
         // mapped exactly as before, and nothing is written under the state dir.
         supervisor.Spawn(
             TestKit.Dispatch(task),
-            TestKit.Profile("emit-stream", events: EventsSource.Terminal),
+            TestKit.Profile("emit-stream"),
             "machine-cap");
 
         // Prove the harness actually ran (its started marker in the work dir).
@@ -124,7 +124,7 @@ public sealed class TranscriptCaptureSupervisorTests : IDisposable
         // First instance.
         supervisor.Spawn(
             TestKit.Dispatch(task),
-            TestKit.Profile("emit-stream", events: EventsSource.Terminal, capture: true),
+            TestKit.Profile("emit-stream", capture: true),
             "machine-cap");
         var first = Path.Combine(TaskDir(task), "0001.ndjson");
         Assert.True(
@@ -141,7 +141,7 @@ public sealed class TranscriptCaptureSupervisorTests : IDisposable
         // Second instance of the SAME task id → the next ordinal, predecessor untouched.
         supervisor.Spawn(
             TestKit.Dispatch(task),
-            TestKit.Profile("emit-stream", events: EventsSource.Terminal, capture: true),
+            TestKit.Profile("emit-stream", capture: true),
             "machine-cap");
         var second = Path.Combine(TaskDir(task), "0002.ndjson");
         Assert.True(
@@ -164,7 +164,7 @@ public sealed class TranscriptCaptureSupervisorTests : IDisposable
         // a marker, but the worker keeps running — logging never kills the process.
         supervisor.Spawn(
             TestKit.Dispatch(task),
-            TestKit.Profile("emit-both", events: EventsSource.Terminal, capture: true, maxBytes: 200),
+            TestKit.Profile("emit-both", capture: true, maxBytes: 200),
             "machine-cap");
         Assert.True(supervisor.TryGet(task, out var supervised));
 
@@ -195,7 +195,7 @@ public sealed class TranscriptCaptureSupervisorTests : IDisposable
         // solely to capture the transcript (the capture-only drain path).
         supervisor.Spawn(
             TestKit.Dispatch(task),
-            TestKit.Profile("emit-stream", events: EventsSource.None, capture: true),
+            TestKit.Profile("emit-stream", capture: true),
             "machine-cap");
 
         var ndjson = Path.Combine(TaskDir(task), "0001.ndjson");

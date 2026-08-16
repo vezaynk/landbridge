@@ -7,15 +7,13 @@ using Microsoft.EntityFrameworkCore;
 namespace Docket.MultiMachine.Tests;
 
 /// <summary>
-/// The multi-machine collaboration crown (spec §8.3), <b>real-<c>claude -p</c> tier</b>:
+/// The multi-machine collaboration crown (spec §8.3), <b>real Claude ACP tier</b>:
 /// the same real plane + real relay + N real <c>docketd</c> rigs the scripted
 /// <see cref="MultiMachineCollaborationTests"/> stand up, but each machine's
-/// <c>default</c> profile spawns a REAL <c>claude -p</c> agent instead of the no-LLM
+/// <c>default</c> profile spawns <c>claude-agent-acp</c> instead of the no-LLM
 /// <c>Docket.CollabHarness</c>. Nothing below the spawn seam changes — this is the §10
 /// config-only harness promise exercised for real: the worker learns its assignment
-/// from the injected <c>--mcp-config</c> + <c>get_task</c>, does the work, and reports
-/// back, driving the task through the live control plane exactly as a scripted worker
-/// would (the recipe proven by the S2 operator spike, 2026-07-29).
+/// from <c>session/new</c> MCP + <c>get_task</c>, does the work, and reports back.
 ///
 /// <para><b>Opt-in, token-spending, and deliberately kept out of the default suite.</b>
 /// The real-worker facts SKIP cleanly unless the run opted in — an Anthropic key in the
@@ -25,9 +23,8 @@ namespace Docket.MultiMachine.Tests;
 /// spends zero tokens. See <see cref="RequireRealClaude"/> for why the two paths are not
 /// interchangeable. The dedicated CI job (see
 /// <c>.github/workflows/ci.yml</c>) sets the key and runs <em>only</em> this trait. Kept
-/// tiny and turn-capped (<c>--model haiku</c>, small <c>--max-turns</c>) and tolerant of a
-/// single flaked worker turn (bounded redispatch) so a full run costs a few cents and a
-/// lone haiku hiccup doesn't red the job.</para>
+/// tiny and tolerant of a single flaked worker turn (bounded redispatch) so a full
+/// run costs a few cents and a lone haiku hiccup doesn't red the job.</para>
 ///
 /// <para>The portable minimum bar — verifying + session ref, usage/cost, park → resume —
 /// lives in <see cref="RealHarnessBar"/> and is wrapped below so this class's
@@ -50,13 +47,8 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// <summary>Bounded redispatch: a worker that succeeds does so on the first try in
     /// well under a minute (A's leg is ~30s in CI); these cover the occasional haiku turn
     /// that ends without the tool call, without letting the job run away.</summary>
-    private const int MaxAttempts = 3;
-    private static readonly TimeSpan PerLegBudget = TimeSpan.FromMinutes(8);
-
-    /// <summary>The allow-listed docket tools the worker needs — and nothing else, so a
-    /// stray step can't wander off spending turns. <c>--strict-mcp-config</c> keeps the
-    /// injected <c>docket</c> server the only MCP surface (never the operator's own).</summary>
-    private const string AllowedTools = "mcp__docket__get_task,mcp__docket__report_result";
+    private const int MaxAttempts = RealHarnessBar.MaxAttempts;
+    private static readonly TimeSpan PerLegBudget = RealHarnessBar.PerLegBudget;
 
     /// <summary>
     /// The standing rule every prompt here carries, and it is a fix for a real failure rather
@@ -117,15 +109,15 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
 
     public Task DisposeAsync() => Task.CompletedTask;
 
-    [SkippableFact]
+    [SkippableFact(Timeout = RealHarnessBar.EchoTimeoutMs)]
     public Task Real_worker_drives_a_task_to_verifying_on_the_fleet() =>
         RealHarnessBar.DriveToVerifyingAsync(pg, RealHarnessProfiles.Claude(RequireRealClaude()));
 
-    [SkippableFact]
+    [SkippableFact(Timeout = RealHarnessBar.EchoTimeoutMs)]
     public Task Real_worker_reports_usage_the_harness_emits() =>
         RealHarnessBar.ReportsUsageAsync(pg, RealHarnessProfiles.Claude(RequireRealClaude()));
 
-    [SkippableFact]
+    [SkippableFact(Timeout = RealHarnessBar.TwoLegTimeoutMs)]
     public Task Real_worker_resumes_its_transcript_after_a_park_and_reports_a_memory_only_nonce() =>
         RealHarnessBar.ResumesAfterParkAsync(pg, RealHarnessProfiles.Claude(RequireRealClaude()));
 
@@ -138,14 +130,15 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// (B's description uses the same proven echo template as A — the handoff lives in the
     /// test threading A's committed token into B, not in extra prose for the worker to reason about.)
     /// </summary>
-    [SkippableFact]
+    [SkippableFact(Timeout = RealHarnessBar.TwoLegTimeoutMs)]
     public async Task Real_claude_workers_hand_off_a_token_across_two_machines()
     {
-        var claudeBin = RequireRealClaude();
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(20));
+        var profile = RealHarnessProfiles.Claude(RequireRealClaude());
+        using var cts = new CancellationTokenSource(RealHarnessBar.TwoLegTimeout);
         var ct = cts.Token;
 
-        await using var rig = new FleetRig(pg, ClaudeWorkerSpawn(claudeBin), files: ClaudeMcpFile);
+        await using var rig = new FleetRig(
+            pg, profile.AcpSpawn, prompt: profile.EchoPrompt, followUp: profile.FollowUpTurn);
         await rig.StartAsync(ct);
         await rig.AddMachineAsync("A");
         await rig.AddMachineAsync("B");
@@ -233,11 +226,11 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// profile config. A cold-started continuation reaches verifying too; only a resumed one
     /// reaches it with this value.</para>
     /// </summary>
-    [SkippableFact]
+    [SkippableFact(Timeout = RealHarnessBar.TwoLegTimeoutMs)]
     public async Task Real_claude_continues_a_finished_tasks_conversation_from_that_tasks_directory()
     {
         var claudeBin = RequireRealClaude();
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(20));
+        using var cts = new CancellationTokenSource(RealHarnessBar.TwoLegTimeout);
         var ct = cts.Token;
 
         // The value the first worker is told, and — separately — the part of it that is the
@@ -255,13 +248,11 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
             // The first task's worker is told the nonce and reports something else; the
             // continuation's is asked for the nonce back. Same turn headroom as the park fact,
             // for the same reason.
-            spawnArgv: StreamingSpawn(
-                claudeBin, RememberThenWorkPrompt(nonce), ParkTools, "--max-turns", "14"),
-            resumeArgv: StreamingSpawn(
-                claudeBin, ContinuationReportPrompt, ParkTools, "--resume", "{session_id}",
-                "--max-turns", "14"),
-            terminalEvents: true,
-            files: ClaudeMcpFile);
+            // One entry point, both legs: the continuation resumes with session/load on the
+            // connection its spawn opens, so there is no second argv to declare.
+            spawnArgv: ["claude-agent-acp"],
+            prompt: RememberThenWorkPrompt(nonce),
+            followUp: ContinuationReportPrompt);
         await rig.StartAsync(ct);
         await rig.AddMachineAsync("A");
 
@@ -308,8 +299,9 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         // leg is allowed its bounded retry (a haiku that ends a turn without the tool call), and
         // a retry resumes rather than re-briefs, so an extra instance carries the same id and is
         // not a different outcome. Zero instances would be, hence the non-empty check.
-        var firstInstances = rig.InstanceSessionIdsOn("A", first);
-        var continuationInstances = rig.InstanceSessionIdsOn("A", second);
+        var sessionIdOf = RealHarnessProfiles.Claude(claudeBin).SessionIdFromLine;
+        var firstInstances = rig.InstanceSessionIdsOn("A", first, sessionIdOf);
+        var continuationInstances = rig.InstanceSessionIdsOn("A", second, sessionIdOf);
         Assert.NotEmpty(firstInstances);
         Assert.NotEmpty(continuationInstances);
         Assert.All(firstInstances, id => Assert.Equal(firstSession, id));
@@ -317,113 +309,6 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         Assert.Equal("A", rig.MachineRanOn(second));
     }
 
-    /// <summary>
-    /// What a graceful <c>stop</c> actually is against a real <c>claude -p</c> worker — and it
-    /// is <b>not</b> a turn the agent reads. This fact pins the observed behaviour rather than
-    /// the hoped-for one, because the gap between them is the finding.
-    ///
-    /// <para>docketd's message-mode stop writes the stop turn to the worker's held-open stdin
-    /// and acks <see cref="StopDelivery.MessageWritten"/>. The only precondition it can check
-    /// is that stdin was redirected — which is always true, because that same pipe is the
-    /// dead-man's switch (§10). So the write happens for <em>any</em> harness, including one
-    /// that never reads stdin. A <c>claude -p "&lt;prompt&gt;"</c> worker is exactly that: the
-    /// prompt arrives as argv (§13 — it must, and stdin must stay unread for the dead-man
-    /// pipe), so <c>--input-format text</c> is in force and the written line is never read.
-    /// The bytes land in a pipe nobody is reading and the worker runs on until the wind-down
-    /// deadline kills it.</para>
-    ///
-    /// <para>So the assertions are: the ack reports a turn was <em>written</em>, and the worker
-    /// nevertheless dies by the deadline with a non-zero (killed) exit rather than winding down
-    /// on its own. Those two coexisting is the point — it is why the ack is worded as an
-    /// action docketd took and not as an effect on the agent, a distinction the enum name now
-    /// carries. Before #103 this same run acked <c>Message</c>, which read as "the agent was
-    /// told to wind down" and was false here; this fact is what keeps that reading from
-    /// growing back.</para>
-    ///
-    /// <para>What makes <c>preserve</c> mean anything here is therefore the plane's record,
-    /// not the agent's cooperation — the harness session ref survives the kill, so the
-    /// transcript remains resumable, which the fact above proves end to end.</para>
-    /// </summary>
-    [SkippableFact]
-    public async Task A_stop_reaches_a_real_claude_worker_as_a_kill_deadline_not_as_a_turn_it_reads()
-    {
-        var claudeBin = RequireRealClaude();
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(10));
-        var ct = cts.Token;
-
-        await using var rig = new FleetRig(
-            pg,
-            spawnArgv: StreamingSpawn(claudeBin, WorkerPrompt, AllowedTools),
-            terminalEvents: true,
-            files: ClaudeMcpFile,
-            // Deliberately the configuration the reference docs used to recommend and no longer
-            // do (#103): mode message, with a stream-json user turn carrying the disposition.
-            // Keeping it here is the point — this profile makes the claim, and the run below is
-            // what shows claude -p cannot honour it. WindDown is short so the deadline, not the
-            // test's patience, is what ends the worker.
-            stop: new StopConfig(
-                StopMode.Message,
-                MessageTemplate: ClaudeStopTurnTemplate, WindDown: TimeSpan.FromSeconds(5)));
-        await rig.StartAsync(ct);
-        await rig.AddMachineAsync("A");
-
-        var task = await rig.CreateTaskAsync(EchoDescription("A", NewToken()), ct);
-
-        // Wait until the worker is demonstrably mid-turn — it has reported a session ref, so
-        // its harness is up and streaming — before stopping it. Stopping earlier would be a
-        // race with the spawn rather than a test of the stop.
-        Assert.True(
-            await rig.DispatchUntilAsync(
-                task, "A", async () => await rig.HarnessSessionRefAsync(task, ct) is { Length: > 0 },
-                MaxAttempts, PerLegBudget, ct),
-            "the real claude worker never reported a session ref, so it was never observably working.\n"
-            + await rig.RealWorkerDiagnosticsAsync(task, ct));
-
-        var sessionRef = await rig.HarnessSessionRefAsync(task, ct);
-        Assert.True(
-            await rig.SendStopAsync(
-                "A", task, TimeSpan.FromMinutes(1), StopDisposition.PreserveAndPark,
-                "characterizing real-harness stop delivery", ct),
-            "the stop was not delivered to the machine holding the task");
-
-        // docketd reports what it did: the turn was written to stdin. It claims nothing about
-        // the harness having read it, and the rest of this fact is why it must not.
-        var ack = rig.StopAckFor(task);
-        Assert.NotNull(ack);
-        Assert.True(ack!.Value.Actioned);
-        Assert.Equal(StopDelivery.MessageWritten, ack.Value.Delivery);
-
-        // And yet the agent never acts on it: the worker is taken down at the wind-down
-        // deadline instead of winding down and exiting cleanly.
-        Assert.True(
-            await FleetRig.WaitUntilAsync(
-                () => Task.FromResult(rig.WorkerObserved(task) is { Exits: > 0 }),
-                TimeSpan.FromMinutes(2)),
-            "the worker never ended, so the wind-down deadline did not fire either.\n"
-            + await rig.RealWorkerDiagnosticsAsync(task, ct));
-
-        var observed = rig.WorkerObserved(task)!.Value;
-        Assert.NotEqual(0, observed.LastExitCode);   // killed at the deadline, not a clean wind-down
-
-        // The state is deliberately NOT asserted here, and a `Verifying` outcome is not a
-        // failure. <see cref="FleetRig.SendStopAsync"/> sends the StopCommand straight to the
-        // machine through the connection registry; it never applies the plane's
-        // StopPreserveAndPark transition, so nothing revokes the worker instance token and the
-        // task stays Working. A `report_result` arriving before the deadline is therefore
-        // entirely legal, and Working->Verifying is the plane behaving correctly — so a worker
-        // fast enough to finish its two-tool-call assignment inside the 5s wind-down lands in
-        // Verifying legitimately. An earlier `Assert.NotEqual(TaskState.Verifying, …)` here read
-        // that legitimate finish as a defect and made this fact a race against claude's speed.
-        //
-        // It also discriminated nothing: the line above is what proves the stop was ignored. An
-        // agent that HAD read the injected turn would wind down and exit 0, so a non-zero exit
-        // already says it did not. Whether it got as far as report_result first only measures
-        // how fast it was, which is not what this fact is about. Do not reinstate it.
-
-        // Preservation is the plane's record, not the agent's cooperation: the ref outlives the
-        // kill, so the transcript stays resumable.
-        Assert.Equal(sessionRef, await rig.HarnessSessionRefAsync(task, ct));
-    }
 
     // ── §10 agent-started processes, with a real agent on both halves ───────────
 
@@ -445,19 +330,20 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// provable only from what the agent was told, which is also the only place an agent could
     /// read it.</para>
     /// </summary>
-    [SkippableFact]
+    [SkippableFact(Timeout = RealHarnessBar.TwoLegTimeoutMs)]
     public async Task A_real_claude_process_outlives_its_task_and_a_later_real_worker_finds_and_stops_it()
     {
-        var claudeBin = RequireRealClaude();
+        RequireRealClaude();
         FleetRig.PublishDotnetRootForSpawnedApphosts();
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(20));
+        using var cts = new CancellationTokenSource(RealHarnessBar.TwoLegTimeout);
         var ct = cts.Token;
 
         await using var rig = new FleetRig(
             pg,
-            spawnArgv: StreamingSpawn(claudeBin, StepwiseWorkerPrompt, ProcessTools, "--max-turns", "14"),
+            spawnArgv: ["claude-agent-acp"],
             agentProcesses: true,
-            files: ClaudeMcpFile);
+            prompt: StepwiseWorkerPrompt,
+            followUp: "There is new input on your assignment. Call mcp__docket__get_task to read it, then continue.");
         await rig.StartAsync(ct);
         await rig.AddMachineAsync("A");
 
@@ -522,19 +408,20 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// it exempts such a task from the progress ceiling. The listener itself is machine-scoped
     /// and would outlive the worker; only the <em>advertisement</em> is tied to the turn.</para>
     /// </summary>
-    [SkippableFact]
+    [SkippableFact(Timeout = RealHarnessBar.TwoLegTimeoutMs)]
     public async Task Real_claude_workers_reach_a_registered_service_across_two_machines()
     {
-        var claudeBin = RequireRealClaude();
+        RequireRealClaude();
         FleetRig.PublishDotnetRootForSpawnedApphosts();
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(20));
+        using var cts = new CancellationTokenSource(RealHarnessBar.TwoLegTimeout);
         var ct = cts.Token;
 
         await using var rig = new FleetRig(
             pg,
-            spawnArgv: StreamingSpawn(claudeBin, StepwiseWorkerPrompt, ServiceTools, "--max-turns", "16"),
+            spawnArgv: ["claude-agent-acp"],
             agentProcesses: true,
-            files: ClaudeMcpFile);
+            prompt: StepwiseWorkerPrompt,
+            followUp: "There is new input on your assignment. Call mcp__docket__get_task to read it, then continue.");
         await rig.StartAsync(ct);
         await rig.AddMachineAsync("A");
         await rig.AddMachineAsync("B");
@@ -574,118 +461,8 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         Assert.Equal("B", rig.MachineRanOn(consumer));
     }
 
-    /// <summary>
-    /// §11's permission bridge against a real <c>claude -p</c> worker running <b>without</b>
-    /// <c>bypassPermissions</c> — the fact the whole feature exists for, and the only one that
-    /// can prove it, because the request shape and the response shape are the harness's rather
-    /// than ours.
-    ///
-    /// <para>The worker is given a task it cannot finish with the tools it was allowed. Claude
-    /// Code's own permission machinery therefore calls <c>request_permission</c>, which blocks
-    /// the task <c>blocked_on_input</c> with the tool name and proposed arguments on the row —
-    /// while the asking process stays alive inside that call, which is what distinguishes this
-    /// wait from every other one in Docket. A Lead verdict then resumes it in place and the
-    /// worker finishes. Nothing here asserts on the model's prose: the assertions are the row's
-    /// recorded tool name, the state transitions, and the fact that the command's output could
-    /// only have been produced by actually running it.</para>
-    /// </summary>
-    [SkippableFact]
-    public async Task Real_claude_without_bypass_routes_its_permission_prompt_through_docket_and_finishes()
-    {
-        var claudeBin = RequireRealClaude();
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(15));
-        var ct = cts.Token;
-
-        var token = NewToken();
-        await using var rig = new FleetRig(
-            pg, spawnArgv: PermissionBridgeSpawn(claudeBin), terminalEvents: true, files: ClaudeMcpFile);
-        await rig.StartAsync(ct);
-        await rig.AddMachineAsync("A");
-
-        var task = await rig.CreateTaskAsync(ShellThenReportDescription(token), ct);
-        await rig.DispatchToAsync("A", ct);
-
-        // The bridge fires: the harness could not run Bash on its own, so it asked. This is
-        // Claude Code calling our MCP tool, with the tool name and arguments it chose.
-        (string? Tool, string? Input)? request = null;
-        Assert.True(
-            await rig.DispatchUntilAsync(
-                task, "A",
-                async () => (request = await rig.PendingPermissionAsync(task, ct)) is not null,
-                MaxAttempts, PerLegBudget, ct),
-            "the real claude worker never routed a permission prompt through Docket.\n"
-            + await rig.RealWorkerDiagnosticsAsync(task, ct));
-
-        Assert.Equal("Bash", request!.Value.Tool);
-        // The proposed arguments are relayed verbatim, which is what makes them worth showing a
-        // person: the command an approver would be approving is right there.
-        Assert.Contains(token, request.Value.Input ?? "");
-        // Still the incumbent: a permission wait does not requeue, so there is no successor and
-        // no park record.
-        Assert.Equal(TaskState.BlockedOnInput, await rig.StateAsync(task, ct));
-        Assert.Null((await rig.ParkAsync(task, ct)).Machine);
-
-        // The Lead's verdict, and then the worker carries on inside the very tool call it
-        // blocked in. Allowing in a loop because a haiku worker may need more than one tool it
-        // was not pre-approved for; every one of them is a real trip through the bridge.
-        var allowed = 0;
-        var finished = await rig.DispatchUntilAsync(
-            task, "A",
-            async () =>
-            {
-                if (await rig.StateAsync(task, ct) == TaskState.Verifying) return true;
-                if (await rig.PendingPermissionAsync(task, ct) is not null)
-                {
-                    await rig.AnswerPermissionAsync(task, "allow", null, ct);
-                    allowed++;
-                }
-                return await rig.StateAsync(task, ct) == TaskState.Verifying;
-            },
-            MaxAttempts, PerLegBudget, ct);
-
-        Assert.True(
-            finished,
-            $"the worker never completed after {allowed} permission approval(s).\n"
-            + await rig.RealWorkerDiagnosticsAsync(task, ct));
-        Assert.True(allowed >= 1, "no permission request was ever approved");
-
-        // The output could only exist if the approved command actually ran — the approval is
-        // load-bearing, not decorative.
-        Assert.Contains(token, await rig.ResultReferenceAsync(task, ct) ?? "");
-        Assert.Equal("A", rig.MachineRanOn(task));
-
-        // The audit trail a person would read afterwards: the ask, and the Lead's own approval.
-        await using var db = pg.NewContext();
-        var events = await db.TaskEvents.AsNoTracking()
-            .Where(e => e.TaskId == task.Value).OrderBy(e => e.Seq).ToListAsync(ct);
-        Assert.Contains(events, e => e.Kind == nameof(RequestInput)
-                                     && e.InputKind == InputRequestKind.Permission);
-        Assert.Contains(events, e => e.Kind == nameof(AnswerPermission)
-                                     && e.PermissionVerdict == PermissionVerdict.Allow
-                                     && e.PermissionAnswerer == PermissionAnswerer.Lead);
-    }
 
     // ── Recipe + descriptions ───────────────────────────────────────────────────
-
-    private const string ClaudeMcpPath = RealHarnessProfiles.ClaudeMcpPath;
-    private static readonly ProfileFile[] ClaudeMcpFile = RealHarnessProfiles.ClaudeMcpFile;
-
-    /// <summary>
-    /// The validated real-<c>claude -p</c> worker argv (S2 spike, 2026-07-29): headless
-    /// print mode, a per-task MCP file written by <c>files[]</c> as the ONLY MCP
-    /// server (<c>--strict-mcp-config</c>), a minimal docket tool allow-list, haiku,
-    /// and a tight turn cap. Auth is the bearer <c>{worker_token}</c> in that file
-    /// plus the ambient <c>ANTHROPIC_API_KEY</c> the spawned process inherits.
-    /// </summary>
-    private static string[] ClaudeWorkerSpawn(string claudeBin) =>
-    [
-        claudeBin, "-p", WorkerPrompt,
-        "--mcp-config", ClaudeMcpPath,
-        "--strict-mcp-config",
-        "--allowedTools", AllowedTools,
-        "--model", "haiku",
-        "--max-turns", "8",
-    ];
 
     /// <summary>The one description template both roles use (§7): report
     /// <c>&lt;label&gt;:&lt;token&gt;</c>, front-loading the imperative so a haiku worker's
@@ -701,108 +478,6 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
          That is the entire task. Do not create or edit files. Do not do anything else.
          """;
 
-    // ── Streaming recipe (session refs, resume, stop) ───────────────────────────
-
-    /// <summary>
-    /// The claude spawn argv for scenarios that need docketd to see the harness's own stream:
-    /// <c>--output-format stream-json</c> plus <c>--verbose</c> (which is what makes claude emit
-    /// that stream under <c>-p</c>) so an <c>events.source: terminal</c> profile can read the
-    /// <c>system/init</c> session ref (§11) and per-tool-call liveness (§10). Otherwise the
-    /// validated recipe unchanged: strict MCP config, a minimal allow-list, haiku, small turn cap.
-    /// </summary>
-    private static string[] StreamingSpawn(
-        string claudeBin, string prompt, string tools, params string[] extra) =>
-    [
-        claudeBin, "-p", prompt,
-        "--mcp-config", ClaudeMcpPath,
-        "--strict-mcp-config",
-        "--allowedTools", tools,
-        "--output-format", "stream-json",
-        "--verbose",
-        "--model", "haiku",
-        "--max-turns", "8",
-        .. extra,
-    ];
-
-    /// <summary>
-    /// The message-mode stop turn the runner-config reference carried for <c>claude -p</c>
-    /// before #103 (a stream-json user message carrying the disposition), kept verbatim in shape
-    /// so the stop characterization's finding is about the harness rather than about a template
-    /// this test invented. docketd substitutes
-    /// <c>{disposition}</c>/<c>{ttl_seconds}</c>/<c>{reason}</c>.
-    /// </summary>
-    private const string ClaudeStopTurnTemplate =
-        """{"type":"user","message":{"role":"user","content":"Docket is winding this task down (disposition={disposition}, ~{ttl_seconds}s left; reason: {reason}). Immediately call report_result with a reference to your current progress, then stop."}}""";
-
-    // ── §11 park/resume prompts and description ────────────────────────────────
-
-    /// <summary>The docket tools the continuation scenario's worker may call.</summary>
-    private const string ParkTools =
-        "mcp__docket__get_task,mcp__docket__report_result,mcp__docket__request_input";
-
-    // ── §11 permission-bridge prompt and description ───────────────────────────
-
-    /// <summary>
-    /// The docket tools a permission-bridge worker may call. Deliberately <b>no</b>
-    /// <c>Bash</c> and no <c>request_permission</c>: Bash's absence is what makes the harness
-    /// prompt, and the relaying tool is Claude Code's to call, never the agent's.
-    /// </summary>
-    private const string PermissionTools =
-        "mcp__docket__get_task,mcp__docket__report_result";
-
-    /// <summary>
-    /// The permission-bridge worker prompt. Front-loads <c>get_task</c> like every other
-    /// profile here; the shell step it will be stopped on lives in the description.
-    /// </summary>
-    private const string PermissionWorkerPrompt =
-        "You are a Docket worker agent. Your FIRST action must be to call the " +
-        "mcp__docket__get_task tool to read your assignment, then do exactly what its description " +
-        "says. If a tool call is refused, read the refusal and follow it — do not retry the same " +
-        "call." + McpToolsRule;
-
-    /// <summary>
-    /// A task that cannot be finished without a tool the allow-list withholds, so the harness
-    /// must prompt. Reporting the command's own output is what makes the approval load-bearing:
-    /// a worker that was never allowed to run it has nothing to report.
-    /// </summary>
-    private static string ShellThenReportDescription(string token) =>
-        $"""
-         Do these two steps in order:
-
-         1. Use the Bash tool to run exactly: /bin/echo {token}
-         2. Call report_result exactly once, with resultReference set to the exact text the
-            command printed.
-
-         Do not create or edit files. Do not do anything else.
-         """;
-
-    /// <summary>
-    /// The permission-bridge spawn argv (§11). Two differences from every other recipe here,
-    /// and they are the whole point:
-    /// <list type="bullet">
-    /// <item><c>--permission-prompt-tool mcp__docket__request_permission</c> <b>instead of</b>
-    /// <c>--permission-mode bypassPermissions</c> — the approval dialog routes to Docket rather
-    /// than being skipped.</item>
-    /// <item><c>--setting-sources ''</c>, so the run does not inherit the operator's own
-    /// <c>settings.json</c> allow rules. Without it this fact is machine-dependent: on a
-    /// developer box that has already allowed <c>Bash(/bin/echo:*)</c> nothing ever prompts and
-    /// the bridge is never exercised.</item>
-    /// </list>
-    /// </summary>
-    private static string[] PermissionBridgeSpawn(string claudeBin) =>
-    [
-        claudeBin, "-p", PermissionWorkerPrompt,
-        "--mcp-config", ClaudeMcpPath,
-        "--strict-mcp-config",
-        "--allowedTools", PermissionTools,
-        "--permission-prompt-tool", "mcp__docket__request_permission",
-        "--setting-sources", "",
-        "--output-format", "stream-json",
-        "--verbose",
-        "--model", "haiku",
-        "--max-turns", "10",
-    ];
-
     // ── §11 continuation prompts and description ───────────────────────────────
 
     /// <summary>
@@ -811,14 +486,15 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// any file — only the conversation a later continuation inherits.
     /// </summary>
     private static string RememberThenWorkPrompt(string nonce) =>
-        "You are a Docket worker agent. Remember this value for the rest of this conversation: " +
-        $"{nonce}. Do not write it to any file, and do not put it in any tool call. Now call the " +
+        "You are a Docket worker agent. Remember this test nonce for the rest of this conversation: " +
+        $"{nonce}. Do not write it to any file, and do not put it in any tool call yet — a later " +
+        "task in this same conversation will ask you to report it. Now call the " +
         "mcp__docket__get_task tool and do exactly what its description tells you." + McpToolsRule;
 
     /// <summary>
-    /// The profile's static <c>resume.args</c> prompt for the continuation leg (§11) — generic
-    /// config carrying no task content, and deliberately not the nonce. Worded for a worker
-    /// whose assignment is new but whose conversation is not.
+    /// The follow-up turn for the continuation leg (§11) — generic config carrying no
+    /// task content, and deliberately not the nonce. Worded for a worker whose assignment
+    /// is new but whose conversation is not.
     /// </summary>
     private const string ContinuationReportPrompt =
         "This conversation continues under a new task. FIRST call the mcp__docket__get_task tool " +

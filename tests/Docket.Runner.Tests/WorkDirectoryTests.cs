@@ -40,9 +40,10 @@ public sealed class WorkDirectoryTests : IDisposable
     }
 
     /// <summary>
-    /// The whole point: a resumed continuation runs in the named task's dir, and the
-    /// substituted <c>{mcp_config}</c> lands there too, so <c>--resume</c> is issued from the
-    /// directory that actually created the session.
+    /// The whole point: a resumed continuation runs in the named task's dir, so the session
+    /// it loads is loaded from the directory that created it (§11 sessions are
+    /// directory-scoped). The ref itself now travels to <c>session/load</c> rather than into
+    /// a respawned argv, so what this fact still owns is the working directory.
     /// </summary>
     [Fact]
     public async Task A_resume_that_names_another_tasks_directory_runs_there()
@@ -55,24 +56,20 @@ public sealed class WorkDirectoryTests : IDisposable
             new DispatchCommand(
                 continuation, "default", McpConfigJson: """{"mcpServers":{}}""",
                 ResumeSessionRef: "sess-abc", WorkDirTask: predecessor),
-            TestKit.ResumeProfile(), "m");
+            TestKit.Profile("echo-argv"), "m");
 
-        // The harness ran in the PREDECESSOR's dir — it wrote its argv marker there…
+        // The harness ran in the PREDECESSOR's dir — it wrote its argv marker there. The
+        // resume ref itself is no longer visible here: it rides the dispatch into
+        // session/load rather than a respawned argv (ResumeTranscriptEndToEndTests asserts
+        // that end). What this fact is about is the DIRECTORY, and that is unchanged.
         var argv = await ArgvIn(predecessor);
-        var resumeIdx = Array.IndexOf(argv, "--resume");
-        Assert.True(resumeIdx >= 0, "resume argv did not carry --resume");
-        Assert.Equal("sess-abc", argv[resumeIdx + 1]);
+        Assert.NotEmpty(argv);
 
-        // …and its config was written there under a task-scoped name, because the plain one
-        // belongs to the task that owns the dir and its worker may still be running.
-        var mcpIdx = Array.IndexOf(argv, "--mcp-config");
-        Assert.True(mcpIdx >= 0, "resume argv did not carry --mcp-config");
-        Assert.Equal(
-            Path.Combine(_workRoot, predecessor.ToString(), $"mcp-{continuation}.json"),
-            argv[mcpIdx + 1]);
-        Assert.True(File.Exists(argv[mcpIdx + 1]));
-        // Nothing was written into the continuation's own dir, and nothing clobbered the
-        // predecessor's own config name.
+        // …and nothing was written into the continuation's own dir. The borrowed-directory
+        // hazard this fact guards is that a continuation running in its predecessor's dir
+        // must not clobber what the predecessor owns — still true, and now with less to
+        // clobber, since an ACP profile names no {mcp_config} and so no config file is
+        // written at all (#112 G11 gates that write on the argv actually asking for it).
         Assert.False(File.Exists(Path.Combine(_workRoot, predecessor.ToString(), "mcp.json")));
         Assert.False(Directory.Exists(Path.Combine(_workRoot, continuation.ToString())));
 
@@ -103,7 +100,7 @@ public sealed class WorkDirectoryTests : IDisposable
             new DispatchCommand(
                 task, "default", McpConfigJson: """{"mcpServers":{}}""",
                 WorkDirTask: predecessor),
-            TestKit.ResumeProfile(), "m");
+            TestKit.Profile("echo-argv"), "m");
 
         var argv = await ArgvIn(predecessor);          // it ran in the predecessor's dir…
         Assert.DoesNotContain("--resume", argv);        // …on the cold argv, with no resume
@@ -131,12 +128,14 @@ public sealed class WorkDirectoryTests : IDisposable
         supervisor.Spawn(
             new DispatchCommand(
                 task, "default", McpConfigJson: """{"mcpServers":{}}""", ResumeSessionRef: "sess-abc"),
-            TestKit.ResumeProfile(), "m");
+            TestKit.Profile("echo-argv"), "m");
 
+        // Its own dir, and the plain config name is free: a task resuming itself borrows
+        // nothing, so there is no task-scoped rename and — since an ACP profile names no
+        // {mcp_config} — no config file written at all.
         var argv = await ArgvIn(task);
-        Assert.Contains("--resume", argv);
-        var mcpIdx = Array.IndexOf(argv, "--mcp-config");
-        Assert.Equal(Path.Combine(_workRoot, task.ToString(), "mcp.json"), argv[mcpIdx + 1]);
+        Assert.NotEmpty(argv);
+        Assert.False(File.Exists(Path.Combine(_workRoot, task.ToString(), $"mcp-{task}.json")));
 
         supervisor.Kill(task);
     }
@@ -162,7 +161,7 @@ public sealed class WorkDirectoryTests : IDisposable
         supervisor.Spawn(
             new DispatchCommand(
                 continuation, "default", ResumeSessionRef: "sess-abc", WorkDirTask: predecessor),
-            TestKit.ResumeProfile("sleeper"), "m");
+            TestKit.Profile("echo-argv"), "m");
         Assert.True(supervisor.TryGet(continuation, out var guest));
 
         // Two live workers, two supervised tasks, one directory. Neither was superseded:

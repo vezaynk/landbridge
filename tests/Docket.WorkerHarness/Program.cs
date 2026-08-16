@@ -65,6 +65,23 @@ public static class Program
         // Dead-man's switch (§10). Linux: SIGKILL us if docketd (our parent) dies.
         if (ParentDeathSignal.ArmAndParentAlreadyDead())
             return 1;
+
+        // ACP mode: stdin is the JSON-RPC request channel, not a liveness pipe, so the
+        // EOF watch below must not run — it would eat docketd's requests. The read loop's
+        // own EOF is the dead-man's switch instead, which is also what ACP's shutdown rule
+        // prescribes. Everything after the handshake is the same scripted work.
+        if (args.Contains("--acp", StringComparer.Ordinal))
+        {
+            using var acpTelemetry = WorkerTelemetry.Start(cwd);
+            return await AcpAgentLoop.RunAsync(
+                cwd,
+                async (url, auth, dir, token) =>
+                {
+                    await using var client = await ConnectAsync(url, auth, token);
+                    return await RunWorkAsync(client, dir, token);
+                },
+                ct);
+        }
         // Portable: docketd holds the write end of our stdin for our lifetime, so
         // EOF means docketd is gone. Watch it in the background and cancel the run —
         // the worker's only channel to the plane is MCP, so stdin carries no data,
@@ -82,48 +99,8 @@ public static class Program
         try
         {
             var (url, authorization) = ResolveConnection(args);
-
-            var transport = new HttpClientTransport(new HttpClientTransportOptions
-            {
-                Endpoint = new Uri(url),
-                TransportMode = HttpTransportMode.StreamableHttp,
-                AdditionalHeaders = new Dictionary<string, string> { ["Authorization"] = authorization },
-            });
-
-            // Bound the connect + get_task handshake so a stuck setup fails hard
-            // rather than hanging; the per-mode work below sets its own bounds.
-            using var setupCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
-            setupCts.CancelAfter(TimeSpan.FromSeconds(60));
-            await using var client = await McpClient.CreateAsync(transport, cancellationToken: setupCts.Token);
-
-            // ── Learn the assignment (§7): namespace, description, criteria, workspace, attempt.
-            var assignment = await client.CallToolAsync(
-                "get_task", new Dictionary<string, object?>(), cancellationToken: setupCts.Token);
-            if (assignment.IsError == true)
-                throw new InvalidOperationException("get_task returned an error: " + TextOf(assignment));
-
-            var assignmentJson = TextOf(assignment);
-            await File.WriteAllTextAsync(Path.Combine(cwd, "get_task.json"), assignmentJson, ct);
-
-            // ── Branch on the description (§7): the opaque prose is the channel that
-            //    tells the worker what to do, so one 'default' profile drives a whole
-            //    fleet — a serving producer and a forwarding consumer — off the wire.
-            var description = DescriptionOf(assignmentJson);
-            if (description is not null && description.StartsWith(ServePrefix, StringComparison.Ordinal))
-                return await RunServeModeAsync(client, cwd, description[ServePrefix.Length..].Trim(), ct);
-            if (description is not null && description.StartsWith(ConsumePrefix, StringComparison.Ordinal))
-                return await RunConsumeModeAsync(client, cwd, description[ConsumePrefix.Length..].Trim(), ct);
-
-            // ── Default (§10) — report a result, driving working → verifying. No real
-            //    work; a reference is all the state machine requires (verification is separate).
-            var reported = await client.CallToolAsync(
-                "report_result",
-                new Dictionary<string, object?> { ["resultReference"] = "docket-worker-harness:done" },
-                cancellationToken: setupCts.Token);
-            if (reported.IsError == true)
-                throw new InvalidOperationException("report_result returned an error: " + TextOf(reported));
-
-            return 0;
+            await using var client = await ConnectAsync(url, authorization, ct);
+            return await RunWorkAsync(client, cwd, ct);
         }
         catch (Exception e)
         {
@@ -131,6 +108,68 @@ public static class Program
             catch { /* best effort */ }
             return 1;
         }
+    }
+
+    /// <summary>
+    /// Connects to the plane's MCP endpoint as the dispatched worker instance (§13). Shared
+    /// by both modes: the credentials reach a stream-mode harness through the
+    /// <c>--mcp-config</c> file on its argv and an ACP one through <c>session/new</c>, and
+    /// from here on the two are identical.
+    /// </summary>
+    internal static async Task<McpClient> ConnectAsync(string url, string authorization, CancellationToken ct)
+    {
+        var transport = new HttpClientTransport(new HttpClientTransportOptions
+        {
+            Endpoint = new Uri(url),
+            TransportMode = HttpTransportMode.StreamableHttp,
+            AdditionalHeaders = new Dictionary<string, string> { ["Authorization"] = authorization },
+        });
+
+        // Bound the connect so a stuck setup fails hard rather than hanging.
+        using var setupCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        setupCts.CancelAfter(TimeSpan.FromSeconds(60));
+        return await McpClient.CreateAsync(transport, cancellationToken: setupCts.Token);
+    }
+
+    /// <summary>
+    /// The scripted work itself — <c>get_task</c>, branch on the description, then serve,
+    /// consume, or report. Identical under both protocols by construction: this is the body
+    /// that used to live inline in <see cref="Main"/>, and keeping one copy is what makes an
+    /// ACP E2E a test of the transport rather than of a second worker implementation.
+    /// </summary>
+    internal static async Task<int> RunWorkAsync(McpClient client, string cwd, CancellationToken ct)
+    {
+        using var setupCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+        setupCts.CancelAfter(TimeSpan.FromSeconds(60));
+
+        // ── Learn the assignment (§7): namespace, description, criteria, workspace, attempt.
+        var assignment = await client.CallToolAsync(
+            "get_task", new Dictionary<string, object?>(), cancellationToken: setupCts.Token);
+        if (assignment.IsError == true)
+            throw new InvalidOperationException("get_task returned an error: " + TextOf(assignment));
+
+        var assignmentJson = TextOf(assignment);
+        await File.WriteAllTextAsync(Path.Combine(cwd, "get_task.json"), assignmentJson, ct);
+
+        // ── Branch on the description (§7): the opaque prose is the channel that
+        //    tells the worker what to do, so one 'default' profile drives a whole
+        //    fleet — a serving producer and a forwarding consumer — off the wire.
+        var description = DescriptionOf(assignmentJson);
+        if (description is not null && description.StartsWith(ServePrefix, StringComparison.Ordinal))
+            return await RunServeModeAsync(client, cwd, description[ServePrefix.Length..].Trim(), ct);
+        if (description is not null && description.StartsWith(ConsumePrefix, StringComparison.Ordinal))
+            return await RunConsumeModeAsync(client, cwd, description[ConsumePrefix.Length..].Trim(), ct);
+
+        // ── Default (§10) — report a result, driving working → verifying. No real
+        //    work; a reference is all the state machine requires (verification is separate).
+        var reported = await client.CallToolAsync(
+            "report_result",
+            new Dictionary<string, object?> { ["resultReference"] = "docket-worker-harness:done" },
+            cancellationToken: setupCts.Token);
+        if (reported.IsError == true)
+            throw new InvalidOperationException("report_result returned an error: " + TextOf(reported));
+
+        return 0;
     }
 
     /// <summary>

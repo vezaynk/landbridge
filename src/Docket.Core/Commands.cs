@@ -267,8 +267,43 @@ public sealed record AnswerPermission(
 public sealed record EscalatePermission(
     Actor Actor, InputRequestKind? PendingKind, string Reason) : TaskCommand(Actor);
 
-/// <summary>blocked_on_input → parked: wait TTL expired, lease released (§6, §11).</summary>
+/// <summary>blocked_on_input → parked: wait TTL expired, lease released (§6, §11).
+/// Off by default under ACP (wait is indefinite); kept for explicit config.</summary>
 public sealed record WaitTtlExpired(ParkRecord Park) : TaskCommand(ControlPlaneActor.Instance);
+
+/// <summary>
+/// working | blocked_on_input → parked: a Lead or human released the session on
+/// purpose. Not a timer. The ACP host gets session/cancel; the instance token
+/// is revoked; a later wake is session/load (or PromptCommand if the process
+/// is still up — it will not be after cancel).
+/// </summary>
+public sealed record Park(Actor Actor, ParkRecord Record) : TaskCommand(Actor);
+
+/// <summary>
+/// blocked_on_input → working: a Lead or human answered a still-live ACP
+/// session. The process is idle waiting for a follow-up prompt, so this keeps
+/// the incumbent instance, revokes nothing, and writes no park record. The
+/// plane then sends <c>PromptCommand</c>; the worker pulls the answer on
+/// <c>get_task</c> (ideas/sessions.md).
+///
+/// <para><see cref="PendingKind"/> is the live kind of the request being
+/// answered, supplied by the store off the task row. A
+/// <see cref="InputRequestKind.Permission"/> request must never be answered
+/// this way (<see cref="Rule.PermissionVerdictAnswersPermissionRequests"/>) —
+/// that worker is blocked inside a tool call and needs a verdict, not a
+/// follow-up turn.</para>
+/// </summary>
+public sealed record ContinueSession(
+    Actor Actor, string? Answer = null, InputRequestKind? PendingKind = null) : TaskCommand(Actor);
+
+/// <summary>
+/// working → working: the Lead or a human sent a follow-up without a pending
+/// question. The process is still up; the plane doorbells it and the worker
+/// pulls the text on <c>get_task</c>. The Claude-subagent shape: the parent
+/// speaks when it has something to say, not only when the child files a ticket.
+/// </summary>
+public sealed record LeadMessage(
+    Actor Actor, string? Text = null, InputRequestKind? PendingKind = null) : TaskCommand(Actor);
 
 /// <summary>
 /// parked → submitted: the awaited answer or endpoint landed. Redispatch then

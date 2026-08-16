@@ -290,14 +290,11 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
     [SkippableFact]
     public async Task Exited_while_blocked_on_input_leaves_the_task_tracked_so_the_sweeper_can_park_it()
     {
-        // The live path a store-only test cannot prove: a headless worker asks a
-        // question (working → blocked_on_input) and its process exits — the NORMAL
-        // claude -p behaviour, and per §6/§11 not a failure. The exit must NOT
-        // untrack the task, or the wait-TTL sweeper's MachineFor look-up returns
-        // null and the task strands in blocked_on_input forever (never parked on
-        // TTL, never requeued on machine death). Here: the exit leaves it tracked,
-        // and the sweeper then parks it on TTL expiry — the transition that was
-        // unreachable before the fix.
+        // A worker asks a question (stays working) and its process exits. That is
+        // not a failure: the exit must NOT untrack the task, or the wait-TTL
+        // sweeper's MachineFor look-up returns null and the task strands forever
+        // (never parked on TTL, never requeued on machine death). Mark the
+        // process gone so an answer redispatches; the sweeper still parks on TTL.
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
         var scopes = ScopeFactory(clock);
@@ -312,8 +309,9 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         // Still blocked, still tracked: the machine keeps the lease so the sweeper
         // can find it (before the fix the exit untracked it here and the sweeper
         // skipped it — MachineFor was null).
-        Assert.Equal(TaskState.BlockedOnInput, await StateAsync(clock, id));
+        Assert.Equal(TaskState.Working, await StateAsync(clock, id));
         Assert.Equal("m1", registry.MachineFor(id));
+        Assert.False(registry.HasLiveProcess(id));
 
         // Wait TTL elapses with the machine still heartbeating → the sweeper parks.
         var sweeper = NewSweeper(clock, registry,
@@ -386,6 +384,127 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
 
         Assert.Equal(TaskState.Verifying, await StateAsync(clock, id));
         Assert.Empty(registry.TasksOn("m1"));
+    }
+
+    // ── Event sink: turn-ended (§10, ideas/sessions.md stage 1) ──────────────────
+    //
+    // The signal the task model could not produce. There, a worker that finished a turn had
+    // also exited, so its silence arrived as a death and requeued on that. An ACP session
+    // outlives its turn by design: the process stays up and keeps heartbeating, so neither
+    // liveness clock will ever fire on a worker that simply stopped talking. Measured
+    // 2026-08-16 against a real claude-agent-acp worker — stopReason end_turn, nothing
+    // reported, task pinned in working for the full eight-minute budget.
+
+    [SkippableFact]
+    public async Task Turn_ended_while_still_working_requeues_the_task_with_its_own_reason()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = TimeProvider.System;
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var (id, instance) = await SeedWorkingTaskWithInstanceAsync(clock, team, "m1");
+        var registry = LiveMachine(clock, "m1", id);
+
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
+        await sink.HandleAsync(new TurnEndedEvent(id, "end_turn", clock.GetUtcNow()));
+
+        await using var v = pg.NewContext();
+        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(TaskState.Submitted, row.State);
+        Assert.Equal(1, row.InfrastructureRequeues); // §9 check 7, infra never verification
+        // The trail says the agent stopped, not that the harness died — different remedies.
+        Assert.Equal(LivenessLossReason.TurnEndedWithoutResult, row.LastRequeueReason);
+        Assert.True((await v.WorkerInstances.AsNoTracking().SingleAsync(w => w.Id == instance.Value)).Revoked);
+    }
+
+    [SkippableFact]
+    public async Task Turn_ended_after_the_worker_reported_is_moot()
+    {
+        // The overwhelmingly common path, and the one that must never requeue: a worker
+        // waits for report_result to return before ending its turn, so working → verifying
+        // is committed by the time this arrives.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = TimeProvider.System;
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var (id, instance) = await SeedWorkingTaskWithInstanceAsync(clock, team, "m1");
+        await using (var db = pg.NewContext())
+            await new TaskStore(db, clock).ApplyAsync(
+                id, new ReportResult(new WorkerCaller(team, id, instance), "git:ref-1"));
+        var registry = LiveMachine(clock, "m1", id);
+
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
+        await sink.HandleAsync(new TurnEndedEvent(id, "end_turn", clock.GetUtcNow()));
+
+        await using var v = pg.NewContext();
+        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(TaskState.Verifying, row.State);
+        Assert.Equal(0, row.InfrastructureRequeues);
+    }
+
+    [SkippableFact]
+    public async Task Turn_ended_after_the_worker_asked_a_question_is_moot()
+    {
+        // Stage 2's whole point: asking ends the turn and the session stays alive waiting to
+        // be prompted with the answer. Requeuing here would undo it.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var (id, _) = await SeedBlockedTaskAsync(clock, team, "m1");
+        var registry = LiveMachine(clock, "m1", id);
+
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
+        await sink.HandleAsync(new TurnEndedEvent(id, "end_turn", clock.GetUtcNow()));
+
+        Assert.Equal(TaskState.Working, await StateAsync(clock, id));
+        Assert.Equal("m1", registry.MachineFor(id));
+    }
+
+    [SkippableFact]
+    public async Task A_turn_ended_by_the_planes_own_kill_is_not_the_worker_going_quiet()
+    {
+        // The echo, and the reason this guard peeks at the commanded-exit expectation rather
+        // than consuming it: killing an ACP session produces a turn-ended AND an exited, so
+        // the expectation has to survive the first to still be there for the second. Without
+        // the peek the pair requeues one death twice, taking two off the §9 check 7 cap.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = TimeProvider.System;
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var (id, _) = await SeedWorkingTaskWithInstanceAsync(clock, team, "m1");
+        var registry = LiveMachine(clock, "m1", id);
+        Assert.True(await registry.SendKillAsync("m1", id, TimeSpan.FromMinutes(2), CancellationToken.None));
+
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
+        await sink.HandleAsync(new TurnEndedEvent(id, "cancelled", clock.GetUtcNow()));
+
+        Assert.Equal(TaskState.Working, await StateAsync(clock, id));
+        // Peeked, not consumed: the exit that follows still recognises its own echo.
+        Assert.True(registry.ConsumeCommandedExit(id));
+    }
+
+    [SkippableFact]
+    public async Task A_worker_that_cancels_its_own_turn_is_still_a_worker_that_went_quiet()
+    {
+        // Measured 2026-08-16: `grok agent stdio` answers stopReason "cancelled" on turns the
+        // plane never touched. The word names who reported the stop, not who ordered it, so
+        // reading it as an echo would make every wedged grok worker invisible — three real
+        // dispatches sat in working for eight minutes each on exactly this.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = TimeProvider.System;
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var (id, _) = await SeedWorkingTaskWithInstanceAsync(clock, team, "m1");
+        var registry = LiveMachine(clock, "m1", id);
+
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
+        await sink.HandleAsync(new TurnEndedEvent(id, "cancelled", clock.GetUtcNow()));
+
+        await using var v = pg.NewContext();
+        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(TaskState.Submitted, row.State);
+        Assert.Equal(LivenessLossReason.TurnEndedWithoutResult, row.LastRequeueReason);
     }
 
     // ── Event sink: derived-telemetry persistence (§10/§12, #50) ─────────────────
@@ -473,14 +592,14 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
 
         await using var db = pg.NewContext();
         var row = await db.TaskEvents.AsNoTracking()
-            .Where(e => e.TaskId == id.Value && e.ToState == TaskState.BlockedOnInput)
+            .Where(e => e.TaskId == id.Value && e.Kind == nameof(RequestInput))
             .OrderByDescending(e => e.Seq)
             .FirstAsync();
-        Assert.Equal(nameof(RequestInput), row.Kind);
+        Assert.Equal(TaskState.Working, row.ToState);
         Assert.Equal(InputRequestKind.Question, row.InputKind);
 
         var evt = (await new DashboardQueries(db, new RunnerConnectionRegistry(clock)).GetEventsAsync())
-            .Single(e => e.ToState == TaskState.BlockedOnInput && e.Kind == nameof(RequestInput));
+            .Single(e => e.Kind == nameof(RequestInput));
         Assert.Equal(InputRequestKind.Question, evt.InputKind);
     }
 

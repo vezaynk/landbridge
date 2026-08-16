@@ -5,6 +5,10 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
+    <!-- Local paid-e2e keys. Loaded at assembly start and published into the
+         process environment so spawned CLIs inherit them. CI sets the same
+         names as job env and is not overwritten. -->
+    <UserSecretsId>a7e4c8b2-1f93-4d6a-9e20-6c8f1b0d4e7a</UserSecretsId>
   </PropertyGroup>
 
   <!-- Each scenario hosts a real MCP plane + a real relay on loopback Kestrel ports

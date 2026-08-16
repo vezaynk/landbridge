@@ -615,10 +615,50 @@ public class RunnerWireTests
     public void Vocabulary_sets_are_the_closed_frozen_lists()
     {
         Assert.Equal(
-            new HashSet<string> { "dispatch", "stop", "kill", "open-forward", "close-forward", "read-transcript", "start-process", "stop-process", "write-process" },
+            new HashSet<string> { "dispatch", "stop", "kill", "prompt", "open-forward", "close-forward", "read-transcript", "start-process", "stop-process", "write-process" },
             new HashSet<string>(RunnerWire.Commands));
         Assert.Equal(
-            new HashSet<string> { "started", "session-started", "alive", "tool-call", "usage-reported", "subagent-spawned", "exited", "auth-failed", "forward-opened", "forward-closed", "rebooted", "transcript-chunk", "process-started", "process-stopped", "process-written" },
+            new HashSet<string> { "started", "session-started", "alive", "tool-call", "usage-reported", "subagent-spawned", "turn-ended", "exited", "auth-failed", "forward-opened", "forward-closed", "rebooted", "transcript-chunk", "process-started", "process-stopped", "process-written" },
             new HashSet<string>(RunnerWire.Events));
+    }
+
+    /// <summary>
+    /// <c>prompt</c> round-trips (<c>ideas/sessions.md</c> stage 1) — the first command that
+    /// assumes a worker is something you talk to rather than something you launch.
+    ///
+    /// <para>It names a task and nothing else, and the emptiness is the point: the input the
+    /// worker is being woken for stays on the assignment and is pulled over the authenticated
+    /// MCP call, so the read is a receipt (§11). A payload here would have been a message the
+    /// plane could only report as <em>queued</em>.</para>
+    /// </summary>
+    [Fact]
+    public void Prompt_command_round_trips_and_carries_no_message()
+    {
+        var task = TaskId.New();
+        var encoded = RunnerWire.EncodeCommand(new PromptCommand(task));
+
+        var decoded = Assert.IsType<PromptCommand>(RunnerWire.DecodeCommand(encoded, out _));
+        Assert.Equal(task, decoded.Task);
+        Assert.Equal(new PromptCommand(task), decoded);
+    }
+
+    /// <summary>
+    /// <c>turn-ended</c> round-trips, stop reason and all. A null reason is its own case: an
+    /// agent that ends a turn without saying why gets no reason invented for it (§2
+    /// principle 2).
+    /// </summary>
+    [Theory]
+    [InlineData("end_turn")]
+    [InlineData("max_tokens")]
+    [InlineData(null)]
+    public void Turn_ended_event_round_trips(string? reason)
+    {
+        var task = TaskId.New();
+        var at = DateTimeOffset.UtcNow;
+        var encoded = RunnerWire.EncodeEvent(new TurnEndedEvent(task, reason, at));
+
+        var decoded = Assert.IsType<TurnEndedEvent>(RunnerWire.DecodeEvent(encoded));
+        Assert.Equal(task, decoded.Task);
+        Assert.Equal(reason, decoded.StopReason);
     }
 }

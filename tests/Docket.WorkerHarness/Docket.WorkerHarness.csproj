@@ -17,6 +17,9 @@
        exact convention a BYO harness would copy (§10). -->
   <ItemGroup>
     <Compile Include="../HarnessSupport/ParentDeathSignal.cs" Link="ParentDeathSignal.cs" />
+    <!-- The ACP agent loop, linked for the same reason: both harnesses answer the same
+         four methods, and the E2E tiers now drive them through docketd's real AcpClient. -->
+    <Compile Include="../HarnessSupport/AcpAgentLoop.cs" Link="AcpAgentLoop.cs" />
   </ItemGroup>
 
   <!-- A real MCP client, because the whole point of the walking skeleton is a

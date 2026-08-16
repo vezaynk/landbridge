@@ -11,7 +11,7 @@ public class ProfileHookLoadTests
     {
         var json = """
             { "machine": { "work_root": "/w" },
-              "profiles": [ { "name": "default", "spawn": ["codex", "exec"],
+              "profiles": [ { "name": "default", "spawn": ["codex", "exec"], "prompt": "go",
                 "hooks": { "before_spawn": ["/bin/ensure-mcp", "{mcp_url}"],
                            "after_exit": ["/bin/idle"] } } ] }
             """;
@@ -26,7 +26,7 @@ public class ProfileHookLoadTests
     {
         var json = """
             { "machine": { "work_root": "/w" },
-              "profiles": [ { "name": "default", "spawn": ["codex", "exec"],
+              "profiles": [ { "name": "default", "spawn": ["codex", "exec"], "prompt": "go",
                 "hooks": { "before_spawn": [""] } } ] }
             """;
 

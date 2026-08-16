@@ -190,6 +190,21 @@ public sealed class RunnerDaemon
                 var killed = _supervisor.Kill(kill.Task);
                 return new CommandOutcome.Acknowledged(killed ? "killed" : "not running");
 
+            case PromptCommand prompt:
+                // ideas/sessions.md stage 1. Best-effort and acked either way, like
+                // close-forward: §10 commands do not fail, they report what happened. But
+                // the two outcomes are named apart, because a Lead's message that went
+                // nowhere must not read as delivered — and the two reasons it can go nowhere
+                // (the session ended; this is a stream profile with no channel that accepts
+                // a turn) have completely different fixes.
+                var queued = _supervisor.TryPrompt(prompt.Task);
+                var promptDetail = queued
+                    ? "queued for the live session"
+                    : "not delivered: no live ACP session for this task — it has ended, or this is a " +
+                      "stream profile, whose worker has no channel that accepts a turn (§10)";
+                _log?.Invoke($"prompt {prompt.Task}: {promptDetail}");
+                return new CommandOutcome.Acknowledged(promptDetail);
+
             case OpenForwardCommand forward:
                 return HandleOpenForward(forward);
 
@@ -222,27 +237,26 @@ public sealed class RunnerDaemon
 
     /// <summary>
     /// The operator-facing sentence for one <c>stop</c> outcome (§10). It states what this
-    /// machine <em>did</em> and what backs it — and, on the written-turn path, says outright
-    /// that consumption is unobservable, so the line cannot be misread as the agent having
-    /// agreed to wind down. That misreading is the bug this wording exists to prevent: the
-    /// old text was <c>"stop delivered as Message"</c>, which a <c>claude -p</c> worker
-    /// earned by having a pipe written into, while it ran on untouched until the deadline
-    /// killed it. Whether a written turn is read at all is the profile's declaration to
-    /// make (<see cref="StopMode"/>), and only a real run can check it.
+    /// machine <em>did</em> and what backs it. The wording is careful for a reason the old
+    /// stream mode earned: its line read <c>"stop delivered as Message"</c>, which a
+    /// <c>claude -p</c> worker collected by having a pipe written into while it ran on
+    /// untouched until the deadline killed it. A cancel is a stronger claim — the agent is
+    /// specified to honour it — but it is still a notification with no reply, so the line
+    /// says sent, not obeyed.
     /// </summary>
     private static string DescribeStop(StopCommand stop, StopAck ack) => ack.Delivery switch
     {
-        StopDelivery.MessageWritten =>
-            "wind-down turn written to the harness's stdin — written, not confirmed read "
-            + "(the profile declares this harness consumes stdin turns; docketd cannot observe it); "
+        StopDelivery.CancelSent =>
+            "session/cancel sent on the worker's ACP connection — sent, not confirmed obeyed "
+            + "(cancel is a notification with no reply, though the agent is specified to honour it); "
             + $"hard kill armed at min(ttl={Seconds(stop.Ttl)}, wind_down)",
 
         StopDelivery.DeadlineArmed =>
-            "no wind-down turn written (profile declares no message seam, or its stdin was gone); "
+            "no cancel sent (the session had not opened, or its connection was already gone); "
             + $"hard kill armed at ttl={Seconds(stop.Ttl)} — the worker's own exit is the only graceful path left",
 
         StopDelivery.ImmediateKill =>
-            "ttl=0 — process tree killed outright; nothing written, nothing waited for (§9 check 12)",
+            "ttl=0 — process tree killed outright; nothing sent, nothing waited for (§9 check 12)",
 
         StopDelivery.NotRunning =>
             "not held by this machine; nothing to stop (§10 commands are best-effort)",

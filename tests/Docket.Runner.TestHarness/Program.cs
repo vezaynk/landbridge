@@ -113,6 +113,18 @@ public static class Program
             return DeadManExitCode;
 
         var mode = args.Length > 0 ? args[0] : "run";
+
+        // §10: an ACP agent that speaks the protocol and nothing else — no MCP client, no
+        // model. It exists so the supervision-level E2E can assert on how a session OPENED
+        // (new vs load, and with which ref), which under stream mode was observable in a
+        // respawned argv and now happens on a connection nobody else sees. AcpAgentLoop
+        // writes acp_session.json; the work body has nothing to do but succeed.
+        if (mode == "--acp" || args.Contains("--acp", StringComparer.Ordinal))
+            return await AcpAgentLoop.RunAsync(
+                Directory.GetCurrentDirectory(),
+                (_, _, _, _) => Task.FromResult(0),
+                CancellationToken.None,
+                sessionId: EmitStreamSessionId);
         var cwd = Directory.GetCurrentDirectory();
 
         switch (mode)

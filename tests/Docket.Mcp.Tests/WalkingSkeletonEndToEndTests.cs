@@ -97,13 +97,13 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
         // The profile runs the harness with the injected --mcp-config path (§13).
         var profile = new ProfileConfig(
             "default",
-            [WorkerHarnessPath(), "--mcp-config", "{mcp_config}"],
-            new StopConfig(StopMode.Signal, MessageTemplate: null, WindDown: TimeSpan.FromSeconds(30)),
-            Resume: null,
-            new EventsConfig(EventsSource.None, new Dictionary<string, string>()),
+            [WorkerHarnessPath(), "--acp"],
+            new StopConfig(WindDown: TimeSpan.FromSeconds(30)),
             new TelemetryConfig(Otel: false, Endpoint: null),
             new LogsConfig(),
-            MaxConcurrent: null);
+            MaxConcurrent: null,
+            Prompt: "Do the task.",
+            FollowUp: "There is new input on your assignment. Read it, then continue.");
 
         try
         {
@@ -148,14 +148,24 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
             Assert.NotNull(seen);
             Assert.Equal(baseUrl, seen!.SpawnSubstitutions?["mcp_url"]);
 
-            // ── §13: docketd wrote the generated MCP config, owner-only ──
-            var mcpPath = Path.Combine(workDir, "mcp.json");
-            Assert.True(File.Exists(mcpPath), "docketd did not write the injected mcp.json");
-            var mcpJson = await File.ReadAllTextAsync(mcpPath, ct);
-            Assert.Contains("\"type\":\"http\"", mcpJson);
-            Assert.Contains("Bearer dkt_w_", mcpJson); // the minted worker token
-            if (!OperatingSystem.IsWindows())
-                Assert.Equal(UnixFileMode.UserRead | UnixFileMode.UserWrite, File.GetUnixFileMode(mcpPath));
+            // ── §13 under ACP: the MCP server crossed on the WIRE, and left nothing on disk ──
+            //
+            // The inversion is the point. A stream profile names {mcp_config} in its argv and
+            // docketd writes the generated config to {work_dir}/mcp.json (0600) for the
+            // harness to read; #112 G11 made that write conditional on the argv actually
+            // referencing it. An ACP profile references nothing, because the server is a
+            // parameter of session/new — so the correct assertion here is that no file was
+            // written at all, and therefore that no live bearer token sat on disk for the
+            // length of the task.
+            //
+            // What proves the wire path worked is the assignment below: the harness could
+            // only have reached the plane by using the url and Authorization header it read
+            // out of session/new's mcpServers array. There is no other source for them in
+            // this profile.
+            Assert.False(
+                File.Exists(Path.Combine(workDir, "mcp.json")),
+                "an ACP profile names no {mcp_config}, so docketd should have written no config file — " +
+                "the server rides session/new instead, which is what keeps the worker token off disk");
 
             // ── get_task delivered the assignment over the wire (§7) ──
             var assignmentPath = Path.Combine(workDir, "get_task.json");

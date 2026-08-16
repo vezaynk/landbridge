@@ -16,7 +16,7 @@ public class ServiceSupervisionTests
     private static string Config(string servicesJson) => $$"""
     {
       "machine": { "work_root": "/tmp/docketd-fake" },
-      "profiles": [ { "name": "default", "spawn": ["noop"] } ],
+      "profiles": [ { "name": "default", "prompt": "go", "spawn": ["noop"] } ],
       "services": {{servicesJson}}
     }
     """;
@@ -43,7 +43,7 @@ public class ServiceSupervisionTests
     public void A_config_with_no_services_section_is_normal()
     {
         var config = RunnerConfig.Load("""
-        { "machine": { "work_root": "/w" }, "profiles": [ { "name": "default", "spawn": ["x"] } ] }
+        { "machine": { "work_root": "/w" }, "profiles": [ { "name": "default", "prompt": "go", "spawn": ["x"] } ] }
         """);
 
         Assert.Empty(config.DeclaredServices);
@@ -76,7 +76,7 @@ public class ServiceSupervisionTests
     public void A_service_name_longer_than_the_cap_is_refused()
     {
         var ex = Assert.Throws<RunnerConfigException>(() => RunnerConfig.Load(Config(
-            $$"""[ { "name": "{{new string('a', 65)}}", "spawn": ["x"] } ]""")));
+            $$"""[ { "name": "{{new string('a', 65)}}", "prompt": "go", "spawn": ["x"] } ]""")));
         Assert.Contains(ex.Errors, e => e.Contains("1-64 characters", StringComparison.Ordinal));
     }
 
@@ -86,7 +86,7 @@ public class ServiceSupervisionTests
     [InlineData("API")]
     public void An_ordinary_service_name_is_accepted(string name)
     {
-        var config = RunnerConfig.Load(Config($$"""[ { "name": "{{name}}", "spawn": ["x"] } ]"""));
+        var config = RunnerConfig.Load(Config($$"""[ { "name": "{{name}}", "prompt": "go", "spawn": ["x"] } ]"""));
         Assert.Equal(name, Assert.Single(config.DeclaredServices).Name);
     }
 
@@ -96,7 +96,7 @@ public class ServiceSupervisionTests
         // The key exists precisely so a config asking for delegation is refused instead
         // of silently supervised the other way (§10).
         var ex = Assert.Throws<RunnerConfigException>(() => RunnerConfig.Load(Config(
-            """[ { "name": "api", "spawn": ["x"], "backend": "systemd-run" } ]""")));
+            """[ { "name": "api", "prompt": "go", "spawn": ["x"], "backend": "systemd-run" } ]""")));
 
         Assert.Contains(ex.Errors, e => e.Contains("backend 'systemd-run'", StringComparison.Ordinal)
                                         && e.Contains("not implemented", StringComparison.Ordinal));
@@ -106,7 +106,7 @@ public class ServiceSupervisionTests
     public void The_direct_backend_is_accepted_explicitly()
     {
         var config = RunnerConfig.Load(Config(
-            """[ { "name": "api", "spawn": ["x"], "backend": "direct" } ]"""));
+            """[ { "name": "api", "prompt": "go", "spawn": ["x"], "backend": "direct" } ]"""));
         Assert.Single(config.DeclaredServices);
     }
 
@@ -114,11 +114,11 @@ public class ServiceSupervisionTests
     public void Duplicate_names_and_empty_spawn_are_refused()
     {
         var dup = Assert.Throws<RunnerConfigException>(() => RunnerConfig.Load(Config(
-            """[ { "name": "api", "spawn": ["x"] }, { "name": "api", "spawn": ["y"] } ]""")));
+            """[ { "name": "api", "prompt": "go", "spawn": ["x"] }, { "name": "api", "prompt": "go", "spawn": ["y"] } ]""")));
         Assert.Contains(dup.Errors, e => e.Contains("duplicate service name", StringComparison.Ordinal));
 
         var empty = Assert.Throws<RunnerConfigException>(() => RunnerConfig.Load(Config(
-            """[ { "name": "api", "spawn": [] } ]""")));
+            """[ { "name": "api", "prompt": "go", "spawn": [] } ]""")));
         Assert.Contains(empty.Errors, e => e.Contains("empty spawn argv", StringComparison.Ordinal));
     }
 
@@ -131,8 +131,8 @@ public class ServiceSupervisionTests
         // the operator does not have to diff the config to find the other one.
         var ex = Assert.Throws<RunnerConfigException>(() => RunnerConfig.Load(Config(
             """
-            [ { "name": "api", "spawn": ["x"], "port": 5173 },
-              { "name": "web", "spawn": ["y"], "port": 5173 } ]
+            [ { "name": "api", "prompt": "go", "spawn": ["x"], "port": 5173 },
+              { "name": "web", "prompt": "go", "spawn": ["y"], "port": 5173 } ]
             """)));
 
         var problem = Assert.Single(ex.Errors);
@@ -149,7 +149,7 @@ public class ServiceSupervisionTests
         var ex = Assert.Throws<RunnerConfigException>(() => RunnerConfig.Load(Config(
             """
             [ { "name": "api", "spawn": ["x"], "readiness": { "tcp_port": 9001 } },
-              { "name": "web", "spawn": ["y"], "port": 9001 } ]
+              { "name": "web", "prompt": "go", "spawn": ["y"], "port": 9001 } ]
             """)));
 
         Assert.Contains(ex.Errors, e => e.Contains("both claim port 9001", StringComparison.Ordinal));
@@ -164,8 +164,8 @@ public class ServiceSupervisionTests
         var config = RunnerConfig.Load(Config(
             """
             [ { "name": "api", "spawn": ["x"], "port": 5173, "readiness": { "tcp_port": 5173 } },
-              { "name": "worker-a", "spawn": ["y"] },
-              { "name": "worker-b", "spawn": ["z"] } ]
+              { "name": "worker-a", "prompt": "go", "spawn": ["y"] },
+              { "name": "worker-b", "prompt": "go", "spawn": ["z"] } ]
             """));
 
         Assert.Equal(3, config.DeclaredServices.Count);
@@ -175,7 +175,7 @@ public class ServiceSupervisionTests
     public void An_out_of_range_port_is_refused()
     {
         var ex = Assert.Throws<RunnerConfigException>(() => RunnerConfig.Load(Config(
-            """[ { "name": "api", "spawn": ["x"], "port": 70000 } ]""")));
+            """[ { "name": "api", "prompt": "go", "spawn": ["x"], "port": 70000 } ]""")));
         Assert.Contains(ex.Errors, e => e.Contains("port must be in 1..65535", StringComparison.Ordinal));
     }
 
@@ -385,7 +385,7 @@ public class ServiceSupervisionTests
     public void Enabled_defaults_to_true_and_can_be_declared_off()
     {
         var config = RunnerConfig.Load(Config(
-            """[ { "name": "on", "spawn": ["x"] }, { "name": "off", "spawn": ["y"], "enabled": false } ]"""));
+            """[ { "name": "on", "prompt": "go", "spawn": ["x"] }, { "name": "off", "prompt": "go", "spawn": ["y"], "enabled": false } ]"""));
 
         Assert.True(config.DeclaredServices.Single(x => x.Name == "on").Enabled);
         Assert.False(config.DeclaredServices.Single(x => x.Name == "off").Enabled);
@@ -433,7 +433,7 @@ public class ServiceSupervisionTests
         RunnerConfig.Load($$"""
         {
           "machine": { "work_root": "/tmp/docketd-fake" },
-          "profiles": [ { "name": "default", "spawn": ["noop"],
+          "profiles": [ { "name": "default", "spawn": ["noop"], "prompt": "go",
             "processes": { "agent_initiated": {{(agentInitiated ? "true" : "false")}},
                           "max": {{cap}} } } ]
         }

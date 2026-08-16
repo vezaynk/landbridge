@@ -68,6 +68,10 @@ public sealed class RunnerEventSink(
                     store.RecordSubagentSpawnAsync(sub.Task, sub.AgentId, sub.ParentAgentId, ct));
                 break;
 
+            case TurnEndedEvent te:
+                await HandleTurnEndedAsync(te, ct);
+                break;
+
             case ExitedEvent e:
                 await HandleExitedAsync(e, ct);
                 break;
@@ -142,6 +146,67 @@ public sealed class RunnerEventSink(
         }
     }
 
+    /// <summary>
+    /// §10 <c>turn-ended</c>: an ACP worker stopped talking. Whether that is news depends
+    /// entirely on what the task did first.
+    ///
+    /// <para>Almost always it is not. A worker reports its result over MCP and waits for the
+    /// tool to return before ending its turn, so the working → verifying transition is
+    /// already committed by the time this arrives; the same holds for a worker that asked and
+    /// is now blocked_on_input. Both leave nothing to do.</para>
+    ///
+    /// <para>A task still in <c>working</c> is the case that matters, and it is the one the
+    /// task model could not produce. There, the turn ending is the worker declining to say
+    /// anything at all — and because the ACP session outlives the turn, the process stays up,
+    /// keeps heartbeating, and neither liveness clock will ever fire on it. Nothing else in
+    /// the plane would notice, so the dispatch would hang until a human did. It requeues
+    /// against the §9 check 7 infrastructure cap, exactly as the equivalent silent exit used
+    /// to, with its own reason on the trail (<see cref="LivenessLossReason.TurnEndedWithoutResult"/>)
+    /// so "the agent stopped" stays distinguishable from "the harness died".</para>
+    ///
+    /// <para>The stop reason is logged rather than stored: <c>max_tokens</c> and <c>refusal</c>
+    /// are the difference between a worker that ran out of room and one that would not do the
+    /// task, and the requeue about to happen helps only the first. Giving it a home on the
+    /// task row is §12 work, not this.</para>
+    /// </summary>
+    private async Task HandleTurnEndedAsync(TurnEndedEvent te, CancellationToken ct)
+    {
+        // A turn the plane itself ended must never be read as the worker going quiet. The
+        // wire names only the task, never the attempt (the same limitation HandleExitedAsync
+        // works around), so a kill, a requeue and a fast redispatch can put a healthy
+        // successor in `working` before the dead session's last turn-ended arrives — and
+        // without this guard that successor would be requeued for its predecessor's silence.
+        //
+        // Peek rather than consume: one killed session yields a turn-ended AND an exited, and
+        // the expectation has to survive this to still be here for that. Note what is NOT
+        // used — the agent's own `stopReason`. `cancelled` looks like it identifies exactly
+        // this case and does not: grok answers `cancelled` on turns the plane never touched
+        // (measured 2026-08-16), which would make every wedged grok worker invisible here.
+        if (registry.HasCommandedExit(te.Task))
+        {
+            logger.LogDebug(
+                "runner turn-ended for task {Task} is the plane's own kill echoing back", te.Task);
+            return;
+        }
+
+        await WithStoreAsync(async store =>
+        {
+            if (await store.GetStateAsync(te.Task, ct) != TaskState.Working)
+                return;
+            // A question is a turn, not a death. The session is idle for the Lead;
+            // requeueing it would kill the process the Lead is about to doorbell.
+            if (await store.IsAwaitingLeadAsync(te.Task, ct))
+                return;
+
+            logger.LogInformation(
+                "runner turn-ended for task {Task} with stopReason {StopReason} while still working — "
+                + "the worker ended its turn without reporting a result or asking a question",
+                te.Task, te.StopReason ?? "(none)");
+            await store.ApplyAsync(
+                te.Task, new LivenessLost(LivenessLossReason.TurnEndedWithoutResult), ct);
+        });
+    }
+
     private async Task HandleExitedAsync(ExitedEvent e, CancellationToken ct)
     {
         // §10, #84: the plane kills the harness of a dispatch it has just requeued, and the
@@ -162,37 +227,30 @@ public sealed class RunnerEventSink(
         }
 
         TaskState? state = null;
+        var awaitingLead = false;
         await WithStoreAsync(async store =>
         {
             state = await store.GetStateAsync(e.Task, ct);
-            // §10: a death after started may have side effects, so a still-working
-            // task requeues against the infrastructure counter. If it already
-            // reached verifying/terminal (worker reported first), the exit is
-            // expected and moot. Exit-without-submit refinement deferred.
-            //
-            // The reason is the exit itself (#73), not a liveness timeout: nothing timed
-            // out here, the process died, and telling the two apart in the trail is the
-            // difference between "the harness crashed" and "the daemon went quiet".
+            // A question is a turn, not a death. If the process died while the
+            // session was idle for the Lead, keep the row working and mark the
+            // process gone so the answer redispatches instead of PromptCommand
+            // into a corpse. Permission still lives in blocked_on_input below.
             if (state == TaskState.Working)
-                await store.ApplyAsync(e.Task, new LivenessLost(LivenessLossReason.ProcessExited), ct);
+            {
+                awaitingLead = await store.IsAwaitingLeadAsync(e.Task, ct);
+                if (!awaitingLead)
+                    await store.ApplyAsync(e.Task, new LivenessLost(LivenessLossReason.ProcessExited), ct);
+            }
         });
 
-        // §6/§11: blocked_on_input holds a task whose harness process is *expected*
-        // to be gone — a headless worker that asks a question ends its turn and its
-        // process exits, and per-task liveness is suspended there. That exit is not
-        // a failure and it is not a disconnect: the machine still holds the lease
-        // until the wait-TTL sweeper parks it (blocked_on_input → parked) or the
-        // machine itself dies (blocked_on_input → submitted). The sweeper resolves a
-        // blocked task's machine through RunnerConnectionRegistry.MachineFor, so
-        // untracking here would hide the task from it — stranding the task in
-        // blocked_on_input forever (never parked on TTL, never requeued on machine
-        // death). So leave a blocked task tracked: the sweeper untracks on its own
-        // park/requeue transition (WaitTtlSweeper.TryApplyAsync), and a
-        // wake→redispatch re-tracks it, so this is consistent, not a leak. Every
-        // other state is done here or already handled — working just requeued;
-        // verifying/terminal are moot; a parked task's affinity lives in its park
-        // record — so untrack as before.
-        if (state != TaskState.BlockedOnInput)
+        // §6/§11: blocked_on_input (and a working question whose process died)
+        // keep the lease on this machine so the sweeper can still find it
+        // (MachineFor). Mark the process gone so an answer redispatches instead
+        // of sending PromptCommand into a dead session. A still-up session never
+        // reaches this handler. Every other state is done here or already handled.
+        if (state == TaskState.BlockedOnInput || awaitingLead)
+            registry.MarkProcessGone(e.Task);
+        else
             registry.Untrack(e.Task);
     }
 

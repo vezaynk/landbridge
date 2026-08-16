@@ -301,6 +301,46 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     }
 
     /// <summary>
+    /// The asking ACP process has exited, but the task stays tracked so the
+    /// wait-TTL sweeper and a later answer can still resolve its machine. A
+    /// subsequent <see cref="HasLiveProcess"/> is false: answering then
+    /// redispatches rather than sending <c>PromptCommand</c> into a dead session.
+    /// </summary>
+    public void MarkProcessGone(TaskId task)
+    {
+        foreach (var conn in _connections.Values)
+        {
+            lock (conn.Gate)
+            {
+                if (conn.Dispatched.TryGetValue(task, out var current))
+                {
+                    conn.Dispatched[task] = current with { ProcessGone = true };
+                    return;
+                }
+            }
+        }
+    }
+
+    /// <summary>
+    /// Whether this task is tracked on a machine <em>and</em> that machine still
+    /// holds a live ACP process for it. <see cref="MachineFor"/> is not this:
+    /// a blocked task stays tracked after its process exits so the sweeper can
+    /// find it. An in-place answer is only honest when the process is still up.
+    /// </summary>
+    public bool HasLiveProcess(TaskId task)
+    {
+        foreach (var conn in _connections.Values)
+        {
+            lock (conn.Gate)
+            {
+                if (conn.Dispatched.TryGetValue(task, out var activity) && !activity.ProcessGone)
+                    return true;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
     /// The machine a task is currently tracked as dispatched to, or null when it
     /// is tracked nowhere. Two callers: the wait-TTL sweeper (§11) uses it to find
     /// a blocked task's machine — to judge that machine's liveness and record it
@@ -325,11 +365,12 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
 
     /// <summary>
     /// A machine's most recent heartbeat, or null when it has no live connection.
-    /// A blocked task's own per-task activity is frozen — its worker has exited
-    /// (§11) — so the wait-TTL sweeper judges the machine's liveness by this
-    /// machine-level heartbeat, not the task's activity, and requeues a blocked
-    /// task whose machine has gone silent past the liveness window (§6:
-    /// blocked_on_input → submitted on machine liveness loss).
+    /// A blocked task whose process has exited has frozen per-task activity, so
+    /// the wait-TTL sweeper judges that machine's liveness by this heartbeat and
+    /// requeues when the box itself has gone silent past the liveness window
+    /// (§6: blocked_on_input → submitted on machine liveness loss). A blocked
+    /// task whose process is still up (ACP wait, permission) is also covered
+    /// here: a dead machine takes the session with it either way.
     /// </summary>
     public DateTimeOffset? LastHeartbeatFor(string machineId)
     {
@@ -596,6 +637,36 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     }
 
     /// <summary>
+    /// The same question as <see cref="ConsumeCommandedExit"/> without consuming the answer:
+    /// is a kill the plane ordered for <paramref name="task"/> still outstanding?
+    ///
+    /// <para>Exists because a killed ACP session produces <em>two</em> signals, not one — the
+    /// turn ends (<c>session/cancel</c> answered) and then the process exits — and the
+    /// expectation has to survive the first to still be there for the second. So
+    /// <c>turn-ended</c> peeks and <c>exited</c> consumes; the ordering is guaranteed by
+    /// docketd, which cancels before it kills. Reading it the other way round would leave the
+    /// genuine exit looking like news and requeue a task twice for one death.</para>
+    ///
+    /// <para>Do not reach for the agent's own <c>stopReason</c> instead. Measured 2026-08-16:
+    /// <c>grok agent stdio</c> answers <c>cancelled</c> on turns the plane never touched, so
+    /// that word identifies who reported the stop and not who ordered it — and a worker that
+    /// wedges itself would be read as a kill the plane is already handling.</para>
+    /// </summary>
+    public bool HasCommandedExit(TaskId task)
+    {
+        var now = clock.GetUtcNow();
+        foreach (var conn in _connections.Values)
+        {
+            lock (conn.Gate)
+            {
+                if (conn.CommandedExits.TryGetValue(task, out var until))
+                    return now <= until;
+            }
+        }
+        return false;
+    }
+
+    /// <summary>
     /// The identity of one accepted <c>/runner</c> connection (#94): the machine that
     /// authenticated, plus the generation this registry minted for the connection itself.
     /// Held by the endpoint serving that socket and presented at teardown, so cleanup can
@@ -631,8 +702,12 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     public readonly record struct TrackedTask(
         TaskId Task, string Machine, DateTimeOffset LastActivity, DateTimeOffset LastProgress);
 
-    /// <summary>The two clocks kept per dispatched task; see <see cref="TrackedTask"/>.</summary>
-    private readonly record struct TaskActivity(DateTimeOffset LastActivity, DateTimeOffset LastProgress);
+    /// <summary>The two clocks kept per dispatched task; see <see cref="TrackedTask"/>.
+    /// <see cref="ProcessGone"/> is set when the harness exits but the task stays
+    /// tracked (blocked_on_input): the lease is still this machine's, the process
+    /// is not.</summary>
+    private readonly record struct TaskActivity(
+        DateTimeOffset LastActivity, DateTimeOffset LastProgress, bool ProcessGone = false);
 
     private sealed class RunnerConnection(Func<RunnerCommand, CancellationToken, Task> send, long generation)
     {

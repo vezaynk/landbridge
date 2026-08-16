@@ -113,7 +113,9 @@ public sealed record ProfileMachineView(
 /// request the same way (§11): the typed kind rides along because it is structure and
 /// it is the triage fact — <c>auth_help</c> needs a human, a <c>question</c> the Lead
 /// can take — while the question's text does not, and is pulled per task with
-/// <c>get_task_question</c>.
+/// <c>get_task_question</c>. <see cref="HasQuestion"/> is a live wait (the row still
+/// has <c>BlockedAt</c>), not "this task ever asked": a working task with no flag
+/// is still turning, one with the flag is idle for the Lead.
 /// <see cref="InfrastructureRequeues"/> and <see cref="LastRequeueReason"/> are the §6
 /// infrastructure counter and the signal behind its last increment (#73) — both
 /// structure, and both here because a task quietly on its fourth machine is a shape of

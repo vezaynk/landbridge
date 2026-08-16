@@ -43,6 +43,9 @@ internal static class MultiMachineKit
         {
             [RelayValidationEndpoints.BearerConfigKey] = relayValidationBearer,
             ["Docket:RelayUrl"] = relayUrl,
+            // Real ACP workers block inside session/request_permission; keep the
+            // plane-side poll tight so a Lead verdict is noticed immediately.
+            ["Docket:PermissionPollIntervalMs"] = "50",
         });
 
         builder.Services.AddDbContext<DocketDbContext>(o =>
@@ -73,6 +76,7 @@ internal static class MultiMachineKit
         app.UseAuthentication();
         app.UseAuthorization();
         app.MapMcp().RequireAuthorization();
+        app.MapWorkerPermissionEndpoint();
         app.MapRelayValidationEndpoint();
         return app;
     }
@@ -169,7 +173,7 @@ internal sealed class DaemonHarness : IAsyncDisposable
         Directory.CreateDirectory(_workRoot);
         var config = workerConfig ?? RunnerConfig.Load($$"""
             { "machine": { "work_root": {{JsonSerializer.Serialize(_workRoot)}} },
-              "profiles": [ { "name": "default", "spawn": ["noop"] } ] }
+              "profiles": [ { "name": "default", "prompt": "go", "spawn": ["noop"] } ] }
             """);
         var ring = new OutboundEventRing(256);
         var supervisor = workerSupervisor ?? new ProcessSupervisor(config.Machine, ring, TimeProvider.System);

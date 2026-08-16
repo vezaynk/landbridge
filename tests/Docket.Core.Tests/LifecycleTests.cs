@@ -98,14 +98,38 @@ public class LifecycleTests
     }
 
     [Fact]
-    public void Request_input_moves_working_to_blocked_with_a_typed_kind()
+    public void Request_input_of_a_question_stays_working()
     {
         var task = Given.Task(TaskState.Working);
         var result = TaskStateMachine.Apply(task,
             new RequestInput(Given.IncumbentOf(task), InputRequestKind.Question));
 
+        Expect.Transitioned(result, TaskState.Working);
+        Assert.DoesNotContain(Expect.Effects(result), e => e is ClearServicesAndForwards);
+    }
+
+    [Fact]
+    public void Request_input_of_permission_still_blocks()
+    {
+        var task = Given.Task(TaskState.Working);
+        var result = TaskStateMachine.Apply(task,
+            new RequestInput(Given.IncumbentOf(task), InputRequestKind.Permission, PermissionTool: "Bash"));
+
         Expect.Transitioned(result, TaskState.BlockedOnInput);
-        Assert.Contains(new ClearServicesAndForwards(), Expect.Effects(result));
+    }
+
+    [Fact]
+    public void Lead_can_message_a_working_session_without_a_pending_question()
+    {
+        var task = Given.Task(TaskState.Working);
+        var incumbent = task.CurrentInstance!.Value;
+
+        var next = Expect.Transitioned(
+            TaskStateMachine.Apply(task, new LeadMessage(Given.Lead, "keep going on the tests")),
+            TaskState.Working);
+        Assert.Equal(incumbent, next.CurrentInstance);
+        Assert.Empty(Expect.Effects(
+            TaskStateMachine.Apply(Given.Task(TaskState.Working), new LeadMessage(Given.Lead, "ok"))));
     }
 
     [Theory]
@@ -132,6 +156,36 @@ public class LifecycleTests
         var effects = Expect.Effects(result);
         Assert.Contains(new WriteParkRecord(Given.Park), effects);
         Assert.Contains(new RevokeWorkerInstanceToken(incumbent), effects);
+        Assert.Contains(new ClearServicesAndForwards(), effects);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void Continue_session_resumes_a_live_wait_in_place(bool byLead)
+    {
+        var task = Given.Task(TaskState.BlockedOnInput);
+        var incumbent = task.CurrentInstance!.Value;
+
+        var result = TaskStateMachine.Apply(
+            task,
+            new ContinueSession(byLead ? Given.Lead : Given.Human, "use staging-pg"));
+
+        var next = Expect.Transitioned(result, TaskState.Working);
+        Assert.Equal(incumbent, next.CurrentInstance);
+        Assert.Null(next.Park);
+        Assert.Empty(Expect.Effects(result));
+    }
+
+    [Fact]
+    public void Continue_session_refuses_a_permission_request()
+    {
+        var task = Given.Task(TaskState.BlockedOnInput);
+        Expect.Rejected(
+            TaskStateMachine.Apply(
+                task,
+                new ContinueSession(Given.Lead, "go ahead", InputRequestKind.Permission)),
+            Rule.PermissionVerdictAnswersPermissionRequests);
     }
 
     [Fact]
@@ -148,6 +202,7 @@ public class LifecycleTests
         var effects = Expect.Effects(result);
         Assert.Contains(new WriteParkRecord(Given.Park), effects);
         Assert.Contains(new RevokeWorkerInstanceToken(incumbent), effects);
+        Assert.Contains(new ClearServicesAndForwards(), effects);
     }
 
     [Fact]
@@ -159,6 +214,39 @@ public class LifecycleTests
 
         var next = Expect.Transitioned(result, TaskState.Submitted);
         Assert.Equal(Given.Park, next.Park);
+    }
+
+    [Fact]
+    public void Park_from_working_releases_the_session_and_revokes_the_instance()
+    {
+        var task = Given.Task(TaskState.Working);
+        var incumbent = task.CurrentInstance!.Value;
+
+        var result = TaskStateMachine.Apply(task, new Park(Given.Lead, Given.Park));
+
+        var next = Expect.Transitioned(result, TaskState.Parked);
+        Assert.Equal(Given.Park, next.Park);
+        var effects = Expect.Effects(result);
+        Assert.Contains(new RevokeWorkerInstanceToken(incumbent), effects);
+        Assert.Contains(new ClearServicesAndForwards(), effects);
+        Assert.Contains(new WriteParkRecord(Given.Park), effects);
+    }
+
+    [Fact]
+    public void Park_from_blocked_on_input_clears_services()
+    {
+        // A question no longer tears services down, so park is the first time they go.
+        var task = Given.Task(TaskState.BlockedOnInput);
+        var incumbent = task.CurrentInstance!.Value;
+
+        var result = TaskStateMachine.Apply(task, new Park(Given.Lead, Given.Park));
+
+        var next = Expect.Transitioned(result, TaskState.Parked);
+        Assert.Equal(Given.Park, next.Park);
+        var effects = Expect.Effects(result);
+        Assert.Contains(new RevokeWorkerInstanceToken(incumbent), effects);
+        Assert.Contains(new WriteParkRecord(Given.Park), effects);
+        Assert.Contains(new ClearServicesAndForwards(), effects);
     }
 
     [Fact]

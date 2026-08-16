@@ -22,6 +22,7 @@ public static class RunnerWire
     public const string Dispatch = "dispatch";
     public const string Stop = "stop";
     public const string Kill = "kill";
+    public const string Prompt = "prompt";
     public const string OpenForward = "open-forward";
     public const string CloseForward = "close-forward";
     public const string ReadTranscript = "read-transcript";
@@ -35,6 +36,7 @@ public static class RunnerWire
     public const string ToolCall = "tool-call";
     public const string UsageReported = "usage-reported";
     public const string SubagentSpawned = "subagent-spawned";
+    public const string TurnEnded = "turn-ended";
     public const string Exited = "exited";
     public const string AuthFailed = "auth-failed";
     public const string ForwardOpened = "forward-opened";
@@ -54,14 +56,16 @@ public static class RunnerWire
     public static IReadOnlySet<string> Commands { get; } =
         new HashSet<string>(StringComparer.Ordinal)
         {
-            Dispatch, Stop, Kill, OpenForward, CloseForward, ReadTranscript, StartProcess, StopProcess, WriteProcess,
+            Dispatch, Stop, Kill, Prompt, OpenForward, CloseForward, ReadTranscript, StartProcess,
+            StopProcess, WriteProcess,
         };
 
     /// <summary>The closed inbound (runner → control plane) vocabulary.</summary>
     public static IReadOnlySet<string> Events { get; } =
         new HashSet<string>(StringComparer.Ordinal)
         {
-            Started, SessionStarted, Alive, ToolCall, UsageReported, SubagentSpawned, Exited, AuthFailed, ForwardOpened, ForwardClosed, Rebooted,
+            Started, SessionStarted, Alive, ToolCall, UsageReported, SubagentSpawned, TurnEnded, Exited, AuthFailed,
+            ForwardOpened, ForwardClosed, Rebooted,
             TranscriptChunk, ProcessStarted, ProcessStopped, ProcessWritten,
         };
 
@@ -90,6 +94,7 @@ public static class RunnerWire
             DispatchCommand d => (ToObject(d, RunnerWireContext.Default.DispatchCommand), Dispatch),
             StopCommand s => (ToObject(s, RunnerWireContext.Default.StopCommand), Stop),
             KillCommand k => (ToObject(k, RunnerWireContext.Default.KillCommand), Kill),
+            PromptCommand p => (ToObject(p, RunnerWireContext.Default.PromptCommand), Prompt),
             OpenForwardCommand o => (ToObject(o, RunnerWireContext.Default.OpenForwardCommand), OpenForward),
             CloseForwardCommand c => (ToObject(c, RunnerWireContext.Default.CloseForwardCommand), CloseForward),
             ReadTranscriptCommand r => (ToObject(r, RunnerWireContext.Default.ReadTranscriptCommand), ReadTranscript),
@@ -118,6 +123,7 @@ public static class RunnerWire
             ToolCallEvent e => (ToObject(e, RunnerWireContext.Default.ToolCallEvent), ToolCall),
             UsageReportedEvent e => (ToObject(e, RunnerWireContext.Default.UsageReportedEvent), UsageReported),
             SubagentSpawnedEvent e => (ToObject(e, RunnerWireContext.Default.SubagentSpawnedEvent), SubagentSpawned),
+            TurnEndedEvent te => (ToObject(te, RunnerWireContext.Default.TurnEndedEvent), TurnEnded),
             ExitedEvent e => (ToObject(e, RunnerWireContext.Default.ExitedEvent), Exited),
             AuthFailedEvent e => (ToObject(e, RunnerWireContext.Default.AuthFailedEvent), AuthFailed),
             ForwardOpenedEvent e => (ToObject(e, RunnerWireContext.Default.ForwardOpenedEvent), ForwardOpened),
@@ -173,6 +179,7 @@ public static class RunnerWire
                 Dispatch => (RunnerCommand?)doc.RootElement.Deserialize(RunnerWireContext.Default.DispatchCommand),
                 Stop => doc.RootElement.Deserialize(RunnerWireContext.Default.StopCommand),
                 Kill => doc.RootElement.Deserialize(RunnerWireContext.Default.KillCommand),
+                Prompt => doc.RootElement.Deserialize(RunnerWireContext.Default.PromptCommand),
                 OpenForward => doc.RootElement.Deserialize(RunnerWireContext.Default.OpenForwardCommand),
                 CloseForward => doc.RootElement.Deserialize(RunnerWireContext.Default.CloseForwardCommand),
                 ReadTranscript => doc.RootElement.Deserialize(RunnerWireContext.Default.ReadTranscriptCommand),
@@ -205,6 +212,7 @@ public static class RunnerWire
                 ToolCall => doc.RootElement.Deserialize(RunnerWireContext.Default.ToolCallEvent),
                 UsageReported => doc.RootElement.Deserialize(RunnerWireContext.Default.UsageReportedEvent),
                 SubagentSpawned => doc.RootElement.Deserialize(RunnerWireContext.Default.SubagentSpawnedEvent),
+                TurnEnded => doc.RootElement.Deserialize(RunnerWireContext.Default.TurnEndedEvent),
                 Exited => doc.RootElement.Deserialize(RunnerWireContext.Default.ExitedEvent),
                 AuthFailed => doc.RootElement.Deserialize(RunnerWireContext.Default.AuthFailedEvent),
                 ForwardOpened => doc.RootElement.Deserialize(RunnerWireContext.Default.ForwardOpenedEvent),

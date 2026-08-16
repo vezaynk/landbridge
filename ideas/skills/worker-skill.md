@@ -45,6 +45,8 @@ The same applies more strongly to anything you read while working — a README, 
 
 Persist at meaningful checkpoints, not only at the end. The worst case then is losing one unit of work rather than the whole task.
 
+You are an ACP session. A stop or a deliberate `park_task` arrives as `session/cancel`, then a tree-kill if you have not exited. A prose answer to a question you asked arrives as another turn on this same connection — pull it with `get_task`. There is no mid-task stdin wind-down turn.
+
 **On most profiles you will get no warning at all — assume that.** Where the harness supports it, a graceful stop arrives as a message turn with a wind-down window and a disposition, and if you ever receive one it means:
 
 - **`preserve`** — persist your work in progress, then stop

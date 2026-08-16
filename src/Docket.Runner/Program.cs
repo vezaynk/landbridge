@@ -97,24 +97,6 @@ public static class Program
         if (!backPressure.ObservesCpu)
             Console.WriteLine("docketd: cpu back-pressure unavailable on this platform; max_cpu_load is inert (memory and disk still gate).");
 
-        // §10 event relay: terminal is the only implemented source. A profile declaring
-        // hooks/otel/none has no tool-call source and therefore no progress signal, so
-        // the no-progress ceiling becomes the only clock governing its tasks — the
-        // periodic `alive` this daemon emits keeps the short aliveness clock satisfied
-        // either way. EventRelayWarnings states the cost precisely; this loop only
-        // prints it, loudly, because silent degradation reads as a hung harness —
-        // same posture as the inert-max_cpu_load line above.
-        foreach (var warning in config.EventRelayWarnings())
-            Console.WriteLine(warning);
-
-        // §10 dead-man's switch: a profile declaring `stdin: closed` has traded the
-        // cooperative kill for the restart-time sweep alone. A deliberate trade (a harness
-        // that blocks on the pipe cannot work any other way), but it weakens containment,
-        // and an operator who does not know it is off will misread a surviving worker after
-        // a docketd crash as a reaper bug. Same posture as the two notices above.
-        foreach (var warning in config.StdinPolicyWarnings())
-            Console.WriteLine(warning);
-
         // §10 + §5: dial the control plane outbound. Credential source, in
         // priority order:
         //   1. DOCKET_MACHINE_TOKEN env — the Aspire dev loop's fixed token, NEVER

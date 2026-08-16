@@ -116,15 +116,12 @@ public class WrongSourceStateAndAuthorityTests
 
     [Theory]
     [InlineData(TaskState.Submitted)]
-    [InlineData(TaskState.Working)]
     [InlineData(TaskState.Verifying)]
     [InlineData(TaskState.Parked)]
-    public void Answer_input_applies_only_from_blocked_on_input(TaskState state)
+    public void Answer_input_applies_only_from_blocked_on_input_or_working(TaskState state)
     {
-        // Answering a task that never asked would revoke a working worker's token
-        // and requeue it — the state gate is what keeps a stray answer from
-        // restarting live work. A parked task is woken by WakeParked, not answered
-        // here, which is why it is refused too.
+        // A parked task is woken by WakeParked, not answered here.
+        // Working is legal: a live session that asked a question stays working.
         var answer = new AnswerInput(Given.Lead, Given.Park, Answer: "use the second option");
 
         Expect.Rejected(TaskStateMachine.Apply(Given.Task(state), answer), Rule.InvalidSourceState);
@@ -165,7 +162,9 @@ public class WrongSourceStateAndAuthorityTests
                      new VerdictAccept(Given.Lead),
                      new VerdictFail(Given.Lead),
                      new AnswerInput(Given.Lead, Given.Park),
+                     new ContinueSession(Given.Lead, "use staging"),
                      new StopPreserveAndPark(Given.Lead, Given.Park),
+                     new Park(Given.Lead, Given.Park),
                      new Cancel(Given.Lead, CancelDisposition.Preserve),
                      new WakeParked(),
                  })
@@ -214,6 +213,23 @@ public class WrongSourceStateAndAuthorityTests
                 TaskStateMachine.Apply(task, new Cancel(incumbent, disposition)),
                 Rule.ActorLacksAuthority);
         }
+    }
+
+    [Fact]
+    public void Park_refuses_a_worker_parking_its_own_task()
+    {
+        var task = Given.Task(TaskState.Working);
+        Expect.Rejected(
+            TaskStateMachine.Apply(task, new Park(Given.IncumbentOf(task), Given.Park)),
+            Rule.ActorLacksAuthority);
+    }
+
+    [Fact]
+    public void Park_refuses_a_foreign_lead()
+    {
+        Expect.Rejected(
+            TaskStateMachine.Apply(Given.Task(TaskState.Working), new Park(Given.ForeignLead, Given.Park)),
+            Rule.ActorLacksAuthority);
     }
 
     [Fact]

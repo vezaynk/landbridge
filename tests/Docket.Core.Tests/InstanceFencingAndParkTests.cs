@@ -177,6 +177,9 @@ public class InstanceFencingAndParkTests
         Expect.Rejected(
             TaskStateMachine.Apply(task, new AnswerInput(Given.IncumbentOf(task), Given.Park)),
             Rule.ActorLacksAuthority);
+        Expect.Rejected(
+            TaskStateMachine.Apply(task, new ContinueSession(Given.IncumbentOf(task), "no")),
+            Rule.ActorLacksAuthority);
     }
 
     [Fact]
@@ -227,13 +230,20 @@ public class InstanceFencingAndParkTests
 
     [Theory]
     [InlineData(TaskState.Submitted)]
-    [InlineData(TaskState.Working)]
     [InlineData(TaskState.Verifying)]
-    public void Wait_ttl_only_applies_to_blocked_tasks(TaskState state)
+    public void Wait_ttl_only_applies_to_a_waiting_task(TaskState state)
     {
         Expect.Rejected(
             TaskStateMachine.Apply(Given.Task(state), new WaitTtlExpired(Given.Park)),
             Rule.InvalidSourceState);
+    }
+
+    [Fact]
+    public void Wait_ttl_parks_a_working_task_that_is_idle_for_the_lead()
+    {
+        Expect.Transitioned(
+            TaskStateMachine.Apply(Given.Task(TaskState.Working), new WaitTtlExpired(Given.Park)),
+            TaskState.Parked);
     }
 
     [Theory]

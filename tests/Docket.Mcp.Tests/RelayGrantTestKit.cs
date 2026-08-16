@@ -97,6 +97,7 @@ internal static class RelayGrantTestKit
         app.UseAuthentication();
         app.UseAuthorization();
         app.MapMcp().RequireAuthorization();
+        app.MapWorkerPermissionEndpoint();
         app.MapRelayValidationEndpoint();
         app.MapPreviewConnectEndpoint();
         app.MapDashboard();

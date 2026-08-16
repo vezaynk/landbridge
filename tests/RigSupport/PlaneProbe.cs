@@ -217,7 +217,8 @@ internal static class PlaneProbe
             $"lastRequeueReason={row.LastRequeueReason?.ToString() ?? "(none)"} " +
             $"verificationFailures={row.VerificationFailures} " +
             $"profile={row.Profile ?? "(default)"} result={row.ResultReference ?? "(none)"} " +
-            $"instance={row.CurrentInstanceId?.ToString() ?? "(none)"}");
+            $"instance={row.CurrentInstanceId?.ToString() ?? "(none)"} " +
+            $"inputKind={row.InputKind?.ToString() ?? "(none)"}");
 
         var instances = await db.WorkerInstances.AsNoTracking()
             .Where(w => w.TaskId == task.Value)

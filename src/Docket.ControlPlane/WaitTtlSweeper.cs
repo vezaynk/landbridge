@@ -6,13 +6,9 @@ using Microsoft.Extensions.Logging;
 namespace Docket.ControlPlane;
 
 /// <summary>
-/// The §11 wait-TTL sweeper: the control-plane driver that ends a task's stay in
-/// <see cref="TaskState.BlockedOnInput"/> so no task waits on a human forever.
-/// A headless worker that asks a question ends its turn and its process exits —
-/// per-task liveness is suspended while blocked (§11), and <see cref="DispatchService"/>
-/// deliberately leaves blocked tasks alone — so without this sweeper a task whose
-/// Lead never answers holds its lease indefinitely. This closes exactly the two
-/// §6 rows the control plane owns for a waiting task:
+/// The §11 wait-TTL sweeper. Auto-park is off by default: a live ACP session is
+/// held until a Lead answers or calls <c>park_task</c>. When a TTL is configured,
+/// this still closes the two §6 rows the plane owns for a waiting task:
 ///
 ///   blocked_on_input → parked    (<see cref="WaitTtlExpired"/>): the wait TTL
 ///     elapsed; the worker-instance token is revoked and a park record is written
@@ -47,12 +43,12 @@ public sealed class WaitTtlSweeper : IHostedService
     private readonly TimeSpan _sweepInterval;
 
     /// <summary>
-    /// How long a task may sit in blocked_on_input before it parks (§11 names the
-    /// wait TTL but not a value). 30 minutes by default — long enough for a human
-    /// to answer in-session, short enough that a Lead's session ending frees the
-    /// lease promptly. Override with <c>Docket:WaitTtl</c>.
+    /// How long a task may sit in blocked_on_input before it parks. Off by default
+    /// (<see cref="Timeout.InfiniteTimeSpan"/>): a live ACP session is held until a
+    /// Lead answers or calls <c>park_task</c>. Override with <c>Docket:WaitTtl</c>
+    /// to restore a timer. Zero and infinite both mean "do not auto-park".
     /// </summary>
-    public static readonly TimeSpan DefaultWaitTtl = TimeSpan.FromMinutes(30);
+    public static readonly TimeSpan DefaultWaitTtl = Timeout.InfiniteTimeSpan;
 
     /// <summary>
     /// How stale a machine's heartbeat may get before a task blocked on it is
@@ -168,7 +164,9 @@ public sealed class WaitTtlSweeper : IHostedService
                 continue;
             }
 
-            if (b.BlockedAt is { } since && now - since >= _waitTtl)
+            if (_waitTtl > TimeSpan.Zero
+                && _waitTtl != Timeout.InfiniteTimeSpan
+                && b.BlockedAt is { } since && now - since >= _waitTtl)
             {
                 // §6/§11: blocked_on_input → parked, wait TTL expired. The park record is
                 // the machine, which is the one fact of it the plane holds and redispatch

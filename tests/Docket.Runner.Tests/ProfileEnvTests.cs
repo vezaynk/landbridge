@@ -13,7 +13,7 @@ public class ProfileEnvTests
 {
     private static string WithEnv(string envJson) => $$"""
         { "machine": { "work_root": "/w" },
-          "profiles": [ { "name": "default", "spawn": ["grok", "-p"],
+          "profiles": [ { "name": "default", "spawn": ["grok", "-p"], "prompt": "go",
             "env": {{envJson}} } ] }
         """;
 
@@ -22,7 +22,7 @@ public class ProfileEnvTests
     {
         var json = """
             { "machine": { "work_root": "/w" },
-              "profiles": [ { "name": "default", "spawn": ["grok", "-p"] } ] }
+              "profiles": [ { "name": "default", "prompt": "go", "spawn": ["grok", "-p"] } ] }
             """;
 
         Assert.Empty(RunnerConfig.Load(json).Default.Env);

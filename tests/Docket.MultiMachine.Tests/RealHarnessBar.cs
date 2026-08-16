@@ -10,15 +10,23 @@ namespace Docket.MultiMachine.Tests;
 /// derived class's <c>[Trait]</c> to methods declared on a base type, so the
 /// wrappers are the load-bearing half of the filter — not decoration.
 ///
-/// <para>Three claims, and only these three, because they are the ones a
-/// <c>resume.args</c> profile plus a terminal stream make generic. Dead-man
-/// hangs, stop delivery, permission, mixed fleets stay per-CLI: their
-/// assertions invert across harnesses.</para>
+/// <para>Three claims, and only these three, because they are the ones an ACP
+/// session plus <c>session/load</c> make generic. Stop delivery and mixed fleets
+/// stay per-CLI.</para>
 /// </summary>
 internal static class RealHarnessBar
 {
     public const int MaxAttempts = 3;
-    public static readonly TimeSpan PerLegBudget = TimeSpan.FromMinutes(8);
+
+    // Successful paid runs (local 2026-08-16): Claude 8/8 in 2m 40s, Codex
+    // 5/5 in 1m 14s, Grok 3/3 in 2m 5s, OpenCode 5/5 in 1m 44s. Per-test
+    // that is ~15–40s for a single dispatch and ~40–80s for a two-leg
+    // (park / handoff / continuation). The budgets below are 2× those.
+    public const int EchoTimeoutMs = 120_000;
+    public const int TwoLegTimeoutMs = 180_000;
+    public static readonly TimeSpan EchoTimeout = TimeSpan.FromMilliseconds(EchoTimeoutMs);
+    public static readonly TimeSpan TwoLegTimeout = TimeSpan.FromMilliseconds(TwoLegTimeoutMs);
+    public static readonly TimeSpan PerLegBudget = TimeSpan.FromSeconds(60);
 
     /// <summary>
     /// A real worker reads <c>get_task</c>, reports the live-description token,
@@ -28,7 +36,7 @@ internal static class RealHarnessBar
     /// </summary>
     public static async Task DriveToVerifyingAsync(PostgresFixture pg, RealHarnessProfile profile)
     {
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(15));
+        using var cts = new CancellationTokenSource(EchoTimeout);
         var ct = cts.Token;
 
         await using var rig = profile.OpenEchoRig(pg);
@@ -49,8 +57,8 @@ internal static class RealHarnessBar
         Assert.Equal("A", rig.MachineRanOn(task));
         Assert.False(
             string.IsNullOrWhiteSpace(await rig.HarnessSessionRefAsync(task, ct)),
-            $"no harness session ref was stamped for {profile.Name} — events.source: terminal "
-            + "did not carry a session id, so §11 resume would silently cold-start.\n"
+            $"no harness session ref was stamped for {profile.Name} — session/new did not "
+            + "return a sessionId, so §11 resume would silently cold-start.\n"
             + profile.FailureHypotheses + await rig.RealWorkerDiagnosticsAsync(task, ct));
     }
 
@@ -65,7 +73,7 @@ internal static class RealHarnessBar
         Skip.If(profile.Usage == UsageExpectation.None,
             profile.Name + " declares no usage the bar can assert on");
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(15));
+        using var cts = new CancellationTokenSource(EchoTimeout);
         var ct = cts.Token;
 
         await using var rig = profile.OpenEchoRig(pg);
@@ -86,7 +94,7 @@ internal static class RealHarnessBar
             Assert.True(
                 await FleetRig.WaitUntilAsync(
                     async () => await rig.ReportedUsageAsync(task, ct) is [{ CostUsd: not null }, ..],
-                    TimeSpan.FromMinutes(2)),
+                    TimeSpan.FromSeconds(30)),
                 $"no usage report with a cost reached the plane for {profile.Name}.\n"
                 + profile.FailureHypotheses + await rig.RealWorkerDiagnosticsAsync(task, ct));
             var rows = await rig.ReportedUsageAsync(task, ct);
@@ -102,29 +110,35 @@ internal static class RealHarnessBar
         Assert.True(
             await FleetRig.WaitUntilAsync(
                 async () => (await rig.ReportedUsageAsync(task, ct)).Count > 0,
-                TimeSpan.FromMinutes(2)),
+                TimeSpan.FromSeconds(30)),
             $"no usage report reached the plane for {profile.Name}.\n"
             + profile.FailureHypotheses + await rig.RealWorkerDiagnosticsAsync(task, ct));
         var tokens = await rig.ReportedUsageAsync(task, ct);
         Assert.True(
             tokens.Sum(u => u.InputTokens + u.OutputTokens + u.CacheReadTokens + u.CacheWriteTokens) > 0,
             $"a usage row landed for {profile.Name} but every token bucket was zero");
-        Assert.DoesNotContain(tokens, u => u.CostUsd is not null);
+        // A real dollar figure is fine (OpenCode + Anthropic reports one). A
+        // $0.00 is the adapter not computing cost and must not be stored as
+        // "this dispatch was free".
+        Assert.DoesNotContain(tokens, u => u.CostUsd is 0m);
     }
 
     /// <summary>
-    /// §11 park → resume against whatever CLI declared <c>resume.args</c>: a
-    /// worker asks, the Lead answers, the park record carries the session ref,
-    /// and the resumed instance reports a nonce that existed only in the
-    /// first spawn prompt. Skips when the profile has no resume argv — that
-    /// is the "harness that declares resume.args" gate, not a missing test.
+    /// §11 park → resume via <c>session/load</c>: a worker asks, the Lead parks it on
+    /// purpose, the park record carries the session ref, the answer wakes it on a fresh
+    /// process, and that process reports a nonce that existed only in the first turn — which
+    /// it can only know by having reopened the transcript. Skips when the profile does not
+    /// support loadSession.
     /// </summary>
     public static async Task ResumesAfterParkAsync(PostgresFixture pg, RealHarnessProfile profile)
     {
-        Skip.If(profile.Resume is null,
-            profile.Name + " does not declare resume.args — park/resume is not this harness's bar");
+        // Under ACP the gate is the agent's own loadSession capability, not a resume argv.
+        // Every agent measured on 2026-08-15 declares it, so this skip should now be dead —
+        // tools/acp-probe is how you check before adding a fifth harness.
+        Skip.If(!profile.SupportsResume,
+            profile.Name + " does not support session/load — park/resume is not this harness's bar");
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(20));
+        using var cts = new CancellationTokenSource(TwoLegTimeout);
         var ct = cts.Token;
 
         var remembered = RealHarnessProfiles.NewToken();
@@ -134,20 +148,24 @@ internal static class RealHarnessBar
         using var attach = profile.AttachTo(rig);
         await rig.AddMachineAsync("A");
 
-        var task = await rig.CreateTaskAsync(RealHarnessProfile.AskThenStopDescription, ct);
+        var task = await rig.CreateTaskAsync(profile.AskThenStopDescription, ct);
 
         Assert.True(
             await rig.DispatchUntilAsync(
                 task, "A",
-                async () => await rig.StateAsync(task, ct)
-                    is TaskState.BlockedOnInput or TaskState.Verifying or TaskState.Completed,
+                async () =>
+                {
+                    var state = await rig.StateAsync(task, ct);
+                    if (state is TaskState.Verifying or TaskState.Completed)
+                        return true;
+                    return await rig.HasPendingQuestionAsync(task, ct);
+                },
                 MaxAttempts, PerLegBudget, ct),
-            $"the real {profile.Name} worker neither blocked on input nor finished.\n"
+            $"the real {profile.Name} worker neither asked a question nor finished.\n"
             + profile.FailureHypotheses + await rig.RealWorkerDiagnosticsAsync(task, ct));
-        var blockedState = await rig.StateAsync(task, ct);
         Assert.True(
-            blockedState == TaskState.BlockedOnInput,
-            $"the {profile.Name} worker reached {blockedState} without ever asking, so there is "
+            await rig.HasPendingQuestionAsync(task, ct),
+            $"the {profile.Name} worker reached {await rig.StateAsync(task, ct)} without ever asking, so there is "
             + "no park to resume.\n"
             + profile.FailureHypotheses + await rig.RealWorkerDiagnosticsAsync(task, ct));
 
@@ -162,10 +180,19 @@ internal static class RealHarnessBar
             await rig.QuestionAsync(task, ct),
             StringComparison.OrdinalIgnoreCase);
 
-        await rig.AnswerAsync(task, "Yes — report the remembered value now.", ct);
+        // Park before answering, and that ordering is the whole point of this test.
+        // Since ideas/sessions.md stage 2 an answer to a live session is a follow-up prompt
+        // on the same process — no second instance, no session/load, nothing resumed — so
+        // answering first would quietly turn a resume proof into a re-prompt proof that
+        // still went green. park_task is the deliberate release, and the only route left to
+        // the §11 path this test exists to hold: the session is cancelled, the token
+        // revoked, the machine freed, and the wake below has to reopen the transcript.
+        await rig.ParkTaskAsync(task, ct);
         var park = await rig.ParkAsync(task, ct);
         Assert.Equal("A", park.Machine);
         Assert.Equal(sessionRef, park.SessionRef);
+
+        await rig.AnswerAsync(task, "Yes — report the remembered value now.", ct);
 
         Assert.True(
             await rig.DispatchUntilVerifyingAsync(task, "A", MaxAttempts, PerLegBudget, ct),
@@ -174,12 +201,15 @@ internal static class RealHarnessBar
 
         Assert.Contains(remembered, await rig.ResultReferenceAsync(task, ct));
 
-        var instanceSessions = rig.InstanceSessionIdsOn("A", task, profile.SessionIdFromLine);
         Assert.True(
-            instanceSessions.Count >= 2,
+            await FleetRig.WaitUntilAsync(
+                () => Task.FromResult(
+                    rig.InstanceSessionIdsOn("A", task, profile.SessionIdFromLine).Count >= 2),
+                TimeSpan.FromSeconds(15)),
             $"resume of {profile.Name} did not produce a second captured instance — the successor "
             + "may have cold-started without a transcript file, or SessionIdFromLine missed the stream.\n"
             + profile.FailureHypotheses + await rig.RealWorkerDiagnosticsAsync(task, ct));
+        var instanceSessions = rig.InstanceSessionIdsOn("A", task, profile.SessionIdFromLine);
         Assert.All(instanceSessions, id => Assert.Equal(sessionRef, id));
         Assert.Equal("A", rig.MachineRanOn(task));
         Assert.Equal(sessionRef, await rig.HarnessSessionRefAsync(task, ct));

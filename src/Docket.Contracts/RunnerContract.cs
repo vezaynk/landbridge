@@ -120,6 +120,43 @@ public sealed record StopCommand(
 public sealed record KillCommand(TaskId Task) : RunnerCommand;
 
 /// <summary>
+/// <c>prompt</c> — wake a worker whose session is <b>still open</b> so it re-reads its
+/// assignment (<c>ideas/sessions.md</c> stage 1). The first command in this vocabulary that
+/// assumes a worker is something you talk to rather than something you launch.
+///
+/// <para><b>It carries no message, and that is the whole design.</b> The content a worker is
+/// being woken for — an answered question, and later a Lead's message — stays where §11 put
+/// it: on the assignment, fetched by the worker's own authenticated <c>get_task</c> call.
+/// Three properties depend on that pull, and pushing the text in this envelope would cost
+/// all three:
+/// <list type="number">
+///   <item><b>The read receipt.</b> A pulled answer is one the worker demonstrably received,
+///     because it asked for it. A pushed one is only <em>delivered to a queue</em> — the same
+///     gap between "written" and "read" that the runner's <c>StopDelivery.MessageWritten</c>
+///     ack exists to be honest about, and the plane would have no way to tell a worker that
+///     acted on an answer from one that never saw it.</item>
+///   <item><b>Confidentiality.</b> Answer content deliberately does not travel as spawn argv,
+///     which is world-readable through <c>ps</c> and <c>/proc/&lt;pid&gt;/cmdline</c> (§13
+///     keeps enrollment tokens out of argv for the same reason). It should not gain a second
+///     path out of the authenticated MCP channel just because the session is now live.</item>
+///   <item><b>Config stays config.</b> The turn text is profile configuration — and must be,
+///     since it has to name the docket tools the way <em>this</em> harness spells them. Per-
+///     message content in a profile-shaped turn would mix the two.</item>
+/// </list>
+/// So the runner sends the profile's <c>follow_up</c> turn, the worker calls
+/// <c>get_task</c>, and the pull is the receipt exactly as it was under the task model. The
+/// session is what makes the wake-up cheap — no respawn, no cold start, no replay — not what
+/// carries the payload.</para>
+///
+/// <para><b>Only meaningful for a <c>protocol: acp</c> profile.</b> A stream-mode worker has
+/// no channel that accepts a turn: its stdin is a dead-man's pipe, not a request channel,
+/// and the harnesses this repo supports do not read mid-task turns off it (the reason every
+/// stream profile is forced to <c>stop.mode: signal</c>). Such a task is woken the old way,
+/// by redispatch.</para>
+/// </summary>
+public sealed record PromptCommand(TaskId Task) : RunnerCommand;
+
+/// <summary>
 /// <c>open-forward</c> — the control plane asks this runner to stand up one end
 /// of a relay forward (§8.3). In this deployment the plane (not the relay, which
 /// holds no docketd channel of its own) sends this to <em>both</em> ends over the
@@ -506,6 +543,25 @@ public sealed record UsageReportedEvent(
 /// it; progressive enhancement, not a given (§10 telemetry ingest).</summary>
 public sealed record SubagentSpawnedEvent(
     TaskId Task, string? AgentId, string? ParentAgentId, DateTimeOffset At) : RunnerEvent;
+
+/// <summary>
+/// <c>turn-ended</c> — an ACP worker finished a turn and its session is still open
+/// (<c>ideas/sessions.md</c> stage 1). The event the task model could not have: there, a
+/// finished turn and a dead process were the same observation, so <c>exited</c> carried
+/// both meanings and neither precisely.
+///
+/// <para><see cref="StopReason"/> is the agent's own word for why the turn ended —
+/// <c>end_turn</c>, <c>max_tokens</c>, <c>max_turn_requests</c>, <c>refusal</c> or
+/// <c>cancelled</c>. Under the task model all five arrived as "the process exited 0 without
+/// reporting a result", which is why a worker that hit a token ceiling looked exactly like a
+/// lazy one. That distinction matters more since the ACP migration, not less: ACP has no
+/// <c>--max-turns</c> or budget flag, so <c>max_tokens</c> is now one of the few bounds that
+/// announces itself.</para>
+///
+/// <para>Null when the turn ended without the agent saying why — a stream that died
+/// mid-turn, or an agent that omits the field. Not invented, per §2 principle 2.</para>
+/// </summary>
+public sealed record TurnEndedEvent(TaskId Task, string? StopReason, DateTimeOffset At) : RunnerEvent;
 
 /// <summary><c>exited</c> — the harness process ended (§10). Observed directly
 /// by process supervision, not inferred.</summary>
