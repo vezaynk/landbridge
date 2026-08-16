@@ -51,8 +51,8 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
     /// <summary>Trait value the opt-in CI job filters on so it runs <em>only</em> this tier.</summary>
     public const string RealOpenCode = "RealOpenCode";
 
-    private const int MaxAttempts = 3;
-    private static readonly TimeSpan PerLegBudget = TimeSpan.FromMinutes(8);
+    private const int MaxAttempts = RealHarnessBar.MaxAttempts;
+    private static readonly TimeSpan PerLegBudget = RealHarnessBar.PerLegBudget;
 
     /// <summary>
     /// The standing rule both prompts here carry, ported from the claude tier where it fixed a real
@@ -87,15 +87,15 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
 
     public Task DisposeAsync() => Task.CompletedTask;
 
-    [SkippableFact]
+    [SkippableFact(Timeout = RealHarnessBar.EchoTimeoutMs)]
     public Task Real_worker_drives_a_task_to_verifying_on_the_fleet() =>
         RealHarnessBar.DriveToVerifyingAsync(pg, RealHarnessProfiles.OpenCode(RequireRealOpenCode()));
 
-    [SkippableFact]
+    [SkippableFact(Timeout = RealHarnessBar.EchoTimeoutMs)]
     public Task Real_worker_reports_usage_the_harness_emits() =>
         RealHarnessBar.ReportsUsageAsync(pg, RealHarnessProfiles.OpenCode(RequireRealOpenCode()));
 
-    [SkippableFact]
+    [SkippableFact(Timeout = RealHarnessBar.TwoLegTimeoutMs)]
     public Task Real_worker_resumes_its_transcript_after_a_park_and_reports_a_memory_only_nonce() =>
         RealHarnessBar.ResumesAfterParkAsync(pg, RealHarnessProfiles.OpenCode(RequireRealOpenCode()));
 
@@ -115,11 +115,11 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
     /// takes, and it outlives the kill — so <c>preserve</c> means something without anything
     /// having been negotiated.</para>
     /// </summary>
-    [SkippableFact]
+    [SkippableFact(Timeout = RealHarnessBar.EchoTimeoutMs)]
     public async Task A_stop_reaches_a_real_opencode_worker_as_a_kill_deadline_with_its_session_ref_preserved()
     {
         var openCodeBin = RequireRealOpenCode();
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(12));
+        using var cts = new CancellationTokenSource(RealHarnessBar.EchoTimeout);
         var ct = cts.Token;
 
         var profile = RealHarnessProfiles.OpenCode(openCodeBin);
@@ -128,7 +128,8 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
             spawnArgv: profile.AcpSpawn,
             prompt: SlowWorkerPrompt,
             followUp: profile.FollowUpTurn,
-            stop: new StopConfig(WindDown: TimeSpan.FromSeconds(5)));
+            stop: new StopConfig(WindDown: TimeSpan.FromSeconds(5)),
+            configOptions: profile.ConfigOptions);
         await rig.StartAsync(ct);
         using var config = profile.AttachTo(rig);
         await rig.AddMachineAsync("A");
@@ -141,7 +142,7 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
         Assert.True(
             await FleetRig.WaitUntilAsync(
                 async () => await rig.HarnessSessionRefAsync(task, ct) is { Length: > 0 },
-                TimeSpan.FromMinutes(5)),
+                RealHarnessBar.PerLegBudget),
             "the opencode worker never reported a session ref, so there was nothing to stop.\n"
             + OpenCodeFailureHypotheses() + await rig.RealWorkerDiagnosticsAsync(task, ct));
 
@@ -165,7 +166,7 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
         Assert.True(
             await FleetRig.WaitUntilAsync(
                 () => Task.FromResult(rig.WorkerObserved(task) is { Exits: > 0 }),
-                TimeSpan.FromMinutes(3)),
+                TimeSpan.FromSeconds(30)),
             "the stopped opencode worker never exited, so the deadline kill did not reach it.\n"
             + await rig.RealWorkerDiagnosticsAsync(task, ct));
 
@@ -180,19 +181,20 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
     /// <c>opencode run</c>, and B reports back a value only A could have produced — so the two
     /// harnesses collaborated through Docket without either knowing the other existed.
     /// </summary>
-    [SkippableFact]
+    [SkippableFact(Timeout = RealHarnessBar.TwoLegTimeoutMs)]
     public async Task A_claude_worker_and_an_opencode_worker_hand_off_a_token_across_one_fleet()
     {
         var openCode = RealHarnessProfiles.OpenCode(RequireRealOpenCode());
         var claude = RealHarnessProfiles.Claude(RequireRealClaudeForMixedFleet());
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(25));
+        using var cts = new CancellationTokenSource(RealHarnessBar.TwoLegTimeout);
         var ct = cts.Token;
 
         await using var rig = new FleetRig(
             pg,
             spawnArgv: openCode.AcpSpawn,
             prompt: openCode.EchoPrompt,
-            followUp: openCode.FollowUpTurn);
+            followUp: openCode.FollowUpTurn,
+            configOptions: openCode.ConfigOptions);
         await rig.StartAsync(ct);
         using var config = openCode.AttachTo(rig);
 

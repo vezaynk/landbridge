@@ -154,6 +154,17 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
             .Select(g => new { g.Key.TeamId, g.Key.State, Count = g.Count() })
             .ToListAsync(ct);
 
+        // Permission stays blocked_on_input; a question stays working. Both
+        // stamp BlockedAt and clear it when the wait ends.
+        var openByTeam = await tasks
+            .Where(t => t.BlockedAt != null
+                && (t.State == TaskState.BlockedOnInput
+                    || (t.State == TaskState.Working && t.InputKind != null
+                        && t.InputKind != InputRequestKind.Permission)))
+            .GroupBy(t => t.TeamId)
+            .Select(g => new { TeamId = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(x => x.TeamId, x => x.Count, ct);
+
         var parksByTeam = await events
             .Where(e => e.ToState == TaskState.Parked)
             .GroupBy(e => e.TeamId)
@@ -189,7 +200,7 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
                 .Where(s => s.TeamId == teamId)
                 .ToDictionary(s => s.State, s => s.Count);
             var total = counts.Values.Sum();
-            var open = counts.GetValueOrDefault(TaskState.BlockedOnInput);
+            var open = openByTeam.GetValueOrDefault(teamId);
             var isIdle = !ActiveStates.Any(s => counts.GetValueOrDefault(s) > 0);
             leadByTeam.TryGetValue(teamId, out var lead);
             overviews.Add(new TeamOverview(
@@ -298,7 +309,10 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
                 t.Id, t.Namespace, t.State, t.CompletionMode, t.Attempt,
                 parksByTask.GetValueOrDefault(t.Id),
                 t.Parked ? t.ParkMachine : null,
-                t.State == TaskState.BlockedOnInput ? t.BlockedAt : null,
+                t.BlockedAt is not null
+                    && (t.State == TaskState.BlockedOnInput
+                        || (t.State == TaskState.Working && t.InputKind != InputRequestKind.Permission))
+                    ? t.BlockedAt : null,
                 t.ContinuesTaskId,
                 t.State == TaskState.Completed ? t.CompletionProvenance : null,
                 t.WorkerReport,
@@ -316,7 +330,9 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
             .ToDictionary(g => g.Key, g => g.Count());
 
         var inputRequests = taskRows
-            .Where(t => t.State == TaskState.BlockedOnInput)
+            .Where(t => t.BlockedAt is not null
+                && t.InputKind != InputRequestKind.Permission
+                && (t.State == TaskState.BlockedOnInput || t.State == TaskState.Working))
             .Select(t => new InputRequestView(
                 t.TaskId, t.Namespace, teamId, t.BlockedAt, t.InputKind, t.Question))
             .ToList();
@@ -406,8 +422,11 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
         }
 
         var questions = await scopedTasks
-            .Where(t => t.State == TaskState.BlockedOnInput
-                        && t.InputKind != InputRequestKind.Permission)
+            .Where(t => t.InputKind != InputRequestKind.Permission
+                        && t.InputKind != null
+                        && t.BlockedAt != null
+                        && (t.State == TaskState.BlockedOnInput
+                            || t.State == TaskState.Working))
             .OrderBy(t => t.BlockedAt)
             .Select(t => new InputRequestView(
                 t.Id, t.Namespace, t.TeamId, t.BlockedAt, t.InputKind, t.InputQuestion))

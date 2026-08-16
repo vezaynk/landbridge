@@ -23,6 +23,7 @@ The config must cover:
 |---|---|
 | Harness invocation | The ACP entry point (`spawn`) and the opening turn (`prompt`). An ACP agent takes no prompt on argv. |
 | Follow-up | The wake-up turn (`follow_up`) when there is new input. Names docket tools the way *this* harness spells them. |
+| Config options | Optional `config_options` map. Each pair is `session/set_config_option` after `session/new`, skipped unless the agent advertised that `configId` and value. OpenCode needs `{ "model": "<slug>" }`; most others advertise nothing. |
 | Process control | `stop.wind_down_seconds` — grace after `session/cancel` before the tree-kill. There is no `mode` or `message`. |
 | Resume | Not a profile field. Redispatch uses `session/load` on the live connection. |
 | Transcript capture | Whether to record this worker's output locally (`logs.capture`) and the caps on it |

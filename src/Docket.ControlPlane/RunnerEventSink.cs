@@ -193,6 +193,10 @@ public sealed class RunnerEventSink(
         {
             if (await store.GetStateAsync(te.Task, ct) != TaskState.Working)
                 return;
+            // A question is a turn, not a death. The session is idle for the Lead;
+            // requeueing it would kill the process the Lead is about to doorbell.
+            if (await store.IsAwaitingLeadAsync(te.Task, ct))
+                return;
 
             logger.LogInformation(
                 "runner turn-ended for task {Task} with stopReason {StopReason} while still working — "
@@ -223,28 +227,28 @@ public sealed class RunnerEventSink(
         }
 
         TaskState? state = null;
+        var awaitingLead = false;
         await WithStoreAsync(async store =>
         {
             state = await store.GetStateAsync(e.Task, ct);
-            // §10: a death after started may have side effects, so a still-working
-            // task requeues against the infrastructure counter. If it already
-            // reached verifying/terminal (worker reported first), the exit is
-            // expected and moot. Exit-without-submit refinement deferred.
-            //
-            // The reason is the exit itself (#73), not a liveness timeout: nothing timed
-            // out here, the process died, and telling the two apart in the trail is the
-            // difference between "the harness crashed" and "the daemon went quiet".
+            // A question is a turn, not a death. If the process died while the
+            // session was idle for the Lead, keep the row working and mark the
+            // process gone so the answer redispatches instead of PromptCommand
+            // into a corpse. Permission still lives in blocked_on_input below.
             if (state == TaskState.Working)
-                await store.ApplyAsync(e.Task, new LivenessLost(LivenessLossReason.ProcessExited), ct);
+            {
+                awaitingLead = await store.IsAwaitingLeadAsync(e.Task, ct);
+                if (!awaitingLead)
+                    await store.ApplyAsync(e.Task, new LivenessLost(LivenessLossReason.ProcessExited), ct);
+            }
         });
 
-        // §6/§11: blocked_on_input keeps the lease on this machine so the sweeper
-        // can still find it (MachineFor). The process itself may have exited — an
-        // ACP session that crashed, or a worker that asked and then died — and that
-        // is not a failure: mark the process gone so an answer redispatches instead
+        // §6/§11: blocked_on_input (and a working question whose process died)
+        // keep the lease on this machine so the sweeper can still find it
+        // (MachineFor). Mark the process gone so an answer redispatches instead
         // of sending PromptCommand into a dead session. A still-up session never
         // reaches this handler. Every other state is done here or already handled.
-        if (state == TaskState.BlockedOnInput)
+        if (state == TaskState.BlockedOnInput || awaitingLead)
             registry.MarkProcessGone(e.Task);
         else
             registry.Untrack(e.Task);

@@ -77,6 +77,76 @@ public sealed class AcpClientTests
     /// write and nothing to smuggle.
     /// </summary>
     [Fact]
+    public async Task Pins_advertised_config_options_after_session_new()
+    {
+        // OpenCode ACP defaults to opencode/big-pickle. The pin is a
+        // session/set_config_option after the agent has advertised the value.
+        var agent = new FakeAgent
+        {
+            AdvertiseOptions = new Dictionary<string, string>
+            {
+                ["model"] = "anthropic/claude-haiku-4-5-20251001",
+            },
+        };
+        var request = Request("go") with
+        {
+            ConfigOptions = new Dictionary<string, string>
+            {
+                ["model"] = "anthropic/claude-haiku-4-5-20251001",
+            },
+        };
+        await RunAsync(agent, request);
+
+        Assert.Equal("anthropic/claude-haiku-4-5-20251001", agent.PinnedOptions["model"]);
+        Assert.Equal(
+            ["initialize", "session/new", "session/set_config_option", "session/prompt"],
+            agent.MethodsReceived);
+    }
+
+    [Fact]
+    public async Task Does_not_pin_a_config_option_the_agent_did_not_advertise()
+    {
+        var agent = new FakeAgent();
+        await RunAsync(agent, Request("go") with
+        {
+            ConfigOptions = new Dictionary<string, string>
+            {
+                ["model"] = "anthropic/claude-haiku-4-5-20251001",
+            },
+        });
+
+        Assert.Empty(agent.PinnedOptions);
+        Assert.DoesNotContain("session/set_config_option", agent.MethodsReceived);
+    }
+
+    [Fact]
+    public async Task Pins_each_advertised_config_option_and_skips_the_rest()
+    {
+        var agent = new FakeAgent
+        {
+            AdvertiseOptions = new Dictionary<string, string>
+            {
+                ["model"] = "anthropic/claude-haiku-4-5-20251001",
+                ["mode"] = "code",
+            },
+        };
+        await RunAsync(agent, Request("go") with
+        {
+            ConfigOptions = new Dictionary<string, string>
+            {
+                ["model"] = "anthropic/claude-haiku-4-5-20251001",
+                ["mode"] = "code",
+                ["thought_level"] = "high",
+            },
+        });
+
+        Assert.Equal("anthropic/claude-haiku-4-5-20251001", agent.PinnedOptions["model"]);
+        Assert.Equal("code", agent.PinnedOptions["mode"]);
+        Assert.False(agent.PinnedOptions.ContainsKey("thought_level"));
+        Assert.Equal(2, agent.MethodsReceived.Count(m => m == "session/set_config_option"));
+    }
+
+    [Fact]
     public async Task Hands_the_planes_mcp_server_over_on_session_new()
     {
         var agent = new FakeAgent();
@@ -988,8 +1058,31 @@ public sealed class AcpClientTests
         /// <summary>The method id the client chose, or null if it never authenticated.</summary>
         public string? AuthenticatedWith { get; private set; }
 
+        /// <summary>
+        /// Values advertised on <c>session/new</c> as select <c>configOptions</c>.
+        /// Empty is the agent that offers none.
+        /// </summary>
+        public IReadOnlyDictionary<string, string> AdvertiseOptions { get; init; } =
+            new Dictionary<string, string>();
+
+        /// <summary>Values the client pinned via <c>session/set_config_option</c>.</summary>
+        public Dictionary<string, string> PinnedOptions { get; } = new(StringComparer.Ordinal);
+
         private string AuthMethodsJson =>
             "[" + string.Join(",", AuthMethods.Select(m => $$"""{"id":"{{m}}","name":"{{m}}"}""")) + "]";
+
+        private string ConfigOptionsJson()
+        {
+            var parts = new List<string>();
+            foreach (var (id, advertised) in AdvertiseOptions)
+            {
+                var current = PinnedOptions.GetValueOrDefault(id, advertised);
+                parts.Add(
+                    $$"""{"id":"{{id}}","type":"select","currentValue":"{{current}}","options":[{"value":"{{advertised}}","name":"{{id}}"}]}""");
+            }
+
+            return "[" + string.Join(",", parts) + "]";
+        }
 
         public bool AskPermissionDuringPrompt { get; init; }
         public string PermissionOptions { get; init; } =
@@ -1135,7 +1228,23 @@ public sealed class AcpClientTests
                             id);
                         break;
                     }
-                    Send("""{"jsonrpc":"2.0","id":%id%,"result":{"sessionId":"sess_1"}}""", id);
+                    Send(
+                        AdvertiseOptions.Count > 0
+                            ? """{"jsonrpc":"2.0","id":%id%,"result":{"sessionId":"sess_1","configOptions":%opts%}}"""
+                                .Replace("%opts%", ConfigOptionsJson())
+                            : """{"jsonrpc":"2.0","id":%id%,"result":{"sessionId":"sess_1"}}""",
+                        id);
+                    break;
+
+                case "session/set_config_option":
+                    var p = message.GetProperty("params");
+                    var configId = p.GetProperty("configId").GetString() ?? "";
+                    var value = p.GetProperty("value").GetString() ?? "";
+                    PinnedOptions[configId] = value;
+                    Send(
+                        """{"jsonrpc":"2.0","id":%id%,"result":{"configOptions":%opts%}}"""
+                            .Replace("%opts%", ConfigOptionsJson()),
+                        id);
                     break;
 
                 case "session/load":

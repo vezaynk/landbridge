@@ -29,12 +29,12 @@ public class QuestionAnswerCapTests
 
     [Fact]
     public void A_null_question_is_accepted() =>
-        Expect.Transitioned(Ask(null), TaskState.BlockedOnInput); // the kind alone still blocks
+        Expect.Transitioned(Ask(null), TaskState.Working); // a question is a turn, not a phase
 
     [Fact]
     public void A_question_at_the_cap_is_accepted() =>
         Expect.Transitioned(
-            Ask(new string('x', RequestInput.MaxQuestionBytes)), TaskState.BlockedOnInput);
+            Ask(new string('x', RequestInput.MaxQuestionBytes)), TaskState.Working);
 
     [Fact]
     public void A_question_one_byte_over_the_cap_is_rejected() =>
@@ -114,7 +114,7 @@ public class QuestionAnswerCapTests
         var moved = Expect.Transitioned(
             TaskStateMachine.Apply(task, new RequestInput(
                 Given.IncumbentOf(task), InputRequestKind.Question, "which database?")),
-            TaskState.BlockedOnInput);
+            TaskState.Working);
 
         Assert.DoesNotContain(
             "which database?",

@@ -83,6 +83,14 @@ internal sealed class ProfileDto
     // offers `api-key` and `chat-gpt`, and only the first works unattended.
     public string? AuthMethod { get; set; }
 
+    // ACP session/set_config_option pins, keyed by the agent's advertised
+    // configId. Consulted after session/new (or session/load): each pair is sent
+    // only when that session advertised a select listing the exact value.
+    // OpenCode ACP otherwise defaults to opencode/big-pickle and ignores
+    // opencode.json — `{ "model": "anthropic/claude-haiku-4-5-20251001" }` is
+    // the pin. An unadvertised key is skipped, not an error.
+    public Dictionary<string, string>? ConfigOptions { get; set; }
+
     public StopDto? Stop { get; set; }
     public TelemetryDto? Telemetry { get; set; }
     public LogsDto? Logs { get; set; }

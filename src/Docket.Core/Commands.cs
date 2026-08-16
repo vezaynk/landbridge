@@ -297,6 +297,15 @@ public sealed record ContinueSession(
     Actor Actor, string? Answer = null, InputRequestKind? PendingKind = null) : TaskCommand(Actor);
 
 /// <summary>
+/// working → working: the Lead or a human sent a follow-up without a pending
+/// question. The process is still up; the plane doorbells it and the worker
+/// pulls the text on <c>get_task</c>. The Claude-subagent shape: the parent
+/// speaks when it has something to say, not only when the child files a ticket.
+/// </summary>
+public sealed record LeadMessage(
+    Actor Actor, string? Text = null, InputRequestKind? PendingKind = null) : TaskCommand(Actor);
+
+/// <summary>
 /// parked → submitted: the awaited answer or endpoint landed. Redispatch then
 /// runs the full submitted → working checks, preferring the park record's
 /// machine (§6, §11).

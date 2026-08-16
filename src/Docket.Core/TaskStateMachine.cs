@@ -79,6 +79,7 @@ public static class TaskStateMachine
             WaitTtlExpired c => ApplyWaitTtlExpired(task, c),
             Park c => ApplyPark(task, c),
             ContinueSession c => ApplyContinueSession(task, c),
+            LeadMessage c => ApplyLeadMessage(task, c),
             WakeParked c => ApplyWakeParked(task, c),
             StopPreserveAndPark c => ApplyStopPreserveAndPark(task, c),
             Cancel c => ApplyCancel(task, c),
@@ -288,18 +289,21 @@ public static class TaskStateMachine
             return TransitionResult.Reject(Rule.PermissionRequestNamesItsTool,
                 "a permission request must name the tool it is asking about");
 
-        // ACP sessions stay up through a question (ideas/sessions.md): the process
-        // is idle for a follow-up prompt, so services and the instance stay.
-        // Permission was already this shape — the asking process is parked inside a
-        // live tool call. A process that actually exits is recovered on answer
-        // (redispatch) or on liveness, not here. Park / wait-TTL / AnswerInput are
-        // the edges that release services.
-        return TransitionResult.Ok(task with { State = TaskState.BlockedOnInput });
+        // Permission is the one live wait inside a tool call: the process cannot
+        // take another turn until a verdict, so it leaves working. A question is
+        // a turn, not a phase — the ACP session stays in working, idle for a
+        // Lead follow-up (ideas/sessions.md stage 3). Services and the instance
+        // stay either way. Park / wait-TTL / a dead-session AnswerInput are the
+        // edges that release them.
+        if (c.Kind == InputRequestKind.Permission)
+            return TransitionResult.Ok(task with { State = TaskState.BlockedOnInput });
+
+        return TransitionResult.Ok(task);
     }
 
     private static TransitionResult ApplyAnswerInput(TaskRecord task, AnswerInput c)
     {
-        if (task.State != TaskState.BlockedOnInput)
+        if (task.State is not (TaskState.BlockedOnInput or TaskState.Working))
             return WrongState(task, TaskState.BlockedOnInput);
 
         if (!IsLeadOrHuman(task, c.Actor))
@@ -357,7 +361,15 @@ public static class TaskStateMachine
     private static TransitionResult ApplyAnswerPermission(TaskRecord task, AnswerPermission c)
     {
         if (task.State != TaskState.BlockedOnInput)
+        {
+            // A question stays working; a verdict on it is the crossed-path
+            // refusal, not a wrong-state one.
+            if (task.State == TaskState.Working && c.PendingKind != InputRequestKind.Permission)
+                return TransitionResult.Reject(Rule.PermissionVerdictAnswersPermissionRequests,
+                    "a permission verdict answers a permission request; this task is waiting on "
+                    + (c.PendingKind is { } kind ? $"{kind} input" : "input of no recorded kind"));
             return WrongState(task, TaskState.BlockedOnInput);
+        }
 
         if (c.PendingKind != InputRequestKind.Permission)
             return TransitionResult.Reject(Rule.PermissionVerdictAnswersPermissionRequests,
@@ -436,7 +448,7 @@ public static class TaskStateMachine
 
     private static TransitionResult ApplyWaitTtlExpired(TaskRecord task, WaitTtlExpired c)
     {
-        if (task.State != TaskState.BlockedOnInput)
+        if (task.State is not (TaskState.BlockedOnInput or TaskState.Working))
             return WrongState(task, TaskState.BlockedOnInput);
 
         var effects = new List<Effect> { new WriteParkRecord(c.Park), new ClearServicesAndForwards() };
@@ -484,7 +496,7 @@ public static class TaskStateMachine
 
     private static TransitionResult ApplyContinueSession(TaskRecord task, ContinueSession c)
     {
-        if (task.State != TaskState.BlockedOnInput)
+        if (task.State is not (TaskState.BlockedOnInput or TaskState.Working))
             return WrongState(task, TaskState.BlockedOnInput);
 
         if (!IsLeadOrHuman(task, c.Actor))
@@ -506,6 +518,37 @@ public static class TaskStateMachine
                 "continue-session needs the incumbent still on the row");
 
         return TransitionResult.Ok(task with { State = TaskState.Working });
+    }
+
+    /// <summary>
+    /// working → working: the Lead spoke without being asked. The session is
+    /// live; this writes the words and doorbells. Not a dispatch and not a
+    /// park. Permission still needs a verdict, not prose.
+    /// </summary>
+    private static TransitionResult ApplyLeadMessage(TaskRecord task, LeadMessage c)
+    {
+        if (task.State != TaskState.Working)
+            return WrongState(task, TaskState.Working);
+
+        if (!IsLeadOrHuman(task, c.Actor))
+            return TransitionResult.Reject(Rule.ActorLacksAuthority,
+                "only the Lead of this Team or a human can message a live worker");
+
+        if (c.PendingKind == InputRequestKind.Permission)
+            return TransitionResult.Reject(Rule.PermissionVerdictAnswersPermissionRequests,
+                "this task is waiting on a permission verdict, not prose; answer it with allow or deny");
+
+        if (task.CurrentInstance is null)
+            return TransitionResult.Reject(Rule.InvalidSourceState,
+                "lead-message needs the incumbent still on the row");
+
+        if (OverCap(c.Text, AnswerInput.MaxAnswerBytes, Rule.AnswerWithinSizeCap,
+                "message",
+                "say what the worker should do and point at a reference for the detail")
+            is { } tooLong)
+            return tooLong;
+
+        return TransitionResult.Ok(task);
     }
 
     private static TransitionResult ApplyWakeParked(TaskRecord task, WakeParked c)

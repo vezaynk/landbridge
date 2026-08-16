@@ -47,8 +47,8 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// <summary>Bounded redispatch: a worker that succeeds does so on the first try in
     /// well under a minute (A's leg is ~30s in CI); these cover the occasional haiku turn
     /// that ends without the tool call, without letting the job run away.</summary>
-    private const int MaxAttempts = 3;
-    private static readonly TimeSpan PerLegBudget = TimeSpan.FromMinutes(8);
+    private const int MaxAttempts = RealHarnessBar.MaxAttempts;
+    private static readonly TimeSpan PerLegBudget = RealHarnessBar.PerLegBudget;
 
     /// <summary>
     /// The standing rule every prompt here carries, and it is a fix for a real failure rather
@@ -109,15 +109,15 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
 
     public Task DisposeAsync() => Task.CompletedTask;
 
-    [SkippableFact]
+    [SkippableFact(Timeout = RealHarnessBar.EchoTimeoutMs)]
     public Task Real_worker_drives_a_task_to_verifying_on_the_fleet() =>
         RealHarnessBar.DriveToVerifyingAsync(pg, RealHarnessProfiles.Claude(RequireRealClaude()));
 
-    [SkippableFact]
+    [SkippableFact(Timeout = RealHarnessBar.EchoTimeoutMs)]
     public Task Real_worker_reports_usage_the_harness_emits() =>
         RealHarnessBar.ReportsUsageAsync(pg, RealHarnessProfiles.Claude(RequireRealClaude()));
 
-    [SkippableFact]
+    [SkippableFact(Timeout = RealHarnessBar.TwoLegTimeoutMs)]
     public Task Real_worker_resumes_its_transcript_after_a_park_and_reports_a_memory_only_nonce() =>
         RealHarnessBar.ResumesAfterParkAsync(pg, RealHarnessProfiles.Claude(RequireRealClaude()));
 
@@ -130,11 +130,11 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// (B's description uses the same proven echo template as A — the handoff lives in the
     /// test threading A's committed token into B, not in extra prose for the worker to reason about.)
     /// </summary>
-    [SkippableFact]
+    [SkippableFact(Timeout = RealHarnessBar.TwoLegTimeoutMs)]
     public async Task Real_claude_workers_hand_off_a_token_across_two_machines()
     {
         var profile = RealHarnessProfiles.Claude(RequireRealClaude());
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(20));
+        using var cts = new CancellationTokenSource(RealHarnessBar.TwoLegTimeout);
         var ct = cts.Token;
 
         await using var rig = new FleetRig(
@@ -226,11 +226,11 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// profile config. A cold-started continuation reaches verifying too; only a resumed one
     /// reaches it with this value.</para>
     /// </summary>
-    [SkippableFact]
+    [SkippableFact(Timeout = RealHarnessBar.TwoLegTimeoutMs)]
     public async Task Real_claude_continues_a_finished_tasks_conversation_from_that_tasks_directory()
     {
         var claudeBin = RequireRealClaude();
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(20));
+        using var cts = new CancellationTokenSource(RealHarnessBar.TwoLegTimeout);
         var ct = cts.Token;
 
         // The value the first worker is told, and — separately — the part of it that is the
@@ -330,12 +330,12 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// provable only from what the agent was told, which is also the only place an agent could
     /// read it.</para>
     /// </summary>
-    [SkippableFact]
+    [SkippableFact(Timeout = RealHarnessBar.TwoLegTimeoutMs)]
     public async Task A_real_claude_process_outlives_its_task_and_a_later_real_worker_finds_and_stops_it()
     {
         RequireRealClaude();
         FleetRig.PublishDotnetRootForSpawnedApphosts();
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(20));
+        using var cts = new CancellationTokenSource(RealHarnessBar.TwoLegTimeout);
         var ct = cts.Token;
 
         await using var rig = new FleetRig(
@@ -408,12 +408,12 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// it exempts such a task from the progress ceiling. The listener itself is machine-scoped
     /// and would outlive the worker; only the <em>advertisement</em> is tied to the turn.</para>
     /// </summary>
-    [SkippableFact]
+    [SkippableFact(Timeout = RealHarnessBar.TwoLegTimeoutMs)]
     public async Task Real_claude_workers_reach_a_registered_service_across_two_machines()
     {
         RequireRealClaude();
         FleetRig.PublishDotnetRootForSpawnedApphosts();
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(20));
+        using var cts = new CancellationTokenSource(RealHarnessBar.TwoLegTimeout);
         var ct = cts.Token;
 
         await using var rig = new FleetRig(

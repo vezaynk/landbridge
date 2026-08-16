@@ -98,11 +98,11 @@ public sealed class WorkerTools(
     }
 
     [McpServerTool(Name = "request_input"),
-     Description("Block the task pending input. Use when genuinely blocked or when a decision is " +
-                 "above your scope. The task pauses and is answered by the Lead or a human. ALWAYS " +
+     Description("Ask the Lead or a human for a decision that is above your scope. ALWAYS " +
                  "include 'question' — it is the only thing the answerer sees, so a request without " +
-                 "it just says a task needs attention, not what for. Persist your state first: your " +
-                 "process ends when you block, and the answer reaches your successor on get_task.")]
+                 "it just says a task needs attention, not what for. A question ends your turn; the " +
+                 "session stays up and the answer arrives as a follow-up — pull it on get_task. " +
+                 "A permission request is a different tool (the harness relays it).")]
     public async Task<string> RequestInput(
         [Description("The kind of input needed: question, spawn_request, auth_help, endpoint_wait, or unreachable. " +
                      "This is a LABEL on the request, not a route: the plane does not use it to decide who may " +

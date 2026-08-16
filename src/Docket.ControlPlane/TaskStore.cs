@@ -183,7 +183,14 @@ public sealed class TaskStore(
         // a follow-up prompt after this commit. Permission stays on the verdict
         // path — ContinueSession refuses it the same way AnswerInput does.
         if (sessionLive)
+        {
+            // A live worker the Lead spoke to without being asked is a follow-up
+            // on the same session, not a continue-from-blocked. Permission is
+            // never this path — ContinueSession / LeadMessage both refuse it.
+            if (row.State == TaskState.Working && row.InputKind is null)
+                return await RunTransition(row, new LeadMessage(lead, answer, row.InputKind), ct);
             return await RunTransition(row, new ContinueSession(lead, answer, row.InputKind), ct);
+        }
 
         // §11: the redispatch park record is the machine still holding the lease, preferred
         // for transcript resume. Same shape the wait-TTL sweeper writes. Null when that
@@ -637,7 +644,9 @@ public sealed class TaskStore(
                 // structure and rides along (it tells a Lead who can answer, which is
                 // triage), but the question text does not — get_task_question pulls it.
                 t.InputKind,
-                HasQuestion = t.InputQuestion != null,
+                HasQuestion = t.BlockedAt != null
+                    && t.InputKind != null
+                    && t.InputKind != InputRequestKind.Permission,
             })
             .ToListAsync(ct);
 
@@ -715,7 +724,10 @@ public sealed class TaskStore(
     /// </summary>
     public async Task<IReadOnlyList<BlockedTaskView>> ListBlockedAsync(CancellationToken ct = default) =>
         await db.Tasks.AsNoTracking()
-            .Where(t => t.State == TaskState.BlockedOnInput)
+            .Where(t => t.BlockedAt != null
+                && (t.State == TaskState.BlockedOnInput
+                    || (t.State == TaskState.Working && t.InputKind != null
+                        && t.InputKind != InputRequestKind.Permission)))
             .OrderBy(t => t.BlockedAt)
             .Select(t => new BlockedTaskView(t.Id, t.BlockedAt, t.Attempt, t.HarnessSessionRef))
             .ToListAsync(ct);
@@ -768,6 +780,18 @@ public sealed class TaskStore(
             .Where(t => t.Id == id.Value)
             .Select(t => (TaskState?)t.State)
             .FirstOrDefaultAsync(ct);
+
+    /// <summary>
+    /// True when a <c>working</c> task has a pending question (not a permission
+    /// wait). A turn ending then is idle-correct, not a silent death.
+    /// </summary>
+    public async Task<bool> IsAwaitingLeadAsync(TaskId id, CancellationToken ct = default) =>
+        await db.Tasks.AsNoTracking()
+            .AnyAsync(t => t.Id == id.Value
+                && t.State == TaskState.Working
+                && t.BlockedAt != null
+                && t.InputKind != null
+                && t.InputKind != InputRequestKind.Permission, ct);
 
     /// <summary>
     /// The state read of <see cref="GetStateAsync"/> plus the instance currently working the
@@ -979,7 +1003,7 @@ public sealed class TaskStore(
         // what kind of attention the task needs — the kind is command content the
         // engine already requires, threaded through here, not onto the pure state.
         InputRequestKind? inputKind = null;
-        if (command is RequestInput ri && row.State == TaskState.BlockedOnInput)
+        if (command is RequestInput ri)
         {
             row.BlockedAt = clock.GetUtcNow();
             inputKind = ri.Kind;
@@ -1002,7 +1026,11 @@ public sealed class TaskStore(
             row.PermissionEscalatedAt = null;
             row.PermissionEscalationReason = null;
         }
-        else if (before == TaskState.BlockedOnInput && row.State != TaskState.BlockedOnInput)
+        else if (command is not EscalatePermission)
+            // Leave BlockedAt only for a still-open wait: a new RequestInput
+            // (stamped above) or an escalation (same permission request, still
+            // blocked). Everything else — answer, continue, park, liveness loss,
+            // report, cancel — has left the wait, even when the row stays working.
             row.BlockedAt = null;
 
         // §11 permission bridge, the two transitions that decide and re-route a permission
@@ -1034,6 +1062,7 @@ public sealed class TaskStore(
         {
             AnswerInput answered => answered.Answer,
             ContinueSession continued => continued.Answer,
+            LeadMessage spoken => spoken.Text,
             WakeParked woken => woken.Answer,
             _ => null,
         };

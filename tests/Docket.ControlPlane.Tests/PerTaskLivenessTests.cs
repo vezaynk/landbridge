@@ -171,15 +171,14 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
         var id = await SeedWorkingTaskAsync(clock, "m1");
         var registry = LiveMachine(clock, "m1", id);
 
-        // §11: liveness is suspended for blocked_on_input — the worker has exited by
-        // design, so no alive events arrive and none are needed. The sweep must leave
-        // it alone rather than requeue it on either clock.
+        // A question stays working, idle for the Lead. Neither liveness clock
+        // should requeue it — the session is supposed to sit there.
         await BlockOnInputAsync(clock, id);
 
         clock.Advance(Ceiling * 2);
         await NewDispatch(clock, registry).CheckLivenessAsync(CancellationToken.None);
 
-        Assert.Equal(TaskState.BlockedOnInput, await StateAsync(clock, id));
+        Assert.Equal(TaskState.Working, await StateAsync(clock, id));
         Assert.Contains(id, registry.TasksOn("m1"));
     }
 

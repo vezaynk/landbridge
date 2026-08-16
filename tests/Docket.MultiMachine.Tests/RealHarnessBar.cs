@@ -17,7 +17,16 @@ namespace Docket.MultiMachine.Tests;
 internal static class RealHarnessBar
 {
     public const int MaxAttempts = 3;
-    public static readonly TimeSpan PerLegBudget = TimeSpan.FromMinutes(8);
+
+    // Successful paid runs (local 2026-08-16): Claude 8/8 in 2m 40s, Codex
+    // 5/5 in 1m 14s, Grok 3/3 in 2m 5s, OpenCode 5/5 in 1m 44s. Per-test
+    // that is ~15–40s for a single dispatch and ~40–80s for a two-leg
+    // (park / handoff / continuation). The budgets below are 2× those.
+    public const int EchoTimeoutMs = 120_000;
+    public const int TwoLegTimeoutMs = 180_000;
+    public static readonly TimeSpan EchoTimeout = TimeSpan.FromMilliseconds(EchoTimeoutMs);
+    public static readonly TimeSpan TwoLegTimeout = TimeSpan.FromMilliseconds(TwoLegTimeoutMs);
+    public static readonly TimeSpan PerLegBudget = TimeSpan.FromSeconds(60);
 
     /// <summary>
     /// A real worker reads <c>get_task</c>, reports the live-description token,
@@ -27,7 +36,7 @@ internal static class RealHarnessBar
     /// </summary>
     public static async Task DriveToVerifyingAsync(PostgresFixture pg, RealHarnessProfile profile)
     {
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(15));
+        using var cts = new CancellationTokenSource(EchoTimeout);
         var ct = cts.Token;
 
         await using var rig = profile.OpenEchoRig(pg);
@@ -64,7 +73,7 @@ internal static class RealHarnessBar
         Skip.If(profile.Usage == UsageExpectation.None,
             profile.Name + " declares no usage the bar can assert on");
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(15));
+        using var cts = new CancellationTokenSource(EchoTimeout);
         var ct = cts.Token;
 
         await using var rig = profile.OpenEchoRig(pg);
@@ -85,7 +94,7 @@ internal static class RealHarnessBar
             Assert.True(
                 await FleetRig.WaitUntilAsync(
                     async () => await rig.ReportedUsageAsync(task, ct) is [{ CostUsd: not null }, ..],
-                    TimeSpan.FromMinutes(2)),
+                    TimeSpan.FromSeconds(30)),
                 $"no usage report with a cost reached the plane for {profile.Name}.\n"
                 + profile.FailureHypotheses + await rig.RealWorkerDiagnosticsAsync(task, ct));
             var rows = await rig.ReportedUsageAsync(task, ct);
@@ -101,14 +110,17 @@ internal static class RealHarnessBar
         Assert.True(
             await FleetRig.WaitUntilAsync(
                 async () => (await rig.ReportedUsageAsync(task, ct)).Count > 0,
-                TimeSpan.FromMinutes(2)),
+                TimeSpan.FromSeconds(30)),
             $"no usage report reached the plane for {profile.Name}.\n"
             + profile.FailureHypotheses + await rig.RealWorkerDiagnosticsAsync(task, ct));
         var tokens = await rig.ReportedUsageAsync(task, ct);
         Assert.True(
             tokens.Sum(u => u.InputTokens + u.OutputTokens + u.CacheReadTokens + u.CacheWriteTokens) > 0,
             $"a usage row landed for {profile.Name} but every token bucket was zero");
-        Assert.DoesNotContain(tokens, u => u.CostUsd is not null);
+        // A real dollar figure is fine (OpenCode + Anthropic reports one). A
+        // $0.00 is the adapter not computing cost and must not be stored as
+        // "this dispatch was free".
+        Assert.DoesNotContain(tokens, u => u.CostUsd is 0m);
     }
 
     /// <summary>
@@ -126,7 +138,7 @@ internal static class RealHarnessBar
         Skip.If(!profile.SupportsResume,
             profile.Name + " does not support session/load — park/resume is not this harness's bar");
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(20));
+        using var cts = new CancellationTokenSource(TwoLegTimeout);
         var ct = cts.Token;
 
         var remembered = RealHarnessProfiles.NewToken();
@@ -136,7 +148,7 @@ internal static class RealHarnessBar
         using var attach = profile.AttachTo(rig);
         await rig.AddMachineAsync("A");
 
-        var task = await rig.CreateTaskAsync(RealHarnessProfile.AskThenStopDescription, ct);
+        var task = await rig.CreateTaskAsync(profile.AskThenStopDescription, ct);
 
         Assert.True(
             await rig.DispatchUntilAsync(
@@ -146,19 +158,14 @@ internal static class RealHarnessBar
                     var state = await rig.StateAsync(task, ct);
                     if (state is TaskState.Verifying or TaskState.Completed)
                         return true;
-                    if (state != TaskState.BlockedOnInput)
-                        return false;
-                    // Permission-kind is auto-allowed by the fleet pump; only a
-                    // question is the park the rest of this bar drives.
-                    return await rig.PendingPermissionAsync(task, ct) is null;
+                    return await rig.HasPendingQuestionAsync(task, ct);
                 },
                 MaxAttempts, PerLegBudget, ct),
-            $"the real {profile.Name} worker neither blocked on a question nor finished.\n"
+            $"the real {profile.Name} worker neither asked a question nor finished.\n"
             + profile.FailureHypotheses + await rig.RealWorkerDiagnosticsAsync(task, ct));
-        var blockedState = await rig.StateAsync(task, ct);
         Assert.True(
-            blockedState == TaskState.BlockedOnInput,
-            $"the {profile.Name} worker reached {blockedState} without ever asking, so there is "
+            await rig.HasPendingQuestionAsync(task, ct),
+            $"the {profile.Name} worker reached {await rig.StateAsync(task, ct)} without ever asking, so there is "
             + "no park to resume.\n"
             + profile.FailureHypotheses + await rig.RealWorkerDiagnosticsAsync(task, ct));
 

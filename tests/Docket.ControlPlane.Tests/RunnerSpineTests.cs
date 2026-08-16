@@ -290,14 +290,11 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
     [SkippableFact]
     public async Task Exited_while_blocked_on_input_leaves_the_task_tracked_so_the_sweeper_can_park_it()
     {
-        // The live path a store-only test cannot prove: a headless worker asks a
-        // question (working → blocked_on_input) and its process exits — the NORMAL
-        // claude -p behaviour, and per §6/§11 not a failure. The exit must NOT
-        // untrack the task, or the wait-TTL sweeper's MachineFor look-up returns
-        // null and the task strands in blocked_on_input forever (never parked on
-        // TTL, never requeued on machine death). Here: the exit leaves it tracked,
-        // and the sweeper then parks it on TTL expiry — the transition that was
-        // unreachable before the fix.
+        // A worker asks a question (stays working) and its process exits. That is
+        // not a failure: the exit must NOT untrack the task, or the wait-TTL
+        // sweeper's MachineFor look-up returns null and the task strands forever
+        // (never parked on TTL, never requeued on machine death). Mark the
+        // process gone so an answer redispatches; the sweeper still parks on TTL.
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
         var scopes = ScopeFactory(clock);
@@ -312,7 +309,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         // Still blocked, still tracked: the machine keeps the lease so the sweeper
         // can find it (before the fix the exit untracked it here and the sweeper
         // skipped it — MachineFor was null).
-        Assert.Equal(TaskState.BlockedOnInput, await StateAsync(clock, id));
+        Assert.Equal(TaskState.Working, await StateAsync(clock, id));
         Assert.Equal("m1", registry.MachineFor(id));
         Assert.False(registry.HasLiveProcess(id));
 
@@ -460,7 +457,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
         await sink.HandleAsync(new TurnEndedEvent(id, "end_turn", clock.GetUtcNow()));
 
-        Assert.Equal(TaskState.BlockedOnInput, await StateAsync(clock, id));
+        Assert.Equal(TaskState.Working, await StateAsync(clock, id));
         Assert.Equal("m1", registry.MachineFor(id));
     }
 
@@ -595,14 +592,14 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
 
         await using var db = pg.NewContext();
         var row = await db.TaskEvents.AsNoTracking()
-            .Where(e => e.TaskId == id.Value && e.ToState == TaskState.BlockedOnInput)
+            .Where(e => e.TaskId == id.Value && e.Kind == nameof(RequestInput))
             .OrderByDescending(e => e.Seq)
             .FirstAsync();
-        Assert.Equal(nameof(RequestInput), row.Kind);
+        Assert.Equal(TaskState.Working, row.ToState);
         Assert.Equal(InputRequestKind.Question, row.InputKind);
 
         var evt = (await new DashboardQueries(db, new RunnerConnectionRegistry(clock)).GetEventsAsync())
-            .Single(e => e.ToState == TaskState.BlockedOnInput && e.Kind == nameof(RequestInput));
+            .Single(e => e.Kind == nameof(RequestInput));
         Assert.Equal(InputRequestKind.Question, evt.InputKind);
     }
 

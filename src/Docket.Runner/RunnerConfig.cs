@@ -362,6 +362,21 @@ public sealed record RunnerConfig(
                 && string.IsNullOrWhiteSpace(after[0]))
                 problems.Add($"profile '{name}' hooks.after_exit has an empty argv[0]");
 
+            if (dto.ConfigOptions is { Count: > 0 })
+            {
+                foreach (var (key, value) in dto.ConfigOptions)
+                {
+                    if (string.IsNullOrWhiteSpace(key))
+                    {
+                        problems.Add($"profile '{name}' config_options has an empty key");
+                        continue;
+                    }
+
+                    if (string.IsNullOrWhiteSpace(value))
+                        problems.Add($"profile '{name}' config_options '{key}' has an empty value");
+                }
+            }
+
             built[name] = BuildProfile(dto);
         }
 
@@ -409,7 +424,8 @@ public sealed record RunnerConfig(
                 : new ProfileHooks(dto.Hooks.BeforeSpawn, dto.Hooks.AfterExit),
             dto.Prompt,
             dto.FollowUp,
-            dto.AuthMethod);
+            dto.AuthMethod,
+            dto.ConfigOptions);
     }
 
     internal static bool IsOctalFileMode(string raw)
@@ -480,7 +496,8 @@ public sealed record ProfileConfig(
     ProfileHooks? Hooks = null,
     string? Prompt = null,
     string? FollowUp = null,
-    string? AuthMethod = null)
+    string? AuthMethod = null,
+    IReadOnlyDictionary<string, string>? ConfigOptions = null)
 {
     /// <summary>
     /// §11 / <c>ideas/sessions.md</c>: the turn that wakes this profile's live session when
@@ -517,6 +534,15 @@ public sealed record ProfileConfig(
 
     /// <summary>Argv hooks. Never null: an absent block is an empty record.</summary>
     public ProfileHooks Hooks { get; init; } = Hooks ?? new ProfileHooks();
+
+    /// <summary>
+    /// ACP <c>session/set_config_option</c> pins for this profile. Each key is a
+    /// <c>configId</c> the agent advertised; the value must be one of that option's
+    /// listed values or the pair is skipped. Never null: an absent block is an
+    /// empty map.
+    /// </summary>
+    public IReadOnlyDictionary<string, string> ConfigOptions { get; init; } =
+        ConfigOptions ?? new Dictionary<string, string>(StringComparer.Ordinal);
 }
 
 /// <summary>
