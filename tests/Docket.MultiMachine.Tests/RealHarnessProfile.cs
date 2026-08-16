@@ -57,9 +57,11 @@ internal sealed class RealHarnessProfile
         GetTask + ", then " + ReportResult + "." + McpToolsRule;
 
     public string RememberThenAsk(string nonce) =>
-        "You are a Docket worker agent. Remember this value for the rest of this conversation: " +
+        "You are a Docket worker agent. Remember this test nonce for the rest of this conversation: " +
         nonce + ". Do not write it to any file, and do not put it in any tool call yet. Now call " +
-        "the " + GetTask + " tool and do exactly what its description tells you." + McpToolsRule;
+        "the " + GetTask + " tool and do exactly what its description tells you. On this first " +
+        "turn that means request_input, then stop — do not call " + ReportResult + " yet." +
+        McpToolsRule;
 
     public string ResumeAndReport =>
         "Your task has resumed. FIRST call the " + GetTask + " tool — it carries the answer " +
@@ -110,7 +112,7 @@ internal sealed class RealHarnessProfile
             throw new InvalidOperationException(Name + " does not support resume — the park bar must skip.");
         return new FleetRig(
             pg, AcpSpawn, env: Env,
-            prompt: RememberThenAsk(nonce), followUp: FollowUpTurn, authMethod: AuthMethod);
+            prompt: RememberThenAsk(nonce), followUp: ResumeAndReport, authMethod: AuthMethod);
     }
 
     public IDisposable? AttachTo(FleetRig rig) => Attach?.Invoke(rig);

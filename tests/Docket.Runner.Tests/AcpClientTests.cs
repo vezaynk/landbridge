@@ -514,6 +514,33 @@ public sealed class AcpClientTests
     }
 
     /// <summary>
+    /// Grok does not put buckets on PromptResponse.usage. Measured 2026-08-16: they
+    /// arrive on <c>_x.ai/session_notification</c> / <c>response_completed</c> as
+    /// snake_case, with no cost. The plane still has to record the tokens.
+    /// </summary>
+    [Fact]
+    public async Task Grok_xai_usage_notification_reaches_the_plane_as_tokens_with_no_cost()
+    {
+        var agent = new FakeAgent
+        {
+            DuringPrompt =
+            [
+                """{"jsonrpc":"2.0","method":"_x.ai/session_notification","params":{"sessionId":"sess_1","update":{"sessionUpdate":"response_completed","usage":{"input_tokens":1048,"output_tokens":22,"cache_read_input_tokens":10240,"cache_creation_input_tokens":0,"reasoning_tokens":0}}}}""",
+            ],
+        };
+        var (_, drain) = Start(agent, Request("go"));
+        var run = await drain;
+
+        var usage = Assert.Single(run.Events.OfType<UsageReportedEvent>());
+        Assert.Null(usage.CostUsd);
+        Assert.Null(usage.Model);
+        Assert.Equal(1048, usage.InputTokens);
+        Assert.Equal(22, usage.OutputTokens);
+        Assert.Equal(10240, usage.CacheReadTokens);
+        Assert.Equal(0, usage.CacheWriteTokens);
+    }
+
+    /// <summary>
     /// Each report is the session's running total, not the turn's own. That is a deliberate
     /// fit to the store: <c>TaskStore.RecordUsageAsync</c> keeps a high-water mark per bucket,
     /// so per-turn reports would leave the row holding the single largest turn instead of what
@@ -667,6 +694,12 @@ public sealed class AcpClientTests
         Assert.Equal("sess_old", p.GetProperty("sessionId").GetString());
         Assert.Equal("/work/task-1", p.GetProperty("cwd").GetString());
         Assert.True(p.TryGetProperty("mcpServers", out _));
+
+        // A load is a wake: the follow-up, not the opening brief. Re-sending "go"
+        // after load is what made the park bar re-ask the question it had already asked.
+        var prompt = agent.Received("session/prompt").GetProperty("params")
+            .GetProperty("prompt").EnumerateArray().Single();
+        Assert.Equal("Read your assignment again.", prompt.GetProperty("text").GetString());
 
         // The resumed ref is the session, so it is what the plane hears about.
         Assert.Equal("sess_old", run.SessionId);

@@ -322,15 +322,21 @@ public sealed class AcpClient
         if (_cancelSent)
             return;
 
-        // The session outlives the turn (ideas/sessions.md stage 1). The opening prompt is
-        // the profile's; every one after it arrives through PromptAsync — a `prompt` command
-        // from the plane carrying, for instance, the answer to a question this worker asked.
+        // The session outlives the turn (ideas/sessions.md stage 1). A cold start gets
+        // the profile's opening prompt. A session/load is a wake, not a re-brief — the
+        // follow-up says "read your assignment" (and, on the park bar, "report the
+        // remembered value"). Sending the opening prompt again after load told the
+        // worker to re-ask the question it had already asked.
         //
         // This loop is the whole shape change. Under the task model there was nothing to
         // loop over: a worker that finished a turn had also exited, so "the turn ended" and
         // "the conversation ended" were one observation. Here they are two, and only the
         // second ends this method.
-        await PromptAsync(_request.Prompt, ct).ConfigureAwait(false);
+        var resumed = _request.ResumeSessionRef is { Length: > 0 } && AgentSupportsLoadSession;
+        var opening = resumed && _request.FollowUp is { Length: > 0 }
+            ? _request.FollowUp
+            : _request.Prompt;
+        await PromptAsync(opening, ct).ConfigureAwait(false);
 
         try
         {
@@ -387,7 +393,7 @@ public sealed class AcpClient
         // not `usage_update` — so the report is deliberately unattributed rather than guessing
         // from the profile's argv, which names a CLI and not the model it happened to route to.
         var reportedTokens = AddTurnUsage(result.Value);
-        if (reportedTokens || _costUsd is not null)
+        if (reportedTokens || _costUsd is not null || HasAccumulatedUsage)
         {
             _ring.Enqueue(new UsageReportedEvent(
                 _task,
@@ -744,7 +750,15 @@ public sealed class AcpClient
             if (method is not null && hasId)
                 await AnswerAgentRequestAsync(method, id, root, ct).ConfigureAwait(false);
             else if (method is not null)
-                HandleNotification(method, root);
+            {
+                // Grok reports spend on a vendor notification, not PromptResponse.usage
+                // or session/update usage_update. Measured 2026-08-16: tokens land on
+                // `_x.ai/session_notification` / `response_completed`, no dollar figure.
+                if (method == "_x.ai/session_notification")
+                    RecordXaiUsage(root);
+                else
+                    HandleNotification(method, root);
+            }
             else if (hasId)
                 CompletePending(id, root);
         }
@@ -947,6 +961,37 @@ public sealed class AcpClient
     /// opencode 99 + 14 + 14,208 = 14,321 = <c>totalTokens</c>. <c>totalTokens</c> is therefore
     /// derivable and is deliberately not stored.</para>
     /// </summary>
+    private bool HasAccumulatedUsage =>
+        _inputTokens + _outputTokens + _cacheReadTokens + _cacheWriteTokens > 0;
+
+    /// <summary>
+    /// Grok's <c>_x.ai/session_notification</c> usage: snake_case buckets, no cost.
+    /// Added into the same session totals <see cref="AddTurnUsage"/> feeds, so the
+    /// high-water-mark store still sees one rising report.
+    /// </summary>
+    private void RecordXaiUsage(JsonElement root)
+    {
+        if (!root.TryGetProperty("params", out var p) || p.ValueKind != JsonValueKind.Object)
+            return;
+        if (!p.TryGetProperty("update", out var update) || update.ValueKind != JsonValueKind.Object)
+            return;
+        if (!update.TryGetProperty("usage", out var usage) || usage.ValueKind != JsonValueKind.Object)
+            return;
+
+        AddSnake(usage, "input_tokens", ref _inputTokens);
+        AddSnake(usage, "output_tokens", ref _outputTokens);
+        AddSnake(usage, "cache_read_input_tokens", ref _cacheReadTokens);
+        AddSnake(usage, "cache_creation_input_tokens", ref _cacheWriteTokens);
+
+        static void AddSnake(JsonElement o, string key, ref long total)
+        {
+            if (!o.TryGetProperty(key, out var v) || v.ValueKind != JsonValueKind.Number
+                || !v.TryGetInt64(out var n) || n < 0)
+                return;
+            total += n;
+        }
+    }
+
     private bool AddTurnUsage(JsonElement result)
     {
         if (!result.TryGetProperty("usage", out var usage) || usage.ValueKind != JsonValueKind.Object)

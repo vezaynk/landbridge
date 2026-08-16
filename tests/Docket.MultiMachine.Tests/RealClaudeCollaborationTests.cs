@@ -299,8 +299,9 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         // leg is allowed its bounded retry (a haiku that ends a turn without the tool call), and
         // a retry resumes rather than re-briefs, so an extra instance carries the same id and is
         // not a different outcome. Zero instances would be, hence the non-empty check.
-        var firstInstances = rig.InstanceSessionIdsOn("A", first);
-        var continuationInstances = rig.InstanceSessionIdsOn("A", second);
+        var sessionIdOf = RealHarnessProfiles.Claude(claudeBin).SessionIdFromLine;
+        var firstInstances = rig.InstanceSessionIdsOn("A", first, sessionIdOf);
+        var continuationInstances = rig.InstanceSessionIdsOn("A", second, sessionIdOf);
         Assert.NotEmpty(firstInstances);
         Assert.NotEmpty(continuationInstances);
         Assert.All(firstInstances, id => Assert.Equal(firstSession, id));

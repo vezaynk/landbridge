@@ -87,7 +87,10 @@ internal static class RealHarnessProfiles
         GetTask = "docket__get_task",
         ReportResult = "docket__report_result",
         RequestInput = "docket__request_input",
-        Usage = UsageExpectation.Cost,
+        // Tokens, not Cost. Measured 2026-08-16: grok agent stdio reports spend on
+        // `_x.ai/session_notification` / `response_completed` as snake_case buckets
+        // and no dollar figure. Recording $0.00 would claim the dispatch was free.
+        Usage = UsageExpectation.Tokens,
         SupportsResume = true,
         FailureHypotheses = GrokHypotheses(),
     };
@@ -192,6 +195,8 @@ internal static class RealHarnessProfiles
             File.WriteAllText(
                 Path.Combine(dir, "config.toml"),
                 $"""
+                 model = "{CodexModel}"
+
                  [mcp_servers.docket]
                  url = "{mcpUrl}"
                  bearer_token_env_var = "DOCKET_WORKER_TOKEN"
