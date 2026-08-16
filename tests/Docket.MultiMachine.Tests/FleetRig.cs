@@ -324,10 +324,42 @@ internal sealed class FleetRig(
     }
 
     /// <summary>
-    /// Answer a blocked task over the real Lead MCP surface (§11), which requeues it for
-    /// redispatch <em>with its transcript resumed</em> and writes the park record carrying
-    /// the harness session ref. The answer itself reaches the worker on its next
-    /// <c>get_task</c> and never through the resume argv (§13).
+    /// Release a live ACP session on purpose over the real Lead MCP surface
+    /// (<c>park_task</c>, §11): the task parks, its worker-instance token is revoked and the
+    /// machine gets a <c>preserve_and_park</c> stop. Waits for the process to actually go,
+    /// because the park record commits before the stop is even sent — answering while the
+    /// old session is still winding down would race a redispatch against its predecessor.
+    ///
+    /// <para>The counterpart to <see cref="AnswerAsync"/>, not a variant of it: since
+    /// <c>ideas/sessions.md</c> stage 2 an answer to a <em>live</em> session continues it in
+    /// place, so this is the only route left to the §11 park → <c>session/load</c> path.</para>
+    /// </summary>
+    public async Task ParkTaskAsync(TaskId task, CancellationToken ct)
+    {
+        var exitsBefore = WorkerObserved(task)?.Exits ?? 0;
+        await using (var lead = await PlaneProbe.ConnectMcpAsync(new Uri(_baseUrl + "/"), _leadToken, ct))
+        {
+            var parked = await lead.CallToolAsync("park_task", new Dictionary<string, object?>
+            {
+                ["taskId"] = task.Value.ToString(),
+            }, cancellationToken: ct);
+            Assert.NotEqual(true, parked.IsError);
+        }
+
+        Assert.True(
+            await WaitUntilAsync(
+                () => Task.FromResult((WorkerObserved(task)?.Exits ?? 0) > exitsBefore),
+                TimeSpan.FromSeconds(60)),
+            $"park_task did not bring down the worker for {task} within 60s — a redispatch from "
+            + "here would race the session it is meant to replace.");
+    }
+
+    /// <summary>
+    /// Answer a blocked task over the real Lead MCP surface (§11). A still-live ACP session
+    /// continues in place on the same instance; a task whose session is gone — or one
+    /// <see cref="ParkTaskAsync"/> already parked — is requeued for redispatch <em>with its
+    /// transcript resumed</em>. The answer itself reaches the worker on its next
+    /// <c>get_task</c> and never through spawn argv (§13).
     /// </summary>
     public async Task AnswerAsync(TaskId task, string answer, CancellationToken ct)
     {
@@ -683,9 +715,22 @@ internal sealed class FleetRig(
             string[] lines;
             try { lines = System.IO.File.ReadAllLines(file); }
             catch (IOException) { continue; } // being written; the rest of the dump still stands
-            var tail = lines.Reverse().Take(4).Reverse()
-                .Select(l => l.Length > 240 ? l[..240] + "…" : l);
-            sb.AppendLine($"  transcript[{machineId}] {System.IO.Path.GetFileName(file)} ({lines.Length} lines, last 4):");
+            // Deliberately generous, and it was not always. Four 240-char lines was the right
+            // budget for a stream transcript, where the last few NDJSON records held the whole
+            // story. An ACP transcript is a conversation: the reason a turn went wrong is a
+            // refused client request, a tool call that never happened, or a capability missing
+            // from the handshake — none of which are in the last four lines, and one of which
+            // (grok returning `cancelled` after 11k tokens, 2026-08-16) cost a 24-minute paid
+            // run that produced no diagnosis at all. A whole ACP turn is tens of lines, so a
+            // dump that covers one costs nothing and is the difference between reading the
+            // failure and re-running it.
+            const int TailLines = 60;
+            const int LineBudget = 2000;
+            var tail = lines.Reverse().Take(TailLines).Reverse()
+                .Select(l => l.Length > LineBudget ? l[..LineBudget] + "…" : l);
+            sb.AppendLine(
+                $"  transcript[{machineId}] {System.IO.Path.GetFileName(file)} "
+                + $"({lines.Length} lines, last {Math.Min(lines.Length, TailLines)}):");
             foreach (var line in tail)
                 sb.AppendLine($"    {line}");
         }

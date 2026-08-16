@@ -116,6 +116,15 @@ blocked. A held-idle session is a third state the clocks have never had to repre
 process alive, no progress expected, and that is *correct* rather than a symptom. The
 existing `InputRequestKind.Permission` live wait is the one precedent in the codebase.
 
+*Partly done, and the reason it could not wait for stage 3.* A worker that ends its turn
+still in `working` — reporting nothing and asking nothing — is invisible to both clocks: the
+process is up and heartbeating, so neither ever fires. Under the task model that same
+silence arrived as a process death and requeued. Stage 1's `turn-ended` is now read as its
+successor (`LivenessLossReason.TurnEndedWithoutResult`), because without it the first real
+ACP dispatch to go quiet simply hung — measured 2026-08-16, twice, once per agent. That is
+the *fourth* state named, not the third: a turn ended in `working` is a fault, a session
+held idle awaiting input is not, and only the first requeues.
+
 **Concurrency.** `max_concurrent` counts dispatched tasks. Under indefinite holding, a fleet
 where many sessions await humans consumes every seat while doing nothing. Sessions awaiting
 input must either not count, or count against a separate ceiling.
@@ -168,6 +177,8 @@ on next invocation, replacing the park/redispatch path entirely.
 - **Does the §7 profile still describe how to *launch*?** Under sessions it increasingly
   describes how to *reach* — which is a different thing, and may want a different key than
   `spawn`.
-- **Cost.** The migration already gave up `--max-turns` and per-turn token accounting
-  (see runner-config.md). Indefinite sessions with unbounded follow-ups remove the last
-  implicit bound, which was "a dispatch eventually exits". Something has to replace it.
+- **Cost.** The migration gave up `--max-turns` (see runner-config.md). It did *not*, in the
+  end, give up token accounting — `PromptResponse.usage` carries the four disjoint buckets
+  after all, measured 2026-08-16 — so the meter survives and only the cap is gone.
+  Indefinite sessions with unbounded follow-ups remove the last implicit bound, which was
+  "a dispatch eventually exits". Something has to replace it.

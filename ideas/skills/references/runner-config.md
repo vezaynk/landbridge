@@ -473,16 +473,42 @@ ceiling.
 
 For `codex exec` and `opencode run` that is no change — neither ever had a turn cap. For
 `claude -p` and `grok -p` it is a real loss: those two profiles go from a bounded runaway
-to an unbounded one. Weigh that per profile before migrating, and note it compounds with
-the usage gap below — you lose the cap and the meter in the same move.
+to an unbounded one. Weigh that per profile before migrating. You keep the meter (below) —
+what you lose is the cap.
 
-### What this increment still does not do
+### Token accounting: better than the docs suggested
 
-**Token accounting is not carried over.** ACP's accepted usage surface (`usage_update`) is
-context-window utilization plus an optional cumulative cost, not the four disjoint token
-buckets `UsageReportedEvent` carries today. An ACP profile currently reports **no usage
-at all** — it does not report zeros, and it does not fabricate buckets from a context
-gauge. Reshaping the measured view is tracked separately.
+This section used to say usage was not carried over, on the reading that ACP's only usage
+surface is `usage_update` — context-window utilization plus an optional cost, and not the
+four disjoint buckets `UsageReportedEvent` carries. **Real transcripts say otherwise**, and
+the correction is worth stating plainly because a real decision was taken on the old claim.
+
+Measured 2026-08-16 against live workers, `PromptResponse` carries per-turn buckets:
+
+| Agent | `inputTokens` | `outputTokens` | `cachedReadTokens` | `cachedWriteTokens` | `totalTokens` | cost |
+|---|--:|--:|--:|--:|--:|--:|
+| `claude-agent-acp` 0.68.0 | 6 | 866 | 61,019 | 6,701 | 68,592 | $0.09490875 |
+| `opencode acp` 1.18.18 | 99 | 14 | 14,208 | — | 14,321 | `{"amount":0}` |
+
+Both reconcile exactly against `totalTokens`, so the buckets are **disjoint** — they map
+onto §12's four columns with no subset correction, which is the per-harness
+`usage_cached_is_subset` knob the stream mapping needed and ACP does not. `totalTokens` is
+derivable and deliberately not stored.
+
+Three things the mapping does deliberately:
+
+- **Reports cumulative totals, not per-turn ones.** `TaskStore.RecordUsageAsync` keeps a
+  high-water mark per bucket, so per-turn reports would leave the row holding the largest
+  single turn rather than the dispatch's spend.
+- **Treats an explicit zero cost as no cost.** OpenCode priced a 14,321-token turn at
+  `{"amount":0}`; recording $0.00 would assert the dispatch was free. Same rule as Codex,
+  same §2 principle 2.
+- **Records no model.** Nothing in ACP attributes usage to a model, and the profile's argv
+  names a CLI rather than whatever it routed to.
+
+What is still open: `usage_update`'s `used`/`size` context gauge has nowhere honest to go in
+a cumulative column, and reshaping the §12 measured view to hold a gauge is tracked
+separately.
 
 ## Profile archetypes — open vs. strict
 

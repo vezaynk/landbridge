@@ -123,6 +123,23 @@ public sealed class AcpClient
     private readonly Channel<string> _followUps = Channel.CreateUnbounded<string>(
         new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
 
+    /// <summary>
+    /// Running totals for the whole session, in the four disjoint buckets §12 measures.
+    /// Cumulative rather than per-turn on purpose: <c>TaskStore.RecordUsageAsync</c> keeps a
+    /// high-water mark per bucket, so a client that reported each turn separately would
+    /// leave the row holding the <em>largest</em> turn instead of the session's spend.
+    /// Feeding it a monotonically rising total makes the max a no-op and the last report the
+    /// truth. Touched only by the single-threaded read loop and the turn it drives.
+    /// </summary>
+    private long _inputTokens, _outputTokens, _cacheReadTokens, _cacheWriteTokens;
+
+    /// <summary>
+    /// The most recent dollar figure the agent put on this session, or null if it has never
+    /// named one. See <see cref="RecordUsageUpdate"/> for why an explicit zero counts as
+    /// "never".
+    /// </summary>
+    private decimal? _costUsd;
+
     private TextWriter? _stdin;
     private long _nextId;
     private string? _sessionId;
@@ -351,6 +368,28 @@ public sealed class AcpClient
             ? sr.GetString()
             : null;
         Turns++;
+
+        // §10 telemetry ingest, before the turn-ended event rather than after: turn-ended is
+        // what the plane may act on (a turn that ended with nothing reported requeues), and
+        // accounting for a dispatch should already be in when its fate is decided.
+        //
+        // No model name. Nothing in ACP attributes usage to a model — not the usage buckets,
+        // not `usage_update` — so the report is deliberately unattributed rather than guessing
+        // from the profile's argv, which names a CLI and not the model it happened to route to.
+        var reportedTokens = AddTurnUsage(result.Value);
+        if (reportedTokens || _costUsd is not null)
+        {
+            _ring.Enqueue(new UsageReportedEvent(
+                _task,
+                Model: null,
+                _inputTokens,
+                _outputTokens,
+                _cacheReadTokens,
+                _cacheWriteTokens,
+                ReasoningOutputTokens: null,
+                _costUsd,
+                _clock.GetUtcNow()));
+        }
 
         _ring.Enqueue(new TurnEndedEvent(_task, StopReason, _clock.GetUtcNow()));
     }
@@ -602,10 +641,11 @@ public sealed class AcpClient
     }
 
     /// <summary>
-    /// The only notification that carries anything docketd's event vocabulary has a place
-    /// for. Everything else ACP streams — message chunks, thoughts, plans, mode changes —
-    /// is conversation content, which §12 captures verbatim through the transcript tee and
-    /// which the frozen runner vocabulary deliberately has no member for.
+    /// The two notifications that carry something docketd's event vocabulary has a place for:
+    /// tool calls (progress) and <c>usage_update</c> (§12 accounting). Everything else ACP
+    /// streams — message chunks, thoughts, plans, mode changes — is conversation content,
+    /// which §12 captures verbatim through the transcript tee and which the frozen runner
+    /// vocabulary deliberately has no member for.
     /// </summary>
     private void HandleNotification(string method, JsonElement root)
     {
@@ -619,6 +659,12 @@ public sealed class AcpClient
         var kind = update.TryGetProperty("sessionUpdate", out var k) && k.ValueKind == JsonValueKind.String
             ? k.GetString()
             : null;
+
+        if (kind == "usage_update")
+        {
+            RecordUsageUpdate(update);
+            return;
+        }
 
         // `tool_call` announces a call; `tool_call_update` reports its progress through
         // pending → in_progress → completed. Both are accepted because an agent may skip
@@ -735,6 +781,64 @@ public sealed class AcpClient
         return decision.Allow
             ? FirstOfKind(options, "allow_once") ?? FirstOfKind(options, "allow_always")
             : FirstOfKind(options, "reject_once") ?? FirstOfKind(options, "reject_always");
+    }
+
+    /// <summary>
+    /// Takes the dollar figure off a <c>usage_update</c>. The rest of that notification —
+    /// <c>used</c> and <c>size</c> — is a context-window gauge, not spend, and §12's measured
+    /// view has nowhere honest to put it; a gauge written into a cumulative column would read
+    /// as consumption that never happened.
+    ///
+    /// <para><b>An explicit zero is treated as no cost at all</b>, not as a free dispatch.
+    /// Measured on 2026-08-16: <c>claude-agent-acp</c> priced a turn at $0.0949, and
+    /// <c>opencode acp</c> reported <c>{"amount":0}</c> for a turn that plainly burned 14,321
+    /// tokens — so a zero here means "this adapter does not compute cost", and recording
+    /// $0.00 would assert the dispatch was free. That is the same mislabelling §2 principle 2
+    /// forbids, and the reason the real-harness bar refuses to derive a cost for Codex.</para>
+    /// </summary>
+    private void RecordUsageUpdate(JsonElement update)
+    {
+        if (!update.TryGetProperty("cost", out var cost) || cost.ValueKind != JsonValueKind.Object)
+            return;
+        if (!cost.TryGetProperty("amount", out var amount) || amount.ValueKind != JsonValueKind.Number)
+            return;
+        if (!amount.TryGetDecimal(out var value) || value <= 0m)
+            return;
+        _costUsd = value;
+    }
+
+    /// <summary>
+    /// Adds a finished turn's token buckets to the session totals, and answers whether the
+    /// agent reported any.
+    ///
+    /// <para>ACP's <c>PromptResponse.usage</c> buckets are <b>disjoint</b>, which is what lets
+    /// them map onto §12's four columns without a subset correction — the per-harness
+    /// <c>usage_cached_is_subset</c> knob the stream mapping needed has no ACP equivalent
+    /// because there is nothing to correct. Both agents measured on 2026-08-16 reconcile
+    /// exactly: claude reported 6 + 866 + 61,019 + 6,701 = 68,592 = <c>totalTokens</c>, and
+    /// opencode 99 + 14 + 14,208 = 14,321 = <c>totalTokens</c>. <c>totalTokens</c> is therefore
+    /// derivable and is deliberately not stored.</para>
+    /// </summary>
+    private bool AddTurnUsage(JsonElement result)
+    {
+        if (!result.TryGetProperty("usage", out var usage) || usage.ValueKind != JsonValueKind.Object)
+            return false;
+
+        var any = false;
+        any |= Add(usage, "inputTokens", ref _inputTokens);
+        any |= Add(usage, "outputTokens", ref _outputTokens);
+        any |= Add(usage, "cachedReadTokens", ref _cacheReadTokens);
+        any |= Add(usage, "cachedWriteTokens", ref _cacheWriteTokens);
+        return any;
+
+        static bool Add(JsonElement o, string key, ref long total)
+        {
+            if (!o.TryGetProperty(key, out var v) || v.ValueKind != JsonValueKind.Number
+                || !v.TryGetInt64(out var n) || n < 0)
+                return false;
+            total += n;
+            return true;
+        }
     }
 
     private static string ToolOf(JsonElement p)

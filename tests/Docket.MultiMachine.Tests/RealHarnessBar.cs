@@ -112,10 +112,11 @@ internal static class RealHarnessBar
     }
 
     /// <summary>
-    /// §11 park → resume via <c>session/load</c>: a worker asks, the Lead
-    /// answers, the park record carries the session ref, and the resumed
-    /// instance reports a nonce that existed only in the first turn. Skips
-    /// when the profile does not support loadSession.
+    /// §11 park → resume via <c>session/load</c>: a worker asks, the Lead parks it on
+    /// purpose, the park record carries the session ref, the answer wakes it on a fresh
+    /// process, and that process reports a nonce that existed only in the first turn — which
+    /// it can only know by having reopened the transcript. Skips when the profile does not
+    /// support loadSession.
     /// </summary>
     public static async Task ResumesAfterParkAsync(PostgresFixture pg, RealHarnessProfile profile)
     {
@@ -163,10 +164,19 @@ internal static class RealHarnessBar
             await rig.QuestionAsync(task, ct),
             StringComparison.OrdinalIgnoreCase);
 
-        await rig.AnswerAsync(task, "Yes — report the remembered value now.", ct);
+        // Park before answering, and that ordering is the whole point of this test.
+        // Since ideas/sessions.md stage 2 an answer to a live session is a follow-up prompt
+        // on the same process — no second instance, no session/load, nothing resumed — so
+        // answering first would quietly turn a resume proof into a re-prompt proof that
+        // still went green. park_task is the deliberate release, and the only route left to
+        // the §11 path this test exists to hold: the session is cancelled, the token
+        // revoked, the machine freed, and the wake below has to reopen the transcript.
+        await rig.ParkTaskAsync(task, ct);
         var park = await rig.ParkAsync(task, ct);
         Assert.Equal("A", park.Machine);
         Assert.Equal(sessionRef, park.SessionRef);
+
+        await rig.AnswerAsync(task, "Yes — report the remembered value now.", ct);
 
         Assert.True(
             await rig.DispatchUntilVerifyingAsync(task, "A", MaxAttempts, PerLegBudget, ct),

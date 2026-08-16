@@ -153,6 +153,23 @@ public enum LivenessLossReason
 
     /// <summary>The runner restarted adopting nothing, or its machine went silent (§10).</summary>
     MachineReboot,
+
+    /// <summary>
+    /// An ACP worker's turn ended while the task was still <c>working</c> — it stopped
+    /// talking rather than reporting a result or asking a question (a runner
+    /// <c>turn-ended</c> event, §10).
+    ///
+    /// <para>The session-model counterpart of <see cref="ProcessExited"/>, and it exists
+    /// because those two stopped being the same observation. Under the stream protocol a
+    /// worker that finished without reporting had also exited, so its silence arrived as a
+    /// death and requeued on that reason. An ACP session outlives its turn by design
+    /// (<c>ideas/sessions.md</c> stage 1), so the process is still there, still alive, still
+    /// heartbeating — and without this the task would sit in <c>working</c> until a human
+    /// noticed. Kept distinct from <see cref="ProcessExited"/> because the remedies differ:
+    /// nothing crashed here, the agent simply stopped, and the <c>stopReason</c> on the
+    /// turn-ended event usually says why.</para>
+    /// </summary>
+    TurnEndedWithoutResult,
 }
 
 /// <summary>
