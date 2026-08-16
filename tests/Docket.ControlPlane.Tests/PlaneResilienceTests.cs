@@ -124,19 +124,19 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         var seeded = await SeedWorkingAsync(clock, "m1");
         await BlockOnInputAsync(clock, seeded);
 
-        // §11: a blocked task's harness process is expected to be gone, but the machine
-        // still holds its lease until the sweeper parks it or the machine dies — and the
-        // sweeper finds that machine only through the registry. So blocked_on_input has to
-        // be re-adopted too, or a task that outlives a restart while waiting on a human is
-        // never parked on TTL and never requeued on machine death. WaitTtlSweeper carried a
-        // comment marking exactly this hole.
+        // §11: a blocked task's session is held on its machine, and the machine keeps its
+        // lease until a Lead parks it or the machine dies — and the sweeper finds that
+        // machine only through the registry. So blocked_on_input has to be re-adopted too,
+        // or a task that outlives a restart while waiting on a human can be neither parked
+        // nor requeued on machine death. WaitTtlSweeper carried a comment marking this hole.
         var registry = ReconnectedMachine(clock, "m1");
         Assert.Equal(1, await NewDispatch(clock, registry).RehydrateMachineAsync("m1", default));
         Assert.Equal("m1", registry.MachineFor(seeded.Task));
 
-        // Auto-park is off by default; this test turns a 30-minute TTL on so the
-        // sweeper still has a job. The wait lapses on a live machine, so the task
-        // parks rather than sitting blocked forever.
+        // And the sweeper can now act on it. The TTL is passed explicitly because the
+        // default is infinite — a session is held until park_task, not until a timer — so
+        // this exercises the opt-in auto-park an operator gets from Docket:WaitTtl. What the
+        // re-adoption bought is the same either way: the sweeper resolved the machine.
         var waitTtl = TimeSpan.FromMinutes(30);
         clock.Advance(waitTtl + TimeSpan.FromMinutes(1));
         registry.ApplyHeartbeat("m1", Heartbeat("m1", "default")); // still live at the new now
@@ -1019,6 +1019,12 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         new(ScopeFactory(clock), registry, new ForwardWaiters(), new TranscriptWaiters(),
             new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
 
+    /// <summary>
+    /// A sweeper for these tests. <paramref name="waitTtl"/> is null for the machine-death
+    /// paths, which fire regardless — the wait TTL now defaults to infinite (a session is
+    /// held until <c>park_task</c>, not until a timer), so a test about the TTL lapsing has
+    /// to ask for one explicitly, exactly as an operator does with <c>Docket:WaitTtl</c>.
+    /// </summary>
     private WaitTtlSweeper NewSweeper(
         TimeProvider clock, RunnerConnectionRegistry registry, TimeSpan? waitTtl = null) =>
         new(ScopeFactory(clock), registry, clock, NullLogger<WaitTtlSweeper>.Instance, waitTtl);

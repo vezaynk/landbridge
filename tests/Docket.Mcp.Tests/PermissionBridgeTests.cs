@@ -360,8 +360,11 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         var caller = await SeedWorkingTask();
         var pending = await AskPermissionAsync(caller);
 
-        // Zero TTL now means "do not auto-park". A 1ms TTL plus a short wait is
-        // "already expired" without disabling the sweeper.
+        // The sweeper's own path, with a TTL short enough that the wait it measures has
+        // already elapsed. NOT zero: auto-park is off by default now (a session is held
+        // until park_task, not until a timer), and zero is one of the two values that mean
+        // "do not auto-park" — so a zero here would assert the opposite of the intent. A
+        // live machine tracking the task is what lets it park rather than requeue.
         var registry = new RunnerConnectionRegistry(TimeProvider.System);
         registry.Register("m1", new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
         registry.ApplyHeartbeat("m1", new MachineHeartbeat(
