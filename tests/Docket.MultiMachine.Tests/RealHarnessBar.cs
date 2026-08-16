@@ -17,7 +17,16 @@ namespace Docket.MultiMachine.Tests;
 internal static class RealHarnessBar
 {
     public const int MaxAttempts = 3;
-    public static readonly TimeSpan PerLegBudget = TimeSpan.FromMinutes(8);
+
+    // Successful paid runs (local 2026-08-16): Claude 8/8 in 2m 40s, Codex
+    // 5/5 in 1m 14s, Grok 3/3 in 2m 5s, OpenCode 5/5 in 1m 44s. Per-test
+    // that is ~15–40s for a single dispatch and ~40–80s for a two-leg
+    // (park / handoff / continuation). The budgets below are 2× those.
+    public const int EchoTimeoutMs = 120_000;
+    public const int TwoLegTimeoutMs = 180_000;
+    public static readonly TimeSpan EchoTimeout = TimeSpan.FromMilliseconds(EchoTimeoutMs);
+    public static readonly TimeSpan TwoLegTimeout = TimeSpan.FromMilliseconds(TwoLegTimeoutMs);
+    public static readonly TimeSpan PerLegBudget = TimeSpan.FromSeconds(60);
 
     /// <summary>
     /// A real worker reads <c>get_task</c>, reports the live-description token,
@@ -27,7 +36,7 @@ internal static class RealHarnessBar
     /// </summary>
     public static async Task DriveToVerifyingAsync(PostgresFixture pg, RealHarnessProfile profile)
     {
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(15));
+        using var cts = new CancellationTokenSource(EchoTimeout);
         var ct = cts.Token;
 
         await using var rig = profile.OpenEchoRig(pg);
@@ -64,7 +73,7 @@ internal static class RealHarnessBar
         Skip.If(profile.Usage == UsageExpectation.None,
             profile.Name + " declares no usage the bar can assert on");
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(15));
+        using var cts = new CancellationTokenSource(EchoTimeout);
         var ct = cts.Token;
 
         await using var rig = profile.OpenEchoRig(pg);
@@ -85,7 +94,7 @@ internal static class RealHarnessBar
             Assert.True(
                 await FleetRig.WaitUntilAsync(
                     async () => await rig.ReportedUsageAsync(task, ct) is [{ CostUsd: not null }, ..],
-                    TimeSpan.FromMinutes(2)),
+                    TimeSpan.FromSeconds(30)),
                 $"no usage report with a cost reached the plane for {profile.Name}.\n"
                 + profile.FailureHypotheses + await rig.RealWorkerDiagnosticsAsync(task, ct));
             var rows = await rig.ReportedUsageAsync(task, ct);
@@ -101,7 +110,7 @@ internal static class RealHarnessBar
         Assert.True(
             await FleetRig.WaitUntilAsync(
                 async () => (await rig.ReportedUsageAsync(task, ct)).Count > 0,
-                TimeSpan.FromMinutes(2)),
+                TimeSpan.FromSeconds(30)),
             $"no usage report reached the plane for {profile.Name}.\n"
             + profile.FailureHypotheses + await rig.RealWorkerDiagnosticsAsync(task, ct));
         var tokens = await rig.ReportedUsageAsync(task, ct);
@@ -126,7 +135,7 @@ internal static class RealHarnessBar
         Skip.If(!profile.SupportsResume,
             profile.Name + " does not support session/load — park/resume is not this harness's bar");
 
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(20));
+        using var cts = new CancellationTokenSource(TwoLegTimeout);
         var ct = cts.Token;
 
         var remembered = RealHarnessProfiles.NewToken();

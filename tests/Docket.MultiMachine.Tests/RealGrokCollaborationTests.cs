@@ -18,9 +18,6 @@ public sealed class RealGrokCollaborationTests(PostgresFixture pg) : IAsyncLifet
 {
     public const string RealGrok = "RealGrok";
 
-    private const int MaxAttempts = 3;
-    private static readonly TimeSpan PerLegBudget = TimeSpan.FromMinutes(8);
-
     private const string McpToolsRule =
         " Docket's tools are MCP tools, named exactly docket__get_task, docket__report_result " +
         "and so on — call them as tools, under those names. There is no `docket` program: no " +
@@ -43,15 +40,15 @@ public sealed class RealGrokCollaborationTests(PostgresFixture pg) : IAsyncLifet
 
     public Task DisposeAsync() => Task.CompletedTask;
 
-    [SkippableFact]
+    [SkippableFact(Timeout = RealHarnessBar.EchoTimeoutMs)]
     public Task Real_worker_drives_a_task_to_verifying_on_the_fleet() =>
         RealHarnessBar.DriveToVerifyingAsync(pg, RealHarnessProfiles.Grok(RequireRealGrok()));
 
-    [SkippableFact]
+    [SkippableFact(Timeout = RealHarnessBar.EchoTimeoutMs)]
     public Task Real_worker_reports_usage_the_harness_emits() =>
         RealHarnessBar.ReportsUsageAsync(pg, RealHarnessProfiles.Grok(RequireRealGrok()));
 
-    [SkippableFact]
+    [SkippableFact(Timeout = RealHarnessBar.TwoLegTimeoutMs)]
     public Task Real_worker_resumes_its_transcript_after_a_park_and_reports_a_memory_only_nonce() =>
         RealHarnessBar.ResumesAfterParkAsync(pg, RealHarnessProfiles.Grok(RequireRealGrok()));
 

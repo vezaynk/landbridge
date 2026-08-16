@@ -99,8 +99,8 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
     /// <summary>Bounded redispatch, same rationale as the claude tier: a worker that succeeds
     /// does so on the first try; these absorb the occasional turn that ends without the tool
     /// call without letting the job run away.</summary>
-    private const int MaxAttempts = 3;
-    private static readonly TimeSpan PerLegBudget = TimeSpan.FromMinutes(8);
+    private const int MaxAttempts = RealHarnessBar.MaxAttempts;
+    private static readonly TimeSpan PerLegBudget = RealHarnessBar.PerLegBudget;
 
     public async Task InitializeAsync()
     {
@@ -109,15 +109,15 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
 
     public Task DisposeAsync() => Task.CompletedTask;
 
-    [SkippableFact]
+    [SkippableFact(Timeout = RealHarnessBar.EchoTimeoutMs)]
     public Task Real_worker_drives_a_task_to_verifying_on_the_fleet() =>
         RealHarnessBar.DriveToVerifyingAsync(pg, RealHarnessProfiles.Codex(RequireRealCodex()));
 
-    [SkippableFact]
+    [SkippableFact(Timeout = RealHarnessBar.EchoTimeoutMs)]
     public Task Real_worker_reports_usage_the_harness_emits() =>
         RealHarnessBar.ReportsUsageAsync(pg, RealHarnessProfiles.Codex(RequireRealCodex()));
 
-    [SkippableFact]
+    [SkippableFact(Timeout = RealHarnessBar.TwoLegTimeoutMs)]
     public Task Real_worker_resumes_its_transcript_after_a_park_and_reports_a_memory_only_nonce() =>
         RealHarnessBar.ResumesAfterParkAsync(pg, RealHarnessProfiles.Codex(RequireRealCodex()));
 
@@ -144,11 +144,11 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
     /// <c>codex exec resume &lt;SESSION_ID&gt;</c> takes — so the transcript stays resumable
     /// even though nothing was negotiated with the agent.</para>
     /// </summary>
-    [SkippableFact]
+    [SkippableFact(Timeout = RealHarnessBar.EchoTimeoutMs)]
     public async Task A_stop_reaches_a_real_codex_worker_as_a_kill_deadline_with_its_thread_ref_preserved()
     {
         var codexBin = RequireRealCodex();
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(12));
+        using var cts = new CancellationTokenSource(RealHarnessBar.EchoTimeout);
         var ct = cts.Token;
 
         var profile = RealHarnessProfiles.Codex(codexBin);
@@ -192,7 +192,7 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
         Assert.True(
             await FleetRig.WaitUntilAsync(
                 () => Task.FromResult(rig.WorkerObserved(task) is { Exits: > 0 }),
-                TimeSpan.FromMinutes(3)),
+                TimeSpan.FromSeconds(30)),
             "the worker never ended, so the deadline did not fire either.\n"
             + await rig.RealWorkerDiagnosticsAsync(task, ct));
 
@@ -220,12 +220,12 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
     /// so A contributes no session ref under it — which is why this fact asserts on results and
     /// machines, never on A's ref.</para>
     /// </summary>
-    [SkippableFact]
+    [SkippableFact(Timeout = RealHarnessBar.TwoLegTimeoutMs)]
     public async Task A_claude_worker_and_a_codex_worker_hand_off_a_token_across_one_fleet()
     {
         var codex = RealHarnessProfiles.Codex(RequireRealCodex());
         var claude = RealHarnessProfiles.Claude(RequireRealClaudeForMixedFleet());
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(25));
+        using var cts = new CancellationTokenSource(RealHarnessBar.TwoLegTimeout);
         var ct = cts.Token;
 
         await using var rig = new FleetRig(
