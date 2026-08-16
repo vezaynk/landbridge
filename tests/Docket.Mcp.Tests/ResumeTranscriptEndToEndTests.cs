@@ -198,7 +198,12 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
             // A resume that silently became a cold start is the §11 failure this whole area
             // exists to prevent, and under ACP the only difference between the two is a
             // method name on a connection nobody else sees — so the harness records it.
-            Assert.True(await WaitUntilAsync(() => Task.FromResult(File.Exists(sessionRecord)), TimeSpan.FromSeconds(15)),
+            Assert.True(
+                await WaitUntilAsync(
+                    () => Task.FromResult(
+                        File.Exists(sessionRecord)
+                        && File.ReadAllText(sessionRecord).Contains("\"method\":\"session/load\"", StringComparison.Ordinal)),
+                    TimeSpan.FromSeconds(15)),
                 "the resumed harness never recorded how its session opened");
             var opened = await File.ReadAllTextAsync(sessionRecord, ct);
             Assert.Contains("\"method\":\"session/load\"", opened, StringComparison.Ordinal);

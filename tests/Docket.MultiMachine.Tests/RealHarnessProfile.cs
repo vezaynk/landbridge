@@ -30,6 +30,11 @@ internal sealed class RealHarnessProfile
     /// Claude and Codex. Carries no prompt — an ACP agent takes none on argv.
     /// </summary>
     public required string[] AcpSpawn { get; init; }
+    /// <summary>
+    /// ACP <c>authenticate</c> method id, when the agent refuses <c>session/new</c>.
+    /// Codex offers <c>api-key</c> and <c>chat-gpt</c>; only the first works unattended.
+    /// </summary>
+    public string? AuthMethod { get; init; }
     public Func<FleetRig, IDisposable?>? Attach { get; init; }
 
     public string EchoTools => $"{GetTask},{ReportResult}";
@@ -91,7 +96,7 @@ internal sealed class RealHarnessProfile
     /// </summary>
     public FleetRig OpenEchoRig(PostgresFixture pg) =>
         new(pg, AcpSpawn, env: Env,
-            prompt: EchoPrompt, followUp: FollowUpTurn);
+            prompt: EchoPrompt, followUp: FollowUpTurn, authMethod: AuthMethod);
 
     /// <summary>
     /// The park/resume rig, on ACP. There is no <c>resume.args</c> here and that is the
@@ -105,7 +110,7 @@ internal sealed class RealHarnessProfile
             throw new InvalidOperationException(Name + " does not support resume — the park bar must skip.");
         return new FleetRig(
             pg, AcpSpawn, env: Env,
-            prompt: RememberThenAsk(nonce), followUp: FollowUpTurn);
+            prompt: RememberThenAsk(nonce), followUp: FollowUpTurn, authMethod: AuthMethod);
     }
 
     public IDisposable? AttachTo(FleetRig rig) => Attach?.Invoke(rig);
@@ -115,9 +120,11 @@ internal sealed class RealHarnessProfile
     /// <em>harness-side</em> proof of a resume: two instances reporting the same id cannot
     /// be a cold start, independently of what the plane recorded.
     ///
-    /// <para>A worker's stdout is the agent's half of a JSON-RPC conversation, and the id
-    /// arrives exactly once: in the <em>response</em> to <c>session/new</c>, as
-    /// <c>result.sessionId</c>.</para>
+    /// <para>A worker's stdout is the agent's half of a JSON-RPC conversation. The id
+    /// arrives on <c>session/new</c> as <c>result.sessionId</c>. <c>session/load</c>
+    /// often echoes none — the ref we asked for <em>is</em> the session — so the
+    /// successor's proof is the <c>sessionId</c> on later <c>session/update</c>
+    /// notifications, not a second <c>session/new</c>.</para>
     /// </summary>
     public string? SessionIdFromLine(string line)
     {
@@ -127,16 +134,26 @@ internal sealed class RealHarnessProfile
             using var doc = System.Text.Json.JsonDocument.Parse(line);
             var root = doc.RootElement;
             if (root.ValueKind != System.Text.Json.JsonValueKind.Object) return null;
+            if (!root.TryGetProperty("jsonrpc", out _))
+                return null;
 
-            // ACP: a JSON-RPC response whose result names a session. Checked first and
-            // guarded on `jsonrpc` so it can never match a harness stream line that happens
-            // to carry a sessionId of its own.
-            if (root.TryGetProperty("jsonrpc", out _)
-                && root.TryGetProperty("result", out var result)
+            // session/new (and any agent that echoes an id from session/load).
+            if (root.TryGetProperty("result", out var result)
                 && result.ValueKind == System.Text.Json.JsonValueKind.Object
                 && result.TryGetProperty("sessionId", out var acpId)
                 && acpId.ValueKind == System.Text.Json.JsonValueKind.String)
                 return acpId.GetString();
+
+            // session/load typically has no result.sessionId. The replayed
+            // conversation still names the session on every session/update.
+            if (root.TryGetProperty("method", out var method)
+                && method.ValueKind == System.Text.Json.JsonValueKind.String
+                && method.GetString() == "session/update"
+                && root.TryGetProperty("params", out var p)
+                && p.ValueKind == System.Text.Json.JsonValueKind.Object
+                && p.TryGetProperty("sessionId", out var updateId)
+                && updateId.ValueKind == System.Text.Json.JsonValueKind.String)
+                return updateId.GetString();
 
             return null;
         }

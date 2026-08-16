@@ -157,7 +157,8 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
             spawnArgv: profile.AcpSpawn,
             prompt: profile.EchoPrompt,
             followUp: profile.FollowUpTurn,
-            stop: new StopConfig(WindDown: TimeSpan.FromSeconds(5)));
+            stop: new StopConfig(WindDown: TimeSpan.FromSeconds(5)),
+            authMethod: profile.AuthMethod);
         await rig.StartAsync(ct);
         using var home = profile.AttachTo(rig);
         await rig.AddMachineAsync("A");
@@ -231,7 +232,8 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
             pg,
             spawnArgv: codex.AcpSpawn,
             prompt: codex.EchoPrompt,
-            followUp: codex.FollowUpTurn);
+            followUp: codex.FollowUpTurn,
+            authMethod: codex.AuthMethod);
         await rig.StartAsync(ct);
         using var home = codex.AttachTo(rig);
 

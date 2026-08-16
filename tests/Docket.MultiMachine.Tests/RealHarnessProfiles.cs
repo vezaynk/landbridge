@@ -38,6 +38,7 @@ internal static class RealHarnessProfiles
         // true, mcp.http true. Note what this removes against the stream profile —
         // codex exec needs stdin: closed to start at all, and codex-acp does not.
         AcpSpawn = ["codex-acp"],
+        AuthMethod = "api-key",
         Bin = bin,
         GetTask = "mcp__docket__get_task",
         ReportResult = "mcp__docket__report_result",

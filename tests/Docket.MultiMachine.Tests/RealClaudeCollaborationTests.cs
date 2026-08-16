@@ -485,8 +485,9 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// any file — only the conversation a later continuation inherits.
     /// </summary>
     private static string RememberThenWorkPrompt(string nonce) =>
-        "You are a Docket worker agent. Remember this value for the rest of this conversation: " +
-        $"{nonce}. Do not write it to any file, and do not put it in any tool call. Now call the " +
+        "You are a Docket worker agent. Remember this test nonce for the rest of this conversation: " +
+        $"{nonce}. Do not write it to any file, and do not put it in any tool call yet — a later " +
+        "task in this same conversation will ask you to report it. Now call the " +
         "mcp__docket__get_task tool and do exactly what its description tells you." + McpToolsRule;
 
     /// <summary>

@@ -194,12 +194,15 @@ internal static class RealHarnessBar
 
         Assert.Contains(remembered, await rig.ResultReferenceAsync(task, ct));
 
-        var instanceSessions = rig.InstanceSessionIdsOn("A", task, profile.SessionIdFromLine);
         Assert.True(
-            instanceSessions.Count >= 2,
+            await FleetRig.WaitUntilAsync(
+                () => Task.FromResult(
+                    rig.InstanceSessionIdsOn("A", task, profile.SessionIdFromLine).Count >= 2),
+                TimeSpan.FromSeconds(15)),
             $"resume of {profile.Name} did not produce a second captured instance — the successor "
             + "may have cold-started without a transcript file, or SessionIdFromLine missed the stream.\n"
             + profile.FailureHypotheses + await rig.RealWorkerDiagnosticsAsync(task, ct));
+        var instanceSessions = rig.InstanceSessionIdsOn("A", task, profile.SessionIdFromLine);
         Assert.All(instanceSessions, id => Assert.Equal(sessionRef, id));
         Assert.Equal("A", rig.MachineRanOn(task));
         Assert.Equal(sessionRef, await rig.HarnessSessionRefAsync(task, ct));

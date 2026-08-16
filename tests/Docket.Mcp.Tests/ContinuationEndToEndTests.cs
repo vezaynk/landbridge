@@ -281,7 +281,12 @@ public sealed class ContinuationEndToEndTests(PostgresFixture pg) : IAsyncLifeti
             supervisor.Spawn(dispatch, profile, "m1");
 
             var sessionPath = Path.Combine(workRoot, taskId.ToString(), "acp_session.json");
-            Assert.True(await WaitUntilAsync(() => Task.FromResult(File.Exists(sessionPath)), TimeSpan.FromSeconds(15)),
+            Assert.True(
+                await WaitUntilAsync(
+                    () => Task.FromResult(
+                        File.Exists(sessionPath)
+                        && File.ReadAllText(sessionPath).Contains("\"method\":\"session/load\"", StringComparison.Ordinal)),
+                    TimeSpan.FromSeconds(15)),
                 "the continuation's harness never recorded how its session opened");
             var opened = await File.ReadAllTextAsync(sessionPath, ct);
             Assert.Contains("\"method\":\"session/load\"", opened, StringComparison.Ordinal);
