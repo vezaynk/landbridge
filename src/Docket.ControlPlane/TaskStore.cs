@@ -644,7 +644,9 @@ public sealed class TaskStore(
                 // structure and rides along (it tells a Lead who can answer, which is
                 // triage), but the question text does not — get_task_question pulls it.
                 t.InputKind,
-                HasQuestion = t.InputQuestion != null,
+                HasQuestion = t.BlockedAt != null
+                    && t.InputKind != null
+                    && t.InputKind != InputRequestKind.Permission,
             })
             .ToListAsync(ct);
 

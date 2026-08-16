@@ -820,6 +820,8 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         Assert.NotNull(row.CurrentInstanceId);
         Assert.Equal("use staging-pg", row.InputAnswer);
         Assert.Null(row.ParkMachine);
+        Assert.Null(row.BlockedAt);
+        Assert.False((await NewStore(v).GetTeamStateAsync(Team)).Tasks.Single(t => t.TaskId == id.Value).HasQuestion);
     }
 
     [SkippableFact]
