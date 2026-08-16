@@ -9,3 +9,4 @@ spikes/out/
 out/
 
 .DS_Store
+.env

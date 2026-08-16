@@ -556,3 +556,18 @@ it is set they use that server instead of spinning a local cluster, and each get
 `ci.yml` (ubuntu + Postgres: the build-and-test matrix, the chaos job, and the two
 opt-in real-harness tiers), `os-matrix.yml` (the platform-sensitive suites on
 ubuntu/macOS/Windows), and `publish-images.yml` (GHCR runtime images on a `v*` tag).
+
+Paid real-harness e2e (`Category=RealClaude` / `RealCodex` / `RealOpenCode` /
+`RealGrok`) reads API keys from the environment. Locally, put them in user
+secrets on the MultiMachine test project — they are loaded at assembly start
+and published into the process so spawned CLIs inherit them. Process env
+(including CI job secrets) is not overwritten.
+
+```bash
+dotnet user-secrets set ANTHROPIC_API_KEY '…' --project tests/Docket.MultiMachine.Tests
+dotnet user-secrets set CODEX_API_KEY     '…' --project tests/Docket.MultiMachine.Tests
+dotnet user-secrets set XAI_API_KEY       '…' --project tests/Docket.MultiMachine.Tests
+```
+
+`ANTHROPIC_KEY`, `OPENAI_KEY` / `OPENAI_API_KEY`, and `XAI_KEY` are accepted
+and aliased to the names the CLIs actually read.
