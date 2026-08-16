@@ -43,6 +43,9 @@ internal static class MultiMachineKit
         {
             [RelayValidationEndpoints.BearerConfigKey] = relayValidationBearer,
             ["Docket:RelayUrl"] = relayUrl,
+            // Real ACP workers block inside session/request_permission; keep the
+            // plane-side poll tight so a Lead verdict is noticed immediately.
+            ["Docket:PermissionPollIntervalMs"] = "50",
         });
 
         builder.Services.AddDbContext<DocketDbContext>(o =>
@@ -73,6 +76,7 @@ internal static class MultiMachineKit
         app.UseAuthentication();
         app.UseAuthorization();
         app.MapMcp().RequireAuthorization();
+        app.MapWorkerPermissionEndpoint();
         app.MapRelayValidationEndpoint();
         return app;
     }

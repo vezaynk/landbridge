@@ -207,8 +207,13 @@ internal sealed class FleetRig(
         if (RealWorkerMode)
         {
             _pumps.Add(Task.Run(() => PumpSupervisorRingAsync(ring, _pumpCts.Token)));
-            if (_pumps.Count == 1) // one heartbeat pump for the whole fleet, on the first machine
+            if (_pumps.Count == 1)
+            {
+                // One heartbeat pump and one permission pump for the whole fleet,
+                // started with the first machine.
                 _pumps.Add(Task.Run(() => PumpHeartbeatsAsync(_pumpCts.Token)));
+                _pumps.Add(Task.Run(() => PumpPermissionsAsync(_pumpCts.Token)));
+            }
         }
 
         // The §10 socket seam: dispatch → the real spawn, open-/close-forward → the real
@@ -226,6 +231,9 @@ internal sealed class FleetRig(
             // held-open stdin where the profile declares a message seam, otherwise the
             // bounded TTL kill. The ack is kept for the scenario that measures it.
             StopCommand s => StopOnMachineAsync(machine, s, sendCt),
+            // Live-session wake: the plane doorbells the held ACP process. Same
+            // supervisor that spawned it, so TryPrompt lands on the right session.
+            PromptCommand p => PromptOnMachineAsync(machine, p),
             // §10 process commands go to the real daemon, which applies the profile gate on
             // the machine and replies on the shared ring.
             StartProcessCommand or StopProcessCommand or WriteProcessCommand =>
@@ -241,6 +249,12 @@ internal sealed class FleetRig(
     {
         var ack = await machine.Supervisor.StopAsync(stop.Task, stop.Ttl, stop.Disposition, stop.Reason, ct);
         _stopAcks[stop.Task] = ack;
+    }
+
+    private static Task PromptOnMachineAsync(MachineRig machine, PromptCommand prompt)
+    {
+        machine.Supervisor.TryPrompt(prompt.Task);
+        return Task.CompletedTask;
     }
 
     /// <summary>
@@ -324,10 +338,10 @@ internal sealed class FleetRig(
     }
 
     /// <summary>
-    /// Answer a blocked task over the real Lead MCP surface (§11), which requeues it for
-    /// redispatch <em>with its transcript resumed</em> and writes the park record carrying
-    /// the harness session ref. The answer itself reaches the worker on its next
-    /// <c>get_task</c> and never through the resume argv (§13).
+    /// Answer a blocked task over the real Lead MCP surface (§11). A still-live ACP
+    /// session continues in place and is doorbell'd; a dead or parked session is
+    /// requeued for redispatch with its transcript resumed. The answer itself
+    /// reaches the worker on its next <c>get_task</c>.
     /// </summary>
     public async Task AnswerAsync(TaskId task, string answer, CancellationToken ct)
     {
@@ -338,6 +352,21 @@ internal sealed class FleetRig(
             ["answer"] = answer,
         }, cancellationToken: ct);
         Assert.NotEqual(true, answered.IsError);
+    }
+
+    /// <summary>
+    /// Release a live ACP session on purpose over the real Lead MCP surface
+    /// (<c>park_task</c>). The worker is cancelled and the task parks; wake is a
+    /// later <see cref="AnswerAsync"/>, which redispatches with <c>session/load</c>.
+    /// </summary>
+    public async Task ParkTaskAsync(TaskId task, CancellationToken ct)
+    {
+        await using var lead = await PlaneProbe.ConnectMcpAsync(new Uri(_baseUrl + "/"), _leadToken, ct);
+        var parked = await lead.CallToolAsync("park_task", new Dictionary<string, object?>
+        {
+            ["taskId"] = task.Value.ToString(),
+        }, cancellationToken: ct);
+        Assert.NotEqual(true, parked.IsError);
     }
 
     /// <summary>
@@ -521,6 +550,46 @@ internal sealed class FleetRig(
                     catch (KeyNotFoundException) { /* machine removed mid-sweep */ }
                 }
                 await Task.Delay(TimeSpan.FromMilliseconds(500), ct);
+            }
+        }
+        catch (OperationCanceledException) { /* disposing */ }
+    }
+
+    /// <summary>
+    /// Auto-allow ACP <c>session/request_permission</c> on this fleet. Real workers
+    /// block inside the tool call until a Lead verdict; without this pump the
+    /// first MCP tool hangs the turn. Questions are left for the scenario to
+    /// answer — only <see cref="InputRequestKind.Permission"/> is decided here.
+    /// </summary>
+    private async Task PumpPermissionsAsync(CancellationToken ct)
+    {
+        try
+        {
+            while (!ct.IsCancellationRequested)
+            {
+                try
+                {
+                    await using var db = pg.NewContext();
+                    var pending = await db.Tasks.AsNoTracking()
+                        .Where(t => t.TeamId == Team.Value
+                            && t.State == TaskState.BlockedOnInput
+                            && t.InputKind == InputRequestKind.Permission)
+                        .Select(t => t.Id)
+                        .ToListAsync(ct);
+                    foreach (var id in pending)
+                    {
+                        try
+                        {
+                            await AnswerPermissionAsync(new TaskId(id), "allow", "e2e auto-allow", ct);
+                        }
+                        catch (OperationCanceledException) { throw; }
+                        catch { /* already answered, parked, or tearing down */ }
+                    }
+                }
+                catch (OperationCanceledException) { break; }
+                catch { /* plane teardown / scope disposed */ }
+
+                await Task.Delay(TimeSpan.FromMilliseconds(50), ct);
             }
         }
         catch (OperationCanceledException) { /* disposing */ }

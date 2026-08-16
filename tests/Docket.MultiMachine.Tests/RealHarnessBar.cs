@@ -113,9 +113,10 @@ internal static class RealHarnessBar
 
     /// <summary>
     /// §11 park → resume via <c>session/load</c>: a worker asks, the Lead
-    /// answers, the park record carries the session ref, and the resumed
-    /// instance reports a nonce that existed only in the first turn. Skips
-    /// when the profile does not support loadSession.
+    /// parks (the live session is cancelled), then answers. The park record
+    /// carries the session ref, and the resumed instance reports a nonce
+    /// that existed only in the first turn. Skips when the profile does not
+    /// support loadSession.
     /// </summary>
     public static async Task ResumesAfterParkAsync(PostgresFixture pg, RealHarnessProfile profile)
     {
@@ -140,10 +141,19 @@ internal static class RealHarnessBar
         Assert.True(
             await rig.DispatchUntilAsync(
                 task, "A",
-                async () => await rig.StateAsync(task, ct)
-                    is TaskState.BlockedOnInput or TaskState.Verifying or TaskState.Completed,
+                async () =>
+                {
+                    var state = await rig.StateAsync(task, ct);
+                    if (state is TaskState.Verifying or TaskState.Completed)
+                        return true;
+                    if (state != TaskState.BlockedOnInput)
+                        return false;
+                    // Permission-kind is auto-allowed by the fleet pump; only a
+                    // question is the park the rest of this bar drives.
+                    return await rig.PendingPermissionAsync(task, ct) is null;
+                },
                 MaxAttempts, PerLegBudget, ct),
-            $"the real {profile.Name} worker neither blocked on input nor finished.\n"
+            $"the real {profile.Name} worker neither blocked on a question nor finished.\n"
             + profile.FailureHypotheses + await rig.RealWorkerDiagnosticsAsync(task, ct));
         var blockedState = await rig.StateAsync(task, ct);
         Assert.True(
@@ -163,10 +173,26 @@ internal static class RealHarnessBar
             await rig.QuestionAsync(task, ct),
             StringComparison.OrdinalIgnoreCase);
 
-        await rig.AnswerAsync(task, "Yes — report the remembered value now.", ct);
+        // Park is a deliberate Lead command, not a side effect of answering. The
+        // process must actually be down before the wake redispatches — an exit
+        // arriving after the successor is Working would look like the successor
+        // died and requeue it.
+        await rig.ParkTaskAsync(task, ct);
         var park = await rig.ParkAsync(task, ct);
         Assert.Equal("A", park.Machine);
         Assert.Equal(sessionRef, park.SessionRef);
+        Assert.True(
+            await FleetRig.WaitUntilAsync(
+                () =>
+                {
+                    var seen = rig.WorkerObserved(task);
+                    return Task.FromResult(seen is { } o && o.Exits >= o.Starts);
+                },
+                TimeSpan.FromSeconds(45)),
+            $"park_task did not take the {profile.Name} worker down before the wake.\n"
+            + profile.FailureHypotheses + await rig.RealWorkerDiagnosticsAsync(task, ct));
+
+        await rig.AnswerAsync(task, "Yes — report the remembered value now.", ct);
 
         Assert.True(
             await rig.DispatchUntilVerifyingAsync(task, "A", MaxAttempts, PerLegBudget, ct),
