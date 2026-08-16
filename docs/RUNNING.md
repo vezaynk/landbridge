@@ -194,7 +194,9 @@ The dev-loop template is
 / `max_disk_usage` in `[0,1]`).
 
 Each `profile` carries `spawn` (the ACP entry point), a required `prompt` (the
-opening `session/prompt`), optional `follow_up`, `stop.wind_down_seconds`,
+opening `session/prompt`), optional `follow_up`, optional `auth_method`,
+optional `config_options` (ACP `session/set_config_option` pins; skipped unless
+the agent advertised that `configId` and value), `stop.wind_down_seconds`,
 `telemetry`, `logs`, an optional `max_concurrent`, and an optional `processes`
 block. There is no `stdin`, `resume`, `events`, or `protocol` key.
 

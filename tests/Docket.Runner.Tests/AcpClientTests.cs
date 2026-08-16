@@ -77,28 +77,73 @@ public sealed class AcpClientTests
     /// write and nothing to smuggle.
     /// </summary>
     [Fact]
-    public async Task Pins_an_advertised_model_after_session_new()
+    public async Task Pins_advertised_config_options_after_session_new()
     {
         // OpenCode ACP defaults to opencode/big-pickle. The pin is a
         // session/set_config_option after the agent has advertised the value.
-        var agent = new FakeAgent { AdvertiseModel = "anthropic/claude-haiku-4-5-20251001" };
-        var request = Request("go") with { Model = "anthropic/claude-haiku-4-5-20251001" };
+        var agent = new FakeAgent
+        {
+            AdvertiseOptions = new Dictionary<string, string>
+            {
+                ["model"] = "anthropic/claude-haiku-4-5-20251001",
+            },
+        };
+        var request = Request("go") with
+        {
+            ConfigOptions = new Dictionary<string, string>
+            {
+                ["model"] = "anthropic/claude-haiku-4-5-20251001",
+            },
+        };
         await RunAsync(agent, request);
 
-        Assert.Equal("anthropic/claude-haiku-4-5-20251001", agent.PinnedModel);
+        Assert.Equal("anthropic/claude-haiku-4-5-20251001", agent.PinnedOptions["model"]);
         Assert.Equal(
             ["initialize", "session/new", "session/set_config_option", "session/prompt"],
             agent.MethodsReceived);
     }
 
     [Fact]
-    public async Task Does_not_pin_a_model_the_agent_did_not_advertise()
+    public async Task Does_not_pin_a_config_option_the_agent_did_not_advertise()
     {
         var agent = new FakeAgent();
-        await RunAsync(agent, Request("go") with { Model = "anthropic/claude-haiku-4-5-20251001" });
+        await RunAsync(agent, Request("go") with
+        {
+            ConfigOptions = new Dictionary<string, string>
+            {
+                ["model"] = "anthropic/claude-haiku-4-5-20251001",
+            },
+        });
 
-        Assert.Null(agent.PinnedModel);
+        Assert.Empty(agent.PinnedOptions);
         Assert.DoesNotContain("session/set_config_option", agent.MethodsReceived);
+    }
+
+    [Fact]
+    public async Task Pins_each_advertised_config_option_and_skips_the_rest()
+    {
+        var agent = new FakeAgent
+        {
+            AdvertiseOptions = new Dictionary<string, string>
+            {
+                ["model"] = "anthropic/claude-haiku-4-5-20251001",
+                ["mode"] = "code",
+            },
+        };
+        await RunAsync(agent, Request("go") with
+        {
+            ConfigOptions = new Dictionary<string, string>
+            {
+                ["model"] = "anthropic/claude-haiku-4-5-20251001",
+                ["mode"] = "code",
+                ["thought_level"] = "high",
+            },
+        });
+
+        Assert.Equal("anthropic/claude-haiku-4-5-20251001", agent.PinnedOptions["model"]);
+        Assert.Equal("code", agent.PinnedOptions["mode"]);
+        Assert.False(agent.PinnedOptions.ContainsKey("thought_level"));
+        Assert.Equal(2, agent.MethodsReceived.Count(m => m == "session/set_config_option"));
     }
 
     [Fact]
@@ -1013,14 +1058,31 @@ public sealed class AcpClientTests
         /// <summary>The method id the client chose, or null if it never authenticated.</summary>
         public string? AuthenticatedWith { get; private set; }
 
-        /// <summary>When set, session/new advertises this model on a select option.</summary>
-        public string? AdvertiseModel { get; init; }
+        /// <summary>
+        /// Values advertised on <c>session/new</c> as select <c>configOptions</c>.
+        /// Empty is the agent that offers none.
+        /// </summary>
+        public IReadOnlyDictionary<string, string> AdvertiseOptions { get; init; } =
+            new Dictionary<string, string>();
 
-        /// <summary>The value the client pinned via session/set_config_option.</summary>
-        public string? PinnedModel { get; private set; }
+        /// <summary>Values the client pinned via <c>session/set_config_option</c>.</summary>
+        public Dictionary<string, string> PinnedOptions { get; } = new(StringComparer.Ordinal);
 
         private string AuthMethodsJson =>
             "[" + string.Join(",", AuthMethods.Select(m => $$"""{"id":"{{m}}","name":"{{m}}"}""")) + "]";
+
+        private string ConfigOptionsJson()
+        {
+            var parts = new List<string>();
+            foreach (var (id, advertised) in AdvertiseOptions)
+            {
+                var current = PinnedOptions.GetValueOrDefault(id, advertised);
+                parts.Add(
+                    $$"""{"id":"{{id}}","type":"select","currentValue":"{{current}}","options":[{"value":"{{advertised}}","name":"{{id}}"}]}""");
+            }
+
+            return "[" + string.Join(",", parts) + "]";
+        }
 
         public bool AskPermissionDuringPrompt { get; init; }
         public string PermissionOptions { get; init; } =
@@ -1167,16 +1229,22 @@ public sealed class AcpClientTests
                         break;
                     }
                     Send(
-                        AdvertiseModel is { } model
-                            ? """{"jsonrpc":"2.0","id":%id%,"result":{"sessionId":"sess_1","configOptions":[{"id":"model","type":"select","currentValue":"opencode/big-pickle","options":[{"value":"%model%","name":"pinned"}]}]}}"""
-                                .Replace("%model%", model)
+                        AdvertiseOptions.Count > 0
+                            ? """{"jsonrpc":"2.0","id":%id%,"result":{"sessionId":"sess_1","configOptions":%opts%}}"""
+                                .Replace("%opts%", ConfigOptionsJson())
                             : """{"jsonrpc":"2.0","id":%id%,"result":{"sessionId":"sess_1"}}""",
                         id);
                     break;
 
                 case "session/set_config_option":
-                    PinnedModel = message.GetProperty("params").GetProperty("value").GetString();
-                    Send("""{"jsonrpc":"2.0","id":%id%,"result":{"configOptions":[]}}""", id);
+                    var p = message.GetProperty("params");
+                    var configId = p.GetProperty("configId").GetString() ?? "";
+                    var value = p.GetProperty("value").GetString() ?? "";
+                    PinnedOptions[configId] = value;
+                    Send(
+                        """{"jsonrpc":"2.0","id":%id%,"result":{"configOptions":%opts%}}"""
+                            .Replace("%opts%", ConfigOptionsJson()),
+                        id);
                     break;
 
                 case "session/load":

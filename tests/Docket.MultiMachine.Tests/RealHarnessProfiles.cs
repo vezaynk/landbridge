@@ -54,7 +54,10 @@ internal static class RealHarnessProfiles
         Name = "opencode",
         // Native. Measured 2026-08-15: protocol 1, loadSession true, mcp.http true.
         AcpSpawn = [bin, "acp"],
-        Model = OpenCodeModel,
+        ConfigOptions = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["model"] = OpenCodeModel,
+        },
         Bin = bin,
         GetTask = "docket_get_task",
         ReportResult = "docket_report_result",

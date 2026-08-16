@@ -73,7 +73,8 @@ public sealed class AcpClient
     /// the client to <em>offer</em> its latest, which is why
     /// <see cref="LatestProtocolVersion"/> is what goes on the wire; the methods this client
     /// uses (<c>session/new</c>, <c>session/load</c>, <c>session/prompt</c>,
-    /// <c>session/update</c>, <c>session/cancel</c>, <c>session/request_permission</c>) are
+    /// <c>session/update</c>, <c>session/cancel</c>, <c>session/request_permission</c>,
+    /// <c>session/set_config_option</c>) are
     /// common to both, so anything in this range is silently fine.
     /// </summary>
     public const int OldestProtocolVersion = 1;
@@ -317,7 +318,7 @@ public sealed class AcpClient
 
         _sessionId = session;
         _onSessionId?.Invoke(session);
-        await MaybePinModelAsync(session, ct).ConfigureAwait(false);
+        await MaybeApplyConfigOptionsAsync(session, ct).ConfigureAwait(false);
 
         // A cancel that arrived between the spawn and here has nothing to cancel yet; now
         // that a session exists, honour it instead of prompting into a stop already asked for.
@@ -484,28 +485,37 @@ public sealed class AcpClient
     }
 
     /// <summary>
-    /// OpenCode ACP defaults every session to <c>opencode/big-pickle</c> and
-    /// ignores <c>opencode.json</c> (measured 2026-08-16: session/new returns
-    /// that as <c>configOptions.model.currentValue</c> and then never turns).
-    /// ACP <c>session/set_config_option</c> is the pin. No-op when the profile
-    /// named no model, or the agent did not advertise that value.
+    /// ACP <c>session/set_config_option</c> for each pair on the profile that
+    /// this session advertised as a select listing that exact value. OpenCode
+    /// ACP is why this exists: it defaults every session to
+    /// <c>opencode/big-pickle</c> and ignores <c>opencode.json</c> (measured
+    /// 2026-08-16). An unadvertised key, or a value the agent did not list, is
+    /// skipped — not an error, and not a guess. Sequential on purpose: one
+    /// pin can change the remaining options, so each call refreshes the
+    /// advertisement used by the next.
     /// </summary>
-    private async Task MaybePinModelAsync(string sessionId, CancellationToken ct)
+    private async Task MaybeApplyConfigOptionsAsync(string sessionId, CancellationToken ct)
     {
-        if (_request.Model is not { Length: > 0 } model)
-            return;
-        if (_lastSessionResult is not { } result || !AdvertisesSelectValue(result.Value, "model", model))
+        if (_request.ConfigOptions is not { Count: > 0 } wanted)
             return;
 
-        await RequestAsync(
-            "session/set_config_option",
-            w =>
-            {
-                w.WriteString("sessionId", sessionId);
-                w.WriteString("configId", "model");
-                w.WriteString("value", model);
-            },
-            ct).ConfigureAwait(false);
+        foreach (var (configId, value) in wanted)
+        {
+            if (string.IsNullOrWhiteSpace(configId) || string.IsNullOrWhiteSpace(value))
+                continue;
+            if (_lastSessionResult is not { } result || !AdvertisesSelectValue(result.Value, configId, value))
+                continue;
+
+            _lastSessionResult = await RequestAsync(
+                "session/set_config_option",
+                w =>
+                {
+                    w.WriteString("sessionId", sessionId);
+                    w.WriteString("configId", configId);
+                    w.WriteString("value", value);
+                },
+                ct).ConfigureAwait(false);
+        }
     }
 
     private static bool AdvertisesSelectValue(JsonElement session, string configId, string value)
@@ -1296,6 +1306,10 @@ public sealed class AcpClient
 /// </param>
 /// <param name="McpServers">The plane's MCP server, translated from the generated config.</param>
 /// <param name="ResumeSessionRef">§11: the session to <c>session/load</c>, when the plane has one.</param>
+/// <param name="ConfigOptions">
+/// <c>profiles[].config_options</c>: ACP <c>session/set_config_option</c> pins,
+/// sent only when this session advertised the <c>configId</c> and the value.
+/// </param>
 public sealed record AcpSessionRequest(
     string WorkDir,
     string Prompt,
@@ -1303,7 +1317,7 @@ public sealed record AcpSessionRequest(
     IReadOnlyList<AcpMcpServer> McpServers,
     string? ResumeSessionRef = null,
     string? AuthMethod = null,
-    string? Model = null);
+    IReadOnlyDictionary<string, string>? ConfigOptions = null);
 
 /// <summary>One MCP server as ACP's <c>session/new</c> wants it: HTTP, named, with headers.</summary>
 /// <summary>What the agent is asking the plane to decide.</summary>

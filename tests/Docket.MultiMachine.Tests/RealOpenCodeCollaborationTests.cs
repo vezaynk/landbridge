@@ -129,7 +129,7 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
             prompt: SlowWorkerPrompt,
             followUp: profile.FollowUpTurn,
             stop: new StopConfig(WindDown: TimeSpan.FromSeconds(5)),
-            model: profile.Model);
+            configOptions: profile.ConfigOptions);
         await rig.StartAsync(ct);
         using var config = profile.AttachTo(rig);
         await rig.AddMachineAsync("A");
@@ -194,7 +194,7 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
             spawnArgv: openCode.AcpSpawn,
             prompt: openCode.EchoPrompt,
             followUp: openCode.FollowUpTurn,
-            model: openCode.Model);
+            configOptions: openCode.ConfigOptions);
         await rig.StartAsync(ct);
         using var config = openCode.AttachTo(rig);
 

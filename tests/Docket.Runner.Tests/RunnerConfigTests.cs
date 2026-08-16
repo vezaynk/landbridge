@@ -221,6 +221,36 @@ public class RunnerConfigTests
         Assert.Null(config.Default.MaxConcurrent);
         Assert.Empty(config.Default.Env);
         Assert.Empty(config.Default.Files);
+        Assert.Empty(config.Default.ConfigOptions);
+    }
+
+    [Fact]
+    public void Config_options_are_the_set_config_option_pins()
+    {
+        var config = RunnerConfig.Load(AcpProfile(extra: """
+            "config_options": { "model": "anthropic/claude-haiku-4-5-20251001", "mode": "code" },
+            """));
+
+        Assert.Equal("anthropic/claude-haiku-4-5-20251001", config.Default.ConfigOptions["model"]);
+        Assert.Equal("code", config.Default.ConfigOptions["mode"]);
+    }
+
+    [Fact]
+    public void Config_options_refuse_an_empty_key_or_value()
+    {
+        Assert.False(RunnerConfig.TryLoad(
+            AcpProfile(extra: """
+            "config_options": { "": "x" },
+            """),
+            out _, out var emptyKey));
+        Assert.Contains(emptyKey, e => e.Contains("config_options") && e.Contains("empty key"));
+
+        Assert.False(RunnerConfig.TryLoad(
+            AcpProfile(extra: """
+            "config_options": { "model": "" },
+            """),
+            out _, out var emptyValue));
+        Assert.Contains(emptyValue, e => e.Contains("config_options") && e.Contains("empty value"));
     }
 
 
