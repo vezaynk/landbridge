@@ -142,7 +142,7 @@ The failure you are hunting is the quiet one — a machine that heartbeats, read
 
 **Run `docketd` in the foreground for this, or tail its journal.** Its stdout is the only place several of these failures appear at all. On start it prints one line — `docketd up: machine=… profiles=[…] strays_reaped=… control=…`. A config that does not parse never gets that far; `docketd` prints the error and exits non-zero before it connects. Set `logs.capture: true` on every profile you are about to check; the transcript is the only place a fast crash explains itself.
 
-**Walk the list in the config, one profile at a time.** For `default`, the plane can mint the dummy set (next section), or the human's Lead can `create_session` and omit `profile`. For every other name, the dummy set will not hit it — have the Lead `create_session(profile: <the exact name>)`. "Report this machine's hostname and working directory" is enough. Then follow that session:
+**Walk the list in the config, one profile at a time.** For each name, mint the dummy set against that profile (next section). Then follow that run:
 
 | Watch | Where | Healthy |
 |---|---|---|
@@ -170,18 +170,21 @@ Two things you cannot verify by hand, so do not claim them either way: whether t
 
 **Failures here are configuration bugs, and they are worth fixing carefully rather than working around.** Fix the config, restart `docketd`, and run the check again — remembering that a restart kills every agent on this machine, and that the file is not re-read in place.
 
-## Profile check — dummy sessions from the plane (`default` only)
+## Profile check — dummy sessions from the plane
 
-The control plane will mint a fixed set of dummy sessions aimed at `default` and expose their states. This is the stand-in for the unbuilt §11 conformance run, and **only for `default`**. It does **not** judge the answers — a session that reaches `verifying` is a worker that called `report_result`. A report keeps the process. It does not exercise any other profile you declared.
+The control plane will mint a fixed set of dummy sessions aimed at **one profile you name** and expose their states. This is the stand-in for the unbuilt §11 conformance run. It does **not** judge the answers — a session that reaches `verifying` is a worker that called `report_result`. A report keeps the process. One POST is one profile; walk the config and POST once per name.
 
-After `docketd` is up and `default` is on the Machine Group badges, have the human (operator session, not a Lead token) start a run:
+After `docketd` is up and the name is on this machine's badges, have the human (operator session, not a Lead token) start a run. `profile` is the exact string from the runner config. Omit it (or send empty) only for `default`:
 
 ```
 POST /dashboard/conformance
 Origin: <the plane's own origin>
+Content-Type: application/json
+
+{ "profile": "<exact name>" }
 ```
 
-A browser can do the same from `/dashboard/conformance`. Same-origin only, human-only (a Lead token is 403). The sessions are always aimed at `default`. The response is `201` with a `runId`, a `progressUrl`, how many connected machines currently declare `default` (`machinesDeclaring`), and the three sessions:
+A browser can do the same from `/dashboard/conformance` — the form has a profile field. Same-origin only, human-only (a Lead token is 403). The response is `201` with a `runId`, a `progressUrl`, how many connected machines currently declare that profile (`machinesDeclaring`), and the three sessions:
 
 | kind | What the worker must do |
 |---|---|
@@ -197,7 +200,7 @@ GET /dashboard/conformance/{runId}?format=json
 
 `workerDone` is true when every session is `verifying` or `completed` and none failed. `pending` includes `submitted` (no machine claimed it — usually the profile name is not on a heartbeat yet) and `working`. `failed` is `canceled`, `rejected`, or `Failed` (infrastructure gave up). A `machinesDeclaring` of `[]` with sessions stuck in `submitted` is the restart-the-daemon miss from above.
 
-Do not skip the kill-path check above because the dummy set reached `verifying`. Dummy sessions never exercise `stop`. When you are done, `park_session` or accept each dummy — or those workers keep the machine. Then go back and `create_session(profile: …)` for every other name in the config.
+Do not skip the kill-path check above because the dummy set reached `verifying`. Dummy sessions never exercise `stop`. When you are done, `park_session` or accept each dummy — or those workers keep the machine. Then POST again with the next name in the config.
 
 > **Future work (spec §11).** The conformance run automates the above and goes past it: per declared profile, the control plane would judge event attribution by session id, heartbeat cadence against the config, two concurrent sessions tracked independently, `stop` acknowledgement (and message delivery demonstrably reaching the agent as a turn), `TTL=0` killing one process while its sibling survives, a relay forward round-tripping and its listener closing on release, an approval-prone session completing without hanging, and a parked session resuming from its recorded directory with context intact — admitting the machine as `ready` on a pass, or leaving it registered-but-unclaimable with the failing step named. None of that exists yet. The manual per-profile pass above is its stand-in, not a preview of it.
 

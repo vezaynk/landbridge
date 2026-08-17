@@ -950,11 +950,15 @@ internal static class DashboardRenderer
     {
         var sb = new StringBuilder();
         sb.Append("<h1>Profile check</h1>");
-        sb.Append("<p class=\"sub\">Mint dummy tasks aimed at <span class=\"mono\">default</span>. " +
+        sb.Append("<p class=\"sub\">Mint dummy sessions aimed at one profile. " +
                   "A worker that reaches <span class=\"mono\">verifying</span> called " +
                   "<span class=\"mono\">report_result</span> — the plane does not judge the answers. " +
-                  "Any ready machine that declares <span class=\"mono\">default</span> may claim them.</p>");
-        sb.Append("<form class=\"card\" method=\"post\" action=\"/dashboard/conformance\">");
+                  "Any ready machine that declares that name may claim them.</p>");
+        sb.Append("<form class=\"card conformance-start\" method=\"post\" action=\"/dashboard/conformance\">");
+        sb.Append("<label for=\"profile\">Profile</label>");
+        sb.Append($"<input id=\"profile\" type=\"text\" name=\"profile\" value=\"{E(MachineSnapshot.DefaultProfile)}\" " +
+                  "class=\"mono\" spellcheck=\"false\" autocomplete=\"off\">");
+        sb.Append("<p class=\"nt\">Exact name from the runner config. Empty is <span class=\"mono\">default</span>.</p>");
         sb.Append("<button type=\"submit\">Start check</button>");
         sb.Append("</form>");
         return Page("Profile check", "conformance", sb.ToString(), autoRefresh: false);

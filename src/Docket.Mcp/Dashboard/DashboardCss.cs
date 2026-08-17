@@ -120,6 +120,15 @@ internal static class DashboardCss
       background: var(--bad); color: var(--accent-ink); font: inherit; font-weight: 600; cursor: pointer;
     }
     /* Login */
+    .conformance-start label { display: block; font-weight: 600; margin-bottom: 6px; }
+    .conformance-start input[type=text] {
+      width: 100%; max-width: 280px; padding: 8px 10px; border: 1px solid var(--line);
+      border-radius: 6px; background: var(--bg); color: var(--ink); font: inherit;
+    }
+    .conformance-start button {
+      margin-top: 12px; padding: 6px 12px; border: none; border-radius: 6px;
+      background: var(--accent); color: var(--accent-ink); font: inherit; font-weight: 600; cursor: pointer;
+    }
     .login-wrap { max-width: 420px; margin: 8vh auto; }
     .login-wrap input[type=text], .login-wrap input[type=password] {
       width: 100%; padding: 10px; border: 1px solid var(--line);
