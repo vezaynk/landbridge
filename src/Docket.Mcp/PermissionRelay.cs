@@ -5,7 +5,7 @@ namespace Docket.Mcp;
 
 /// <summary>
 /// The shared §11 permission-bridge body: open a typed permission request on
-/// the incumbent's task, then wait for a Lead or human verdict. Both the MCP
+/// the incumbent's session, then wait for a Lead or human verdict. Both the MCP
 /// <c>request_permission</c> tool (legacy harness hook) and
 /// <c>POST /worker/permission</c> (ACP <c>session/request_permission</c>) run
 /// this, so the two transports cannot disagree about what a decision means.
@@ -37,7 +37,7 @@ public static class PermissionRelay
         if (outcome is null)
             return PermissionRelayResult.Denied(
                 "Nobody answered this permission request in time, so Docket stopped waiting and "
-                + "the task was parked for a person to pick up. Stop here: do not retry the call "
+                + "the session was parked for a person to pick up. Stop here: do not retry the call "
                 + "and do not work around it.");
 
         return outcome.Verdict == PermissionVerdict.Allow
