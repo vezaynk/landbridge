@@ -55,10 +55,12 @@ public sealed class ForwardTeardownTests(PostgresFixture pg) : IAsyncLifetime
                 new WorkerCaller(team, consumer.Task, consumer.Instance), ServiceName));
         Assert.Equal(producer.Task, issued.Producer);
 
-        // The producer reports and leaves working. Nothing is killed here — this is the
-        // transition where the splice used to simply carry on.
+        // The producer reports (process stays) then the Lead accepts — that is
+        // what tears the splice down.
         Assert.IsType<StoreResult.Applied>(await NewStore(db, clock, rig).ApplyAsync(
             producer.Task, new ReportResult(new WorkerCaller(team, producer.Task, producer.Instance), "ref")));
+        Assert.IsType<StoreResult.Applied>(await NewStore(db, clock, rig).ApplyAsync(
+            producer.Task, new VerdictAccept(new LeadClaim(team))));
 
         var forwardId = issued.ForwardId.ToString();
         var closes = rig.Closes;

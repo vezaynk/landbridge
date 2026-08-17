@@ -361,6 +361,23 @@ internal static class DashboardRenderer
         }
         sb.Append("</section>");
 
+        sb.Append("<section><h2>Failed — infrastructure gave up</h2>");
+        if (inbox.Failed.Count == 0)
+            sb.Append(Empty("No failed attempts."));
+        else
+        {
+            sb.Append("<p class=\"nt\">The plane parked these. They do not requeue. Resume is a Lead note " +
+                      "(<code>answer_input_request</code>) if the reason looks flaky.</p>");
+            sb.Append("<table><thead><tr><th>Namespace</th><th>Team</th><th>Reason</th>" +
+                      "<th class=\"num\">Losses</th></tr></thead><tbody>");
+            foreach (var f in inbox.Failed)
+                sb.Append($"<tr><td><code>{E(f.Namespace)}</code></td><td>{TeamLink(f.TeamId)}</td>" +
+                          $"<td>{E(f.Reason?.ToString() ?? "—")}</td>" +
+                          $"<td class=\"num\">{f.InfrastructureRequeues}</td></tr>");
+            sb.Append("</tbody></table>");
+        }
+        sb.Append("</section>");
+
         // The runner's own auth-failure facts (§11, #50), for the tasks still live enough
         // for a person to help: a missing scope is granted by a human, never by the worker
         // retrying. Repeat attempts at the same thing arrive as one row each and are
@@ -1041,6 +1058,11 @@ internal static class DashboardRenderer
             parts.Add($"<span class=\"nt\">blocked {E(Age(t.BlockedAt, now))}</span>");
         else if (t.State == TaskState.Parked && t.ParkMachine is not null)
             parts.Add($"<span class=\"nt\">parked on <span class=\"mono\">{E(t.ParkMachine)}</span></span>");
+        else if (t.State == TaskState.Failed)
+            parts.Add($"<span class=\"nt\">failed" +
+                      (t.LastRequeueReason is { } why ? $", {E(why.ToString())}" : "") +
+                      (t.InfrastructureRequeues > 0 ? $" ({t.InfrastructureRequeues})" : "") +
+                      "</span>");
         // §9 check 4: who adjudicated a completed task — lead-session or human.
         else if (t.State == TaskState.Completed && t.CompletionProvenance is { } who)
             parts.Add($"<span class=\"nt\">accepted by {E(ProvenanceLabel(who))}</span>");

@@ -274,8 +274,12 @@ public sealed class ContinuationDispatchTests(PostgresFixture pg) : IAsyncLifeti
         await using (var stamp = pg.NewContext())
             await NewStore(stamp).StampHarnessSessionRefAsync(task, "sess-park");
         await using (var requeue = pg.NewContext())
+        {
+            var store = NewStore(requeue);
             Assert.IsType<StoreResult.Applied>(
-                await NewStore(requeue).ApplyAsync(task, new LivenessLost(LivenessLossReason.ProcessExited)));
+                await store.ApplyAsync(task, new LivenessLost(LivenessLossReason.ProcessExited)));
+            Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(task, new WakeParked()));
+        }
 
         await using var redispatch = pg.NewContext();
         var second = Assert.IsType<StoreResult.Applied>(

@@ -52,7 +52,7 @@ internal static class ConformanceCatalog
     {
         TaskState.Verifying => "verifying",
         TaskState.Completed => "completed",
-        TaskState.Rejected or TaskState.Canceled => "failed",
+        TaskState.Rejected or TaskState.Canceled or TaskState.Failed => "failed",
         _ => "pending",
     };
 }

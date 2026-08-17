@@ -105,11 +105,11 @@ become explicit — a message carries an authorship class, and a verdict is only
 a Lead or human author. Spec §2's note that this "holds structurally regardless of who is
 watching" is exactly what must not weaken.
 
-**The requeue cap (§9 check 7).** Today the infrastructure counter counts *dispatches*. A
-session that never redispatches has no natural counter, so a wedged session could be
-nursed forever by follow-up messages. The cap needs re-expressing — most likely as
-recoveries (process deaths the plane recovered from), which is the same thing the counter
-was really measuring.
+**The requeue cap (§9 check 7).** *Decided, 2026-08-16:* there is no automatic requeue.
+Infrastructure giving up (`LivenessLost`) parks the attempt as `Failed` with a
+plane-authored reason. The counter is observability, not a loop. Resume is the Lead's
+(`WakeParked` / `answer_input_request` with a note → `session/load`). A fail verdict is
+`Rejected`, not a retry.
 
 **Liveness.** Today: process-alive plus a progress clock, with liveness suspended while
 blocked. A held-idle session is a third state the clocks have never had to represent —
@@ -125,13 +125,13 @@ ACP dispatch to go quiet simply hung — measured 2026-08-16, twice, once per ag
 the *fourth* state named, not the third: a turn ended in `working` is a fault, a session
 held idle awaiting input is not, and only the first requeues.
 
-**Concurrency.** `max_concurrent` counts dispatched tasks. Under indefinite holding, a fleet
-where many sessions await humans consumes every seat while doing nothing. Sessions awaiting
-input must either not count, or count against a separate ceiling.
+**Concurrency.** *Decided:* do not prescribe `max_concurrent`. Back-pressure is what
+`docketd` observes (memory/disk/load). Waiting sessions may occupy seats; `park_task` is
+how a Lead frees one.
 
-**Token lifetime.** The worker-instance token dies with the instance (§9 check 14), and the
-park path explicitly revokes it. A session held across a long wait keeps its credential live
-for that whole period, which is a real change in exposure and should be a deliberate one.
+**Token lifetime.** *Decided:* the token lives with the instance. Revoke on park, fail,
+cancel, kill, or process exit. A session held idle still holds its credential; that is
+deliberate and ends when the Lead parks or the process dies.
 
 ## Staged ladder
 
@@ -157,9 +157,29 @@ redispatches. ACP `session/request_permission` routes through
 `POST /worker/permission` onto the existing permission tools. A turn that
 ends while a question is pending is idle, not `TurnEndedWithoutResult`.
 
-**Stage 3 — the session becomes the record.** Message history persisted; session states
-replace task states; migrations; dashboard reoriented. **This is where the properties above
-get re-derived**, and it is the stage that deserves its own design pass.
+**Stage 3 — fail is a park, a report is not a yield.** *Implemented on the task model,
+2026-08-16 — the domain is not renamed yet.* The decisions that were blocking the
+rename, recorded here so the rename does not reopen them:
+
+- **`Failed` is a park the Lead did not ask for.** Handshake flake, process death, silent
+  machine, turn ended with no report: token revoked, process gone, workspace kept,
+  plane-authored reason, inbox. Not terminal. No auto-requeue.
+- **Resume is `WakeParked` with a note** (`answer_input_request` → `session/load`). The
+  Lead decides whether the reason was flaky.
+- **A report keeps the process.** `working → verifying` does not revoke the token or
+  clear services. The Lead accepts (`Completed`), replies (`LeadMessage` → `working`),
+  parks, or fails (`Rejected` — no retry loop).
+- **Review mode trusts the Lead.** The plane will not refuse a Lead accept. Escalate
+  when the evidence is a person's to own.
+- **New work is a new session.** A rejected assignment is done. More from the same
+  worker is a reply, not a fail-and-redispatch.
+- **ACP client offers protocol 1 only.** Hand-rolled client stays; do not advertise v2.
+- **`session/load` is machine-local** (#175). Work-dir GC is skill advice. Spend is
+  observability plus the provider key's own limits.
+
+The domain rename (session states, migrations, dashboard reoriented around conversation)
+is still ahead of this file's original stage-3 sentence. The engine now behaves as if
+the session were the record.
 
 **Stage 4 — the Lead can talk back.** A rejection becomes a message rather than a
 continuation task. Requires the doer/judge authorship rule from stage 3 to already hold.
@@ -173,14 +193,12 @@ on next invocation, replacing the park/redispatch path entirely.
 
 ## Open questions
 
-- **Does a session span more than one piece of work?** If a Lead can keep talking to a
-  worker, the boundary that made a task a unit of accountability becomes a convention rather
-  than a mechanism. Something has to say when a session is *done* — otherwise long-lived
-  sessions accumulate context until they hit the window and get worse at their jobs.
-- **What closes a session?** `session/close` is declared by every measured agent. Completion
-  is the obvious trigger; cancellation is the other. An idle session that will never be
-  spoken to again is `park_task`: `session/cancel`, token revoked, later wake is
-  `session/load`.
+- **Does a session span more than one piece of work?** *Decided:* no. New work is a new
+  session. A Lead reply on a live report is the same assignment continuing, not a second
+  piece of work. A fail or accept ends it.
+- **What closes a session?** `park_task` / accept / fail / cancel: `session/cancel`, token
+  revoked. Later wake of a park or fail is `session/load`. An idle session you will not
+  speak to again is a leak — park it.
 - **Does the §7 profile still describe how to *launch*?** Under sessions it increasingly
   describes how to *reach* — which is a different thing, and may want a different key than
   `spawn`.

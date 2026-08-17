@@ -38,8 +38,9 @@ profile is invisible until you restart the daemon. The next heartbeat is what
 publishes the new names to the Machine Group — the only channel the plane uses
 for routing. Until that beat lands, a task aimed at a new name sits in
 `Submitted` with `Attempt` at 0, the same quiet failure as a typo. A restart
-kills every agent on this machine and their tasks requeue; that is the cost of
-a profile change, not a bug. Say so to the human before they edit a live box.
+kills every agent on this machine and their tasks fail (parked, waiting on the
+Lead); that is the cost of a profile change, not a bug. Say so to the human
+before they edit a live box.
 
 ## Wiring the docket MCP server
 
@@ -122,8 +123,8 @@ fires. That is a harness or prompt problem, not a mapping problem.
 
 `telemetry.otel` is still visibility rather than metering — see `docs/TELEMETRY.md`.
 `subagent-spawned` has no producer. The short aliveness window is satisfied by
-`docketd`'s own `alive` heartbeat; the no-progress ceiling is what requeues a
-worker that never emits a tool call.
+`docketd`'s own `alive` heartbeat; the no-progress ceiling is what fails a
+worker that never emits a tool call (the Lead then decides whether to resume).
 
 ## Registering the daemon — hand this to the human
 
@@ -156,10 +157,10 @@ Both views take `?format=json` if you would rather read them structured — the 
 The failures worth naming, and what each really looks like:
 
 - **Nothing dispatches: the task sits in `Submitted` with `Attempt` at 0.** No reason is surfaced anywhere — this is the quietest failure in the system. It is a profile-name mismatch (exact string equality; check the spelling against the badges the machine actually published), or the machine is not `ready`, or it never connected. A machine that is not connected does not show as offline; it is absent from `/dashboard/machines` entirely.
-- **Wrong `spawn` argv, or the harness binary is not on `docketd`'s `PATH`.** `docketd` prints `command handler threw: …` on its own stdout and nothing else happens — no event, no row, no change on any page. The task stays `Working` until the per-task liveness window (60s) expires and requeues it, and the requeue record says nothing about the spawn. An unwritable `work_root` surfaces identically, since `docketd` creates the work dir (and writes `mcp.json` when the profile names `{mcp_config}`). **If a task requeues with no explanation, read `docketd`'s stdout before anything else.**
-- **The harness starts and exits immediately** — a rejected flag, a permission mode managed settings forbid, a missing credential. The exit code rides the `exited` event but is stored and displayed nowhere, so a fast crash is indistinguishable from a hang: same liveness timeout, same requeue. Set `logs.capture: true` on `default`; the transcript is the only place the reason exists.
+- **Wrong `spawn` argv, or the harness binary is not on `docketd`'s `PATH`.** `docketd` prints `command handler threw: …` on its own stdout and nothing else happens — no event, no row, no change on any page. The task stays `Working` until the per-task liveness window (60s) expires and fails it (`Failed`, last reason `LivenessTimeout`), and that record says nothing about the spawn. An unwritable `work_root` surfaces identically, since `docketd` creates the work dir (and writes `mcp.json` when the profile names `{mcp_config}`). **If a task fails with no explanation, read `docketd`'s stdout before anything else.**
+- **The harness starts and exits immediately** — a rejected flag, a permission mode managed settings forbid, a missing credential. The exit code rides the `exited` event but is stored and displayed nowhere, so a fast crash is indistinguishable from a hang: same liveness timeout, same `Failed`. Set `logs.capture: true` on `default`; the transcript is the only place the reason exists.
 - **The worker cannot authenticate to the plane.** Do not wait for an `auth-failed` event. The plane can record one, but `docketd` never emits one, so none will arrive. A rejected worker token appears as a 401 inside the harness's own output and `report_result` simply never lands — the transcript again.
-- **`Attempt` climbing on its own.** The task is being dispatched, failing, and redispatched. Infrastructure requeues are capped (5 by default), so this does not run forever: at the cap the task is abandoned as `canceled` — not `rejected`, since nothing is wrong with the work — with the reason that reclaimed it on the record and the workspace left intact. Read that reason, not the attempt count.
+- **`Failed` after one attempt.** The plane does not requeue. Handshake flakes, spawn failures, and dead processes land as `Failed` with a plane-authored reason and wait for the Lead. If you see `Attempt` climbing, a Lead is resuming those failures on purpose — read the last reason, not the count.
 
 **Then test the kill path, and do not skip it because dispatch worked.** Have the human cancel the task mid-flight (`cancel_task`, disposition `preserve`) and confirm the process is actually gone — that is the assertion that matters, and it holds on every profile. A machine that dispatches but cannot be stopped looks fine right up until someone needs to stop a runaway agent — the worst possible moment to find out.
 
@@ -194,7 +195,7 @@ Poll progress:
 GET /dashboard/conformance/{runId}?format=json
 ```
 
-`workerDone` is true when every task is `verifying` or `completed` and none failed. `pending` includes `submitted` (no machine claimed it — usually the profile name is not on a heartbeat yet) and `working`. `failed` is `canceled` or `rejected`. A `machinesDeclaring` of `[]` with tasks stuck in `submitted` is the restart-the-daemon miss from above.
+`workerDone` is true when every task is `verifying` or `completed` and none failed. `pending` includes `submitted` (no machine claimed it — usually the profile name is not on a heartbeat yet) and `working`. `failed` is `canceled`, `rejected`, or `Failed` (infrastructure gave up). A `machinesDeclaring` of `[]` with tasks stuck in `submitted` is the restart-the-daemon miss from above.
 
 Do not skip the kill-path check above because the dummy set reached `verifying`. Dummy tasks never exercise `stop`.
 
@@ -206,7 +207,7 @@ Nothing about this setup is meant to be hand-maintained. Re-running this flow �
 
 Spec §11 also wants the config stamped with the version of this skill, so the control plane can flag stale machines for a re-run. **That does not exist**: nothing writes a version, nothing serves one, and a `skill_version` key added by hand is silently dropped when the config parses. Until it lands, a machine's config is only as current as whoever last re-ran this — so when you notice a config written against older guidance, say so to the human rather than assuming the plane will catch it.
 
-Note that `docketd` keeps no state a restart would try to reconcile: no task ledger, no process re-adoption. If it restarts, every agent on this machine is killed and their tasks requeue — that is deliberate, not a fault. On start it also kills any stray harness processes it finds, which is what makes the guarantee survive an unclean shutdown. The state dir is the exception, and a narrow one: it holds the machine credentials and, where capture is on, the transcripts, which must outlive both a task teardown and a restart.
+Note that `docketd` keeps no state a restart would try to reconcile: no task ledger, no process re-adoption. If it restarts, every agent on this machine is killed and their tasks fail (`Failed`) — that is deliberate, not a fault. On start it also kills any stray harness processes it finds, which is what makes the guarantee survive an unclean shutdown. The state dir is the exception, and a narrow one: it holds the machine credentials and, where capture is on, the transcripts, which must outlive both a task teardown and a restart.
 
 ## A note on what this machine is
 

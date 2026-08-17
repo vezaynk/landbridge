@@ -200,9 +200,9 @@ All four measured agents also declare `sessionCapabilities` well beyond the base
 `additionalDirectories`. Nothing here uses them yet; a §11 fork/chain is the obvious future
 customer.
 
-Two things to take from the table. **Every agent negotiates protocol version 1**, not 2 —
-so 1 is what this client actually speaks, and negotiating it is deliberately not warned
-about (a warning that fires on every task is one an operator learns to skip). And
+Two things to take from the table. **Every agent negotiates protocol version 1**, and
+that is what this client offers — not 2, which would claim v2 shapes we do not
+speak. And
 `@zed-industries/claude-code-acp` is **deprecated**, renamed to
 `@agentclientprotocol/claude-agent-acp`; use the new one, which is also the only agent that
 needed no interactive login.

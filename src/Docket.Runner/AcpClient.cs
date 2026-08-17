@@ -57,25 +57,19 @@ namespace Docket.Runner;
 public sealed class AcpClient
 {
     /// <summary>
-    /// The protocol MAJOR version this client speaks. The spec requires the client to send
-    /// the latest it supports and the agent to answer with the same value or its own
-    /// latest; <see cref="NegotiatedProtocolVersion"/> records what came back, and a
-    /// downgrade is reported rather than treated as fatal — an older agent that still
-    /// answers <c>session/new</c> is more useful than a refused dispatch.
+    /// The protocol MAJOR version this client speaks. Every shipping agent measured
+    /// on 2026-08-15 — <c>claude-agent-acp</c> 0.68.0, <c>codex-acp</c> 1.3.0,
+    /// <c>opencode</c> 1.18.18 — answers <b>1</b>, and this client implements the
+    /// v1 methods (<c>session/new</c>, <c>session/load</c>, <c>session/prompt</c>,
+    /// <c>session/update</c>, <c>session/cancel</c>, <c>session/request_permission</c>,
+    /// <c>session/set_config_option</c>). Offering 2 would claim v2 shapes we do
+    /// not speak. <see cref="NegotiatedProtocolVersion"/> records what came back.
     /// </summary>
-    public const int LatestProtocolVersion = 2;
+    public const int LatestProtocolVersion = 1;
 
     /// <summary>
-    /// The oldest version this client can hold a session over. Every shipping agent
-    /// measured on 2026-08-15 — <c>claude-agent-acp</c> 0.68.0, <c>codex-acp</c> 1.3.0,
-    /// <c>opencode</c> 1.18.18 — negotiates <b>1</b>, so 1 is the version this actually
-    /// speaks in practice and must not be treated as a degradation. The spec still requires
-    /// the client to <em>offer</em> its latest, which is why
-    /// <see cref="LatestProtocolVersion"/> is what goes on the wire; the methods this client
-    /// uses (<c>session/new</c>, <c>session/load</c>, <c>session/prompt</c>,
-    /// <c>session/update</c>, <c>session/cancel</c>, <c>session/request_permission</c>,
-    /// <c>session/set_config_option</c>) are
-    /// common to both, so anything in this range is silently fine.
+    /// The oldest version this client can hold a session over. Same as
+    /// <see cref="LatestProtocolVersion"/>: this is a v1 client.
     /// </summary>
     public const int OldestProtocolVersion = 1;
 

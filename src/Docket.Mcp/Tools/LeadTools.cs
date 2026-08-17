@@ -88,13 +88,13 @@ public sealed class LeadTools(
         [Description("Opaque, non-empty prose instructions for the worker: what to accomplish and the " +
                      "context to meet the criteria. Read by the worker, never parsed by the control plane.")]
         string description,
-        [Description("Opaque, non-empty completion criteria. In lead mode you (the Lead) judge it — gather " +
-                     "your own evidence (run the suite, check CI) before accepting; in review mode a person " +
-                     "reads it. Never parsed by the control plane.")]
+        [Description("Opaque, non-empty completion criteria. You judge it — gather your own evidence " +
+                     "(run the suite, check CI) before accepting. In review mode a person should own the " +
+                     "judgment; escalate rather than waving it through. Never parsed by the control plane.")]
         string completionCriteria,
-        [Description("Completion mode: 'lead' (default — the Lead session's verdict completes the task, no " +
-                     "human confirmation) or 'review' (a human confirms the verdict). A task's own worker can " +
-                     "never complete it either way.")]
+        [Description("Completion mode: 'lead' (default — you adjudicate) or 'review' (a person should own " +
+                     "the judgment; escalate to them, the plane will not refuse your accept). A task's own " +
+                     "worker can never complete it either way.")]
         string? mode = null,
         [Description("Optional runner profile name for exact-match routing. Omit for the default profile. " +
                      "Call list_profiles first if you are setting this — a name no machine declares makes " +
@@ -218,11 +218,11 @@ public sealed class LeadTools(
 
     [McpServerTool(Name = "park_task"),
      Description("Release a live ACP session on purpose. The worker is cancelled and the task " +
-                 "parks; it is not a timer. Use this to free the machine. Answering a still-live " +
-                 "wait is answer_input_request, not this. Wake later is session/load (or a " +
-                 "follow-up prompt if the process is somehow still up).")]
+                 "parks; it is not a timer. Use this to free the machine when the work is done " +
+                 "waiting, including after a report you are not ready to accept. Answering a " +
+                 "still-live wait is answer_input_request, not this. Wake later is session/load.")]
     public async Task<string> ParkTask(
-        [Description("The working or blocked task to park.")] string taskId,
+        [Description("The working, blocked, or verifying task to park.")] string taskId,
         CancellationToken ct)
     {
         var id = ParseTaskId(taskId);
@@ -239,14 +239,14 @@ public sealed class LeadTools(
     }
 
     [McpServerTool(Name = "answer_input_request"),
-     Description("Talk to a live worker, or answer a question it asked. Read first with get_task_question. " +
-                 "Pass your words as 'answer' — that text is the only thing the worker receives, and " +
-                 "without it the worker comes back knowing it was unblocked but not with what, so it " +
-                 "guesses or asks again. A still-live ACP session gets a follow-up prompt and stays on " +
-                 "the same instance (a pending question, or an unsolicited follow-up); a dead session " +
-                 "(or a parked task) is redispatched with its transcript resumed.")]
+     Description("Talk to a live worker, answer a question it asked, reply to a report, or resume a " +
+                 "failed attempt with a note. Read first with get_task_question / get_task_report. " +
+                 "Pass your words as 'answer' — that text is the only thing the worker receives. A " +
+                 "still-live ACP session (working or verifying) gets a follow-up prompt and stays on " +
+                 "the same instance; a dead session, a parked task, or a failed attempt is " +
+                 "redispatched with its transcript resumed.")]
     public async Task<string> AnswerInputRequest(
-        [Description("The task id that is blocked on input (or already parked).")]
+        [Description("The task id that is blocked, verifying, parked, or failed.")]
         string taskId,
         [Description("Your answer, in prose: the decision, and enough of why for the worker to apply it to cases " +
                      "you did not enumerate. It reaches the worker on its next get_task. Capped at 16 KB; " +
@@ -334,16 +334,16 @@ public sealed class LeadTools(
     }
 
     [McpServerTool(Name = "submit_review"),
-     Description("Adjudicate a task in verifying (§7, §9 check 4). In LEAD mode your verdict completes the " +
-                 "task on its own — so gather your own evidence first (run the suite, check CI, re-verify the " +
-                 "worker's claims); accept carefully, reject freely. In REVIEW mode the verdict MUST carry " +
-                 "human confirmation (pass humanConfirmed=true only when a human actually confirmed). Either " +
-                 "way a task's own worker can never complete it.")]
+     Description("Adjudicate a task in verifying (§7, §9 check 4). Your verdict completes the task in " +
+                 "either mode — gather your own evidence first (run the suite, check CI, re-verify the " +
+                 "worker's claims); accept carefully. Fail rejects the assignment (no retry loop). If you " +
+                 "want more from this worker, answer_input_request with a note instead of failing. A " +
+                 "task's own worker can never complete it.")]
     public async Task<string> SubmitReview(
         [Description("The task id in verifying.")] string taskId,
-        [Description("The verdict: 'accept' or 'fail'. Rejection is never gated — reject cheaply.")] string verdict,
-        [Description("Review mode only: whether a human confirmed this accept (e.g. via an elicitation " +
-                     "prompt). Ignored in lead mode; without it a review task cannot complete (§7).")]
+        [Description("The verdict: 'accept' or 'fail'. Fail rejects; it does not redispatch.")] string verdict,
+        [Description("Ignored. Review mode trusts the Lead to escalate to a human when the evidence is " +
+                     "theirs to own. Kept so older callers still bind.")]
         bool humanConfirmed = false,
         CancellationToken ct = default)
     {
@@ -364,7 +364,7 @@ public sealed class LeadTools(
                  "(flags) plus input_kind (the typed kind of request it is waiting on), and you fetch " +
                  "the text deliberately with get_task_report / get_task_question, one item at a time. " +
                  "This is the reattachment surface after a session ends or a takeover, and the poll " +
-                 "that tells you which tasks are blocked waiting on you. Also reports which " +
+                 "that tells you which tasks are blocked, verifying, or failed waiting on you. Also reports which " +
                  "machine you have bound as your human's own (bound_machine, null if none) — the " +
                  "consumer end open_lead_forward needs.")]
     public async Task<TeamStateView> GetTeamState(CancellationToken ct)
@@ -472,42 +472,22 @@ public sealed class LeadTools(
     }
 
     /// <summary>
-    /// The §9 check-7 infrastructure account for one task's report read: how many times
-    /// the control plane re-placed the task, the cap it was measured against, and the
-    /// signal behind the last requeue (#73). Null on a task that was never requeued —
-    /// the ordinary case, where "0 of 5" is noise on a read §13 keeps deliberately
-    /// narrow, and where the §12 dashboard shows no badge either. A count at the cap can
-    /// only be an abandonment (see
-    /// <see cref="TaskRecord.InfrastructureRequeuesExhausted"/>: the requeue that reaches
-    /// the cap is the one that ends the task), which is why the state is not needed here
-    /// to say so.
+    /// The infrastructure account for one task's report read: how many times
+    /// the plane lost an attempt, and the signal behind the last loss. Null on a
+    /// task that never failed that way — the ordinary case, where "0 losses" is
+    /// noise on a read §13 keeps deliberately narrow. The plane does not re-place
+    /// automatically; resume is the Lead's.
     /// </summary>
     private static string? RequeueAccount(TaskReportView view)
     {
-        var (count, limit) = (view.InfrastructureRequeues, view.InfrastructureRequeueLimit);
+        var count = view.InfrastructureRequeues;
         if (count <= 0)
             return null;
 
-        // A pre-column row carries a count with no reason; say that rather than inventing one.
         var last = view.LastRequeueReason?.ToString() ?? "reason not recorded";
-        var header = $"Infrastructure account for {view.Namespace} — the plane's own record, not its worker's: ";
-
-        // Uncapped is the documented opt-out, so it gets its own sentence: "N of 0" is
-        // nonsense, and the cap's consequences do not apply to a task that has none.
-        if (limit <= 0)
-            return header +
-                   $"{count} infrastructure requeues, last {last}. This task's requeue cap is configured " +
-                   "off, so it is re-placed for as long as it keeps failing and is never abandoned for it.";
-
-        if (count >= limit)
-            return $"Task {view.Namespace} was ended by its requeue cap, not by a verdict: {count} of {limit} " +
-                   $"infrastructure requeues, last {last}. The plane gave up placing the work rather than " +
-                   "judging it, so the task is canceled and never rejected; its workspace is preserved as the " +
-                   "evidence of whatever wedged every attempt. Recovery is a new task, not a retry of this one.";
-
-        return header +
-               $"{count} of {limit} infrastructure requeues, last {last}. It has been re-placed that many " +
-               "times; the requeue that reaches the cap abandons it as canceled instead of dispatching it again.";
+        return $"Infrastructure account for {view.Namespace} — the plane's own record, not its worker's: " +
+               $"{count} infrastructure loss(es), last {last}. The plane parked the attempt rather than " +
+               "re-placing it. Resume with answer_input_request and a note if the reason looks flaky.";
     }
 
     [McpServerTool(Name = "get_task_question"),

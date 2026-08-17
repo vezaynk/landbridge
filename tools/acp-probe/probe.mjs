@@ -10,7 +10,7 @@ const INITIALIZE = {
   id: 0,
   method: "initialize",
   params: {
-    protocolVersion: 2,
+    protocolVersion: 1,
     clientCapabilities: {
       fs: { readTextFile: false, writeTextFile: false },
       terminal: false,

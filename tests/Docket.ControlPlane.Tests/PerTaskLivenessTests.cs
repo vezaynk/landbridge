@@ -64,7 +64,7 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
         StayAliveFor(clock, registry, id, Ceiling + TimeSpan.FromMinutes(1));
         await NewDispatch(clock, registry).CheckLivenessAsync(CancellationToken.None);
 
-        Assert.Equal(TaskState.Submitted, await StateAsync(clock, id));
+        Assert.Equal(TaskState.Failed, await StateAsync(clock, id));
         Assert.DoesNotContain(id, registry.TasksOn("m1"));
     }
 
@@ -81,7 +81,7 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
         clock.Advance(Window + TimeSpan.FromSeconds(1));
         await NewDispatch(clock, registry).CheckLivenessAsync(CancellationToken.None);
 
-        Assert.Equal(TaskState.Submitted, await StateAsync(clock, id));
+        Assert.Equal(TaskState.Failed, await StateAsync(clock, id));
         Assert.DoesNotContain(id, registry.TasksOn("m1"));
     }
 
@@ -138,7 +138,7 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
         clock.Advance(Window + TimeSpan.FromSeconds(1));
         await NewDispatch(clock, registry).CheckLivenessAsync(CancellationToken.None);
 
-        Assert.Equal(TaskState.Submitted, await StateAsync(clock, id));
+        Assert.Equal(TaskState.Failed, await StateAsync(clock, id));
     }
 
     [SkippableFact]
@@ -160,7 +160,7 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
 
         StayAliveFor(clock, registry, id, TimeSpan.FromMinutes(2), step: TimeSpan.FromSeconds(5));
         await dispatch.CheckLivenessAsync(CancellationToken.None);
-        Assert.Equal(TaskState.Submitted, await StateAsync(clock, id));
+        Assert.Equal(TaskState.Failed, await StateAsync(clock, id));
     }
 
     [SkippableFact]
@@ -220,7 +220,7 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
         Assert.All(requeues, e =>
         {
             Assert.Equal(TaskState.Working, e.FromState);
-            Assert.Equal(TaskState.Submitted, e.ToState);
+            Assert.Equal(TaskState.Failed, e.ToState);
         });
     }
 
@@ -241,15 +241,15 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
         // machine — exactly the behaviour that must survive the cap.
         StayAliveFor(clock, registry, id, Ceiling + TimeSpan.FromMinutes(1));
         await dispatch.CheckLivenessAsync(CancellationToken.None);
-        Assert.Equal(TaskState.Submitted, await StateAsync(clock, id));
+        Assert.Equal(TaskState.Failed, await StateAsync(clock, id));
 
-        // Requeue two wedges the same way and reaches the cap. Terminal as canceled, with
-        // the reason that ended it — never rejected (§6, two counters).
+        // A second wedge, after the Lead resumes, fails again. No cap abandonment —
+        // Failed is not terminal; the Lead decides whether to resume.
         await RedispatchAsync(clock, registry, "m1", id);
         StayAliveFor(clock, registry, id, Ceiling + TimeSpan.FromMinutes(1));
         await dispatch.CheckLivenessAsync(CancellationToken.None);
 
-        Assert.Equal(TaskState.Canceled, await StateAsync(clock, id));
+        Assert.Equal(TaskState.Failed, await StateAsync(clock, id));
         Assert.DoesNotContain(id, registry.TasksOn("m1"));
 
         await using var db = pg.NewContext();
@@ -258,25 +258,14 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(0, row.VerificationFailures);
         Assert.Equal(LivenessLossReason.NoProgress, row.LastRequeueReason);
 
-        // The abandoning requeue is its own event row: LivenessLost, working → canceled,
-        // carrying the reason. That row is how the §12 log distinguishes the cap from a
-        // cancel a person asked for.
-        var abandoning = await db.TaskEvents.AsNoTracking()
-            .Where(e => e.TaskId == id.Value && e.ToState == TaskState.Canceled)
-            .SingleAsync();
-        Assert.Equal(nameof(LivenessLost), abandoning.Kind);
-        Assert.Equal(LivenessLossReason.NoProgress, abandoning.LivenessReason);
-
-        // And it reaches the Lead through both reads it would actually use (§10).
         var store = new TaskStore(db, clock);
         var team = new TeamId(row.TeamId);
         var report = await store.GetTaskReportAsync(team, id);
         Assert.Equal(2, report!.InfrastructureRequeues);
-        Assert.Equal(2, report.InfrastructureRequeueLimit);
         Assert.Equal(LivenessLossReason.NoProgress, report.LastRequeueReason);
 
         var summary = Assert.Single((await store.GetTeamStateAsync(team)).Tasks);
-        Assert.Equal(TaskState.Canceled, summary.State);
+        Assert.Equal(TaskState.Failed, summary.State);
         Assert.Equal(2, summary.InfrastructureRequeues);
         Assert.Equal(LivenessLossReason.NoProgress, summary.LastRequeueReason);
     }
@@ -294,7 +283,7 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
         // so the ~30-minute-per-attempt burn of a model's time ends here.
         clock.Advance(Window + TimeSpan.FromSeconds(1));
         await NewDispatch(clock, registry).CheckLivenessAsync(CancellationToken.None);
-        Assert.Equal(TaskState.Canceled, await StateAsync(clock, id));
+        Assert.Equal(TaskState.Failed, await StateAsync(clock, id));
 
         await using var db = pg.NewContext();
         var claim = await new TaskStore(db, clock).DispatchNextAsync(
@@ -397,7 +386,10 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
         TimeProvider clock, RunnerConnectionRegistry registry, string machineId, TaskId id)
     {
         await using var db = pg.NewContext();
-        Assert.IsType<StoreResult.Applied>(await new TaskStore(db, clock).DispatchNextAsync(
+        var store = new TaskStore(db, clock);
+        if (await store.GetStateAsync(id) == TaskState.Failed)
+            Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(id, new WakeParked("retry")));
+        Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(
             new MachineSnapshot(machineId, Ready: true, UnderBackPressure: false, Set("default")),
             WorkerInstanceId.New()));
         registry.TrackDispatch(machineId, id);

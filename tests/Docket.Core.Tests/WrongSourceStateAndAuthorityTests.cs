@@ -21,7 +21,7 @@ public class WrongSourceStateAndAuthorityTests
 
     /// <summary>Every state a task can be in and still be moved at all (§6: terminals are final).</summary>
     public static TheoryData<TaskState> NonTerminalStates() =>
-        new(TaskState.Submitted, TaskState.Working, TaskState.Verifying, TaskState.BlockedOnInput, TaskState.Parked);
+        new(TaskState.Submitted, TaskState.Working, TaskState.Verifying, TaskState.BlockedOnInput, TaskState.Parked, TaskState.Failed);
 
     // ── Commands the dispatch table does not recognize ────────────────────────
 
@@ -56,6 +56,7 @@ public class WrongSourceStateAndAuthorityTests
     [InlineData(TaskState.Verifying)]
     [InlineData(TaskState.BlockedOnInput)]
     [InlineData(TaskState.Parked)]
+    [InlineData(TaskState.Failed)]
     public void Dispatch_applies_only_from_submitted(TaskState state)
     {
         // §9 check 5's other half: a task already claimed is not re-claimable. The
@@ -68,21 +69,18 @@ public class WrongSourceStateAndAuthorityTests
 
     [Theory]
     [InlineData(TaskState.Submitted)]
-    [InlineData(TaskState.Verifying)]
     [InlineData(TaskState.Parked)]
-    public void Liveness_loss_applies_only_from_working_or_blocked_on_input(TaskState state)
+    [InlineData(TaskState.Failed)]
+    public void Liveness_loss_applies_only_to_a_live_attempt(TaskState state)
     {
-        // Liveness is a property of a task with a live worker. A submitted task has
-        // no worker to lose, a verifying one has already reported, and a parked one
-        // released its lease on purpose — requeuing any of them on a liveness timer
-        // would re-run work that was never lost.
+        // Submitted has no worker. Parked and Failed already released the lease.
         var lost = new LivenessLost(LivenessLossReason.LivenessTimeout);
 
         var result = TaskStateMachine.Apply(Given.Task(state), lost);
 
         Expect.Rejected(result, Rule.InvalidSourceState);
         var rejected = Assert.IsType<TransitionResult.Rejected>(result);
-        Assert.Contains("working or blocked_on_input", rejected.Reason);
+        Assert.Contains("working, blocked_on_input, or verifying", rejected.Reason);
     }
 
     [Theory]
@@ -118,6 +116,7 @@ public class WrongSourceStateAndAuthorityTests
     [InlineData(TaskState.Submitted)]
     [InlineData(TaskState.Verifying)]
     [InlineData(TaskState.Parked)]
+    [InlineData(TaskState.Failed)]
     public void Answer_input_applies_only_from_blocked_on_input_or_working(TaskState state)
     {
         // A parked task is woken by WakeParked, not answered here.

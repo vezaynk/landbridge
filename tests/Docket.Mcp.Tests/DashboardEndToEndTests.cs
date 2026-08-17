@@ -561,6 +561,12 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             await store.RecordAuthFailureAsync(authTaskId, "clone", authTarget, "insufficient_scope", "repo", ct);
         });
 
+        // Infrastructure gave up: Failed is inbox, unlike a deliberate park.
+        var teamFail = TeamId.New();
+        var (failedId, failedNs, _) = await SeedWorkingTaskWithCallerAsync(teamFail, CompletionMode.Lead, ct);
+        await WithStoreAsync(async store =>
+            await store.ApplyAsync(failedId, new LivenessLost(LivenessLossReason.ProcessExited), ct));
+
         // The same failure on a task that has since gone terminal is history, not an inbox
         // item: no scope a person grants changes a canceled task. The event log keeps it.
         var teamE = TeamId.New();
@@ -583,6 +589,9 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         Assert.DoesNotContain("<script>alert(1)</script>", body, StringComparison.Ordinal);
         Assert.Contains(parkedNs, body, StringComparison.Ordinal);
         Assert.Contains(parkedQuestion, body, StringComparison.Ordinal);
+        Assert.Contains("Failed — infrastructure gave up", body, StringComparison.Ordinal);
+        Assert.Contains(failedNs, body, StringComparison.Ordinal);
+        Assert.Contains("ProcessExited", body, StringComparison.Ordinal);
         // §11 auth failures are joined, not disclaimed (#80): the runner's own facts land on
         // the page, and the "not recorded" copy they were hidden behind is gone.
         Assert.Contains("Auth failures", body, StringComparison.Ordinal);
@@ -617,6 +626,9 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Contains(doc.RootElement.GetProperty("parked").EnumerateArray(),
             p => p.GetProperty("namespace").GetString() == parkedNs
                  && p.GetProperty("question").GetString() == parkedQuestion);
+        Assert.Contains(doc.RootElement.GetProperty("failed").EnumerateArray(),
+            f => f.GetProperty("namespace").GetString() == failedNs
+                 && f.GetProperty("reason").GetString() == "ProcessExited");
 
         // The auth failure travels as structured fields, the two reports collapsed into the
         // one problem they describe — and the canceled task's failure is not here either.

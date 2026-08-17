@@ -139,6 +139,8 @@ public sealed class TaskStore(
     ///     checked the Lead's Team scope — the same store-level guard
     ///     <see cref="RegisterServiceAsync"/> applies, and exactly the Team check
     ///     the engine enforces on the <see cref="AnswerInput"/> path.
+    ///   failed → submitted           (<see cref="WakeParked"/>): same wake as a
+    ///     park. Infrastructure gave up; the Lead's note is the resume prompt.
     ///
     /// Any other state falls through to <see cref="AnswerInput"/> and surfaces the
     /// engine's wrong-state rejection unchanged — the behaviour before this method
@@ -171,7 +173,7 @@ public sealed class TaskStore(
         if (row is null)
             return new StoreResult.NotFound($"no task {id}");
 
-        if (row.State == TaskState.Parked)
+        if (row.State is TaskState.Parked or TaskState.Failed)
         {
             if (row.TeamId != lead.Team.Value)
                 return new StoreResult.Rejected(Rule.ActorLacksAuthority,
@@ -184,10 +186,12 @@ public sealed class TaskStore(
         // path — ContinueSession refuses it the same way AnswerInput does.
         if (sessionLive)
         {
-            // A live worker the Lead spoke to without being asked is a follow-up
-            // on the same session, not a continue-from-blocked. Permission is
+            // A live worker the Lead spoke to without being asked — including a
+            // reply to a report still sitting in verifying — is a follow-up on
+            // the same session, not a continue-from-blocked. Permission is
             // never this path — ContinueSession / LeadMessage both refuse it.
-            if (row.State == TaskState.Working && row.InputKind is null)
+            if (row.State == TaskState.Verifying
+                || (row.State == TaskState.Working && row.InputKind is null))
                 return await RunTransition(row, new LeadMessage(lead, answer, row.InputKind), ct);
             return await RunTransition(row, new ContinueSession(lead, answer, row.InputKind), ct);
         }

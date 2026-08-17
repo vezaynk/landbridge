@@ -45,7 +45,7 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
     private static readonly TaskState[] ActiveStates =
     [
         TaskState.Submitted, TaskState.Working, TaskState.Verifying,
-        TaskState.BlockedOnInput, TaskState.Parked,
+        TaskState.BlockedOnInput, TaskState.Parked, TaskState.Failed,
     ];
 
     // How many distinct auth failures the inbox carries (§12). Smaller than the event
@@ -388,7 +388,8 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
     /// Everything waiting on a person across every Team (§12): open questions
     /// (blocked_on_input) with the typed kind and the worker's own question text,
     /// tasks awaiting review (verifying + review mode, §7), parked tasks awaiting
-    /// an answer (§11) with the same question, the pending permission requests of §11's
+    /// an answer (§11) with the same question, failed attempts the plane parked
+    /// (infrastructure gave up — resume is a Lead note), the pending permission requests of §11's
     /// permission bridge, and the auth failures a person could still act on (§11, #50).
     /// This is where a person answers, so it is the one place the question's prose has to be
     /// legible verbatim — a §12 human surface, not a §10 agent read.
@@ -457,6 +458,13 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
                 t.Id, t.Namespace, t.TeamId, t.ParkMachine, t.InputKind, t.InputQuestion))
             .ToListAsync(ct);
 
+        var failed = await scopedTasks
+            .Where(t => t.State == TaskState.Failed)
+            .OrderBy(t => t.Namespace)
+            .Select(t => new FailedItemView(
+                t.Id, t.Namespace, t.TeamId, t.LastRequeueReason, t.InfrastructureRequeues))
+            .ToListAsync(ct);
+
         // §11/§12 (#50): the auth failures a person could still act on. Nothing marks an
         // individual failure resolved — the §11 remediation menu is not built — so a live
         // task stands in for "unresolved": once a task is terminal, no scope a person
@@ -506,7 +514,7 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
                 g.Occurrences))
             .ToList();
 
-        return new InboxView(questions, awaitingReview, parked, authFailures, permissionRequests);
+        return new InboxView(questions, awaitingReview, parked, failed, authFailures, permissionRequests);
     }
 
     // ── Event log (§12) ───────────────────────────────────────────────────────
@@ -755,6 +763,15 @@ public sealed record ParkedItemView(
     InputRequestKind? Kind,
     string? Question);
 
+/// <summary>An attempt the plane parked because infrastructure gave up. Resume
+/// is a Lead note — not an automatic requeue.</summary>
+public sealed record FailedItemView(
+    Guid TaskId,
+    string Namespace,
+    Guid TeamId,
+    LivenessLossReason? Reason,
+    int InfrastructureRequeues);
+
 /// <summary>
 /// An auth failure a person could still act on (§11, §12): the structured facts the
 /// runner reported (#50), collapsed across the repeat attempts that reported the same
@@ -788,6 +805,7 @@ public sealed record InboxView(
     IReadOnlyList<InputRequestView> Questions,
     IReadOnlyList<ReviewItemView> AwaitingReview,
     IReadOnlyList<ParkedItemView> Parked,
+    IReadOnlyList<FailedItemView> Failed,
     IReadOnlyList<AuthFailureItemView> AuthFailures,
     IReadOnlyList<PermissionRequestView> PermissionRequests);
 

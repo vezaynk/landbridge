@@ -65,7 +65,7 @@ public sealed class MachineRevocationServiceTests(PostgresFixture pg) : IAsyncLi
         // Its work went back in the queue rather than being abandoned on a box no one
         // trusts — the same fact, and the same reason, as the socket dying on its own.
         Assert.Equal(1, revoked.TasksRequeued);
-        Assert.Equal(TaskState.Submitted, await StateAsync(clock, task));
+        Assert.Equal(TaskState.Failed, await StateAsync(clock, task));
 
         // The worker token stops authenticating, which is the half the credential sweep
         // cannot reach: a worker credential carries no machine id, only {team, task,

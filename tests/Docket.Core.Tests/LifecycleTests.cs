@@ -34,14 +34,14 @@ public class LifecycleTests
     }
 
     [Fact]
-    public void Liveness_loss_requeues_working_task_on_the_infrastructure_counter()
+    public void Liveness_loss_fails_a_working_task_instead_of_requeueing()
     {
         var task = Given.Task(TaskState.Working);
         var incumbent = task.CurrentInstance!.Value;
 
         var result = TaskStateMachine.Apply(task, new LivenessLost(LivenessLossReason.MachineReboot));
 
-        var next = Expect.Transitioned(result, TaskState.Submitted);
+        var next = Expect.Transitioned(result, TaskState.Failed);
         Assert.Equal(1, next.InfrastructureRequeues);
         Assert.Equal(0, next.VerificationFailures);
         Assert.Null(next.CurrentInstance);
@@ -51,14 +51,14 @@ public class LifecycleTests
     }
 
     [Fact]
-    public void Report_result_moves_working_to_verifying_and_clears_services()
+    public void Report_result_moves_working_to_verifying_and_keeps_the_process()
     {
         var task = Given.Task(TaskState.Working);
         var result = TaskStateMachine.Apply(task,
             new ReportResult(Given.IncumbentOf(task), "git:refs/agents/run-1/fix"));
 
         Expect.Transitioned(result, TaskState.Verifying);
-        Assert.Contains(new ClearServicesAndForwards(), Expect.Effects(result));
+        Assert.Empty(Expect.Effects(result));
     }
 
     [Fact]
@@ -76,25 +76,55 @@ public class LifecycleTests
     }
 
     [Fact]
-    public void Failed_verification_with_retries_remaining_requeues_on_the_verification_counter()
+    public void Failed_verification_rejects_without_redispatch()
     {
         var result = TaskStateMachine.Apply(
             Given.Task(TaskState.Verifying, verificationFailures: 0, retryLimit: 3),
             new VerdictFail(Given.Lead));
 
-        var next = Expect.Transitioned(result, TaskState.Submitted);
+        var next = Expect.Transitioned(result, TaskState.Rejected);
         Assert.Equal(1, next.VerificationFailures);
         Assert.Equal(0, next.InfrastructureRequeues);
     }
 
     [Fact]
-    public void Exhausted_verification_retries_reject_the_task()
+    public void Liveness_loss_fails_a_verifying_task_and_releases_services()
     {
-        var result = TaskStateMachine.Apply(
-            Given.Task(TaskState.Verifying, verificationFailures: 2, retryLimit: 3),
-            new VerdictFail(Given.Lead));
+        var task = Given.Task(TaskState.Verifying);
+        var incumbent = task.CurrentInstance!.Value;
 
-        Expect.Transitioned(result, TaskState.Rejected);
+        var result = TaskStateMachine.Apply(
+            task, new LivenessLost(LivenessLossReason.ProcessExited, incumbent));
+
+        var next = Expect.Transitioned(result, TaskState.Failed);
+        Assert.Null(next.CurrentInstance);
+        var effects = Expect.Effects(result);
+        Assert.Contains(new RevokeWorkerInstanceToken(incumbent), effects);
+        Assert.Contains(new ClearServicesAndForwards(), effects);
+    }
+
+    [Fact]
+    public void Park_from_verifying_releases_the_session()
+    {
+        var task = Given.Task(TaskState.Verifying);
+        var incumbent = task.CurrentInstance!.Value;
+
+        var result = TaskStateMachine.Apply(task, new Park(Given.Lead, Given.Park));
+
+        var next = Expect.Transitioned(result, TaskState.Parked);
+        Assert.Equal(Given.Park, next.Park);
+        var effects = Expect.Effects(result);
+        Assert.Contains(new RevokeWorkerInstanceToken(incumbent), effects);
+        Assert.Contains(new ClearServicesAndForwards(), effects);
+    }
+
+    [Fact]
+    public void A_lead_reply_to_a_report_returns_the_live_worker_to_working()
+    {
+        var task = Given.Task(TaskState.Verifying);
+        var result = TaskStateMachine.Apply(task, new LeadMessage(Given.Lead, "needs a test"));
+        var next = Expect.Transitioned(result, TaskState.Working);
+        Assert.Equal(task.CurrentInstance, next.CurrentInstance);
     }
 
     [Fact]
@@ -277,15 +307,12 @@ public class LifecycleTests
         var first = WorkerInstanceId.New();
         task = Expect.Transitioned(TaskStateMachine.Apply(task, new Dispatch(Given.Machine(), first)), TaskState.Working);
         task = Expect.Transitioned(TaskStateMachine.Apply(task, new ReportResult(new WorkerCaller(task.Team, task.Id, first), "ref-1")), TaskState.Verifying);
-        task = Expect.Transitioned(TaskStateMachine.Apply(task, new VerdictFail(Given.Lead)), TaskState.Submitted);
-
-        var second = WorkerInstanceId.New();
-        task = Expect.Transitioned(TaskStateMachine.Apply(task, new Dispatch(Given.Machine(), second)), TaskState.Working);
-        task = Expect.Transitioned(TaskStateMachine.Apply(task, new ReportResult(new WorkerCaller(task.Team, task.Id, second), "ref-2")), TaskState.Verifying);
+        task = Expect.Transitioned(TaskStateMachine.Apply(task, new LeadMessage(Given.Lead, "add a test")), TaskState.Working);
+        task = Expect.Transitioned(TaskStateMachine.Apply(task, new ReportResult(new WorkerCaller(task.Team, task.Id, first), "ref-2")), TaskState.Verifying);
         task = Expect.Transitioned(TaskStateMachine.Apply(task, new VerdictAccept(Given.Lead)), TaskState.Completed);
 
-        Assert.Equal(2, task.Attempt);
-        Assert.Equal(1, task.VerificationFailures);
+        Assert.Equal(1, task.Attempt);
+        Assert.Equal(0, task.VerificationFailures);
         Assert.Equal(0, task.InfrastructureRequeues);
     }
 }
