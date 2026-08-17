@@ -29,7 +29,7 @@ internal static class ConformanceCatalog
                 "The result reference names a hostname, a working directory path, and an 8-character hex prefix."),
             new("write",
                 "This is a Docket enrollment check (kind: write). " +
-                "In the assigned workspace, write a file named smoke.txt containing only this machine's hostname " +
+                "In this session's working directory, write a file named smoke.txt containing only this machine's hostname " +
                 "(one line, no extra text). Call report_result with a path to that file.",
                 "smoke.txt exists in the workspace and contains only a hostname."),
             new("shell",

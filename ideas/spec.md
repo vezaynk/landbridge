@@ -262,7 +262,7 @@ Leaving `working` clears the task's registered services and releases its relay f
 | `completion.criteria` | Opaque, non-empty string. In `lead` mode the Lead judges it against evidence it gathers; in `review` mode a person reads it. The control plane never parses it. |
 | `completion.provenance` | Set on completion: `lead-session` or `human` (§9 check 4). Null until completed. |
 | `namespace` | Server-assigned `team-{id}/session-{id}`. Guaranteed unique. What an agent maps it onto is convention. |
-| `workspace` | Opaque blob assigned by the Lead. Where the work happens, how it is isolated, which ports it may use. Shape defined by the skill. |
+| `workspace` | Optional opaque context the Lead may pass (repo, package, base ref). Shape defined by the skill. Not isolation — the worker stays in `{work_root}/{session_id}`, uses a worktree, and binds a random port. |
 | `team_id`, `parent_task` | Lineage. |
 | `expected_duration` | Lead's guess. Distinguishes stuck-short from long-running. |
 | `profile` | Optional runner profile name. Exact-match routing; the control plane never interprets it. |
@@ -288,13 +288,11 @@ Both land in `verifying` and take the same transitions; which credential may rul
 
 ### Workspace and isolation
 
-**Isolation is assigned by the Lead at decomposition time, never chosen by the worker.** Workers who each pick their own isolation collide, because they have no channel to coordinate. Since `namespace` is server-assigned and unique, isolation derives from it and collision is structurally impossible.
+**The worker isolates itself.** Several sessions share a machine, including several from the same Team. `docketd` starts each worker in `{work_root}/{session_id}`. The worker writes only there, uses a git worktree for repo work, and binds a random loopback port. The Lead does not assign ports or working directories. `workspace` on the session, if present, is context — which repo, which package — not a lock and not a path the worker is entitled to mutate.
 
-The general rule: **each concurrent task gets its own mutable copy; anything shared is read-only.** Separate worktrees, directories, containers, or schemas depending on substrate.
+The general rule: **each concurrent session's mutable state lives under its session directory; anything shared is read-only.**
 
-**One deliberate exception: a continuation inherits its predecessor's working directory** (§11), whether or not it resumes that agent's transcript. That is what a continuation is *for* — carrying on the same work, where the workspace is that work — so a cold-started continuation inherits the directory too; it still needs the worktree and artifacts the predecessor left. (Transcript resume additionally requires it, since a harness session is resumable only from the directory that created it, but does not define it.) So two task ids can share one directory, by the Lead's own choice in asking for a continuation. Nothing else about them is shared: each keeps its own identity, credential, liveness, and transcript. The rule above still governs every *concurrent decomposition*, which is what it exists for — sibling tasks a Lead fans out must not collide, and they still cannot.
-
-`workspace` also carries any port assignments, for the same reason — two agents on one machine binding the same port is the Lead's problem to avoid, not the worker's to discover.
+**One deliberate exception: a continuation inherits its predecessor's working directory** (§11), whether or not it resumes that agent's transcript. That is what a continuation is *for* — carrying on the same work, in the same session directory — so a continuation inherits the directory too; it still needs the worktree and artifacts the predecessor left. (Transcript resume additionally requires it, since a harness session is resumable only from the directory that created it, but does not define it.) So two session ids can share one directory, by the Lead's own choice in asking for a continuation. Nothing else about them is shared: each keeps its own identity, credential, liveness, and transcript.
 
 ---
 
@@ -899,7 +897,7 @@ Three skills ship by default:
 | Skill | Audience |
 |---|---|
 | `docket-lead` | Humans driving a Lead. Decomposition, isolation assignment, completion modes, cancellation, Team lifecycle — and the integration pattern: **integration is itself a task**, authored by the Lead and sequenced after its inputs complete. Workers never negotiate merges peer-to-peer; they have no channel, and should not. |
-| `docket-worker` | Dispatched workers. Working within an assigned workspace, persisting before asking, reporting, blockers, inheriting a workspace on redispatch (`attempt > 1`: inspect before trusting). |
+| `docket-worker` | Dispatched workers. Isolating on a shared machine, persisting before asking, reporting, blockers, inheriting the session directory on redispatch (`attempt > 1`: inspect before trusting). |
 | `docket-enroll` | The enrollment flow. Writing the runner config, headless-posture prerequisites, guiding the human, conformance. |
 
 The failure mode for everything in these is bounded and recoverable. That is the test for belonging here rather than in §9.
