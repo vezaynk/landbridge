@@ -120,9 +120,9 @@ public static class TaskStateMachine
 
     private static TransitionResult ApplyLivenessLost(TaskRecord task, LivenessLost c)
     {
-        if (task.State is not (TaskState.Working or TaskState.BlockedOnInput))
+        if (task.State is not (TaskState.Working or TaskState.BlockedOnInput or TaskState.Verifying))
             return TransitionResult.Reject(Rule.InvalidSourceState,
-                $"liveness loss applies to working or blocked_on_input, not {task.State}");
+                $"liveness loss applies to working, blocked_on_input, or verifying, not {task.State}");
 
         // §9 check 14: a loss that names the attempt it judged applies only while that
         // attempt is still working this task. The plane's per-dispatch clocks read the row,
@@ -136,39 +136,29 @@ public static class TaskStateMachine
         // fact about the machine rather than about one attempt, and still applies from
         // blocked_on_input.
         if (c.Instance is { } judged
-            && (task.State != TaskState.Working || task.CurrentInstance != judged))
+            && (task.State is not (TaskState.Working or TaskState.Verifying)
+                || task.CurrentInstance != judged))
             return TransitionResult.Reject(Rule.IncumbentInstanceOnly,
                 $"liveness loss was decided about instance {judged}, which is no longer the "
-                + $"incumbent of a working task (now {task.State}); the dispatch it judged has moved on");
+                + $"incumbent of a live attempt (now {task.State}); the dispatch it judged has moved on");
 
-        var effects = new List<Effect>();
+        var effects = new List<Effect> { new ClearServicesAndForwards() };
         if (task.CurrentInstance is { } instance)
-            effects.Add(new RevokeWorkerInstanceToken(instance));
-        if (task.State == TaskState.Working)
-            effects.Add(new ClearServicesAndForwards());
+            effects.Insert(0, new RevokeWorkerInstanceToken(instance));
 
-        // The reason rides onto the record so the requeue trail says WHICH signal fired
-        // (#73): without it every requeue is indistinguishable, and a task looping on a
-        // wedged machine reads exactly like one whose machine rebooted twice.
-        var requeued = task with
-        {
-            CurrentInstance = null,
-            InfrastructureRequeues = task.InfrastructureRequeues + 1,
-            LastRequeueReason = c.Reason,
-        };
-
-        // §9 check 7: infrastructure requeues are capped. At the cap the task is
-        // abandoned rather than dispatched again — terminal as `canceled`, the state §6
-        // already gives the control plane for "this work was called off", and deliberately
-        // NOT `rejected`: rejection is the verification counter's alone (§6, two
-        // counters), and blaming the work for a machine that keeps failing it punishes the
-        // wrong party. The workspace is preserved (no discard effect) — whatever wedged
-        // every attempt is the evidence a human needs — and the reason that ended it stays
-        // on the record for get_task_report/get_team_state.
-        if (requeued.InfrastructureRequeuesExhausted)
-            return TransitionResult.Ok(requeued with { State = TaskState.Canceled }, effects.ToArray());
-
-        return TransitionResult.Ok(requeued with { State = TaskState.Submitted }, effects.ToArray());
+        // No automatic requeue. Failed is a park the Lead did not ask for: same
+        // release (token gone, process gone, workspace kept), plane-authored
+        // reason, inbox. Resume is WakeParked → session/load, with a note if
+        // the Lead thinks the reason was flaky.
+        return TransitionResult.Ok(
+            task with
+            {
+                State = TaskState.Failed,
+                CurrentInstance = null,
+                InfrastructureRequeues = task.InfrastructureRequeues + 1,
+                LastRequeueReason = c.Reason,
+            },
+            effects.ToArray());
     }
 
     private static TransitionResult ApplyReportResult(TaskRecord task, ReportResult c)
@@ -193,9 +183,11 @@ public static class TaskStateMachine
             is { } tooLong)
             return tooLong;
 
-        return TransitionResult.Ok(
-            task with { State = TaskState.Verifying },
-            new ClearServicesAndForwards());
+        // The process stays. A report is "I think I am done", not a yield of the
+        // machine — killing the ACP host would take a compile or a descendant
+        // server with it. Services stay registered. The Lead accepts, replies
+        // (LeadMessage), or parks.
+        return TransitionResult.Ok(task with { State = TaskState.Verifying });
     }
 
     private static TransitionResult ApplyVerdict(TaskRecord task, Actor actor, bool humanConfirmed, bool accepted)
@@ -221,43 +213,36 @@ public static class TaskStateMachine
         var authorized = provenance switch
         {
             VerdictProvenance.Human => true,
-            VerdictProvenance.LeadSession => task.CompletionMode != CompletionMode.Review || humanConfirmed,
+            // Review mode trusts the Lead to escalate to a human when the
+            // evidence is theirs to own. The plane does not refuse a Lead accept.
+            VerdictProvenance.LeadSession => true,
             _ => false,
         };
         if (!authorized)
             return TransitionResult.Reject(Rule.CompletionByLeadOrHuman,
-                actor is LeadClaim && task.CompletionMode == CompletionMode.Review
-                    ? "review verdicts require human confirmation; a lead claim alone cannot complete a task"
-                    : "completion is a Lead or human verdict, never the task's own worker");
+                "completion is a Lead or human verdict, never the task's own worker");
 
-        var revoke = task.CurrentInstance is { } instance
-            ? new Effect[] { new RevokeWorkerInstanceToken(instance) }
-            : [];
+        var effects = new List<Effect> { new ClearServicesAndForwards() };
+        if (task.CurrentInstance is { } instance)
+            effects.Add(new RevokeWorkerInstanceToken(instance));
 
         if (accepted)
             return TransitionResult.Ok(
                 task with { State = TaskState.Completed, CurrentInstance = null, CompletionProvenance = provenance },
-                revoke);
+                effects.ToArray());
 
-        var failures = task.VerificationFailures + 1;
-        if (failures >= task.VerificationRetryLimit)
-            return TransitionResult.Ok(
-                task with
-                {
-                    State = TaskState.Rejected,
-                    VerificationFailures = failures,
-                    CurrentInstance = null,
-                },
-                revoke);
-
+        // A fail is not a redispatch. The assignment is rejected; the session
+        // can still be resumed as a new piece of work. No verification-retry
+        // loop — if the Lead wants more from this worker they reply
+        // (LeadMessage) instead of failing.
         return TransitionResult.Ok(
             task with
             {
-                State = TaskState.Submitted,
-                VerificationFailures = failures,
+                State = TaskState.Rejected,
+                VerificationFailures = task.VerificationFailures + 1,
                 CurrentInstance = null,
             },
-            revoke);
+            effects.ToArray());
     }
 
     private static TransitionResult ApplyRequestInput(TaskRecord task, RequestInput c)
@@ -467,7 +452,7 @@ public static class TaskStateMachine
 
     private static TransitionResult ApplyPark(TaskRecord task, Park c)
     {
-        if (task.State is not (TaskState.Working or TaskState.BlockedOnInput))
+        if (task.State is not (TaskState.Working or TaskState.BlockedOnInput or TaskState.Verifying))
             return WrongState(task, TaskState.Working);
 
         var authorized = c.Actor switch
@@ -527,7 +512,7 @@ public static class TaskStateMachine
     /// </summary>
     private static TransitionResult ApplyLeadMessage(TaskRecord task, LeadMessage c)
     {
-        if (task.State != TaskState.Working)
+        if (task.State is not (TaskState.Working or TaskState.Verifying))
             return WrongState(task, TaskState.Working);
 
         if (!IsLeadOrHuman(task, c.Actor))
@@ -548,12 +533,12 @@ public static class TaskStateMachine
             is { } tooLong)
             return tooLong;
 
-        return TransitionResult.Ok(task);
+        return TransitionResult.Ok(task with { State = TaskState.Working });
     }
 
     private static TransitionResult ApplyWakeParked(TaskRecord task, WakeParked c)
     {
-        if (task.State != TaskState.Parked)
+        if (task.State is not (TaskState.Parked or TaskState.Failed))
             return WrongState(task, TaskState.Parked);
 
         // Same cap as the blocked half: one answer path, one gate, so a Lead's answer
@@ -601,9 +586,9 @@ public static class TaskStateMachine
         var authorized = c.Actor switch
         {
             // §6: cancelling is a judgement that the work should not continue, which is the
-            // Lead's or a human's alone. The plane holds no such opinion — the one thing it
-            // gives up on is placing the work, and that lands as `canceled` from inside the
-            // check 7 requeue cap (ApplyLivenessLost), never as a command.
+            // Lead's or a human's alone. The plane holds no such opinion — infrastructure
+            // giving up lands as Failed (a park the Lead did not ask for), never as a
+            // Cancel command.
             HumanSession => true,
             LeadClaim lead => lead.Team == task.Team,
             _ => false,
@@ -615,7 +600,7 @@ public static class TaskStateMachine
         var effects = new List<Effect>();
         if (task.CurrentInstance is { } instance)
             effects.Add(new RevokeWorkerInstanceToken(instance));
-        if (task.State == TaskState.Working)
+        if (task.State is TaskState.Working or TaskState.Verifying)
             effects.Add(new ClearServicesAndForwards());
         if (c.Disposition == CancelDisposition.Discard)
             effects.Add(task.State == TaskState.Verifying

@@ -575,20 +575,35 @@ public sealed class DispatchService : IHostedService
                             tracked.Task, tracked.Machine, requeue.GetType().Name);
                         break;
                     }
-                    if (applied.Task.State == TaskState.Canceled)
-                        _logger.LogError(
-                            "task {Task} abandoned after {Requeues} infrastructure requeues (cap {Cap}), last reason {Reason}",
-                            tracked.Task, applied.Task.InfrastructureRequeues,
-                            applied.Task.InfrastructureRequeueLimit, reason);
+                    if (applied.Task.State == TaskState.Failed)
+                        _logger.LogWarning(
+                            "task {Task} failed ({Reason}) after {Requeues} infrastructure losses; waiting for the Lead",
+                            tracked.Task, reason, applied.Task.InfrastructureRequeues);
                     _registry.Untrack(tracked.Task);
                     // Only once the plane has actually given up on this dispatch: a refused
                     // transition means it has not, and killing a process the plane still
                     // considers live would destroy work nothing requeued.
                     await KillAbandonedDispatchAsync(tracked.Task, tracked.Machine, ct);
                     break;
+                case { State: TaskState.Verifying } dispatch:
+                    // A report keeps the process. No-progress while verifying is the
+                    // Lead thinking, not a wedge. A dead process is a fail.
+                    if (!notAlive)
+                        break;
+                    _logger.LogWarning(
+                        "task {Task} on {Machine} died while verifying; failing the attempt",
+                        tracked.Task, tracked.Machine);
+                    var verifyingLoss = await store.ApplyAsync(
+                        tracked.Task, new LivenessLost(LivenessLossReason.LivenessTimeout, dispatch.Instance), ct);
+                    if (verifyingLoss is StoreResult.Applied)
+                    {
+                        _registry.Untrack(tracked.Task);
+                        await KillAbandonedDispatchAsync(tracked.Task, tracked.Machine, ct);
+                    }
+                    break;
                 case null:
-                case { State: TaskState.Verifying or TaskState.Completed
-                    or TaskState.Rejected or TaskState.Canceled }:
+                case { State: TaskState.Completed or TaskState.Rejected
+                    or TaskState.Canceled or TaskState.Failed }:
                     _registry.Untrack(tracked.Task);
                     break;
                     // blocked_on_input / parked / submitted: leave tracked (§11).

@@ -48,13 +48,16 @@ public class InstanceFencingAndParkTests
         var task = Given.Task(TaskState.Working);
         var zombieInstance = task.CurrentInstance!.Value;
 
-        var requeued = Expect.Transitioned(
+        var failed = Expect.Transitioned(
             TaskStateMachine.Apply(task, new LivenessLost(LivenessLossReason.LivenessTimeout)),
+            TaskState.Failed);
+        var submitted = Expect.Transitioned(
+            TaskStateMachine.Apply(failed, new WakeParked("retry")),
             TaskState.Submitted);
 
         var successor = WorkerInstanceId.New();
         var redispatched = Expect.Transitioned(
-            TaskStateMachine.Apply(requeued, new Dispatch(Given.Machine(), successor)),
+            TaskStateMachine.Apply(submitted, new Dispatch(Given.Machine(), successor)),
             TaskState.Working);
         Assert.Equal(2, redispatched.Attempt);
 
@@ -74,20 +77,20 @@ public class InstanceFencingAndParkTests
     }
 
     [Fact]
-    public void Requeue_from_blocked_on_input_uses_the_infrastructure_counter_and_skips_service_cleanup()
+    public void Requeue_from_blocked_on_input_uses_the_infrastructure_counter_and_releases_services()
     {
-        // Services were already cleared when the task left working (§6).
+        // A permission wait keeps the process and its services. Infra death releases both.
         var task = Given.Task(TaskState.BlockedOnInput);
 
         var result = TaskStateMachine.Apply(task, new LivenessLost(LivenessLossReason.MachineReboot));
 
-        var next = Expect.Transitioned(result, TaskState.Submitted);
+        var next = Expect.Transitioned(result, TaskState.Failed);
         Assert.Equal(1, next.InfrastructureRequeues);
-        Assert.DoesNotContain(new ClearServicesAndForwards(), Expect.Effects(result));
+        Assert.Contains(new ClearServicesAndForwards(), Expect.Effects(result));
     }
 
     [Fact]
-    public void A_liveness_loss_that_names_its_attempt_still_requeues_that_attempt()
+    public void A_liveness_loss_that_names_its_attempt_still_fails_that_attempt()
     {
         // The positive control for the fence: in the ordinary case the attempt the clock
         // judged is still the one on the task, and naming it changes nothing.
@@ -97,7 +100,7 @@ public class InstanceFencingAndParkTests
         var result = TaskStateMachine.Apply(
             task, new LivenessLost(LivenessLossReason.NoProgress, judged));
 
-        var next = Expect.Transitioned(result, TaskState.Submitted);
+        var next = Expect.Transitioned(result, TaskState.Failed);
         Assert.Equal(1, next.InfrastructureRequeues);
         Assert.Contains(new RevokeWorkerInstanceToken(judged), Expect.Effects(result));
     }
@@ -136,11 +139,14 @@ public class InstanceFencingAndParkTests
         var task = Given.Task(TaskState.Working);
         var judged = task.CurrentInstance!.Value;
 
-        var requeued = Expect.Transitioned(
+        var failed = Expect.Transitioned(
             TaskStateMachine.Apply(task, new LivenessLost(LivenessLossReason.MachineReboot)),
+            TaskState.Failed);
+        var submitted = Expect.Transitioned(
+            TaskStateMachine.Apply(failed, new WakeParked()),
             TaskState.Submitted);
         var redispatched = Expect.Transitioned(
-            TaskStateMachine.Apply(requeued, new Dispatch(Given.Machine(), WorkerInstanceId.New())),
+            TaskStateMachine.Apply(submitted, new Dispatch(Given.Machine(), WorkerInstanceId.New())),
             TaskState.Working);
 
         Expect.Rejected(
@@ -263,7 +269,7 @@ public class InstanceFencingAndParkTests
         foreach (var state in new[]
                  {
                      TaskState.Submitted, TaskState.Working, TaskState.Verifying,
-                     TaskState.BlockedOnInput, TaskState.Parked,
+                     TaskState.BlockedOnInput, TaskState.Parked, TaskState.Failed,
                  })
         {
             var result = TaskStateMachine.Apply(

@@ -97,25 +97,18 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task Submit_review_needs_human_confirmation_a_lead_claim_alone_cannot_complete()
+    public async Task Submit_review_in_review_mode_trusts_the_lead()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var taskId = await SeedReviewTaskInVerifying();
         var tools = LeadFor(new Principal.Lead(Team));
 
-        // §7: an unattended lead turn cannot complete a review task.
-        var refused = await Assert.ThrowsAsync<McpException>(
-            () => tools.SubmitReview(taskId.ToString(), "accept", humanConfirmed: false, CancellationToken.None));
-        Assert.Contains(nameof(Rule.CompletionByLeadOrHuman), refused.Message);
-
-        await using (var v = pg.NewContext())
-            Assert.Equal(TaskState.Verifying, (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == taskId.Value)).State);
-
-        // With human confirmation the same verdict completes the task.
-        var ok = await tools.SubmitReview(taskId.ToString(), "accept", humanConfirmed: true, CancellationToken.None);
+        var ok = await tools.SubmitReview(taskId.ToString(), "accept", humanConfirmed: false, CancellationToken.None);
         Assert.Contains("Completed", ok);
-        await using (var v = pg.NewContext())
-            Assert.Equal(TaskState.Completed, (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == taskId.Value)).State);
+        await using var v = pg.NewContext();
+        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == taskId.Value);
+        Assert.Equal(TaskState.Completed, row.State);
+        Assert.Equal(VerdictProvenance.LeadSession, row.CompletionProvenance);
     }
 
     [SkippableFact]
@@ -535,35 +528,28 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
 
         var text = await tools.GetTaskReport(taskId.ToString(), CancellationToken.None);
 
-        Assert.Contains("2 of 5 infrastructure requeues", text, StringComparison.Ordinal);
+        Assert.Contains("2 infrastructure loss", text, StringComparison.Ordinal);
         Assert.Contains(nameof(LivenessLossReason.MachineReboot), text, StringComparison.Ordinal);
-        Assert.Contains(report, text, StringComparison.Ordinal); // still the report read it was
-        // The account is the plane's own structure, so it sits OUTSIDE the untrusted
-        // fences — a Lead that distrusted these numbers would have nothing left to trust.
-        Assert.EndsWith("instead of dispatching it again.", text, StringComparison.Ordinal);
+        Assert.Contains(report, text, StringComparison.Ordinal);
+        Assert.Contains("parked the attempt", text, StringComparison.Ordinal);
+        Assert.Contains("answer_input_request", text, StringComparison.Ordinal);
     }
 
     [SkippableFact]
-    public async Task Get_task_report_says_the_cap_ended_a_task_it_abandoned()
+    public async Task Get_task_report_on_a_failed_attempt_names_the_reason_and_how_to_resume()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
-        // A cap of one, so a single wedge abandons it: no result reference, no report, and
-        // before #91 nothing but two "there is nothing here" lines. The account is the
-        // ONLY answer to "what happened to this task" that exists for it.
         var taskId = await SeedRequeuedTask(
             requeueLimit: 1, requeues: 1, LivenessLossReason.NoProgress);
         var tools = LeadFor(new Principal.Lead(Team));
 
         var text = await tools.GetTaskReport(taskId.ToString(), CancellationToken.None);
 
-        Assert.Contains("1 of 1 infrastructure requeues", text, StringComparison.Ordinal);
+        Assert.Contains("1 infrastructure loss", text, StringComparison.Ordinal);
         Assert.Contains(nameof(LivenessLossReason.NoProgress), text, StringComparison.Ordinal);
-        // Legible as the cap rather than as a cancel someone asked for, and legible as
-        // NOT a verdict on the work (§6 two counters — canceled, never rejected).
-        Assert.Contains("ended by its requeue cap", text, StringComparison.Ordinal);
-        Assert.Contains("canceled and never rejected", text, StringComparison.Ordinal);
-        // And it does not read as a task still waiting to be adjudicated.
-        Assert.Contains("Recovery is a new task", text, StringComparison.Ordinal);
+        Assert.Contains("parked the attempt", text, StringComparison.Ordinal);
+        Assert.Contains("answer_input_request", text, StringComparison.Ordinal);
+        Assert.DoesNotContain("ended by its requeue cap", text, StringComparison.Ordinal);
     }
 
     [SkippableFact]
@@ -596,8 +582,9 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
 
         var text = await tools.GetTaskReport(taskId.ToString(), CancellationToken.None);
 
-        Assert.Contains("3 infrastructure requeues", text, StringComparison.Ordinal);
-        Assert.Contains("requeue cap is configured off", text, StringComparison.Ordinal);
+        Assert.Contains("3 infrastructure loss", text, StringComparison.Ordinal);
+        Assert.Contains(nameof(LivenessLossReason.LivenessTimeout), text, StringComparison.Ordinal);
+        Assert.Contains("parked the attempt", text, StringComparison.Ordinal);
         Assert.DoesNotContain("of 0", text, StringComparison.Ordinal);
         Assert.DoesNotContain("ended by its requeue cap", text, StringComparison.Ordinal);
     }
@@ -783,6 +770,9 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
             Assert.IsType<StoreResult.Applied>(
                 await store.DispatchNextAsync(Machine(), WorkerInstanceId.New()));
             Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(id, new LivenessLost(reason)));
+            // Failed is not claimable. Wake between losses when another attempt is needed.
+            if (report is not null || i < requeues - 1)
+                Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(id, new WakeParked()));
         }
 
         if (report is null)

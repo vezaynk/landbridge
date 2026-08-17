@@ -174,11 +174,11 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
 
         await fleet.SigkillDocketdAsync();
 
-        // ── 1. Both siblings requeued by the one death.
+        // ── 1. Both siblings failed by the one death. The plane does not requeue.
         foreach (var task in siblings)
         {
-            await AssertReachesAsync(fleet, task, TaskState.Submitted,
-                "a sibling was not requeued after docketd was SIGKILLed", ct, siblings);
+            await AssertReachesAsync(fleet, task, TaskState.Failed,
+                "a sibling was not failed after docketd was SIGKILLed", ct, siblings);
             var facts = (await fleet.FactsAsync(task, ct))!.Value;
             Assert.True(facts.InfrastructureRequeues == beforeKill[task].InfrastructureRequeues + 1,
                 $"task {task} counted {facts.InfrastructureRequeues - beforeKill[task].InfrastructureRequeues} " +
@@ -232,11 +232,12 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
             await ChaosFleet.WaitUntilAsync(() => Task.FromResult(!stray.AnyAlive), TransitionBudget, ct),
             "the planted stray tree survived the restart sweep\n" + await fleet.DiagnoseAsync(siblings, ct));
 
-        // ── 3. The requeued work is picked back up, once each.
+        // ── 3. The Lead resumes each failed attempt; dispatch places them once each.
         foreach (var task in siblings)
         {
+            await fleet.ResumeFailedAsync(task, ct);
             await AssertReachesAsync(fleet, task, TaskState.Working,
-                "a requeued sibling was never redispatched after docketd came back", ct, siblings);
+                "a failed sibling was never redispatched after docketd came back", ct, siblings);
             var facts = (await fleet.FactsAsync(task, ct))!.Value;
             Assert.NotEqual(beforeKill[task].CurrentInstanceId, facts.CurrentInstanceId);
             Assert.Equal(1, facts.LiveInstanceCount);
@@ -304,8 +305,8 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
         }
 
         await fleet.SigkillDocketdAsync();
-        await AssertReachesAsync(fleet, task, TaskState.Submitted,
-            "the task was not requeued, so its instance was never revoked", ct);
+        await AssertReachesAsync(fleet, task, TaskState.Failed,
+            "the task was not failed, so its instance was never revoked", ct);
 
         var refused = await IsRefusedAsync(fleet, stale!, ct);
         Assert.True(refused,
@@ -507,7 +508,9 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
             $"[{string.Join(",", reasons.Select(r => r?.ToString() ?? "(null)"))}]\n" +
             await fleet.DiagnoseAsync([task], ct));
 
-        // ── 3. Nothing lost: it goes back out to the machine that is still there.
+        // ── 3. Nothing lost: the Lead resumes, and it goes back out to the machine
+        // that is still there.
+        await fleet.ResumeFailedAsync(task, ct);
         await AssertReachesAsync(fleet, task, TaskState.Working,
             "the reclaimed task was never redispatched after the plane restart", ct);
         var afterRestart = (await fleet.FactsAsync(task, ct))!.Value;
@@ -598,7 +601,8 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
             await fleet.DiagnoseAsync([task], ct));
 
         // ── 2. And the machine is still good for work — a kill takes down one dispatch, not
-        // the daemon's ability to accept the next one, which is the same task coming back.
+        // the daemon's ability to accept the next one. The Lead resumes; dispatch places it.
+        await fleet.ResumeFailedAsync(task, ct);
         await AssertReachesAsync(fleet, task, TaskState.Working,
             "the reclaimed task was never redispatched after its worker was killed", ct);
         Assert.True(
@@ -607,14 +611,15 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
                 TransitionBudget, ct),
             "no live worker process for the redispatched task\n" + await fleet.DiagnoseAsync([task], ct));
 
-        // ── 3. The trail is the clock's, not the kill's. Waiting for a second requeue gives
-        // the kill/redispatch race another run at producing a ProcessExited row.
+        // ── 3. The trail is the clock's, not the kill's. Resume once more so the
+        // kill/redispatch race gets another run at producing a ProcessExited row.
         Assert.True(
             await ChaosFleet.WaitUntilAsync(
                 async () =>
                 {
                     var facts = await fleet.FactsAsync(task, ct);
-                    return facts is { } f && f.InfrastructureRequeues >= working.InfrastructureRequeues + 2;
+                    return facts is { } f && f.State == TaskState.Failed
+                        && f.InfrastructureRequeues >= working.InfrastructureRequeues + 2;
                 },
                 TransitionBudget, ct),
             "the wedge did not re-wedge, so the echo race only got one run\n" +

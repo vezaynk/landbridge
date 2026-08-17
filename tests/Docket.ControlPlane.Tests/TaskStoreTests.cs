@@ -140,6 +140,8 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         Assert.IsType<StoreResult.Applied>(result);
         await using var verify = pg.NewContext();
         Assert.Equal(TaskState.Verifying, (await verify.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value)).State);
+        Assert.Single(await verify.RegisteredServices.AsNoTracking().Where(s => s.TaskId == id.Value).ToListAsync());
+        Assert.IsType<StoreResult.Applied>(await NewStore(db).ApplyAsync(id, new VerdictAccept(new LeadClaim(Team))));
         Assert.Empty(await verify.RegisteredServices.AsNoTracking().Where(s => s.TaskId == id.Value).ToListAsync());
     }
 
@@ -635,10 +637,11 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(first.Value, svc.TaskId);
         Assert.Equal(5001, svc.Port);
 
-        // The holder finishing frees the name: registrations live only while their task does,
-        // so this is a lease on the address rather than a permanent claim.
+        // The holder finishing frees the name: a report keeps the process (and the
+        // lease); accept is what ends the assignment.
         Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(
             first, new ReportResult(new WorkerCaller(Team, first, firstInstance), "ref")));
+        Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(first, new VerdictAccept(new LeadClaim(Team))));
         Assert.IsType<StoreResult.Applied>(await store.RegisterServiceAsync(secondCaller, "api", 5002));
         Assert.Equal(second.Value,
             (await verify.RegisteredServices.AsNoTracking().SingleAsync(s => s.Name == "api")).TaskId);
@@ -657,7 +660,7 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
 
         await using var verify = pg.NewContext();
         var row = await verify.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
-        Assert.Equal(TaskState.Submitted, row.State);
+        Assert.Equal(TaskState.Failed, row.State);
         Assert.Equal(1, row.InfrastructureRequeues);
         Assert.Null(row.CurrentInstanceId);
         Assert.True((await verify.WorkerInstances.AsNoTracking().SingleAsync(w => w.Id == instance.Value)).Revoked);
@@ -674,6 +677,7 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         var zombie = WorkerInstanceId.New();
         await store.DispatchNextAsync(Machine(), zombie);
         await store.ApplyAsync(id, new LivenessLost(LivenessLossReason.LivenessTimeout));
+        await store.ApplyAsync(id, new WakeParked("retry"));
         var successor = WorkerInstanceId.New();
         await store.DispatchNextAsync(Machine(), successor);
 
@@ -846,6 +850,51 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal("keep going on the tests", row.InputAnswer);
         Assert.Null(row.ParkMachine);
         Assert.Null(row.BlockedAt);
+    }
+
+    [SkippableFact]
+    public async Task A_lead_reply_to_a_report_on_a_live_session_returns_to_working()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await CreateSubmitted(db);
+        var instance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), instance);
+        Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(
+            id, new ReportResult(new WorkerCaller(Team, id, instance), "git:ref")));
+
+        var applied = Assert.IsType<StoreResult.Applied>(
+            await store.AnswerOrWakeAsync(Lead, id, leaseMachine: "m1", answer: "add a test", sessionLive: true));
+        Assert.Equal(TaskState.Working, applied.Task.State);
+        Assert.Equal(instance, applied.Task.CurrentInstance);
+
+        await using var v = pg.NewContext();
+        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(TaskState.Working, row.State);
+        Assert.Equal("add a test", row.InputAnswer);
+    }
+
+    [SkippableFact]
+    public async Task Waking_a_failed_task_requeues_it_with_the_note()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await CreateSubmitted(db);
+        await store.DispatchNextAsync(Machine(), WorkerInstanceId.New());
+        Assert.IsType<StoreResult.Applied>(
+            await store.ApplyAsync(id, new LivenessLost(LivenessLossReason.ProcessExited)));
+
+        var woken = Assert.IsType<StoreResult.Applied>(
+            await store.AnswerOrWakeAsync(Lead, id, leaseMachine: null, answer: "handshake flake — try again"));
+        Assert.Equal(TaskState.Submitted, woken.Task.State);
+
+        await using var v = pg.NewContext();
+        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(TaskState.Submitted, row.State);
+        Assert.Equal("handshake flake — try again", row.InputAnswer);
+        Assert.Equal(LivenessLossReason.ProcessExited, row.LastRequeueReason);
     }
 
     [SkippableFact]

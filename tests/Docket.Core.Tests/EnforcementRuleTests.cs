@@ -101,14 +101,15 @@ public class EnforcementRuleTests
         Assert.Equal(VerdictProvenance.LeadSession, task.CompletionProvenance);
     }
 
-    // §9 check 4 + §7 — review mode requires human confirmation
+    // Review mode trusts the Lead to escalate to a human. The plane does not refuse.
     [Fact]
-    public void A_lead_claim_alone_cannot_complete_a_review_task()
+    public void A_lead_claim_completes_a_review_task()
     {
         var result = TaskStateMachine.Apply(
             Given.Task(TaskState.Verifying, CompletionMode.Review),
             new VerdictAccept(Given.Lead, HumanConfirmed: false));
-        Expect.Rejected(result, Rule.CompletionByLeadOrHuman);
+        var task = Expect.Transitioned(result, TaskState.Completed);
+        Assert.Equal(VerdictProvenance.LeadSession, task.CompletionProvenance);
     }
 
     [Fact]
@@ -143,8 +144,8 @@ public class EnforcementRuleTests
 
     // §6 — the control plane cannot cancel, on any disposition. It had exactly one
     // disposition it was allowed (budget exhaustion) and that went with the budget
-    // subsystem; the plane's own giving-up path is the check 7 requeue cap inside
-    // LivenessLost, which reaches `canceled` without a Cancel command.
+    // subsystem; the plane's own giving-up path is Failed inside LivenessLost, not a
+    // Cancel command.
     [Theory]
     [InlineData(CancelDisposition.Preserve)]
     [InlineData(CancelDisposition.Discard)]

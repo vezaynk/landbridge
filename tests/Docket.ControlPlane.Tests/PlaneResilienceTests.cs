@@ -177,7 +177,7 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         // machine's disconnect. The query keys on the live current instance precisely so
         // this case falls out.
         await RequeueAsync(clock, seeded.Task, LivenessLossReason.MachineReboot);
-        Assert.Equal(TaskState.Submitted, await StateAsync(clock, seeded.Task));
+        Assert.Equal(TaskState.Failed, await StateAsync(clock, seeded.Task));
 
         var registry = ReconnectedMachine(clock, "m1");
         Assert.Equal(0, await NewDispatch(clock, registry).RehydrateMachineAsync("m1", default));
@@ -250,7 +250,7 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         clock.Advance(Window + TimeSpan.FromSeconds(1));
         await NewDispatch(clock, registry).CheckLivenessAsync(default);
 
-        Assert.Equal(TaskState.Submitted, await StateAsync(clock, seeded.Task));
+        Assert.Equal(TaskState.Failed, await StateAsync(clock, seeded.Task));
         Assert.Equal(LivenessLossReason.LivenessTimeout, await LastReasonAsync(seeded.Task));
     }
 
@@ -302,7 +302,7 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         // put the task and it stays submitted for a live machine to claim later.
         await NewDispatch(clock, registry).RunDispatchPassAsync(default);
 
-        Assert.Equal(TaskState.Submitted, await StateAsync(clock, seeded.Task));
+        Assert.Equal(TaskState.Failed, await StateAsync(clock, seeded.Task));
         Assert.Equal(
             [LivenessLossReason.MachineReboot],
             await RequeueReasonsAsync(seeded.Task));
@@ -326,12 +326,13 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         await NewDispatch(clock, registry).RunDispatchPassAsync(default);
         registry.Unregister(connection);
 
-        // The pass claimed the just-requeued task onto the corpse socket, the send failed,
-        // and the task paid a second requeue against its §9 check 7 cap.
+        // Failed is not claimable, so the old double-requeue onto a corpse socket
+        // cannot happen: one loss, one fail-park.
+        Assert.Equal(TaskState.Failed, await StateAsync(clock, seeded.Task));
         Assert.Equal(
-            [LivenessLossReason.MachineReboot, LivenessLossReason.AckTimeout],
+            [LivenessLossReason.MachineReboot],
             await RequeueReasonsAsync(seeded.Task));
-        Assert.Equal(2, await RequeueCountAsync(seeded.Task));
+        Assert.Equal(1, await RequeueCountAsync(seeded.Task));
     }
 
     // ── The two fixes together ───────────────────────────────────────────────────
@@ -355,6 +356,10 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         var reconnected = LiveConnection(clock, registry, "m1");
         var dispatch = NewDispatch(clock, registry);
         Assert.Equal(0, await dispatch.RehydrateMachineAsync("m1", default));
+
+        await using (var wake = pg.NewContext())
+            Assert.IsType<StoreResult.Applied>(
+                await new TaskStore(wake, clock).ApplyAsync(seeded.Task, new WakeParked("retry")));
 
         // It comes back the ordinary way instead — a fresh claim on a live socket.
         await dispatch.RunDispatchPassAsync(default);
@@ -392,7 +397,7 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         StayAliveFor(clock, registry, seeded.Task, Ceiling + Window);
         await NewDispatch(clock, registry).CheckLivenessAsync(default);
 
-        Assert.Equal(TaskState.Submitted, await StateAsync(clock, seeded.Task));
+        Assert.Equal(TaskState.Failed, await StateAsync(clock, seeded.Task));
         Assert.Equal(LivenessLossReason.NoProgress, await LastReasonAsync(seeded.Task));
         var kill = Assert.Single(connection.Commands.OfType<KillCommand>());
         Assert.Equal(seeded.Task, kill.Task);
@@ -424,7 +429,7 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         clock.Advance(Window + TimeSpan.FromSeconds(1));
         await NewDispatch(clock, registry).CheckLivenessAsync(default);
 
-        Assert.Equal(TaskState.Submitted, whenKilled);
+        Assert.Equal(TaskState.Failed, whenKilled);
         Assert.Equal(1, await RequeueCountAsync(seeded.Task));
     }
 
@@ -444,7 +449,7 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         clock.Advance(Window + TimeSpan.FromSeconds(1));
         await NewDispatch(clock, registry).CheckLivenessAsync(default);
 
-        Assert.Equal(TaskState.Submitted, await StateAsync(clock, seeded.Task));
+        Assert.Equal(TaskState.Failed, await StateAsync(clock, seeded.Task));
         Assert.Equal(1, await RequeueCountAsync(seeded.Task));
         Assert.Equal([LivenessLossReason.LivenessTimeout], await RequeueReasonsAsync(seeded.Task));
     }
@@ -462,7 +467,10 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
 
         clock.Advance(Window + TimeSpan.FromSeconds(1));
         await dispatch.CheckLivenessAsync(default);
-        // The requeue's own notify wake, which puts the task straight back onto the one
+        await using (var wake = pg.NewContext())
+            Assert.IsType<StoreResult.Applied>(
+                await new TaskStore(wake, clock).ApplyAsync(seeded.Task, new WakeParked("retry")));
+        // The Lead resume, which puts the task straight back onto the one
         // machine available — the ordinary outcome, and the reason the echo is dangerous.
         await dispatch.RunDispatchPassAsync(default);
         Assert.Equal(TaskState.Working, await StateAsync(clock, seeded.Task));
@@ -500,6 +508,9 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
 
         clock.Advance(Window + TimeSpan.FromSeconds(1));
         await dispatch.CheckLivenessAsync(default);
+        await using (var wake = pg.NewContext())
+            Assert.IsType<StoreResult.Applied>(
+                await new TaskStore(wake, clock).ApplyAsync(seeded.Task, new WakeParked("retry")));
         await dispatch.RunDispatchPassAsync(default);
 
         // Long past the echo window: the plane can no longer tell a very late echo from the
@@ -510,7 +521,7 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         await NewSink(clock, registry).HandleAsync(
             new ExitedEvent(seeded.Task, ExitCode: 1, clock.GetUtcNow()));
 
-        Assert.Equal(TaskState.Submitted, await StateAsync(clock, seeded.Task));
+        Assert.Equal(TaskState.Failed, await StateAsync(clock, seeded.Task));
         Assert.Equal(
             [LivenessLossReason.LivenessTimeout, LivenessLossReason.ProcessExited],
             await RequeueReasonsAsync(seeded.Task));
@@ -582,8 +593,12 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         var raced = new CommitAfterTaskRead(async () =>
         {
             await using (var requeue = pg.NewContext())
-                Assert.IsType<StoreResult.Applied>(await new TaskStore(requeue, clock)
+            {
+                var store = new TaskStore(requeue, clock);
+                Assert.IsType<StoreResult.Applied>(await store
                     .ApplyAsync(seeded.Task, new LivenessLost(LivenessLossReason.MachineReboot)));
+                Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(seeded.Task, new WakeParked()));
+            }
             await using var redispatch = pg.NewContext();
             Assert.IsType<StoreResult.Applied>(await new TaskStore(redispatch, clock).DispatchNextAsync(
                 new MachineSnapshot("m1", Ready: true, UnderBackPressure: false, Set("default")),
@@ -789,7 +804,7 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         // So it takes the remedy a failed send takes (§10 best-effort commands), where before
         // the throw unwound out of the pass and left this row working with nothing working it
         // — and untracked, so no liveness clock would ever come back for it.
-        Assert.Equal(TaskState.Submitted, await StateAsync(clock, task));
+        Assert.Equal(TaskState.Failed, await StateAsync(clock, task));
         Assert.Equal([LivenessLossReason.AckTimeout], await RequeueReasonsAsync(task));
         Assert.Equal(1, await RequeueCountAsync(task));
         Assert.Empty(registry.TasksOn("m1"));

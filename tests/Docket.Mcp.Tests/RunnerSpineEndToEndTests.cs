@@ -299,10 +299,10 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
         Assert.Equal(HttpStatusCode.Unauthorized, await McpProbeAsync(baseUrl, command.WorkerToken, ct));
         Assert.Equal(HttpStatusCode.Unauthorized, await McpProbeAsync(baseUrl, machineToken, ct));
 
-        // And the work it held went back in the queue instead of being abandoned on a box
-        // nobody trusts. It stays submitted: the only machine in the fleet just left it.
+        // And the work it held failed rather than being abandoned on a box nobody
+        // trusts. Failed is a park the Lead did not ask for; the only machine just left.
         await using (var db = pg.NewContext())
-            Assert.Equal(TaskState.Submitted,
+            Assert.Equal(TaskState.Failed,
                 (await db.Tasks.AsNoTracking().SingleAsync(t => t.Id == task.Value, ct)).State);
 
         await app.StopAsync(ct);

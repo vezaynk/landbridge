@@ -258,7 +258,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
         await sink.HandleAsync(new ExitedEvent(taskId, ExitCode: 0, clock.GetUtcNow()));
 
-        Assert.Equal(TaskState.Submitted, await StateAsync(clock, taskId));
+        Assert.Equal(TaskState.Failed, await StateAsync(clock, taskId));
         Assert.Empty(registry.TasksOn("m1"));
     }
 
@@ -280,8 +280,8 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
         await sink.HandleAsync(new RebootedEvent("m1", clock.GetUtcNow()));
 
-        Assert.Equal(TaskState.Submitted, await StateAsync(clock, first));
-        Assert.Equal(TaskState.Submitted, await StateAsync(clock, second));
+        Assert.Equal(TaskState.Failed, await StateAsync(clock, first));
+        Assert.Equal(TaskState.Failed, await StateAsync(clock, second));
         Assert.Empty(registry.TasksOn("m1"));
     }
 
@@ -352,20 +352,18 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
 
         await using var v = pg.NewContext();
         var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
-        Assert.Equal(TaskState.Submitted, row.State);
+        Assert.Equal(TaskState.Failed, row.State);
         Assert.Equal(1, row.InfrastructureRequeues); // infra counter, never verification (§6)
-        Assert.Null(row.ParkMachine);                 // requeued, not parked
+        Assert.Null(row.ParkMachine);                 // fail-park; no park record from a silent machine
         Assert.True((await v.WorkerInstances.AsNoTracking().SingleAsync(w => w.Id == instance.Value)).Revoked);
         Assert.Empty(registry.TasksOn("m1"));
     }
 
     [SkippableFact]
-    public async Task Exited_while_verifying_untracks_and_is_moot()
+    public async Task Exited_while_verifying_fails_the_attempt()
     {
-        // Regression for the state-aware untrack: a task that reached verifying (the
-        // worker reported a result before its process ended) is done on this
-        // machine, so the exit still untracks it and changes no state — only
-        // blocked_on_input is held tracked across an exit.
+        // A report keeps the process so the Lead can reply. If that process then
+        // dies, the attempt fails — the Lead cannot doorbell a corpse.
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = TimeProvider.System;
         var scopes = ScopeFactory(clock);
@@ -382,7 +380,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
         await sink.HandleAsync(new ExitedEvent(id, ExitCode: 0, clock.GetUtcNow()));
 
-        Assert.Equal(TaskState.Verifying, await StateAsync(clock, id));
+        Assert.Equal(TaskState.Failed, await StateAsync(clock, id));
         Assert.Empty(registry.TasksOn("m1"));
     }
 
@@ -410,8 +408,8 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
 
         await using var v = pg.NewContext();
         var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
-        Assert.Equal(TaskState.Submitted, row.State);
-        Assert.Equal(1, row.InfrastructureRequeues); // §9 check 7, infra never verification
+        Assert.Equal(TaskState.Failed, row.State);
+        Assert.Equal(1, row.InfrastructureRequeues); // infra counter, never verification
         // The trail says the agent stopped, not that the harness died — different remedies.
         Assert.Equal(LivenessLossReason.TurnEndedWithoutResult, row.LastRequeueReason);
         Assert.True((await v.WorkerInstances.AsNoTracking().SingleAsync(w => w.Id == instance.Value)).Revoked);
@@ -503,7 +501,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
 
         await using var v = pg.NewContext();
         var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
-        Assert.Equal(TaskState.Submitted, row.State);
+        Assert.Equal(TaskState.Failed, row.State);
         Assert.Equal(LivenessLossReason.TurnEndedWithoutResult, row.LastRequeueReason);
     }
 

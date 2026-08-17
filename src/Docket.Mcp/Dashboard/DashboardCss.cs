@@ -73,7 +73,7 @@ internal static class DashboardCss
     .state-verifying { background: var(--warn-bg); color: var(--warn); }
     .state-blockedoninput, .state-parked, .backpressure { background: var(--warn-bg); color: var(--warn); }
     .state-completed { background: var(--ok-bg); color: var(--ok); }
-    .state-rejected, .state-canceled, .down { background: var(--bad-bg); color: var(--bad); }
+    .state-failed, .state-rejected, .state-canceled, .down { background: var(--bad-bg); color: var(--bad); }
     .pill-row { display: flex; flex-wrap: wrap; gap: 6px; }
     .empty { color: var(--muted); font-style: italic; margin: 8px 0; }
     .nt { color: var(--muted); font-size: 12px; }

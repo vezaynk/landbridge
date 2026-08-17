@@ -305,6 +305,20 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
         await PlaneProbe.AcceptAsync(lead, task, ct);
     }
 
+    /// <summary>
+    /// Lead resume of a failed attempt. The plane no longer requeues; the bar
+    /// simulates the Lead waking the park so dispatch can place it again.
+    /// </summary>
+    public async Task ResumeFailedAsync(TaskId task, CancellationToken ct)
+    {
+        await using var db = pg.NewContext();
+        var store = new TaskStore(db, TimeProvider.System);
+        var result = await store.ApplyAsync(task, new WakeParked("chaos: resume after fail"), ct);
+        if (result is not StoreResult.Applied)
+            throw new InvalidOperationException($"resume of {task} did not apply: {result.GetType().Name}");
+        Note($"resumed failed task {task}");
+    }
+
     private Task<McpClient> ConnectLeadAsync(CancellationToken ct) => ConnectMcpAsync(_leadToken, ct);
 
     /// <summary>

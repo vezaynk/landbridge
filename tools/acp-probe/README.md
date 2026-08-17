@@ -27,7 +27,7 @@ this is cheap enough to run on every machine during enroll.
   `session/new`, so the worker has no docket tools and can neither read its task nor report
   a result.
 - **`protocolVersion`** — every agent measured on 2026-08-15 answered `1`. `AcpClient`
-  speaks 1 and 2 and warns only outside that range.
+  speaks 1 and warns outside that.
 - **`authMethods`** — which ids the agent will accept at `authenticate`, in its own order.
   A non-empty list means authentication is *available*; whether it is *required* only shows
   up when `session/new` answers `-32000`. `AcpClient` runs the step on that refusal and takes
@@ -48,7 +48,7 @@ codex e2e tier produced two transcript lines and failed on exactly this. Reprodu
 spending anything, since none of these calls reach a model:
 
 ```
-echo '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":2,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"clientInfo":{"name":"p","version":"0"}}}
+echo '{"jsonrpc":"2.0","id":0,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{"fs":{"readTextFile":false,"writeTextFile":false},"terminal":false},"clientInfo":{"name":"p","version":"0"}}}
 {"jsonrpc":"2.0","id":1,"method":"authenticate","params":{"methodId":"api-key"}}
 {"jsonrpc":"2.0","id":2,"method":"session/new","params":{"cwd":"/tmp","mcpServers":[]}}' | codex-acp
 ```

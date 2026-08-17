@@ -201,21 +201,25 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
             var echoed = await ReadExactlyAsync(heldStream, probe.Length, ct);
             Assert.True(probe.AsSpan().SequenceEqual(echoed), "the held forward never round-tripped bytes");
 
-            // The producer reports and leaves working, through the plane's OWN store — so the
-            // §8.3 teardown is wired exactly as a production host wires it.
+            // A report keeps the process and the service — the Lead can still reach
+            // it while adjudicating. Teardown is the verdict.
             var instanceA = await IncumbentInstanceAsync(taskA, ct);
             await using (var scope = plane.Services.CreateAsyncScope())
             {
+                var store = scope.ServiceProvider.GetRequiredService<TaskStore>();
                 Assert.IsType<StoreResult.Applied>(
-                    await scope.ServiceProvider.GetRequiredService<TaskStore>().ApplyAsync(
+                    await store.ApplyAsync(
                         taskA, new ReportResult(new WorkerCaller(team, taskA, instanceA), "served"), ct));
+                Assert.True(await ServiceExistsAsync(team, ServiceName, ct),
+                    "a report must keep the registered service so the Lead can still reach it");
+                Assert.False(await ConnectionIsDeadAsync(heldStream, ct),
+                    "the splice must survive a report; verifying is not a teardown");
+                Assert.IsType<StoreResult.Applied>(
+                    await store.ApplyAsync(taskA, new VerdictAccept(new LeadClaim(team)), ct));
             }
 
-            // Bookkeeping (§6/§8.3): the registration is gone…
             Assert.False(await ServiceExistsAsync(team, ServiceName, ct),
-                "registered_services row for the echo service was not cleared when the producer left working");
-            // …and so is the live connection through it, with the producer's worker — and the
-            // echo service it started — still running, which is the whole point.
+                "registered_services row for the echo service was not cleared on accept");
             Assert.True(await ConnectionIsDeadAsync(heldStream, ct),
                 "the established splice outlived the task that authorized it (§8.3)");
         }

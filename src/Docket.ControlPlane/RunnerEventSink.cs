@@ -241,6 +241,12 @@ public sealed class RunnerEventSink(
                 if (!awaitingLead)
                     await store.ApplyAsync(e.Task, new LivenessLost(LivenessLossReason.ProcessExited), ct);
             }
+            else if (state == TaskState.Verifying)
+            {
+                // A report keeps the process. If it then dies, that is an infra
+                // fail — the Lead cannot reply into a corpse.
+                await store.ApplyAsync(e.Task, new LivenessLost(LivenessLossReason.ProcessExited), ct);
+            }
         });
 
         // §6/§11: blocked_on_input (and a working question whose process died)
@@ -288,7 +294,7 @@ public sealed class RunnerEventSink(
             foreach (var task in held)
             {
                 var state = await store.GetStateAsync(task, ct);
-                if (state is TaskState.Working or TaskState.BlockedOnInput)
+                if (state is TaskState.Working or TaskState.BlockedOnInput or TaskState.Verifying)
                     await store.ApplyAsync(task, new LivenessLost(LivenessLossReason.MachineReboot), ct);
             }
         });

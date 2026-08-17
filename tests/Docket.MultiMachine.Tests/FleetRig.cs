@@ -689,7 +689,16 @@ internal sealed class FleetRig(
         {
             if (await done())
                 return true;
-            if (await StateAsync(task, ct) == TaskState.Submitted && attempts < maxAttempts)
+            var state = await StateAsync(task, ct);
+            // Infra loss is fail-and-park. The Lead would resume; the bar does that.
+            if (state == TaskState.Failed && attempts < maxAttempts)
+            {
+                await using var db = pg.NewContext();
+                var store = new TaskStore(db, TimeProvider.System);
+                await store.ApplyAsync(task, new WakeParked("e2e: resume after fail"), ct);
+                state = await StateAsync(task, ct);
+            }
+            if (state == TaskState.Submitted && attempts < maxAttempts)
             {
                 await DispatchToAsync(machineId, ct);
                 attempts++;

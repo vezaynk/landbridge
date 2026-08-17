@@ -125,14 +125,15 @@ public sealed record ReportResult(Actor Actor, string? ResultReference, string? 
 }
 
 /// <summary>
-/// verifying → completed. Caller identity is not an agent; in review mode the
-/// verdict carries human confirmation (§6, §7).
+/// verifying → completed. Caller identity is not an agent. Review mode trusts
+/// the Lead; <see cref="HumanConfirmed"/> is accepted but not gated on.
 /// </summary>
 public sealed record VerdictAccept(Actor Actor, bool HumanConfirmed = false) : TaskCommand(Actor);
 
 /// <summary>
-/// verifying → submitted while verification retries remain, else → rejected
-/// (§6). Same identity gate as <see cref="VerdictAccept"/>.
+/// verifying → rejected. A fail is not a redispatch: if the Lead wants more
+/// from this worker they reply (<see cref="LeadMessage"/>) instead. Same
+/// identity gate as <see cref="VerdictAccept"/>.
 /// </summary>
 public sealed record VerdictFail(Actor Actor, bool HumanConfirmed = false) : TaskCommand(Actor);
 

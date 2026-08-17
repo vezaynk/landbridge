@@ -135,9 +135,9 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
 
         await using var v = pg.NewContext();
         var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
-        Assert.Equal(TaskState.Submitted, row.State);
+        Assert.Equal(TaskState.Failed, row.State);
         Assert.Equal(1, row.InfrastructureRequeues); // infra counter, never verification (§6)
-        Assert.Null(row.ParkMachine);                 // requeued, not parked
+        Assert.Null(row.ParkMachine);
         Assert.Null(row.CurrentInstanceId);
         Assert.True((await v.WorkerInstances.AsNoTracking().SingleAsync(w => w.Id == instance.Value)).Revoked);
         Assert.Empty(registry.TasksOn("m1"));
