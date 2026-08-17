@@ -1,15 +1,15 @@
-using Docket.ControlPlane.Tests;
-using Docket.Core;
-using CollabProgram = Docket.CollabHarness.Program;
+using Landbridge.ControlPlane.Tests;
+using Landbridge.Core;
+using CollabProgram = Landbridge.CollabHarness.Program;
 
-namespace Docket.MultiMachine.Tests;
+namespace Landbridge.MultiMachine.Tests;
 
 /// <summary>
 /// The multi-machine collaboration crown (spec §8.3), scripted/deterministic tier:
-/// several <c>docketd</c> machines coordinating through one control plane + relay to
+/// several <c>landbridged</c> machines coordinating through one control plane + relay to
 /// complete a task, with <b>no LLM and no fakes on any surface that matters</b>. A real
 /// plane, a real relay validating grants against it, and N real runner rigs each
-/// spawning the scripted <c>Docket.CollabHarness</c> — steered entirely by each task's
+/// spawning the scripted <c>Landbridge.CollabHarness</c> — steered entirely by each task's
 /// opaque prose description (§7).
 ///
 /// <para>Every scenario spans ≥2 distinct machines and asserts on committed

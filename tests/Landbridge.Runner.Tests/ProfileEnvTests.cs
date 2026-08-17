@@ -1,12 +1,12 @@
-using Docket.Core;
+using Landbridge.Core;
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.Runner.Tests;
+namespace Landbridge.Runner.Tests;
 
 /// <summary>
 /// #112 G3: <c>profiles[].env</c> is a per-spawn environment map with the same
 /// <c>{…}</c> substitutions <c>spawn</c> already gets. Load validation refuses the
-/// reserved <c>DOCKET_*</c> names; the supervisor substitutes and stamps the rest
+/// reserved <c>LANDBRIDGE_*</c> names; the supervisor substitutes and stamps the rest
 /// onto a real child.
 /// </summary>
 public class ProfileEnvTests
@@ -38,11 +38,11 @@ public class ProfileEnvTests
     }
 
     [Theory]
-    [InlineData("DOCKET_SESSION_ID")]
-    [InlineData("DOCKET_MACHINE_ID")]
-    [InlineData("DOCKET_WORKER_TOKEN")]
-    [InlineData("DOCKET_TRACEPARENT")]
-    public void Refuses_the_variables_docketd_stamps_itself(string key)
+    [InlineData("LANDBRIDGE_SESSION_ID")]
+    [InlineData("LANDBRIDGE_MACHINE_ID")]
+    [InlineData("LANDBRIDGE_WORKER_TOKEN")]
+    [InlineData("LANDBRIDGE_TRACEPARENT")]
+    public void Refuses_the_variables_landbridged_stamps_itself(string key)
     {
         var ex = Assert.Throws<RunnerConfigException>(() =>
             RunnerConfig.Load(WithEnv($$"""{ "{{key}}": "forged" }""")));
@@ -87,23 +87,23 @@ public sealed class ProfileEnvSpawnTests : IDisposable
             TestKit.Profile("echo-env", env: new Dictionary<string, string>
             {
                 ["GROK_HOME"] = "{work_dir}/.grok",
-                ["DOCKET_PROFILE_ENV_MARKER"] = "from-profile",
+                ["LANDBRIDGE_PROFILE_ENV_MARKER"] = "from-profile",
             }),
             "machine-42");
 
         var env = await ReadEnvMarker(task);
         var workDir = Path.Combine(_workRoot, task.ToString());
 
-        Assert.Equal("from-profile", env["DOCKET_PROFILE_ENV_MARKER"]);
+        Assert.Equal("from-profile", env["LANDBRIDGE_PROFILE_ENV_MARKER"]);
         // Verbatim substitution, so the expectation is verbatim too: the declared value is
         // "{work_dir}/.grok" and `Substitute` only replaces the token, leaving the operator's
         // own separator alone. NOT Path.Combine — on Windows that builds an all-backslash
         // string while the actual keeps the config's forward slash before `.grok`, which is
-        // exactly how this failed the Windows leg of #164. docketd must not silently rewrite
+        // exactly how this failed the Windows leg of #164. landbridged must not silently rewrite
         // a value the operator wrote; spawn argv and files[] paths substitute the same way.
         Assert.Equal($"{workDir}/.grok", env["GROK_HOME"]);
-        Assert.Equal(task.ToString(), env["DOCKET_SESSION_ID"]);
-        Assert.Equal("machine-42", env["DOCKET_MACHINE_ID"]);
+        Assert.Equal(task.ToString(), env["LANDBRIDGE_SESSION_ID"]);
+        Assert.Equal("machine-42", env["LANDBRIDGE_MACHINE_ID"]);
 
         Assert.True(supervisor.Kill(task));
     }

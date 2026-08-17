@@ -1,9 +1,9 @@
-using Docket.Core;
+using Landbridge.Core;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-namespace Docket.ControlPlane;
+namespace Landbridge.ControlPlane;
 
 /// <summary>
 /// The §11 wait-TTL sweeper. Auto-park is off by default: a live ACP session is
@@ -22,7 +22,7 @@ namespace Docket.ControlPlane;
 /// engine owns every transition (§15), never raw SQL. Machine death is checked
 /// first: a task on a dead machine requeues rather than parking onto a machine
 /// that could never resume it. The sweep is a periodic <see cref="TimeProvider"/>
-/// timer with a fresh scoped <see cref="DocketDbContext"/> per pass, mirroring
+/// timer with a fresh scoped <see cref="LandbridgeDbContext"/> per pass, mirroring
 /// <see cref="DispatchService"/>.
 ///
 /// Race safety: a Lead answering (<see cref="AnswerInput"/>) at the same instant
@@ -45,7 +45,7 @@ public sealed class WaitTtlSweeper : IHostedService
     /// <summary>
     /// How long a task may sit in blocked_on_input before it parks. Off by default
     /// (<see cref="Timeout.InfiniteTimeSpan"/>): a live ACP session is held until a
-    /// Lead answers or calls <c>park_session</c>. Override with <c>Docket:WaitTtl</c>
+    /// Lead answers or calls <c>park_session</c>. Override with <c>Landbridge:WaitTtl</c>
     /// to restore a timer. Zero and infinite both mean "do not auto-park".
     /// </summary>
     public static readonly TimeSpan DefaultWaitTtl = Timeout.InfiniteTimeSpan;
@@ -55,11 +55,11 @@ public sealed class WaitTtlSweeper : IHostedService
     /// treated as having lost its machine and requeued. 90 seconds — six missed
     /// 15-second heartbeats (the runner default) and comfortably above the
     /// per-task liveness window, so a briefly-quiet machine is not mistaken for a
-    /// dead one. Override with <c>Docket:MachineLivenessTtl</c>.
+    /// dead one. Override with <c>Landbridge:MachineLivenessTtl</c>.
     /// </summary>
     public static readonly TimeSpan DefaultMachineLivenessWindow = TimeSpan.FromSeconds(90);
 
-    /// <summary>How often a sweep runs. Override with <c>Docket:WaitTtlSweepInterval</c>.</summary>
+    /// <summary>How often a sweep runs. Override with <c>Landbridge:WaitTtlSweepInterval</c>.</summary>
     public static readonly TimeSpan DefaultSweepInterval = TimeSpan.FromSeconds(60);
 
     private CancellationTokenSource? _cts;

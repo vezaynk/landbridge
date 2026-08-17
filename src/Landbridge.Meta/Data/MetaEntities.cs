@@ -1,7 +1,7 @@
-namespace Docket.Meta.Data;
+namespace Landbridge.Meta.Data;
 
 /// <summary>
-/// The lifecycle state of an Instance (spec §3, docket-meta). The saga drives
+/// The lifecycle state of an Instance (spec §3, landbridge-meta). The saga drives
 /// <see cref="Provisioning"/> → <see cref="Ready"/>; an operator suspends/resumes
 /// and destroys. <see cref="Failed"/> is a saga stall recorded with the step that
 /// stalled (<see cref="InstanceRow.FailedStep"/>) — recoverable by re-running the
@@ -150,7 +150,7 @@ public sealed class InstanceRow
 {
     public Guid Id { get; set; }
 
-    /// <summary>DNS-safe instance name; the subdomain label under <c>docket.&lt;domain&gt;</c>.</summary>
+    /// <summary>DNS-safe instance name; the subdomain label under <c>landbridge.&lt;domain&gt;</c>.</summary>
     public required string Name { get; set; }
 
     /// <summary>A human label grouping instances (spec §3 Accounts — name only, no billing).</summary>
@@ -159,7 +159,7 @@ public sealed class InstanceRow
     public Guid HostId { get; set; }
     public HostRow? Host { get; set; }
 
-    /// <summary>The pinned docket image tag this instance runs (spec §3 image rollout).</summary>
+    /// <summary>The pinned landbridge image tag this instance runs (spec §3 image rollout).</summary>
     public required string ImageTag { get; set; }
 
     public InstanceState State { get; set; } = InstanceState.Provisioning;

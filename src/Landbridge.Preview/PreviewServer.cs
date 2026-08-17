@@ -6,7 +6,7 @@ using System.Net.WebSockets;
 using System.Security.Authentication;
 using Microsoft.Extensions.Logging;
 
-namespace Docket.Preview;
+namespace Landbridge.Preview;
 
 /// <summary>
 /// The HTTP preview frontend's connection server (spec §8.4). It owns a raw
@@ -181,7 +181,7 @@ public sealed class PreviewServer : IAsyncDisposable
         try
         {
             // HEAD-STRIP before the splice (§8.4): drop the operator's Authorization
-            // and the docket_session/docket_preview cookies so they never reach the
+            // and the landbridge_session/landbridge_preview cookies so they never reach the
             // team's workload code, which receives these bytes verbatim. The one
             // deliberate exception to never-rewrite — auth material, not app content.
             var initial = Concat(head.StripAuthMaterial(), head.Extra);

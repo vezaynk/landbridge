@@ -1,6 +1,6 @@
 using System.Text.RegularExpressions;
 
-namespace Docket.HarnessBump.Tests;
+namespace Landbridge.HarnessBump.Tests;
 
 /// <summary>
 /// Guards the coupling between the bot's merge gate and ci.yml's job names. The gate is

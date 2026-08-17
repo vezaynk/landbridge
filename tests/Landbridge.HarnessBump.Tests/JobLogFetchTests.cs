@@ -1,4 +1,4 @@
-namespace Docket.HarnessBump.Tests;
+namespace Landbridge.HarnessBump.Tests;
 
 /// <summary>
 /// The log fetch, which is the one step the original fixture tests could not see: they fed log TEXT
@@ -10,7 +10,7 @@ namespace Docket.HarnessBump.Tests;
 /// </summary>
 public class JobLogFetchTests
 {
-    private const string Repo = "vezaynk/docket-mcp";
+    private const string Repo = "vezaynk/landbridge-mcp";
     private const long JobId = 94861882031;
 
     [Fact]
@@ -64,9 +64,9 @@ public class JobLogFetchTests
         // point is that the escapes are in the surrounding output, never in the summary itself, so
         // once the fetch is allowed to return the bytes the parser needs nothing else.
         var log = string.Join('\n',
-            "2026-08-14T18:44:33.1000000Z \u001b[32mPassed\u001b[0m Docket.MultiMachine.Tests.RealClaude...",
+            "2026-08-14T18:44:33.1000000Z \u001b[32mPassed\u001b[0m Landbridge.MultiMachine.Tests.RealClaude...",
             "2026-08-14T18:44:35.2000000Z \u001b[1;31mfail\u001b[0m: something noisy \u001b[0m",
-            "2026-08-14T18:44:37.3275571Z Passed!  - Failed:     0, Passed:     9, Skipped:     0, Total:     9, Duration: 4 m 13 s - Docket.MultiMachine.Tests.dll (net10.0)");
+            "2026-08-14T18:44:37.3275571Z Passed!  - Failed:     0, Passed:     9, Skipped:     0, Total:     9, Duration: 4 m 13 s - Landbridge.MultiMachine.Tests.dll (net10.0)");
 
         Assert.Contains('\u001b', log);
         var summary = TestSummary.Parse(log);

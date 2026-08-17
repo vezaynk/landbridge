@@ -16,11 +16,11 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
-    <Using Include="Docket.Contracts" />
+    <Using Include="Landbridge.Contracts" />
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\Docket.Contracts\Docket.Contracts.csproj" />
+    <ProjectReference Include="..\..\src\Landbridge.Contracts\Landbridge.Contracts.csproj" />
   </ItemGroup>
 
 </Project>

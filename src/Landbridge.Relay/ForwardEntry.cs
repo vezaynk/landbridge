@@ -1,6 +1,6 @@
 using System.Net.WebSockets;
 
-namespace Docket.Relay;
+namespace Landbridge.Relay;
 
 /// <summary>
 /// One forward id's pairing slot and splice (spec §8.3). Holds the consumer and

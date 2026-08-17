@@ -1,9 +1,9 @@
-using Docket.Meta.Data;
-using Docket.Meta.Provisioning;
-using Docket.Meta.Secrets;
+using Landbridge.Meta.Data;
+using Landbridge.Meta.Provisioning;
+using Landbridge.Meta.Secrets;
 using Microsoft.EntityFrameworkCore;
 
-namespace Docket.Meta.Tests;
+namespace Landbridge.Meta.Tests;
 
 /// <summary>
 /// What actually lands on disk (task #79). The in-memory suites prove the round-trip;
@@ -251,7 +251,7 @@ public class SecretsAtRestPostgresTests(MetaPostgresFixture pg)
 
         // ... plaintext in the container.
         var mcp = h.Substrate.Containers[InstanceNaming.McpContainer("sagaenc")].Spec.Env;
-        Assert.Contains("Password=" + DeterministicSecrets.FixedSecret, mcp["ConnectionStrings__Docket"]);
+        Assert.Contains("Password=" + DeterministicSecrets.FixedSecret, mcp["ConnectionStrings__Landbridge"]);
 
         // Resume reads the sealed columns back and rebuilds the containers from them —
         // the operation that breaks first if decryption is wrong.

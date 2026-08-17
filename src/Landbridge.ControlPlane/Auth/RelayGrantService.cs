@@ -1,8 +1,8 @@
 using System.Security.Cryptography;
-using Docket.Core;
+using Landbridge.Core;
 using Microsoft.EntityFrameworkCore;
 
-namespace Docket.ControlPlane.Auth;
+namespace Landbridge.ControlPlane.Auth;
 
 /// <summary>
 /// Issues and validates forward grants (spec §8.3), alongside
@@ -14,7 +14,7 @@ namespace Docket.ControlPlane.Auth;
 /// <para>Kept deliberately separate from <see cref="TokenService"/> and the
 /// credential classes: a grant is not a Principal and authenticates nothing to
 /// the MCP surface. It has its own table (<see cref="RelayGrantRow"/>) and its
-/// own <c>dkt_g_</c> prefix.</para>
+/// own <c>lbr_g_</c> prefix.</para>
 ///
 /// <para>Revocation is not this service's job — it rides the existing
 /// <see cref="ClearServicesAndForwards"/> effect in <see cref="SessionStore"/>,
@@ -26,7 +26,7 @@ namespace Docket.ControlPlane.Auth;
 ///
 /// <para>Revoking bounds only the <em>next</em> open. Ending the splices already running is
 /// the same effect's other arm — <c>close-forward</c> to both machines
-/// (<see cref="Docket.ControlPlane.ForwardTeardownService"/>) — because §8.3 bounds an
+/// (<see cref="Landbridge.ControlPlane.ForwardTeardownService"/>) — because §8.3 bounds an
 /// established splice by its owning task's <c>working</c> state, and no row can enforce
 /// that.</para>
 ///
@@ -39,7 +39,7 @@ namespace Docket.ControlPlane.Auth;
 /// mid-flight, which leaves what a reached ceiling should actually do unresolved.</para>
 /// </summary>
 public sealed class RelayGrantService(
-    DocketDbContext db, TimeProvider clock, int? forwardsPerWindow = null, TimeSpan? forwardWindow = null)
+    LandbridgeDbContext db, TimeProvider clock, int? forwardsPerWindow = null, TimeSpan? forwardWindow = null)
 {
     /// <summary>
     /// A grant establishes a connection; it does not authorize an ongoing
@@ -67,7 +67,7 @@ public sealed class RelayGrantService(
     /// <paramref name="serviceName"/> (spec §8.3 step 2). Checks, all scoped to
     /// the consumer's Team so another Team's services never leak (§8.2):
     /// the service is registered in the consumer's Team, and its owning task is
-    /// still <c>working</c>. On success mints an opaque <c>dkt_g_</c> grant
+    /// still <c>working</c>. On success mints an opaque <c>lbr_g_</c> grant
     /// (hashed at rest), a fresh forward id, and a short expiry.
     /// </summary>
     public Task<RelayGrantResult> IssueAsync(
@@ -103,7 +103,7 @@ public sealed class RelayGrantService(
 
     /// <summary>
     /// Issues a grant for the §8.3 <b>human</b> path: the consumer is the Lead's own
-    /// bound machine's <c>docketd</c>, not a task, so — exactly as for a preview —
+    /// bound machine's <c>landbridged</c>, not a task, so — exactly as for a preview —
     /// there is no consumer worker instance to bind and the mint records only the
     /// producer + Team. Runs the identical check-11 gate as <see cref="IssueAsync"/>
     /// (registered service owned by a working task in <paramref name="team"/>, which
@@ -143,7 +143,7 @@ public sealed class RelayGrantService(
         // downstream of the thing it is meant to bound.
         //
         // Counted per Team over a rolling window, on MINTS rather than open tunnels — the same
-        // choice as the §9.9 ceiling and for the same reason: what Docket authorized is
+        // choice as the §9.9 ceiling and for the same reason: what Landbridge authorized is
         // knowable, what a peer then did with it is not. A grant minted and never used still
         // spent authorization. The check runs before the service lookup so a Team in a mint
         // loop is cut off at the cheapest possible point.
@@ -254,7 +254,7 @@ public sealed class RelayGrantService(
         // 64 hex chars = 256 bits, URL-safe, same shape as TokenService's opaque
         // credentials — but its own class prefix so a grant is never mistaken for
         // a Principal-bearing token.
-        var grant = $"dkt_g_{RandomNumberGenerator.GetHexString(64)}";
+        var grant = $"lbr_g_{RandomNumberGenerator.GetHexString(64)}";
         return (grant, Hash(grant));
     }
 

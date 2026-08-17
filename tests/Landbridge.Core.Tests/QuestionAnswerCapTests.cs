@@ -1,4 +1,4 @@
-namespace Docket.Core.Tests;
+namespace Landbridge.Core.Tests;
 
 /// <summary>
 /// §10/§11 in-band question and answer: the two halves of the human-in-the-loop

@@ -1,9 +1,9 @@
-namespace Docket.ControlPlane.Auth;
+namespace Landbridge.ControlPlane.Auth;
 
 /// <summary>
 /// One issued OAuth 2.1 authorization code (spec §5). Like every other credential
 /// in the system it is opaque and only its SHA-256 lands here (§5, §13): the
-/// <c>dkt_c_</c> plaintext exists once, in the 302 to the client's redirect URI.
+/// <c>lbr_c_</c> plaintext exists once, in the 302 to the client's redirect URI.
 ///
 /// <para>The code is bound at mint to everything the token exchange must re-check
 /// (RFC 6749 §4.1.3, RFC 7636 §4.6, RFC 8707 §2): the CIMD <c>client_id</c>, the
@@ -17,7 +17,7 @@ public sealed class OAuthAuthorizationCodeRow
 {
     public Guid Id { get; set; }
 
-    /// <summary>SHA-256 of the opaque <c>dkt_c_</c> code; the code itself is never stored (§5).</summary>
+    /// <summary>SHA-256 of the opaque <c>lbr_c_</c> code; the code itself is never stored (§5).</summary>
     public string CodeHash { get; set; } = "";
 
     /// <summary>The CIMD client identifier (an HTTPS URL) the code was issued to.</summary>

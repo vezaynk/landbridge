@@ -1,7 +1,7 @@
 using System.Globalization;
 using System.Text.RegularExpressions;
 
-namespace Docket.HarnessBump;
+namespace Landbridge.HarnessBump;
 
 /// <summary>
 /// Aggregated <c>dotnet test</c> counts scraped from a job log.

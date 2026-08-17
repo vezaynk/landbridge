@@ -1,7 +1,7 @@
 # Preview TLS: wildcard certs with lego
 
 Operator recipe for putting real TLS on the HTTP preview frontend
-(`Docket.Preview`, spec §8.4). The frontend terminates TLS itself on
+(`Landbridge.Preview`, spec §8.4). The frontend terminates TLS itself on
 `*.preview.<your-domain>` from a wildcard-cert PEM you point it at; this page
 gets that PEM issued and renewed automatically with
 [lego](https://go-acme.github.io/lego/), a single-binary ACME client.
@@ -13,7 +13,7 @@ gets that PEM issued and renewed automatically with
   every label to public Certificate Transparency logs within minutes — a
   capability URL in a CT log is no longer secret. One wildcard cert keeps
   labels out of CT entirely. Wildcards require the ACME **DNS-01** challenge.
-- **TLS stays in `Docket.Preview`, issuance stays outside it.** The frontend
+- **TLS stays in `Landbridge.Preview`, issuance stays outside it.** The frontend
   routes once per connection and byte-splices, so a TLS-terminating HTTP proxy
   in front (Caddy, nginx, an ALB) is *not* supported in the data path — backend
   connection pooling would interleave different labels onto one connection.
@@ -72,10 +72,10 @@ lego writes the pair (wildcard filenames use a leading underscore):
 /var/lib/lego/certificates/_.preview.example.com.key   # private key, PEM
 ```
 
-Keep the key readable only by the account `docket-preview` runs as
+Keep the key readable only by the account `landbridge-preview` runs as
 (`chmod 600`, `chown`).
 
-## 2. Point `Docket.Preview` at the PEM
+## 2. Point `Landbridge.Preview` at the PEM
 
 Config section `Preview` (appsettings/env of the preview host process):
 
@@ -127,7 +127,7 @@ WantedBy=timers.target
 systemctl enable --now lego-preview-renew.timer
 ```
 
-**No restart needed.** `Docket.Preview` watches `CertPemPath`/`CertKeyPemPath`
+**No restart needed.** `Landbridge.Preview` watches `CertPemPath`/`CertKeyPemPath`
 and hot-reloads: when a renewal rewrites the pair, new TLS handshakes are served
 off the new cert automatically, established preview tunnels are left untouched,
 and there is no restart. `lego renew` only rewrites the files inside the expiry
@@ -136,12 +136,12 @@ only when *both* files load and the key matches the cert, so it tolerates the
 two files being rewritten non-atomically — a partially-written or mismatched
 snapshot is ignored and the current cert keeps serving until the pair settles;
 a failed reload never drops TLS. (A `--renew-hook "systemctl restart
-docket-preview"` still works if you prefer an explicit restart, but it is no
+landbridge-preview"` still works if you prefer an explicit restart, but it is no
 longer required and does cost the in-flight tunnels.)
 
 ## Alternatives
 
-- **Hosted product:** `docket-meta` already owns per-instance DNS and
+- **Hosted product:** `landbridge-meta` already owns per-instance DNS and
   provisioning credentials (spec §3), so in the hosted deployment it — not the
   instance operator — is the natural ACME DNS-01 issuer, delivering the PEM
   alongside the instance's other provisioned material.

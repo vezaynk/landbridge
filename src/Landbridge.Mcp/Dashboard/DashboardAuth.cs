@@ -1,13 +1,13 @@
-using Docket.ControlPlane.Auth;
+using Landbridge.ControlPlane.Auth;
 
-namespace Docket.Mcp.Dashboard;
+namespace Landbridge.Mcp.Dashboard;
 
 /// <summary>
 /// The dashboard's own caller-resolution step (§12 human surface), kept out of the
-/// <see cref="Docket.Mcp.Auth.DocketAuthenticationHandler"/> so the browser path never trips the
+/// <see cref="Landbridge.Mcp.Auth.LandbridgeAuthenticationHandler"/> so the browser path never trips the
 /// MCP RFC-9728 challenge. A dashboard request authenticates from <b>either</b> an
 /// <c>Authorization: Bearer</c> header (a Lead consuming the JSON twin with its
-/// token) <b>or</b> the <c>docket_session</c> HttpOnly cookie (a human in a
+/// token) <b>or</b> the <c>landbridge_session</c> HttpOnly cookie (a human in a
 /// browser). Both resolve through the same <see cref="TokenService.ValidateAsync"/>
 /// the rest of §5 uses, so revocation stays instant here too. Only a
 /// <see cref="Principal.Human"/> or a live <see cref="Principal.Lead"/> may view
@@ -22,7 +22,7 @@ namespace Docket.Mcp.Dashboard;
 internal static class DashboardAuth
 {
     /// <summary>The HttpOnly session cookie carrying an opaque human-session token.</summary>
-    public const string CookieName = "docket_session";
+    public const string CookieName = "landbridge_session";
 
     /// <summary>
     /// Resolves the caller from a bearer header first, then the session cookie, and

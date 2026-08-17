@@ -1,13 +1,13 @@
-using Docket.Contracts;
-using Docket.ControlPlane.Auth;
-using Docket.Core;
+using Landbridge.Contracts;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.Core;
 using Microsoft.Extensions.Logging;
 
-namespace Docket.ControlPlane;
+namespace Landbridge.ControlPlane;
 
 /// <summary>
-/// Drives the two docketd ends of a relay forward from a freshly-issued grant
-/// (spec §8.3). The relay has no docketd channel of its own in this deployment,
+/// Drives the two landbridged ends of a relay forward from a freshly-issued grant
+/// (spec §8.3). The relay has no landbridged channel of its own in this deployment,
 /// so the <b>control plane</b> relays <c>open-forward</c> to both ends over the
 /// runner channel: it resolves each end's machine, sends the producer its dial
 /// target and the consumer a bind instruction — both carrying the <em>same</em>
@@ -138,7 +138,7 @@ public sealed class ForwardOrchestrator(
     /// <summary>
     /// Relay a single <c>open-forward</c> to the <b>producer</b> end only, for an
     /// §8.4 HTTP-preview connection. Unlike <see cref="EstablishAsync"/> there is
-    /// no consumer <c>docketd</c> to command and no <c>forward-opened</c> to wait
+    /// no consumer <c>landbridged</c> to command and no <c>forward-opened</c> to wait
     /// for — the preview frontend is the consumer and dials the relay itself — so
     /// this just resolves the producer's machine and sends it its dial target.
     /// The producer dials on demand: a fresh grant + forward id per browser
@@ -171,7 +171,7 @@ public sealed class ForwardOrchestrator(
 /// <summary>
 /// Outcome of <see cref="ForwardOrchestrator.EstablishAsync"/>. A plain result
 /// (not <see cref="StoreResult"/>) — establishing a forward is not a task
-/// transition — kept in <c>Docket.ControlPlane</c> so the plane takes no
+/// transition — kept in <c>Landbridge.ControlPlane</c> so the plane takes no
 /// dependency on the MCP layer; the tool surface maps <see cref="Failed"/> onto
 /// its own exception type.
 /// </summary>

@@ -1,4 +1,4 @@
-namespace Docket.HarnessBump;
+namespace Landbridge.HarnessBump;
 
 /// <summary>A single package moving from one pinned version to another.</summary>
 public sealed record Bump(HarnessPackage Package, string From, string To)

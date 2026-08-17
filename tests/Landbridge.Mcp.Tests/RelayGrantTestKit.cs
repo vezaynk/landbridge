@@ -1,15 +1,15 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Net.WebSockets;
-using Docket.Contracts;
-using Docket.ControlPlane;
-using Docket.ControlPlane.Auth;
-using Docket.ControlPlane.Tests;
-using Docket.Core;
-using Docket.Mcp.Auth;
-using Docket.Mcp.Dashboard;
-using Docket.Mcp.Tools;
-using Docket.Relay;
+using Landbridge.Contracts;
+using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.ControlPlane.Tests;
+using Landbridge.Core;
+using Landbridge.Mcp.Auth;
+using Landbridge.Mcp.Dashboard;
+using Landbridge.Mcp.Tools;
+using Landbridge.Relay;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -22,7 +22,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol.Client;
 
-namespace Docket.Mcp.Tests;
+namespace Landbridge.Mcp.Tests;
 
 /// <summary>
 /// Hosts for the relay-grant tests (spec §8.3): the real control plane (MCP tools
@@ -39,7 +39,7 @@ internal static class RelayGrantTestKit
 
     /// <summary>The plane, with the relay-validation endpoint and its shared bearer configured.</summary>
     /// <param name="relayUrl">
-    /// The relay base URL <c>open_forward</c> hands docketd (§8.3). Configured up
+    /// The relay base URL <c>open_forward</c> hands landbridged (§8.3). Configured up
     /// front (the crown E2E reserves the relay's port before starting anything) so
     /// the plane and relay can be brought up in either order without a config race.
     /// </param>
@@ -55,16 +55,16 @@ internal static class RelayGrantTestKit
         if (relayValidationBearer is not null)
             settings[RelayValidationEndpoints.BearerConfigKey] = relayValidationBearer;
         if (relayUrl is not null)
-            settings["Docket:RelayUrl"] = relayUrl;
+            settings["Landbridge:RelayUrl"] = relayUrl;
         // §8.4: the shared bearer the preview frontend presents to /preview/connect.
         if (previewConnectBearer is not null)
             settings[PreviewConnectEndpoints.BearerConfigKey] = previewConnectBearer;
         if (settings.Count > 0)
             builder.Configuration.AddInMemoryCollection(settings);
 
-        builder.Services.AddDbContext<DocketDbContext>(o =>
+        builder.Services.AddDbContext<LandbridgeDbContext>(o =>
             o.UseNpgsql(connectionString).UseSnakeCaseNamingConvention());
-        builder.Services.AddDocketStore();
+        builder.Services.AddLandbridgeStore();
         builder.Services.AddScoped<TokenService>();
         builder.Services.AddScoped<RelayGrantService>();
         // §8.4: the preview mapping store + the per-connection connect orchestrator.
@@ -80,12 +80,12 @@ internal static class RelayGrantTestKit
         // §8.3: the forward orchestrator + waiter, and the event sink that completes
         // the waiter when the consumer end reports its bound port.
         builder.Services.AddSingleton<RunnerEventSink>();
-        builder.Services.AddDocketForwarding();
+        builder.Services.AddLandbridgeForwarding();
         builder.Services.AddHttpContextAccessor();
 
-        builder.Services.AddAuthentication(DocketAuthenticationHandler.SchemeName)
-            .AddScheme<AuthenticationSchemeOptions, DocketAuthenticationHandler>(
-                DocketAuthenticationHandler.SchemeName, configureOptions: null);
+        builder.Services.AddAuthentication(LandbridgeAuthenticationHandler.SchemeName)
+            .AddScheme<AuthenticationSchemeOptions, LandbridgeAuthenticationHandler>(
+                LandbridgeAuthenticationHandler.SchemeName, configureOptions: null);
         builder.Services.AddAuthorization();
 
         builder.Services.AddMcpServer()
@@ -154,7 +154,7 @@ internal static class RelayGrantTestKit
     /// <see cref="WorkerTools.DefaultRelayUrl"/>.
     /// </summary>
     public static LeadTools LeadToolsFor(
-        DocketDbContext db, TimeProvider clock, RunnerConnectionRegistry registry, IHttpContextAccessor http) =>
+        LandbridgeDbContext db, TimeProvider clock, RunnerConnectionRegistry registry, IHttpContextAccessor http) =>
         new(new SessionStore(db, clock),
             registry,
             new LeadMachineBindingService(db, clock),
@@ -166,20 +166,20 @@ internal static class RelayGrantTestKit
     /// <summary>
     /// <see cref="WorkerTools"/> wired for the direct-call tests, over the same store shape
     /// <see cref="LeadToolsFor"/> uses. <paramref name="pollIntervalMs"/> sets
-    /// <c>Docket:PermissionPollIntervalMs</c> so §11's permission wait runs at millisecond
+    /// <c>Landbridge:PermissionPollIntervalMs</c> so §11's permission wait runs at millisecond
     /// granularity against the real clock — the wait is a genuine delay loop, so a test
     /// drives it by making the ticks short rather than by advancing a fake clock through
     /// them.
     /// </summary>
     public static WorkerTools WorkerToolsFor(
-        DocketDbContext db, TimeProvider clock, RunnerConnectionRegistry registry,
+        LandbridgeDbContext db, TimeProvider clock, RunnerConnectionRegistry registry,
         IHttpContextAccessor http, int? pollIntervalMs = null)
     {
         var config = new ConfigurationBuilder();
         if (pollIntervalMs is { } ms)
             config.AddInMemoryCollection(new Dictionary<string, string?>
             {
-                ["Docket:PermissionPollIntervalMs"] = ms.ToString(),
+                ["Landbridge:PermissionPollIntervalMs"] = ms.ToString(),
             });
         return new WorkerTools(
             new SessionStore(db, clock),
@@ -287,7 +287,7 @@ internal static class RelayGrantTestKit
         (await LeadSessionAsync(pg, team, ct)).Token;
 
     /// <summary>
-    /// An enrolled machine, as <c>/docket-enroll</c> leaves it (§11): the id a Lead
+    /// An enrolled machine, as <c>/landbridge-enroll</c> leaves it (§11): the id a Lead
     /// passes to <c>bind_machine</c>, and the key the connection registry uses.
     /// </summary>
     public static async Task<Guid> EnrollMachineAsync(PostgresFixture pg, string name, CancellationToken ct)
@@ -300,7 +300,7 @@ internal static class RelayGrantTestKit
         return credentials!.MachineId;
     }
 
-    // ── Relay tunnel client helpers (the docketd sides, stubbed by the test) ──
+    // ── Relay tunnel client helpers (the landbridged sides, stubbed by the test) ──
 
     public static async Task<ClientWebSocket> ConnectTunnelAsync(
         Uri tunnelUri, string forwardId, string grant, string role, CancellationToken ct)

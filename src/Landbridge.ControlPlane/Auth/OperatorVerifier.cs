@@ -2,13 +2,13 @@ using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Extensions.Configuration;
 
-namespace Docket.ControlPlane.Auth;
+namespace Landbridge.ControlPlane.Auth;
 
 /// <summary>
 /// Verifies that the human driving the OAuth authorize step is <em>the
 /// operator</em> of this Instance (spec §5: a human session is the root every
 /// other credential descends from, §2 principle 5). This interface is the seam a
-/// future multi-user / <c>docket-meta</c> identity story replaces — today there
+/// future multi-user / <c>landbridge-meta</c> identity story replaces — today there
 /// is one operator per Instance, proven by a shared passphrase, and the whole
 /// point is that the wire protocol above it (the OAuth flow) does not change when
 /// the identity source does.
@@ -34,7 +34,7 @@ public interface IOperatorVerifier
 
 /// <summary>
 /// The v1 operator verifier: a single shared passphrase whose SHA-256 hex is held
-/// in configuration (<c>Docket:Operator:PassphraseHash</c>) — never the plaintext
+/// in configuration (<c>Landbridge:Operator:PassphraseHash</c>) — never the plaintext
 /// (§5, §13: opaque credentials hashed at rest). Verification hashes the presented
 /// passphrase the same way and compares the two <em>hashes</em> in constant time,
 /// so both the compare length and the timing are independent of the real secret.
@@ -47,7 +47,7 @@ public interface IOperatorVerifier
 public sealed class ConfiguredOperatorVerifier : IOperatorVerifier
 {
     /// <summary>Config key holding the SHA-256 hex of the operator passphrase (never the plaintext).</summary>
-    public const string PassphraseHashKey = "Docket:Operator:PassphraseHash";
+    public const string PassphraseHashKey = "Landbridge:Operator:PassphraseHash";
 
     private readonly byte[]? _expectedHashBytes;
 

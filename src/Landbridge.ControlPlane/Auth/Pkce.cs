@@ -1,18 +1,18 @@
 using System.Security.Cryptography;
 using System.Text;
 
-namespace Docket.ControlPlane.Auth;
+namespace Landbridge.ControlPlane.Auth;
 
 /// <summary>
 /// Proof Key for Code Exchange (RFC 7636), <b>S256 only</b>. OAuth 2.1 §4.1.1
 /// requires PKCE for the authorization-code grant and the MCP authorization spec
-/// requires clients to use S256 when technically capable; Docket therefore
+/// requires clients to use S256 when technically capable; Landbridge therefore
 /// advertises and accepts <c>S256</c> alone and rejects <c>plain</c> outright, so
 /// an authorization code is never bound to a downgradable challenge.
 /// </summary>
 public static class Pkce
 {
-    /// <summary>The one code-challenge method Docket supports (RFC 7636 §4.2).</summary>
+    /// <summary>The one code-challenge method Landbridge supports (RFC 7636 §4.2).</summary>
     public const string S256 = "S256";
 
     /// <summary>

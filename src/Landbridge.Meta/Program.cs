@@ -1,17 +1,17 @@
-using Docket.Meta;
-using Docket.Meta.Auth;
-using Docket.Meta.Data;
-using Docket.Meta.Edge;
-using Docket.Meta.Provisioning;
-using Docket.Meta.Secrets;
-using Docket.Meta.Substrate;
-using Docket.Meta.Web;
+using Landbridge.Meta;
+using Landbridge.Meta.Auth;
+using Landbridge.Meta.Data;
+using Landbridge.Meta.Edge;
+using Landbridge.Meta.Provisioning;
+using Landbridge.Meta.Secrets;
+using Landbridge.Meta.Substrate;
+using Landbridge.Meta.Web;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Shared Aspire service defaults (health, OTel, resilience) — the ONLY Docket
+// Shared Aspire service defaults (health, OTel, resilience) — the ONLY Landbridge
 // dependency meta carries, and it is MCP-free, so meta is structurally not an MCP
 // server (spec §3). The OTLP exporter only activates when the endpoint env is set.
 builder.AddServiceDefaults();
@@ -21,8 +21,8 @@ builder.Services.Configure<MetaOptions>(builder.Configuration.GetSection(MetaOpt
 builder.Services.AddSingleton(sp => sp.GetRequiredService<IOptions<MetaOptions>>().Value);
 
 var connectionString = builder.Configuration.GetConnectionString("Meta")
-    ?? Environment.GetEnvironmentVariable("DOCKET_META_DB")
-    ?? "Host=localhost;Database=docket_meta;Username=docket";
+    ?? Environment.GetEnvironmentVariable("LANDBRIDGE_META_DB")
+    ?? "Host=localhost;Database=landbridge_meta;Username=landbridge";
 builder.Services.AddDbContext<MetaDbContext>(o =>
     MetaDbContext.Configure(o.UseNpgsql(connectionString)));
 
@@ -70,7 +70,7 @@ var app = builder.Build();
 app.Services.GetRequiredService<MetaSecretProtector>();
 
 // Dev/single-operator convenience: apply meta's OWN migration to its OWN store at
-// startup. Unrelated to the per-instance Docket:MigrateOnStartup meta injects into
+// startup. Unrelated to the per-instance Landbridge:MigrateOnStartup meta injects into
 // instance containers (deviation #4).
 if (app.Services.GetRequiredService<MetaOptions>().MigrateOnStartup)
 {

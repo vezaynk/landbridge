@@ -1,16 +1,16 @@
-# Docket architecture
+# Landbridge architecture
 
 This is a map of how the pieces fit and why. It summarizes; the authoritative
 design is [`ideas/spec.md`](../ideas/spec.md), cited by section (§) throughout.
 Where the implementation on this branch differs from the spec's aspiration, the
-difference is called out — the spec is where Docket is going, the code is what
+difference is called out — the spec is where Landbridge is going, the code is what
 runs today.
 
 ## The shape
 
 One control plane per Instance, many machines, an optional relay, and a
 dashboard. Everything an agent touches goes through the control plane's MCP
-surface; everything a machine does goes through `docketd`. `docketd` only ever
+surface; everything a machine does goes through `landbridged`. `landbridged` only ever
 dials *out*, so it works behind NAT with no inbound firewall rule. Completion is
 adjudicated by the Lead over MCP (§7, §9 check 4) — there is no verifier process.
 
@@ -18,45 +18,45 @@ adjudicated by the Lead over MCP (§7, §9 check 4) — there is no verifier pro
    human (browser / harness)
         │  OAuth 2.1 / operator passphrase
         ▼
-  ┌───────────────────────── Docket.Mcp (the host) ─────────────────────────┐
+  ┌───────────────────────── Landbridge.Mcp (the host) ─────────────────────────┐
   │  MCP tools  ·  /runner WS  ·  OAuth AS  ·  /enroll                       │
   │  /relay/validate  ·  /dashboard         (spec §5, §10, §12)              │
   │                                                                          │
-  │  Docket.ControlPlane:  SessionStore ─► Docket.Core (pure state machine)     │
+  │  Landbridge.ControlPlane:  SessionStore ─► Landbridge.Core (pure state machine)     │
   │  DispatchService · WaitTtlSweeper · TokenService · DashboardQueries      │
   └───────────────┬──────────────────────────────────────────┬─────────────┘
                   │  Postgres (per Instance)                   │ runner channel
                   ▼  SKIP LOCKED dispatch · LISTEN/NOTIFY       │ (WebSocket, frozen §10 vocab)
           ┌───────────────┐                            ┌───────┴───────────────┐
-          │  tasks, events│                            │  docketd (Machine A)  │
+          │  tasks, events│                            │  landbridged (Machine A)  │
           │  credentials  │                            │  ProcessSupervisor    │
           │  relay_grants │                            │  spawns worker harness│
           └───────────────┘                            └───────┬───────────────┘
                                                                │ spawns
-                                        DOCKET_SESSION_ID, mcp.json (0600) ▼
+                                        LANDBRIDGE_SESSION_ID, mcp.json (0600) ▼
                                                         ┌──────────────────────┐
                                                         │  worker harness       │
                                                         │  (claude -p, MCP      │
                                                         │  client → the host)   │
                                                         └──────────────────────┘
 
-  docket-relay (separate module):  Machine A's docketd ⇄ relay ⇄ Machine B's docketd
+  landbridge-relay (separate module):  Machine A's landbridged ⇄ relay ⇄ Machine B's landbridged
 ```
 
-- **`Docket.Mcp`** is the single ASP.NET process (`docket` + `docket-mcp` in spec
+- **`Landbridge.Mcp`** is the single ASP.NET process (`landbridge` + `landbridge-mcp` in spec
   terms). It hosts the MCP tool endpoint, the `/runner` WebSocket, the OAuth
   authorization-server endpoints, `/enroll` + `/machine/refresh`,
   `/relay/validate`, and the web dashboard. It owns one Postgres
   database and is the *only* path to the state machine — there is no
   client-direct table access (spec §3, §15).
-- **`Docket.ControlPlane`** is the library behind that host: the store, auth,
+- **`Landbridge.ControlPlane`** is the library behind that host: the store, auth,
   dispatch loop, TTL sweeper, and dashboard read models.
-- **`Docket.Core`** is the pure engine underneath the store.
-- **`docketd`** (`Docket.Runner`) runs on each machine. It is transport: it
+- **`Landbridge.Core`** is the pure engine underneath the store.
+- **`landbridged`** (`Landbridge.Runner`) runs on each machine. It is transport: it
   spawns and supervises harness processes, heartbeats, relays events, holds the
   machine credential, and opens relay tunnels. It never touches the workspace or
   interprets task content (spec §2 principle 6, §10).
-- **`docket-relay`** is a standalone module that dials the plane; it is not part
+- **`landbridge-relay`** is a standalone module that dials the plane; it is not part
   of the host process. (There is no verifier module — completion is Lead-adjudicated.)
 
 ## The engine is pure; opaque metadata rides the row
@@ -66,7 +66,7 @@ It validates that fields exist, checks identities, counts, and enforces
 transitions — it never parses a task description or evaluates completion
 criteria.
 
-`Docket.Core` embodies this literally. `SessionStateMachine` is a pure function:
+`Landbridge.Core` embodies this literally. `SessionStateMachine` is a pure function:
 `Apply(SessionRecord, SessionCommand)` returns a `TransitionResult` that is either
 `Transitioned(newRecord, effects)` or `Rejected(rule, reason)`. It has no clock,
 no I/O, and no dependencies — its `.csproj` references nothing (verify: no
@@ -86,7 +86,7 @@ record as plain columns the plane stores and returns but never dereferences:
 | `Workspace` | where/how work is isolated, port assignments | the worker's skill (§7) |
 | `ResultReference` | where the finished work lives (a commit/URL) | the Lead reading it before adjudicating, via `get_session_report`, and a human on the §12 dashboard (§8.1, §7) |
 | `CompletionProvenance` | who adjudicated a completed task (`lead-session` \| `human`) | the §12 dashboard (§9 check 4) |
-| `ParkRecord{Machine, Directory, HarnessSessionRef, Attempt}` | resume affinity | `docketd` on redispatch (§11) |
+| `ParkRecord{Machine, Directory, HarnessSessionRef, Attempt}` | resume affinity | `landbridged` on redispatch (§11) |
 | `TraceContext` | W3C `traceparent` for cross-process tracing | OpenTelemetry, not the domain |
 | `Profile` | optional runner-profile routing key | exact-match at dispatch, never parsed |
 
@@ -102,10 +102,10 @@ instantly — `TokenService` stores only a SHA-256 hash and validates by lookup:
 
 | Identity | Token prefix | Obtained | Authorizes |
 |---|---|---|---|
-| Human | `dkt_h_` | OAuth code flow / operator passphrase | create Teams, confirm verdicts, dashboard |
-| Lead | `dkt_l_` | claimed against a Team under a human session | create tasks, answer, adjudicate completion (`submit_review`), read Team state |
-| Machine (`docketd`) | `dkt_m_` / `dkt_r_` | enrollment token → client credentials | runner channel |
-| Worker | `dkt_w_` | **minted at dispatch** | MCP worker tools, scoped to `{team, task, worker, instance}` |
+| Human | `lbr_h_` | OAuth code flow / operator passphrase | create Teams, confirm verdicts, dashboard |
+| Lead | `lbr_l_` | claimed against a Team under a human session | create tasks, answer, adjudicate completion (`submit_review`), read Team state |
+| Machine (`landbridged`) | `lbr_m_` / `lbr_r_` | enrollment token → client credentials | runner channel |
+| Worker | `lbr_w_` | **minted at dispatch** | MCP worker tools, scoped to `{team, task, worker, instance}` |
 
 The asymmetry is deliberate. A Lead's authority comes down from a human directly.
 A worker's is minted by the control plane from the Lead's dispatch decision — **a
@@ -134,7 +134,7 @@ holds a token that is already dead. Token exchange is strictly narrowing: the
 only exchange in the system is enrollment → machine credentials; there is no path
 from a worker credential to a lead claim or a human session (§5, §9 check 13).
 
-The host authenticates callers with a single `DocketAuthenticationHandler` that
+The host authenticates callers with a single `LandbridgeAuthenticationHandler` that
 maps a bearer token to a typed `Principal`; the MCP tools then narrow (Lead tools
 require a lead principal, worker tools a worker principal), and `/runner` requires
 a machine principal.
@@ -178,7 +178,7 @@ Two counters, not one (`SessionRecord.InfrastructureRequeues` vs
 retries a task has for failing its criteria. **Only the verification counter drives
 `rejected`** (default limit 3). Both are capped, but they end differently: the
 infrastructure cap (`InfrastructureRequeueLimit`, default 5, configurable via
-`Docket:InfrastructureRequeueLimit`, non-positive for uncapped) abandons the task as
+`Landbridge:InfrastructureRequeueLimit`, non-positive for uncapped) abandons the task as
 `canceled` — the plane giving up on placing the work, not a verdict on it — and every
 requeue records `LivenessLossReason` on the task row and its event row so the trail
 says which signal fired. Terminal states — `completed`, `rejected`,
@@ -191,9 +191,9 @@ every guard is a field check, an identity check, a count, or a state check.
 
 ## The frozen runner wire vocabulary (§10)
 
-The control plane can be fixed by redeploying. **`docketd` cannot** — it runs on
+The control plane can be fixed by redeploying. **`landbridged` cannot** — it runs on
 customer machines and may go a year untouched. So the runner contract is the one
-frozen interface in the system, and `Docket.Contracts` enforces that in the type
+frozen interface in the system, and `Landbridge.Contracts` enforces that in the type
 system: the message hierarchy has `private protected` constructors, so no message
 type can be added from outside the assembly. A runner rejects anything outside
 the vocabulary (`RunnerWire.Decode*` returns null on an unknown `type`).
@@ -215,17 +215,17 @@ envelope key for tracing and a `heartbeat` message that carries a machine's
 declared profiles and load). Nothing in the vocabulary is domain-specific.
 
 > **Implemented subset.** The vocabulary is frozen and complete in the types, and
-> `docketd` on this branch emits all of it except two: `auth-failed` and
+> `landbridged` on this branch emits all of it except two: `auth-failed` and
 > `subagent-spawned` are defined but not yet produced (their dashboard rows render as
 > "not reported" rather than fabricated — spec §10, §12). Everything else has a
-> producer, including `alive` (docketd's own per-task process-alive assertion, §10),
+> producer, including `alive` (landbridged's own per-task process-alive assertion, §10),
 > `session-started`, `transcript-chunk`, and the three §10 process replies
 > (`process-started`, `process-stopped`, `process-written`) — each produced by the
 > handler for its command, and each handled on the plane by the process-control relay's
 > request/reply rendezvous.
 >
 > The three outbound `*-process` commands are the agent-facing half of §10's background
-> processes: a worker starts a long-running child of `docketd`, writes to its stdin, and
+> processes: a worker starts a long-running child of `landbridged`, writes to its stdin, and
 > stops it. They are the largest single addition the frozen vocabulary has taken, and
 > they are distinct records rather than one polymorphic command for the same reason
 > `stop` and `kill` are distinct — the closed hierarchy is the boundary, and the three
@@ -235,7 +235,7 @@ declared profiles and load). Nothing in the vocabulary is domain-specific.
 
 A signal cannot carry a disposition. Claude Code's SIGTERM behavior is
 abort-and-exit, which would silently turn `preserve` into `kill`. So where the
-harness reads turns off a held-open stdin, `docketd` delivers `stop` as an
+harness reads turns off a held-open stdin, `landbridged` delivers `stop` as an
 *injected turn* — the agent reads the disposition, winds down, persists, and exits
 — and reserves signals for TTL expiry and `kill`. A profile's `stop.mode`
 (`message` | `signal`) declares which delivery it supports. `ttl == 0` means kill
@@ -251,14 +251,14 @@ stream-json`) makes it ignore its argv prompt and hang instead. So the reference
 profiles declare `signal`, and a stop there is the granted TTL then a tree-kill.
 `preserve` still holds — the recorded session ref outlives the kill, so the
 transcript is resumable — but by the plane's record rather than the agent's
-cooperation. Correspondingly, `docketd`'s ack reports only what it did (a turn was
+cooperation. Correspondingly, `landbridged`'s ack reports only what it did (a turn was
 *written*; a deadline was *armed*): whether a harness consumed a written line is
 not observable without harness-specific knowledge, which the runner does not carry.
 Spec §10's as-built note has the two CLI facts.
 
 ## Restart equals reboot
 
-`docketd` keeps no persistent local state and does no process re-adoption (spec
+`landbridged` keeps no persistent local state and does no process re-adoption (spec
 §10, §15). A restart *is* a machine reboot:
 
 - On clean shutdown it kills every harness it started.
@@ -269,15 +269,15 @@ Spec §10's as-built note has the two CLI facts.
 - On reconnect it emits `rebooted`, and the affected tasks requeue against the
   infrastructure counter.
 
-Stray cleanup keys off two environment variables `docketd` stamps on every child
-it spawns, non-configurably: `DOCKET_MACHINE_ID` (the start-of-day sweep) and
-`DOCKET_SESSION_ID` (the per-task-exit sweep, which catches a dev server that
+Stray cleanup keys off two environment variables `landbridged` stamps on every child
+it spawns, non-configurably: `LANDBRIDGE_MACHINE_ID` (the start-of-day sweep) and
+`LANDBRIDGE_SESSION_ID` (the per-task-exit sweep, which catches a dev server that
 `setsid`'d out of the task's process group and would otherwise hold a port a
 later consumer's forward could reach). Discovery is per-OS: `/proc/<pid>/environ`
 on Linux, `KERN_PROCARGS2` on macOS, and on Windows a kill-on-close **Job Object**
 per worker (so the kernel does the cleanup and there is nothing to discover). The
-primary dead-man's switch is simpler still: `docketd` holds each worker's stdin
-pipe open, and if `docketd` dies the OS closes the write end, so a well-behaved
+primary dead-man's switch is simpler still: `landbridged` holds each worker's stdin
+pipe open, and if `landbridged` dies the OS closes the write end, so a well-behaved
 harness sees EOF and tears down its own tree.
 
 That switch is a per-profile declaration (`stdin`), not a universal property, because
@@ -285,27 +285,27 @@ it is not universally survivable. `deadman` is the default and holds the pipe; `
 gives the worker a deterministic EOF right after spawn, for a harness that would
 otherwise block on the pipe forever instead of taking its first turn — `codex exec`
 reads stdin during prompt resolution and does exactly that. A `closed` worker gives up
-the switch: it no longer dies with `docketd`, and the next start's stray sweep is the
-only thing that collects it. `docketd` states that cost on its startup line rather than
+the switch: it no longer dies with `landbridged`, and the next start's stray sweep is the
+only thing that collects it. `landbridged` states that cost on its startup line rather than
 leaving it implicit.
 
 ## The relay (§8.3)
 
-`docket-relay` gives authenticated cross-machine service access with no network
+`landbridge-relay` gives authenticated cross-machine service access with no network
 prerequisite. A producer task registers `{name, port}` after binding; a consumer
 calls `open_forward(name)`; the control plane checks Team membership,
 registration, and that the owning task is `working`, then issues a grant bound to
 `{consumer, service, expiry}`. The relay itself moves opaque bytes and holds no
-`docketd` channel of its own — so in this deployment the **control plane** relays
+`landbridged` channel of its own — so in this deployment the **control plane** relays
 `open-forward` to *both* ends over the runner channel, and each end dials the
 relay independently.
 
 ```
  consumer's client
-   → 127.0.0.1:8391            docketd binds loopback ONLY, on demand
+   → 127.0.0.1:8391            landbridged binds loopback ONLY, on demand
      → authenticated tunnel     HTTP upgrade, forward-scoped grant
-       → docket-relay           ForwardRegistry pairs the two ends by forward id, splices
-         → producer's docketd
+       → landbridge-relay           ForwardRegistry pairs the two ends by forward id, splices
+         → producer's landbridged
            → 127.0.0.1:5432     the registered service
 ```
 
@@ -356,13 +356,13 @@ the typed input-request kind — have a **plane-side path end to end**: each is 
 as a task event row and renders structured in the event log, with the auth failures on
 live tasks also joined into the inbox (the log is history; the inbox is what needs a
 person). Two of those three are waiting on a producer rather than on a read model:
-`docketd` emits neither `auth-failed` nor `subagent-spawned` (above), so in practice no
+`landbridged` emits neither `auth-failed` nor `subagent-spawned` (above), so in practice no
 such row arrives today — the plane can record one, and nothing sends it. **Permission requests** now have
 a source too — §11's permission bridge records them on the task row, and the inbox
 section renders them with an allow/deny form. What genuinely has no source is the
 **subagent tree nested under a machine**, which renders as an honest empty state rather
 than fabricated numbers. Cross-process tracing is real: the host exports
-OpenTelemetry (traces/metrics/logs via `Docket.ServiceDefaults`), and a stored
+OpenTelemetry (traces/metrics/logs via `Landbridge.ServiceDefaults`), and a stored
 `traceparent` lets one trace span `create_session → dispatch → runner → worker`.
 
 ## Where to go next

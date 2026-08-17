@@ -1,7 +1,7 @@
 using System.Runtime.CompilerServices;
 using Microsoft.Extensions.Configuration;
 
-namespace Docket.MultiMachine.Tests;
+namespace Landbridge.MultiMachine.Tests;
 
 /// <summary>
 /// Publishes this assembly's user secrets into the process environment before

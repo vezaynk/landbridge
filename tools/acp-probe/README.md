@@ -7,7 +7,7 @@ or degrades to a permanent cold start. The spec defaults it to `false`, and noth
 profile can compensate for an agent that lacks it.
 
 Run it before writing a profile for a harness this repo has not measured,
-and again when you bump an adapter — an adapter is a second upstream between `docketd` and
+and again when you bump an adapter — an adapter is a second upstream between `landbridged` and
 the model, and capabilities are exactly the kind of thing that moves in a minor release.
 
 ```sh
@@ -24,7 +24,7 @@ this is cheap enough to run on every machine during enroll.
 
 - **`loadSession`** — false means every redispatch of a parked task is a cold start.
 - **`mcpCapabilities.http`** — false means the plane's MCP server cannot be handed over on
-  `session/new`, so the worker has no docket tools and can neither read its task nor report
+  `session/new`, so the worker has no landbridge tools and can neither read its task nor report
   a result.
 - **`protocolVersion`** — every agent measured on 2026-08-15 answered `1`. `AcpClient`
   speaks 1 and warns outside that.
@@ -65,5 +65,5 @@ key is enough to see the difference, and codex-acp reads either `CODEX_API_KEY` 
 Grok Build (`grok agent stdio`) is **still unmeasured** — its installer resolves releases
 through the GitHub API, which the environment this was written in blocks — and it is the
 one harness misbehaving in CI: every turn returns `stopReason: "cancelled"` after ~11.3k
-tokens without calling a single docket tool, on a cancel the plane never sent. Measuring it
+tokens without calling a single landbridge tool, on a cancel the plane never sent. Measuring it
 is the first move, not another paid run.

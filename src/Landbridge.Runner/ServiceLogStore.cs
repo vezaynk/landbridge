@@ -1,4 +1,4 @@
-namespace Docket.Runner;
+namespace Landbridge.Runner;
 
 /// <summary>
 /// Machine-local log capture for supervised services (§10, §12), deliberately in its

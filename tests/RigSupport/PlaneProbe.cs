@@ -1,26 +1,26 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Text;
-using Docket.ControlPlane;
-using Docket.ControlPlane.Auth;
-using Docket.Core;
+using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.Core;
 using Microsoft.EntityFrameworkCore;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 
-namespace Docket.RigSupport;
+namespace Landbridge.RigSupport;
 
 /// <summary>
 /// The plane-facing half of a fleet rig: reserving a loopback port, polling committed
 /// control-plane state, driving the real Lead MCP surface, and rendering a task's committed
-/// facts for a timeout message. Shared by <c>Docket.MultiMachine.Tests</c>' <c>FleetRig</c>
-/// and <c>Docket.Chaos.Tests</c>' <c>ChaosFleet</c>, which had grown their own copy of each.
+/// facts for a timeout message. Shared by <c>Landbridge.MultiMachine.Tests</c>' <c>FleetRig</c>
+/// and <c>Landbridge.Chaos.Tests</c>' <c>ChaosFleet</c>, which had grown their own copy of each.
 ///
 /// <para><b>Why a source-only directory rather than a project.</b> This is linked into both
 /// suites with <c>&lt;Compile Include="../RigSupport/PlaneProbe.cs" Link="..." /&gt;</c>, the same
 /// idiom <c>tests/HarnessSupport/ParentDeathSignal.cs</c> already uses for the harness dead-man
 /// convention: no csproj, not in the solution, compiled into each consumer. The alternative —
-/// hosting it in <c>Docket.ControlPlane.Tests</c> and source-linking from there — would have
+/// hosting it in <c>Landbridge.ControlPlane.Tests</c> and source-linking from there — would have
 /// forced an MCP client package onto a suite that never speaks MCP, since a linked file must
 /// compile in its home project too. Sharing test source should not add a dependency to a
 /// project that does not want one.</para>
@@ -28,12 +28,12 @@ namespace Docket.RigSupport;
 /// <para><b>What deliberately stays in each rig.</b> The two rigs are not variants of one
 /// thing and this type does not try to unify them. <c>FleetRig</c> runs the plane, the relay,
 /// and N <c>ProcessSupervisor</c>s <em>in-process</em>, standing in for the §10 socket with a
-/// registry send delegate; <c>ChaosFleet</c> runs the plane and <c>docketd</c> as separate OS
+/// registry send delegate; <c>ChaosFleet</c> runs the plane and <c>landbridged</c> as separate OS
 /// processes over the real <c>/runner</c> WebSocket, precisely so they can be SIGKILLed. Their
 /// csprojs prove the split is structural rather than stylistic: Chaos references
-/// <c>Docket.Runner</c> with <c>ReferenceOutputAssembly="false"</c>, keeping runner types off
-/// its compile closure entirely, so nothing here may touch <c>Docket.Runner</c>,
-/// <c>Docket.Mcp</c>, or <c>Docket.Relay</c>. Bring-up, teardown, machine enrollment, and every
+/// <c>Landbridge.Runner</c> with <c>ReferenceOutputAssembly="false"</c>, keeping runner types off
+/// its compile closure entirely, so nothing here may touch <c>Landbridge.Runner</c>,
+/// <c>Landbridge.Mcp</c>, or <c>Landbridge.Relay</c>. Bring-up, teardown, machine enrollment, and every
 /// rig-specific diagnostic addition stay where they are.</para>
 ///
 /// <para><b>Failures throw with the reason.</b> Where a rig previously asserted
@@ -114,7 +114,7 @@ internal static class PlaneProbe
     /// way an OAuth callback would (§5): a human session, then the lead-claim flow. Lead
     /// identity <em>is</em> the credential, so there is no tool to call for this.
     /// </summary>
-    public static async Task<string> LeadTokenAsync(DocketDbContext db, TeamId team, CancellationToken ct)
+    public static async Task<string> LeadTokenAsync(LandbridgeDbContext db, TeamId team, CancellationToken ct)
     {
         var tokens = new TokenService(db, TimeProvider.System);
         var human = await tokens.IssueHumanSessionAsync(ct);
@@ -183,7 +183,7 @@ internal static class PlaneProbe
     // ── Committed control-plane state ──────────────────────────────────────────
 
     /// <summary>The task's committed state, or null when there is no such row.</summary>
-    public static Task<SessionState?> StateAsync(DocketDbContext db, SessionId task, CancellationToken ct) =>
+    public static Task<SessionState?> StateAsync(LandbridgeDbContext db, SessionId task, CancellationToken ct) =>
         new SessionStore(db, TimeProvider.System).GetStateAsync(task, ct);
 
     /// <summary>
@@ -202,7 +202,7 @@ internal static class PlaneProbe
     /// nothing at the moment it is needed.</para>
     /// </summary>
     public static async Task AppendTaskFactsAsync(
-        StringBuilder sb, DocketDbContext db, SessionId task, string prefix, CancellationToken ct)
+        StringBuilder sb, LandbridgeDbContext db, SessionId task, string prefix, CancellationToken ct)
     {
         var row = await db.Sessions.AsNoTracking().SingleOrDefaultAsync(t => t.Id == task.Value, ct);
         if (row is null)

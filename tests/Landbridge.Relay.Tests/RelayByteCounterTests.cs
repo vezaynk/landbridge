@@ -1,9 +1,9 @@
 using System.Collections.Concurrent;
 using System.Net.WebSockets;
-using Docket.Contracts;
-using static Docket.Relay.Tests.RelayTestKit;
+using Landbridge.Contracts;
+using static Landbridge.Relay.Tests.RelayTestKit;
 
-namespace Docket.Relay.Tests;
+namespace Landbridge.Relay.Tests;
 
 /// <summary>
 /// The §9 check 10 / §9.10 byte counter at the relay's splice pump, over the real wire.

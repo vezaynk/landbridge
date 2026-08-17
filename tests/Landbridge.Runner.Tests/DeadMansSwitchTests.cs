@@ -1,13 +1,13 @@
 using System.Diagnostics;
-using Docket.Core;
+using Landbridge.Core;
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.Runner.Tests;
+namespace Landbridge.Runner.Tests;
 
 /// <summary>
 /// The harness dead-man's switch (§10): a spawned worker self-terminates when
-/// docketd is gone, before any restart sweep runs. docketd redirects a worker's
-/// stdin and holds the write end for the worker's lifetime; if docketd dies the OS
+/// landbridged is gone, before any restart sweep runs. landbridged redirects a worker's
+/// stdin and holds the write end for the worker's lifetime; if landbridged dies the OS
 /// closes the pipe and the harness sees EOF. These exercise that against real
 /// spawned processes — no shell, argv only — with the atomic markers the harness
 /// writes and generous bounded waits, matching the rest of the runner suite.
@@ -29,7 +29,7 @@ public sealed class DeadMansSwitchTests : IDisposable
         // test is deterministic (must match ParentDeathSignal.DisableEnvVar, which
         // is internal to the harness assemblies).
         if (disablePdeathsig)
-            psi.Environment["DOCKET_TEST_DISABLE_PDEATHSIG"] = "1";
+            psi.Environment["LANDBRIDGE_TEST_DISABLE_PDEATHSIG"] = "1";
         psi.ArgumentList.Add(mode);
         var process = Process.Start(psi)!;
         _spawned.Add(process);
@@ -38,8 +38,8 @@ public sealed class DeadMansSwitchTests : IDisposable
 
     /// <summary>
     /// Portable, required (must pass on this macOS box). Closing the stdin write end
-    /// is byte-identical to what the OS does when the pipe holder (docketd) dies —
-    /// so this faithfully simulates docketd death without killing anything. The
+    /// is byte-identical to what the OS does when the pipe holder (landbridged) dies —
+    /// so this faithfully simulates landbridged death without killing anything. The
     /// harness must trip the switch: write the deadman marker, exit with the
     /// distinct code, and take its grandchild down with it.
     /// </summary>
@@ -56,7 +56,7 @@ public sealed class DeadMansSwitchTests : IDisposable
         var grandchildPid = int.Parse(await File.ReadAllTextAsync(childPidPath));
         Assert.True(await TestKit.WaitUntilAsync(() => TestKit.PidAlive(grandchildPid), TimeSpan.FromSeconds(10)));
 
-        // Close the write end = pipe EOF = the kernel signal a dying docketd sends.
+        // Close the write end = pipe EOF = the kernel signal a dying landbridged sends.
         harness.StandardInput.Close();
 
         var deadman = Path.Combine(_workRoot, "deadman");
@@ -71,15 +71,15 @@ public sealed class DeadMansSwitchTests : IDisposable
 
     /// <summary>
     /// True parent death (best-effort; runs here on macOS). A `middleman` harness
-    /// stands in for docketd: it spawns an inner spawn-child harness, holds the
-    /// inner's stdin exactly as docketd would, and sleeps. SIGKILLing ONLY the
+    /// stands in for landbridged: it spawns an inner spawn-child harness, holds the
+    /// inner's stdin exactly as landbridged would, and sleeps. SIGKILLing ONLY the
     /// middleman (not the tree) is a real parent death — the OS closes the inner's
     /// stdin pipe, and the inner must trip its own switch and take its grandchild.
     /// </summary>
     [Fact]
     public async Task Killing_the_true_parent_trips_the_inner_switch()
     {
-        // We hold the middleman's stdin like docketd would, and never close it — the
+        // We hold the middleman's stdin like landbridged would, and never close it — the
         // SIGKILL below, not a pipe close, is what ends it. PDEATHSIG is disabled for
         // the whole planted tree so this test deterministically exercises the
         // PORTABLE EOF path on every OS: on Linux the SIGKILL delivered by PDEATHSIG
@@ -112,13 +112,13 @@ public sealed class DeadMansSwitchTests : IDisposable
     }
 
     /// <summary>
-    /// Supervisor integration: docketd redirects and HOLDS the worker's stdin, so a live
+    /// Supervisor integration: landbridged redirects and HOLDS the worker's stdin, so a live
     /// supervisor must NOT let the harness trip its switch. Under ACP that same held pipe
     /// carries the JSON-RPC requests, so this is also what keeps a session reachable —
     /// one pipe, two guarantees.
     /// </summary>
     [Fact]
-    public async Task Supervisor_holds_stdin_so_the_harness_does_not_trip_while_docketd_lives()
+    public async Task Supervisor_holds_stdin_so_the_harness_does_not_trip_while_landbridged_lives()
     {
         var ring = new OutboundEventRing(capacity: 256);
         var supervisor = new ProcessSupervisor(TestKit.Machine(_workRoot), ring, new FakeTimeProvider());
@@ -129,7 +129,7 @@ public sealed class DeadMansSwitchTests : IDisposable
         Assert.True(await TestKit.WaitUntilAsync(() => File.Exists(Path.Combine(workDir, "started")), TimeSpan.FromSeconds(15)),
             "harness never started under the supervisor");
 
-        // Held stdin means no EOF: the switch must stay unarmed while docketd lives.
+        // Held stdin means no EOF: the switch must stay unarmed while landbridged lives.
         var deadman = Path.Combine(workDir, "deadman");
         var tripped = await TestKit.WaitUntilAsync(() => File.Exists(deadman), TimeSpan.FromSeconds(2));
         Assert.False(tripped, "harness tripped its dead-man switch while the supervisor still held stdin");

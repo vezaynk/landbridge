@@ -3,13 +3,13 @@ using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 using System.Text;
 
-namespace Docket.Runner;
+namespace Landbridge.Runner;
 
 /// <summary>
 /// macOS inventory: the <c>/proc</c> equivalent for Darwin, which has no
 /// <c>/proc</c>. Enumerates every pid with libproc's <c>proc_listallpids</c>,
 /// then reads each process's argv+environment via <c>sysctl(KERN_PROCARGS2)</c>
-/// and scans it for the docket tags. All unprivileged: a same-user process's
+/// and scans it for the landbridge tags. All unprivileged: a same-user process's
 /// args/env are readable without root, and <c>KERN_PROCARGS2</c> simply fails
 /// (skipped) for processes we may not read — which is exactly the set that
 /// isn't ours to reap. No cgroups, no launchd, no privileged syscall. Guarded
@@ -29,10 +29,10 @@ public sealed partial class MacOsProcessInventory : IProcessInventory
     // Our tags are env-only (ProcessSupervision.Spawn injects them into the
     // child's environment, never argv), so scanning the whole KERN_PROCARGS2
     // string region past the argc header for these prefixes is unambiguous.
-    private static ReadOnlySpan<byte> MachineIdPrefix => "DOCKET_MACHINE_ID="u8;
-    private static ReadOnlySpan<byte> SessionIdPrefix => "DOCKET_SESSION_ID="u8;
+    private static ReadOnlySpan<byte> MachineIdPrefix => "LANDBRIDGE_MACHINE_ID="u8;
+    private static ReadOnlySpan<byte> SessionIdPrefix => "LANDBRIDGE_SESSION_ID="u8;
 
-    public IReadOnlyList<TaggedProcess> ListDocketProcesses()
+    public IReadOnlyList<TaggedProcess> ListLandbridgeProcesses()
     {
         if (!OperatingSystem.IsMacOS())
             return [];
@@ -120,7 +120,7 @@ public sealed partial class MacOsProcessInventory : IProcessInventory
 
     /// <summary>
     /// Reads one process's argv+env block via <c>sysctl(KERN_PROCARGS2)</c> into
-    /// <paramref name="buffer"/> and scans it for the docket tags. A failed
+    /// <paramref name="buffer"/> and scans it for the landbridge tags. A failed
     /// sysctl (process exited, or not ours to read) returns <c>false</c> — the
     /// natural, uid-free filter to same-user processes.
     /// </summary>

@@ -1,16 +1,16 @@
-using Docket.Meta.Auth;
-using Docket.Meta.Data;
-using Docket.Meta.Provisioning;
-using Docket.Meta.Substrate;
-using Docket.Web;
+using Landbridge.Meta.Auth;
+using Landbridge.Meta.Data;
+using Landbridge.Meta.Provisioning;
+using Landbridge.Meta.Substrate;
+using Landbridge.Web;
 using Microsoft.EntityFrameworkCore;
 
-namespace Docket.Meta.Web;
+namespace Landbridge.Meta.Web;
 
 /// <summary>
 /// The meta panel's HTTP surface (design note §1). Server-rendered HTML only — no
 /// MCP, no JSON agent API (spec §3: "human-only", "agent-facing anything on
-/// docket-meta" is explicitly not built). Every page but the login door is gated by
+/// landbridge-meta" is explicitly not built). Every page but the login door is gated by
 /// the operator session; the door itself is fail-closed when no passphrase hash is
 /// configured (mirrors the plane dashboard's operator seam).
 /// </summary>

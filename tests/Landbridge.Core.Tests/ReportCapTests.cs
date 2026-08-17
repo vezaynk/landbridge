@@ -1,4 +1,4 @@
-namespace Docket.Core.Tests;
+namespace Landbridge.Core.Tests;
 
 /// <summary>
 /// §10 in-band worker report: the optional <c>report</c> on report_result is

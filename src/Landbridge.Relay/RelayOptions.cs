@@ -1,4 +1,4 @@
-namespace Docket.Relay;
+namespace Landbridge.Relay;
 
 /// <summary>Relay host options (config section <c>Relay</c>).</summary>
 public sealed class RelayOptions

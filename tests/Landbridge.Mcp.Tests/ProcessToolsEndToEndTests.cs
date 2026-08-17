@@ -1,18 +1,18 @@
 using System.Text.Json;
-using Docket.Contracts;
-using Docket.Core;
-using Docket.ControlPlane;
-using Docket.ControlPlane.Tests;
+using Landbridge.Contracts;
+using Landbridge.Core;
+using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Tests;
 using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 
-namespace Docket.Mcp.Tests;
+namespace Landbridge.Mcp.Tests;
 
 /// <summary>
 /// The four §10 process tools over a <b>real MCP connection</b> — `start_process`,
 /// `write_process`, `list_processes`, `stop_process` — driven with a real worker credential
-/// against a real plane, with a stub machine standing in for docketd's side of the
+/// against a real plane, with a stub machine standing in for landbridged's side of the
 /// request/reply.
 ///
 /// <para>The centrepiece is
@@ -32,7 +32,7 @@ public sealed class ProcessToolsEndToEndTests(PostgresFixture pg) : IAsyncLifeti
     public Task DisposeAsync() => Task.CompletedTask;
 
     /// <summary>
-    /// A stub machine that answers the process commands the way a real docketd would, and
+    /// A stub machine that answers the process commands the way a real landbridged would, and
     /// remembers what it was told. Keyed by name, so it can model the one fact the tools depend
     /// on: a process keeps existing after the task that started it is gone.
     /// </summary>
@@ -117,7 +117,7 @@ public sealed class ProcessToolsEndToEndTests(PostgresFixture pg) : IAsyncLifeti
         Assert.Contains("web-dev", payload.GetProperty("logPath").GetString()!, StringComparison.Ordinal);
         // Ports are out of scope: the reply must carry no port at all, so nobody reads one into it.
         Assert.False(payload.TryGetProperty("port", out _));
-        // Guidance: Docket tracks no port, registering is separate, and nothing stops it for you.
+        // Guidance: Landbridge tracks no port, registering is separate, and nothing stops it for you.
         var next = payload.GetProperty("nextStep").GetString()!;
         Assert.Contains("does not track this process's port", next, StringComparison.Ordinal);
         Assert.Contains("register_service", next, StringComparison.Ordinal);

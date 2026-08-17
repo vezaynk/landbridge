@@ -1,4 +1,4 @@
-namespace Docket.Core;
+namespace Landbridge.Core;
 
 /// <summary>
 /// Side effects a transition demands of the surrounding system, returned as

@@ -8,8 +8,8 @@ package's published `latest`, and when something is newer it opens a PR, dispatc
 real-harness tiers against that PR's branch, and merges **only if those tiers actually passed**.
 
 ```sh
-dotnet run --project tools/Docket.HarnessBump -- --dry-run   # report the plan, spend nothing
-dotnet run --project tools/Docket.HarnessBump                # the real thing (needs GH_TOKEN)
+dotnet run --project tools/Landbridge.HarnessBump -- --dry-run   # report the plan, spend nothing
+dotnet run --project tools/Landbridge.HarnessBump                # the real thing (needs GH_TOKEN)
 ```
 
 `--dry-run` does every read — parse ci.yml, hit the registry, look for an open bump PR, decide —

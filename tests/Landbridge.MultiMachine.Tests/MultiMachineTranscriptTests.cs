@@ -1,18 +1,18 @@
-using Docket.ControlPlane;
-using Docket.ControlPlane.Tests;
-using Docket.Core;
+using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Tests;
+using Landbridge.Core;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace Docket.MultiMachine.Tests;
+namespace Landbridge.MultiMachine.Tests;
 
 /// <summary>
-/// The §12 transcript crown, no fakes on any surface that matters: a real <c>docketd</c>
+/// The §12 transcript crown, no fakes on any surface that matters: a real <c>landbridged</c>
 /// supervisor spawns a real process whose stdout is really captured to disk, and the real
 /// plane-side read path pulls it back range by range over the runner-channel seam. Capture,
 /// storage, the terminal gate, the pull protocol, and the relay are all the production code.
 ///
 /// <para>The assertion is deliberately uncomfortable: a credential-shaped string the worker
-/// printed comes back <b>intact</b>. That is the documented behavior — Docket does not redact
+/// printed comes back <b>intact</b>. That is the documented behavior — Landbridge does not redact
 /// transcripts (§13, §16 open question 8) — and pinning it here means a future change that
 /// starts filtering, or one that widens who may read, has to come through this test.</para>
 /// </summary>
@@ -22,8 +22,8 @@ public sealed class MultiMachineTranscriptTests(PostgresFixture pg) : IAsyncLife
     private static readonly TimeSpan Bound = TimeSpan.FromSeconds(60);
 
     /// <summary>Credential-shaped and unmistakable, so "it came back verbatim" cannot pass by
-    /// accident. Not a real token — the shape is what matters (<c>dkt_w_</c>, §5).</summary>
-    private const string PlantedSecret = "dkt_w_deadbeefcafe1234567890abcdef";
+    /// accident. Not a real token — the shape is what matters (<c>lbr_w_</c>, §5).</summary>
+    private const string PlantedSecret = "lbr_w_deadbeefcafe1234567890abcdef";
 
     public async Task InitializeAsync()
     {
@@ -44,7 +44,7 @@ public sealed class MultiMachineTranscriptTests(PostgresFixture pg) : IAsyncLife
         await rig.AddMachineAsync("A");
         await rig.AddMachineAsync("B");
 
-        // A real worker on machine A prints the planted secret to stdout, which docketd's
+        // A real worker on machine A prints the planted secret to stdout, which landbridged's
         // capture tees to <state>/transcripts/<task>/0001.ndjson, then reports.
         var task = await rig.CreateSessionAsync($"echo:{PlantedSecret}", ct);
         await rig.DispatchToAsync("A", ct);
@@ -107,7 +107,7 @@ public sealed class MultiMachineTranscriptTests(PostgresFixture pg) : IAsyncLife
         for (var guard = 0; guard < 10_000; guard++)
         {
             var result = await relay.ReadAsync(
-                task, machine, ordinal, Docket.Contracts.TranscriptStreams.Stdout, offset, maxBytes, ct);
+                task, machine, ordinal, Landbridge.Contracts.TranscriptStreams.Stdout, offset, maxBytes, ct);
             var range = Assert.IsType<TranscriptResult.Range>(result);
             text.Append(range.Text);
             if (range.Eof)

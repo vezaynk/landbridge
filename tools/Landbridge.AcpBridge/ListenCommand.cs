@@ -5,7 +5,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-namespace Docket.AcpBridge;
+namespace Landbridge.AcpBridge;
 
 /// <summary>
 /// Hosts <c>/acp</c> as a WebSocket and, per connection, spawns the agent argv

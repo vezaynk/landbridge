@@ -1,8 +1,8 @@
-using Docket.Meta.Data;
-using Docket.Meta.Edge;
-using Docket.Meta.Substrate;
+using Landbridge.Meta.Data;
+using Landbridge.Meta.Edge;
+using Landbridge.Meta.Substrate;
 
-namespace Docket.Meta.Tests;
+namespace Landbridge.Meta.Tests;
 
 /// <summary>
 /// An in-memory <see cref="ISubstrate"/> for the saga tests (design note §7): records
@@ -27,7 +27,7 @@ public sealed class FakeSubstrate : ISubstrate
     /// <summary>Health inspect returns this; default None so "running" is the readiness signal.</summary>
     public HealthState ContainerHealth { get; set; } = HealthState.None;
 
-    /// <summary>Optional per-operation hook (label like "run:docket-x-mcp"); throw to inject a failure.</summary>
+    /// <summary>Optional per-operation hook (label like "run:landbridge-x-mcp"); throw to inject a failure.</summary>
     public Func<string, Task>? BeforeOp { get; set; }
 
     public Task PingAsync(CancellationToken ct) => Task.CompletedTask;

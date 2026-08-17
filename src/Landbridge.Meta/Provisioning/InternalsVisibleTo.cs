@@ -5,6 +5,6 @@ using System.Runtime.CompilerServices;
 // caller that skips the tracker mark the loop takes. The tests that prove convergence
 // have to drive one deterministic pass rather than wait on a 30s interval, and they
 // assert against the retry backoff by name, so they need internal visibility. No
-// InternalsVisibleTo existed for Docket.Meta before this change; the file lives under
+// InternalsVisibleTo existed for Landbridge.Meta before this change; the file lives under
 // Provisioning/ because that is the change's fence.
-[assembly: InternalsVisibleTo("Docket.Meta.Tests")]
+[assembly: InternalsVisibleTo("Landbridge.Meta.Tests")]

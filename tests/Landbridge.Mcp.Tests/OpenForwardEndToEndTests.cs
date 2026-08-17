@@ -1,19 +1,19 @@
 using System.Text.Json;
-using Docket.Contracts;
-using Docket.Core;
-using Docket.ControlPlane;
-using Docket.ControlPlane.Tests;
+using Landbridge.Contracts;
+using Landbridge.Core;
+using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Tests;
 using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 
-namespace Docket.Mcp.Tests;
+namespace Landbridge.Mcp.Tests;
 
 /// <summary>
 /// The <c>open_forward</c> worker tool over a real MCP connection (spec §8.3,
 /// §10). The authority gates hold — an unknown service is refused, and a Lead (no
 /// worker credential) cannot call it at all — and the happy path returns a
-/// <c>{host, port}</c> loopback address, with the plane driving both docketd ends
+/// <c>{host, port}</c> loopback address, with the plane driving both landbridged ends
 /// (here their send delegates are stubbed to report a bound port; the full
 /// no-fakes splice loop is <see cref="ForwardDataPlaneEndToEndTests"/>).
 /// </summary>
@@ -34,7 +34,7 @@ public sealed class OpenForwardEndToEndTests(PostgresFixture pg) : IAsyncLifetim
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var ct = cts.Token;
 
-        const int boundPort = 45999; // the port the consumer docketd would report
+        const int boundPort = 45999; // the port the consumer landbridged would report
 
         var team = TeamId.New();
         // Producer first (only submitted task → deterministic dispatch), then the
@@ -48,7 +48,7 @@ public sealed class OpenForwardEndToEndTests(PostgresFixture pg) : IAsyncLifetim
 
         // Two "machines" the plane will send the two open-forward commands to. The
         // consumer's stub reports a bound port via the real event sink, exactly as
-        // a real consumer docketd would after binding its loopback listener.
+        // a real consumer landbridged would after binding its loopback listener.
         var registry = plane.Services.GetRequiredService<RunnerConnectionRegistry>();
         var sink = plane.Services.GetRequiredService<RunnerEventSink>();
 
@@ -80,7 +80,7 @@ public sealed class OpenForwardEndToEndTests(PostgresFixture pg) : IAsyncLifetim
             Assert.Equal(boundPort, payload.GetProperty("port").GetInt32());
             Assert.True(Guid.TryParse(payload.GetProperty("forward_id").GetString(), out _));
             Assert.True(payload.TryGetProperty("expires_at", out _));
-            // The grant and relay URL are docketd's business — never handed to the agent.
+            // The grant and relay URL are landbridged's business — never handed to the agent.
             Assert.False(payload.TryGetProperty("grant", out _));
             Assert.False(payload.TryGetProperty("relay_url", out _));
         }

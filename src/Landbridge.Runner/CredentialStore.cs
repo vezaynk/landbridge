@@ -2,10 +2,10 @@ using System.Net.Http.Json;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace Docket.Runner;
+namespace Landbridge.Runner;
 
 /// <summary>
-/// The machine credentials docketd persists after enrollment (spec §5, §13):
+/// The machine credentials landbridged persists after enrollment (spec §5, §13):
 /// its machine id, the control-plane HTTP base it enrolled against, and the
 /// access/refresh token pair with their expiries. The refresh token is the only
 /// long-lived secret on the box; the access token is short and re-minted (§13),
@@ -15,7 +15,7 @@ namespace Docket.Runner;
 /// <c>https://plane.example.com</c>) — where <c>/enroll</c> and
 /// <c>/machine/refresh</c> live. It is persisted so the daemon can refresh with
 /// no further argv, and so the runner WebSocket URL can be derived from it when
-/// <c>DOCKET_CONTROL_URL</c> is not set (see <see cref="CredentialStore.DeriveRunnerWsUrl"/>).</para>
+/// <c>LANDBRIDGE_CONTROL_URL</c> is not set (see <see cref="CredentialStore.DeriveRunnerWsUrl"/>).</para>
 /// </summary>
 internal sealed record MachineCredentialFile(
     string MachineId,
@@ -25,7 +25,7 @@ internal sealed record MachineCredentialFile(
     string RefreshToken,
     DateTimeOffset RefreshExpiresAt);
 
-/// <summary>The POST /enroll body docketd sends (§11, §13). os is auto-filled.</summary>
+/// <summary>The POST /enroll body landbridged sends (§11, §13). os is auto-filled.</summary>
 internal sealed record EnrollRequest(
     string EnrollmentToken, string Name, string Purpose, string Os, string PermissionLevel);
 
@@ -48,7 +48,7 @@ internal sealed record RefreshResponse(string AccessToken, DateTimeOffset Access
 /// wire (§5, §13). camelCase to match the control plane's Web-default JSON on
 /// <c>/enroll</c> and <c>/machine/refresh</c>; kept separate from
 /// <see cref="RunnerJsonContext"/> (which is snake_case for the config document)
-/// so docketd stays AOT-clean with no reflection-based serializer.
+/// so landbridged stays AOT-clean with no reflection-based serializer.
 /// </summary>
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase,
@@ -61,7 +61,7 @@ internal sealed record RefreshResponse(string AccessToken, DateTimeOffset Access
 internal sealed partial class CredentialsJsonContext : JsonSerializerContext;
 
 /// <summary>
-/// Reads and writes docketd's <c>credentials.json</c> and drives the enrollment
+/// Reads and writes landbridged's <c>credentials.json</c> and drives the enrollment
 /// and refresh HTTP exchanges (spec §5 Bootstrap, §13). Writes are atomic
 /// (temp + rename) and owner-only (0600) — the file holds a live machine
 /// credential, exactly like the worker <c>mcp.json</c> the supervisor writes.
@@ -77,8 +77,8 @@ internal static class CredentialStore
     /// Where credentials live when no <c>--state-dir</c> is given. Pure over its
     /// inputs so the resolution is testable without touching the environment:
     /// an explicit <paramref name="argStateDir"/> wins, then
-    /// <c>DOCKET_STATE_DIR</c>, then <c>$XDG_STATE_HOME/docket</c>, else
-    /// <c>~/.docket</c>.
+    /// <c>LANDBRIDGE_STATE_DIR</c>, then <c>$XDG_STATE_HOME/landbridge</c>, else
+    /// <c>~/.landbridge</c>.
     /// </summary>
     public static string ResolveStateDir(
         string? argStateDir, string? envStateDir, string? xdgStateHome, string homeDir)
@@ -88,15 +88,15 @@ internal static class CredentialStore
         if (!string.IsNullOrWhiteSpace(envStateDir))
             return envStateDir;
         if (!string.IsNullOrWhiteSpace(xdgStateHome))
-            return Path.Combine(xdgStateHome, "docket");
-        return Path.Combine(homeDir, ".docket");
+            return Path.Combine(xdgStateHome, "landbridge");
+        return Path.Combine(homeDir, ".landbridge");
     }
 
     /// <summary>Resolves the default state dir from the current environment.</summary>
     public static string ResolveStateDir(string? argStateDir) =>
         ResolveStateDir(
             argStateDir,
-            Environment.GetEnvironmentVariable("DOCKET_STATE_DIR"),
+            Environment.GetEnvironmentVariable("LANDBRIDGE_STATE_DIR"),
             Environment.GetEnvironmentVariable("XDG_STATE_HOME"),
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile));
 
@@ -143,7 +143,7 @@ internal static class CredentialStore
     /// <summary>
     /// The runner WebSocket URL derived from the plane's HTTP base (§10): the
     /// scheme flips http→ws / https→wss and the path becomes <c>/runner</c>.
-    /// docketd dials <c>DOCKET_CONTROL_URL</c> when set; this is the default when
+    /// landbridged dials <c>LANDBRIDGE_CONTROL_URL</c> when set; this is the default when
     /// it is not, so a file-enrolled daemon needs no second URL.
     /// </summary>
     public static Uri DeriveRunnerWsUrl(string httpBase)

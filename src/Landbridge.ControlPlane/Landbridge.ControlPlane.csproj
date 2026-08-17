@@ -1,8 +1,8 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <ItemGroup>
-    <ProjectReference Include="..\Docket.Core\Docket.Core.csproj" />
-    <ProjectReference Include="..\Docket.Contracts\Docket.Contracts.csproj" />
+    <ProjectReference Include="..\Landbridge.Core\Landbridge.Core.csproj" />
+    <ProjectReference Include="..\Landbridge.Contracts\Landbridge.Contracts.csproj" />
   </ItemGroup>
 
   <ItemGroup>

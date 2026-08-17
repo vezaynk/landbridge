@@ -1,10 +1,10 @@
-using Docket.ControlPlane.Auth;
+using Landbridge.ControlPlane.Auth;
 
-namespace Docket.Mcp;
+namespace Landbridge.Mcp;
 
 /// <summary>
 /// The machine bootstrap surface (spec §5 Bootstrap, §11, §13). Plain HTTP, in
-/// the narrow non-MCP style of <see cref="RelayValidationEndpoints"/>: docketd
+/// the narrow non-MCP style of <see cref="RelayValidationEndpoints"/>: landbridged
 /// exchanges a human-issued
 /// enrollment token for machine credentials at <c>/enroll</c>, then keeps its
 /// short-lived access token fresh at <c>/machine/refresh</c>.
@@ -14,7 +14,7 @@ namespace Docket.Mcp;
 /// credential here, and its validity is a <see cref="TokenService"/> semantic,
 /// not a <see cref="Principal"/>: an enrollment token authenticates nothing on
 /// its own (it exists only to be exchanged), and neither does a refresh token
-/// (it exists only to mint access). Gating these with the ambient Docket auth
+/// (it exists only to mint access). Gating these with the ambient Landbridge auth
 /// handler would reject every caller before the one method that knows how to
 /// consume them ever ran.</para>
 ///

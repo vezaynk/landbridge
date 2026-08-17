@@ -1,6 +1,6 @@
-using Docket.Core;
+using Landbridge.Core;
 
-namespace Docket.ControlPlane;
+namespace Landbridge.ControlPlane;
 
 /// <summary>
 /// Outcome of a store operation. Wraps the engine's <see cref="TransitionResult"/>

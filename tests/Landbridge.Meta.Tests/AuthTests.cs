@@ -1,8 +1,8 @@
-using Docket.Meta.Auth;
-using Docket.Meta.Provisioning;
+using Landbridge.Meta.Auth;
+using Landbridge.Meta.Provisioning;
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.Meta.Tests;
+namespace Landbridge.Meta.Tests;
 
 /// <summary>Operator auth (design note §5): fail-closed verifier + in-memory session lifetimes.</summary>
 public class AuthTests

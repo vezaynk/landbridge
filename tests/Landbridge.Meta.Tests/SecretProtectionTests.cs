@@ -1,9 +1,9 @@
-using Docket.Meta.Data;
-using Docket.Meta.Provisioning;
-using Docket.Meta.Secrets;
+using Landbridge.Meta.Data;
+using Landbridge.Meta.Provisioning;
+using Landbridge.Meta.Secrets;
 using Microsoft.EntityFrameworkCore;
 
-namespace Docket.Meta.Tests;
+namespace Landbridge.Meta.Tests;
 
 /// <summary>
 /// At-rest protection for the secrets meta RETAINS (task #79): the instance database
@@ -213,8 +213,8 @@ public class SecretProtectionTests
 
         // What the container receives must be the plaintext, never the envelope.
         var mcp = h.Substrate.Containers[InstanceNaming.McpContainer("enc1")].Spec.Env;
-        Assert.Equal(DeterministicSecrets.FixedSecret, mcp["Docket__RelayValidation__Bearer"]);
-        Assert.Contains("Password=" + DeterministicSecrets.FixedSecret, mcp["ConnectionStrings__Docket"]);
+        Assert.Equal(DeterministicSecrets.FixedSecret, mcp["Landbridge__RelayValidation__Bearer"]);
+        Assert.Contains("Password=" + DeterministicSecrets.FixedSecret, mcp["ConnectionStrings__Landbridge"]);
         Assert.Equal(DeterministicSecrets.FixedSecret,
             h.Substrate.Containers[InstanceNaming.PgContainer("enc1")].Spec.Env["POSTGRES_PASSWORD"]);
 

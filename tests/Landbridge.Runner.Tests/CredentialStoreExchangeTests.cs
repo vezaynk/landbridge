@@ -2,10 +2,10 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 
-namespace Docket.Runner.Tests;
+namespace Landbridge.Runner.Tests;
 
 /// <summary>
-/// The two HTTP exchanges behind docketd's credentials (spec §5 Bootstrap, §13)
+/// The two HTTP exchanges behind landbridged's credentials (spec §5 Bootstrap, §13)
 /// and the one read that has to survive a bad file. Their failure contracts are
 /// deliberately different, and the difference is the point: a refused enrollment
 /// is a fatal, operator-facing error, while a refused refresh is just a failed
@@ -20,7 +20,7 @@ public class CredentialStoreExchangeTests
     private const string Plane = "https://plane.example.com";
 
     private static EnrollRequest Request() =>
-        new("dkt_e_token", "machine-a", "dev laptop", "darwin", "standard");
+        new("lbr_e_token", "machine-a", "dev laptop", "darwin", "standard");
 
     // ── Enrollment (§5) ───────────────────────────────────────────────────────
 
@@ -30,9 +30,9 @@ public class CredentialStoreExchangeTests
         var body = JsonSerializer.Serialize(new
         {
             machineId = "11111111-1111-1111-1111-111111111111",
-            accessToken = "dkt_m_aaa",
+            accessToken = "lbr_m_aaa",
             accessExpiresAt = AccessExp,
-            refreshToken = "dkt_r_bbb",
+            refreshToken = "lbr_r_bbb",
             refreshExpiresAt = RefreshExp,
         });
         using var http = Responding(HttpStatusCode.OK, body, out var sent);
@@ -40,9 +40,9 @@ public class CredentialStoreExchangeTests
         var creds = await CredentialStore.EnrollAsync(http, Plane, Request(), default);
 
         Assert.Equal("11111111-1111-1111-1111-111111111111", creds.MachineId);
-        Assert.Equal("dkt_m_aaa", creds.AccessToken);
+        Assert.Equal("lbr_m_aaa", creds.AccessToken);
         Assert.Equal(AccessExp, creds.AccessExpiresAt);
-        Assert.Equal("dkt_r_bbb", creds.RefreshToken);
+        Assert.Equal("lbr_r_bbb", creds.RefreshToken);
         Assert.Equal(RefreshExp, creds.RefreshExpiresAt);
         // The plane never echoes its own URL, so the record is stamped with the base
         // we enrolled against — that is what later refreshes and the derived runner
@@ -61,7 +61,7 @@ public class CredentialStoreExchangeTests
         Assert.Equal(HttpMethod.Post, request.Method);
         Assert.Equal("https://plane.example.com/enroll", request.Url);
         using var posted = JsonDocument.Parse(request.Body);
-        Assert.Equal("dkt_e_token", posted.RootElement.GetProperty("enrollmentToken").GetString());
+        Assert.Equal("lbr_e_token", posted.RootElement.GetProperty("enrollmentToken").GetString());
         Assert.Equal("machine-a", posted.RootElement.GetProperty("name").GetString());
         Assert.Equal("standard", posted.RootElement.GetProperty("permissionLevel").GetString());
     }
@@ -124,13 +124,13 @@ public class CredentialStoreExchangeTests
     [Fact]
     public async Task Refresh_returns_the_fresh_access_token()
     {
-        var body = JsonSerializer.Serialize(new { accessToken = "dkt_m_ccc", accessExpiresAt = AccessExp });
+        var body = JsonSerializer.Serialize(new { accessToken = "lbr_m_ccc", accessExpiresAt = AccessExp });
         using var http = Responding(HttpStatusCode.OK, body, out var sent);
 
-        var refreshed = await CredentialStore.RefreshAsync(http, Plane, "dkt_r_bbb", default);
+        var refreshed = await CredentialStore.RefreshAsync(http, Plane, "lbr_r_bbb", default);
 
         Assert.NotNull(refreshed);
-        Assert.Equal("dkt_m_ccc", refreshed!.AccessToken);
+        Assert.Equal("lbr_m_ccc", refreshed!.AccessToken);
         Assert.Equal(AccessExp, refreshed.AccessExpiresAt);
 
         var request = Assert.Single(sent);
@@ -138,7 +138,7 @@ public class CredentialStoreExchangeTests
         using var posted = JsonDocument.Parse(request.Body);
         // The refresh token is the only long-lived secret on the box; it goes in the
         // body, never on a URL or in argv where `ps` would show it (§13).
-        Assert.Equal("dkt_r_bbb", posted.RootElement.GetProperty("refreshToken").GetString());
+        Assert.Equal("lbr_r_bbb", posted.RootElement.GetProperty("refreshToken").GetString());
     }
 
     [Theory]
@@ -155,7 +155,7 @@ public class CredentialStoreExchangeTests
         // throwing here would take down a daemon that is still supervising tasks.
         using var http = Responding(status, """{"accessToken":"x","accessExpiresAt":"2026-07-29T13:00:00+00:00"}""", out _);
 
-        Assert.Null(await CredentialStore.RefreshAsync(http, Plane, "dkt_r_bbb", default));
+        Assert.Null(await CredentialStore.RefreshAsync(http, Plane, "lbr_r_bbb", default));
     }
 
     [Fact]
@@ -163,7 +163,7 @@ public class CredentialStoreExchangeTests
     {
         using var http = Responding(HttpStatusCode.OK, "null", out _);
 
-        Assert.Null(await CredentialStore.RefreshAsync(http, Plane, "dkt_r_bbb", default));
+        Assert.Null(await CredentialStore.RefreshAsync(http, Plane, "lbr_r_bbb", default));
     }
 
     // ── Reading a file that is not what we wrote (§5) ──────────────────────────
@@ -243,7 +243,7 @@ public class CredentialStoreExchangeTests
         try
         {
             var enrolled = new MachineCredentialFile(
-                "11111111-1111-1111-1111-111111111111", Plane, "dkt_m_aaa", AccessExp, "dkt_r_bbb", RefreshExp);
+                "11111111-1111-1111-1111-111111111111", Plane, "lbr_m_aaa", AccessExp, "lbr_r_bbb", RefreshExp);
 
             CredentialStore.Save(dir, enrolled);
 
@@ -258,14 +258,14 @@ public class CredentialStoreExchangeTests
         JsonSerializer.Serialize(new
         {
             machineId = "11111111-1111-1111-1111-111111111111",
-            accessToken = "dkt_m_aaa",
+            accessToken = "lbr_m_aaa",
             accessExpiresAt = AccessExp,
-            refreshToken = "dkt_r_bbb",
+            refreshToken = "lbr_r_bbb",
             refreshExpiresAt = RefreshExp,
         });
 
     private static string FreshDir() =>
-        Path.Combine(Path.GetTempPath(), "docket-cred-exchange-tests", Guid.NewGuid().ToString("N"));
+        Path.Combine(Path.GetTempPath(), "landbridge-cred-exchange-tests", Guid.NewGuid().ToString("N"));
 
     private static HttpClient Responding(HttpStatusCode status, string body, out List<SentRequest> sent)
     {

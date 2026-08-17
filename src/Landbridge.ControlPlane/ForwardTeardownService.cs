@@ -1,8 +1,8 @@
-using Docket.Contracts;
-using Docket.Core;
+using Landbridge.Contracts;
+using Landbridge.Core;
 using Microsoft.Extensions.Logging;
 
-namespace Docket.ControlPlane;
+namespace Landbridge.ControlPlane;
 
 /// <summary>
 /// One live forward a leaving-<c>working</c> task is taking with it (§8.3), as read off
@@ -17,7 +17,7 @@ namespace Docket.ControlPlane;
 /// <param name="Consumer">
 /// The consumer end's task, when the consumer <em>is</em> a task — a worker that called
 /// <c>open_forward</c>. Null for the two consumer kinds that are not: an §8.4 preview
-/// (the browser, with no <c>docketd</c> at all) and the §8.3 human path (a Lead's own
+/// (the browser, with no <c>landbridged</c> at all) and the §8.3 human path (a Lead's own
 /// bound machine, which the grant does not record). Both are still torn down, one hop
 /// later: the relay splices exactly two ends per forward id, so closing the producer's
 /// tunnel ends theirs.

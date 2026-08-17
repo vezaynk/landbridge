@@ -1,14 +1,14 @@
 using System.Net;
 using System.Net.Http.Headers;
 
-namespace Docket.Preview.Tests;
+namespace Landbridge.Preview.Tests;
 
 /// <summary>
 /// L2 for the §8.4 gated browser flow + head-strip at the frontend edge: a gated
 /// preview with no session bounces a browser to the dashboard confirm (302, not
 /// 401); a returned one-time code is exchanged for a per-label cookie; and every
 /// spliced request has its operator auth material stripped before reaching the
-/// upstream. Drives the real <see cref="Docket.Preview.PreviewServer"/> against the
+/// upstream. Drives the real <see cref="Landbridge.Preview.PreviewServer"/> against the
 /// fake control plane + bridge + a real upstream that echoes what it received.
 /// </summary>
 public sealed class PreviewGatedFlowTests
@@ -75,14 +75,14 @@ public sealed class PreviewGatedFlowTests
 
         using var browser = PreviewTestKit.Browser(harness.Port, followRedirects: false);
         using var response = await browser.GetAsync(
-            "http://label1.preview.localhost/app?x=1&docket_preview_code=good-code", Ct);
+            "http://label1.preview.localhost/app?x=1&landbridge_preview_code=good-code", Ct);
 
         Assert.Equal(HttpStatusCode.Found, response.StatusCode);
         // Clean redirect: the one-time code is stripped from the target.
         Assert.Equal("/app?x=1", response.Headers.Location!.ToString());
         // The frontend set its own per-label HttpOnly cookie on the preview origin.
         var setCookie = Assert.Single(response.Headers.GetValues("Set-Cookie"));
-        Assert.Contains("docket_preview=sess-ok", setCookie);
+        Assert.Contains("landbridge_preview=sess-ok", setCookie);
         Assert.Contains("HttpOnly", setCookie);
     }
 
@@ -99,7 +99,7 @@ public sealed class PreviewGatedFlowTests
         // The browser carries the per-label preview cookie, an operator session
         // cookie, an unrelated cookie, and a bearer — all of which except the
         // unrelated cookie must be stripped before the upstream sees the request.
-        browser.DefaultRequestHeaders.Add("Cookie", "docket_preview=sess-ok; docket_session=op-token; keep=me");
+        browser.DefaultRequestHeaders.Add("Cookie", "landbridge_preview=sess-ok; landbridge_session=op-token; keep=me");
         browser.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", "op-bearer");
         using var response = await browser.GetAsync("http://label1.preview.localhost/secret", Ct);
 
@@ -109,8 +109,8 @@ public sealed class PreviewGatedFlowTests
         // HEAD-STRIP: the upstream saw no Authorization and neither auth cookie...
         Assert.Equal("", First(response, "X-Echo-Auth"));
         var echoedCookie = First(response, "X-Echo-Cookie");
-        Assert.DoesNotContain("docket_preview", echoedCookie);
-        Assert.DoesNotContain("docket_session", echoedCookie);
+        Assert.DoesNotContain("landbridge_preview", echoedCookie);
+        Assert.DoesNotContain("landbridge_session", echoedCookie);
         // ...but a non-auth cookie is preserved (never-rewrite holds for app content).
         Assert.Contains("keep=me", echoedCookie);
 

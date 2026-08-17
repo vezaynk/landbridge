@@ -5,7 +5,7 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
-namespace Docket.Relay;
+namespace Landbridge.Relay;
 
 /// <summary>
 /// Reports per-forward byte counts to the control plane (spec §9 check 10 / §9.10), over the

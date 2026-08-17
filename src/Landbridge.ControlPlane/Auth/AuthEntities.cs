@@ -1,4 +1,4 @@
-namespace Docket.ControlPlane.Auth;
+namespace Landbridge.ControlPlane.Auth;
 
 /// <summary>Credential classes as stored, spec §5.</summary>
 public enum CredentialKind
@@ -119,8 +119,8 @@ public sealed class LeadEventRow
 /// its own binding or none (§4).</para>
 ///
 /// <para>One live binding per human and per machine, enforced by two partial
-/// unique indexes (<see cref="DocketDbContext.OneLiveBindingPerHumanIndex"/>,
-/// <see cref="DocketDbContext.OneLiveBindingPerMachineIndex"/>) rather than by a
+/// unique indexes (<see cref="LandbridgeDbContext.OneLiveBindingPerHumanIndex"/>,
+/// <see cref="LandbridgeDbContext.OneLiveBindingPerMachineIndex"/>) rather than by a
 /// read — the same shape as one-live-Lead-per-Team. Revocation is a soft delete
 /// so an unbind/rebind history survives.</para>
 /// </summary>
@@ -155,7 +155,7 @@ public sealed record LeadMachineBinding(Guid MachineId, string MachineName, Date
 
 /// <summary>
 /// Outcome of a bind attempt. <see cref="Refused"/> carries a Lead-facing reason
-/// rather than a <see cref="Docket.Core.Rule"/> — a binding precondition is
+/// rather than a <see cref="Landbridge.Core.Rule"/> — a binding precondition is
 /// plane-side routing state, not one of §9's enforcement checks — and is rendered
 /// by the tool surface exactly like <see cref="ForwardEstablishResult.Failed"/>.
 /// </summary>
@@ -201,24 +201,24 @@ public sealed class MachineRow
 /// <summary>
 /// What a validated token authenticates as. The worker principal carries the
 /// engine's own actor type, so the MCP layer hands
-/// <see cref="Docket.Core.WorkerCaller"/> straight to transitions — authority
+/// <see cref="Landbridge.Core.WorkerCaller"/> straight to transitions — authority
 /// stays structural end to end.
 /// </summary>
 public abstract record Principal
 {
-    public sealed record Worker(Docket.Core.WorkerCaller Caller) : Principal;
+    public sealed record Worker(Landbridge.Core.WorkerCaller Caller) : Principal;
 
     public sealed record Machine(Guid MachineId) : Principal;
 
     /// <summary>A human's own session (§5). Carries its session id for lead-claim attribution.</summary>
     public sealed record Human(Guid HumanId) : Principal
     {
-        public Docket.Core.HumanSession Actor { get; } = new();
+        public Landbridge.Core.HumanSession Actor { get; } = new();
     }
 
     /// <summary>
     /// A live lead claim (§5). Maps straight to the engine's
-    /// <see cref="Docket.Core.LeadClaim"/> so authority stays structural end to end.
+    /// <see cref="Landbridge.Core.LeadClaim"/> so authority stays structural end to end.
     ///
     /// <para><see cref="HumanId"/> is the claiming human's session id, carried from
     /// the credential row (§4: a Lead's authority descends from a human). The engine
@@ -228,9 +228,9 @@ public abstract record Principal
     /// Nullable because <see cref="CredentialRow.HumanId"/> is: a synthesized or
     /// pre-attribution lead credential authenticates but owns no binding.</para>
     /// </summary>
-    public sealed record Lead(Docket.Core.TeamId Team, Guid? HumanId = null) : Principal
+    public sealed record Lead(Landbridge.Core.TeamId Team, Guid? HumanId = null) : Principal
     {
-        public Docket.Core.LeadClaim Actor => new(Team);
+        public Landbridge.Core.LeadClaim Actor => new(Team);
     }
 
     /// <summary>
@@ -239,7 +239,7 @@ public abstract record Principal
     /// with an explicit reason — evicted by whom, when — instead of a bare 403,
     /// which would leave an agent inventing explanations for a denial.
     /// </summary>
-    public sealed record EvictedLead(Docket.Core.TeamId Team, Guid EvictedByHuman, DateTimeOffset EvictedAt) : Principal;
+    public sealed record EvictedLead(Landbridge.Core.TeamId Team, Guid EvictedByHuman, DateTimeOffset EvictedAt) : Principal;
 }
 
 /// <summary>
@@ -252,7 +252,7 @@ public abstract record LeadClaimResult
     private LeadClaimResult() { }
 
     /// <summary>The claim (or takeover) succeeded; the lead token is minted once here.</summary>
-    public sealed record Claimed(IssuedToken Token, Docket.Core.TeamId Team) : LeadClaimResult;
+    public sealed record Claimed(IssuedToken Token, Landbridge.Core.TeamId Team) : LeadClaimResult;
 
     /// <summary>The Team is actively led and takeover was not requested (§4).</summary>
     public sealed record Refused(Guid HeldByHuman, DateTimeOffset HeldSince) : LeadClaimResult;
@@ -264,7 +264,7 @@ public abstract record LeadClaimResult
 /// <summary>A newly minted token. The plaintext exists only in this value, once.</summary>
 public sealed record IssuedToken(string Token, Guid CredentialId, DateTimeOffset? ExpiresAt);
 
-/// <summary>Access + refresh pair handed to docketd at enrollment (§5, §13).</summary>
+/// <summary>Access + refresh pair handed to landbridged at enrollment (§5, §13).</summary>
 public sealed record MachineCredentials(Guid MachineId, IssuedToken Access, IssuedToken Refresh);
 
 /// <summary>Declared at enrollment, bound server-side (§11, §13).</summary>

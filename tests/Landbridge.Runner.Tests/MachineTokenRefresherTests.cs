@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.Runner.Tests;
+namespace Landbridge.Runner.Tests;
 
 /// <summary>
 /// The machine access-token refresher (spec §5, §13): it swaps the token the

@@ -2,33 +2,33 @@ using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using Docket.ControlPlane;
-using Docket.ControlPlane.Auth;
-using Docket.ControlPlane.Tests;
-using Docket.Core;
+using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.ControlPlane.Tests;
+using Landbridge.Core;
 using Microsoft.EntityFrameworkCore;
 using ModelContextProtocol.Client;
 
-namespace Docket.Chaos.Tests;
+namespace Landbridge.Chaos.Tests;
 
 /// <summary>
-/// The §17.8 chaos rig: a real control plane and a real <c>docketd</c> as separate
+/// The §17.8 chaos rig: a real control plane and a real <c>landbridged</c> as separate
 /// OS processes over a real Postgres, with real worker binaries underneath. Nothing
-/// here is a seam — where <c>Docket.MultiMachine.Tests</c>' FleetRig stands in
+/// here is a seam — where <c>Landbridge.MultiMachine.Tests</c>' FleetRig stands in
 /// for the §10 socket with an in-process delegate, this dials the actual
 /// <c>/runner</c> WebSocket, so the processes can be SIGKILLed and restarted the way
-/// §17.8 asks ("kill a runner mid-task", "SIGKILL docketd and restart it").
+/// §17.8 asks ("kill a runner mid-task", "SIGKILL landbridged and restart it").
 ///
 /// <para>Three deliberate choices make the scenarios deterministic and bounded:</para>
 /// <list type="bullet">
 /// <item><b>Ephemeral ports.</b> Both the plane's URL and every reservation come from
 /// an OS-assigned port, so parallel CI legs cannot collide.</item>
 /// <item><b>Shrunk liveness windows.</b> The plane's aliveness / no-progress clocks
-/// and docketd's heartbeat cadence are configuration (§10), so a scenario that would
+/// and landbridged's heartbeat cadence are configuration (§10), so a scenario that would
 /// otherwise wait 30 real minutes for the no-progress ceiling waits seconds instead.
 /// No test here sleeps for a fixed duration as a synchronization device: every wait
 /// is a bounded poll of committed control-plane state with a hard deadline.</item>
-/// <item><b>Secrets off argv.</b> The machine token reaches docketd through the
+/// <item><b>Secrets off argv.</b> The machine token reaches landbridged through the
 /// environment and the worker token through the injected <c>mcp.json</c>, never as an
 /// argument (§13).</item>
 /// </list>
@@ -39,7 +39,7 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     private readonly List<string> _timeline = new();
 
     private ChaosProcess? _plane;
-    private ChaosProcess? _docketd;
+    private ChaosProcess? _landbridged;
     private HttpClient _http = null!;
 
     private string _planeUrl = null!;
@@ -55,19 +55,19 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     public string MachineId { get; private set; } = null!;
 
     public string WorkRoot => _workRoot;
-    public ChaosProcess Docketd => _docketd ?? throw new InvalidOperationException("docketd is not running");
+    public ChaosProcess Landbridged => _landbridged ?? throw new InvalidOperationException("landbridged is not running");
 
     // ── Bring-up ────────────────────────────────────────────────────────────────
 
     public async Task StartAsync(CancellationToken ct)
     {
         await StartPlaneOnlyAsync(ct);
-        await StartDocketdAsync(ct);
+        await StartLandbridgedAsync(ct);
         Note($"fleet up: plane={_planeUrl} machine={MachineId}");
     }
 
     /// <summary>
-    /// Everything except <c>docketd</c>: the credentials, the plane, and docketd's config
+    /// Everything except <c>landbridged</c>: the credentials, the plane, and landbridged's config
     /// written and ready. For the one scenario that needs to hold a <c>/runner</c> connection
     /// open BEFORE the daemon dials in, so the daemon's connection is the one that supersedes
     /// (§17.8 "close a laptop and reattach", #94). Every other scenario wants
@@ -77,15 +77,15 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     {
         _http = new HttpClient { Timeout = TimeSpan.FromSeconds(10) };
         _workRoot = NewTempDir("work");
-        // §13/§10: docketd's own state dir must be a temp path. On a box that has ever
-        // run `docketd --enroll`, a real ~/.docket/credentials.json would override the
+        // §13/§10: landbridged's own state dir must be a temp path. On a box that has ever
+        // run `landbridged --enroll`, a real ~/.landbridge/credentials.json would override the
         // machine id we hand it — and point it at a real control plane.
         _stateDir = NewTempDir("state");
 
         // Mint the machine identity and the Lead credential directly against the store, the
         // idiom the existing suites use (RunnerSpineEndToEndTests for the machine,
         // PlaneProbe.LeadTokenAsync for the Lead). The machine half stays here: this is the
-        // only rig that enrolls one, because it is the only one with a real docketd to enroll.
+        // only rig that enrolls one, because it is the only one with a real landbridged to enroll.
         await using (var db = pg.NewContext())
         {
             var tokens = new TokenService(db, TimeProvider.System);
@@ -105,7 +105,7 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
         _planeUrl = PlaneProbe.ReserveLoopbackUrl();
         await StartPlaneAsync(ct);
 
-        _configPath = WriteDocketdConfig();
+        _configPath = WriteLandbridgedConfig();
     }
 
     private async Task StartPlaneAsync(CancellationToken ct)
@@ -117,18 +117,18 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
             // ServiceDefaults maps /health only in Development — that endpoint is this
             // rig's readiness gate, exactly as it is the AppHost's.
             ["ASPNETCORE_ENVIRONMENT"] = "Development",
-            ["ConnectionStrings__Docket"] = pg.ConnectionString,
+            ["ConnectionStrings__Landbridge"] = pg.ConnectionString,
             // The URL the plane writes into every worker's injected mcp.json. Without
             // this the workers would dial the 127.0.0.1:5000 default and never find us.
-            ["Docket__PublicMcpUrl"] = _planeUrl,
+            ["Landbridge__PublicMcpUrl"] = _planeUrl,
             // The PostgresFixture already migrated; a second migrate would only race.
-            ["Docket__MigrateOnStartup"] = "false",
+            ["Landbridge__MigrateOnStartup"] = "false",
             // §10 two-clock liveness, shrunk. Note PerTaskLivenessWindow doubles as the
             // sweep PERIOD, and that these parse as TimeSpan — a bare number would mean
             // DAYS, so they are always written out in full.
-            ["Docket__PerTaskLivenessWindow"] = Fmt(options.PerTaskLivenessWindow),
-            ["Docket__NoProgressCeiling"] = Fmt(options.NoProgressCeiling),
-            // Keep Docket's own categories verbose — the liveness warning is the only
+            ["Landbridge__PerTaskLivenessWindow"] = Fmt(options.PerTaskLivenessWindow),
+            ["Landbridge__NoProgressCeiling"] = Fmt(options.NoProgressCeiling),
+            // Keep Landbridge's own categories verbose — the liveness warning is the only
             // record of which clock reclaimed a task — but silence framework chatter.
             // EF Core logs every dispatch query at Information, and the dispatch loop
             // runs on every heartbeat, so at default levels the plane emits hundreds of
@@ -164,52 +164,52 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     }
 
     /// <summary>
-    /// Starts docketd and waits for its <c>docketd up:</c> announcement — which §10
+    /// Starts landbridged and waits for its <c>landbridged up:</c> announcement — which §10
     /// guarantees is printed only AFTER the restart sweep has run, so seeing the line
     /// is what makes "the sweep completed before this daemon accepted any dispatch"
     /// an observable fact. Returns the announcement line.
     /// </summary>
-    public async Task<string> StartDocketdAsync(CancellationToken ct)
+    public async Task<string> StartLandbridgedAsync(CancellationToken ct)
     {
-        _docketd = ChaosProcess.Start("docketd", ChaosBinaries.Docketd(),
+        _landbridged = ChaosProcess.Start("landbridged", ChaosBinaries.Landbridged(),
             ["--config", _configPath, "--state-dir", _stateDir],
             new Dictionary<string, string>
             {
-                ["DOCKET_CONTROL_URL"] = WsRunnerUrl(_planeUrl),
+                ["LANDBRIDGE_CONTROL_URL"] = WsRunnerUrl(_planeUrl),
                 // §13: the machine token travels in the environment, never in argv.
-                ["DOCKET_MACHINE_TOKEN"] = _machineToken,
-                ["DOCKET_MACHINE_ID"] = MachineId,
+                ["LANDBRIDGE_MACHINE_TOKEN"] = _machineToken,
+                ["LANDBRIDGE_MACHINE_ID"] = MachineId,
             });
 
-        var up = await _docketd.WaitForLineAsync(l => l.Contains("docketd up:", StringComparison.Ordinal),
+        var up = await _landbridged.WaitForLineAsync(l => l.Contains("landbridged up:", StringComparison.Ordinal),
             options.StartupTimeout);
         if (up is null)
             throw new TimeoutException(
-                $"docketd never announced itself within {options.StartupTimeout}:\n" + _docketd.Tail());
-        Note("docketd: " + up.Trim());
+                $"landbridged never announced itself within {options.StartupTimeout}:\n" + _landbridged.Tail());
+        Note("landbridged: " + up.Trim());
         return up;
     }
 
     /// <summary>
-    /// SIGKILL docketd — no handler, no flush, no child cleanup (§17.8). The plane
+    /// SIGKILL landbridged — no handler, no flush, no child cleanup (§17.8). The plane
     /// notices the dropped socket and requeues everything the machine held; asserting
     /// that is the caller's job.
     /// </summary>
-    public async Task SigkillDocketdAsync()
+    public async Task SigkillLandbridgedAsync()
     {
-        var victim = _docketd ?? throw new InvalidOperationException("docketd is not running");
-        Note($"SIGKILL docketd pid={victim.Id}");
+        var victim = _landbridged ?? throw new InvalidOperationException("landbridged is not running");
+        Note($"SIGKILL landbridged pid={victim.Id}");
         victim.Sigkill();
         await victim.WaitForExitAsync(TimeSpan.FromSeconds(15));
         victim.Dispose();
-        _docketd = null;
+        _landbridged = null;
     }
 
     /// <summary>
     /// SIGKILL the plane, then bring an identically-configured one back up on the same
     /// URL and the same database — a plane restart under live work, which is exactly what
     /// leaves in-flight tasks with no in-memory tracking behind them (§17.8, #86).
-    /// docketd is left running and reconnects on its own backoff.
+    /// landbridged is left running and reconnects on its own backoff.
     /// </summary>
     public async Task RestartPlaneAsync(CancellationToken ct)
     {
@@ -236,10 +236,10 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
             .WaitForLineAsync(match, timeout);
 
     /// <summary>
-    /// Plants a tagged process tree that will OUTLIVE docketd, standing in for the
+    /// Plants a tagged process tree that will OUTLIVE landbridged, standing in for the
     /// escaped grandchild §10 describes (a dev server that <c>setsid</c>ed out of the
     /// task's process group and still holds its port). Two mechanisms have to be
-    /// defeated for it to survive, exactly as <c>DocketdStrayReapEndToEndTests</c>
+    /// defeated for it to survive, exactly as <c>LandbridgedStrayReapEndToEndTests</c>
     /// does: this rig holds its stdin open (so the harness's dead-man watch never sees
     /// EOF) and disables PDEATHSIG (armed per-thread, so an xunit pool thread retiring
     /// would otherwise kill it early). A real stray survives because NOTHING fires —
@@ -255,10 +255,10 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
             {
                 // The tag the sweep matches on (§10). Set ONLY on this child: were it
                 // ever exported into the test process's own environment, a restarted
-                // docketd would kill the test runner itself.
-                ["DOCKET_MACHINE_ID"] = MachineId,
-                ["DOCKET_SESSION_ID"] = Guid.NewGuid().ToString(),
-                ["DOCKET_TEST_DISABLE_PDEATHSIG"] = "1",
+                // landbridged would kill the test runner itself.
+                ["LANDBRIDGE_MACHINE_ID"] = MachineId,
+                ["LANDBRIDGE_SESSION_ID"] = Guid.NewGuid().ToString(),
+                ["LANDBRIDGE_TEST_DISABLE_PDEATHSIG"] = "1",
             },
             workingDirectory: strayDir,
             redirectStdin: true);
@@ -376,7 +376,7 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     /// <summary>
     /// Dials the plane's real <c>/runner</c> WebSocket with the machine's own credential and
     /// hands back the socket, without sending anything on it (§10, §13: the token travels in
-    /// the header, as <c>docketd</c>'s own channel sends it).
+    /// the header, as <c>landbridged</c>'s own channel sends it).
     ///
     /// <para>This is the closest deterministic stand-in for the half-open socket §17.8's
     /// closed-laptop case produces. A genuinely half-open TCP connection needs packets
@@ -396,7 +396,7 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     }
 
     /// <summary>
-    /// The worker token docketd injected for the CURRENT dispatch of
+    /// The worker token landbridged injected for the CURRENT dispatch of
     /// <paramref name="task"/>, read out of the generated <c>mcp.json</c> in the task's
     /// work dir (§13) — the very token the live worker is authenticating with. Null
     /// until the file exists. Redispatch overwrites it in place, so a scenario that
@@ -504,7 +504,7 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
         }
 
         sb.AppendLine("╠═ processes ═══════════════════════════════════════════════════");
-        foreach (var process in new[] { _plane, _docketd }.Concat(_strays).OfType<ChaosProcess>())
+        foreach (var process in new[] { _plane, _landbridged }.Concat(_strays).OfType<ChaosProcess>())
             sb.Append(Indent(process.Tail()));
         sb.AppendLine("╚═══════════════════════════════════════════════════════════════");
         return sb.ToString();
@@ -522,21 +522,21 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     // ── Config + wiring ─────────────────────────────────────────────────────────
 
     /// <summary>
-    /// docketd's config (§10). Two profiles, both spawning REAL binaries by absolute
+    /// landbridged's config (§10). Two profiles, both spawning REAL binaries by absolute
     /// path with argv only:
     /// <list type="bullet">
-    /// <item><c>default</c> — <c>Docket.WorkerHarness</c>, which dials the plane with
+    /// <item><c>default</c> — <c>Landbridge.WorkerHarness</c>, which dials the plane with
     /// its injected token, calls <c>get_session</c>, reports a result and exits: a task
     /// that reaches <c>verifying</c> on its own.</item>
-    /// <item><c>wedge</c> — <c>Docket.Runner.TestHarness run</c>, which writes a marker
+    /// <item><c>wedge</c> — <c>Landbridge.Runner.TestHarness run</c>, which writes a marker
     /// and then only watches stdin. It never speaks MCP, so it registers no service and
-    /// makes no progress, while docketd keeps emitting <c>alive</c> for it every
+    /// makes no progress, while landbridged keeps emitting <c>alive</c> for it every
     /// heartbeat. That is precisely the wedged agent the two clocks exist to separate:
     /// aliveness stays fresh, so only the no-progress ceiling can reclaim it.</item>
     /// </list>
     /// <para><b>Only the wedge profile names <c>{mcp_config}</c>, and it must keep doing so
     /// even though its harness ignores every argument past <c>run</c>.</b> Since #112 G11
-    /// docketd writes the 0600 <c>mcp.json</c> only when the argv references it, so this is
+    /// landbridged writes the 0600 <c>mcp.json</c> only when the argv references it, so this is
     /// what puts a real worker-instance token on disk — the credential
     /// <see cref="InjectedWorkerTokenAsync"/> reads and the stale-token replay scenario
     /// (§17.8) presents again after a requeue. Drop it and that scenario stops finding a
@@ -551,7 +551,7 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     /// the dispatch signal, and it must stay well inside the plane's aliveness window or
     /// a perfectly healthy task would be requeued.
     /// </summary>
-    private string WriteDocketdConfig()
+    private string WriteLandbridgedConfig()
     {
         var config = new JsonObject
         {
@@ -578,7 +578,7 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
                     //
                     // It DOES still name {mcp_config}, and alone in this file. The harness
                     // ignores every argument past `run`, so the path is never read; what the
-                    // reference does is make docketd write the 0600 file (#112 G11 gates that
+                    // reference does is make landbridged write the 0600 file (#112 G11 gates that
                     // write on the argv asking for it), which is the only way the stale-token
                     // replay scenario can get hold of a real worker-instance credential —
                     // tokens are hashed at rest, so the plane's own tables cannot give one
@@ -590,7 +590,7 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
                     ["prompt"] = "Do the task you have been dispatched.",
                 }),
         };
-        var path = Path.Combine(NewTempDir("config"), "docketd.json");
+        var path = Path.Combine(NewTempDir("config"), "landbridged.json");
         File.WriteAllText(path, config.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
         return path;
     }
@@ -605,16 +605,16 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     private static string NewTempDir(string kind)
     {
         var dir = Path.Combine(
-            Path.GetTempPath(), "docket-chaos-tests", Guid.NewGuid().ToString("N"), kind);
+            Path.GetTempPath(), "landbridge-chaos-tests", Guid.NewGuid().ToString("N"), kind);
         Directory.CreateDirectory(dir);
         return dir;
     }
 
     public async ValueTask DisposeAsync()
     {
-        // Order matters: docketd first, so it tears down its own workers before the
+        // Order matters: landbridged first, so it tears down its own workers before the
         // plane goes away and starts logging requeues at a stopping host.
-        _docketd?.Dispose();
+        _landbridged?.Dispose();
         foreach (var stray in _strays)
             stray.Dispose();
         _plane?.Dispose();
@@ -631,7 +631,7 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
 internal sealed record ChaosFleetOptions
 {
     /// <summary>
-    /// docketd's heartbeat cadence — the <c>alive</c> cadence and the dispatch signal.
+    /// landbridged's heartbeat cadence — the <c>alive</c> cadence and the dispatch signal.
     /// Must stay comfortably inside <see cref="PerTaskLivenessWindow"/>.
     /// </summary>
     public TimeSpan HeartbeatInterval { get; init; } = TimeSpan.FromSeconds(1);
@@ -644,7 +644,7 @@ internal sealed record ChaosFleetOptions
     /// <para><b>It is pulled in two directions, so it is left tight here and widened
     /// per scenario.</b> Too tight and it does not cover the COLD START: the clock
     /// starts on the plane in <c>RunnerConnectionRegistry.TrackDispatch</c>, just before
-    /// the send, so it is already running while the command crosses the socket, docketd
+    /// the send, so it is already running while the command crosses the socket, landbridged
     /// writes <c>files[]</c>, and <c>Process.Start</c> runs — and no heartbeat can carry
     /// <c>alive</c> until that process exists. Too wide and it stops being the FAST
     /// RETRY that a scenario asserting real work inside <c>TransitionBudget</c> leans on:
@@ -668,7 +668,7 @@ internal sealed record ChaosFleetOptions
     public TimeSpan StartupTimeout { get; init; } = TimeSpan.FromSeconds(90);
 }
 
-/// <summary>Runner profile names this suite declares in docketd's config.</summary>
+/// <summary>Runner profile names this suite declares in landbridged's config.</summary>
 internal static class ChaosProfiles
 {
     /// <summary>A worker that stays alive and makes no progress; see the config comment.</summary>

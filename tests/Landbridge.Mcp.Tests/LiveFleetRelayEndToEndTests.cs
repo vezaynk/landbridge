@@ -1,18 +1,18 @@
 using System.Net;
 using System.Net.Sockets;
-using Docket.Contracts;
-using Docket.ControlPlane;
-using Docket.ControlPlane.Auth;
-using Docket.ControlPlane.Tests;
-using Docket.Core;
-using Docket.Runner;
+using Landbridge.Contracts;
+using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.ControlPlane.Tests;
+using Landbridge.Core;
+using Landbridge.Runner;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 
-namespace Docket.Mcp.Tests;
+namespace Landbridge.Mcp.Tests;
 
 /// <summary>
 /// The live-fleet crown of increment 4 (spec §8.3): the relay proven through a
@@ -20,7 +20,7 @@ namespace Docket.Mcp.Tests;
 /// plane (grants + registry + orchestrator + event sink), a real relay validating
 /// grants against that plane, and the real <see cref="DispatchService"/> +
 /// <see cref="ProcessSupervisor"/> spawning the <b>real</b>
-/// <see cref="Docket.WorkerHarness"/> process <em>twice</em> — once as a producer,
+/// <see cref="Landbridge.WorkerHarness"/> process <em>twice</em> — once as a producer,
 /// once as a consumer — off a single <c>default</c> profile. The two workers are
 /// steered entirely by their task's opaque prose description (§7): a
 /// <c>relay-serve:echo</c> task makes its worker bind a loopback echo service and
@@ -29,7 +29,7 @@ namespace Docket.Mcp.Tests;
 /// address, and prove a byte round-trip through the real relay before reporting
 /// <c>relay-echo:ok:&lt;bytes&gt;</c>.
 ///
-/// <para>The forward's two docketd data planes are real <see cref="RunnerDaemon"/>s
+/// <para>The forward's two landbridged data planes are real <see cref="RunnerDaemon"/>s
 /// (via <see cref="DaemonHarness"/>, reused from the increment-3 crown): the producer
 /// task's machine handles the producer <c>open-forward</c> (dialing the echo service),
 /// the consumer task's machine handles the consumer one (binding the loopback the
@@ -38,7 +38,7 @@ namespace Docket.Mcp.Tests;
 /// <see cref="OpenForwardCommand"/> → that machine's real daemon, whose ring drains
 /// forward-opened/-closed back into the plane's <see cref="RunnerEventSink"/> so the
 /// orchestrator's waiter completes — exactly the §10 socket seam a production
-/// docketd would occupy. Producer and consumer land on <em>different</em> machines
+/// landbridged would occupy. Producer and consumer land on <em>different</em> machines
 /// (the relay is cross-machine, and one <see cref="RelayForwarder"/> dedups a
 /// forward id) by dispatching them one at a time with only the intended machine ready.</para>
 ///
@@ -78,7 +78,7 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
         var registry = plane.Services.GetRequiredService<RunnerConnectionRegistry>();
         var sink = plane.Services.GetRequiredService<RunnerEventSink>();
 
-        // ── Two machines, each a real docketd data plane for its end of a forward.
+        // ── Two machines, each a real landbridged data plane for its end of a forward.
         //    "mp" hosts the producer task, "mc" the consumer. Separate daemons →
         //    separate RelayForwarders, so the shared forward id is not deduped away.
         await using var producerDaemon = new DaemonHarness("mp", new SinkForwardingChannel(sink));
@@ -168,7 +168,7 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
             //    splice persists UNTIL the owning task leaves working."
             //
             //    The consumer end above belonged to a worker that has since exited, so the
-            //    test takes one for itself: a real grant, both real docketd ends armed by the
+            //    test takes one for itself: a real grant, both real landbridged ends armed by the
             //    real orchestrator, and a TCP client the test holds OPEN across the
             //    producer's transition. Deliberately driven by report_result and NOT by a
             //    liveness loss, because a liveness loss tree-kills the worker (§10, #84) — the
@@ -303,7 +303,7 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
     }
 
     /// <summary>
-    /// Whether the far end has gone: a read of 0 (docketd shut its side of the loopback
+    /// Whether the far end has gone: a read of 0 (landbridged shut its side of the loopback
     /// socket down, the clean case) or a reset. Bounded, so a connection that is still very
     /// much alive fails the assertion rather than hanging the test.
     /// </summary>
@@ -335,28 +335,28 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
     }
 
     /// <summary>
-    /// The built <see cref="Docket.WorkerHarness"/> apphost, resolved from its own
+    /// The built <see cref="Landbridge.WorkerHarness"/> apphost, resolved from its own
     /// bin (not the copy beside this test) — its MCP-client closure is copied local
     /// only there, so the copy beside the test cannot start. Mirrors the skeleton E2E.
     /// </summary>
     private static string WorkerHarnessPath()
     {
-        const string stem = "Docket.WorkerHarness";
+        const string stem = "Landbridge.WorkerHarness";
         var testDir = System.IO.Path.GetDirectoryName(typeof(LiveFleetRelayEndToEndTests).Assembly.Location)!;
         var harnessDir = testDir.Replace(
-            System.IO.Path.Combine("Docket.Mcp.Tests", "bin"),
+            System.IO.Path.Combine("Landbridge.Mcp.Tests", "bin"),
             System.IO.Path.Combine(stem, "bin"),
             StringComparison.Ordinal);
         var apphost = System.IO.Path.Combine(harnessDir, OperatingSystem.IsWindows() ? stem + ".exe" : stem);
         return System.IO.File.Exists(apphost)
             ? apphost
             : throw new System.IO.FileNotFoundException(
-                $"worker harness apphost not found at {apphost}; is Docket.WorkerHarness built?");
+                $"worker harness apphost not found at {apphost}; is Landbridge.WorkerHarness built?");
     }
 
     private static string NewWorkRoot()
     {
-        var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "docket-live-fleet-tests", Guid.NewGuid().ToString("N"));
+        var dir = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "landbridge-live-fleet-tests", Guid.NewGuid().ToString("N"));
         System.IO.Directory.CreateDirectory(dir);
         return dir;
     }

@@ -1,13 +1,13 @@
 using System.Diagnostics;
-using Docket.ControlPlane;
+using Landbridge.ControlPlane;
 using Microsoft.EntityFrameworkCore;
 
-namespace Docket.ControlPlane.Tests;
+namespace Landbridge.ControlPlane.Tests;
 
 /// <summary>
 /// An ephemeral Postgres cluster for the test session — initdb + pg_ctl into a
 /// temp dir, torn down at the end. No shell scripts: every step is a spawned
-/// process via ArgumentList (repo convention). Set DOCKET_TEST_PG to a
+/// process via ArgumentList (repo convention). Set LANDBRIDGE_TEST_PG to a
 /// connection string to point at an existing server instead and skip the
 /// managed cluster entirely.
 ///
@@ -25,7 +25,7 @@ public sealed class PostgresFixture : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        var external = Environment.GetEnvironmentVariable("DOCKET_TEST_PG");
+        var external = Environment.GetEnvironmentVariable("LANDBRIDGE_TEST_PG");
         if (!string.IsNullOrWhiteSpace(external))
         {
             ConnectionString = external;
@@ -38,15 +38,15 @@ public sealed class PostgresFixture : IAsyncLifetime
         var pgCtl = Which("pg_ctl");
         if (initdb is null || pgCtl is null)
         {
-            SkipReason = "no DOCKET_TEST_PG and initdb/pg_ctl not on PATH";
+            SkipReason = "no LANDBRIDGE_TEST_PG and initdb/pg_ctl not on PATH";
             return;
         }
 
-        _dataDir = Directory.CreateTempSubdirectory("docket-pg-").FullName;
-        _socketDir = Directory.CreateTempSubdirectory("docket-sock-").FullName;
+        _dataDir = Directory.CreateTempSubdirectory("landbridge-pg-").FullName;
+        _socketDir = Directory.CreateTempSubdirectory("landbridge-sock-").FullName;
         var port = FreePort();
 
-        await Run(initdb, ["-D", _dataDir, "-U", "docket", "--auth=trust", "-E", "UTF8"]);
+        await Run(initdb, ["-D", _dataDir, "-U", "landbridge", "--auth=trust", "-E", "UTF8"]);
         await Run(pgCtl,
         [
             "-D", _dataDir, "-w", "start",
@@ -54,13 +54,13 @@ public sealed class PostgresFixture : IAsyncLifetime
         ]);
 
         ConnectionString =
-            $"Host=127.0.0.1;Port={port};Username=docket;Database=postgres;Include Error Detail=true";
+            $"Host=127.0.0.1;Port={port};Username=landbridge;Database=postgres;Include Error Detail=true";
         Available = true;
         await MigrateAsync();
     }
 
-    public DocketDbContext NewContext() =>
-        new(DocketDbContext.BuildOptions(ConnectionString));
+    public LandbridgeDbContext NewContext() =>
+        new(LandbridgeDbContext.BuildOptions(ConnectionString));
 
     /// <summary>
     /// Clears all rows between tests. Dispatch is machine-driven and spans

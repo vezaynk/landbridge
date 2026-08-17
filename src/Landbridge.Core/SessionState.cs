@@ -1,4 +1,4 @@
-namespace Docket.Core;
+namespace Landbridge.Core;
 
 /// <summary>Task states, spec §6.</summary>
 public enum SessionState
@@ -69,7 +69,7 @@ public enum InputRequestKind
 
     /// <summary>
     /// A harness permission prompt relayed into the plane (§11 permission bridge): the
-    /// worker's harness wants to use a tool its allowlist does not cover, and Docket is
+    /// worker's harness wants to use a tool its allowlist does not cover, and Landbridge is
     /// standing in for the human who would have answered the dialog. The one kind whose
     /// wait is <em>live</em> — the asking process stays up inside its tool call, because
     /// the harness contract has nowhere to put a resumed answer — so it is answered with
@@ -142,7 +142,7 @@ public enum LivenessLossReason
     AckTimeout,
 
     /// <summary>
-    /// docketd stopped asserting the harness process is alive (§10's aliveness clock,
+    /// landbridged stopped asserting the harness process is alive (§10's aliveness clock,
     /// ~60s). The process died without an <c>exited</c>, or the daemon itself is wedged.
     /// </summary>
     LivenessTimeout,

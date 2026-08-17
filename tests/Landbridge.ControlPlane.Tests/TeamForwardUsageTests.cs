@@ -1,9 +1,9 @@
-using Docket.ControlPlane.Auth;
-using Docket.Core;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.Core;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.ControlPlane.Tests;
+namespace Landbridge.ControlPlane.Tests;
 
 /// <summary>
 /// §9 check 10 / §9.10 relay byte accounting — <b>measurement without enforcement</b>, and the
@@ -176,7 +176,7 @@ public sealed class TeamForwardUsageTests(PostgresFixture pg) : IAsyncLifetime
     /// <summary>A working task in <paramref name="team"/> with a registered service and one
     /// issued grant; returns the forward id the relay would report against.</summary>
     private static async Task<Guid> IssuedForwardAsync(
-        DocketDbContext db, TimeProvider clock, TeamId team, string serviceName)
+        LandbridgeDbContext db, TimeProvider clock, TeamId team, string serviceName)
     {
         var store = new SessionStore(db, clock);
         var created = (StoreResult.Applied)await store.CreateAsync(

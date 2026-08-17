@@ -1,4 +1,4 @@
-namespace Docket.Relay;
+namespace Landbridge.Relay;
 
 /// <summary>
 /// Validates the opaque connection-establishment grant a tunnel presents

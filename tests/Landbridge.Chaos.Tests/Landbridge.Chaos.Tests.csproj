@@ -22,17 +22,17 @@
     <Using Include="Xunit" />
     <!-- The shared rig kit is source-linked below; a global using keeps every scenario
          file from repeating the import for a type that is effectively part of this suite. -->
-    <Using Include="Docket.RigSupport" />
+    <Using Include="Landbridge.RigSupport" />
   </ItemGroup>
 
   <!-- Reuse the ControlPlane suite's ephemeral-Postgres fixture verbatim (single
-       source of truth) rather than duplicating it, exactly like Docket.Mcp.Tests
-       and Docket.MultiMachine.Tests. -->
+       source of truth) rather than duplicating it, exactly like Landbridge.Mcp.Tests
+       and Landbridge.MultiMachine.Tests. -->
   <ItemGroup>
-    <Compile Include="..\Docket.ControlPlane.Tests\PostgresFixture.cs" Link="PostgresFixture.cs" />
+    <Compile Include="..\Landbridge.ControlPlane.Tests\PostgresFixture.cs" Link="PostgresFixture.cs" />
     <!-- The plane-facing half both fleet rigs need: loopback reservation, the bounded
          poll, the Lead MCP surface, and the committed-facts dump. Source-linked rather
-         than referenced because this suite deliberately keeps Docket.Runner off its
+         than referenced because this suite deliberately keeps Landbridge.Runner off its
          compile closure (see the build-only edges below), so it cannot share an assembly
          with the MultiMachine rig. -->
     <Compile Include="..\RigSupport\PlaneProbe.cs" Link="PlaneProbe.cs" />
@@ -43,29 +43,29 @@
        committed state). Everything this suite exercises at runtime is a REAL
        separate OS process, so nothing else needs to be on our compile closure. -->
   <ItemGroup>
-    <ProjectReference Include="..\..\src\Docket.ControlPlane\Docket.ControlPlane.csproj" />
+    <ProjectReference Include="..\..\src\Landbridge.ControlPlane\Landbridge.ControlPlane.csproj" />
   </ItemGroup>
 
-  <!-- Build-only edges (the AppHost idiom, src/Docket.AppHost/Docket.AppHost.csproj):
+  <!-- Build-only edges (the AppHost idiom, src/Landbridge.AppHost/Landbridge.AppHost.csproj):
        this suite resolves each of these binaries BY PATH from its own bin and spawns
        it as a real process, but never links its assembly. ReferenceOutputAssembly=false
        keeps them off our closure — which also keeps each apphost startable from its own
        bin, where its full dependency closure lives — while still guaranteeing MSBuild
        builds them before us.
-         Docket.Mcp                → the control plane / MCP host under test
-         Docket.Runner             → docketd (AssemblyName `docketd`)
-         Docket.WorkerHarness      → the scripted no-LLM worker that reports and exits
-         Docket.Runner.TestHarness → `run` = a worker that emits nothing and reports
+         Landbridge.Mcp                → the control plane / MCP host under test
+         Landbridge.Runner             → landbridged (AssemblyName `landbridged`)
+         Landbridge.WorkerHarness      → the scripted no-LLM worker that reports and exits
+         Landbridge.Runner.TestHarness → `run` = a worker that emits nothing and reports
                                      nothing (the wedged agent), `spawn-child` = a
                                      planted stray tree for the restart sweep -->
   <ItemGroup>
-    <ProjectReference Include="..\..\src\Docket.Mcp\Docket.Mcp.csproj"
+    <ProjectReference Include="..\..\src\Landbridge.Mcp\Landbridge.Mcp.csproj"
                       ReferenceOutputAssembly="false" PrivateAssets="all" />
-    <ProjectReference Include="..\..\src\Docket.Runner\Docket.Runner.csproj"
+    <ProjectReference Include="..\..\src\Landbridge.Runner\Landbridge.Runner.csproj"
                       ReferenceOutputAssembly="false" PrivateAssets="all" />
-    <ProjectReference Include="..\Docket.WorkerHarness\Docket.WorkerHarness.csproj"
+    <ProjectReference Include="..\Landbridge.WorkerHarness\Landbridge.WorkerHarness.csproj"
                       ReferenceOutputAssembly="false" PrivateAssets="all" />
-    <ProjectReference Include="..\Docket.Runner.TestHarness\Docket.Runner.TestHarness.csproj"
+    <ProjectReference Include="..\Landbridge.Runner.TestHarness\Landbridge.Runner.TestHarness.csproj"
                       ReferenceOutputAssembly="false" PrivateAssets="all" />
   </ItemGroup>
 

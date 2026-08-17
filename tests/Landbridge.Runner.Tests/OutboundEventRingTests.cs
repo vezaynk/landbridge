@@ -1,6 +1,6 @@
-using Docket.Core;
+using Landbridge.Core;
 
-namespace Docket.Runner.Tests;
+namespace Landbridge.Runner.Tests;
 
 /// <summary>The bounded runner→control-plane buffer, spec §10 buffering:
 /// drop-oldest with a gap marker.</summary>

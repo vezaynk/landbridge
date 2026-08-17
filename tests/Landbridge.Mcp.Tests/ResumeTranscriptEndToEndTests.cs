@@ -1,15 +1,15 @@
-using Docket.Contracts;
-using Docket.ControlPlane;
-using Docket.ControlPlane.Tests;
-using Docket.Core;
-using Docket.Runner;
+using Landbridge.Contracts;
+using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Tests;
+using Landbridge.Core;
+using Landbridge.Runner;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
-using HarnessProgram = Docket.Runner.TestHarness.Program;
+using HarnessProgram = Landbridge.Runner.TestHarness.Program;
 
-namespace Docket.Mcp.Tests;
+namespace Landbridge.Mcp.Tests;
 
 /// <summary>
 /// §11 resume crown, skeleton-style (a real spawned harness, no LLM): proves the
@@ -22,7 +22,7 @@ namespace Docket.Mcp.Tests;
 /// <c>--resume &lt;that id&gt;</c>. The one thing left to an operator spike (§17.0)
 /// is a real <c>claude -p --resume</c>; everything up to the resumed argv is here.
 ///
-/// <para>Deviations from a live docketd, called out where they matter: the pieces
+/// <para>Deviations from a live landbridged, called out where they matter: the pieces
 /// are wired directly rather than over the <c>/runner</c> WebSocket (the wire is
 /// covered by RunnerSpineEndToEndTests + the contract round-trips), and the first
 /// harness is left alive through the park so the task stays tracked for the sweeper
@@ -237,9 +237,9 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
     private IServiceScopeFactory ScopeFactory(TimeProvider clock)
     {
         var services = new ServiceCollection();
-        services.AddDbContext<DocketDbContext>(o =>
+        services.AddDbContext<LandbridgeDbContext>(o =>
             o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
-        services.AddDocketStore();
+        services.AddLandbridgeStore();
         services.AddSingleton(clock);
         return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
     }
@@ -285,7 +285,7 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
 
     private static string NewWorkRoot()
     {
-        var dir = Path.Combine(Path.GetTempPath(), "docket-resume-crown", Guid.NewGuid().ToString("N"));
+        var dir = Path.Combine(Path.GetTempPath(), "landbridge-resume-crown", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
         return dir;
     }

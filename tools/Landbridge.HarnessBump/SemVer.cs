@@ -1,7 +1,7 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Globalization;
 
-namespace Docket.HarnessBump;
+namespace Landbridge.HarnessBump;
 
 /// <summary>
 /// Enough of semver 2.0.0 to answer one question: is the registry's <c>latest</c> newer

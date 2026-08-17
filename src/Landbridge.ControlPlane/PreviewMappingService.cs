@@ -1,13 +1,13 @@
 using System.Security.Cryptography;
 using System.Text;
-using Docket.Core;
+using Landbridge.Core;
 using Microsoft.EntityFrameworkCore;
 
-namespace Docket.ControlPlane;
+namespace Landbridge.ControlPlane;
 
 /// <summary>
 /// Creates and resolves HTTP-preview mappings (spec §8.4), alongside
-/// <see cref="Docket.ControlPlane.Auth.RelayGrantService"/> and in the same
+/// <see cref="Landbridge.ControlPlane.Auth.RelayGrantService"/> and in the same
 /// clock/db-injection style. A mapping is the durable <c>{label → (team, task,
 /// service, expiry, auth-policy)}</c> record a preview subdomain resolves to.
 ///
@@ -20,7 +20,7 @@ namespace Docket.ControlPlane;
 /// surfaces (§10 <c>open_preview</c>, §12 dashboard button) will call in #62; this
 /// increment builds the model, persistence, and resolve/connect path only.</para>
 /// </summary>
-public sealed class PreviewMappingService(DocketDbContext db, TimeProvider clock)
+public sealed class PreviewMappingService(LandbridgeDbContext db, TimeProvider clock)
 {
     /// <summary>
     /// Mint a mapping and return the plaintext label (which exists only in this

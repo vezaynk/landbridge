@@ -1,12 +1,12 @@
-using Docket.Contracts;
-using Docket.ControlPlane.Auth;
-using Docket.Core;
+using Landbridge.Contracts;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.Core;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.ControlPlane.Tests;
+namespace Landbridge.ControlPlane.Tests;
 
 /// <summary>
 /// §10 per-task liveness, on its two clocks. The pair that matters is
@@ -16,7 +16,7 @@ namespace Docket.ControlPlane.Tests;
 /// genuinely stuck one is still caught. Get only the first and every long task is
 /// requeued forever; get only the second and a wedged agent is immortal.
 ///
-/// The <c>alive</c> events these tests feed the registry are what docketd emits on
+/// The <c>alive</c> events these tests feed the registry are what landbridged emits on
 /// its heartbeat timer for each supervised live process (see the daemon's
 /// EmitAliveEvents, and RunnerDaemonTests for the emitter itself). Here they arrive
 /// pre-decoded so the policy can be driven on a FakeTimeProvider.
@@ -42,7 +42,7 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
         var id = await SeedWorkingTaskAsync(clock, "m1");
         var registry = LiveMachine(clock, "m1", id);
 
-        // Ten minutes of a long tool call: no progress, but docketd keeps saying the
+        // Ten minutes of a long tool call: no progress, but landbridged keeps saying the
         // process is there. Under the old single-clock rule this requeued at 60s.
         StayAliveFor(clock, registry, id, TimeSpan.FromMinutes(10));
         await NewDispatch(clock, registry).CheckLivenessAsync(CancellationToken.None);
@@ -76,7 +76,7 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
         var id = await SeedWorkingTaskAsync(clock, "m1");
         var registry = LiveMachine(clock, "m1", id);
 
-        // No alive events at all: the process died without an `exited`, or docketd is
+        // No alive events at all: the process died without an `exited`, or landbridged is
         // wedged. This is the fast path and it must stay fast.
         clock.Advance(Window + TimeSpan.FromSeconds(1));
         await NewDispatch(clock, registry).CheckLivenessAsync(CancellationToken.None);
@@ -198,7 +198,7 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
         await dispatch.CheckLivenessAsync(CancellationToken.None);
         Assert.Equal(LivenessLossReason.NoProgress, await LastReasonAsync(id));
 
-        // Second fault, after a redispatch: docketd stops asserting the process exists
+        // Second fault, after a redispatch: landbridged stops asserting the process exists
         // at all. Same counter, different signal, and the row now holds the live one.
         await RedispatchAsync(clock, registry, "m1", id);
         clock.Advance(Window + TimeSpan.FromSeconds(1));
@@ -296,7 +296,7 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
 
     /// <summary>
     /// Walks the clock forward in <paramref name="step"/> increments, recording an
-    /// <c>alive</c> at each one — docketd's heartbeat-cadence emission, replayed. The
+    /// <c>alive</c> at each one — landbridged's heartbeat-cadence emission, replayed. The
     /// step must stay under the aliveness window or the task dies of silence between
     /// beats, which is the very thing these tests are distinguishing.
     /// </summary>
@@ -368,9 +368,9 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
     private IServiceScopeFactory ScopeFactory(TimeProvider clock)
     {
         var services = new ServiceCollection();
-        services.AddDbContext<DocketDbContext>(o =>
+        services.AddDbContext<LandbridgeDbContext>(o =>
             o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
-        services.AddDocketStore();
+        services.AddLandbridgeStore();
         services.AddScoped<TokenService>();
         services.AddSingleton(clock);
         return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();

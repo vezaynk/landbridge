@@ -1,9 +1,9 @@
-using Docket.Meta.Data;
-using Docket.Meta.Edge;
-using Docket.Meta.Substrate;
+using Landbridge.Meta.Data;
+using Landbridge.Meta.Edge;
+using Landbridge.Meta.Substrate;
 using Microsoft.EntityFrameworkCore;
 
-namespace Docket.Meta.Provisioning;
+namespace Landbridge.Meta.Provisioning;
 
 /// <summary>
 /// Refusal of a lifecycle transition because the Instance row was not in a state this

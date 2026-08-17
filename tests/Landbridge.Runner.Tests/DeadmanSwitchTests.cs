@@ -1,11 +1,11 @@
-using Docket.Core;
+using Landbridge.Core;
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.Runner.Tests;
+namespace Landbridge.Runner.Tests;
 
 /// <summary>
-/// §10's dead-man's switch, against real processes: docketd holds the write end of every
-/// worker's stdin for that worker's whole life, so EOF means docketd is gone.
+/// §10's dead-man's switch, against real processes: landbridged holds the write end of every
+/// worker's stdin for that worker's whole life, so EOF means landbridged is gone.
 ///
 /// <para>Under ACP that same pipe is the JSON-RPC request channel, and the protocol's own
 /// shutdown rule — the client closes stdin to terminate the agent — is the identical
@@ -37,7 +37,7 @@ public sealed class DeadmanSwitchTests : IDisposable
     /// <summary>
     /// The default is unchanged, and this is the fact that says so: with no <c>stdin</c>
     /// declared the pipe is held open, the worker sits in its stdin read, and it neither
-    /// sees EOF nor exits. Without this the fix above could have been "docketd now always
+    /// sees EOF nor exits. Without this the fix above could have been "landbridged now always
     /// closes stdin", which would silently remove the §10 dead-man's switch from every
     /// existing profile in the fleet.
     /// </summary>
@@ -61,7 +61,7 @@ public sealed class DeadmanSwitchTests : IDisposable
         Assert.False(
             await TestKit.WaitUntilAsync(() => File.Exists(deadman), TimeSpan.FromSeconds(3)),
             "a default-profile worker saw EOF on stdin — the dead-man pipe is no longer being "
-            + "held open, so docketd's death would no longer be visible to any worker");
+            + "held open, so landbridged's death would no longer be visible to any worker");
         Assert.True(supervised!.ProcessAlive);
 
         Assert.True(supervisor.Kill(task));
@@ -69,7 +69,7 @@ public sealed class DeadmanSwitchTests : IDisposable
 
     /// <summary>
     /// The dead-man's switch still works for a <c>deadman</c> profile spawned through the
-    /// supervisor — closing the write end is byte-identical to what the OS does when docketd
+    /// supervisor — closing the write end is byte-identical to what the OS does when landbridged
     /// dies, so this is the switch itself, reached through the spawn path the policy now
     /// branches in. Pinned here because the two policies share one line of code: a
     /// regression that closed the pipe too late, or on the wrong side of the branch, would
@@ -87,7 +87,7 @@ public sealed class DeadmanSwitchTests : IDisposable
         var started = Path.Combine(_workRoot, task.ToString(), "started");
         Assert.True(await TestKit.WaitUntilAsync(() => File.Exists(started), TimeSpan.FromSeconds(20)));
 
-        // Stand in for docketd's death.
+        // Stand in for landbridged's death.
         supervised!.Process.StandardInput.Close();
 
         var deadman = Path.Combine(_workRoot, task.ToString(), "deadman");

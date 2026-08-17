@@ -1,10 +1,10 @@
-using Docket.Contracts;
-using Docket.ControlPlane;
-using Docket.ControlPlane.Auth;
-using Docket.ControlPlane.Tests;
-using Docket.Core;
-using Docket.Mcp.Auth;
-using Docket.Mcp.Tools;
+using Landbridge.Contracts;
+using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.ControlPlane.Tests;
+using Landbridge.Core;
+using Landbridge.Mcp.Auth;
+using Landbridge.Mcp.Tools;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -12,7 +12,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
 using ModelContextProtocol;
 
-namespace Docket.Mcp.Tests;
+namespace Landbridge.Mcp.Tests;
 
 /// <summary>
 /// LeadTools driven directly against a Postgres-backed <see cref="SessionStore"/>
@@ -35,7 +35,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     private readonly FakeTimeProvider _clock = new();
 
     private static IHttpContextAccessor AccessorFor(Principal principal) =>
-        new HttpContextAccessor { HttpContext = new DefaultHttpContext { User = DocketClaims.ToClaimsPrincipal(principal) } };
+        new HttpContextAccessor { HttpContext = new DefaultHttpContext { User = LandbridgeClaims.ToClaimsPrincipal(principal) } };
 
     private LeadTools LeadFor(Principal principal, RunnerConnectionRegistry? registry = null) =>
         RelayGrantTestKit.LeadToolsFor(
@@ -428,9 +428,9 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     private IServiceScopeFactory ScopeFactory()
     {
         var services = new ServiceCollection();
-        services.AddDbContext<DocketDbContext>(o =>
+        services.AddDbContext<LandbridgeDbContext>(o =>
             o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
-        services.AddDocketStore();
+        services.AddLandbridgeStore();
         services.AddScoped<TokenService>();
         services.AddSingleton<TimeProvider>(_clock);
         return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();

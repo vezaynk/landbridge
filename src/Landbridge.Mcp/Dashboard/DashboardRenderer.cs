@@ -1,11 +1,11 @@
 using System.Globalization;
 using System.Text;
-using Docket.Contracts;
-using Docket.ControlPlane;
-using Docket.Core;
-using static Docket.Mcp.Dashboard.DashboardHtml;
+using Landbridge.Contracts;
+using Landbridge.ControlPlane;
+using Landbridge.Core;
+using static Landbridge.Mcp.Dashboard.DashboardHtml;
 
-namespace Docket.Mcp.Dashboard;
+namespace Landbridge.Mcp.Dashboard;
 
 /// <summary>
 /// Turns the <see cref="DashboardQueries"/> view records into the §12 pages as
@@ -90,7 +90,7 @@ internal static class DashboardRenderer
             sb.Append("<div class=\"machine-services\">");
             sb.Append("<h3>Background processes <span class=\"nt\">started by agents on this machine</span></h3>");
             sb.Append("<table><thead><tr>");
-            // No port column: Docket tracks no port for a process (§10). Stdin is here because a
+            // No port column: Landbridge tracks no port for a process (§10). Stdin is here because a
             // cleanup agent needs to know whether a graceful stop exists.
             sb.Append("<th>Process</th><th>State</th><th>Stdin</th><th>Up for</th>" +
                       "<th>Exit</th><th>Ended</th><th>Started by session</th>");
@@ -121,7 +121,7 @@ internal static class DashboardRenderer
             // Say the leak out loud: nothing reclaims these when a task ends, by design.
             sb.Append("<p class=\"nt\">A process outlives the task that started it and is never " +
                       "restarted. Nothing stops it automatically — a Lead sends a cleanup task, " +
-                      "or it runs until this machine's docketd restarts. Docket tracks no port for " +
+                      "or it runs until this machine's landbridged restarts. Landbridge tracks no port for " +
                       "a process; reachability is a registered service (§8.2). A process with " +
                       "closed stdin has no graceful stop.</p>");
             sb.Append("</div>");
@@ -485,7 +485,7 @@ internal static class DashboardRenderer
         // Secondary door: paste a token directly (a Lead token, or a
         // headless-minted human session). Left blank on the normal operator path.
         sb.Append("<label class=\"or\">or paste a token</label>");
-        sb.Append("<input type=\"password\" name=\"token\" placeholder=\"dkt_h_… / dkt_l_…\" autocomplete=\"off\">");
+        sb.Append("<input type=\"password\" name=\"token\" placeholder=\"lbr_h_… / lbr_l_…\" autocomplete=\"off\">");
         sb.Append("<button type=\"submit\">Sign in</button>");
         sb.Append("</form>");
         // This same-origin form is the first-party operator door on the
@@ -604,7 +604,7 @@ internal static class DashboardRenderer
 
     /// <summary>
     /// A cost cell, carrying its provenance to the pixel. The three cases must not look alike:
-    /// a reported figure is the harness's arithmetic, a derived one would be Docket's, and an
+    /// a reported figure is the harness's arithmetic, a derived one would be Landbridge's, and an
     /// absent one is neither — and rendering the third as "$0.00" would turn "nobody measured
     /// this" into "this was free".
     /// </summary>
@@ -613,7 +613,7 @@ internal static class DashboardRenderer
         {
             ({ } c, UsageCostProvenance.Reported) => $"{E(Usd(c))} <span class=\"nt\">USD</span>",
             ({ } c, UsageCostProvenance.Derived) =>
-                $"<span title=\"derived by Docket from token counts, not reported by the harness\">~{E(Usd(c))} "
+                $"<span title=\"derived by Landbridge from token counts, not reported by the harness\">~{E(Usd(c))} "
                 + "<span class=\"nt\">USD est.</span></span>",
             _ => "<span class=\"nt\" title=\"this harness reports no cost\">not reported</span>",
         };
@@ -794,7 +794,7 @@ internal static class DashboardRenderer
     /// bare success. An offline or already-revoked machine reports zeros — the call is
     /// idempotent, and saying so is more useful than implying something happened.
     /// </summary>
-    public static string MachineRevoked(Guid machineId, Docket.ControlPlane.Auth.MachineRevocation revoked)
+    public static string MachineRevoked(Guid machineId, Landbridge.ControlPlane.Auth.MachineRevocation revoked)
     {
         var sb = new StringBuilder();
         sb.Append("<section class=\"card\"><h1>Machine revoked</h1>");
@@ -893,12 +893,12 @@ internal static class DashboardRenderer
 
     /// <summary>The typed input-request kind for a table cell, honest when a row predates
     /// the column (blocked before the kind was persisted on the task).</summary>
-    private static string KindCell(Docket.Core.InputRequestKind? kind) =>
+    private static string KindCell(Landbridge.Core.InputRequestKind? kind) =>
         kind is null
             ? "<span class=\"nt\">not recorded</span>"
             : $"<code>{E(KindText(kind))}</code>";
 
-    private static string KindText(Docket.Core.InputRequestKind? kind) =>
+    private static string KindText(Landbridge.Core.InputRequestKind? kind) =>
         kind?.ToString().ToLowerInvariant() ?? "kind not recorded";
 
     /// <summary>
@@ -923,24 +923,24 @@ internal static class DashboardRenderer
             : "<span class=\"nt\">not reported</span>";
 
     /// <summary>§9 check 4 completion provenance, humanized for the task view.</summary>
-    private static string ProvenanceLabel(Docket.Core.VerdictProvenance p) => p switch
+    private static string ProvenanceLabel(Landbridge.Core.VerdictProvenance p) => p switch
     {
-        Docket.Core.VerdictProvenance.LeadSession => "lead session",
-        Docket.Core.VerdictProvenance.Human => "a human",
+        Landbridge.Core.VerdictProvenance.LeadSession => "lead session",
+        Landbridge.Core.VerdictProvenance.Human => "a human",
         _ => p.ToString(),
     };
 
     /// <summary>The result page after a dashboard mint (§12): the shareable URL to copy.</summary>
-    public static string PreviewCreated(string url, Docket.Core.PreviewAuthPolicy policy, DateTimeOffset expiresAt, Guid teamId)
+    public static string PreviewCreated(string url, Landbridge.Core.PreviewAuthPolicy policy, DateTimeOffset expiresAt, Guid teamId)
     {
         var sb = new StringBuilder();
         sb.Append("<section class=\"card\"><h1>Preview created</h1>");
         sb.Append($"<p class=\"sub\">{E(policy.ToString().ToLowerInvariant())} preview — expires {E(expiresAt.ToString("u"))}.</p>");
         sb.Append($"<p><a class=\"preview-url mono\" href=\"{E(url)}\">{E(url)}</a></p>");
-        if (policy == Docket.Core.PreviewAuthPolicy.Public)
+        if (policy == Landbridge.Core.PreviewAuthPolicy.Public)
             sb.Append("<p class=\"nt\">Anyone with this link can open it until it expires. Public previews are short-lived by design.</p>");
         else
-            sb.Append("<p class=\"nt\">Opening this link requires a Docket operator session in the browser.</p>");
+            sb.Append("<p class=\"nt\">Opening this link requires a Landbridge operator session in the browser.</p>");
         sb.Append($"<p><a href=\"/dashboard/teams/{teamId}\">← back to the Team</a></p>");
         sb.Append("</section>");
         return Page("Preview created", "teams", sb.ToString(), autoRefresh: false);
@@ -1121,7 +1121,7 @@ internal static class DashboardRenderer
                 : "<span class=\"nt\">by an unrecorded answerer</span>";
             var said = string.IsNullOrEmpty(e.Detail) ? "" : $" <span class=\"nt\">{E(e.Detail)}</span>";
             return Badge(verdict.ToString().ToLowerInvariant(),
-                       verdict == Docket.Core.PermissionVerdict.Allow ? "state-working" : "state-rejected")
+                       verdict == Landbridge.Core.PermissionVerdict.Allow ? "state-working" : "state-rejected")
                    + $" {who}{said}";
         }
 

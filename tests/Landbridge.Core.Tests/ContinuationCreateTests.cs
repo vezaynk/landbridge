@@ -1,4 +1,4 @@
-namespace Docket.Core.Tests;
+namespace Landbridge.Core.Tests;
 
 /// <summary>
 /// §6/§11 continuation-targeting creation rules, as pure engine checks. The store

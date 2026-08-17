@@ -1,6 +1,6 @@
-using Docket.Core;
+using Landbridge.Core;
 
-namespace Docket.Runner.Tests;
+namespace Landbridge.Runner.Tests;
 
 /// <summary>The frozen contract's wire boundary, spec §10: a runner rejects
 /// anything outside the vocabulary.</summary>
@@ -83,7 +83,7 @@ public class RunnerWireTests
     }
 
     /// <summary>The frozen §10 lists, spelled out as literals on purpose — the same
-    /// tripwire as <c>Docket.Contracts.Tests</c>, asserted here too because this is the
+    /// tripwire as <c>Landbridge.Contracts.Tests</c>, asserted here too because this is the
     /// side that must reject anything outside the vocabulary.</summary>
     [Fact]
     public void Vocabulary_sets_are_the_closed_frozen_lists()

@@ -1,7 +1,7 @@
 using System.Text;
 using System.Text.Json.Serialization;
 
-namespace Docket.HarnessBump;
+namespace Landbridge.HarnessBump;
 
 /// <summary>
 /// Daily harness-CLI bump-and-verify bot. Reads the three BYO-harness pins out of ci.yml,
@@ -42,7 +42,7 @@ public static class Program
 
     private static void Usage()
     {
-        Console.Error.WriteLine("usage: dotnet run --project tools/Docket.HarnessBump -- [options]");
+        Console.Error.WriteLine("usage: dotnet run --project tools/Landbridge.HarnessBump -- [options]");
         Console.Error.WriteLine("  --dry-run                report the plan and stop (spends nothing)");
         Console.Error.WriteLine("  --allow-local-writes     permit push/PR/dispatch/merge outside GitHub Actions");
         Console.Error.WriteLine("  --repo <owner/name>      default: $GITHUB_REPOSITORY");
@@ -53,7 +53,7 @@ public static class Program
         Console.Error.WriteLine("  --codex-model <slug>     dispatch input override; omitted = ci.yml's own default");
         Console.Error.WriteLine("  --opencode-model <slug>  dispatch input override; omitted = ci.yml's own default");
         Console.Error.WriteLine("  --run-timeout-minutes <n>  how long to wait for the e2e (default: 60)");
-        Console.Error.WriteLine("env: DOCKET_BUMP_DRY_RUN=true, GH_TOKEN (needs contents+PRs+actions write)");
+        Console.Error.WriteLine("env: LANDBRIDGE_BUMP_DRY_RUN=true, GH_TOKEN (needs contents+PRs+actions write)");
     }
 
     private static void Log(string message) => Console.WriteLine($"harness-bump: {message}");
@@ -274,7 +274,7 @@ public static class Program
     private static string PrBody(BumpPlan plan, Options options)
     {
         var body = new StringBuilder();
-        body.AppendLine("Opened by the daily harness-CLI bump bot (`tools/Docket.HarnessBump`).");
+        body.AppendLine("Opened by the daily harness-CLI bump bot (`tools/Landbridge.HarnessBump`).");
         body.AppendLine();
         body.AppendLine("| package | pinned | → | `dist-tags.latest` |");
         body.AppendLine("|---|---|---|---|");

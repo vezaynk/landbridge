@@ -4,6 +4,6 @@ using System.Runtime.CompilerServices;
 // internal — only DashboardEndpoints.MapDashboard is public surface. The dashboard
 // end-to-end test asserts against the session-cookie name and drives the same
 // helpers, so it needs internal visibility. No InternalsVisibleTo existed for
-// Docket.Mcp before this change; the file lives under Dashboard/ because that is
+// Landbridge.Mcp before this change; the file lives under Dashboard/ because that is
 // the change's fence.
-[assembly: InternalsVisibleTo("Docket.Mcp.Tests")]
+[assembly: InternalsVisibleTo("Landbridge.Mcp.Tests")]

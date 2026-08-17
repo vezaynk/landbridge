@@ -1,8 +1,8 @@
-using Docket.Meta.Data;
-using Docket.Meta.Provisioning;
+using Landbridge.Meta.Data;
+using Landbridge.Meta.Provisioning;
 using Microsoft.EntityFrameworkCore;
 
-namespace Docket.Meta.Tests;
+namespace Landbridge.Meta.Tests;
 
 /// <summary>
 /// The two properties that make the lifecycle transitions safe to run in the background
@@ -67,7 +67,7 @@ public class LifecycleSingleFlightTests
         var failRelay = true;
         h.Substrate.BeforeOp = op =>
         {
-            if (failRelay && op == "run:docket-acme-relay")
+            if (failRelay && op == "run:landbridge-acme-relay")
                 throw new InvalidOperationException("relay would not come up");
             return Task.CompletedTask;
         };
@@ -79,13 +79,13 @@ public class LifecycleSingleFlightTests
         // the upgrade is half applied.
         var stalled = await ReadAsync(h.Db, i.Id);
         Assert.Equal("v2", stalled.ImageTag);
-        Assert.Equal("docket-mcp:v2", h.Substrate.Containers["docket-acme-mcp"].Spec.Image);
+        Assert.Equal("landbridge-mcp:v2", h.Substrate.Containers["landbridge-acme-mcp"].Spec.Image);
 
         // The invariant the old shape broke, stated as the conjunction it broke: it recorded
         // nothing in flight and removed BOTH plane containers before recreating either, so
         // this exact throw left the row persisted `ready` with no relay container at all.
         Assert.False(
-            stalled.State is InstanceState.Ready && !h.Substrate.Containers.ContainsKey("docket-acme-relay"),
+            stalled.State is InstanceState.Ready && !h.Substrate.Containers.ContainsKey("landbridge-acme-relay"),
             "the row reads ready while a container is missing — a half-applied upgrade nothing will heal");
 
         // What it reads instead is the step it stalled at, which the sweep selects.
@@ -95,7 +95,7 @@ public class LifecycleSingleFlightTests
         // And the relay the upgrade had not reached yet is still up on the old tag rather
         // than removed ahead of time: each step now replaces only what it recreates, so a
         // stall costs one container's worth of downtime instead of the whole plane's.
-        Assert.Equal("docket-relay:v1", h.Substrate.Containers["docket-acme-relay"].Spec.Image);
+        Assert.Equal("landbridge-relay:v1", h.Substrate.Containers["landbridge-acme-relay"].Spec.Image);
 
         // One sweep, once the stall has waited out its retry backoff, and the upgrade
         // finishes from the checkpoint it stalled at.
@@ -106,7 +106,7 @@ public class LifecycleSingleFlightTests
         var healed = await ReadAsync(h.Db, i.Id);
         Assert.Equal(InstanceState.Ready, healed.State);
         Assert.Null(healed.FailedStep);
-        Assert.Equal("docket-relay:v2", h.Substrate.Containers["docket-acme-relay"].Spec.Image);
+        Assert.Equal("landbridge-relay:v2", h.Substrate.Containers["landbridge-acme-relay"].Spec.Image);
         Assert.All(healed.Steps, s => Assert.Equal(StepStatus.Done, s.Status));
     }
 
@@ -128,7 +128,7 @@ public class LifecycleSingleFlightTests
         var release = Gate();
         h.Substrate.BeforeOp = async op =>
         {
-            if (op != "run:docket-acme-mcp") return;
+            if (op != "run:landbridge-acme-mcp") return;
             park.TrySetResult();
             await release.Task;
         };
@@ -144,8 +144,8 @@ public class LifecycleSingleFlightTests
 
         var healed = await ReadAsync(h.Db, i.Id);
         Assert.Equal(InstanceState.Ready, healed.State);
-        Assert.Equal("docket-mcp:v2", h.Substrate.Containers["docket-acme-mcp"].Spec.Image);
-        Assert.Equal("docket-relay:v2", h.Substrate.Containers["docket-acme-relay"].Spec.Image);
+        Assert.Equal("landbridge-mcp:v2", h.Substrate.Containers["landbridge-acme-mcp"].Spec.Image);
+        Assert.Equal("landbridge-relay:v2", h.Substrate.Containers["landbridge-acme-relay"].Spec.Image);
 
         release.SetResult();
         await Task.WhenAny(abandoned, Task.Delay(TimeSpan.FromSeconds(10)));
@@ -186,7 +186,7 @@ public class LifecycleSingleFlightTests
         using var h = new SagaHarness();
         var i = await ReadyInstanceAsync(h);
 
-        h.Substrate.BeforeOp = op => op == "run:docket-acme-relay"
+        h.Substrate.BeforeOp = op => op == "run:landbridge-acme-relay"
             ? throw new InvalidOperationException("relay would not come up")
             : Task.CompletedTask;
         await Assert.ThrowsAsync<InvalidOperationException>(
@@ -218,7 +218,7 @@ public class LifecycleSingleFlightTests
         var release = Gate();
         h.Substrate.BeforeOp = async op =>
         {
-            if (op != "run:docket-acme-mcp") return;
+            if (op != "run:landbridge-acme-mcp") return;
             park.TrySetResult();
             await release.Task;
         };
@@ -244,8 +244,8 @@ public class LifecycleSingleFlightTests
         var held = await ReadAsync(second, i.Id);
         Assert.Equal(InstanceState.Upgrading, held.State);
         Assert.Null(held.DestroyedAt);
-        Assert.Contains("docket-acme-pgdata", h.Substrate.Volumes);
-        Assert.Contains("docket-acme-pg", h.Substrate.Containers.Keys);
+        Assert.Contains("landbridge-acme-pgdata", h.Substrate.Volumes);
+        Assert.Contains("landbridge-acme-pg", h.Substrate.Containers.Keys);
         Assert.Equal(2, h.Caddy.Routes.Count);
 
         release.SetResult();
@@ -303,9 +303,9 @@ public class LifecycleSingleFlightTests
         var failRelay = true;
         h.Substrate.BeforeOp = async op =>
         {
-            if (failRelay && op == "run:docket-acme-relay")
+            if (failRelay && op == "run:landbridge-acme-relay")
                 throw new InvalidOperationException("relay would not come up");
-            if (op != "pull:docket-mcp:v2") return;
+            if (op != "pull:landbridge-mcp:v2") return;
             park.TrySetResult();
             await release.Task;
         };
@@ -430,7 +430,7 @@ public sealed class LifecycleClaimPostgresTests(MetaPostgresFixture pg)
         var release = Gate();
         h.Substrate.BeforeOp = async op =>
         {
-            if (op != "run:docket-sweep-mcp") return;
+            if (op != "run:landbridge-sweep-mcp") return;
             park.TrySetResult();
             await release.Task;
         };
@@ -444,7 +444,7 @@ public sealed class LifecycleClaimPostgresTests(MetaPostgresFixture pg)
         var row = await read.Instances.AsNoTracking().SingleAsync(i => i.Id == created.Id);
         Assert.Equal(InstanceState.Ready, row.State);
         Assert.Equal("v2", row.ImageTag);
-        Assert.Equal("docket-mcp:v2", h.Substrate.Containers["docket-sweep-mcp"].Spec.Image);
+        Assert.Equal("landbridge-mcp:v2", h.Substrate.Containers["landbridge-sweep-mcp"].Spec.Image);
 
         release.SetResult();
         await Task.WhenAny(abandoned, Task.Delay(TimeSpan.FromSeconds(10)));

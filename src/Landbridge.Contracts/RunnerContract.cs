@@ -1,6 +1,6 @@
-using Docket.Core;
+using Landbridge.Core;
 
-namespace Docket.Contracts;
+namespace Landbridge.Contracts;
 
 /// <summary>
 /// The control-plane ↔ runner contract, spec §10 — <b>the only frozen
@@ -17,7 +17,7 @@ namespace Docket.Contracts;
 /// reference (§10 runner restart).
 ///
 /// Nothing here is domain-specific: the runner is transport (§2.6). It lives in
-/// <c>Docket.Contracts</c> so both sides — <c>docketd</c> and the control
+/// <c>Landbridge.Contracts</c> so both sides — <c>landbridged</c> and the control
 /// plane — share one wire vocabulary rather than each redeclaring it.
 /// </summary>
 public abstract record RunnerMessage
@@ -44,7 +44,7 @@ public abstract record RunnerCommand : RunnerMessage
 /// harness (<c>{budget}</c> → Claude Code's <c>--max-budget-usd</c>); the Team-level
 /// ceiling that was its only value source is gone (§9's note), so nothing can populate it
 /// and no cap it once expressed is being silently dropped. Both decode directions stay
-/// clean: an older <c>docketd</c> receiving an envelope without the field reads
+/// clean: an older <c>landbridged</c> receiving an envelope without the field reads
 /// <c>null</c>, which is exactly what a Team configuring no cap already sent, and a newer
 /// one receiving a stale envelope <em>with</em> it ignores the unmapped property. Contrast
 /// <see cref="SpawnSubstitutions"/> below, which stays precisely because it still has a
@@ -93,7 +93,7 @@ public abstract record RunnerCommand : RunnerMessage
 /// parsing Claude's <c>mcp.json</c>. An older envelope with a null map still decodes;
 /// an older runner receiving the key just substitutes it. The field stays on the
 /// frozen wire for that reason — dropping it is the one change a year-old
-/// <c>docketd</c> would notice.</para>
+/// <c>landbridged</c> would notice.</para>
 /// </summary>
 public sealed record DispatchCommand(
     SessionId Session,
@@ -140,7 +140,7 @@ public sealed record KillCommand(SessionId Session) : RunnerCommand;
 ///     keeps enrollment tokens out of argv for the same reason). It should not gain a second
 ///     path out of the authenticated MCP channel just because the session is now live.</item>
 ///   <item><b>Config stays config.</b> The turn text is profile configuration — and must be,
-///     since it has to name the docket tools the way <em>this</em> harness spells them. Per-
+///     since it has to name the landbridge tools the way <em>this</em> harness spells them. Per-
 ///     message content in a profile-shaped turn would mix the two.</item>
 /// </list>
 /// So the runner sends the profile's <c>follow_up</c> turn, the worker calls
@@ -159,7 +159,7 @@ public sealed record PromptCommand(SessionId Session) : RunnerCommand;
 /// <summary>
 /// <c>open-forward</c> — the control plane asks this runner to stand up one end
 /// of a relay forward (§8.3). In this deployment the plane (not the relay, which
-/// holds no docketd channel of its own) sends this to <em>both</em> ends over the
+/// holds no landbridged channel of its own) sends this to <em>both</em> ends over the
 /// runner channel: the <c>producer</c> dials <see cref="Port"/> on loopback and
 /// opens its outbound tunnel; the <c>consumer</c> binds a loopback listener,
 /// reports the bound port via <see cref="ForwardOpenedEvent"/>, and opens its
@@ -214,10 +214,10 @@ public sealed record OpenForwardCommand(
 /// exact moment as its end.</para>
 ///
 /// <para><b>Additive and skew-compatible</b> like every §10 addition since the freeze:
-/// a <c>docketd</c> that predates it rejects the envelope at the wire boundary
+/// a <c>landbridged</c> that predates it rejects the envelope at the wire boundary
 /// (<see cref="RunnerWire.DecodeCommand(string)"/> returns null on an unknown type) and
 /// goes on serving its splice exactly as it does today — the pre-fix behaviour, not a
-/// crash. A newer <c>docketd</c> talking to an older plane simply never receives one.</para>
+/// crash. A newer <c>landbridged</c> talking to an older plane simply never receives one.</para>
 /// </summary>
 /// <param name="Session">
 /// The session this forward serves — <b>correlation, not the close key.</b> §10 requires a
@@ -274,7 +274,7 @@ public sealed record ReadTranscriptCommand(
 /// machine generation — a daemon. A <em>process</em> is agent-started over this wire, never
 /// restarted, its exit recorded, and cleaned up by Lead orchestration — a job. Same
 /// supervision substrate, same machine tagging, same stray-sweep bound; different
-/// declaration source, restart policy, and name. Neither is a Docket <em>task</em>.</para>
+/// declaration source, restart policy, and name. Neither is a Landbridge <em>task</em>.</para>
 ///
 /// <para><b>Machine-scoped, not task-scoped.</b> The task id here is provenance and nothing
 /// more: the process outlives the worker's turn, the task blocking, and the task completing.
@@ -301,7 +301,7 @@ public sealed record ReadTranscriptCommand(
 /// nothing held open, and its first read returns EOF rather than blocking on input nobody will
 /// send. Closing is done by redirecting stdin and closing it at once, which is the portable
 /// choice: .NET has no cross-platform null-device handle, and leaving stdin un-redirected would
-/// hand the child whatever docketd inherited, which is not a defined thing to give it.
+/// hand the child whatever landbridged inherited, which is not a defined thing to give it.
 ///
 /// <para>Ask for true when you intend to talk to the process — <c>write-process</c> is therefore
 /// <b>opt-in by construction</b>, and so is the graceful EOF half of <c>stop-process</c>. A
@@ -483,13 +483,13 @@ public sealed record ToolCallEvent(SessionId Session, string Tool, DateTimeOffse
 /// model's token counts and, where the harness states one, its cost in USD.
 ///
 /// <para><b>This is a claim, not a derivation (§2 principle 2).</b> Every number here was
-/// computed by the harness and relayed verbatim; docketd does no arithmetic on it beyond the
+/// computed by the harness and relayed verbatim; landbridged does no arithmetic on it beyond the
 /// normalization below, and the plane none at all. A harness can under-report, mis-report, or
 /// report nothing — which is why nothing is enforced on it and why the §12 section that
 /// renders it is visually separated from everything the plane derives itself.</para>
 ///
 /// <para><b>Additive and optional, like every field added to this frozen contract since.</b>
-/// A <c>docketd</c> that predates it simply never sends one, and the plane's measured view
+/// A <c>landbridged</c> that predates it simply never sends one, and the plane's measured view
 /// then shows the honest empty state rather than a zero — an absence of measurement is not a
 /// measurement of nothing (the same distinction §9.10's relay bytes draw).</para>
 ///
@@ -499,7 +499,7 @@ public sealed record ToolCallEvent(SessionId Session, string Tool, DateTimeOffse
 /// Codex counts the WHOLE prompt in <c>input_tokens</c> with <c>cached_input_tokens</c> as a
 /// subset of it — its own <c>non_cached_input()</c> subtracts one from the other for display.
 /// Summing the four as reported would therefore double-count a Codex worker's cache hits, so
-/// docketd subtracts where a profile declares the subset relationship
+/// landbridged subtracts where a profile declares the subset relationship
 /// (<c>usage_cached_is_subset</c>) and what arrives here is always four buckets that add up.
 /// The normalization is declared per profile as data, never inferred from a harness name.</para>
 ///
@@ -591,7 +591,7 @@ public sealed record ForwardOpenedEvent(SessionId Session, string ForwardId, int
 /// Additive and optional: an older runner omits it and the plane falls back to its
 /// generic sentence. The case that motivated it is §8.2's oldest hazard — a
 /// registration outliving the process it advertises. Where the port belongs to a
-/// docketd-supervised service that is <em>not</em> running, docketd refuses the dial
+/// landbridged-supervised service that is <em>not</em> running, landbridged refuses the dial
 /// instead of connecting to whatever else may now hold that port, and this carries the
 /// reason far enough that the consumer is told the service is down rather than being
 /// handed a bare connection error.
@@ -621,7 +621,7 @@ public sealed record RebootedEvent(string MachineId, DateTimeOffset At) : Runner
 /// channel instead, so transcript traffic can never starve a heartbeat or a
 /// <c>kill</c>.</para>
 ///
-/// <para><see cref="Text"/> is <b>verbatim</b> file content — Docket does not redact
+/// <para><see cref="Text"/> is <b>verbatim</b> file content — Landbridge does not redact
 /// transcripts (§13, §16 open question 8), which is why the plane serves them only to a
 /// human operator and only for a terminal task.</para>
 /// </summary>

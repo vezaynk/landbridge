@@ -1,7 +1,7 @@
 using System.Net.WebSockets;
-using Docket.Contracts;
+using Landbridge.Contracts;
 
-namespace Docket.Relay.Tests;
+namespace Landbridge.Relay.Tests;
 
 /// <summary>
 /// Regression for the close-teardown final-frame drop (spec §8.3): a forward must

@@ -1,27 +1,27 @@
 using System.Text.Encodings.Web;
-using Docket.ControlPlane.Auth;
+using Landbridge.ControlPlane.Auth;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Options;
 
-namespace Docket.Mcp.Auth;
+namespace Landbridge.Mcp.Auth;
 
 /// <summary>
-/// Validates Docket's opaque bearer tokens (spec §5) inside the ASP.NET auth
+/// Validates Landbridge's opaque bearer tokens (spec §5) inside the ASP.NET auth
 /// pipeline: pull the token, hand it to <see cref="TokenService.ValidateAsync"/>,
 /// and on success attach the typed principal's claims to the request. No JWT,
 /// no signature math — validation is a store lookup, which is what makes
 /// revocation instant. Rejection is a clean "no result" (not a failure), so
 /// the MCP challenge scheme can emit the RFC 9728 resource-metadata challenge.
 /// </summary>
-public sealed class DocketAuthenticationHandler(
+public sealed class LandbridgeAuthenticationHandler(
     IOptionsMonitor<AuthenticationSchemeOptions> options,
     ILoggerFactory logger,
     UrlEncoder encoder,
     TokenService tokens)
     : AuthenticationHandler<AuthenticationSchemeOptions>(options, logger, encoder)
 {
-    public const string SchemeName = "DocketToken";
+    public const string SchemeName = "LandbridgeToken";
 
     /// <summary>
     /// The RFC 9728 §5.1 challenge on a 401 (spec §5): point the MCP client at
@@ -62,7 +62,7 @@ public sealed class DocketAuthenticationHandler(
         if (principal is null)
             return AuthenticateResult.Fail("invalid or revoked token");
 
-        var user = DocketClaims.ToClaimsPrincipal(principal);
+        var user = LandbridgeClaims.ToClaimsPrincipal(principal);
         return AuthenticateResult.Success(new AuthenticationTicket(user, SchemeName));
     }
 }

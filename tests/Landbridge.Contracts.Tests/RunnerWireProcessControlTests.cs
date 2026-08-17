@@ -1,6 +1,6 @@
-using Docket.Core;
+using Landbridge.Core;
 
-namespace Docket.Contracts.Tests;
+namespace Landbridge.Contracts.Tests;
 
 /// <summary>
 /// The §10 process-control family on the wire: <c>start-process</c> /
@@ -118,7 +118,7 @@ public class RunnerWireProcessControlTests
     public void Process_started_event_round_trips_a_success_with_its_log_path()
     {
         var original = new ProcessStartedEvent(
-            SessionId.New(), "req-1", "devserver", Started: true, LogPath: "/work/task-3/.docket/devserver.log");
+            SessionId.New(), "req-1", "devserver", Started: true, LogPath: "/work/task-3/.landbridge/devserver.log");
 
         var decoded = Assert.IsType<ProcessStartedEvent>(
             RunnerWire.DecodeEvent(RunnerWire.EncodeEvent(original)));
@@ -126,7 +126,7 @@ public class RunnerWireProcessControlTests
         Assert.Equal(original, decoded);
         Assert.True(decoded.Started);
         Assert.Null(decoded.Refusal);
-        Assert.Equal("/work/task-3/.docket/devserver.log", decoded.LogPath);
+        Assert.Equal("/work/task-3/.landbridge/devserver.log", decoded.LogPath);
     }
 
     [Fact]

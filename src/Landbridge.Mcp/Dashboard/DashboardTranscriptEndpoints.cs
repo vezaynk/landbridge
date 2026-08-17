@@ -1,10 +1,10 @@
 using System.Text;
-using Docket.Contracts;
-using Docket.ControlPlane;
-using Docket.ControlPlane.Auth;
-using Docket.Core;
+using Landbridge.Contracts;
+using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.Core;
 
-namespace Docket.Mcp.Dashboard;
+namespace Landbridge.Mcp.Dashboard;
 
 /// <summary>
 /// The §12 transcript surface: an index of what is readable for a task, and the raw stream
@@ -12,7 +12,7 @@ namespace Docket.Mcp.Dashboard;
 /// because its auth rule is deliberately different from every other dashboard route (see
 /// <see cref="RequireHumanAsync"/>), and that difference should be impossible to miss.
 ///
-/// <para><b>Transcripts are served verbatim.</b> Docket does not redact them — how to do it
+/// <para><b>Transcripts are served verbatim.</b> Landbridge does not redact them — how to do it
 /// well is unresolved (§13, §16 open question 8) — so the compensating controls are all
 /// here and in <see cref="TranscriptRelayService"/>: a human operator session only, a
 /// terminal task only, a warning the operator cannot miss, and a response the plane never
@@ -42,8 +42,8 @@ public static class DashboardTranscriptEndpoints
     /// is most likely to forget what they are holding.
     /// </summary>
     internal const string Warning =
-        "[docket] Raw harness output, served verbatim. It may contain credentials, customer " +
-        "data, or anything else the agent read or printed. Docket does not redact transcripts " +
+        "[landbridge] Raw harness output, served verbatim. It may contain credentials, customer " +
+        "data, or anything else the agent read or printed. Landbridge does not redact transcripts " +
         "(spec §13, open question 8). Treat this text as sensitive: do not paste it into a " +
         "ticket, a chat, or another agent.";
 
@@ -139,7 +139,7 @@ public static class DashboardTranscriptEndpoints
         http.Response.Headers["X-Content-Type-Options"] = "nosniff";
 
         await WriteAsync(http, Warning + "\n");
-        await WriteAsync(http, $"[docket] task {task} · machine {machine} · instance {ordinal:D4} · {stream}\n\n");
+        await WriteAsync(http, $"[landbridge] task {task} · machine {machine} · instance {ordinal:D4} · {stream}\n\n");
         await WriteAsync(http, range.Text);
 
         var deadline = clock.GetUtcNow() + StreamDeadline;
@@ -151,7 +151,7 @@ public static class DashboardTranscriptEndpoints
             {
                 // In-band: the status line is long gone, so say so where the reader will see
                 // it — the same honesty as the capture side's truncation marker (§12).
-                await WriteAsync(http, $"\n[docket] transcript stream interrupted: exceeded the " +
+                await WriteAsync(http, $"\n[landbridge] transcript stream interrupted: exceeded the " +
                                        $"{StreamDeadline.TotalMinutes:N0}-minute read deadline at offset {offset}.\n");
                 break;
             }
@@ -160,7 +160,7 @@ public static class DashboardTranscriptEndpoints
             if (next is not TranscriptResult.Range more)
             {
                 var detail = next is TranscriptResult.Unavailable u ? u.Detail : "unexpected reply";
-                await WriteAsync(http, $"\n[docket] transcript stream interrupted at offset {offset}: {detail}\n");
+                await WriteAsync(http, $"\n[landbridge] transcript stream interrupted at offset {offset}: {detail}\n");
                 break;
             }
 
@@ -169,7 +169,7 @@ public static class DashboardTranscriptEndpoints
             // guarantees progress while bytes remain, so treat a stalled cursor as the end.
             if (more.NextOffset <= offset && !more.Eof)
             {
-                await WriteAsync(http, $"\n[docket] transcript stream ended early at offset {offset}.\n");
+                await WriteAsync(http, $"\n[landbridge] transcript stream ended early at offset {offset}.\n");
                 break;
             }
             offset = more.NextOffset;

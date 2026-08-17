@@ -1,4 +1,4 @@
-namespace Docket.Core;
+namespace Landbridge.Core;
 
 /// <summary>
 /// Spec §6, as a pure function. No clock, no IO, no interpretation of task

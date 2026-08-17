@@ -1,7 +1,7 @@
-using Docket.Meta.Data;
+using Landbridge.Meta.Data;
 using Microsoft.EntityFrameworkCore;
 
-namespace Docket.Meta.Provisioning;
+namespace Landbridge.Meta.Provisioning;
 
 /// <summary>
 /// Finishes lifecycle operations nothing is driving (design note §2). Every

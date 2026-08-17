@@ -1,26 +1,26 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Text.Json;
-using Docket.Contracts;
-using Docket.ControlPlane;
-using Docket.ControlPlane.Tests;
-using Docket.Core;
-using Docket.Runner;
+using Landbridge.Contracts;
+using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Tests;
+using Landbridge.Core;
+using Landbridge.Runner;
 using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 
-namespace Docket.Mcp.Tests;
+namespace Landbridge.Mcp.Tests;
 
 /// <summary>
 /// The crown of increment 3 (spec §8.3): the whole forward loop with <b>no
 /// fakes</b>. A real control plane (grants + registry + orchestrator + event
 /// sink), a real relay validating grants against that plane, a real TCP echo
-/// service registered by a working producer task, and two real docketd data
+/// service registered by a working producer task, and two real landbridged data
 /// planes driven through <see cref="RunnerDaemon.HandleAsync"/> at the registry
 /// seam. A consumer worker calls <c>open_forward</c> over real MCP, gets a
 /// <c>127.0.0.1:port</c> address, and bytes written there round-trip
-/// consumer-docketd → relay → producer-docketd → echo service and back. Closing
+/// consumer-landbridged → relay → producer-landbridged → echo service and back. Closing
 /// the connection surfaces <c>forward-closed</c> on both ends.
 /// </summary>
 [Collection(PostgresCollection.Name)]
@@ -60,7 +60,7 @@ public sealed class ForwardDataPlaneEndToEndTests(PostgresFixture pg) : IAsyncLi
         var registry = plane.Services.GetRequiredService<RunnerConnectionRegistry>();
         var sink = plane.Services.GetRequiredService<RunnerEventSink>();
 
-        // ── Two real docketd data planes, one per machine ───────────────────────
+        // ── Two real landbridged data planes, one per machine ───────────────────────
         var consumerChannel = new SinkForwardingChannel(sink);
         var producerChannel = new SinkForwardingChannel(sink);
         await using var consumerDaemon = new DaemonHarness("mc", consumerChannel);
@@ -69,7 +69,7 @@ public sealed class ForwardDataPlaneEndToEndTests(PostgresFixture pg) : IAsyncLi
         await producerDaemon.StartAsync();
 
         // The registry seam a socket would occupy: each machine's send delegate
-        // hands the open-forward command straight to its docketd (§10).
+        // hands the open-forward command straight to its landbridged (§10).
         registry.Register("mc", new HashSet<string> { "default" }, consumerDaemon.Send);
         registry.Register("mp", new HashSet<string> { "default" }, producerDaemon.Send);
         registry.TrackDispatch("mc", consumer.Session);
@@ -109,7 +109,7 @@ public sealed class ForwardDataPlaneEndToEndTests(PostgresFixture pg) : IAsyncLi
             await stream.WriteAsync(payload, ct);
             var echoed = await ReadExactlyAsync(stream, payload.Length, ct);
             Assert.True(payload.AsSpan().SequenceEqual(echoed),
-                "bytes did not round-trip through consumer-docketd → relay → producer-docketd → echo");
+                "bytes did not round-trip through consumer-landbridged → relay → producer-landbridged → echo");
 
             // Closing the connection tears the splice down on both ends.
             client.Client.Shutdown(SocketShutdown.Both);
@@ -118,10 +118,10 @@ public sealed class ForwardDataPlaneEndToEndTests(PostgresFixture pg) : IAsyncLi
         // ── forward-closed bookkeeping fires on both ends ───────────────────────
         Assert.True(
             await WaitForAsync(() => consumerChannel.HasForwardClosed(forwardId), TimeSpan.FromSeconds(20)),
-            "consumer docketd never reported forward-closed");
+            "consumer landbridged never reported forward-closed");
         Assert.True(
             await WaitForAsync(() => producerChannel.HasForwardClosed(forwardId), TimeSpan.FromSeconds(20)),
-            "producer docketd never reported forward-closed");
+            "producer landbridged never reported forward-closed");
 
         await consumerDaemon.StopAsync();
         await producerDaemon.StopAsync();
@@ -170,7 +170,7 @@ internal sealed class DaemonHarness : IAsyncDisposable
 
     public DaemonHarness(string machineId, IControlPlaneChannel channel)
     {
-        _workRoot = Path.Combine(Path.GetTempPath(), "docket-forward-e2e", Guid.NewGuid().ToString("N"));
+        _workRoot = Path.Combine(Path.GetTempPath(), "landbridge-forward-e2e", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_workRoot);
         var config = RunnerConfig.Load($$"""
             { "machine": { "work_root": {{JsonSerializer.Serialize(_workRoot)}} },

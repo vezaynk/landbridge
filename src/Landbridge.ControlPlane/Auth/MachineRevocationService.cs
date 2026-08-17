@@ -1,7 +1,7 @@
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging;
 
-namespace Docket.ControlPlane.Auth;
+namespace Landbridge.ControlPlane.Auth;
 
 /// <summary>
 /// Un-trusting a machine, whole (§5: it must take seconds; §13). One call takes away
@@ -56,7 +56,7 @@ namespace Docket.ControlPlane.Auth;
 /// lets a surface offer the action without first proving the machine is live.</para>
 /// </summary>
 public sealed class MachineRevocationService(
-    DocketDbContext db,
+    LandbridgeDbContext db,
     TokenService tokens,
     RunnerConnectionRegistry registry,
     RunnerEventSink sink,

@@ -1,13 +1,13 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
-using Docket.ControlPlane.Tests;
+using Landbridge.ControlPlane.Tests;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.Hosting;
 
-namespace Docket.Mcp.Tests;
+namespace Landbridge.Mcp.Tests;
 
 /// <summary>
 /// Endpoint-level behaviour of the OAuth 2.1 surface (spec §5): the discovery
@@ -284,7 +284,7 @@ public sealed class OAuthEndpointsTests(PostgresFixture pg) : IAsyncLifetime
                 new Dictionary<string, string>
                 {
                     ["grant_type"] = "authorization_code",
-                    ["code"] = "dkt_c_nope",
+                    ["code"] = "lbr_c_nope",
                     ["client_id"] = "https://app.example.com/client.json",
                     ["redirect_uri"] = "https://app.example.com/callback",
                     ["code_verifier"] = "whatever",
@@ -349,7 +349,7 @@ public sealed class OAuthEndpointsTests(PostgresFixture pg) : IAsyncLifetime
                 http, baseUrl, code, clientId, "http://127.0.0.1:54999/callback", verifier, ct);
             // ...versus a code that never existed at all.
             var unknownCode = await ExchangeDescriptionAsync(
-                http, baseUrl, "dkt_c_never-issued", clientId, redirect, verifier, ct);
+                http, baseUrl, "lbr_c_never-issued", clientId, redirect, verifier, ct);
 
             // Two unrelated server-side reasons, one indistinguishable answer: holding a
             // stolen code, an unauthenticated caller cannot probe out what it was bound to.

@@ -1,12 +1,12 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using Docket.ControlPlane;
-using Docket.ControlPlane.Auth;
-using Docket.Core;
-using Docket.Web;
+using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.Core;
+using Landbridge.Web;
 using Microsoft.Extensions.Configuration;
 
-namespace Docket.Mcp.Dashboard;
+namespace Landbridge.Mcp.Dashboard;
 
 /// <summary>
 /// Operator-only stand-in for the unbuilt §11 conformance run: mint dummy sessions
@@ -183,8 +183,8 @@ internal static class ConformanceEndpoints
 
     private static IResult? CrossOriginRefusal(HttpContext http, IConfiguration config)
     {
-        var origin = config["Docket:PublicMcpUrl"]
-            ?? Environment.GetEnvironmentVariable("DOCKET_PUBLIC_MCP_URL");
+        var origin = config["Landbridge:PublicMcpUrl"]
+            ?? Environment.GetEnvironmentVariable("LANDBRIDGE_PUBLIC_MCP_URL");
         return OriginGuard.IsSameOrigin(http.Request, origin)
             ? null
             : WantsJson(http)

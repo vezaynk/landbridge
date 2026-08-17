@@ -1,10 +1,10 @@
-using Docket.Contracts;
+using Landbridge.Contracts;
 
-namespace Docket.Runner;
+namespace Landbridge.Runner;
 
 /// <summary>
 /// The runner's link to the control plane, spec §10 channel separation.
-/// <b>docketd only makes outbound connections and never listens on a network
+/// <b>landbridged only makes outbound connections and never listens on a network
 /// interface</b> (§10) — so this is outbound-only. Delivery is <b>best-effort
 /// against a live connection</b>: an implementation returns <c>false</c> when
 /// the connection is down and never throws and never queues (the outbound

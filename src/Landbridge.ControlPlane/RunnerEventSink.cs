@@ -1,9 +1,9 @@
-using Docket.Contracts;
-using Docket.Core;
+using Landbridge.Contracts;
+using Landbridge.Core;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
-namespace Docket.ControlPlane;
+namespace Landbridge.ControlPlane;
 
 /// <summary>
 /// Maps inbound runner events (§10) onto the task store and the connection
@@ -46,7 +46,7 @@ public sealed class RunnerEventSink(
                 break;
 
             case AliveEvent a:
-                // §10: docketd's periodic "this harness process still exists" for a
+                // §10: landbridged's periodic "this harness process still exists" for a
                 // supervised task. Refreshes ONLY the aliveness clock — it is not
                 // progress, and treating it as progress would make a wedged agent
                 // undetectable. It is what keeps an idle-but-alive worker (a long
@@ -280,7 +280,7 @@ public sealed class RunnerEventSink(
     private async Task HandleRebootedAsync(RebootedEvent r, CancellationToken ct) =>
         // §10 runner restart: the runner adopted nothing, so every task it held
         // requeues against the infrastructure counter (§6). Unlike the disconnect path
-        // the connection is live here — docketd announced itself on a working socket —
+        // the connection is live here — landbridged announced itself on a working socket —
         // so the held set is read from the registry as before.
         await RequeueHeldAsync(r.MachineId, registry.SessionsOn(r.MachineId), ct);
 

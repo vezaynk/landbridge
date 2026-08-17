@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Net.WebSockets;
 
-namespace Docket.AcpBridge;
+namespace Landbridge.AcpBridge;
 
 /// <summary>One WebSocket ↔ one spawned ACP agent, for the life of that socket.</summary>
 internal static class AgentSession

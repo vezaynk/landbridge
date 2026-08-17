@@ -1,4 +1,4 @@
-namespace Docket.Core.Tests;
+namespace Landbridge.Core.Tests;
 
 /// <summary>
 /// The §6 table read backwards: for each transition, the states it does

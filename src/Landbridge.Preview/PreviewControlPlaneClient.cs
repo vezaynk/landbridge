@@ -4,7 +4,7 @@ using System.Net.Http.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
-namespace Docket.Preview;
+namespace Landbridge.Preview;
 
 /// <summary>
 /// The frontend's client for the control plane's <c>/preview/connect</c> endpoint
@@ -16,7 +16,7 @@ namespace Docket.Preview;
 public sealed class PreviewControlPlaneClient
 {
     /// <summary>Named client so a host can attach its own resilience/handlers to just this traffic.</summary>
-    public const string HttpClientName = "docket-preview-controlplane";
+    public const string HttpClientName = "landbridge-preview-controlplane";
 
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(10);
 
@@ -50,7 +50,7 @@ public sealed class PreviewControlPlaneClient
     /// <summary>
     /// Ask the plane to authorize + arm <paramref name="label"/>. For a gated
     /// preview, admission comes from either <paramref name="previewSession"/> (the
-    /// browser's <c>docket_preview</c> cookie) or <paramref name="operatorSession"/>
+    /// browser's <c>landbridge_preview</c> cookie) or <paramref name="operatorSession"/>
     /// (a bearer, tooling). Any transport failure or unexpected status becomes
     /// <see cref="PreviewConnect.Error"/> → 502; the frontend never hangs on the plane.
     /// </summary>

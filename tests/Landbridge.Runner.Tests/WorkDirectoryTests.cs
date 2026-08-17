@@ -1,8 +1,8 @@
-using Docket.Contracts;
-using Docket.Core;
+using Landbridge.Contracts;
+using Landbridge.Core;
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.Runner.Tests;
+namespace Landbridge.Runner.Tests;
 
 /// <summary>
 /// Which directory a task's harness runs in (§7, §11). Ordinarily its own; for a
@@ -172,7 +172,7 @@ public sealed class WorkDirectoryTests : IDisposable
         Assert.Equal(0, supervisor.SupersededExits);
         Assert.Equal(owner.WorkDir, guest.WorkDir);
 
-        // The owner dying reports its OWN exit and reaps only by its own DOCKET_SESSION_ID, so
+        // The owner dying reports its OWN exit and reaps only by its own LANDBRIDGE_SESSION_ID, so
         // the guest sharing its directory is untouched.
         inventory.Processes = [new TaggedProcess(guest.Process.Id, "m", continuation.ToString())];
         Assert.True(supervisor.Kill(predecessor));
@@ -193,6 +193,6 @@ public sealed class WorkDirectoryTests : IDisposable
     {
         public IReadOnlyList<TaggedProcess> Processes { get; set; } = [];
 
-        public IReadOnlyList<TaggedProcess> ListDocketProcesses() => Processes;
+        public IReadOnlyList<TaggedProcess> ListLandbridgeProcesses() => Processes;
     }
 }

@@ -1,9 +1,9 @@
-using Docket.Contracts;
-using Docket.ControlPlane.Tests;
-using Docket.Core;
-using Docket.Runner;
+using Landbridge.Contracts;
+using Landbridge.ControlPlane.Tests;
+using Landbridge.Core;
+using Landbridge.Runner;
 
-namespace Docket.MultiMachine.Tests;
+namespace Landbridge.MultiMachine.Tests;
 
 /// <summary>
 /// §10 BYO-harness, <b>third</b> harness: the same fleet driven by OpenCode
@@ -17,7 +17,7 @@ namespace Docket.MultiMachine.Tests;
 /// OpenCode's source at tag <c>v1.18.17</c> (npm <c>opencode-ai@1.18.17</c>, the version the CI
 /// job installs) — <b>no <c>opencode</c> binary was run</b> while writing it. The per-key
 /// citations live on the members that use them; the parser half is pinned for $0 by
-/// <c>Docket.Runner.Tests/OpenCodeStreamMappingTests</c>. This tier is where the reading gets
+/// <c>Landbridge.Runner.Tests/OpenCodeStreamMappingTests</c>. This tier is where the reading gets
 /// checked against reality.</para>
 ///
 /// <para><b>Why OpenCode was the cheap harness to add.</b> It needed no seam Codex had not
@@ -31,7 +31,7 @@ namespace Docket.MultiMachine.Tests;
 /// (1) The dead-man incompatibility is the same landmine but <em>silent</em> — where a hung
 /// <c>codex exec</c> prints <c>Reading additional input from stdin...</c> to stderr, OpenCode
 /// prints nothing at all and leaves an empty transcript. (2) MCP tool names are
-/// <c>docket_get_session</c>, not <c>mcp__docket__get_session</c>
+/// <c>landbridge_get_session</c>, not <c>mcp__landbridge__get_session</c>
 /// (<c>packages/opencode/src/mcp/catalog.ts:119</c>), and the worker prompts here spell that
 /// underscore form rather than the bare <c>get_session</c> they used to — see
 /// <see cref="McpToolsRule"/> for why the portable bare spelling turned out to cost more than it
@@ -56,12 +56,12 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
 
     /// <summary>
     /// The standing rule both prompts here carry, ported from the claude tier where it fixed a real
-    /// failure — a prompt that said "call the docket get_session tool" was read as a shell command and
-    /// the worker ran <c>docket get_session</c> instead of calling its MCP tool.
+    /// failure — a prompt that said "call the landbridge get_session tool" was read as a shell command and
+    /// the worker ran <c>landbridge get_session</c> instead of calling its MCP tool.
     ///
     /// <para><b>The spelling is this tier's own, and that is the whole subtlety.</b> OpenCode names
-    /// docket's tools <c>docket_get_session</c> (<c>mcp/catalog.ts:119</c>), where claude and Codex
-    /// both use <c>mcp__docket__get_session</c>. Porting the claude wording verbatim would name a tool
+    /// landbridge's tools <c>landbridge_get_session</c> (<c>mcp/catalog.ts:119</c>), where claude and Codex
+    /// both use <c>mcp__landbridge__get_session</c>. Porting the claude wording verbatim would name a tool
     /// that does not exist on this harness — inventing a phantom tool, which is precisely the bug
     /// this rule exists to prevent. So the underscore form here is not a typo, and a "consistency"
     /// edit that aligns it with the other two tiers breaks this one.</para>
@@ -69,16 +69,16 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
     /// <para>This supersedes OC-G3's original reasoning, which named the tools <em>bare</em>
     /// (<c>get_session</c>) on the grounds that the bare form is the one spelling that ports across
     /// all three harnesses. That was true and is still true — but portability was buying less than
-    /// it cost: the bare form is exactly what a worker misread as <c>docket get_session</c>. Each tier
+    /// it cost: the bare form is exactly what a worker misread as <c>landbridge get_session</c>. Each tier
     /// naming its own real tool is unambiguous in a way no shared spelling can be.</para>
     /// </summary>
     private const string McpToolsRule =
-        " Docket's tools are MCP tools, named exactly docket_get_session, docket_report_result and so " +
-        "on — call them as tools, under those names. There is no `docket` program: no such command " +
-        "exists on this machine, so never run `docket` in a shell, and never try to reach the " +
-        "docket MCP server yourself over HTTP or with curl. (A shell command your assignment " +
-        "explicitly asks for is a different thing, and is fine.) If a docket MCP tool is missing " +
-        "or errors, report that with docket_report_result instead of working around it.";
+        " Landbridge's tools are MCP tools, named exactly landbridge_get_session, landbridge_report_result and so " +
+        "on — call them as tools, under those names. There is no `landbridge` program: no such command " +
+        "exists on this machine, so never run `landbridge` in a shell, and never try to reach the " +
+        "landbridge MCP server yourself over HTTP or with curl. (A shell command your assignment " +
+        "explicitly asks for is a different thing, and is fine.) If a landbridge MCP tool is missing " +
+        "or errors, report that with landbridge_report_result instead of working around it.";
 
     public async Task InitializeAsync()
     {
@@ -108,10 +108,10 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
     /// written mid-task has nowhere to land. And the CLI entry point installs no
     /// <c>SIGTERM</c>/<c>SIGINT</c> handler at all: its only teardown is an unconditional
     /// <c>process.exit()</c> in a <c>finally</c> (<c>packages/opencode/src/index.ts:136-142</c>),
-    /// so docketd's tree-kill arrives unhandled.
+    /// so landbridged's tree-kill arrives unhandled.
     ///
     /// <para>What survives is the plane's record rather than the agent's cooperation: the
-    /// <c>sessionID</c> docketd captured is exactly what <c>opencode run --session &lt;id&gt;</c>
+    /// <c>sessionID</c> landbridged captured is exactly what <c>opencode run --session &lt;id&gt;</c>
     /// takes, and it outlives the kill — so <c>preserve</c> means something without anything
     /// having been negotiated.</para>
     /// </summary>
@@ -179,7 +179,7 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
     /// The BYO-harness pitch, one harness further: a claude worker and an OpenCode worker hand a
     /// token across a single fleet. Machine A runs <c>claude -p</c>, machine B runs
     /// <c>opencode run</c>, and B reports back a value only A could have produced — so the two
-    /// harnesses collaborated through Docket without either knowing the other existed.
+    /// harnesses collaborated through Landbridge without either knowing the other existed.
     /// </summary>
     [SkippableFact(Timeout = RealHarnessBar.TwoLegTimeoutMs)]
     public async Task A_claude_worker_and_an_opencode_worker_hand_off_a_token_across_one_fleet()
@@ -238,7 +238,7 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
     /// which for a token-spending CI job is an open cheque. And pinned <em>overridably</em> for
     /// the same reason — OpenCode resolves models through a fetched catalog
     /// (<c>OPENCODE_MODELS_URL</c>, <c>flag.ts:45</c>), so a slug can be retired out from under
-    /// this constant. <c>DOCKET_OPENCODE_MODEL</c> is the escape hatch, and it exists because
+    /// this constant. <c>LANDBRIDGE_OPENCODE_MODEL</c> is the escape hatch, and it exists because
     /// exactly this happened to the Codex tier on its first real dispatch.</para>
     /// </summary>
     private static string OpenCodeModel => RealHarnessProfiles.OpenCodeModel;
@@ -255,10 +255,10 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
     /// and the fact fails on its assertions rather than hanging until the outer deadline.
     /// </summary>
     private const string SlowWorkerPrompt =
-        "You are a Docket worker agent. First call the docket_get_session tool to read your "
+        "You are a Landbridge worker agent. First call the landbridge_get_session tool to read your "
         + "assignment. Then, before reporting anything, count slowly from 1 to 400, writing each "
         + "number on its own line with a short remark about it. Only after finishing the count "
-        + "may you call the docket_report_result tool with the exact string from the description."
+        + "may you call the landbridge_report_result tool with the exact string from the description."
         + McpToolsRule;
 
     /// <summary>
@@ -272,7 +272,7 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
     /// <c>source: "env"</c>), so <c>ANTHROPIC_API_KEY</c> in the environment is sufficient and
     /// nothing needs publishing under a harness-specific name — unlike Codex, whose
     /// <c>exec</c> path reads <c>CODEX_API_KEY</c> and not <c>OPENAI_API_KEY</c>.
-    /// <c>DOCKET_REAL_OPENCODE=1</c> is the path for a machine whose CLI is already logged in
+    /// <c>LANDBRIDGE_REAL_OPENCODE=1</c> is the path for a machine whose CLI is already logged in
     /// (stored credentials live in <c>auth.json</c> under the global data dir,
     /// <c>src/auth/index.ts:10</c>).</para>
     /// </summary>
@@ -281,35 +281,35 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
         Skip.IfNot(pg.Available, pg.SkipReason);
 
         var key = RealHarnessProfiles.FirstNonEmpty("ANTHROPIC_API_KEY", "ANTHROPIC_KEY");
-        var optedIn = Environment.GetEnvironmentVariable("DOCKET_REAL_OPENCODE") is { Length: > 0 } o
+        var optedIn = Environment.GetEnvironmentVariable("LANDBRIDGE_REAL_OPENCODE") is { Length: > 0 } o
                       && !o.Equals("0", StringComparison.Ordinal)
                       && !o.Equals("false", StringComparison.OrdinalIgnoreCase);
 
         Skip.If(string.IsNullOrWhiteSpace(key) && !optedIn,
-            "no ANTHROPIC_API_KEY/ANTHROPIC_KEY and no DOCKET_REAL_OPENCODE — the real "
+            "no ANTHROPIC_API_KEY/ANTHROPIC_KEY and no LANDBRIDGE_REAL_OPENCODE — the real "
             + "opencode run E2E is opt-in (see the gated CI job)");
         if (!string.IsNullOrWhiteSpace(key))
             Environment.SetEnvironmentVariable("ANTHROPIC_API_KEY", key);
 
-        var bin = RealHarnessProfiles.ResolveBin("opencode", "DOCKET_OPENCODE_BIN");
-        Skip.If(bin is null, "opencode CLI not found (set DOCKET_OPENCODE_BIN or put opencode on PATH)");
+        var bin = RealHarnessProfiles.ResolveBin("opencode", "LANDBRIDGE_OPENCODE_BIN");
+        Skip.If(bin is null, "opencode CLI not found (set LANDBRIDGE_OPENCODE_BIN or put opencode on PATH)");
         return bin!;
     }
 
     /// <summary>The mixed-fleet fact needs a real claude too; skip rather than half-test.</summary>
     private static string RequireRealClaudeForMixedFleet()
     {
-        var claudeBin = RealHarnessProfiles.ResolveBin("claude", "DOCKET_CLAUDE_BIN");
+        var claudeBin = RealHarnessProfiles.ResolveBin("claude", "LANDBRIDGE_CLAUDE_BIN");
         Skip.If(claudeBin is null,
             "claude CLI not found — the mixed-harness fleet fact needs BOTH CLIs "
-            + "(set DOCKET_CLAUDE_BIN or put claude on PATH)");
+            + "(set LANDBRIDGE_CLAUDE_BIN or put claude on PATH)");
         return claudeBin!;
     }
 
     /// <summary>
     /// What to suspect first when a fact in this tier goes red, ordered by how often each is
     /// actually the cause for a <em>new</em> harness. The Codex tier earned its equivalent the
-    /// hard way — a retired model slug, not a Docket bug — so this exists before the first red
+    /// hard way — a retired model slug, not a Landbridge bug — so this exists before the first red
     /// run rather than after it.
     /// </summary>
     private static string OpenCodeFailureHypotheses() =>
@@ -319,14 +319,14 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
            1. MODEL SLUG. This tier pins '{{OpenCodeModel}}'. OpenCode resolves models through a
               fetched catalog, so a slug can be retired server-side; the symptom is a worker that
               starts, authenticates, and fails before its first tool call. Override with
-              DOCKET_OPENCODE_MODEL — it is a dispatch input, not a PR.
-           2. MCP WIRING. The bearer arrives via {env:DOCKET_WORKER_TOKEN} substituted into the
+              LANDBRIDGE_OPENCODE_MODEL — it is a dispatch input, not a PR.
+           2. MCP WIRING. The bearer arrives via {env:LANDBRIDGE_WORKER_TOKEN} substituted into the
               config file's Authorization header. An unset variable substitutes to the EMPTY
               STRING rather than failing (variable.ts:37), so the give-away is a plane 401 and an
-              agent that ran with no docket tools and reported nothing. Check that "oauth": false
+              agent that ran with no landbridge tools and reported nothing. Check that "oauth": false
               is present too — without it OAuth auto-detection can displace the header.
            3. TOOL NAMES. OpenCode spells MCP tools <server>_<tool>, so the worker is looking for
-              docket_get_session, NOT mcp__docket__get_session (mcp/catalog.ts:119). A prompt that
+              landbridge_get_session, NOT mcp__landbridge__get_session (mcp/catalog.ts:119). A prompt that
               names the qualified form will have the agent hunting a tool that does not exist.
            4. PERMISSIONS. session/request_permission is answered by the plane, not --auto.
            5. AUTH. ANTHROPIC_API_KEY must be in the environment, or the machine's opencode must

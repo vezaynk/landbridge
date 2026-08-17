@@ -1,6 +1,6 @@
-using Docket.Meta.Substrate;
+using Landbridge.Meta.Substrate;
 
-namespace Docket.Meta.Tests;
+namespace Landbridge.Meta.Tests;
 
 /// <summary>
 /// What an operator reads when provisioning stalls on the first step. A pull failure is
@@ -20,10 +20,10 @@ public class ImagePullDiagnosticsTests
     [Fact]
     public void A_denied_pull_names_the_image_and_both_possible_causes()
     {
-        var ex = new ImagePullException("ghcr.io/vezaynk/docket-mcp:v0.4.0", 500, GhcrDenied);
+        var ex = new ImagePullException("ghcr.io/vezaynk/landbridge-mcp:v0.4.0", 500, GhcrDenied);
 
         // The image reference is the one thing the raw error never carries.
-        Assert.Contains("ghcr.io/vezaynk/docket-mcp:v0.4.0", ex.Message);
+        Assert.Contains("ghcr.io/vezaynk/landbridge-mcp:v0.4.0", ex.Message);
         // A registry answers "denied" for private-without-credentials AND for absent, so
         // the message must offer both rather than assert one.
         Assert.Contains("not published", ex.Message);

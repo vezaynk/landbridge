@@ -3,13 +3,13 @@ using System.Net;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using Docket.Contracts;
-using Docket.ControlPlane;
-using Docket.ControlPlane.Auth;
-using Docket.ControlPlane.Tests;
-using Docket.Core;
-using Docket.Mcp.Auth;
-using Docket.Mcp.Dashboard;
+using Landbridge.Contracts;
+using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.ControlPlane.Tests;
+using Landbridge.Core;
+using Landbridge.Mcp.Auth;
+using Landbridge.Mcp.Dashboard;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -18,7 +18,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-namespace Docket.Mcp.Tests;
+namespace Landbridge.Mcp.Tests;
 
 /// <summary>
 /// The §12 dashboard over real HTTP against the ephemeral Postgres fixture: the
@@ -209,7 +209,7 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Contains("httponly", setCookie, StringComparison.OrdinalIgnoreCase);
 
         // Invalid: a garbage token → re-rendered form, no cookie.
-        var bad = await PostLoginAsync(app, client, ct, ("token", "dkt_h_not-a-real-token"));
+        var bad = await PostLoginAsync(app, client, ct, ("token", "lbr_h_not-a-real-token"));
         Assert.Equal(HttpStatusCode.Unauthorized, bad.StatusCode);
         Assert.False(bad.Headers.Contains("Set-Cookie"));
         Assert.Contains("not a valid human or Lead session", await bad.Content.ReadAsStringAsync(ct), StringComparison.Ordinal);
@@ -743,9 +743,9 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         builder.Logging.ClearProviders();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
 
-        builder.Services.AddDbContext<DocketDbContext>(o =>
+        builder.Services.AddDbContext<LandbridgeDbContext>(o =>
             o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
-        builder.Services.AddDocketStore();
+        builder.Services.AddLandbridgeStore();
         builder.Services.AddScoped<TokenService>();
         builder.Services.AddScoped<DashboardQueries>();
         builder.Services.AddSingleton(TimeProvider.System);
@@ -753,9 +753,9 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         builder.Services.AddSingleton<IOperatorVerifier>(new ConfiguredOperatorVerifier(operatorPassphraseHash));
         builder.Services.AddHttpContextAccessor();
 
-        builder.Services.AddAuthentication(DocketAuthenticationHandler.SchemeName)
-            .AddScheme<AuthenticationSchemeOptions, DocketAuthenticationHandler>(
-                DocketAuthenticationHandler.SchemeName, configureOptions: null);
+        builder.Services.AddAuthentication(LandbridgeAuthenticationHandler.SchemeName)
+            .AddScheme<AuthenticationSchemeOptions, LandbridgeAuthenticationHandler>(
+                LandbridgeAuthenticationHandler.SchemeName, configureOptions: null);
         builder.Services.AddAuthorization();
 
         var app = builder.Build();
@@ -776,7 +776,7 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
     /// <see cref="RunnerWire"/> encode/decode (so a shape that could not survive §10 fails
     /// here), through <see cref="RunnerEventSink"/> and the store, and out to the HTML a human
     /// reads. The other half — those bytes becoming these events — is pinned against the
-    /// verbatim captured stream in <c>Docket.Runner.Tests.UsageReportingTests</c>, which is where
+    /// verbatim captured stream in <c>Landbridge.Runner.Tests.UsageReportingTests</c>, which is where
     /// the reader lives; this suite does not reference the runner and should not start.</para>
     ///
     /// <para>The section's own labelling is asserted, not just its numbers: a cost rendered
@@ -813,7 +813,7 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
 
         foreach (var report in reports)
         {
-            // Through the real wire, both directions: docketd encodes, the plane decodes.
+            // Through the real wire, both directions: landbridged encodes, the plane decodes.
             var decoded = Assert.IsType<UsageReportedEvent>(
                 RunnerWire.DecodeEvent(RunnerWire.EncodeEvent(report)));
             Assert.Equal(report, decoded);
@@ -945,7 +945,7 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         return (await tokens.IssueHumanSessionAsync(ct)).Token;
     }
 
-    /// <summary>Extracts the <c>docket_session</c> value from a response's Set-Cookie.</summary>
+    /// <summary>Extracts the <c>landbridge_session</c> value from a response's Set-Cookie.</summary>
     private static string SessionCookieValue(HttpResponseMessage res)
     {
         var prefix = DashboardAuth.CookieName + "=";

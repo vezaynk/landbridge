@@ -1,6 +1,6 @@
 using System.Diagnostics;
 
-namespace Docket.Runner.Tests;
+namespace Landbridge.Runner.Tests;
 
 /// <summary>
 /// Stray-process cleanup, spec §10 runner restart. Discovery is abstracted
@@ -16,9 +16,9 @@ public class StrayReaperTests : IDisposable
     {
         var psi = new ProcessStartInfo(TestKit.HarnessPath()) { UseShellExecute = false };
         psi.ArgumentList.Add("child");
-        psi.Environment["DOCKET_MACHINE_ID"] = machineId;
+        psi.Environment["LANDBRIDGE_MACHINE_ID"] = machineId;
         if (sessionId is not null)
-            psi.Environment["DOCKET_SESSION_ID"] = sessionId;
+            psi.Environment["LANDBRIDGE_SESSION_ID"] = sessionId;
         var process = Process.Start(psi)!;
         _spawned.Add(process);
         return process;

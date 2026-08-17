@@ -1,7 +1,7 @@
 using System.Security.Cryptography.X509Certificates;
 using Microsoft.Extensions.Logging;
 
-namespace Docket.Preview;
+namespace Landbridge.Preview;
 
 /// <summary>
 /// Holds the wildcard-cert PEM that terminates TLS on <c>*.{Domain}</c> (spec §8.4)

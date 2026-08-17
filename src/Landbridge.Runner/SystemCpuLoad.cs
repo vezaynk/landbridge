@@ -1,8 +1,8 @@
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
-using Docket.Contracts;
+using Landbridge.Contracts;
 
-namespace Docket.Runner;
+namespace Landbridge.Runner;
 
 /// <summary>
 /// A point-in-time snapshot of the host's cumulative CPU-time counters, in
@@ -30,9 +30,9 @@ internal interface ICpuSampler
 /// <see cref="BackPressureMonitor"/> lets the CPU term participate and
 /// <c>max_cpu_load</c> actually trips.
 ///
-/// <para>It measures <b>host</b> CPU utilization, not docketd's own process CPU:
-/// docketd spawns each worker as a separate process, so its own process CPU is
-/// the wrong signal — a busy machine with idle-looking docketd would sail past
+/// <para>It measures <b>host</b> CPU utilization, not landbridged's own process CPU:
+/// landbridged spawns each worker as a separate process, so its own process CPU is
+/// the wrong signal — a busy machine with idle-looking landbridged would sail past
 /// the gate. Utilization is a delta of the OS's cumulative busy/total CPU-time
 /// counters across a short window (<see cref="ReadCpu"/> samples twice around a
 /// brief sleep), which yields instantaneous utilization the same way on all

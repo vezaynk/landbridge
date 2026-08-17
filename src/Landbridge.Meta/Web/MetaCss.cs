@@ -1,4 +1,4 @@
-namespace Docket.Meta.Web;
+namespace Landbridge.Meta.Web;
 
 /// <summary>
 /// Meta's one self-contained stylesheet (no build chain), served as a const from

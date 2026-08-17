@@ -1,12 +1,12 @@
 using System.Text;
-using Docket.Contracts;
-using Docket.Core;
+using Landbridge.Contracts;
+using Landbridge.Core;
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.Runner.Tests;
+namespace Landbridge.Runner.Tests;
 
 /// <summary>
-/// The §12 serving half at the docketd seam: inventory, byte-range reads that reassemble
+/// The §12 serving half at the landbridged seam: inventory, byte-range reads that reassemble
 /// the file exactly, and the refusals that keep a bad request from becoming an exception.
 /// No plane, no socket — <see cref="TranscriptReader"/> is pure over local files, which is
 /// what makes the byte-exactness assertions here meaningful.
@@ -130,13 +130,13 @@ public sealed class TranscriptReaderTests : IDisposable
         // back intact, which is exactly why the plane serves this to human operators only
         // and only for terminal tasks (§13, §16 open question 8).
         var task = SessionId.New();
-        var writer = Capture(task, ["""{"type":"assistant","text":"token dkt_w_deadbeef"}"""]);
+        var writer = Capture(task, ["""{"type":"assistant","text":"token lbr_w_deadbeef"}"""]);
 
         var reply = Reader().Read(Range(task));
 
         Assert.Null(reply.Refusal);
         Assert.Equal(File.ReadAllText(writer.StdoutPath), reply.Text);
-        Assert.Contains("dkt_w_deadbeef", reply.Text);
+        Assert.Contains("lbr_w_deadbeef", reply.Text);
         Assert.True(reply.Eof);
     }
 

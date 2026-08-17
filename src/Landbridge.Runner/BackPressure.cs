@@ -1,6 +1,6 @@
-using Docket.Contracts;
+using Landbridge.Contracts;
 
-namespace Docket.Runner;
+namespace Landbridge.Runner;
 
 /// <summary>Reads current system load. Abstracted so tests drive pressure deterministically.</summary>
 public interface ISystemLoadReader
@@ -72,7 +72,7 @@ public readonly record struct BackPressureReading(SystemLoad Load, bool UnderPre
 
 /// <summary>
 /// §10 concurrency and back-pressure. Machines declare no concurrency limit;
-/// instead docketd observes its own load and <b>stops accepting dispatch when
+/// instead landbridged observes its own load and <b>stops accepting dispatch when
 /// under pressure</b>, resuming when it clears. This breaks the requeue
 /// feedback loop — a saturated machine keeps what it holds and shows as
 /// <c>saturated</c> rather than thrashing.

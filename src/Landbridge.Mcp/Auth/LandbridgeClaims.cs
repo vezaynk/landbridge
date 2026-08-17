@@ -1,28 +1,28 @@
 using System.Security.Claims;
-using Docket.ControlPlane.Auth;
-using Docket.Core;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.Core;
 
-namespace Docket.Mcp.Auth;
+namespace Landbridge.Mcp.Auth;
 
 /// <summary>
 /// Bridges the token service's typed <see cref="Principal"/> and the ASP.NET
 /// <see cref="ClaimsPrincipal"/> the auth pipeline carries. The typed principal
 /// stays the source of truth; claims are just its wire form on
 /// <c>HttpContext.User</c>, and tools reconstruct the principal from them so
-/// authority reaches the engine as a real <see cref="Docket.Core.Actor"/>.
+/// authority reaches the engine as a real <see cref="Landbridge.Core.Actor"/>.
 /// </summary>
-public static class DocketClaims
+public static class LandbridgeClaims
 {
-    public const string AuthenticationType = "docket";
+    public const string AuthenticationType = "landbridge";
 
-    private const string Kind = "docket:kind";
-    private const string Team = "docket:team";
-    private const string Task = "docket:task";
-    private const string Instance = "docket:instance";
-    private const string Machine = "docket:machine";
-    private const string Human = "docket:human";
-    private const string EvictedBy = "docket:evicted_by";
-    private const string EvictedAt = "docket:evicted_at";
+    private const string Kind = "landbridge:kind";
+    private const string Team = "landbridge:team";
+    private const string Task = "landbridge:task";
+    private const string Instance = "landbridge:instance";
+    private const string Machine = "landbridge:machine";
+    private const string Human = "landbridge:human";
+    private const string EvictedBy = "landbridge:evicted_by";
+    private const string EvictedAt = "landbridge:evicted_at";
 
     public static ClaimsPrincipal ToClaimsPrincipal(Principal principal)
     {

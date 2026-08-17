@@ -2,15 +2,15 @@ using System.Diagnostics;
 using System.Formats.Tar;
 using Docker.DotNet;
 using Docker.DotNet.Models;
-using Docket.Meta;
-using Docket.Meta.Data;
-using Docket.Meta.Provisioning;
-using Docket.Meta.Substrate;
+using Landbridge.Meta;
+using Landbridge.Meta.Data;
+using Landbridge.Meta.Provisioning;
+using Landbridge.Meta.Substrate;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
-using ContainerSpec = Docket.Meta.Substrate.ContainerSpec;
+using ContainerSpec = Landbridge.Meta.Substrate.ContainerSpec;
 
-namespace Docket.Meta.Tests;
+namespace Landbridge.Meta.Tests;
 
 /// <summary>
 /// Docker-gated end-to-end (design note §7). Runs only where a Docker Engine is
@@ -20,7 +20,7 @@ namespace Docket.Meta.Tests;
 ///      against the daemon: network + volume + a health-checked container + port
 ///      read-back + idempotent adopt + teardown. Fast (one small image).
 ///   2. <see cref="Full_instance_provision_health_destroy"/> — the whole recipe:
-///      publish + build the docket runtime images in-process (no SDK-in-container),
+///      publish + build the landbridge runtime images in-process (no SDK-in-container),
 ///      provision a real Instance, hit the plane's real HTTP liveness endpoint, then
 ///      destroy and assert every object is gone.
 /// </summary>
@@ -67,7 +67,7 @@ public class DockerE2ETests
         using var client = new DockerClientConfiguration(new Uri(Sock)).CreateClient();
         var sub = new DockerSubstrate(client);
         // Port 1: privileged, never a registry, refused immediately.
-        var image = "127.0.0.1:1/docket-no-such-registry:v0";
+        var image = "127.0.0.1:1/landbridge-no-such-registry:v0";
         var ct = new CancellationTokenSource(TimeSpan.FromMinutes(1)).Token;
 
         var ex = await Assert.ThrowsAsync<ImagePullException>(() => sub.EnsureImageAsync(image, ct));
@@ -96,7 +96,7 @@ public class DockerE2ETests
         var sub = new DockerSubstrate(client);
         var id = "dktmeta-reg-" + Guid.NewGuid().ToString("N")[..8];
         var net = id + "-net";
-        var labels = new Dictionary<string, string> { ["docket.managed"] = "meta-test", ["docket.instance"] = id };
+        var labels = new Dictionary<string, string> { ["landbridge.managed"] = "meta-test", ["landbridge.instance"] = id };
         var ct = new CancellationTokenSource(TimeSpan.FromMinutes(4)).Token;
 
         try
@@ -122,7 +122,7 @@ public class DockerE2ETests
             Assert.True(await RegistryAnswersAsync(port, TimeSpan.FromMinutes(1)),
                 $"registry:2 never answered /v2/ on 127.0.0.1:{port}");
 
-            var image = $"127.0.0.1:{port}/docket-absent-repo:v0";
+            var image = $"127.0.0.1:{port}/landbridge-absent-repo:v0";
             var ex = await Assert.ThrowsAsync<ImagePullException>(() => sub.EnsureImageAsync(image, ct));
 
             Assert.Contains(image, ex.Message);
@@ -176,7 +176,7 @@ public class DockerE2ETests
         var net = id + "-net";
         var vol = id + "-vol";
         var pg = id + "-pg";
-        var labels = new Dictionary<string, string> { ["docket.managed"] = "meta-test", ["docket.instance"] = id };
+        var labels = new Dictionary<string, string> { ["landbridge.managed"] = "meta-test", ["landbridge.instance"] = id };
         var ct = new CancellationTokenSource(TimeSpan.FromMinutes(4)).Token;
 
         try
@@ -193,12 +193,12 @@ public class DockerE2ETests
                 Labels = labels,
                 Env = new Dictionary<string, string>
                 {
-                    ["POSTGRES_USER"] = "docket",
+                    ["POSTGRES_USER"] = "landbridge",
                     ["POSTGRES_PASSWORD"] = "pw",
-                    ["POSTGRES_DB"] = "docket",
+                    ["POSTGRES_DB"] = "landbridge",
                 },
                 Mounts = new[] { new MountSpec(vol, "/var/lib/postgresql/data") },
-                HealthCmd = new[] { "CMD-SHELL", "pg_isready -U docket -d docket" },
+                HealthCmd = new[] { "CMD-SHELL", "pg_isready -U landbridge -d landbridge" },
                 PublishContainerPort = 5432,
                 PublishHostPort = 0,
             };
@@ -238,12 +238,12 @@ public class DockerE2ETests
 
         using var client = new DockerClientConfiguration(new Uri(Sock)).CreateClient();
         var tag = "e2e-" + Guid.NewGuid().ToString("N")[..8];
-        var mcpImage = $"docket-mcp:{tag}";
-        var relayImage = $"docket-relay:{tag}";
+        var mcpImage = $"landbridge-mcp:{tag}";
+        var relayImage = $"landbridge-relay:{tag}";
 
         // 1) Publish + build the two runtime images in-process (fast: COPY of published output).
-        await PublishAndBuildAsync(client, repoRoot!, "Docket.Mcp", mcpImage, ct);
-        await PublishAndBuildAsync(client, repoRoot!, "Docket.Relay", relayImage, ct);
+        await PublishAndBuildAsync(client, repoRoot!, "Landbridge.Mcp", mcpImage, ct);
+        await PublishAndBuildAsync(client, repoRoot!, "Landbridge.Relay", relayImage, ct);
 
         // 2) Wire the provisioner with the REAL substrate + probe, a fake edge (health is
         //    checked on the published port directly), an InMemory store, and image repos
@@ -251,8 +251,8 @@ public class DockerE2ETests
         var options = new MetaOptions
         {
             Domain = "e2e.localhost",
-            McpImageRepo = "docket-mcp",
-            RelayImageRepo = "docket-relay",
+            McpImageRepo = "landbridge-mcp",
+            RelayImageRepo = "landbridge-relay",
             PostgresImage = PgImage,
         };
         using var db = SagaHarness.NewInMemoryDb("e2e-" + Guid.NewGuid(), SagaHarness.NewProtector());
@@ -376,7 +376,7 @@ public class DockerE2ETests
         var dir = new DirectoryInfo(AppContext.BaseDirectory);
         while (dir is not null)
         {
-            if (File.Exists(Path.Combine(dir.FullName, "docket.slnx")))
+            if (File.Exists(Path.Combine(dir.FullName, "landbridge.slnx")))
                 return dir.FullName;
             dir = dir.Parent;
         }

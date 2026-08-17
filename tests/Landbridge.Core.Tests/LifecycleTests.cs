@@ -1,4 +1,4 @@
-namespace Docket.Core.Tests;
+namespace Landbridge.Core.Tests;
 
 /// <summary>One positive test per §6 transition row, plus end-to-end chains.</summary>
 public class LifecycleTests

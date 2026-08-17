@@ -1,10 +1,10 @@
 using System.Runtime.InteropServices;
-using Docket.Contracts;
+using Landbridge.Contracts;
 
-namespace Docket.Runner;
+namespace Landbridge.Runner;
 
 /// <summary>
-/// The <c>docketd</c> entrypoint (spec §10). Loads and validates a config,
+/// The <c>landbridged</c> entrypoint (spec §10). Loads and validates a config,
 /// wires the supervisor / back-pressure / heartbeat / ring, and runs until a
 /// termination signal. The control-plane wire transport is a real outbound
 /// WebSocket (<see cref="WebSocketControlPlaneChannel"/>, §10 — the frozen
@@ -19,7 +19,7 @@ public static class Program
 {
     public static async Task<int> Main(string[] args)
     {
-        // §5 Bootstrap: `docketd --enroll --control-url <https://plane>` is a
+        // §5 Bootstrap: `landbridged --enroll --control-url <https://plane>` is a
         // one-shot mode — exchange the human-issued enrollment token for machine
         // credentials, persist them (atomic, 0600), print the machine id, and exit.
         // It never starts the daemon. The token is read from --enroll-token-file or
@@ -31,7 +31,7 @@ public static class Program
         var configPath = ArgValue(args, "--config");
         if (configPath is null)
         {
-            Console.Error.WriteLine("usage: docketd --config <path> [--machine-id <id>] [--state-dir <dir>]");
+            Console.Error.WriteLine("usage: landbridged --config <path> [--machine-id <id>] [--state-dir <dir>]");
             return 2;
         }
 
@@ -53,7 +53,7 @@ public static class Program
         }
 
         var machineId = ArgValue(args, "--machine-id")
-            ?? Environment.GetEnvironmentVariable("DOCKET_MACHINE_ID")
+            ?? Environment.GetEnvironmentVariable("LANDBRIDGE_MACHINE_ID")
             ?? Guid.NewGuid().ToString("N");
 
         // §1 tracing: stand up OTLP export when the environment provides a
@@ -67,7 +67,7 @@ public static class Program
 
         // §12 machine-local transcript capture lives under the state dir (alongside
         // credentials.json), not the per-task work_root scratch — it must survive a
-        // task teardown and a docketd restart (the §11 resume substrate). Local
+        // task teardown and a landbridged restart (the §11 resume substrate). Local
         // retention is machine hygiene: the most generous prune_after_days any profile
         // asked for wins, and any profile opting out (0) keeps everything.
         var stateDir = CredentialStore.ResolveStateDir(ArgValue(args, "--state-dir"));
@@ -78,7 +78,7 @@ public static class Program
         var transcripts = new TranscriptStore(
             Path.Combine(stateDir, TranscriptDefaults.DirName), retention, clock);
 
-        // §10 services and agent-started processes. Both are docketd's own children, tagged
+        // §10 services and agent-started processes. Both are landbridged's own children, tagged
         // with the machine id only: they outlive every task, and the only thing that ends them
         // is an explicit stop, their own exit, or this daemon's restart (the stray sweep).
         var services = new ServiceSupervisor(
@@ -95,19 +95,19 @@ public static class Program
         // portable reader that can't observe CPU — surface that max_cpu_load is
         // inert there rather than letting it look enforced; memory and disk still gate.
         if (!backPressure.ObservesCpu)
-            Console.WriteLine("docketd: cpu back-pressure unavailable on this platform; max_cpu_load is inert (memory and disk still gate).");
+            Console.WriteLine("landbridged: cpu back-pressure unavailable on this platform; max_cpu_load is inert (memory and disk still gate).");
 
         // §10 + §5: dial the control plane outbound. Credential source, in
         // priority order:
-        //   1. DOCKET_MACHINE_TOKEN env — the Aspire dev loop's fixed token, NEVER
-        //      refreshed (unchanged behaviour). DOCKET_CONTROL_URL is the ws(s) URL.
+        //   1. LANDBRIDGE_MACHINE_TOKEN env — the Aspire dev loop's fixed token, NEVER
+        //      refreshed (unchanged behaviour). LANDBRIDGE_CONTROL_URL is the ws(s) URL.
         //   2. else credentials.json in the state dir — the enrolled machine's
         //      access/refresh pair. The access token is refreshed at half-life and
-        //      on a 401 reconnect (§13); the ws URL is DOCKET_CONTROL_URL when set,
+        //      on a 401 reconnect (§13); the ws URL is LANDBRIDGE_CONTROL_URL when set,
         //      else derived from the enrolled HTTP base (http→ws, https→wss, /runner).
         //   3. else the console placeholder.
-        var controlUrl = Environment.GetEnvironmentVariable("DOCKET_CONTROL_URL");
-        var envMachineToken = Environment.GetEnvironmentVariable("DOCKET_MACHINE_TOKEN");
+        var controlUrl = Environment.GetEnvironmentVariable("LANDBRIDGE_CONTROL_URL");
+        var envMachineToken = Environment.GetEnvironmentVariable("LANDBRIDGE_MACHINE_TOKEN");
 
         WebSocketControlPlaneChannel? wsChannel = null;
         MachineTokenRefresher? refresher = null;
@@ -158,7 +158,7 @@ public static class Program
 
         // §12 serving: the same store capture writes to, read side. Always wired — the
         // gate on who may read a transcript is the plane's (human operator, terminal task
-        // only), not something docketd second-guesses; a machine that captured nothing
+        // only), not something landbridged second-guesses; a machine that captured nothing
         // simply answers with an empty inventory.
         var daemon = new RunnerDaemon(
             machineId, config, supervisor, backPressure, channel, ring, reaper, clock,
@@ -170,14 +170,14 @@ public static class Program
         // machine id — starting first would have this generation kill what it just spawned.
         services.Start();
 
-        // Outbound-only: the receive loop runs on the socket docketd dialed, not
+        // Outbound-only: the receive loop runs on the socket landbridged dialed, not
         // a listener (§10). Commands arriving on it drive the daemon.
         wsChannel?.Start((command, ct) => daemon.HandleAsync(command, ct));
 
         var declaredServices = config.DeclaredServices.Count == 0
             ? ""
             : $" services=[{string.Join(", ", config.DeclaredServices.Select(x => x.Name))}]";
-        Console.WriteLine($"docketd up: machine={machineId} profiles=[{string.Join(", ", config.DeclaredProfiles)}]{declaredServices} strays_reaped={daemon.StraysReaped} control={channelMode}");
+        Console.WriteLine($"landbridged up: machine={machineId} profiles=[{string.Join(", ", config.DeclaredProfiles)}]{declaredServices} strays_reaped={daemon.StraysReaped} control={channelMode}");
 
         using var shutdown = new CancellationTokenSource();
         using var sigint = PosixSignalRegistration.Create(PosixSignal.SIGINT, ctx => { ctx.Cancel = true; shutdown.Cancel(); });
@@ -192,7 +192,7 @@ public static class Program
             // signalled
         }
 
-        Console.WriteLine("docketd shutting down; killing everything it started");
+        Console.WriteLine("landbridged shutting down; killing everything it started");
         await daemon.ShutdownAsync();
         await services.DisposeAsync();
         if (wsChannel is not null)
@@ -215,10 +215,10 @@ public static class Program
         if (string.IsNullOrWhiteSpace(controlUrl))
         {
             Console.Error.WriteLine(
-                "usage: docketd --enroll --control-url <https://plane> " +
+                "usage: landbridged --enroll --control-url <https://plane> " +
                 "[--enroll-token-file <path>] [--state-dir <dir>] [--name <n>] [--purpose <p>] [--permission-level <l>]\n" +
                 "  The enrollment token is read from --enroll-token-file, or from stdin if omitted " +
-                "(`docketd --enroll < token` or an interactive prompt) — never from argv (§13).");
+                "(`landbridged --enroll < token` or an interactive prompt) — never from argv (§13).");
             return 2;
         }
 
@@ -251,7 +251,7 @@ public static class Program
             CredentialStore.Save(stateDir, creds);
             Console.WriteLine(creds.MachineId);
             Console.Error.WriteLine(
-                $"docketd enrolled: machine={creds.MachineId} credentials={CredentialStore.PathIn(stateDir)}");
+                $"landbridged enrolled: machine={creds.MachineId} credentials={CredentialStore.PathIn(stateDir)}");
             return 0;
         }
         catch (EnrollmentException e)
@@ -269,7 +269,7 @@ public static class Program
     /// <summary>
     /// Reads the enrollment token from a file (<paramref name="tokenFile"/>) or,
     /// when none is given, one line from stdin — a prompt to stderr when interactive,
-    /// a clean read when piped (`docketd --enroll &lt; token`). Never argv (§13).
+    /// a clean read when piped (`landbridged --enroll &lt; token`). Never argv (§13).
     /// Returns null (having printed why) when a named file can't be read.
     /// </summary>
     internal static async Task<string?> ReadEnrollmentTokenAsync(string? tokenFile)

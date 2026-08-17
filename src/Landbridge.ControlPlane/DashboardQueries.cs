@@ -1,9 +1,9 @@
-using Docket.Contracts;
-using Docket.ControlPlane.Auth;
-using Docket.Core;
+using Landbridge.Contracts;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.Core;
 using Microsoft.EntityFrameworkCore;
 
-namespace Docket.ControlPlane;
+namespace Landbridge.ControlPlane;
 
 /// <summary>
 /// The read side of the §12 observability dashboard. Pure reads —
@@ -38,7 +38,7 @@ namespace Docket.ControlPlane;
 /// renders one as an empty slot is a rendering gap that view owns, not a missing
 /// source.
 /// </summary>
-public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistry registry)
+public sealed class DashboardQueries(LandbridgeDbContext db, RunnerConnectionRegistry registry)
 {
     // The task states that mean a Team is still doing something (§12: idle Teams
     // drift to the bottom). Everything else is terminal or empty.
@@ -878,7 +878,7 @@ public sealed record SessionUsageView(
 {
     /// <summary>
     /// The four buckets summed. Sound to add because they are disjoint by the time they are
-    /// stored — docketd normalizes a harness that counts cache hits inside its input total
+    /// stored — landbridged normalizes a harness that counts cache hits inside its input total
     /// before reporting. <see cref="ReasoningOutputTokens"/> is deliberately absent: it is part
     /// of <see cref="OutputTokens"/> already, and adding it would count those tokens twice.
     /// </summary>
@@ -890,7 +890,7 @@ public sealed record SessionUsageView(
         CostUsd is null ? UsageCostProvenance.None : UsageCostProvenance.Reported;
 
     /// <summary>The one row→view mapping, so the empty-string-is-the-unnamed-model convention
-    /// (see <c>DocketDbContext</c>) is undone in exactly one place.</summary>
+    /// (see <c>LandbridgeDbContext</c>) is undone in exactly one place.</summary>
     public static SessionUsageView From(SessionUsageRow row) => new(
         row.SessionId,
         string.IsNullOrEmpty(row.Model) ? null : row.Model,

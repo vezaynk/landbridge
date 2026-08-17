@@ -1,18 +1,18 @@
 using System.Net.WebSockets;
 using System.Text;
-using Docket.ControlPlane;
-using Docket.ControlPlane.Tests;
-using Docket.Core;
+using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Tests;
+using Landbridge.Core;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace Docket.Mcp.Tests;
+namespace Landbridge.Mcp.Tests;
 
 /// <summary>
 /// L3 stress guard for the §8.4 preview websocket close handshake through the real
-/// relay + a real producer docketd. It hammers connect → echo → close many times
+/// relay + a real producer landbridged. It hammers connect → echo → close many times
 /// (sequential and concurrent) and requires every close to complete cleanly. This
-/// is the end-to-end guard that the §8.3 splice-teardown fix (Docket.Relay
-/// ForwardEntry + Docket.Runner RelayForwarder — PR #49) holds through the whole
+/// is the end-to-end guard that the §8.3 splice-teardown fix (Landbridge.Relay
+/// ForwardEntry + Landbridge.Runner RelayForwarder — PR #49) holds through the whole
 /// preview data path; it reproduced the drop on run 1 before that fix. Fast
 /// (~1s: the fixed teardown completes each close in milliseconds), so it stays a
 /// normal Postgres-gated test rather than a dispatch-gated one.

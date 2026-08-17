@@ -23,7 +23,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\Docket.ControlPlane\Docket.ControlPlane.csproj" />
+    <ProjectReference Include="..\..\src\Landbridge.ControlPlane\Landbridge.ControlPlane.csproj" />
   </ItemGroup>
 
 </Project>

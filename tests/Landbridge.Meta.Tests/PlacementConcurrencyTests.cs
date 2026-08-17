@@ -1,8 +1,8 @@
-using Docket.Meta.Data;
-using Docket.Meta.Provisioning;
+using Landbridge.Meta.Data;
+using Landbridge.Meta.Provisioning;
 using Microsoft.EntityFrameworkCore;
 
-namespace Docket.Meta.Tests;
+namespace Landbridge.Meta.Tests;
 
 /// <summary>
 /// Port allocation is a read-then-insert, so it is only safe under the per-host
