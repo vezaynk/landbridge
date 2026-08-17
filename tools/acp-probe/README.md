@@ -30,8 +30,8 @@ this is cheap enough to run on every machine during enroll.
   speaks 1 and warns outside that.
 - **`authMethods`** — which ids the agent will accept at `authenticate`, in its own order.
   A non-empty list means authentication is *available*; whether it is *required* only shows
-  up when `session/new` answers `-32000`. `AcpClient` runs the step on that refusal and takes
-  the first id unless the profile's `auth_method` names one.
+  up when `session/new` answers `-32000`. `AcpClient` runs the step on that refusal and
+  requires the profile's `auth_method` — it does not guess the first id.
 
 ## Measured 2026-08-15 / 2026-08-16
 

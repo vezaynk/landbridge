@@ -354,7 +354,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
         Assert.Equal(TaskState.Failed, row.State);
         Assert.Equal(1, row.InfrastructureRequeues); // infra counter, never verification (§6)
-        Assert.Null(row.ParkMachine);                 // fail-park; no park record from a silent machine
+        Assert.Equal("m1", row.ParkMachine);          // pin session/load; gone means wait
         Assert.True((await v.WorkerInstances.AsNoTracking().SingleAsync(w => w.Id == instance.Value)).Revoked);
         Assert.Empty(registry.TasksOn("m1"));
     }

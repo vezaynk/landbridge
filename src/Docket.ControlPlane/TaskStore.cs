@@ -340,8 +340,8 @@ public sealed class TaskStore(
     ///
     /// <para>Continuation targeting (§6/§11) adds a preferred-machine clause to the
     /// SQL half of check 5. A row with no <c>preferred_machine</c> (an ordinary
-    /// profile-targeted task, or a parked task whose affinity lives in the park
-    /// record) is claimable by any profile-matching machine, unchanged. A
+    /// first dispatch) is claimable by any profile-matching machine. A park or
+    /// fail pins the last box so <c>session/load</c> stays in the original cwd. A
     /// continuation row is claimable only by its preferred machine — so the first
     /// dispatch prefers it and resumes the transcript there — <em>unless</em> that
     /// machine is gone (absent from <paramref name="connectedMachines"/>) and its
@@ -847,6 +847,24 @@ public sealed class TaskStore(
             .ExecuteUpdateAsync(s => s.SetProperty(t => t.HarnessSessionRef, sessionRef), ct);
 
     /// <summary>
+    /// The machine of this task's most recent dispatch — durable on the instance
+    /// row, so a fail that never wrote a park record can still pin session/load.
+    /// </summary>
+    private string? LastMachineOf(Guid taskId) =>
+        db.WorkerInstances.Local
+            .Where(w => w.TaskId == taskId && w.MachineId != null)
+            .OrderByDescending(w => w.CreatedAt)
+            .ThenByDescending(w => w.Id)
+            .Select(w => w.MachineId)
+            .FirstOrDefault()
+        ?? db.WorkerInstances
+            .Where(w => w.TaskId == taskId && w.MachineId != null)
+            .OrderByDescending(w => w.CreatedAt)
+            .ThenByDescending(w => w.Id)
+            .Select(w => w.MachineId)
+            .FirstOrDefault();
+
+    /// <summary>
     /// Records a runner <c>auth-failed</c> event (§11) as a first-class task event
     /// row — the structured operation/target/error-code/missing-scope facts the
     /// runner reported — which the §12 event log renders as its own detail line
@@ -1072,6 +1090,23 @@ public sealed class TaskStore(
         };
         if (answerText is not null)
             row.InputAnswer = answerText;
+
+        // Same-task session/load is machine-local (stage 5; #175 is the later
+        // move). A park or fail that does not pin PreferredMachine can be
+        // claimed by any profile-matching box, and load then runs in the wrong
+        // cwd. Continuations already carry their own preferred machine — leave
+        // those alone. Pin, not Degrade: gone means wait, not a cold start.
+        if (ok.Task.State is TaskState.Parked or TaskState.Failed
+            && row.PreferredMachine is null)
+        {
+            var lastMachine = row.ParkMachine ?? LastMachineOf(row.Id);
+            if (lastMachine is { Length: > 0 })
+            {
+                row.ParkMachine ??= lastMachine;
+                row.PreferredMachine = lastMachine;
+                row.OnMachineGone = MachineGonePolicy.Pin;
+            }
+        }
 
         // The transaction opens HERE, before the effects — not down in CommitAsync. Two of
         // the effects are set-based (§9.14's instance revoke, and the §8.2/§8.3 service and

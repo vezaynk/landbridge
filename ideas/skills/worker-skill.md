@@ -189,7 +189,7 @@ It also takes an optional `report`: a short in-band summary that flows straight 
 
 Say what you *didn't* do. Scope you deliberately left, tests you couldn't run, assumptions you made. That is the most useful part of a report and the part most often omitted.
 
-Your task then goes to verification. **You stay up.** A report is not a yield of the machine — your process and anything you started stay running so the Lead can reply on this same session. You do not mark it complete, and reporting is not a claim that it passed. If the Lead wants more, you will get another turn. If they accept, the assignment ends.
+Your task then goes to verification. **You stay up.** A report is not a yield of the machine — your process and anything you started stay running so the Lead can reply on this same session. You do not mark it complete, and reporting is not a claim that it passed. If the Lead wants more, you will get another turn: pull `get_task` — their note is the `answer`. If they accept, the assignment ends.
 
 ## Subagents
 

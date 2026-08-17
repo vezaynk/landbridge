@@ -175,21 +175,24 @@ rename, recorded here so the rename does not reopen them:
   worker is a reply, not a fail-and-redispatch.
 - **ACP client offers protocol 1 only.** Hand-rolled client stays; do not advertise v2.
 - **`session/load` is machine-local** (#175). Work-dir GC is skill advice. Spend is
-  observability plus the provider key's own limits.
+  metered only — the operator's own provisioning is the cap.
 
 The domain rename (session states, migrations, dashboard reoriented around conversation)
 is still ahead of this file's original stage-3 sentence. The engine now behaves as if
 the session were the record.
 
-**Stage 4 — the Lead can talk back.** A rejection becomes a message rather than a
-continuation task. Requires the doer/judge authorship rule from stage 3 to already hold.
-**Started:** `LeadMessage` is working → working on a live session with no
-pending question. The plane doorbells; the worker pulls the text on
-`get_task`. A pending permission still needs a verdict. Full
-replacement of continuation tasks waits on stage 3's authorship rule.
+**Stage 4 — the Lead can talk back.** *Implemented on the task model.* A fail is
+`Rejected`, not a continuation. More from the same worker is `LeadMessage` /
+`answer_input_request`: the plane doorbells; the worker pulls the text on
+`get_task`. A pending permission still needs a verdict, not prose.
+Continuations remain for cleanup and for *new* work that should inherit a
+transcript — not for retrying a rejected assignment.
 
-**Stage 5 — recovery.** A dead session is resumed from its persisted ref via `session/load`
-on next invocation, replacing the park/redispatch path entirely.
+**Stage 5 — recovery.** *Implemented, same-machine only.* Park and fail pin
+`PreferredMachine` to the box that held the session (`OnMachineGone = Pin`).
+Wake is `WakeParked` with a note; dispatch carries `ResumeSessionRef`; the
+runner `session/load`s in the original cwd. If that machine is gone the task
+waits in `submitted`. Moving the session to another box is #175.
 
 ## Open questions
 
@@ -202,8 +205,7 @@ on next invocation, replacing the park/redispatch path entirely.
 - **Does the §7 profile still describe how to *launch*?** Under sessions it increasingly
   describes how to *reach* — which is a different thing, and may want a different key than
   `spawn`.
-- **Cost.** The migration gave up `--max-turns` (see runner-config.md). It did *not*, in the
-  end, give up token accounting — `PromptResponse.usage` carries the four disjoint buckets
-  after all, measured 2026-08-16 — so the meter survives and only the cap is gone.
-  Indefinite sessions with unbounded follow-ups remove the last implicit bound, which was
-  "a dispatch eventually exits". Something has to replace it.
+- **Cost.** *Decided:* Docket meters, it does not cap. `PromptResponse.usage` still
+  feeds the §12 measured view. Spend limits belong to the operator's own
+  provisioning (provider key ceilings, billing alerts, how many machines they
+  enroll). There is no plane dollar ceiling and no `--max-turns` successor.
