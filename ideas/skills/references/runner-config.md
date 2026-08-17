@@ -25,6 +25,7 @@ one shape and an entry point per harness.
 | `profiles[]` | `prompt` | The worker's opening turn, sent as `session/prompt`. **Required**: an ACP agent takes no prompt on argv, so a profile without one spawns an agent that completes the handshake, waits, and does nothing. No default is possible — the text has to name the docket tools the way *this* harness spells them. Same `{...}` substitutions as the spawn argv. |
 | `profiles[]` | `auth_method` | Which of the agent's declared ACP `authMethods` to use. Consulted **only** when the agent refuses `session/new` with `-32000 "authentication required"` — a declared method means authentication is *available*, not required, so an agent already holding a credential is never authenticated. **Required on that refusal.** Unset is a fail, not a guess at the first declared method (that is often a browser login). `codex-acp` needs `"auth_method": "api-key"`. The request carries a method id and nothing else — the credential is the agent's own business, read from its environment (see `env`), so this key never holds a secret. `claude-agent-acp` declares no methods and needs none. |
 | `profiles[]` | `config_options` | String map sent as ACP `session/set_config_option` after `session/new` (or `session/load`). Each key is a `configId` the agent advertised on that session; the value must be one of that option's listed values. An unadvertised key, or a value the agent did not list, is skipped — not an error. OpenCode ACP defaults to `opencode/big-pickle` and ignores `opencode.json`, so this is how you pin `"model": "anthropic/claude-haiku-4-5-20251001"`. Leave it unset on an agent that advertises nothing (`claude-agent-acp`, and so far `codex-acp`). Strings only: boolean ACP options require a client capability this client does not declare. |
+| `profiles[]` | `session_mode` | ACP `session/set_mode` after `session/new` (or `session/load`). Sent only when that session advertised the `modeId`. Goose 1.46 defaults to `auto` (auto-approve); pin `"approve"` so permissions stay on `session/request_permission`. Unadvertised is skipped, not an error. |
 | `profiles[]` | `stop` | `wind_down_seconds` (default `30`) — the window an agent gets to end its turn after `session/cancel` before the portable tree-kill backstops it. No `mode` and no `message`: a stop is a cancel the agent is *specified* to honour, so there is nothing left for a mode to select. `ttl=0` kills immediately (§9 check 12). |
 | `profiles[]` | `env` | String map stamped on every spawn (and resume) of this profile. Values take the same `{task_id}` / `{machine_id}` / `{work_dir}` / `{session_id}` / `{mcp_url}` / `{worker_token}` substitutions `spawn` does. Applied after the reserved `DOCKET_*` stamps and before `telemetry.env`. The four names docketd owns — `DOCKET_MACHINE_ID`, `DOCKET_TASK_ID`, `DOCKET_WORKER_TOKEN`, `DOCKET_TRACEPARENT` — are **refused at load**, not silently dropped. Use this to isolate a home (`GROK_HOME` / `CODEX_HOME`) only when the operator asked for a sealed box. Prefer `files[]` for additive project-local MCP. |
 | `profiles[]` | `files` | Files written into `{work_dir}` **before** the harness starts (#112 G2). Each entry is `path` + `contents` (both substituted) and optional `mode` (octal, default `0600`). A relative path is resolved against the work dir (so `.grok/config.toml` and `{work_dir}/.grok/config.toml` land in the same place). After substitution the path must stay under the work dir — `..` that escapes fails the spawn. Parent directories are created. This is how a Grok profile drops `{work_dir}/.grok/config.toml` so Grok **merges** docket with `~/.grok` instead of replacing it. |
@@ -451,6 +452,10 @@ wrap it with [`docket-acp-bridge`](../../../tools/Docket.AcpBridge/README.md):
       "spawn": ["goose", "acp"],
       "prompt": "You are a Docket worker running headless under docketd. You have been dispatched exactly one task. First call the docket__get_task MCP tool to read your assignment (namespace, description, completion_criteria, workspace, attempt). Do the work inside the assigned workspace. When done, call docket__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call docket__request_input instead of guessing.",
       "follow_up": "There is new input on your assignment. Call docket__get_task to read it, then continue.",
+      // Goose 1.46's session/new starts on `auto` (auto-approve). Pin approve so
+      // tool calls go through session/request_permission. Skipped if this
+      // session did not advertise the mode.
+      "session_mode": "approve",
       // Optional override of whatever `goose configure` stored. Leave unset to use
       // the machine's existing provider.
       // "env": { "GOOSE_PROVIDER": "openai", "GOOSE_MODEL": "gpt-4o-mini" },
@@ -461,12 +466,11 @@ wrap it with [`docket-acp-bridge`](../../../tools/Docket.AcpBridge/README.md):
 }
 ```
 
-**Default session mode is `auto`.** Goose 1.37.0's `session/new` result advertises
+**Default session mode is `auto`.** Goose 1.46's `session/new` result advertises
 modes `auto` / `approve` / `smart_approve` / `chat` and starts on `auto`
-("Automatically approve tool calls"). This client does not send `session/set_mode`,
-so a Goose worker will not route those approvals through
-`session/request_permission`. That is a standing bypass this profile cannot close
-until the client grows a mode pin. Do not also put a bypass flag on `spawn`.
+("Automatically approve tool calls"). Pin `"session_mode": "approve"` so those
+calls go through `session/request_permission`. Unadvertised is skipped. Do not
+also put a bypass flag on `spawn`.
 
 Goose as an *editor* agent often expects the client to provide `fs` and `terminal`.
 This client declares both UNSUPPORTED. A Goose that does its own I/O (its Developer

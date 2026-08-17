@@ -147,6 +147,28 @@ public sealed class AcpClientTests
     }
 
     [Fact]
+    public async Task Pins_an_advertised_session_mode_after_session_new()
+    {
+        var agent = new FakeAgent { AdvertiseModes = ["auto", "approve"] };
+        await RunAsync(agent, Request("go") with { SessionMode = "approve" });
+
+        Assert.Equal("approve", agent.SetMode);
+        Assert.Equal(
+            ["initialize", "session/new", "session/set_mode", "session/prompt"],
+            agent.MethodsReceived);
+    }
+
+    [Fact]
+    public async Task Does_not_set_a_session_mode_the_agent_did_not_advertise()
+    {
+        var agent = new FakeAgent();
+        await RunAsync(agent, Request("go") with { SessionMode = "approve" });
+
+        Assert.Null(agent.SetMode);
+        Assert.DoesNotContain("session/set_mode", agent.MethodsReceived);
+    }
+
+    [Fact]
     public async Task Hands_the_planes_mcp_server_over_on_session_new()
     {
         var agent = new FakeAgent();
@@ -937,6 +959,19 @@ public sealed class AcpClientTests
         Assert.Null(run.SessionId);
     }
 
+    [Fact]
+    public async Task A_dead_prompt_after_session_open_is_not_a_handshake_failure()
+    {
+        var agent = new FakeAgent { HoldPromptOpen = true };
+        var (_, drain) = Start(agent, Request("go"));
+        await agent.WaitForAsync("session/prompt");
+        agent.EndSession();
+        var run = await drain.WaitAsync(TimeSpan.FromSeconds(20));
+
+        Assert.Equal("sess_1", run.SessionId);
+        Assert.DoesNotContain(run.Warnings, w => w.Contains("handshake failed"));
+    }
+
     // ── the generated MCP config translation ────────────────────────────────────
 
     /// <summary>
@@ -1103,8 +1138,14 @@ public sealed class AcpClientTests
         public IReadOnlyDictionary<string, string> AdvertiseOptions { get; init; } =
             new Dictionary<string, string>();
 
+        /// <summary>Mode ids advertised on <c>session/new</c>. Empty is no modes.</summary>
+        public IReadOnlyList<string> AdvertiseModes { get; init; } = [];
+
         /// <summary>Values the client pinned via <c>session/set_config_option</c>.</summary>
         public Dictionary<string, string> PinnedOptions { get; } = new(StringComparer.Ordinal);
+
+        /// <summary>The <c>modeId</c> the client sent, or null if it never set a mode.</summary>
+        public string? SetMode { get; private set; }
 
         private string AuthMethodsJson =>
             "[" + string.Join(",", AuthMethods.Select(m => $$"""{"id":"{{m}}","name":"{{m}}"}""")) + "]";
@@ -1120,6 +1161,14 @@ public sealed class AcpClientTests
             }
 
             return "[" + string.Join(",", parts) + "]";
+        }
+
+        private string ModesJson()
+        {
+            var available = string.Join(
+                ",",
+                AdvertiseModes.Select(id => $$"""{"id":"{{id}}","name":"{{id}}"}"""));
+            return $$"""{"currentModeId":"{{AdvertiseModes[0]}}","availableModes":[{{available}}]}""";
         }
 
         public bool AskPermissionDuringPrompt { get; init; }
@@ -1267,11 +1316,19 @@ public sealed class AcpClientTests
                         break;
                     }
                     Send(
-                        AdvertiseOptions.Count > 0
-                            ? """{"jsonrpc":"2.0","id":%id%,"result":{"sessionId":"sess_1","configOptions":%opts%}}"""
-                                .Replace("%opts%", ConfigOptionsJson())
-                            : """{"jsonrpc":"2.0","id":%id%,"result":{"sessionId":"sess_1"}}""",
+                        """{"jsonrpc":"2.0","id":%id%,"result":{"sessionId":"sess_1"%opts%%modes%}}"""
+                            .Replace("%opts%", AdvertiseOptions.Count > 0
+                                ? ",\"configOptions\":" + ConfigOptionsJson()
+                                : "")
+                            .Replace("%modes%", AdvertiseModes.Count > 0
+                                ? ",\"modes\":" + ModesJson()
+                                : ""),
                         id);
+                    break;
+
+                case "session/set_mode":
+                    SetMode = message.GetProperty("params").GetProperty("modeId").GetString();
+                    Send("""{"jsonrpc":"2.0","id":%id%,"result":{}}""", id);
                     break;
 
                 case "session/set_config_option":

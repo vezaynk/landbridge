@@ -40,6 +40,11 @@ internal sealed class RealHarnessProfile
     /// OpenCode ACP otherwise sits on <c>opencode/big-pickle</c> and never turns.
     /// </summary>
     public IReadOnlyDictionary<string, string>? ConfigOptions { get; init; }
+    /// <summary>
+    /// ACP <c>session/set_mode</c> pin, when the agent advertised that mode.
+    /// Goose defaults to <c>auto</c>; Docket pins <c>approve</c>.
+    /// </summary>
+    public string? SessionMode { get; init; }
     public Func<FleetRig, IDisposable?>? Attach { get; init; }
 
     public string EchoTools => $"{GetTask},{ReportResult}";
@@ -108,7 +113,7 @@ internal sealed class RealHarnessProfile
     public FleetRig OpenEchoRig(PostgresFixture pg) =>
         new(pg, AcpSpawn, env: Env,
             prompt: EchoPrompt, followUp: FollowUpTurn, authMethod: AuthMethod,
-            configOptions: ConfigOptions);
+            configOptions: ConfigOptions, sessionMode: SessionMode);
 
     /// <summary>
     /// The park/resume rig, on ACP. There is no <c>resume.args</c> here and that is the
@@ -123,7 +128,7 @@ internal sealed class RealHarnessProfile
         return new FleetRig(
             pg, AcpSpawn, env: Env,
             prompt: RememberThenAsk(nonce), followUp: ResumeAndReport, authMethod: AuthMethod,
-            configOptions: ConfigOptions);
+            configOptions: ConfigOptions, sessionMode: SessionMode);
     }
 
     public IDisposable? AttachTo(FleetRig rig) => Attach?.Invoke(rig);

@@ -107,6 +107,7 @@ internal static class RealHarnessProfiles
         GetTask = "docket__get_task",
         ReportResult = "docket__report_result",
         RequestInput = "docket__request_input",
+        SessionMode = "approve",
         // Tokens, not Cost. Measured 2026-08-17 through the ACP-bridge turn:
         // PromptResponse carried buckets. A stored $0.00 is still forbidden.
         Usage = UsageExpectation.Tokens,
@@ -122,6 +123,7 @@ internal static class RealHarnessProfiles
         GetTask = "docket__get_task",
         ReportResult = "docket__report_result",
         RequestInput = "docket__request_input",
+        SessionMode = "approve",
         // Tokens, not Cost: first live turn will say whether PromptResponse
         // carries buckets. A stored $0.00 is still forbidden.
         Usage = UsageExpectation.Tokens,
@@ -365,8 +367,8 @@ internal static class RealHarnessProfiles
              provider's key. Do not set auth_method to goose-provider.
           3. TOOL NAMES. Expected spelling is docket__get_task (goose namespaces the
              `docket` MCP server as `{name}__{tool}`). Confirm on the first turn.
-          4. MODE. session/new defaults to `auto` (auto-approve). This client does
-             not send session/set_mode.
+          4. MODE. session/new defaults to `auto`. This profile pins `approve`
+             via session/set_mode when the session advertised it.
           5. FS/TERMINAL. This client declares both UNSUPPORTED. A Goose that asks
              for terminal/create cannot work here.
 

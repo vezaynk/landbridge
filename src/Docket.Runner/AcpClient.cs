@@ -245,10 +245,17 @@ public sealed class AcpClient
         }
         catch (AcpProtocolException e)
         {
-            _warn(
-                $"docketd: task {_task.Value}: the ACP handshake failed — {e.Message}. The worker was " +
-                "spawned but never reached a prompt turn, so it did no work; check that this profile's " +
-                "spawn argv really starts an ACP agent (§10).");
+            // Only a failed initialize / session/new is a handshake. A later
+            // stdout-end (dispose killing connect while session/prompt is still
+            // open) used to print this same line and claim the worker did no
+            // work — after report_result had already landed.
+            if (_sessionId is null)
+            {
+                _warn(
+                    $"docketd: task {_task.Value}: the ACP handshake failed — {e.Message}. The worker was " +
+                    "spawned but never reached a prompt turn, so it did no work; check that this profile's " +
+                    "spawn argv really starts an ACP agent (§10).");
+            }
         }
 
         // Whatever happened above, the stream still has to be drained to EOF: the worker
@@ -313,6 +320,7 @@ public sealed class AcpClient
         _sessionId = session;
         _onSessionId?.Invoke(session);
         await MaybeApplyConfigOptionsAsync(session, ct).ConfigureAwait(false);
+        await MaybeSetSessionModeAsync(session, ct).ConfigureAwait(false);
 
         // A cancel that arrived between the spawn and here has nothing to cancel yet; now
         // that a session exists, honour it instead of prompting into a stop already asked for.
@@ -510,6 +518,46 @@ public sealed class AcpClient
                 },
                 ct).ConfigureAwait(false);
         }
+    }
+
+    /// <summary>
+    /// ACP <c>session/set_mode</c> when the profile named a mode this session
+    /// advertised. Goose 1.46 defaults to <c>auto</c> (auto-approve); pinning
+    /// <c>approve</c> is how a Docket profile keeps permissions on the protocol.
+    /// Unadvertised is skipped, same as <see cref="MaybeApplyConfigOptionsAsync"/>.
+    /// </summary>
+    private async Task MaybeSetSessionModeAsync(string sessionId, CancellationToken ct)
+    {
+        if (_request.SessionMode is not { Length: > 0 } mode)
+            return;
+        if (_lastSessionResult is not { } result || !AdvertisesMode(result.Value, mode))
+            return;
+
+        _lastSessionResult = await RequestAsync(
+            "session/set_mode",
+            w =>
+            {
+                w.WriteString("sessionId", sessionId);
+                w.WriteString("modeId", mode);
+            },
+            ct).ConfigureAwait(false);
+    }
+
+    private static bool AdvertisesMode(JsonElement session, string modeId)
+    {
+        if (!session.TryGetProperty("modes", out var modes) || modes.ValueKind != JsonValueKind.Object)
+            return false;
+        if (!modes.TryGetProperty("availableModes", out var available) || available.ValueKind != JsonValueKind.Array)
+            return false;
+        foreach (var mode in available.EnumerateArray())
+        {
+            if (mode.ValueKind == JsonValueKind.Object
+                && mode.TryGetProperty("id", out var id)
+                && id.GetString() == modeId)
+                return true;
+        }
+
+        return false;
     }
 
     private static bool AdvertisesSelectValue(JsonElement session, string configId, string value)
@@ -1309,6 +1357,10 @@ public sealed class AcpClient
 /// <c>profiles[].config_options</c>: ACP <c>session/set_config_option</c> pins,
 /// sent only when this session advertised the <c>configId</c> and the value.
 /// </param>
+/// <param name="SessionMode">
+/// <c>profiles[].session_mode</c>: ACP <c>session/set_mode</c> after the session
+/// opens, only when this session advertised that <c>modeId</c>.
+/// </param>
 public sealed record AcpSessionRequest(
     string WorkDir,
     string Prompt,
@@ -1316,7 +1368,8 @@ public sealed record AcpSessionRequest(
     IReadOnlyList<AcpMcpServer> McpServers,
     string? ResumeSessionRef = null,
     string? AuthMethod = null,
-    IReadOnlyDictionary<string, string>? ConfigOptions = null);
+    IReadOnlyDictionary<string, string>? ConfigOptions = null,
+    string? SessionMode = null);
 
 /// <summary>One MCP server as ACP's <c>session/new</c> wants it: HTTP, named, with headers.</summary>
 /// <summary>What the agent is asking the plane to decide.</summary>

@@ -91,6 +91,10 @@ internal sealed class ProfileDto
     // the pin. An unadvertised key is skipped, not an error.
     public Dictionary<string, string>? ConfigOptions { get; set; }
 
+    // ACP session/set_mode after session/new (or session/load). Only sent when
+    // that session advertised the modeId. Goose 1.46 defaults to `auto`.
+    public string? SessionMode { get; set; }
+
     public StopDto? Stop { get; set; }
     public TelemetryDto? Telemetry { get; set; }
     public LogsDto? Logs { get; set; }

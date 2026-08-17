@@ -62,7 +62,8 @@ internal sealed class FleetRig(
     string? prompt = null,
     string? followUp = null,
     string? authMethod = null,
-    IReadOnlyDictionary<string, string>? configOptions = null) : IAsyncDisposable
+    IReadOnlyDictionary<string, string>? configOptions = null,
+    string? sessionMode = null) : IAsyncDisposable
 {
     private const string RelayBearer = "multimachine-relay-shared-secret-under-test";
 
@@ -148,7 +149,8 @@ internal sealed class FleetRig(
             Prompt: prompt ?? "Do the task you have been assigned.",
             FollowUp: followUp ?? "There is new input on your assignment. Read it, then continue.",
             AuthMethod: authMethod,
-            ConfigOptions: configOptions);
+            ConfigOptions: configOptions,
+            SessionMode: sessionMode);
 
         Team = TeamId.New();
         await using (var db = pg.NewContext())
