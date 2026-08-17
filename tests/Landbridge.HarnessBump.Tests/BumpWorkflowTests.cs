@@ -1,6 +1,6 @@
 using System.Text.RegularExpressions;
 
-namespace Docket.HarnessBump.Tests;
+namespace Landbridge.HarnessBump.Tests;
 
 /// <summary>
 /// Guards the shape of the cron workflow itself. The repo-wide rule is that tooling is C# and
@@ -15,7 +15,7 @@ public class BumpWorkflowTests
     {
         var commands = RunSteps(RepoFiles.BumpWorkflowYaml);
         var command = Assert.Single(commands);
-        Assert.Equal("dotnet run --project tools/Docket.HarnessBump -c Release", command);
+        Assert.Equal("dotnet run --project tools/Landbridge.HarnessBump -c Release", command);
     }
 
     [Fact]
@@ -47,16 +47,16 @@ public class BumpWorkflowTests
     {
         // The workflow deliberately passes no arguments, so this env var is the only wiring — if it
         // is renamed on one side only, a dispatched "dry run" silently spends money.
-        Assert.Contains("DOCKET_BUMP_DRY_RUN:", RepoFiles.BumpWorkflowYaml);
+        Assert.Contains("LANDBRIDGE_BUMP_DRY_RUN:", RepoFiles.BumpWorkflowYaml);
         Assert.True(Options.Parse([]) is { DryRun: false });
-        Environment.SetEnvironmentVariable("DOCKET_BUMP_DRY_RUN", "true");
+        Environment.SetEnvironmentVariable("LANDBRIDGE_BUMP_DRY_RUN", "true");
         try
         {
             Assert.True(Options.Parse([]).DryRun);
         }
         finally
         {
-            Environment.SetEnvironmentVariable("DOCKET_BUMP_DRY_RUN", null);
+            Environment.SetEnvironmentVariable("LANDBRIDGE_BUMP_DRY_RUN", null);
         }
     }
 

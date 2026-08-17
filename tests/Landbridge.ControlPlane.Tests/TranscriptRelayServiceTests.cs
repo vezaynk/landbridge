@@ -1,17 +1,17 @@
-using Docket.Contracts;
-using Docket.ControlPlane.Auth;
-using Docket.Core;
+using Landbridge.Contracts;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.Core;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 
-namespace Docket.ControlPlane.Tests;
+namespace Landbridge.ControlPlane.Tests;
 
 /// <summary>
 /// The §12 read path on the plane side: the terminal-state gate, the offline/wedged-machine
 /// answers that must never present as a hang, and relaying one range without keeping a byte
 /// of it. A fake connection stands in for the socket — it answers <c>read-transcript</c>
-/// through the real <see cref="RunnerEventSink"/>, exactly as a real docketd would.
+/// through the real <see cref="RunnerEventSink"/>, exactly as a real landbridged would.
 /// </summary>
 [Collection(PostgresCollection.Name)]
 public sealed class TranscriptRelayServiceTests(PostgresFixture pg) : IAsyncLifetime
@@ -55,7 +55,7 @@ public sealed class TranscriptRelayServiceTests(PostgresFixture pg) : IAsyncLife
         // `verifying` is the load-bearing case and is deliberately EXCLUDED. Unlike every
         // other transition out of working, report_result does NOT emit
         // RevokeWorkerInstanceToken (SessionStateMachine.ApplyReportResult) — the revoke waits
-        // for the verdict — so a verifying task's transcript can still carry a LIVE dkt_w_
+        // for the verdict — so a verifying task's transcript can still carry a LIVE lbr_w_
         // token that would be replayable by anyone who read it. Do not widen this to
         // verifying without changing that, however tempting it is to let a reviewer read the
         // transcript of the thing they are reviewing.
@@ -104,7 +104,7 @@ public sealed class TranscriptRelayServiceTests(PostgresFixture pg) : IAsyncLife
     public async Task A_machine_that_never_answers_times_out_rather_than_hanging()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
-        // A docketd predating read-transcript rejects it at the wire boundary and never
+        // A landbridged predating read-transcript rejects it at the wire boundary and never
         // replies — indistinguishable from a wedged machine, so both must time out.
         var rig = Rig();
         var task = await SeedTerminalTaskAsync(rig);
@@ -257,16 +257,16 @@ public sealed class TranscriptRelayServiceTests(PostgresFixture pg) : IAsyncLife
         public Func<ReadTranscriptCommand, TranscriptChunkEvent?>? Answer { get; private set; }
 
         /// <summary>How the fake machine answers; returning null models "received, never
-        /// answered" (a wedged machine, or one whose docketd rejects the command).</summary>
+        /// answered" (a wedged machine, or one whose landbridged rejects the command).</summary>
         public void AnswerWith(Func<ReadTranscriptCommand, TranscriptChunkEvent?> answer) => Answer = answer;
     }
 
     private IServiceScopeFactory ScopeFactory(TimeProvider clock)
     {
         var services = new ServiceCollection();
-        services.AddDbContext<DocketDbContext>(o =>
+        services.AddDbContext<LandbridgeDbContext>(o =>
             o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
-        services.AddDocketStore();
+        services.AddLandbridgeStore();
         services.AddScoped<TokenService>();
         services.AddSingleton(clock);
         return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();

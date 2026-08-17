@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace Docket.Spikes;
+namespace Landbridge.Spikes;
 
 /// <summary>
 /// S2 — stop delivered as an injected turn (spec §10, §17.0b). Proves that
@@ -13,7 +13,7 @@ internal static class Spike2StopInjection
     private const int Steps = 6;
 
     private static readonly string TaskPrompt =
-        $"You are a docket worker. Work through this slowly: create files step1.txt through step{Steps}.txt, " +
+        $"You are a landbridge worker. Work through this slowly: create files step1.txt through step{Steps}.txt, " +
         "one per turn, running 'sleep 3' between each. Do not create them all at once.";
 
     private const string StopPrompt =

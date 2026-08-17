@@ -2,13 +2,13 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text.Json;
 
-namespace Docket.Spikes;
+namespace Landbridge.Spikes;
 
 /// <summary>
 /// S3 — per-tool-call events with task attribution (spec §10, §17.0c).
-/// Proves PostToolUse hooks fire per tool call, inherit DOCKET_SESSION_ID from
+/// Proves PostToolUse hooks fire per tool call, inherit LANDBRIDGE_SESSION_ID from
 /// the spawning environment, and can report {task id, tool name} to a
-/// loopback listener — the event source docketd's per-task liveness derives
+/// loopback listener — the event source landbridged's per-task liveness derives
 /// from. The hook command is this same binary in `hook-relay` mode; there is
 /// no shell script anywhere.
 /// </summary>
@@ -52,8 +52,8 @@ internal static class Spike3HookEvents
             workDir, TimeSpan.FromMinutes(3),
             environment: new Dictionary<string, string>
             {
-                ["DOCKET_SESSION_ID"] = SessionId,
-                ["DOCKET_MACHINE_ID"] = "spike-machine",
+                ["LANDBRIDGE_SESSION_ID"] = SessionId,
+                ["LANDBRIDGE_MACHINE_ID"] = "spike-machine",
             });
         await File.WriteAllTextAsync(Path.Combine(outDir, "result.txt"), result.StdOut + result.StdErr);
 
@@ -123,7 +123,7 @@ internal static class Spike3HookEvents
 
 /// <summary>
 /// The hook side of S3: Claude Code invokes this binary per PostToolUse with
-/// the hook payload on stdin; we attach DOCKET_SESSION_ID from the inherited
+/// the hook payload on stdin; we attach LANDBRIDGE_SESSION_ID from the inherited
 /// environment and POST to the spike's loopback listener.
 /// </summary>
 internal static class HookRelay
@@ -146,7 +146,7 @@ internal static class HookRelay
 
         var body = JsonSerializer.Serialize(new
         {
-            sessionId = Environment.GetEnvironmentVariable("DOCKET_SESSION_ID") ?? "MISSING",
+            sessionId = Environment.GetEnvironmentVariable("LANDBRIDGE_SESSION_ID") ?? "MISSING",
             tool,
         });
 

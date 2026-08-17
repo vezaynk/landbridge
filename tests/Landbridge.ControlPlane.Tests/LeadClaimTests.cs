@@ -1,9 +1,9 @@
-using Docket.ControlPlane.Auth;
-using Docket.Core;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.Core;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.ControlPlane.Tests;
+namespace Landbridge.ControlPlane.Tests;
 
 /// <summary>
 /// The human → Lead credential path of §4/§5: a human session claims a Team,
@@ -30,7 +30,7 @@ public sealed class LeadClaimTests(PostgresFixture pg) : IAsyncLifetime
         var tokens = new TokenService(db, new FakeTimeProvider());
 
         var human = await tokens.IssueHumanSessionAsync();
-        Assert.StartsWith("dkt_h_", human.Token);
+        Assert.StartsWith("lbr_h_", human.Token);
 
         var principal = Assert.IsType<Principal.Human>(await tokens.ValidateAsync(human.Token));
         Assert.Equal(human.CredentialId, principal.HumanId);
@@ -59,7 +59,7 @@ public sealed class LeadClaimTests(PostgresFixture pg) : IAsyncLifetime
 
         var human = await tokens.IssueHumanSessionAsync();
         var claim = Assert.IsType<LeadClaimResult.Claimed>(await tokens.ClaimLeadAsync(human.Token, Team));
-        Assert.StartsWith("dkt_l_", claim.Token.Token);
+        Assert.StartsWith("lbr_l_", claim.Token.Token);
 
         var lead = Assert.IsType<Principal.Lead>(await tokens.ValidateAsync(claim.Token.Token));
         Assert.Equal(Team, lead.Team);

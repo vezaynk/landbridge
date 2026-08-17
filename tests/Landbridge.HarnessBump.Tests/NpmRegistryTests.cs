@@ -1,4 +1,4 @@
-namespace Docket.HarnessBump.Tests;
+namespace Landbridge.HarnessBump.Tests;
 
 /// <summary>
 /// The dist-tag read, against the real <c>dist-tags</c> objects these three packages served on

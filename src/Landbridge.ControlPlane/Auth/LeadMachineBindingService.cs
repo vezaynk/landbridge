@@ -1,6 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 
-namespace Docket.ControlPlane.Auth;
+namespace Landbridge.ControlPlane.Auth;
 
 /// <summary>
 /// The lead↔machine binding (spec §8.3 human path), alongside
@@ -11,7 +11,7 @@ namespace Docket.ControlPlane.Auth;
 ///
 /// <para>A Lead's machine is not derivable. Machines are enrolled runners (§11); a
 /// Lead is a human's session with no machine of its own, and §4 is explicit that a
-/// Lead's box need not run <c>docketd</c> at all. So the human says so, once,
+/// Lead's box need not run <c>landbridged</c> at all. So the human says so, once,
 /// explicitly — and can revoke it. Nothing is inferred from a dispatch, a
 /// heartbeat, or an IP.</para>
 ///
@@ -22,7 +22,7 @@ namespace Docket.ControlPlane.Auth;
 /// unique indexes), not a read's — the advisory reads below exist only to produce a
 /// message that names what is in the way.</para>
 /// </summary>
-public sealed class LeadMachineBindingService(DocketDbContext db, TimeProvider clock)
+public sealed class LeadMachineBindingService(LandbridgeDbContext db, TimeProvider clock)
 {
     /// <summary>
     /// Binds <paramref name="machineId"/> to <paramref name="humanId"/>. Refuses an
@@ -44,7 +44,7 @@ public sealed class LeadMachineBindingService(DocketDbContext db, TimeProvider c
         if (machine is null)
             return new LeadMachineBindResult.Refused(
                 $"no enrolled machine {machineId:D} (or it has been revoked); enroll it with " +
-                "/docket-enroll and take the machine id from the enrollment result or the " +
+                "/landbridge-enroll and take the machine id from the enrollment result or the " +
                 "dashboard Machine Group view");
 
         if (await GetAsync(humanId, ct) is { } mine)
@@ -78,7 +78,7 @@ public sealed class LeadMachineBindingService(DocketDbContext db, TimeProvider c
             // was taken from the constraint itself.
             db.ChangeTracker.Clear();
             return new LeadMachineBindResult.Refused(
-                pg.ConstraintName == DocketDbContext.OneLiveBindingPerMachineIndex
+                pg.ConstraintName == LandbridgeDbContext.OneLiveBindingPerMachineIndex
                     ? $"machine {machine.Name} ({machineId:D}) was bound by someone else just now; " +
                       "a machine belongs to one person"
                     : "you bound a machine in a concurrent session just now; " +

@@ -1,7 +1,7 @@
 using System.Text;
-using Docket.Preview;
+using Landbridge.Preview;
 
-namespace Docket.Preview.Tests;
+namespace Landbridge.Preview.Tests;
 
 /// <summary>
 /// The routing-only request-head reader (spec §8.4): it extracts just the Host, the
@@ -35,7 +35,7 @@ public sealed class HttpRequestHeadTests
         var request =
             "GET /deep/path?x=1 HTTP/1.1\r\n" +
             "Host: abc.preview.localhost\r\n" +
-            "Cookie: other=1; docket_session=tok-123; last=2\r\n" +
+            "Cookie: other=1; landbridge_session=tok-123; last=2\r\n" +
             "Accept: */*\r\n" +
             "\r\n";
         var extra = "not-part-of-head"u8.ToArray();
@@ -59,7 +59,7 @@ public sealed class HttpRequestHeadTests
             "GET /ws HTTP/1.1\r\n" +
             "Host: abc.preview.localhost\r\n" +
             "Authorization: Bearer btok\r\n" +
-            "Cookie: docket_session=ctok\r\n" +
+            "Cookie: landbridge_session=ctok\r\n" +
             "Upgrade: websocket\r\n" +
             "Connection: Upgrade\r\n" +
             "\r\n";

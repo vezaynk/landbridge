@@ -1,4 +1,4 @@
-namespace Docket.HarnessBump.Tests;
+namespace Landbridge.HarnessBump.Tests;
 
 /// <summary>
 /// The whole decision procedure. Every one of these is a rule about not spending money twice, so
@@ -20,7 +20,7 @@ public class BumpPlannerTests
 
     /// <summary>An open bump PR whose branch name is built the way the bot builds them.</summary>
     private static OpenBumpPr OpenPr(string branch, int number = 42) =>
-        new(number, $"https://github.com/vezaynk/docket-mcp/pull/{number}", branch, BumpBranch.TargetsIn(branch));
+        new(number, $"https://github.com/vezaynk/landbridge-mcp/pull/{number}", branch, BumpBranch.TargetsIn(branch));
 
     private static PackageVerdict VerdictFor(BumpPlan plan, HarnessPackage package) =>
         Assert.Single(plan.Verdicts, v => v.Package == package);

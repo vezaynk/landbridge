@@ -1,22 +1,22 @@
-using Docket.Contracts;
-using Docket.ControlPlane.Tests;
-using Docket.Core;
-using Docket.Runner;
+using Landbridge.Contracts;
+using Landbridge.ControlPlane.Tests;
+using Landbridge.Core;
+using Landbridge.Runner;
 
-namespace Docket.MultiMachine.Tests;
+namespace Landbridge.MultiMachine.Tests;
 
 /// <summary>
 /// The §10 BYO-harness promise against a <b>second real harness</b>: OpenAI's Codex
-/// (<c>codex-acp</c>) driving Docket tasks on the same real plane + relay + docketd rigs
+/// (<c>codex-acp</c>) driving Landbridge tasks on the same real plane + relay + landbridged rigs
 /// the <see cref="RealClaudeCollaborationTests"/> tier uses, with no change below the spawn
-/// seam. If Docket's "everything harness-specific is data" claim is true, a Codex worker is
+/// seam. If Landbridge's "everything harness-specific is data" claim is true, a Codex worker is
 /// a profile, not a code change — and this tier is where that stops being an assertion in a
 /// design doc.
 ///
 /// <para><b>Opt-in and token-spending</b>, exactly like the claude tier: the facts SKIP
 /// unless the run opted in — an OpenAI key in the environment (<c>CODEX_API_KEY</c>, or
 /// <c>OPENAI_API_KEY</c>/<c>OPENAI_KEY</c> which the gate maps to it), or
-/// <c>DOCKET_REAL_CODEX=1</c> on a machine whose CLI is already logged in — AND the
+/// <c>LANDBRIDGE_REAL_CODEX=1</c> on a machine whose CLI is already logged in — AND the
 /// <c>codex</c> CLI resolves. A normal push/PR run does neither and spends nothing. The
 /// dedicated CI job (<c>.github/workflows/ci.yml</c>, <c>real-codex-e2e</c>) sets the key
 /// and runs only this trait.</para>
@@ -29,7 +29,7 @@ namespace Docket.MultiMachine.Tests;
 /// <para>The API-key catalog does not serve every slug the CLI lists.
 /// <c>gpt-5.1-codex-mini</c> and an unpinned <c>gpt-5.6-sol</c> 404 on
 /// <c>/v1/responses</c> for this project. The pin is <c>gpt-5.3-codex</c>,
-/// matching the CI dispatch default. <c>DOCKET_CODEX_MODEL</c> overrides it.</para>
+/// matching the CI dispatch default. <c>LANDBRIDGE_CODEX_MODEL</c> overrides it.</para>
 ///
 /// <para><b>Source reading is still the authority for every claim below</b>, and that is
 /// deliberate rather than leftover: <c>codex</c> is not installed on the machine where this
@@ -51,11 +51,11 @@ namespace Docket.MultiMachine.Tests;
 /// <c>codex exec -</c> forces stdin as the prompt, which blocks identically.
 /// <c>claude -p</c> survives the same pipe only because it gives up after ~3s.</para>
 ///
-/// <para>docketd used to hold that pipe open unconditionally — it <em>is</em> the §10
+/// <para>landbridged used to hold that pipe open unconditionally — it <em>is</em> the §10
 /// dead-man's switch — so a Codex worker could not run here at all. #110 made the switch a
 /// per-profile declaration, so the profiles below declare <c>stdin: closed</c> and get a
 /// deterministic EOF right after spawn. The trade is honest and stated in
-/// <c>runner-config.md</c>: such a worker no longer dies with docketd, and the
+/// <c>runner-config.md</c>: such a worker no longer dies with landbridged, and the
 /// <c>StrayReaper</c>'s next-start sweep is the only thing that collects it.</para>
 ///
 /// <para>the dead-man-hang characterization (removed with stream mode)
@@ -68,16 +68,16 @@ namespace Docket.MultiMachine.Tests;
 /// <para><b>The resume path is exempt</b>, which is a genuinely useful asymmetry:
 /// <c>codex exec resume &lt;id&gt; "&lt;prompt&gt;"</c> resolves through <c>resolve_prompt</c>
 /// (<c>lib.rs:1944</c>), whose first arm returns a non-<c>-</c> argv prompt immediately and
-/// never touches stdin. So resume-with-argv-prompt would work under docketd unchanged.</para>
+/// never touches stdin. So resume-with-argv-prompt would work under landbridged unchanged.</para>
 ///
 /// <para><b>MCP reachability — confirmed workable.</b> Codex has no
 /// <c>--mcp-config &lt;file&gt;</c>; its only client surface is a <c>config.toml</c> under
 /// <c>CODEX_HOME</c>, so the injected <c>{mcp_config}</c> is unusable and
 /// <see cref="RealHarnessProfiles.CodexHome"/> writes a TOML table instead. The per-instance bearer rides
-/// <c>bearer_token_env_var = "DOCKET_WORKER_TOKEN"</c>, and
+/// <c>bearer_token_env_var = "LANDBRIDGE_WORKER_TOKEN"</c>, and
 /// <c>resolve_bearer_token</c> (<c>codex-rs/codex-mcp/src/rmcp_client.rs:822</c>) reads that
 /// variable from the <em>live process environment</em> at connect time — which is exactly
-/// where docketd injects the fresh per-spawn token. One static file is therefore correct for
+/// where landbridged injects the fresh per-spawn token. One static file is therefore correct for
 /// every dispatch, and the token never touches disk.</para>
 ///
 /// <para><b>No turn cap.</b> The claude recipe bounds cost with <c>--max-turns</c>; the Codex
@@ -121,11 +121,11 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
     /// What a graceful <c>stop</c> actually is against a real <c>codex exec</c> worker, pinned
     /// the way #103's honesty framework requires: the profile declares
     /// <c>session/cancel</c> plus the deadline because that is the <em>true</em> claim about this
-    /// harness, and the assertions are that docketd armed a deadline and the worker died on
+    /// harness, and the assertions are that landbridged armed a deadline and the worker died on
     /// it with its transcript ref intact.
     ///
     /// <para><b>Why <c>signal</c> and not <c>message</c>.</b> <c>mode: message</c> is a
-    /// declaration that a running session reads turns off its stdin, and docketd cannot check
+    /// declaration that a running session reads turns off its stdin, and landbridged cannot check
     /// it — so declaring it for a harness that does not read stdin buys nothing and makes
     /// <c>preserve</c> a promise the machine will break. <c>codex exec</c> takes its prompt as
     /// an argv positional and its docs describe no mid-run stdin read; there is therefore no
@@ -197,11 +197,11 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
     }
 
     /// <summary>
-    /// Docket's whole pitch, as one fact: <b>a fleet of mixed harnesses</b>. Machine A runs
+    /// Landbridge's whole pitch, as one fact: <b>a fleet of mixed harnesses</b>. Machine A runs
     /// <c>claude-agent-acp</c>, machine B runs <c>codex-acp</c>, under one control plane,
     /// and B reports a token that only A could have produced — read off the plane, not
     /// out of the test's own constant. Two vendors' ACP agents, one task graph, and
-    /// nothing between them but Docket.
+    /// nothing between them but Landbridge.
     ///
     /// <para>The per-machine spawn override is what makes this expressible: the fleet's
     /// profile is one shape, but each machine's <c>default</c> profile spawns its own harness
@@ -270,7 +270,7 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
     /// names the CLI still lists (<c>gpt-5.1-codex-mini</c>, the adapter's fallback) 404 on
     /// <c>/v1/responses</c> for this project, and an unpinned <c>CODEX_HOME</c> then
     /// defaults to <c>gpt-5.6-sol</c>, which this key also cannot call. Measured
-    /// 2026-08-16, twice. <c>DOCKET_CODEX_MODEL</c> overrides without a code change if
+    /// 2026-08-16, twice. <c>LANDBRIDGE_CODEX_MODEL</c> overrides without a code change if
     /// the catalog moves again. The CI dispatch default is the same slug.</para>
     /// </summary>
     private static string CodexModel => RealHarnessProfiles.CodexModel;
@@ -290,7 +290,7 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
     /// ("Provides an API key for a single non-interactive run. This is only supported in
     /// <c>codex exec</c>"). <c>OPENAI_API_KEY</c> is <em>not</em> documented as a variable
     /// Codex itself reads, so it is treated as a source to map from, never relied on directly.
-    /// <c>DOCKET_REAL_CODEX=1</c> is the path for a machine whose CLI is already logged in;
+    /// <c>LANDBRIDGE_REAL_CODEX=1</c> is the path for a machine whose CLI is already logged in;
     /// no key is published there, and <see cref="RealHarnessProfiles.CodexHome"/> carries the existing
     /// credentials instead.</para>
     /// </summary>
@@ -299,18 +299,18 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
         Skip.IfNot(pg.Available, pg.SkipReason);
 
         var key = RealHarnessProfiles.FirstNonEmpty("CODEX_API_KEY", "OPENAI_API_KEY", "OPENAI_KEY");
-        var optedIn = Environment.GetEnvironmentVariable("DOCKET_REAL_CODEX") is { Length: > 0 } o
+        var optedIn = Environment.GetEnvironmentVariable("LANDBRIDGE_REAL_CODEX") is { Length: > 0 } o
                       && !o.Equals("0", StringComparison.Ordinal)
                       && !o.Equals("false", StringComparison.OrdinalIgnoreCase);
 
         Skip.If(string.IsNullOrWhiteSpace(key) && !optedIn,
-            "no CODEX_API_KEY/OPENAI_API_KEY/OPENAI_KEY and no DOCKET_REAL_CODEX — the real "
+            "no CODEX_API_KEY/OPENAI_API_KEY/OPENAI_KEY and no LANDBRIDGE_REAL_CODEX — the real "
             + "codex exec E2E is opt-in (see the gated CI job)");
         if (!string.IsNullOrWhiteSpace(key))
             Environment.SetEnvironmentVariable("CODEX_API_KEY", key);
 
-        var codexBin = RealHarnessProfiles.ResolveBin("codex", "DOCKET_CODEX_BIN");
-        Skip.If(codexBin is null, "codex CLI not found (set DOCKET_CODEX_BIN or put codex on PATH)");
+        var codexBin = RealHarnessProfiles.ResolveBin("codex", "LANDBRIDGE_CODEX_BIN");
+        Skip.If(codexBin is null, "codex CLI not found (set LANDBRIDGE_CODEX_BIN or put codex on PATH)");
         RealHarnessProfiles.ScrubInheritedSessionMarkers();
         return codexBin!;
     }
@@ -321,10 +321,10 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
     /// opted-in real run.</summary>
     private static string RequireRealClaudeForMixedFleet()
     {
-        var claudeBin = RealHarnessProfiles.ResolveBin("claude", "DOCKET_CLAUDE_BIN");
+        var claudeBin = RealHarnessProfiles.ResolveBin("claude", "LANDBRIDGE_CLAUDE_BIN");
         Skip.If(claudeBin is null,
             "claude CLI not found — the mixed-harness fleet fact needs BOTH CLIs "
-            + "(set DOCKET_CLAUDE_BIN or put claude on PATH)");
+            + "(set LANDBRIDGE_CLAUDE_BIN or put claude on PATH)");
         return claudeBin!;
     }
 
@@ -354,7 +354,7 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
                    HYPOTHESIS: no worker spawn was observed at all, so this is a dispatch or
                    enrollment failure and says nothing about Codex. Read the event log below:
                    a task still `submitted` was never claimed (check the machine is ready and
-                   the profile name matches), and a `dispatched` with no spawn means docketd
+                   the profile name matches), and a `dispatched` with no spawn means landbridged
                    refused or failed the spawn (check the machine process log for the reason —
                    a bad `codex` path is reported only there).
 
@@ -371,12 +371,12 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
                    stream. That is the signature of `codex exec` blocking on a held-open stdin
                    pipe (exec/src/lib.rs:1961 -> 1888 -> 1909), which this profile declares
                    `stdin: closed` specifically to avoid — so suspect the POLICY, not the
-                   harness. Check, in order: (1) docketd's startup output for the
+                   harness. Check, in order: (1) landbridged's startup output for the
                    `profile 'default': stdin is 'closed'` notice — its ABSENCE means the profile
                    did not declare it and the dead-man pipe is still held open; (2) that
                    ProcessSupervisor still closes StandardInput right after Process.Start for
                    StdinPolicy.Closed; (3) that this rig passed ``.
-                   A_cold_codex_worker_hangs_on_docketds_dead_man_stdin_and_never_takes_a_turn
+                   A_cold_codex_worker_hangs_on_landbridgeds_dead_man_stdin_and_never_takes_a_turn
                    characterizes exactly this state deliberately, and should be passing.
 
                    """;
@@ -396,13 +396,13 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
                        own. `codex exec` reads CODEX_API_KEY and NOT OPENAI_API_KEY
                        (exec/src/lib.rs:541, login/src/auth/manager.rs:841) — the gate maps the
                        latter onto the former, so an unset CODEX_API_KEY in CI means the mapping
-                       did not fire. On the DOCKET_REAL_CODEX path, auth.json was copied from
+                       did not fire. On the LANDBRIDGE_REAL_CODEX path, auth.json was copied from
                        ~/.codex and may have gone stale (Codex rewrites refresh tokens in place).
-                     * MCP WIRING. config.toml sets `required = true`, so a docket server that
+                     * MCP WIRING. config.toml sets `required = true`, so a landbridge server that
                        fails to initialize exits the run by design. A wrong url, an unreachable
-                       plane, or an unset DOCKET_WORKER_TOKEN at connect time all land here.
+                       plane, or an unset LANDBRIDGE_WORKER_TOKEN at connect time all land here.
                      * MODEL SLUG. The catalog is fetched server-side, so `{CodexModel}` can be
-                       retired out from under this tier. Set DOCKET_CODEX_MODEL to a current
+                       retired out from under this tier. Set LANDBRIDGE_CODEX_MODEL to a current
                        codex-family slug; no code change needed.
 
                    """;
@@ -415,7 +415,7 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
                wiring all worked and the agent simply did not complete the assignment. Read the
                transcript tail for which tools it called: no get_session/report_result pair means
                the tools were unavailable or unused — check `enabled_tools` in config.toml holds
-               the BARE names (get_session, report_result), not the mcp__docket__* spelling the
+               the BARE names (get_session, report_result), not the mcp__landbridge__* spelling the
                model sees. A turn that ended early is ordinary agent flakiness and the fact
                already redispatches for it (MaxAttempts).
 

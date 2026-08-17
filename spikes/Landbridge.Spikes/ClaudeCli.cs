@@ -1,12 +1,12 @@
 using System.Diagnostics;
 
-namespace Docket.Spikes;
+namespace Landbridge.Spikes;
 
 internal sealed record CliResult(int ExitCode, string StdOut, string StdErr, bool TimedOut);
 
 /// <summary>
 /// Spawns `claude` with argv via execve semantics — no shell — mirroring
-/// docketd's runner constraint (spec §10).
+/// landbridged's runner constraint (spec §10).
 /// </summary>
 internal static class ClaudeCli
 {

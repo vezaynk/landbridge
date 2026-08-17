@@ -1,13 +1,13 @@
 using System.Net;
 using System.Net.WebSockets;
 using System.Text;
-using Docket.Contracts;
+using Landbridge.Contracts;
 
-namespace Docket.Runner;
+namespace Landbridge.Runner;
 
 /// <summary>
-/// The real control-plane link, spec §10: <b>docketd dials outbound</b> to
-/// <c>DOCKET_CONTROL_URL</c> (ws/wss) with its machine token and never listens.
+/// The real control-plane link, spec §10: <b>landbridged dials outbound</b> to
+/// <c>LANDBRIDGE_CONTROL_URL</c> (ws/wss) with its machine token and never listens.
 /// Events and heartbeats go up as encoded frames; the receive loop on the dialed
 /// socket decodes commands and hands them to the daemon. It reconnects with
 /// backoff on drop.
@@ -206,10 +206,10 @@ public sealed class WebSocketControlPlaneChannel : IControlPlaneChannel, IAsyncD
             // the vocabulary is rejected (DecodeCommand returns null).
             if (RunnerWire.DecodeCommand(message, out var traceparent) is { } command && _onCommand is { } handler)
             {
-                // §1 tracing: open the docketd handle span, parented on the plane's
+                // §1 tracing: open the landbridged handle span, parented on the plane's
                 // dispatch span via the wire traceparent, and hold it open across
                 // the handler — so a worker spawned during handling inherits it
-                // through Activity.Current (→ DOCKET_TRACEPARENT in the child env).
+                // through Activity.Current (→ LANDBRIDGE_TRACEPARENT in the child env).
                 using var activity = RunnerTelemetry.StartHandleActivity(command, traceparent);
                 try
                 {

@@ -1,7 +1,7 @@
-namespace Docket.Runner;
+namespace Landbridge.Runner;
 
 /// <summary>
-/// Keeps docketd's short-lived machine access token fresh (spec §5, §13). It
+/// Keeps landbridged's short-lived machine access token fresh (spec §5, §13). It
 /// owns the current credentials, hands the control-plane channel the CURRENT
 /// access token on every (re)connect through <see cref="CurrentAccessToken"/>
 /// (the <c>Func&lt;string&gt;</c> seam), and re-mints the access token two ways:

@@ -1,7 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace Docket.Contracts;
+namespace Landbridge.Contracts;
 
 /// <summary>
 /// Source-generated JSON metadata for the wire vocabulary (§10 — "a source-gen'd

@@ -1,7 +1,7 @@
-using Docket.Core;
+using Landbridge.Core;
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.Runner.Tests;
+namespace Landbridge.Runner.Tests;
 
 /// <summary>#112 G2: <c>profiles[].files</c> writes into the work dir before spawn.</summary>
 public class ProfileFilesLoadTests
@@ -112,7 +112,7 @@ public sealed class ProfileFilesSpawnTests : IDisposable
         var envPath = Path.Combine(workDir, "env");
         Assert.True(await TestKit.WaitUntilAsync(() => File.Exists(envPath), TimeSpan.FromSeconds(10)));
         var env = await File.ReadAllTextAsync(envPath);
-        Assert.Contains("DOCKET_MCP_URL=http://plane.test/mcp", env, StringComparison.Ordinal);
+        Assert.Contains("LANDBRIDGE_MCP_URL=http://plane.test/mcp", env, StringComparison.Ordinal);
 
         Assert.True(supervisor.Kill(task));
     }
@@ -124,13 +124,13 @@ public sealed class ProfileFilesSpawnTests : IDisposable
         Supervisor().Spawn(
             new DispatchCommand(
                 task, "default",
-                WorkerToken: "dkt_w_abc",
+                WorkerToken: "lbr_w_abc",
                 SpawnSubstitutions: new Dictionary<string, string> { ["mcp_url"] = "http://plane.test/mcp" }),
             TestKit.Profile("echo-env", files:
             [
                 new ProfileFile(
                     "{work_dir}/mcp-{session_id}.json",
-                    """{"mcpServers":{"docket":{"type":"http","url":"{mcp_url}","headers":{"Authorization":"Bearer {worker_token}"}}}}"""),
+                    """{"mcpServers":{"landbridge":{"type":"http","url":"{mcp_url}","headers":{"Authorization":"Bearer {worker_token}"}}}}"""),
             ]),
             "m");
 
@@ -138,7 +138,7 @@ public sealed class ProfileFilesSpawnTests : IDisposable
         Assert.True(await TestKit.WaitUntilAsync(() => File.Exists(path), TimeSpan.FromSeconds(5)));
         var body = await File.ReadAllTextAsync(path);
         Assert.Contains("\"url\":\"http://plane.test/mcp\"", body, StringComparison.Ordinal);
-        Assert.Contains("\"Authorization\":\"Bearer dkt_w_abc\"", body, StringComparison.Ordinal);
+        Assert.Contains("\"Authorization\":\"Bearer lbr_w_abc\"", body, StringComparison.Ordinal);
         Assert.True(_supervisor!.Kill(task));
     }
 

@@ -16,11 +16,11 @@
 
   <ItemGroup>
     <Using Include="Xunit" />
-    <Using Include="Docket.HarnessBump" />
+    <Using Include="Landbridge.HarnessBump" />
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\tools\Docket.HarnessBump\Docket.HarnessBump.csproj" />
+    <ProjectReference Include="..\..\tools\Landbridge.HarnessBump\Landbridge.HarnessBump.csproj" />
   </ItemGroup>
 
 </Project>

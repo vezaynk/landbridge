@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
-using Docket.Contracts;
+using Landbridge.Contracts;
 
-namespace Docket.ControlPlane;
+namespace Landbridge.ControlPlane;
 
 /// <summary>
 /// In-memory rendezvous between a transcript range request in flight and the machine's

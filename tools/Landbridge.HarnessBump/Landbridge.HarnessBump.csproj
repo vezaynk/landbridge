@@ -2,7 +2,7 @@
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
-    <RootNamespace>Docket.HarnessBump</RootNamespace>
+    <RootNamespace>Landbridge.HarnessBump</RootNamespace>
     <IsPackable>false</IsPackable>
   </PropertyGroup>
 

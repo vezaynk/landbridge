@@ -1,8 +1,8 @@
 using System.Security.Cryptography;
-using Docket.Core;
+using Landbridge.Core;
 using Microsoft.EntityFrameworkCore;
 
-namespace Docket.ControlPlane.Auth;
+namespace Landbridge.ControlPlane.Auth;
 
 /// <summary>
 /// Mints, validates, and revokes the opaque tokens of spec §5. Tokens are
@@ -18,7 +18,7 @@ namespace Docket.ControlPlane.Auth;
 /// them, which wires §9 check 14 into authentication with no second
 /// bookkeeping path.
 /// </summary>
-public sealed class TokenService(DocketDbContext db, TimeProvider clock)
+public sealed class TokenService(LandbridgeDbContext db, TimeProvider clock)
 {
     public static readonly TimeSpan EnrollmentTtl = TimeSpan.FromMinutes(15);
     public static readonly TimeSpan MachineAccessTtl = TimeSpan.FromHours(1);
@@ -34,7 +34,7 @@ public sealed class TokenService(DocketDbContext db, TimeProvider clock)
     /// This is the seam the OAuth 2.1 flow plugs into, and it stays deliberately
     /// free of wire protocol: the control plane is the OAuth authorization server
     /// (§5), but the authorization-code exchange itself — PKCE, the redirect dance,
-    /// CIMD — lives in <c>Docket.Mcp.OAuthEndpoints</c>, which calls exactly this
+    /// CIMD — lives in <c>Landbridge.Mcp.OAuthEndpoints</c>, which calls exactly this
     /// method to turn a verified human into a session token. The token is identical
     /// either way, which is what keeps the human/Lead path testable headlessly: the
     /// tests mint through here directly. No device flow is built.
@@ -371,7 +371,7 @@ public sealed class TokenService(DocketDbContext db, TimeProvider clock)
         Guid? humanId = null)
     {
         // 64 hex chars = 256 bits of entropy, URL-safe with no munging.
-        var token = $"dkt_{Prefix(kind)}_{RandomNumberGenerator.GetHexString(64)}";
+        var token = $"lbr_{Prefix(kind)}_{RandomNumberGenerator.GetHexString(64)}";
         var now = clock.GetUtcNow();
         return (token, new CredentialRow
         {

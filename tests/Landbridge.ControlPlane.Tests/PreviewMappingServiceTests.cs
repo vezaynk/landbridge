@@ -1,8 +1,8 @@
 using System.Text.RegularExpressions;
-using Docket.Core;
+using Landbridge.Core;
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.ControlPlane.Tests;
+namespace Landbridge.ControlPlane.Tests;
 
 /// <summary>
 /// The preview mapping store (spec §8.4): mint an opaque label, resolve it by

@@ -5,8 +5,8 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <RootNamespace>Docket.Runner</RootNamespace>
-    <AssemblyName>docketd</AssemblyName>
+    <RootNamespace>Landbridge.Runner</RootNamespace>
+    <AssemblyName>landbridged</AssemblyName>
     <!-- AOT-friendly: no EF, no ASP.NET, JSON via a source-gen'd context (§10).
          IsAotCompatible turns on the trim/AOT analyzers so drift is caught in
          the normal warnings-as-errors build rather than at publish time. -->
@@ -19,12 +19,12 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\Docket.Core\Docket.Core.csproj" />
-    <ProjectReference Include="..\Docket.Contracts\Docket.Contracts.csproj" />
+    <ProjectReference Include="..\Landbridge.Core\Landbridge.Core.csproj" />
+    <ProjectReference Include="..\Landbridge.Contracts\Landbridge.Contracts.csproj" />
   </ItemGroup>
 
-  <!-- §1 tracing: docketd exports traces/metrics to the Aspire dashboard when
-       OTEL_EXPORTER_OTLP_ENDPOINT is set. Versions match Docket.ServiceDefaults.
+  <!-- §1 tracing: landbridged exports traces/metrics to the Aspire dashboard when
+       OTEL_EXPORTER_OTLP_ENDPOINT is set. Versions match Landbridge.ServiceDefaults.
        The OTLP setup is isolated behind RunnerTelemetry.TryStartOtelExport (with a
        narrowly-scoped trim/AOT suppression) so the rest of the runner stays
        AOT-clean under IsAotCompatible. -->

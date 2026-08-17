@@ -1,10 +1,10 @@
 using System.Collections.Concurrent;
 
-namespace Docket.ControlPlane;
+namespace Landbridge.ControlPlane;
 
 /// <summary>
 /// In-memory rendezvous between an <c>open_forward</c> call in flight and the
-/// consumer docketd's <c>forward-opened</c> event (spec §8.3). The orchestrator
+/// consumer landbridged's <c>forward-opened</c> event (spec §8.3). The orchestrator
 /// registers a waiter keyed by forward id and parks on it; the
 /// <see cref="RunnerEventSink"/> completes it with the bound loopback port the
 /// moment the event arrives. Kept in-memory and simple — a forward that never

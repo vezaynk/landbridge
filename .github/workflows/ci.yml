@@ -1,8 +1,8 @@
 # Build + test on every push to master and every PR.
 #
-# Postgres-backed test projects honour DOCKET_TEST_PG (see PostgresFixture):
+# Postgres-backed test projects honour LANDBRIDGE_TEST_PG (see PostgresFixture):
 # when set, they use that server instead of spinning a local cluster. Each
-# such project gets its OWN database (docket_cp / docket_mcp), created on
+# such project gets its OWN database (landbridge_cp / landbridge_mcp), created on
 # demand by EF Core's EnsureCreated, so the projects stay isolated regardless
 # of scheduling. When a new test project is added, give it its own step —
 # and its own database here if it touches Postgres.
@@ -20,15 +20,15 @@ on:
   workflow_dispatch:
     inputs:
       codex_model:
-        description: "Codex model slug for the real-codex tier (DOCKET_CODEX_MODEL)"
+        description: "Codex model slug for the real-codex tier (LANDBRIDGE_CODEX_MODEL)"
         required: false
         default: "gpt-5.3-codex"
       opencode_model:
-        description: "OpenCode model for the real-opencode tier, provider/model (DOCKET_OPENCODE_MODEL)"
+        description: "OpenCode model for the real-opencode tier, provider/model (LANDBRIDGE_OPENCODE_MODEL)"
         required: false
         default: "anthropic/claude-haiku-4-5-20251001"
       grok_model:
-        description: "Grok Build model slug for the real-grok tier (DOCKET_GROK_MODEL)"
+        description: "Grok Build model slug for the real-grok tier (LANDBRIDGE_GROK_MODEL)"
         required: false
         default: "grok-4.6"
       goose_model:
@@ -50,13 +50,13 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_USER: docket
-          POSTGRES_PASSWORD: docket
-          POSTGRES_DB: docket
+          POSTGRES_USER: landbridge
+          POSTGRES_PASSWORD: landbridge
+          POSTGRES_DB: landbridge
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U docket"
+          --health-cmd "pg_isready -U landbridge"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
@@ -76,54 +76,54 @@ jobs:
       - name: Build
         run: dotnet build --no-restore -c Release
 
-      - name: Test - Docket.Core (pure engine)
-        run: dotnet test tests/Docket.Core.Tests --no-build -c Release
+      - name: Test - Landbridge.Core (pure engine)
+        run: dotnet test tests/Landbridge.Core.Tests --no-build -c Release
 
-      - name: Test - Docket.Contracts (wire vocabulary)
-        run: dotnet test tests/Docket.Contracts.Tests --no-build -c Release
+      - name: Test - Landbridge.Contracts (wire vocabulary)
+        run: dotnet test tests/Landbridge.Contracts.Tests --no-build -c Release
 
-      # The bump bot's own logic (tools/Docket.HarnessBump): the semver compare, the
+      # The bump bot's own logic (tools/Landbridge.HarnessBump): the semver compare, the
       # dist-tags.latest read, the pin rewrite below, and the one-open-PR rule that decides
       # whether to spend a real-harness dispatch at all. Pure and fast — it runs here, on every
       # push, precisely so those rules are never first exercised by a live 06:17 cron run against
       # real money. Some of its tests read THIS file and assert the three harness pins are still
       # present and parseable, and that the jobs its merge gate waits on still exist by name.
-      - name: Test - Docket.HarnessBump (the CLI bump bot's own rules)
-        run: dotnet test tests/Docket.HarnessBump.Tests --no-build -c Release
+      - name: Test - Landbridge.HarnessBump (the CLI bump bot's own rules)
+        run: dotnet test tests/Landbridge.HarnessBump.Tests --no-build -c Release
 
-      - name: Test - Docket.Runner (process supervision + WebSocket channel)
-        run: dotnet test tests/Docket.Runner.Tests --no-build -c Release
+      - name: Test - Landbridge.Runner (process supervision + WebSocket channel)
+        run: dotnet test tests/Landbridge.Runner.Tests --no-build -c Release
 
-      - name: Test - Docket.ControlPlane (Postgres)
-        run: dotnet test tests/Docket.ControlPlane.Tests --no-build -c Release
+      - name: Test - Landbridge.ControlPlane (Postgres)
+        run: dotnet test tests/Landbridge.ControlPlane.Tests --no-build -c Release
         env:
-          DOCKET_TEST_PG: Host=localhost;Port=5432;Username=docket;Password=docket;Database=docket_cp
+          LANDBRIDGE_TEST_PG: Host=localhost;Port=5432;Username=landbridge;Password=landbridge;Database=landbridge_cp
 
-      - name: Test - Docket.Mcp (Postgres + MCP end-to-end)
-        run: dotnet test tests/Docket.Mcp.Tests --no-build -c Release
+      - name: Test - Landbridge.Mcp (Postgres + MCP end-to-end)
+        run: dotnet test tests/Landbridge.Mcp.Tests --no-build -c Release
         env:
-          DOCKET_TEST_PG: Host=localhost;Port=5432;Username=docket;Password=docket;Database=docket_mcp
+          LANDBRIDGE_TEST_PG: Host=localhost;Port=5432;Username=landbridge;Password=landbridge;Database=landbridge_mcp
 
-      # docket-meta: unit/saga (in-memory, 0-skip) + endpoint (WebApplicationFactory)
-      # + the migration test (its own docket_meta database) + the Docker-gated E2E.
+      # landbridge-meta: unit/saga (in-memory, 0-skip) + endpoint (WebApplicationFactory)
+      # + the migration test (its own landbridge_meta database) + the Docker-gated E2E.
       # The E2E's SkippableFacts run here because ubuntu runners have a Docker daemon;
-      # they publish + build the docket runtime images in-process and provision a real
+      # they publish + build the landbridge runtime images in-process and provision a real
       # instance. On a runner without Docker they skip cleanly.
-      - name: Test - Docket.Meta (Postgres + Docker-gated provisioning E2E)
-        run: dotnet test tests/Docket.Meta.Tests --no-build -c Release
+      - name: Test - Landbridge.Meta (Postgres + Docker-gated provisioning E2E)
+        run: dotnet test tests/Landbridge.Meta.Tests --no-build -c Release
         env:
-          DOCKET_TEST_PG: Host=localhost;Port=5432;Username=docket;Password=docket;Database=docket_meta
+          LANDBRIDGE_TEST_PG: Host=localhost;Port=5432;Username=landbridge;Password=landbridge;Database=landbridge_meta
 
-      - name: Test - Docket.MultiMachine (Postgres, multi-machine collab)
-        run: dotnet test tests/Docket.MultiMachine.Tests --no-build -c Release
+      - name: Test - Landbridge.MultiMachine (Postgres, multi-machine collab)
+        run: dotnet test tests/Landbridge.MultiMachine.Tests --no-build -c Release
         env:
-          DOCKET_TEST_PG: Host=localhost;Port=5432;Username=docket;Password=docket;Database=docket_multimachine
+          LANDBRIDGE_TEST_PG: Host=localhost;Port=5432;Username=landbridge;Password=landbridge;Database=landbridge_multimachine
 
   # ── spec §17.8 chaos suite ──────────────────────────────────────────────────────
   #
   # Its own job rather than another step in the matrix above, because it is the one
   # suite that SIGKILLs real processes: it spawns the real control plane, the real
-  # docketd and real worker binaries as separate OS processes and kills them mid-task.
+  # landbridged and real worker binaries as separate OS processes and kills them mid-task.
   # Isolating it means a chaos scenario that leaks a process or wedges cannot take the
   # ordinary unit/integration legs down with it, and its failures are unambiguous.
   #
@@ -133,7 +133,7 @@ jobs:
   # tests skip themselves there rather than pass vacuously.
   #
   # Runtime is bounded by construction, not by hope: the plane's liveness windows and
-  # docketd's heartbeat are configuration, so the scenarios shrink a 30-minute
+  # landbridged's heartbeat are configuration, so the scenarios shrink a 30-minute
   # no-progress ceiling to seconds instead of waiting real durations, and every wait
   # has a hard deadline that dumps process output and task state on expiry. The whole
   # suite runs in well under a minute; the job timeout is a backstop for a hang.
@@ -147,13 +147,13 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_USER: docket
-          POSTGRES_PASSWORD: docket
-          POSTGRES_DB: docket
+          POSTGRES_USER: landbridge
+          POSTGRES_PASSWORD: landbridge
+          POSTGRES_DB: landbridge
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U docket"
+          --health-cmd "pg_isready -U landbridge"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
@@ -167,16 +167,16 @@ jobs:
       - name: Restore
         run: dotnet restore
 
-      # The suite spawns four real binaries (Docket.Mcp, docketd, and the two worker
+      # The suite spawns four real binaries (Landbridge.Mcp, landbridged, and the two worker
       # harnesses) resolved from their own bin directories, so build the solution —
       # the build-only ProjectReferences guarantee all four are present.
       - name: Build
         run: dotnet build --no-restore -c Release
 
-      - name: Test - Docket.Chaos (spec §17.8 chaos scenarios)
-        run: dotnet test tests/Docket.Chaos.Tests --no-build -c Release
+      - name: Test - Landbridge.Chaos (spec §17.8 chaos scenarios)
+        run: dotnet test tests/Landbridge.Chaos.Tests --no-build -c Release
         env:
-          DOCKET_TEST_PG: Host=localhost;Port=5432;Username=docket;Password=docket;Database=docket_chaos
+          LANDBRIDGE_TEST_PG: Host=localhost;Port=5432;Username=landbridge;Password=landbridge;Database=landbridge_chaos
 
   # ── Opt-in real-harness multi-machine E2E ──────────────────────────────────
   #
@@ -196,7 +196,7 @@ jobs:
   # one run installed claude 2.1.229 and went 9/9, another installed 2.1.231 and
   # went 7/2 on identical test code. npm prints no version. Do not go back to
   # `latest`; the daily bump bot carries these pins forward on evidence.
-  #   * claude-code 2.1.232 — the stopgap after 2.1.231 read "call the docket
+  #   * claude-code 2.1.232 — the stopgap after 2.1.231 read "call the landbridge
   #     get_session tool" as a shell command. Prompt clarity (#150) is the durable fix.
   #   * @openai/codex 0.147.0 — rust-v0.147.0, the source citations and the green
   #     baseline. latest is the release line; 0.148.0-alpha.* sit under `alpha`.
@@ -221,19 +221,19 @@ jobs:
         include:
           - harness: claude
             category: RealClaude
-            db: docket_realclaude
+            db: landbridge_realclaude
           - harness: codex
             category: RealCodex
-            db: docket_realcodex
+            db: landbridge_realcodex
           - harness: opencode
             category: RealOpenCode
-            db: docket_realopencode
+            db: landbridge_realopencode
           - harness: grok
             category: RealGrok
-            db: docket_realgrok
+            db: landbridge_realgrok
           - harness: goose
             category: RealGoose
-            db: docket_realgoose
+            db: landbridge_realgoose
     env:
       DOTNET_CLI_TELEMETRY_OPTOUT: 1
       DOTNET_NOLOGO: 1
@@ -241,13 +241,13 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_USER: docket
-          POSTGRES_PASSWORD: docket
-          POSTGRES_DB: docket
+          POSTGRES_USER: landbridge
+          POSTGRES_PASSWORD: landbridge
+          POSTGRES_DB: landbridge
         ports:
           - 5432:5432
         options: >-
-          --health-cmd "pg_isready -U docket"
+          --health-cmd "pg_isready -U landbridge"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 10
@@ -276,7 +276,7 @@ jobs:
       # `grok agent stdio`, `goose acp`).
       #
       # Pinned like the CLIs, and deliberately NOT registered with the bump bot
-      # (HarnessPackages.All): an adapter is a second upstream between docketd and the
+      # (HarnessPackages.All): an adapter is a second upstream between landbridged and the
       # model, and auto-bumping one out of step with its harness is exactly the kind of
       # break that would first surface as a paid run failing. Capability drift is what
       # tools/acp-probe is for.
@@ -316,21 +316,21 @@ jobs:
         run: dotnet restore
 
       - name: Build (Release)
-        run: dotnet build tests/Docket.MultiMachine.Tests --no-restore -c Release
+        run: dotnet build tests/Landbridge.MultiMachine.Tests --no-restore -c Release
 
       # Only this cell's trait. Secrets for every vendor are present on every cell
       # — Category= is what stops one cell lighting up another class. Mixed-fleet
       # facts need ANTHROPIC_KEY in the codex/opencode cells.
       - name: Test - real ${{ matrix.harness }} multi-machine E2E
-        run: dotnet test tests/Docket.MultiMachine.Tests --no-build -c Release --filter "Category=${{ matrix.category }}"
+        run: dotnet test tests/Landbridge.MultiMachine.Tests --no-build -c Release --filter "Category=${{ matrix.category }}"
         env:
-          DOCKET_TEST_PG: Host=localhost;Port=5432;Username=docket;Password=docket;Database=${{ matrix.db }}
+          LANDBRIDGE_TEST_PG: Host=localhost;Port=5432;Username=landbridge;Password=landbridge;Database=${{ matrix.db }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_KEY }}
           CODEX_API_KEY: ${{ secrets.OPENAI_KEY }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY || secrets.XAI_KEY }}
-          DOCKET_CODEX_MODEL: ${{ inputs.codex_model || 'gpt-5.3-codex' }}
-          DOCKET_OPENCODE_MODEL: ${{ inputs.opencode_model || 'anthropic/claude-haiku-4-5-20251001' }}
-          DOCKET_GROK_MODEL: ${{ inputs.grok_model || 'grok-4.6' }}
-          DOCKET_REAL_GOOSE: ${{ matrix.harness == 'goose' && '1' || '' }}
+          LANDBRIDGE_CODEX_MODEL: ${{ inputs.codex_model || 'gpt-5.3-codex' }}
+          LANDBRIDGE_OPENCODE_MODEL: ${{ inputs.opencode_model || 'anthropic/claude-haiku-4-5-20251001' }}
+          LANDBRIDGE_GROK_MODEL: ${{ inputs.grok_model || 'grok-4.6' }}
+          LANDBRIDGE_REAL_GOOSE: ${{ matrix.harness == 'goose' && '1' || '' }}
           GOOSE_PROVIDER: ${{ matrix.harness == 'goose' && 'anthropic' || '' }}
           GOOSE_MODEL: ${{ inputs.goose_model || 'claude-haiku-4-5-20251001' }}

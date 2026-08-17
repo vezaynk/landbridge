@@ -1,9 +1,9 @@
-namespace Docket.Chaos.Tests;
+namespace Landbridge.Chaos.Tests;
 
 /// <summary>
 /// Resolves the REAL binaries this suite spawns. Each is resolved from its OWN build
 /// output rather than the copy beside this test assembly, which is the established
-/// idiom here (WalkingSkeletonEndToEndTests, FleetRig, DocketdStrayReapEndToEndTests)
+/// idiom here (WalkingSkeletonEndToEndTests, FleetRig, LandbridgedStrayReapEndToEndTests)
 /// and not merely a preference: a copy beside a test carries only what the test's own
 /// closure needed, so an apphost copied here can be missing dependencies it has in its
 /// own bin and fail to start. The build-only ProjectReferences in the csproj are what
@@ -11,21 +11,21 @@ namespace Docket.Chaos.Tests;
 /// </summary>
 internal static class ChaosBinaries
 {
-    /// <summary>The control plane / MCP host (<c>Docket.Mcp</c>).</summary>
-    public static string ControlPlane() => FromSrc("Docket.Mcp", "Docket.Mcp");
+    /// <summary>The control plane / MCP host (<c>Landbridge.Mcp</c>).</summary>
+    public static string ControlPlane() => FromSrc("Landbridge.Mcp", "Landbridge.Mcp");
 
-    /// <summary>docketd — note <c>Docket.Runner</c>'s AssemblyName is <c>docketd</c>.</summary>
-    public static string Docketd() => FromSrc("Docket.Runner", "docketd");
+    /// <summary>landbridged — note <c>Landbridge.Runner</c>'s AssemblyName is <c>landbridged</c>.</summary>
+    public static string Landbridged() => FromSrc("Landbridge.Runner", "landbridged");
 
     /// <summary>The scripted no-LLM worker that reports a result and exits.</summary>
-    public static string WorkerHarness() => FromTests("Docket.WorkerHarness", "Docket.WorkerHarness");
+    public static string WorkerHarness() => FromTests("Landbridge.WorkerHarness", "Landbridge.WorkerHarness");
 
     /// <summary>
     /// The runner suite's reference harness: <c>run</c> is this suite's wedged worker,
     /// <c>spawn-child</c> its planted stray tree.
     /// </summary>
     public static string RunnerTestHarness() =>
-        FromTests("Docket.Runner.TestHarness", "Docket.Runner.TestHarness");
+        FromTests("Landbridge.Runner.TestHarness", "Landbridge.Runner.TestHarness");
 
     private static string FromSrc(string project, string apphostName) =>
         Resolve(Path.Combine("src", project, "bin"), apphostName, project);
@@ -41,7 +41,7 @@ internal static class ChaosBinaries
     private static string Resolve(string binSegment, string apphostName, string project)
     {
         var testDir = Path.GetDirectoryName(typeof(ChaosBinaries).Assembly.Location)!;
-        var ownSegment = Path.Combine("tests", "Docket.Chaos.Tests", "bin");
+        var ownSegment = Path.Combine("tests", "Landbridge.Chaos.Tests", "bin");
         if (!testDir.Contains(ownSegment, StringComparison.Ordinal))
             throw new InvalidOperationException(
                 $"cannot locate {project}: this assembly is not running from {ownSegment} (at {testDir})");

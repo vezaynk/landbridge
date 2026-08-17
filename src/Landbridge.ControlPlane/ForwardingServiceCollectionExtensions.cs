@@ -1,15 +1,15 @@
-using Docket.ControlPlane.Auth;
+using Landbridge.ControlPlane.Auth;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
-namespace Docket.ControlPlane;
+namespace Landbridge.ControlPlane;
 
 /// <summary>DI wiring for the relay-forward orchestration (spec §8.3).</summary>
 public static class ForwardingServiceCollectionExtensions
 {
     /// <summary>
     /// Registers what a forward needs at both ends. The singletons drive the two
-    /// docketd ends: the <see cref="RunnerConnectionRegistry"/> machines are resolved
+    /// landbridged ends: the <see cref="RunnerConnectionRegistry"/> machines are resolved
     /// from, the <see cref="ForwardWaiters"/> the event sink completes, and the
     /// <see cref="ForwardOrchestrator"/> itself. The scoped
     /// <see cref="LeadMachineBindingService"/> resolves the consumer end of the
@@ -20,7 +20,7 @@ public static class ForwardingServiceCollectionExtensions
     /// registry (every host wiring the runner spine does) keeps its instance — the
     /// orchestrator and the sink must share exactly that one.</para>
     /// </summary>
-    public static IServiceCollection AddDocketForwarding(this IServiceCollection services)
+    public static IServiceCollection AddLandbridgeForwarding(this IServiceCollection services)
     {
         services.TryAddSingleton<RunnerConnectionRegistry>();
         services.TryAddSingleton<ForwardWaiters>();

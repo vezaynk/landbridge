@@ -1,11 +1,11 @@
 using System.ComponentModel;
 using ModelContextProtocol.Server;
 
-namespace Docket.Mcp.Skills;
+namespace Landbridge.Mcp.Skills;
 
 /// <summary>
 /// Serves the skill bundle (spec §14) as MCP resources so it reaches every agent
-/// on connect (§10). Each method is a "direct resource" — a fixed <c>docket://</c>
+/// on connect (§10). Each method is a "direct resource" — a fixed <c>landbridge://</c>
 /// URI with no template parameters — returning the embedded Markdown verbatim; the
 /// SDK wraps the returned string in a <c>TextResourceContents</c>.
 ///
@@ -13,7 +13,7 @@ namespace Docket.Mcp.Skills;
 /// Scoping is <b>advisory</b>, by deliberate choice. All four skills list and read
 /// for any authenticated principal, and an agent finds its own URI through
 /// <c>resources/list</c> — no MCP prompt is registered on this branch, so the
-/// <c>/docket-*</c> prompts §10 sketches are not what steers anyone here yet. Three
+/// <c>/landbridge-*</c> prompts §10 sketches are not what steers anyone here yet. Three
 /// reasons this is not a hard per-principal ACL:
 /// </para>
 /// <list type="number">
@@ -46,41 +46,41 @@ namespace Docket.Mcp.Skills;
 public sealed class SkillResources
 {
     [McpServerResource(
-        Name = "docket-worker",
-        Title = "Docket worker skill",
+        Name = "landbridge-worker",
+        Title = "Landbridge worker skill",
         UriTemplate = SkillBundle.WorkerUri,
         MimeType = SkillBundle.Markdown)]
-    [Description("How to execute a Docket session as a worker: working inside the assigned " +
+    [Description("How to execute a Landbridge session as a worker: working inside the assigned " +
                  "workspace, persisting before asking, registering services, reporting a result, " +
                  "and raising blockers instead of guessing. Read this first when dispatched.")]
     public static string Worker() => SkillBundle.Worker;
 
     [McpServerResource(
-        Name = "docket-lead",
-        Title = "Docket lead skill",
+        Name = "landbridge-lead",
+        Title = "Landbridge lead skill",
         UriTemplate = SkillBundle.LeadUri,
         MimeType = SkillBundle.Markdown)]
-    [Description("How to lead a Docket Team: claiming and reattaching, decomposing work into " +
+    [Description("How to lead a Landbridge Team: claiming and reattaching, decomposing work into " +
                  "sessions, assigning workspaces and isolation, choosing completion modes, answering " +
                  "worker questions, and cancelling or closing work.")]
     public static string Lead() => SkillBundle.Lead;
 
     [McpServerResource(
-        Name = "docket-enroll",
-        Title = "Docket enrollment skill",
+        Name = "landbridge-enroll",
+        Title = "Landbridge enrollment skill",
         UriTemplate = SkillBundle.EnrollUri,
         MimeType = SkillBundle.Markdown)]
-    [Description("How to enroll a machine into a Docket Machine Group: probing the local harness, " +
-                 "writing the docketd runner config, registering the daemon as a service, and " +
+    [Description("How to enroll a machine into a Landbridge Machine Group: probing the local harness, " +
+                 "writing the landbridged runner config, registering the daemon as a service, and " +
                  "smoke-testing the machine before real work reaches it.")]
     public static string Enroll() => SkillBundle.Enroll;
 
     [McpServerResource(
-        Name = "docket-runner-config",
-        Title = "docketd runner config reference",
+        Name = "landbridge-runner-config",
+        Title = "landbridged runner config reference",
         UriTemplate = SkillBundle.RunnerConfigUri,
         MimeType = SkillBundle.Markdown)]
-    [Description("Reference for the docketd runner config: the full schema, spawn-argv " +
+    [Description("Reference for the landbridged runner config: the full schema, spawn-argv " +
                  "substitutions, the generated worker MCP config, and a worked Claude Code profile. " +
                  "Referenced by the enroll skill and describes the channel a worker dials the plane with.")]
     public static string RunnerConfig() => SkillBundle.RunnerConfig;

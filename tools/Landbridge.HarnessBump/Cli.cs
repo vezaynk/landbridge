@@ -1,7 +1,7 @@
 using System.Diagnostics;
 using System.Text.Json;
 
-namespace Docket.HarnessBump;
+namespace Landbridge.HarnessBump;
 
 public sealed record CliResult(int ExitCode, string StdOut, string StdErr)
 {

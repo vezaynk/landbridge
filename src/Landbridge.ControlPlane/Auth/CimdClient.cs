@@ -4,13 +4,13 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 
-namespace Docket.ControlPlane.Auth;
+namespace Landbridge.ControlPlane.Auth;
 
 /// <summary>
 /// A Client ID Metadata Document (CIMD), as fetched from an HTTPS
 /// <c>client_id</c> URL (MCP authorization spec §"Client ID Metadata Documents";
 /// <c>draft-ietf-oauth-client-id-metadata-document-00</c> §4). Only the fields
-/// Docket uses are modelled; unknown members are ignored. The document's own
+/// Landbridge uses are modelled; unknown members are ignored. The document's own
 /// <c>client_id</c> MUST equal the URL it was fetched from (§4.1), which the
 /// client validates.
 /// </summary>
@@ -89,7 +89,7 @@ public interface ICimdClient
 public sealed class CimdClient : ICimdClient
 {
     /// <summary>Config key: when true, permit <c>http</c> and private/loopback CIMD hosts. Dev/test only; default false.</summary>
-    public const string AllowInsecureKey = "Docket:Oauth:AllowInsecureClientMetadata";
+    public const string AllowInsecureKey = "Landbridge:Oauth:AllowInsecureClientMetadata";
 
     private const int MaxBytes = 5 * 1024; // draft §6.6 recommended cap
     private static readonly TimeSpan Timeout = TimeSpan.FromSeconds(5);

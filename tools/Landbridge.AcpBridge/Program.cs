@@ -1,10 +1,10 @@
-namespace Docket.AcpBridge;
+namespace Landbridge.AcpBridge;
 
 /// <summary>
 /// Stdio ↔ WebSocket pipe for ACP. <c>listen</c> accepts one WebSocket at
 /// <c>/acp</c> and attaches it to a spawned agent's stdin/stdout.
 /// <c>connect</c> is the other half: a profile <c>spawn</c> entry that
-/// forwards docketd's ACP conversation to that socket.
+/// forwards landbridged's ACP conversation to that socket.
 /// </summary>
 public static class Program
 {
@@ -14,8 +14,8 @@ public static class Program
         {
             Console.Error.WriteLine(
                 """
-                docket-acp-bridge listen [--bind 127.0.0.1:0] -- <agent argv>
-                docket-acp-bridge connect <ws-url>
+                landbridge-acp-bridge listen [--bind 127.0.0.1:0] -- <agent argv>
+                landbridge-acp-bridge connect <ws-url>
 
                 listen prints one 'listening <url>' line on stdout, then only
                 stderr. connect uses stdin/stdout as the ACP NDJSON channel.
@@ -34,14 +34,14 @@ public static class Program
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
-            Console.Error.WriteLine("docket-acp-bridge: " + ex.Message);
+            Console.Error.WriteLine("landbridge-acp-bridge: " + ex.Message);
             return 1;
         }
     }
 
     internal static int Fail(string message)
     {
-        Console.Error.WriteLine("docket-acp-bridge: " + message);
+        Console.Error.WriteLine("landbridge-acp-bridge: " + message);
         return 2;
     }
 }

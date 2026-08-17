@@ -1,4 +1,4 @@
-namespace Docket.Runner;
+namespace Landbridge.Runner;
 
 // Wire-shape DTOs for the config file: only simple types (strings, numbers,
 // arrays, string maps) so System.Text.Json source-gen stays AOT-clean and no
@@ -14,7 +14,7 @@ internal sealed class RunnerConfigDto
     public List<ServiceDto>? Services { get; set; }
 }
 
-// §10 operator-declared services: long-lived processes docketd supervises as its own
+// §10 operator-declared services: long-lived processes landbridged supervises as its own
 // children, outside any task's process tree. Config-declared only in v1 — an
 // agent-started process is declared over the wire instead (§10 start_process).
 internal sealed class ServiceDto
@@ -72,7 +72,7 @@ internal sealed class ProfileDto
     // §11 / ideas/sessions.md: the turn sent to wake a live session when there is new input
     // on the assignment. Configuration, never content — the answer itself stays on the
     // assignment and is pulled over the authenticated MCP call, so this text only ever says
-    // "go read", and must name the docket tools the way THIS harness spells them.
+    // "go read", and must name the landbridge tools the way THIS harness spells them.
     public string? FollowUp { get; set; }
 
     // §10: which of the agent's declared ACP authMethods to use when it refuses session/new
@@ -109,8 +109,8 @@ internal sealed class ProfileDto
 
     // §10 / #112 G3: per-spawn environment. Substituted with the same {session_id} /
     // {machine_id} / {work_dir} / {mcp_config} / {session_id} tokens spawn gets. The
-    // four DOCKET_* variables docketd stamps itself are refused at load, not silently
-    // dropped — a profile that thinks it overwrote DOCKET_WORKER_TOKEN must not start.
+    // four LANDBRIDGE_* variables landbridged stamps itself are refused at load, not silently
+    // dropped — a profile that thinks it overwrote LANDBRIDGE_WORKER_TOKEN must not start.
     public Dictionary<string, string>? Env { get; set; }
 
     // #112 G2: files written into {work_dir} before the harness starts. Paths are
@@ -156,7 +156,7 @@ internal sealed class TelemetryDto
     public bool? Otel { get; set; }
     public string? Endpoint { get; set; }
 
-    // §10 telemetry ingest: harness-specific opt-in variables, as data — docketd
+    // §10 telemetry ingest: harness-specific opt-in variables, as data — landbridged
     // itself sets only vendor-neutral OTEL_* (see HarnessTelemetry). Claude Code
     // needs { "CLAUDE_CODE_ENABLE_TELEMETRY": "1" } here. Applied only when
     // `otel` is on and a destination resolves.

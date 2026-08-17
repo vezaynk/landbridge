@@ -1,4 +1,4 @@
-namespace Docket.Preview;
+namespace Landbridge.Preview;
 
 /// <summary>
 /// The HTTP preview frontend's options (config section <c>Preview</c>, spec §8.4).

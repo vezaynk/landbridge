@@ -1,11 +1,11 @@
-using Docket.Contracts;
-using Docket.ControlPlane;
-using Docket.ControlPlane.Auth;
-using Docket.ControlPlane.Tests;
-using Docket.Core;
-using Docket.Mcp.Auth;
-using Docket.Mcp.Tools;
-using Docket.Runner;
+using Landbridge.Contracts;
+using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.ControlPlane.Tests;
+using Landbridge.Core;
+using Landbridge.Mcp.Auth;
+using Landbridge.Mcp.Tools;
+using Landbridge.Runner;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -16,7 +16,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 
-namespace Docket.Mcp.Tests;
+namespace Landbridge.Mcp.Tests;
 
 /// <summary>
 /// The walking skeleton (spec §17 build order, §10): the whole dispatch loop
@@ -151,7 +151,7 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
             // ── §13 under ACP: the MCP server crossed on the WIRE, and left nothing on disk ──
             //
             // The inversion is the point. A stream profile names {mcp_config} in its argv and
-            // docketd writes the generated config to {work_dir}/mcp.json (0600) for the
+            // landbridged writes the generated config to {work_dir}/mcp.json (0600) for the
             // harness to read; #112 G11 made that write conditional on the argv actually
             // referencing it. An ACP profile references nothing, because the server is a
             // parameter of session/new — so the correct assertion here is that no file was
@@ -164,7 +164,7 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
             // this profile.
             Assert.False(
                 File.Exists(Path.Combine(workDir, "mcp.json")),
-                "an ACP profile names no {mcp_config}, so docketd should have written no config file — " +
+                "an ACP profile names no {mcp_config}, so landbridged should have written no config file — " +
                 "the server rides session/new instead, which is what keeps the worker token off disk");
 
             // ── get_session delivered the assignment over the wire (§7) ──
@@ -206,20 +206,20 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
         builder.Logging.ClearProviders();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
 
-        builder.Services.AddDbContext<DocketDbContext>(o =>
+        builder.Services.AddDbContext<LandbridgeDbContext>(o =>
             o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
-        builder.Services.AddDocketStore();
+        builder.Services.AddLandbridgeStore();
         builder.Services.AddScoped<RelayGrantService>();
         builder.Services.AddScoped<PreviewMappingService>(); // §8.4: WorkerTools.open_preview
         builder.Services.AddScoped<TokenService>();
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<RunnerConnectionRegistry>();
-        builder.Services.AddDocketForwarding(); // §8.3: WorkerTools needs the forward orchestrator
+        builder.Services.AddLandbridgeForwarding(); // §8.3: WorkerTools needs the forward orchestrator
         builder.Services.AddHttpContextAccessor();
 
-        builder.Services.AddAuthentication(DocketAuthenticationHandler.SchemeName)
-            .AddScheme<AuthenticationSchemeOptions, DocketAuthenticationHandler>(
-                DocketAuthenticationHandler.SchemeName, configureOptions: null);
+        builder.Services.AddAuthentication(LandbridgeAuthenticationHandler.SchemeName)
+            .AddScheme<AuthenticationSchemeOptions, LandbridgeAuthenticationHandler>(
+                LandbridgeAuthenticationHandler.SchemeName, configureOptions: null);
         builder.Services.AddAuthorization();
 
         builder.Services.AddMcpServer()
@@ -246,7 +246,7 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
     }
 
     /// <summary>
-    /// The apphost of the built <see cref="Docket.WorkerHarness"/>, spawned
+    /// The apphost of the built <see cref="Landbridge.WorkerHarness"/>, spawned
     /// directly (argv, no shell — §10). It is resolved from the harness's <b>own</b>
     /// build output, not the copy beside this test assembly: the harness is a
     /// plain console whose MCP-client dependency closure (Logging.Abstractions et
@@ -257,22 +257,22 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
     /// </summary>
     private static string WorkerHarnessPath()
     {
-        const string stem = "Docket.WorkerHarness";
+        const string stem = "Landbridge.WorkerHarness";
         var testDir = Path.GetDirectoryName(typeof(WalkingSkeletonEndToEndTests).Assembly.Location)!;
         var harnessDir = testDir.Replace(
-            Path.Combine("Docket.Mcp.Tests", "bin"),
+            Path.Combine("Landbridge.Mcp.Tests", "bin"),
             Path.Combine(stem, "bin"),
             StringComparison.Ordinal);
         var apphost = Path.Combine(harnessDir, OperatingSystem.IsWindows() ? stem + ".exe" : stem);
         return File.Exists(apphost)
             ? apphost
             : throw new FileNotFoundException(
-                $"worker harness apphost not found at {apphost}; is Docket.WorkerHarness built?");
+                $"worker harness apphost not found at {apphost}; is Landbridge.WorkerHarness built?");
     }
 
     private static string NewWorkRoot()
     {
-        var dir = Path.Combine(Path.GetTempPath(), "docket-skeleton-tests", Guid.NewGuid().ToString("N"));
+        var dir = Path.Combine(Path.GetTempPath(), "landbridge-skeleton-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
         return dir;
     }

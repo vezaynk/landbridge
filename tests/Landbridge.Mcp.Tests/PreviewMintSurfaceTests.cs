@@ -1,11 +1,11 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
-using Docket.ControlPlane.Tests;
-using Docket.Core;
+using Landbridge.ControlPlane.Tests;
+using Landbridge.Core;
 using ModelContextProtocol.Protocol;
 
-namespace Docket.Mcp.Tests;
+namespace Landbridge.Mcp.Tests;
 
 /// <summary>
 /// The two §8.4 mint surfaces (#62): the worker <c>open_preview</c> MCP tool and the
@@ -85,7 +85,7 @@ public sealed class PreviewMintSurfaceTests(PostgresFixture pg) : IAsyncLifetime
                 ["ttl"] = "10",
             }),
         };
-        request.Headers.Add("Cookie", $"docket_session={operatorSession}");
+        request.Headers.Add("Cookie", $"landbridge_session={operatorSession}");
 
         using var response = await http.SendAsync(request, ct);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);

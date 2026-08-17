@@ -1,6 +1,6 @@
-using Docket.Core;
+using Landbridge.Core;
 
-namespace Docket.Contracts.Tests;
+namespace Landbridge.Contracts.Tests;
 
 /// <summary>
 /// The frozen contract's wire boundary, spec §10: both sides encode and decode
@@ -18,7 +18,7 @@ public class RunnerWireTests
         var original = new DispatchCommand(
             SessionId.New(),
             "restricted",
-            WorkerToken: "dkt_w_abc",
+            WorkerToken: "lbr_w_abc",
             McpConfigJson: """{"mcpServers":{}}""",
             SpawnSubstitutions: new Dictionary<string, string> { ["seed"] = "42", ["mode"] = "headless" });
 
@@ -53,7 +53,7 @@ public class RunnerWireTests
         // §11 resume: the opaque session ref rides the dispatch envelope so the
         // runner can continue a parked transcript.
         var original = new DispatchCommand(
-            SessionId.New(), "default", WorkerToken: "dkt_w_abc", ResumeSessionRef: "sess-a4bbb0fd");
+            SessionId.New(), "default", WorkerToken: "lbr_w_abc", ResumeSessionRef: "sess-a4bbb0fd");
 
         var decoded = Assert.IsType<DispatchCommand>(RunnerWire.DecodeCommand(RunnerWire.EncodeCommand(original)));
 
@@ -87,7 +87,7 @@ public class RunnerWireTests
         // that task (a task, never a path — work_root is machine-local runner config).
         var from = SessionId.New();
         var original = new DispatchCommand(
-            SessionId.New(), "default", WorkerToken: "dkt_w_abc",
+            SessionId.New(), "default", WorkerToken: "lbr_w_abc",
             ResumeSessionRef: "sess-a4bbb0fd", WorkDirSession: from);
 
         var decoded = Assert.IsType<DispatchCommand>(RunnerWire.DecodeCommand(RunnerWire.EncodeCommand(original)));
@@ -156,13 +156,13 @@ public class RunnerWireTests
     {
         var original = new OpenForwardCommand(
             SessionId.New(), "fwd-1", "postgres",
-            Role: "producer", Grant: "dkt_g_abc", RelayUrl: "http://127.0.0.1:5100", Port: 5432);
+            Role: "producer", Grant: "lbr_g_abc", RelayUrl: "http://127.0.0.1:5100", Port: 5432);
 
         var decoded = Assert.IsType<OpenForwardCommand>(RunnerWire.DecodeCommand(RunnerWire.EncodeCommand(original)));
 
         Assert.Equal(original, decoded);
         Assert.Equal("producer", decoded.Role);
-        Assert.Equal("dkt_g_abc", decoded.Grant);
+        Assert.Equal("lbr_g_abc", decoded.Grant);
         Assert.Equal("http://127.0.0.1:5100", decoded.RelayUrl);
         Assert.Equal(5432, decoded.Port);
     }
@@ -201,7 +201,7 @@ public class RunnerWireTests
     [Fact]
     public void Close_forward_envelope_is_the_documented_snake_case_shape()
     {
-        // The envelope a docketd that predates close-forward will see, spelled out: adding a
+        // The envelope a landbridged that predates close-forward will see, spelled out: adding a
         // COMMAND is skew-safe precisely because such a runner rejects the whole envelope at
         // the wire boundary (§10) and goes on serving its splice, which is the pre-fix
         // behaviour rather than a crash. Asserted on the field names because they are what an
@@ -226,7 +226,7 @@ public class RunnerWireTests
     public void Traceparent_round_trips_on_a_dispatch_envelope()
     {
         const string traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
-        var original = new DispatchCommand(SessionId.New(), "default", WorkerToken: "dkt_w_abc");
+        var original = new DispatchCommand(SessionId.New(), "default", WorkerToken: "lbr_w_abc");
 
         var encoded = RunnerWire.EncodeCommand(original, traceparent);
         var decoded = Assert.IsType<DispatchCommand>(RunnerWire.DecodeCommand(encoded, out var decodedTp));
@@ -255,7 +255,7 @@ public class RunnerWireTests
     {
         const string traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
         var original = new DispatchCommand(
-            SessionId.New(), "restricted", WorkerToken: "dkt_w_x");
+            SessionId.New(), "restricted", WorkerToken: "lbr_w_x");
 
         var withTp = Assert.IsType<DispatchCommand>(
             RunnerWire.DecodeCommand(RunnerWire.EncodeCommand(original, traceparent)));
@@ -570,13 +570,13 @@ public class RunnerWireTests
               "type": "dispatch",
               "session": { "value": "3f2504e0-4f89-11d3-9a0c-0305e82c3301" },
               "profile": "default",
-              "worker_token": "dkt_w_x",
+              "worker_token": "lbr_w_x",
               "budget_usd": 12.50
             }
             """));
 
         Assert.Equal("default", decoded.Profile);
-        Assert.Equal("dkt_w_x", decoded.WorkerToken);
+        Assert.Equal("lbr_w_x", decoded.WorkerToken);
     }
 
     [Fact]

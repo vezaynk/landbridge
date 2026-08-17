@@ -2,13 +2,13 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
-using Docket.ControlPlane.Auth;
-using Docket.Core;
-using Docket.ControlPlane.Tests;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.Core;
+using Landbridge.ControlPlane.Tests;
 using Microsoft.AspNetCore.WebUtilities;
 using ModelContextProtocol.Protocol;
 
-namespace Docket.Mcp.Tests;
+namespace Landbridge.Mcp.Tests;
 
 /// <summary>
 /// The crown (spec §5): drive the <b>entire</b> OAuth 2.1 human flow headlessly
@@ -16,7 +16,7 @@ namespace Docket.Mcp.Tests;
 /// Claude Code would — discover the authorization server from the 401 challenge,
 /// read both metadata documents, walk authorize (GET form → POST passphrase) with
 /// a CIMD-served client, exchange the code at the token endpoint with the PKCE
-/// verifier, and then <b>use</b> the returned <c>dkt_h_</c> token to open the real
+/// verifier, and then <b>use</b> the returned <c>lbr_h_</c> token to open the real
 /// system: claim a Lead with it and call a Lead tool over MCP. That end proves the
 /// front door opens onto the actual control plane, not a mock.
 /// </summary>
@@ -100,7 +100,7 @@ public sealed class OAuthHumanFlowEndToEndTests(PostgresFixture pg) : IAsyncLife
                 ["code_challenge"] = OAuthTestKit.S256Challenge(verifier),
                 ["code_challenge_method"] = "S256",
                 ["state"] = state,
-                ["scope"] = "docket",
+                ["scope"] = "landbridge",
                 ["resource"] = baseUrl, // RFC 8707: audience-bind to this server
             });
 
@@ -122,7 +122,7 @@ public sealed class OAuthHumanFlowEndToEndTests(PostgresFixture pg) : IAsyncLife
                     ["code_challenge"] = OAuthTestKit.S256Challenge(verifier),
                     ["code_challenge_method"] = "S256",
                     ["state"] = state,
-                    ["scope"] = "docket",
+                    ["scope"] = "landbridge",
                     ["resource"] = baseUrl,
                     ["passphrase"] = OAuthTestKit.Passphrase,
                 }), ct);
@@ -133,7 +133,7 @@ public sealed class OAuthHumanFlowEndToEndTests(PostgresFixture pg) : IAsyncLife
             var redirectQuery = QueryHelpers.ParseQuery(location.Query);
             Assert.Equal(state, redirectQuery["state"]); // state echoed verbatim
             var code = redirectQuery["code"].ToString();
-            Assert.StartsWith("dkt_c_", code);
+            Assert.StartsWith("lbr_c_", code);
 
             // ── 6. token — exchange the code with the PKCE verifier ──
             using var tokenResp = await http.PostAsync(tokenEndpoint, new FormUrlEncodedContent(
@@ -151,7 +151,7 @@ public sealed class OAuthHumanFlowEndToEndTests(PostgresFixture pg) : IAsyncLife
             Assert.Equal("no-store", tokenResp.Headers.CacheControl!.ToString());
             var token = await tokenResp.Content.ReadFromJsonAsync<JsonElement>(ct);
             var accessToken = token.GetProperty("access_token").GetString()!;
-            Assert.StartsWith("dkt_h_", accessToken); // the EXISTING opaque human session
+            Assert.StartsWith("lbr_h_", accessToken); // the EXISTING opaque human session
             Assert.Equal("Bearer", token.GetProperty("token_type").GetString());
             Assert.True(token.GetProperty("expires_in").GetInt32() > 0);
 

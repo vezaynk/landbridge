@@ -19,7 +19,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\Docket.Core\Docket.Core.csproj" />
+    <ProjectReference Include="..\..\src\Landbridge.Core\Landbridge.Core.csproj" />
   </ItemGroup>
 
 </Project>

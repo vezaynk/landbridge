@@ -1,6 +1,6 @@
 using System.Net.WebSockets;
 using System.Text;
-using Docket.Core;
+using Landbridge.Core;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -8,10 +8,10 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-namespace Docket.Runner.Tests;
+namespace Landbridge.Runner.Tests;
 
 /// <summary>
-/// The docketd side of the wire (spec §10): the channel dials a control plane
+/// The landbridged side of the wire (spec §10): the channel dials a control plane
 /// outbound, ships encoded events/heartbeats up it, and delivers decoded
 /// commands to the daemon. A minimal loopback Kestrel server speaks the contract
 /// so the real <see cref="WebSocketControlPlaneChannel"/> is exercised end to end
@@ -74,7 +74,7 @@ public class WebSocketControlPlaneChannelTests
         // ── The real channel + a daemon backed by a fake supervisor ──────────
         var supervisor = new FakeProcessSupervisor();
         var config = RunnerConfig.Load("""
-            { "machine": { "work_root": "/tmp/docketd-ws-test" },
+            { "machine": { "work_root": "/tmp/landbridged-ws-test" },
               "profiles": [ { "name": "default", "prompt": "go", "spawn": ["noop"] } ] }
             """);
         var clock = TimeProvider.System;

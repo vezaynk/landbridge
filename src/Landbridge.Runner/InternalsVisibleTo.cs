@@ -5,4 +5,4 @@ using System.Runtime.CompilerServices;
 // construct a Job Object directly (the kill-on-close containment proof) and read
 // the per-task job + the captured spawn-thread identity. No InternalsVisibleTo
 // existed before this change.
-[assembly: InternalsVisibleTo("Docket.Runner.Tests")]
+[assembly: InternalsVisibleTo("Landbridge.Runner.Tests")]

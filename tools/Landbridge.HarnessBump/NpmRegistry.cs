@@ -1,7 +1,7 @@
 using System.Net.Http.Headers;
 using System.Text.Json;
 
-namespace Docket.HarnessBump;
+namespace Landbridge.HarnessBump;
 
 /// <summary>Reads published versions from the public npm registry.</summary>
 public sealed class NpmRegistry(HttpClient http)

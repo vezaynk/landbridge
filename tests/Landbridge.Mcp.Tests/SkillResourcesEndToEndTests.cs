@@ -1,10 +1,10 @@
-using Docket.ControlPlane;
-using Docket.ControlPlane.Auth;
-using Docket.ControlPlane.Tests;
-using Docket.Core;
-using Docket.Mcp.Auth;
-using Docket.Mcp.Skills;
-using Docket.Mcp.Tools;
+using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.ControlPlane.Tests;
+using Landbridge.Core;
+using Landbridge.Mcp.Auth;
+using Landbridge.Mcp.Skills;
+using Landbridge.Mcp.Tools;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -14,7 +14,7 @@ using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 
-namespace Docket.Mcp.Tests;
+namespace Landbridge.Mcp.Tests;
 
 /// <summary>
 /// The skill bundle (spec §14) ships as MCP resources (§10): a connected agent
@@ -53,7 +53,7 @@ public sealed class SkillResourcesEndToEndTests(PostgresFixture pg) : IAsyncLife
         await using var worker = await ConnectAsync(baseUri, workerToken, ct);
 
         // The whole bundle is discoverable on connect (§10) — all four resources,
-        // with stable docket:// URIs and a Markdown media type.
+        // with stable landbridge:// URIs and a Markdown media type.
         var listed = await worker.ListResourcesAsync(cancellationToken: ct);
         var byUri = listed.ToDictionary(r => r.Uri);
         Assert.Contains(SkillBundle.WorkerUri, byUri.Keys);
@@ -67,7 +67,7 @@ public sealed class SkillResourcesEndToEndTests(PostgresFixture pg) : IAsyncLife
         // skill's).
         var workerText = await ReadTextAsync(worker, SkillBundle.WorkerUri, ct);
         Assert.Equal(SkillBundle.Worker, workerText);
-        Assert.Contains("name: docket-worker", workerText);
+        Assert.Contains("name: landbridge-worker", workerText);
 
         // The runner-config reference is served to the worker too (its MCP config is
         // documented there).
@@ -98,7 +98,7 @@ public sealed class SkillResourcesEndToEndTests(PostgresFixture pg) : IAsyncLife
 
         var leadText = await ReadTextAsync(lead, SkillBundle.LeadUri, ct);
         Assert.Equal(SkillBundle.Lead, leadText);
-        Assert.Contains("name: docket-lead", leadText);
+        Assert.Contains("name: landbridge-lead", leadText);
 
         await app.StopAsync(ct);
     }
@@ -165,20 +165,20 @@ public sealed class SkillResourcesEndToEndTests(PostgresFixture pg) : IAsyncLife
         builder.WebHost.UseUrls("http://127.0.0.1:0");
 
         // Mirrors Program.cs wiring, pointed at the fixture's ephemeral database.
-        builder.Services.AddDbContext<DocketDbContext>(o =>
+        builder.Services.AddDbContext<LandbridgeDbContext>(o =>
             o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
-        builder.Services.AddDocketStore();
+        builder.Services.AddLandbridgeStore();
         builder.Services.AddScoped<RelayGrantService>();
         builder.Services.AddScoped<PreviewMappingService>(); // §8.4: WorkerTools.open_preview
         builder.Services.AddScoped<TokenService>();
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<RunnerConnectionRegistry>();
-        builder.Services.AddDocketForwarding(); // §8.3: WorkerTools needs the forward orchestrator
+        builder.Services.AddLandbridgeForwarding(); // §8.3: WorkerTools needs the forward orchestrator
         builder.Services.AddHttpContextAccessor();
 
-        builder.Services.AddAuthentication(DocketAuthenticationHandler.SchemeName)
-            .AddScheme<AuthenticationSchemeOptions, DocketAuthenticationHandler>(
-                DocketAuthenticationHandler.SchemeName, configureOptions: null);
+        builder.Services.AddAuthentication(LandbridgeAuthenticationHandler.SchemeName)
+            .AddScheme<AuthenticationSchemeOptions, LandbridgeAuthenticationHandler>(
+                LandbridgeAuthenticationHandler.SchemeName, configureOptions: null);
         builder.Services.AddAuthorization();
 
         builder.Services.AddMcpServer()

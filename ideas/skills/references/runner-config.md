@@ -1,11 +1,11 @@
-# `docketd` runner config — schema and worked profiles
+# `landbridged` runner config — schema and worked profiles
 
-`docketd` contains no harness knowledge; everything specific is data (spec §10). This is the
-reference the enroll skill (`docket-enroll`) and spec §10 point at: the config schema plus a
+`landbridged` contains no harness knowledge; everything specific is data (spec §10). This is the
+reference the enroll skill (`landbridge-enroll`) and spec §10 point at: the config schema plus a
 worked profile for each supported harness.
 
 **Every worker is driven over the [Agent Client Protocol](https://agentclientprotocol.com).**
-`docketd` spawns the agent, then speaks JSON-RPC to it over stdin/stdout: `initialize`, a
+`landbridged` spawns the agent, then speaks JSON-RPC to it over stdin/stdout: `initialize`, a
 session, and the profile's `prompt` as the opening turn. There is no second mode. The
 protocol that preceded it — spawn the CLI with its prompt in the argv, read whatever NDJSON
 it prints, and describe that vendor's shape in an `events.mapping` of up to thirteen keys —
@@ -16,32 +16,32 @@ one shape and an entry point per harness.
 
 | Section | Field | Notes |
 |---|---|---|
-| `machine` | `work_root` | Per-task scratch dirs; `docketd` spawns each task in `{work_root}/{session_id}` (§10). Not the workspace. |
+| `machine` | `work_root` | Per-task scratch dirs; `landbridged` spawns each task in `{work_root}/{session_id}` (§10). Not the workspace. |
 | `machine` | `heartbeat_seconds` | Machine-liveness cadence, in seconds (§10); default `15`. |
 | `machine` | `back_pressure` | `max_cpu_load` / `max_memory_load` / `max_disk_usage` in [0,1]; defaults `0.90` / `0.90` / `0.95`, tune per box (§10). CPU is not yet observed cross-platform, so `max_cpu_load` is currently inert — memory and disk carry the signal (§10). |
 | `profiles[]` | `name` | Profile identifier. `profiles` is a JSON **array**; exactly one entry MUST be named `default` (§10). |
 | `profiles[]` | `spawn` | argv passed to `execve` — **never a shell** (§10). Substitutions below. |
-| `profiles[]` | `follow_up` | The turn sent to **wake a live session** when there is new input on the assignment — an answered question today, a Lead's message later (`ideas/sessions.md`). **Configuration, never content**: the input itself stays on the assignment and is pulled by the worker's own authenticated `get_session`, which is what makes that read a *receipt*. Pushing the text here instead would reduce delivery to "queued", put answer content on a second path out of the MCP channel, and mix per-message content into profile config. Name the docket tools the way *this* harness spells them; the default names none. |
-| `profiles[]` | `prompt` | The worker's opening turn, sent as `session/prompt`. **Required**: an ACP agent takes no prompt on argv, so a profile without one spawns an agent that completes the handshake, waits, and does nothing. No default is possible — the text has to name the docket tools the way *this* harness spells them. Same `{...}` substitutions as the spawn argv. |
+| `profiles[]` | `follow_up` | The turn sent to **wake a live session** when there is new input on the assignment — an answered question today, a Lead's message later (`ideas/sessions.md`). **Configuration, never content**: the input itself stays on the assignment and is pulled by the worker's own authenticated `get_session`, which is what makes that read a *receipt*. Pushing the text here instead would reduce delivery to "queued", put answer content on a second path out of the MCP channel, and mix per-message content into profile config. Name the landbridge tools the way *this* harness spells them; the default names none. |
+| `profiles[]` | `prompt` | The worker's opening turn, sent as `session/prompt`. **Required**: an ACP agent takes no prompt on argv, so a profile without one spawns an agent that completes the handshake, waits, and does nothing. No default is possible — the text has to name the landbridge tools the way *this* harness spells them. Same `{...}` substitutions as the spawn argv. |
 | `profiles[]` | `auth_method` | Which of the agent's declared ACP `authMethods` to use. Consulted **only** when the agent refuses `session/new` with `-32000 "authentication required"` — a declared method means authentication is *available*, not required, so an agent already holding a credential is never authenticated. **Required on that refusal.** Unset is a fail, not a guess at the first declared method (that is often a browser login). `codex-acp` needs `"auth_method": "api-key"`. The request carries a method id and nothing else — the credential is the agent's own business, read from its environment (see `env`), so this key never holds a secret. `claude-agent-acp` declares no methods and needs none. |
 | `profiles[]` | `config_options` | String map sent as ACP `session/set_config_option` after `session/new` (or `session/load`). Each key is a `configId` the agent advertised on that session; the value must be one of that option's listed values. An unadvertised key, or a value the agent did not list, is skipped — not an error. OpenCode ACP defaults to `opencode/big-pickle` and ignores `opencode.json`, so this is how you pin `"model": "anthropic/claude-haiku-4-5-20251001"`. Leave it unset on an agent that advertises nothing (`claude-agent-acp`, and so far `codex-acp`). Strings only: boolean ACP options require a client capability this client does not declare. |
 | `profiles[]` | `session_mode` | ACP `session/set_mode` after `session/new` (or `session/load`). Sent only when that session advertised the `modeId`. Goose 1.46 defaults to `auto` (auto-approve); pin `"approve"` so permissions stay on `session/request_permission`. Unadvertised is skipped, not an error. |
 | `profiles[]` | `stop` | `wind_down_seconds` (default `30`) — the window an agent gets to end its turn after `session/cancel` before the portable tree-kill backstops it. No `mode` and no `message`: a stop is a cancel the agent is *specified* to honour, so there is nothing left for a mode to select. `ttl=0` kills immediately (§9 check 12). |
-| `profiles[]` | `env` | String map stamped on every spawn (and resume) of this profile. Values take the same `{session_id}` / `{machine_id}` / `{work_dir}` / `{harness_session_ref}` / `{mcp_url}` / `{worker_token}` substitutions `spawn` does. Applied after the reserved `DOCKET_*` stamps and before `telemetry.env`. The four names docketd owns — `DOCKET_MACHINE_ID`, `DOCKET_SESSION_ID`, `DOCKET_WORKER_TOKEN`, `DOCKET_TRACEPARENT` — are **refused at load**, not silently dropped. Use this to isolate a home (`GROK_HOME` / `CODEX_HOME`) only when the operator asked for a sealed box. Prefer `files[]` for additive project-local MCP. |
-| `profiles[]` | `files` | Files written into `{work_dir}` **before** the harness starts (#112 G2). Each entry is `path` + `contents` (both substituted) and optional `mode` (octal, default `0600`). A relative path is resolved against the work dir (so `.grok/config.toml` and `{work_dir}/.grok/config.toml` land in the same place). After substitution the path must stay under the work dir — `..` that escapes fails the spawn. Parent directories are created. This is how a Grok profile drops `{work_dir}/.grok/config.toml` so Grok **merges** docket with `~/.grok` instead of replacing it. |
-| `profiles[]` | `hooks` | Argv hooks, **never a shell** (§10). `before_spawn` runs after `files[]` and before `Process.Start`; non-zero or timeout (10s) is fail-closed (`spawn_failed`). `after_exit` is best-effort after the worker's `exited` and stray reap, skipped for superseded instances. Hook processes get `DOCKET_MACHINE_ID`, `DOCKET_HOOK`, and the same `profiles[].env` map the worker does (minus reserved `DOCKET_*`), not `DOCKET_SESSION_ID` / `DOCKET_WORKER_TOKEN`. Use only when the harness will not read a project-local file (Codex / `CODEX_HOME`). |
-| `profiles[]` | `telemetry` | `otel` bool (opt-in, default **false**), `endpoint` (OTLP destination; falls back to the one docketd inherited), and `env` (a string map of harness-specific variables, applied verbatim). When on, docketd sets the vendor-neutral `OTEL_*` exporter variables and appends `docket.session_id`/`docket.machine_id` to `OTEL_RESOURCE_ATTRIBUTES`, so the harness's own token/cost telemetry is attributable per task (§10). `otel: true` with **no endpoint configured and none inherited sets nothing at all** and warns once — telemetry is never enabled without a destination. Claude Code additionally needs `"env": { "CLAUDE_CODE_ENABLE_TELEMETRY": "1" }` (its own flag is data, since docketd holds no harness knowledge). **Visibility only**: Docket ingests none of it and enforces no ceiling — see [docs/TELEMETRY.md](../../../docs/TELEMETRY.md). |
+| `profiles[]` | `env` | String map stamped on every spawn (and resume) of this profile. Values take the same `{session_id}` / `{machine_id}` / `{work_dir}` / `{harness_session_ref}` / `{mcp_url}` / `{worker_token}` substitutions `spawn` does. Applied after the reserved `LANDBRIDGE_*` stamps and before `telemetry.env`. The four names landbridged owns — `LANDBRIDGE_MACHINE_ID`, `LANDBRIDGE_SESSION_ID`, `LANDBRIDGE_WORKER_TOKEN`, `LANDBRIDGE_TRACEPARENT` — are **refused at load**, not silently dropped. Use this to isolate a home (`GROK_HOME` / `CODEX_HOME`) only when the operator asked for a sealed box. Prefer `files[]` for additive project-local MCP. |
+| `profiles[]` | `files` | Files written into `{work_dir}` **before** the harness starts (#112 G2). Each entry is `path` + `contents` (both substituted) and optional `mode` (octal, default `0600`). A relative path is resolved against the work dir (so `.grok/config.toml` and `{work_dir}/.grok/config.toml` land in the same place). After substitution the path must stay under the work dir — `..` that escapes fails the spawn. Parent directories are created. This is how a Grok profile drops `{work_dir}/.grok/config.toml` so Grok **merges** landbridge with `~/.grok` instead of replacing it. |
+| `profiles[]` | `hooks` | Argv hooks, **never a shell** (§10). `before_spawn` runs after `files[]` and before `Process.Start`; non-zero or timeout (10s) is fail-closed (`spawn_failed`). `after_exit` is best-effort after the worker's `exited` and stray reap, skipped for superseded instances. Hook processes get `LANDBRIDGE_MACHINE_ID`, `LANDBRIDGE_HOOK`, and the same `profiles[].env` map the worker does (minus reserved `LANDBRIDGE_*`), not `LANDBRIDGE_SESSION_ID` / `LANDBRIDGE_WORKER_TOKEN`. Use only when the harness will not read a project-local file (Codex / `CODEX_HOME`). |
+| `profiles[]` | `telemetry` | `otel` bool (opt-in, default **false**), `endpoint` (OTLP destination; falls back to the one landbridged inherited), and `env` (a string map of harness-specific variables, applied verbatim). When on, landbridged sets the vendor-neutral `OTEL_*` exporter variables and appends `landbridge.session_id`/`landbridge.machine_id` to `OTEL_RESOURCE_ATTRIBUTES`, so the harness's own token/cost telemetry is attributable per task (§10). `otel: true` with **no endpoint configured and none inherited sets nothing at all** and warns once — telemetry is never enabled without a destination. Claude Code additionally needs `"env": { "CLAUDE_CODE_ENABLE_TELEMETRY": "1" }` (its own flag is data, since landbridged holds no harness knowledge). **Visibility only**: Landbridge ingests none of it and enforces no ceiling — see [docs/TELEMETRY.md](../../../docs/TELEMETRY.md). |
 | `profiles[]` | `logs` | §12 machine-local transcript capture: `capture` (bool, default **false**), `max_bytes` (per-stream cap, default 50 MiB), `prune_after_days` (local hygiene, default 7, `0` disables). There is no `format` or `path`: both were read by nothing and have been removed, and a config still carrying either is accepted unchanged — see [Transcript capture](#transcript-capture-12) below. |
 | `profiles[]` | `max_concurrent` | Optional hard cap for a licence/rate/posture reason, unrelated to load (§10). |
 | `profiles[]` | `processes` | §10 agent-started **processes**: `agent_initiated` (bool, default **false**) and `max` (default 8). Named `processes`, not `services` — they are different things (§10). Whether a task on this profile may call `start_process`, and how many the machine may hold. |
-| `services[]` | — | Optional: long-lived processes `docketd` supervises as its own children. See [Operator-declared services](#operator-declared-services-10) below. |
+| `services[]` | — | Optional: long-lived processes `landbridged` supervises as its own children. See [Operator-declared services](#operator-declared-services-10) below. |
 
 ## Operator-declared services (§10)
 
 A worker that starts `npm run dev` loses it the moment its task ends — the service is
-inside the task's process tree, which is tree-killed, and it carries `DOCKET_*`, which
+inside the task's process tree, which is tree-killed, and it carries `LANDBRIDGE_*`, which
 the stray reaper matches. For a service that must outlive the task using it, declare it
-here and `docketd` supervises it as **its own child**, outside every task's tree:
+here and `landbridged` supervises it as **its own child**, outside every task's tree:
 
 ```jsonc
 "services": [
@@ -61,34 +61,34 @@ here and `docketd` supervises it as **its own child**, outside every task's tree
 ```
 
 **Why this is not an escape hatch.** The process is not a descendant of any harness, so
-the task tree-kill does not reach it, and it is tagged with `DOCKET_MACHINE_ID` but
-deliberately **not** `DOCKET_SESSION_ID` — so the restart sweep (keyed on machine id) reaps
-the previous generation when `docketd` restarts, while per-task exit cleanup (which
+the task tree-kill does not reach it, and it is tagged with `LANDBRIDGE_MACHINE_ID` but
+deliberately **not** `LANDBRIDGE_SESSION_ID` — so the restart sweep (keyed on machine id) reaps
+the previous generation when `landbridged` restarts, while per-task exit cleanup (which
 requires a matching task id) steps over it. It escapes the task's lifetime while staying
-inside Docket's kill guarantee, on every OS, with no `setsid` and no environment
+inside Landbridge's kill guarantee, on every OS, with no `setsid` and no environment
 scrubbing. The worker skill forbids the other route to the same effect for exactly that
 reason.
 
 **Names and ports must both be unique on a machine.** Names because they are identifiers
 (and directory names); ports because a forward dial is resolved to a service *by port*, so a
 shared port would make that lookup answer for whichever service came first, and the resulting
-refusal would make no sense from the consumer's side. `docketd` rejects either at config load
+refusal would make no sense from the consumer's side. `landbridged` rejects either at config load
 and names both offenders — it prints the problem and exits non-zero before connecting, so this
 is caught at start rather than at the first dial.
 
 **`readiness` is a real check.** The port must accept a connection before the service is
 reported `running`. That is what a holder task waits for before calling
-`register_service` (§8.2), and what lets `docketd` refuse a forward dial for a service
+`register_service` (§8.2), and what lets `landbridged` refuse a forward dial for a service
 that is down instead of connecting to whatever else may hold the port.
 
-**Restart, not re-adopt.** On `docketd` restart every service is killed and started
+**Restart, not re-adopt.** On `landbridged` restart every service is killed and started
 again from config; there is no PID registry and no attempt to inherit survivors. Absolute
 paths in `spawn` and an explicit `env` matter for the same reason they do under a system
-service manager: the service gets `docketd`'s environment, not your shell's.
+service manager: the service gets `landbridged`'s environment, not your shell's.
 
 **`backend`** is `direct` today and a config naming anything else is refused rather than
 quietly supervised the other way. Delegation to `systemd-run`/`pm2`/`docker` is a later
-option, and it costs the property refuse-at-dial relies on: `docketd` would no longer own
+option, and it costs the property refuse-at-dial relies on: `landbridged` would no longer own
 the process, so "is my service up" becomes a query rather than a fact.
 
 **To stop a service, set `enabled: false`** — not a dashboard button, and deliberately so.
@@ -103,7 +103,7 @@ than connecting to whatever else has taken it.
 path — the `services[]` block above is for operator-owned fixtures. The two are different
 things and §10 defines both: a **service** is operator-declared and restart-supervised (a
 daemon); a **process** is agent-started via `start_process`, **never restarted**, and lives
-until something stops it or this `docketd` restarts (a job). Same supervision, same machine
+until something stops it or this `landbridged` restarts (a job). Same supervision, same machine
 tagging, same stray-sweep bound.
 
 Gate processes per profile with `processes.agent_initiated`; cap them with `processes.max`. Names
@@ -130,35 +130,35 @@ be useful alongside — see the archetypes below.
 
 ## Spawn substitutions
 
-`docketd` substitutes these `{...}` tokens in each `spawn` arg and each
+`landbridged` substitutes these `{...}` tokens in each `spawn` arg and each
 `profiles[].env` value (and injects the first three as environment on every
 spawn, not configurably — §10):
 
 | Token / env | Value |
 |---|---|
-| `{session_id}` / `DOCKET_SESSION_ID` | The dispatched Docket session id. |
-| `{machine_id}` / `DOCKET_MACHINE_ID` | This machine's id. |
+| `{session_id}` / `LANDBRIDGE_SESSION_ID` | The dispatched Landbridge session id. |
+| `{machine_id}` / `LANDBRIDGE_MACHINE_ID` | This machine's id. |
 | `{work_dir}` | `{work_root}/{session_id}`, the spawn cwd. |
-| `{mcp_config}` | Path to the generated MCP config `docketd` writes to `{work_dir}/mcp.json` (mode 0600) — **only when this token appears in spawn or resume argv**. Prefer `files[]` + `{worker_token}` / `{mcp_url}` (below) for a new profile; this token is the Claude convenience that remains so existing argv keeps working. |
-| `{mcp_url}` | The plane's public MCP URL (`Docket:PublicMcpUrl`). Filled by the plane on every dispatch so a `files[]` body can name the URL without parsing `mcp.json`. Also stamped on the worker as `DOCKET_MCP_URL`. |
-| `{worker_token}` | The minted worker-instance token (`dkt_w_` + 64 hex). For a `files[]` body that must embed the bearer (Claude's `--mcp-config` does not expand `${DOCKET_WORKER_TOKEN}`). Same secret as `DOCKET_WORKER_TOKEN` on the spawn env. |
+| `{mcp_config}` | Path to the generated MCP config `landbridged` writes to `{work_dir}/mcp.json` (mode 0600) — **only when this token appears in spawn or resume argv**. Prefer `files[]` + `{worker_token}` / `{mcp_url}` (below) for a new profile; this token is the Claude convenience that remains so existing argv keeps working. |
+| `{mcp_url}` | The plane's public MCP URL (`Landbridge:PublicMcpUrl`). Filled by the plane on every dispatch so a `files[]` body can name the URL without parsing `mcp.json`. Also stamped on the worker as `LANDBRIDGE_MCP_URL`. |
+| `{worker_token}` | The minted worker-instance token (`lbr_w_` + 64 hex). For a `files[]` body that must embed the bearer (Claude's `--mcp-config` does not expand `${LANDBRIDGE_WORKER_TOKEN}`). Same secret as `LANDBRIDGE_WORKER_TOKEN` on the spawn env. |
 | `{harness_session_ref}` | The ACP harness resume token, when the plane has one. Resume itself is `session/load` on the connection, not an argv token. |
-| `DOCKET_WORKER_TOKEN` | The minted worker-instance token (also `{worker_token}`). |
+| `LANDBRIDGE_WORKER_TOKEN` | The minted worker-instance token (also `{worker_token}`). |
 
 ## The plane's MCP server, and how a worker gets it
 
 At dispatch the control plane mints the worker's token and builds its MCP client config
-(`DispatchService`). `docketd` hands it to the agent as a **`session/new` parameter** —
+(`DispatchService`). `landbridged` hands it to the agent as a **`session/new` parameter** —
 ACP's `mcpServers`, one entry, HTTP transport, bearer header:
 
 ```json
-{ "type": "http", "name": "docket",
+{ "type": "http", "name": "landbridge",
   "url": "https://plane.example/mcp",
-  "headers": [{ "name": "Authorization", "value": "Bearer dkt_w_<worker-instance-token>" }] }
+  "headers": [{ "name": "Authorization", "value": "Bearer lbr_w_<worker-instance-token>" }] }
 ```
 
-The `url` is the plane's public MCP endpoint (`Docket:PublicMcpUrl` / `DOCKET_PUBLIC_MCP_URL`;
-default `http://127.0.0.1:5000`). This is a worker's **only** channel to Docket (§5): it
+The `url` is the plane's public MCP endpoint (`Landbridge:PublicMcpUrl` / `LANDBRIDGE_PUBLIC_MCP_URL`;
+default `http://127.0.0.1:5000`). This is a worker's **only** channel to Landbridge (§5): it
 authenticates as the dispatched instance, and its token dies with the instance (§9 check 14).
 
 **Nothing is written to disk.** The stream protocol wrote this config into the work dir 0600
@@ -178,7 +178,7 @@ only when something actually does (#112 G11). No profile in this document needs 
 > capability table is what they answered. What was *not* done here is an authenticated
 > session — no provider credentials were available — so `session/prompt`, tool-call
 > reporting and `session/load` are still spec-and-test claims rather than observed ones.
-> `Docket.Runner.Tests/AcpClientTests` pins docketd's whole half of the conversation against
+> `Landbridge.Runner.Tests/AcpClientTests` pins landbridged's whole half of the conversation against
 > a scripted peer. The `RealOpenCode`/`RealCodex`/`RealClaude` opt-in tiers are where the
 > rest gets confirmed.
 
@@ -225,7 +225,7 @@ npm install -g @agentclientprotocol/codex-acp
 
 OpenCode, Grok, and Goose need nothing extra — their ACP server is a subcommand of the CLI you
 already installed. Pin the versions the way you pin the harnesses: an adapter is a second
-upstream between `docketd` and the model, and it moves on its own schedule.
+upstream between `landbridged` and the model, and it moves on its own schedule.
 
 The protocol this replaced was the same exercise four times over: read a vendor's NDJSON,
 guess which key holds the session id, discover the hard way that a counter is nested one
@@ -252,27 +252,27 @@ fails the load.
 
 **The dead-man's switch survives, and the spec agrees with it.** ACP's stdio
 transport defines shutdown as *"the client terminates the subprocess after closing stdin"* —
-which is exactly what `stdin: deadman` already means. The held write end says `docketd` is
-alive; its EOF says `docketd` is gone. So an ACP profile keeps the cooperative kill for
+which is exactly what `stdin: deadman` already means. The held write end says `landbridged` is
+alive; its EOF says `landbridged` is gone. So an ACP profile keeps the cooperative kill for
 free, and the `stdin: closed` trade-off that Codex, OpenCode and Grok each forced in their
 own way simply does not arise: an ACP agent reads stdin as a protocol, not as a prompt, so
 the blocking read that caused it never happens.
 
 ### The prompt is the only harness-specific text left
 
-One thing ACP does **not** standardize: what the agent calls docket's MCP tools. ACP is the
+One thing ACP does **not** standardize: what the agent calls landbridge's MCP tools. ACP is the
 client↔agent channel; tool naming belongs to the agent↔MCP one, so each harness keeps its
 own spelling and each `prompt` below differs only in that.
 
-| Harness | Docket tool spelling |
+| Harness | Landbridge tool spelling |
 |---|---|
-| Claude, Codex | `mcp__docket__get_session` |
-| OpenCode | `docket_get_session` |
-| Grok, Goose | `docket__get_session` |
+| Claude, Codex | `mcp__landbridge__get_session` |
+| OpenCode | `landbridge_get_session` |
+| Grok, Goose | `landbridge__get_session` |
 
 Everything else in these profiles is the same profile. Goose's spelling is from its
-extension naming (`{server}__{tool}` on the `docket` MCP server handed over at
-`session/new`), not a live Docket turn — confirm on the first one.
+extension naming (`{server}__{tool}` on the `landbridge` MCP server handed over at
+`session/new`), not a live Landbridge turn — confirm on the first one.
 
 ### Worked example — OpenCode over ACP
 
@@ -281,27 +281,27 @@ follow differ only in the spawn argv and the tool spelling.
 
 ```jsonc
 {
-  "machine": { "work_root": "/var/lib/docketd/work" },
+  "machine": { "work_root": "/var/lib/landbridged/work" },
   "profiles": [
     {
       "name": "default",
       // `opencode acp` starts OpenCode as an ACP agent over stdio. NOT `opencode run` —
       // that is the stream-mode command, and pointing an acp profile at it produces a
-      // worker that never answers `initialize`. docketd reports exactly that, per task.
+      // worker that never answers `initialize`. landbridged reports exactly that, per task.
       "spawn": ["opencode", "acp"],
       // `opencode acp` does not take `--model`. It defaults every session to
       // opencode/big-pickle and ignores opencode.json; the pin is ACP
-      // session/set_config_option, which docketd sends for each pair here that
+      // session/set_config_option, which landbridged sends for each pair here that
       // the agent advertised.
       "config_options": { "model": "anthropic/claude-haiku-4-5-20251001" },
       // The opening turn, on the wire instead of in the argv. Note the tool names are
       // still harness-specific: ACP standardizes the CLIENT-agent channel, not the
-      // agent-MCP one, so OpenCode still spells docket's tools `docket_<name>`.
-      "prompt": "You are a Docket worker on a live session. First call the docket_get_session MCP tool to read your assignment (namespace, description, completion_criteria, workspace, attempt). Do the work inside the assigned workspace. When you think you are done, call docket_report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself — and stay up; the Lead may reply. If you are blocked or a decision is above your scope, call docket_request_input instead of guessing. You do not complete the session yourself.",
+      // agent-MCP one, so OpenCode still spells landbridge's tools `landbridge_<name>`.
+      "prompt": "You are a Landbridge worker on a live session. First call the landbridge_get_session MCP tool to read your assignment (namespace, description, completion_criteria, workspace, attempt). Do the work inside the assigned workspace. When you think you are done, call landbridge_report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself — and stay up; the Lead may reply. If you are blocked or a decision is above your scope, call landbridge_request_input instead of guessing. You do not complete the session yourself.",
       // The wake-up turn, sent when there is new input on the assignment (an answered
       // question). Configuration, never content: the answer is pulled by the worker over
       // MCP, and that pull is the read receipt (§11).
-      "follow_up": "There is new input on your assignment. Call docket_get_session to read it, then continue.",
+      "follow_up": "There is new input on your assignment. Call landbridge_get_session to read it, then continue.",
       // No events block: ACP is the event source. No resume block: resume is session/load.
       // No stdin key: deadman is correct and `closed` is refused.
       "stop": { "wind_down_seconds": 30 },
@@ -338,9 +338,9 @@ there is no interactive login step in the enroll path.
       "name": "default",
       // The adapter, not `claude`. It spawns claude itself.
       "spawn": ["claude-agent-acp"],
-      "prompt": "You are a Docket worker on a live session. First call the mcp__docket__get_session MCP tool to read your assignment (namespace, description, completion_criteria, workspace, attempt). Read the docket-worker skill. Do the work inside the assigned workspace. When you think you are done, call mcp__docket__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself — and stay up; the Lead may reply. If you are blocked or a decision is above your scope, call mcp__docket__request_input instead of guessing. You do not complete the session yourself.",
-      "follow_up": "There is new input on your assignment. Call mcp__docket__get_session to read it, then continue.",
-      // Model and turn caps are the adapter's business, not a docketd key — it reads the
+      "prompt": "You are a Landbridge worker on a live session. First call the mcp__landbridge__get_session MCP tool to read your assignment (namespace, description, completion_criteria, workspace, attempt). Read the landbridge-worker skill. Do the work inside the assigned workspace. When you think you are done, call mcp__landbridge__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself — and stay up; the Lead may reply. If you are blocked or a decision is above your scope, call mcp__landbridge__request_input instead of guessing. You do not complete the session yourself.",
+      "follow_up": "There is new input on your assignment. Call mcp__landbridge__get_session to read it, then continue.",
+      // Model and turn caps are the adapter's business, not a landbridged key — it reads the
       // same environment claude does. `--max-turns` has no ACP equivalent, so on this
       // profile the bound is the model plus the §10 no-progress ceiling. See the cost note.
       "env": { "ANTHROPIC_MODEL": "claude-haiku-4-5-20251001" },
@@ -371,8 +371,8 @@ ACP simply has.
     {
       "name": "default",
       "spawn": ["codex-acp"],
-      "prompt": "You are a Docket worker on a live session. First call the mcp__docket__get_session MCP tool to read your assignment. Do the work inside the assigned workspace. When you think you are done, call mcp__docket__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself — and stay up; the Lead may reply. If you are blocked or a decision is above your scope, call mcp__docket__request_input instead of guessing. You do not complete the session yourself.",
-      "follow_up": "There is new input on your assignment. Call mcp__docket__get_session to read it, then continue.",
+      "prompt": "You are a Landbridge worker on a live session. First call the mcp__landbridge__get_session MCP tool to read your assignment. Do the work inside the assigned workspace. When you think you are done, call mcp__landbridge__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself — and stay up; the Lead may reply. If you are blocked or a decision is above your scope, call mcp__landbridge__request_input instead of guessing. You do not complete the session yourself.",
+      "follow_up": "There is new input on your assignment. Call mcp__landbridge__get_session to read it, then continue.",
       // codex-acp refuses session/new until ACP `authenticate` has run, and declares two
       // methods: `api-key` (from the environment) and `chat-gpt` (a cached login). The
       // method is required on the profile — guessing the first declared one is how a
@@ -392,7 +392,7 @@ sharpest reversal in the file: `codex exec` blocks forever on a held-open stdin 
 is why its stream profile *must* close stdin and give up the dead-man's switch, whereas
 `codex-acp` reads stdin as a protocol and keeps the switch. The mandatory six-key
 `events.mapping` — gone. The static `~/.codex/config.toml` with `bearer_token_env_var` —
-gone, along with its side effect of declaring a docket MCP server for every interactive
+gone, along with its side effect of declaring a landbridge MCP server for every interactive
 `codex` on the machine. And `resume.args` — gone; `codex-acp` declares `loadSession: true`.
 
 ### Worked example — Grok Build over ACP
@@ -413,8 +413,8 @@ gone, along with its side effect of declaring a docket MCP server for every inte
       // `grok agent stdio`, NOT `grok -p --output-format streaming-json`. The latter is an
       // output shape that merely resembles ACP; the former is the protocol.
       "spawn": ["grok", "agent", "stdio"],
-      "prompt": "You are a Docket worker on a live session. First call the docket__get_session MCP tool to read your assignment (namespace, description, completion_criteria, workspace, attempt). Do the work inside the assigned workspace. When you think you are done, call docket__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself — and stay up; the Lead may reply. If you are blocked or a decision is above your scope, call docket__request_input instead of guessing. You do not complete the session yourself.",
-      "follow_up": "There is new input on your assignment. Call docket__get_session to read it, then continue.",
+      "prompt": "You are a Landbridge worker on a live session. First call the landbridge__get_session MCP tool to read your assignment (namespace, description, completion_criteria, workspace, attempt). Do the work inside the assigned workspace. When you think you are done, call landbridge__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself — and stay up; the Lead may reply. If you are blocked or a decision is above your scope, call landbridge__request_input instead of guessing. You do not complete the session yourself.",
+      "follow_up": "There is new input on your assignment. Call landbridge__get_session to read it, then continue.",
       // 1.0.4+ gates project-local config behind folder trust and a work dir is a
       // throwaway folder. Carried over from the stream profile; re-confirm under ACP.
       "env": { "GROK_FOLDER_TRUST": "0" },
@@ -439,7 +439,7 @@ interactive configure, not a headless key. The operator must already have run
 
 `goose serve` is the remote HTTP/WebSocket server. It is **not** this profile. Spawn
 is `goose acp`, stdio, one process per task. To put Goose behind a WebSocket instead,
-wrap it with [`docket-acp-bridge`](../../../tools/Docket.AcpBridge/README.md):
+wrap it with [`landbridge-acp-bridge`](../../../tools/Landbridge.AcpBridge/README.md):
 `listen -- goose acp` on the far side, `connect <ws-url>` on `spawn`.
 
 ```jsonc
@@ -450,8 +450,8 @@ wrap it with [`docket-acp-bridge`](../../../tools/Docket.AcpBridge/README.md):
       // `goose acp`, NOT `goose serve` and NOT `goose run`. serve is a long-lived
       // remote transport; run is not the protocol.
       "spawn": ["goose", "acp"],
-      "prompt": "You are a Docket worker on a live session. First call the docket__get_session MCP tool to read your assignment (namespace, description, completion_criteria, workspace, attempt). Do the work inside the assigned workspace. When you think you are done, call docket__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself — and stay up; the Lead may reply. If you are blocked or a decision is above your scope, call docket__request_input instead of guessing. You do not complete the session yourself.",
-      "follow_up": "There is new input on your assignment. Call docket__get_session to read it, then continue.",
+      "prompt": "You are a Landbridge worker on a live session. First call the landbridge__get_session MCP tool to read your assignment (namespace, description, completion_criteria, workspace, attempt). Do the work inside the assigned workspace. When you think you are done, call landbridge__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself — and stay up; the Lead may reply. If you are blocked or a decision is above your scope, call landbridge__request_input instead of guessing. You do not complete the session yourself.",
+      "follow_up": "There is new input on your assignment. Call landbridge__get_session to read it, then continue.",
       // Goose 1.46's session/new starts on `auto` (auto-approve). Pin approve so
       // tool calls go through session/request_permission. Skipped if this
       // session did not advertise the mode.
@@ -480,7 +480,7 @@ Watch for the refusal line below on the first turn.
 ### The caveat that could make an ACP worker useless
 
 This client declares the ACP `fs` and `terminal` capabilities **UNSUPPORTED**. Those exist
-so an editor can hand an agent its unsaved buffers and its terminal panel; a Docket worker
+so an editor can hand an agent its unsaved buffers and its terminal panel; a Landbridge worker
 has its own work dir and its own shell, so an agent doing that I/O itself is the
 arrangement, not a degradation. All three measured agents carry their own tools.
 
@@ -490,13 +490,13 @@ no tools, and reports nothing, which reads exactly like a lazy model. So a refus
 is reported, once per method per task:
 
 ```
-docketd: task <id>: the agent asked docketd to perform 'terminal/create' and was refused —
+landbridged: task <id>: the agent asked landbridged to perform 'terminal/create' and was refused —
 this client declares the ACP fs and terminal capabilities UNSUPPORTED […] check whether this
 harness needs a client-side terminal (§10).
 ```
 
 If you see that line, the harness needs a client-side terminal and this profile will not
-work until docketd grows one. It is the first thing to look for when an ACP worker does
+work until landbridged grows one. It is the first thing to look for when an ACP worker does
 nothing.
 
 ### What `wind_down_seconds` means here
@@ -514,11 +514,11 @@ implement.
 
 §11 resume is `session/load` on the live connection: no respawn, no argv, and no replay
 cost paid twice. It is gated on the agent's `loadSession` capability, which **defaults to
-false** in the spec. An agent that does not declare it cold-starts, and `docketd` says so
+false** in the spec. An agent that does not declare it cold-starts, and `landbridged` says so
 per task rather than letting a resume quietly become one:
 
 ```
-docketd: task <id>: the plane handed back a resume ref but this agent does not declare the
+landbridged: task <id>: the plane handed back a resume ref but this agent does not declare the
 ACP 'loadSession' capability, so the transcript cannot be reloaded and this dispatch is a
 COLD START. Every redispatch of this task will be one (§11).
 ```
@@ -589,8 +589,8 @@ background processes (§10 `start_process`). Permissions go through
 
 ```jsonc
 "spawn": ["claude-agent-acp"],
-"prompt": "<opening turn naming mcp__docket__get_session / report_result / request_input>",
-"follow_up": "There is new input on your assignment. Call mcp__docket__get_session to read it, then continue.",
+"prompt": "<opening turn naming mcp__landbridge__get_session / report_result / request_input>",
+"follow_up": "There is new input on your assignment. Call mcp__landbridge__get_session to read it, then continue.",
 "processes": { "agent_initiated": true }
 ```
 
@@ -604,7 +604,7 @@ answers `session/request_permission`; deny what should not run. There is no
 
 The trade is blast radius: on an open profile, a prompt-injected worker can do
 anything the machine account can, including using every local MCP server's
-credentials. Docket's containment still holds at its own boundaries — the
+credentials. Landbridge's containment still holds at its own boundaries — the
 worker's plane token stays task-scoped (§5), and time is bounded by the
 no-progress ceiling (§10) — but the machine-local exposure is the
 operator's chosen risk. The two archetypes compose: one machine can declare a
@@ -625,13 +625,13 @@ databases for a Team, declare a profile that permits it and let the Lead route
 service work there by name.
 
 Worth knowing as the operator: a service started that way is **deliberately
-outside** `docketd`'s supervision — the service manager forks it, so it is
+outside** `landbridged`'s supervision — the service manager forks it, so it is
 neither a descendant of the harness (the tree-kill misses it) nor a carrier of
-`DOCKET_*` (the stray reaper's environment scan misses it). That is by
+`LANDBRIDGE_*` (the stray reaper's environment scan misses it). That is by
 construction, and it means stopping such a service is the service manager's job,
-not `docketd`'s: a `docketd` restart or a task kill will not take it down. The
+not `landbridged`'s: a `landbridged` restart or a task kill will not take it down. The
 worker skill forbids the other way of achieving the same escape — scrubbing
-`DOCKET_*` off a spawned process — precisely because that one defeats the kill
+`LANDBRIDGE_*` off a spawned process — precisely because that one defeats the kill
 guarantee for everything else too.
 
 ## Permissions (§11)
@@ -639,18 +639,18 @@ guarantee for everything else too.
 A permission request is part of the protocol: an agent that wants to use a tool its policy
 does not cover sends `session/request_permission`, with its own options attached, and waits.
 
-**docketd routes it through the plane.** The runner posts the worker bearer at
+**landbridged routes it through the plane.** The runner posts the worker bearer at
 `POST /worker/permission`, which is the same `PermissionRelay` as the MCP
 `request_permission` tool. A Lead or human answers with allow or deny. Allow maps
 to the agent's `allow_once` option, never `allow_always`. Deny maps to a reject
 option, or `cancelled` if the agent offered none.
 
 Do not put bypass / `--always-approve` / `--auto` on `spawn`. That skips a dialog
-Docket is now the one answering.
+Landbridge is now the one answering.
 
 ## Park vs wait
 
-A live ACP session is held **indefinitely**. `Docket:WaitTtl` is off by default (infinite).
+A live ACP session is held **indefinitely**. `Landbridge:WaitTtl` is off by default (infinite).
 The sweeper still requeues a task whose machine died while waiting.
 
 **`park_session` is the release.** A Lead or human who wants the machine back sends it; the
@@ -662,18 +662,18 @@ Answering a still-live wait is `answer_input_request`, which delivers the profil
 
 ## Transcript capture (§12)
 
-When a profile sets `logs.capture: true`, `docketd` records that worker's transcript
+When a profile sets `logs.capture: true`, `landbridged` records that worker's transcript
 locally. A `claude -p --output-format stream-json` worker's stdout **is** the full
 transcript of its work — the single most valuable artifact when a task goes wrong —
-so `docketd` **tees** it: the same stdout read that maps events (`events.source:
+so `landbridged` **tees** it: the same stdout read that maps events (`events.source:
 terminal`) also writes each line verbatim to a file, and stderr is captured alongside.
 Capture never disturbs event mapping or the stdin dead-man/stop path — it is a tee,
 not a divert — and it works for any `events.source` (with `none`, stdout is drained
 solely to capture it).
 
 **Where.** Under the **state dir** (the `credentials.json` dir; `--state-dir`,
-`DOCKET_STATE_DIR`, `$XDG_STATE_HOME/docket`, or `~/.docket`), **not** the per-task
-`work_root` scratch — the transcript must outlive a task teardown and a `docketd`
+`LANDBRIDGE_STATE_DIR`, `$XDG_STATE_HOME/landbridge`, or `~/.landbridge`), **not** the per-task
+`work_root` scratch — the transcript must outlive a task teardown and a `landbridged`
 restart, because per §11 the local transcript is the resume-after-reboot substrate.
 
 ```
@@ -688,7 +688,7 @@ ordinal is stable across a restart. Files open lazily on the first line (a silen
 stream leaves no file). The root, task dirs, and files are owner-only (0700/0600) — a
 transcript can capture credentials an agent echoed (§13).
 
-**What "verbatim" means — the line boundary.** Capture is **line-oriented**: `docketd`
+**What "verbatim" means — the line boundary.** Capture is **line-oriented**: `landbridged`
 reads a line, then writes that line plus a single `\n`. So "verbatim" is exact with
 respect to the **captured file** — the serving path returns the file's bytes unchanged,
 which is what spec §13's "served exactly as captured" states — but the capture step
@@ -711,20 +711,20 @@ byte-for-byte (raw ANSI, embedded binary), that is a byte-oriented capture mode,
 tweak to this one.
 
 **Size cap.** `max_bytes` (default 50 MiB) bounds each stream (stdout, stderr) per
-instance. On reaching it, `docketd` writes one truncation marker line
-(`{"docket":"transcript_truncated","limit_bytes":N}`) and stops writing that stream.
+instance. On reaching it, `landbridged` writes one truncation marker line
+(`{"landbridge":"transcript_truncated","limit_bytes":N}`) and stops writing that stream.
 It keeps draining the pipe (so the worker never blocks) and never kills the worker —
 logging is not allowed to affect the task.
 
 **Local pruning.** `prune_after_days` (default 7; `0` disables) is machine-local disk
-hygiene: on each capturing spawn, `docketd` removes any task's transcript dir whose
+hygiene: on each capturing spawn, `landbridged` removes any task's transcript dir whose
 newest file is older than the window. When profiles disagree, the most generous wins
 (any `0` keeps everything; otherwise the longest window). This window **is** the
 retention story: the control plane stores no transcript bytes and has no retention tier
 of its own (§12), so once the sweep removes a dir the transcript is gone everywhere.
 
 > ⚠️ **Turning capture on means raw agent output becomes readable from the dashboard.**
-> A transcript is served **verbatim** — Docket does **not** redact it (spec §13, open
+> A transcript is served **verbatim** — Landbridge does **not** redact it (spec §13, open
 > question 8) — so it may contain credentials the agent echoed, customer data, internal
 > hostnames, or anything else it read or printed. What limits exposure is scope, not
 > filtering: an operator reads it only through a **human** dashboard session (a Lead
@@ -734,7 +734,7 @@ of its own (§12), so once the sweep removes a dir the transcript is gone everyw
 
 **Serving (§12).** With capture on, a human operator can read a terminal task's
 transcript from the dashboard: the control plane asks this machine for one byte range at
-a time over the runner channel (`read-transcript`), and `docketd` replies with the file's
+a time over the runner channel (`read-transcript`), and `landbridged` replies with the file's
 bytes. Nothing is cached or stored plane-side, one range is in flight at a time (so a
 large transcript cannot crowd out heartbeats or a `kill`), and a machine that is offline
 simply has no readable transcript until it reconnects.
@@ -749,19 +749,19 @@ unknown keys are ignored — and behaves exactly as it already did.
 ## Validating for real — operator step, not an automated test
 
 The automated walking-skeleton test
-(`Docket.Mcp.Tests/WalkingSkeletonEndToEndTests`) proves the dispatch → spawn →
+(`Landbridge.Mcp.Tests/WalkingSkeletonEndToEndTests`) proves the dispatch → spawn →
 authenticate → `get_session` → `report_result` loop with a **scripted** MCP worker
-(`Docket.WorkerHarness`), no LLM. Running the argv above against **real**
+(`Landbridge.WorkerHarness`), no LLM. Running the argv above against **real**
 `claude -p` — confirming the bootstrap prompt, permission posture, and hooks
 actually behave on *your* machine — is the operator-run validation and belongs to
 the §17.0 feasibility spikes and the §11 conformance run, deliberately out of
 scope for CI.
 
 Stop delivery is the exception: it is no longer yours to characterize, because
-`Docket.MultiMachine.Tests/RealClaudeCollaborationTests` now runs the real binary in
+`Landbridge.MultiMachine.Tests/RealClaudeCollaborationTests` now runs the real binary in
 an opt-in tier and pins what a stop does to a `claude -p` worker — a kill at the
 deadline, with the transcript preserved via the session ref. What is still worth
 checking on your own machine is the *kill* (that the tree is really gone) and, if you
 declared `mode: message` for a non-`claude -p` harness, that a written turn is actually
-honoured there. Nothing but a real run can tell you the latter, which is why docketd
+honoured there. Nothing but a real run can tell you the latter, which is why landbridged
 does not claim it.

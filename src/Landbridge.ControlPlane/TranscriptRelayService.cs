@@ -1,10 +1,10 @@
 using System.Collections.Concurrent;
-using Docket.Contracts;
-using Docket.Core;
+using Landbridge.Contracts;
+using Landbridge.Core;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
-namespace Docket.ControlPlane;
+namespace Landbridge.ControlPlane;
 
 /// <summary>
 /// Relays one transcript read from a machine to a human operator (spec §12 serving). The
@@ -41,7 +41,7 @@ public sealed class TranscriptRelayService(
     /// <summary>
     /// How long one range may take before the read is abandoned. Generous next to a local
     /// file read plus two runner-channel hops, and bounded so a machine that is connected
-    /// but wedged — or one running a <c>docketd</c> that predates
+    /// but wedged — or one running a <c>landbridged</c> that predates
     /// <see cref="ReadTranscriptCommand"/> and therefore rejects it at the wire boundary
     /// without replying — surfaces as a clear failure instead of a hung page.
     /// </summary>
@@ -136,7 +136,7 @@ public sealed class TranscriptRelayService(
                 return new TranscriptResult.Unavailable(
                     TranscriptUnavailable.Timeout,
                     $"Machine '{machine}' did not answer within {RangeTimeout.TotalSeconds:N0}s. It may be " +
-                    "wedged, or running a docketd that predates transcript serving.");
+                    "wedged, or running a landbridged that predates transcript serving.");
             }
 
             return Interpret(reply, machine);

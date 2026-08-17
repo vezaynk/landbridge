@@ -1,7 +1,7 @@
-using Docket.Meta.Data;
-using Docket.Meta.Substrate;
+using Landbridge.Meta.Data;
+using Landbridge.Meta.Substrate;
 
-namespace Docket.Meta.Provisioning;
+namespace Landbridge.Meta.Provisioning;
 
 /// <summary>The health rollup meta renders + the saga's readiness gate (design note §6).</summary>
 public sealed record InstanceHealth(bool PgRunning, bool McpResponding, bool RelayRunning)

@@ -3,13 +3,13 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Net.WebSockets;
-using Docket.Contracts;
-using Docket.Core;
+using Landbridge.Contracts;
+using Landbridge.Core;
 
-namespace Docket.Runner;
+namespace Landbridge.Runner;
 
 /// <summary>
-/// The docketd data planes for a relay forward (spec §8.3): the concurrent I/O
+/// The landbridged data planes for a relay forward (spec §8.3): the concurrent I/O
 /// behind <c>open-forward</c>. On the <b>consumer</b> side it binds a loopback
 /// listener, reports the bound port via <c>forward-opened</c>, accepts a
 /// connection, opens an authenticated tunnel to the relay, and splices the TCP
@@ -41,7 +41,7 @@ public sealed class RelayForwarder : IAsyncDisposable
     /// How long teardown lets the close handshake complete (the relay replies with
     /// a Close frame so this end's final in-flight frame drains) before aborting
     /// the tunnel (spec §8.3). Normally milliseconds — a safety cap against a peer
-    /// that never replies, mirroring <c>Docket.Relay.ForwardEntry</c>.
+    /// that never replies, mirroring <c>Landbridge.Relay.ForwardEntry</c>.
     /// </summary>
     private static readonly TimeSpan CloseHandshakeTimeout = TimeSpan.FromSeconds(10);
 
@@ -61,10 +61,10 @@ public sealed class RelayForwarder : IAsyncDisposable
 
     /// <param name="serviceOnPort">
     /// §8.2/§8.3 refuse-at-dial: asks whether a loopback port belongs to a
-    /// docketd-supervised service and, if so, whether that service is currently up.
+    /// landbridged-supervised service and, if so, whether that service is currently up.
     /// Returns null when this machine declares no service on the port — which must NOT
     /// be treated as "down", because the port may legitimately belong to a
-    /// worker-started listener docketd knows nothing about.
+    /// worker-started listener landbridged knows nothing about.
     /// </param>
     public RelayForwarder(
         OutboundEventRing ring, TimeSpan? acceptTimeout = null, Action<string>? log = null,
@@ -228,7 +228,7 @@ public sealed class RelayForwarder : IAsyncDisposable
         // one: dial a port whose service has died and something else may have taken it,
         // so the consumer forwards into the wrong stack and gets plausible wrong answers
         // instead of an error. Nobody could close that before, because nobody knew which
-        // listener was the intended one. For a docketd-supervised service, docketd does.
+        // listener was the intended one. For a landbridged-supervised service, landbridged does.
         // Only a declared-and-down service refuses; an unknown port dials as before,
         // since it may be a worker-started listener that is none of our business.
         if (_serviceOnPort?.Invoke(command.Port) is false)
@@ -317,7 +317,7 @@ public sealed class RelayForwarder : IAsyncDisposable
         // WebSocket op aborts the socket and RSTs the tunnel, discarding a final
         // frame still in flight to the relay (e.g. the tail of a producer service's
         // response, or a proxied websocket's close frame) — the same §8.3 teardown
-        // hazard fixed in Docket.Relay.ForwardEntry. Bounded so a stuck peer cannot
+        // hazard fixed in Landbridge.Relay.ForwardEntry. Bounded so a stuck peer cannot
         // hang teardown; do NOT collapse this back to an immediate cancel.
         await CloseWebSocketQuietlyAsync(ws);
         var drained = Task.WhenAll(tcpToWs, wsToTcp);

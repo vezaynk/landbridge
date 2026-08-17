@@ -1,9 +1,9 @@
 using System.Security.Cryptography;
 using System.Text;
-using Docket.ControlPlane;
-using Docket.ControlPlane.Auth;
+using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Auth;
 
-namespace Docket.Mcp;
+namespace Landbridge.Mcp;
 
 /// <summary>
 /// The relay-facing grant-validation endpoint (spec §8.3). Plain HTTP, in the
@@ -14,20 +14,20 @@ namespace Docket.Mcp;
 ///
 /// <para><b>Auth is a shared bearer, kept out of the Principal system.</b> The
 /// relay is not an agent, a machine, or any §5 credential class — the simplest
-/// correct v1 is a configured shared secret (<c>Docket:RelayValidation:Bearer</c>)
+/// correct v1 is a configured shared secret (<c>Landbridge:RelayValidation:Bearer</c>)
 /// compared in constant time. It is <b>fail-closed</b>: with no bearer configured
 /// the endpoint validates nothing and refuses every call with 503, loudly, rather
 /// than answering an unauthenticated caller. A first-class relay credential class
 /// is a possible follow-up.</para>
 ///
 /// <para>Because this endpoint is deliberately outside <c>RequireAuthorization</c>,
-/// the ambient Docket auth handler does not gate it; the handler reads and checks
+/// the ambient Landbridge auth handler does not gate it; the handler reads and checks
 /// the bearer itself.</para>
 /// </summary>
 public static class RelayValidationEndpoints
 {
     /// <summary>Config key for the shared bearer the relay must present (§8.3).</summary>
-    public const string BearerConfigKey = "Docket:RelayValidation:Bearer";
+    public const string BearerConfigKey = "Landbridge:RelayValidation:Bearer";
 
     /// <summary>The POST /relay/validate body: what tunnel is being opened (§8.3).</summary>
     public sealed record ValidateRequest(string? Grant, string? ForwardId, string? Role);
@@ -77,7 +77,7 @@ public static class RelayValidationEndpoints
         ILoggerFactory loggerFactory,
         CancellationToken ct)
     {
-        var logger = loggerFactory.CreateLogger("Docket.Mcp.RelayValidation");
+        var logger = loggerFactory.CreateLogger("Landbridge.Mcp.RelayValidation");
 
         var configured = config[BearerConfigKey];
         if (string.IsNullOrEmpty(configured))
@@ -125,7 +125,7 @@ public static class RelayValidationEndpoints
         ILoggerFactory loggerFactory,
         CancellationToken ct)
     {
-        var logger = loggerFactory.CreateLogger("Docket.Mcp.RelayValidation");
+        var logger = loggerFactory.CreateLogger("Landbridge.Mcp.RelayValidation");
 
         var configured = config[BearerConfigKey];
         if (string.IsNullOrEmpty(configured))

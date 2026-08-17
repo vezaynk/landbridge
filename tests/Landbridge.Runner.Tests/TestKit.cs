@@ -1,20 +1,20 @@
 using System.Diagnostics;
-using Docket.Core;
+using Landbridge.Core;
 
-namespace Docket.Runner.Tests;
+namespace Landbridge.Runner.Tests;
 
 /// <summary>Shared helpers: locating the harness binary, temp roots, and polling.</summary>
 internal static class TestKit
 {
     /// <summary>
-    /// The apphost path of the built <c>Docket.Runner.TestHarness</c>, spawned
+    /// The apphost path of the built <c>Landbridge.Runner.TestHarness</c>, spawned
     /// directly (argv, no shell — §10). Spawning the native apphost rather than
     /// <c>dotnet exec</c> keeps <c>Environment.ProcessPath</c> pointing at the
     /// harness, so its own grandchild-spawn re-executes the harness.
     /// </summary>
     public static string HarnessPath()
     {
-        var dll = typeof(Docket.Runner.TestHarness.Program).Assembly.Location;
+        var dll = typeof(Landbridge.Runner.TestHarness.Program).Assembly.Location;
         var dir = Path.GetDirectoryName(dll)!;
         var stem = Path.GetFileNameWithoutExtension(dll);
         var apphost = Path.Combine(dir, OperatingSystem.IsWindows() ? stem + ".exe" : stem);
@@ -23,7 +23,7 @@ internal static class TestKit
 
     public static string NewWorkRoot()
     {
-        var dir = Path.Combine(Path.GetTempPath(), "docketd-tests", Guid.NewGuid().ToString("N"));
+        var dir = Path.Combine(Path.GetTempPath(), "landbridged-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
         return dir;
     }
@@ -168,5 +168,5 @@ internal sealed class FakeCpuSampler : ICpuSampler
 /// stray cleanup, so the portable kill half (StrayReaper) is exercised for real.</summary>
 internal sealed class FakeProcessInventory(params TaggedProcess[] processes) : IProcessInventory
 {
-    public IReadOnlyList<TaggedProcess> ListDocketProcesses() => processes;
+    public IReadOnlyList<TaggedProcess> ListLandbridgeProcesses() => processes;
 }

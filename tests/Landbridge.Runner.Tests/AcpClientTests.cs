@@ -1,18 +1,18 @@
 using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
-using Docket.Core;
+using Landbridge.Core;
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.Runner.Tests;
+namespace Landbridge.Runner.Tests;
 
 /// <summary>
-/// §10: what docketd's Agent Client Protocol client says, and what it makes of what it
+/// §10: what landbridged's Agent Client Protocol client says, and what it makes of what it
 /// hears back.
 ///
 /// <para><b>Why these are conversation tests, not parser tests.</b> The event-relay suites
 /// this replaced fed a fixed NDJSON blob to a reader and asserted on what came out, because
-/// in stream mode docketd only ever listened. ACP inverts that: an agent that is never
+/// in stream mode landbridged only ever listened. ACP inverts that: an agent that is never
 /// spoken to produces nothing at all, so the thing under test is a two-way exchange and the
 /// fixture has to be an agent, not a transcript. Hence <see cref="FakeAgent"/> — a scripted
 /// peer that answers requests the way the spec says an agent must, and can be told to answer
@@ -34,7 +34,7 @@ public sealed class AcpClientTests
     // ── the conversation ────────────────────────────────────────────────────────
 
     /// <summary>
-    /// The whole point of the mode: docketd speaks first, and in the order the spec
+    /// The whole point of the mode: landbridged speaks first, and in the order the spec
     /// requires. An agent that is merely spawned does nothing, so this sequence — and the
     /// fact that the prompt travels in <c>session/prompt</c> rather than the argv — IS the
     /// protocol migration.
@@ -51,9 +51,9 @@ public sealed class AcpClientTests
 
         var init = agent.Received("initialize");
         Assert.Equal(AcpClient.LatestProtocolVersion, init.GetProperty("params").GetProperty("protocolVersion").GetInt32());
-        Assert.Equal("docketd", init.GetProperty("params").GetProperty("clientInfo").GetProperty("name").GetString());
+        Assert.Equal("landbridged", init.GetProperty("params").GetProperty("clientInfo").GetProperty("name").GetString());
 
-        // Declared UNSUPPORTED on purpose: a Docket worker has its own shell and its own
+        // Declared UNSUPPORTED on purpose: a Landbridge worker has its own shell and its own
         // work dir, so it never needs its supervisor to read or write files for it.
         var fs = init.GetProperty("params").GetProperty("clientCapabilities").GetProperty("fs");
         Assert.False(fs.GetProperty("readTextFile").GetBoolean());
@@ -179,12 +179,12 @@ public sealed class AcpClientTests
 
         var server = p.GetProperty("mcpServers").EnumerateArray().Single();
         Assert.Equal("http", server.GetProperty("type").GetString());
-        Assert.Equal("docket", server.GetProperty("name").GetString());
+        Assert.Equal("landbridge", server.GetProperty("name").GetString());
         Assert.Equal("https://plane.example/mcp", server.GetProperty("url").GetString());
 
         var header = server.GetProperty("headers").EnumerateArray().Single();
         Assert.Equal("Authorization", header.GetProperty("name").GetString());
-        Assert.Equal("Bearer dkt_w_token", header.GetProperty("value").GetString());
+        Assert.Equal("Bearer lbr_w_token", header.GetProperty("value").GetString());
     }
 
     /// <summary>
@@ -568,7 +568,7 @@ public sealed class AcpClientTests
     // token buckets for a context-window gauge. A real turn says otherwise: the buckets are
     // on PromptResponse.usage, and they reconcile against totalTokens exactly. The fixtures
     // below are verbatim from claude-agent-acp 0.68.0 and opencode 1.18.18 on 2026-08-16 —
-    // copied rather than invented, because the point of these tests is that docketd reads
+    // copied rather than invented, because the point of these tests is that landbridged reads
     // what real agents actually send.
 
     /// <summary>
@@ -864,7 +864,7 @@ public sealed class AcpClientTests
         var agent = new FakeAgent { HttpMcp = false };
         var run = await RunAsync(agent, Request("go"));
 
-        Assert.Contains(run.Warnings, w => w.Contains("mcpCapabilities.http") && w.Contains("NO docket tools"));
+        Assert.Contains(run.Warnings, w => w.Contains("mcpCapabilities.http") && w.Contains("NO landbridge tools"));
     }
 
     // ── stop ────────────────────────────────────────────────────────────────────
@@ -984,10 +984,10 @@ public sealed class AcpClientTests
         var servers = AcpMcpServers.FromGeneratedConfig(GeneratedMcpConfig);
 
         var server = Assert.Single(servers);
-        Assert.Equal("docket", server.Name);
+        Assert.Equal("landbridge", server.Name);
         Assert.Equal("https://plane.example/mcp", server.Url);
         Assert.Equal(
-            new KeyValuePair<string, string>("Authorization", "Bearer dkt_w_token"),
+            new KeyValuePair<string, string>("Authorization", "Bearer lbr_w_token"),
             Assert.Single(server.Headers));
     }
 
@@ -1009,8 +1009,8 @@ public sealed class AcpClientTests
 
     private const string GeneratedMcpConfig =
         """
-        {"mcpServers":{"docket":{"type":"http","url":"https://plane.example/mcp",
-        "headers":{"Authorization":"Bearer dkt_w_token"}}}}
+        {"mcpServers":{"landbridge":{"type":"http","url":"https://plane.example/mcp",
+        "headers":{"Authorization":"Bearer lbr_w_token"}}}}
         """;
 
     private static AcpSessionRequest Request(string prompt, string followUp = "Read your assignment again.") =>

@@ -1,7 +1,7 @@
-using Docket.Meta.Data;
+using Landbridge.Meta.Data;
 using Microsoft.EntityFrameworkCore;
 
-namespace Docket.Meta.Provisioning;
+namespace Landbridge.Meta.Provisioning;
 
 /// <summary>What the create form supplies. HostId null = let placement choose (least loaded).</summary>
 public sealed record CreateInstanceRequest(string Name, string? AccountLabel, string ImageTag, Guid? HostId);

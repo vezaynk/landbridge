@@ -1,12 +1,12 @@
 using System.Net;
 using System.Text.Json;
-using Docket.Contracts;
-using Docket.ControlPlane;
-using Docket.ControlPlane.Auth;
-using Docket.ControlPlane.Tests;
-using Docket.Core;
-using Docket.Mcp.Auth;
-using Docket.Mcp.Dashboard;
+using Landbridge.Contracts;
+using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.ControlPlane.Tests;
+using Landbridge.Core;
+using Landbridge.Mcp.Auth;
+using Landbridge.Mcp.Dashboard;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -15,7 +15,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-namespace Docket.Mcp.Tests;
+namespace Landbridge.Mcp.Tests;
 
 /// <summary>
 /// The two rules that run across the whole §12 dashboard rather than route by route, over real
@@ -31,7 +31,7 @@ namespace Docket.Mcp.Tests;
 /// <para><b>Where a write may come from.</b> The session lives in a cookie and the forms carry no
 /// token, so a mutating POST has to prove it came from the dashboard's own origin. The load-bearing
 /// case is a §8.4 preview host: same <em>site</em> as the dashboard by design, so
-/// <c>SameSite=Lax</c> attaches <c>docket_session</c> to its POSTs and only an origin check
+/// <c>SameSite=Lax</c> attaches <c>landbridge_session</c> to its POSTs and only an origin check
 /// refuses them.</para>
 /// </summary>
 [Collection(PostgresCollection.Name)]
@@ -431,9 +431,9 @@ public sealed class DashboardScopeAndOriginTests(PostgresFixture pg) : IAsyncLif
         builder.Logging.ClearProviders();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
 
-        builder.Services.AddDbContext<DocketDbContext>(o =>
+        builder.Services.AddDbContext<LandbridgeDbContext>(o =>
             o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
-        builder.Services.AddDocketStore();
+        builder.Services.AddLandbridgeStore();
         builder.Services.AddScoped<TokenService>();
         builder.Services.AddScoped<DashboardQueries>();
         builder.Services.AddSingleton(TimeProvider.System);
@@ -441,14 +441,14 @@ public sealed class DashboardScopeAndOriginTests(PostgresFixture pg) : IAsyncLif
         // §13 revoke, the fourth origin-guarded write on this surface: the service plus the
         // sink it requeues a revoked machine's held work through.
         builder.Services.AddScoped<MachineRevocationService>();
-        builder.Services.AddDocketForwarding();
+        builder.Services.AddLandbridgeForwarding();
         builder.Services.AddSingleton<RunnerEventSink>();
         builder.Services.AddSingleton<IOperatorVerifier>(new ConfiguredOperatorVerifier((string?)null));
         builder.Services.AddHttpContextAccessor();
 
-        builder.Services.AddAuthentication(DocketAuthenticationHandler.SchemeName)
-            .AddScheme<AuthenticationSchemeOptions, DocketAuthenticationHandler>(
-                DocketAuthenticationHandler.SchemeName, configureOptions: null);
+        builder.Services.AddAuthentication(LandbridgeAuthenticationHandler.SchemeName)
+            .AddScheme<AuthenticationSchemeOptions, LandbridgeAuthenticationHandler>(
+                LandbridgeAuthenticationHandler.SchemeName, configureOptions: null);
         builder.Services.AddAuthorization();
 
         var app = builder.Build();

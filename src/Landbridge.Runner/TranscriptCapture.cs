@@ -1,9 +1,9 @@
 using System.Globalization;
 using System.Text;
-using Docket.Contracts;
-using Docket.Core;
+using Landbridge.Contracts;
+using Landbridge.Core;
 
-namespace Docket.Runner;
+namespace Landbridge.Runner;
 
 /// <summary>Defaults for machine-local transcript capture (§12), shared by the
 /// config record's parameter defaults and <see cref="RunnerConfig"/> validation so
@@ -44,7 +44,7 @@ public static class TranscriptDefaults
 /// lines), where <c>NNNN</c> is a per-task instance ordinal. Each dispatch (a first
 /// spawn, a requeue, a §11 resume) is a distinct worker instance and gets the next
 /// ordinal, so a redispatch never clobbers its predecessor's transcript and the
-/// ordinal is stable across a docketd restart (it is derived by scanning the dir).</para>
+/// ordinal is stable across a landbridged restart (it is derived by scanning the dir).</para>
 ///
 /// <para><b>Permissions.</b> A transcript can capture credentials an agent echoed (§13),
 /// so the root, each task dir, and each file are owner-only (0700/0600), exactly like
@@ -258,7 +258,7 @@ public sealed class TranscriptStore
 /// <para>Thread-safe: stdout and stderr are drained by separate pumps, so writes are
 /// serialized under one lock. Files open lazily on first write and are owner-only
 /// (0600) since a transcript can carry credentials (§13). Writes auto-flush so a
-/// docketd crash loses at most a partial final line, and the naming is append-safe.</para>
+/// landbridged crash loses at most a partial final line, and the naming is append-safe.</para>
 /// </summary>
 public sealed class TranscriptWriter : IDisposable
 {
@@ -330,7 +330,7 @@ public sealed class TranscriptWriter : IDisposable
             if (_bytes + lineBytes > maxBytes)
             {
                 // At the cap: emit one marker, then stop. A stream-json reader sees a
-                // synthetic object line (discriminator `docket`, not `type`), and the
+                // synthetic object line (discriminator `landbridge`, not `type`), and the
                 // marker is greppable in a plain stderr file too.
                 EnsureOpen();
                 _writer!.Write(TruncationMarker(maxBytes));
@@ -367,7 +367,7 @@ public sealed class TranscriptWriter : IDisposable
             _bytes = stream.Length; // correct accounting if appending to existing bytes
             _writer = new StreamWriter(stream, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false))
             {
-                AutoFlush = true, // line-durable: a docketd crash loses at most a partial line
+                AutoFlush = true, // line-durable: a landbridged crash loses at most a partial line
             };
             SetOwnerOnly(Path);
         }
@@ -380,7 +380,7 @@ public sealed class TranscriptWriter : IDisposable
         }
 
         private static string TruncationMarker(long limit) =>
-            "{\"docket\":\"transcript_truncated\",\"limit_bytes\":"
+            "{\"landbridge\":\"transcript_truncated\",\"limit_bytes\":"
             + limit.ToString(CultureInfo.InvariantCulture) + "}";
 
         private static void SetOwnerOnly(string path)

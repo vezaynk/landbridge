@@ -1,8 +1,8 @@
 using System.Net;
 using System.Net.WebSockets;
-using static Docket.Relay.Tests.RelayTestKit;
+using static Landbridge.Relay.Tests.RelayTestKit;
 
-namespace Docket.Relay.Tests;
+namespace Landbridge.Relay.Tests;
 
 /// <summary>
 /// The relay splice core over the wire (spec §8.3): the real relay host on

@@ -1,7 +1,7 @@
-using Docket.Core;
+using Landbridge.Core;
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.Runner.Tests;
+namespace Landbridge.Runner.Tests;
 
 /// <summary>
 /// Process supervision against real spawned children, spec §10. No shell,
@@ -37,7 +37,7 @@ public sealed class ProcessSupervisorTests : IDisposable
         Assert.Equal(1, supervisor.RunningTotal);
         Assert.Equal(1, supervisor.RunningFor("default"));
 
-        // §10: spawned into {work_root}/{session_id} with DOCKET_* injected. The
+        // §10: spawned into {work_root}/{session_id} with LANDBRIDGE_* injected. The
         // harness writes those into a marker in its own working directory.
         var marker = Path.Combine(_workRoot, task.ToString(), "started");
         Assert.True(await TestKit.WaitUntilAsync(() => File.Exists(marker), TimeSpan.FromSeconds(15)),

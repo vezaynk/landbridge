@@ -2,10 +2,10 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Security.Cryptography;
 using System.Text.Json;
-using Docket.ControlPlane;
-using Docket.ControlPlane.Auth;
-using Docket.ControlPlane.Tests;
-using Docket.Core;
+using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.ControlPlane.Tests;
+using Landbridge.Core;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.EntityFrameworkCore;
@@ -13,7 +13,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.Mcp.Tests;
+namespace Landbridge.Mcp.Tests;
 
 /// <summary>
 /// The machine bootstrap surface over real HTTP (spec §5 Bootstrap, §13): the
@@ -52,8 +52,8 @@ public sealed class EnrollmentEndpointsTests(PostgresFixture pg) : IAsyncLifetim
 
         var body = await ReadEnrollAsync(resp, ct);
         Assert.NotEqual(Guid.Empty, body.MachineId);
-        Assert.StartsWith("dkt_m_", body.AccessToken);
-        Assert.StartsWith("dkt_r_", body.RefreshToken);
+        Assert.StartsWith("lbr_m_", body.AccessToken);
+        Assert.StartsWith("lbr_r_", body.RefreshToken);
         // Expiries reflect the server-side TTLs measured from the (fake) mint instant.
         Assert.Equal(clock.GetUtcNow() + TokenService.MachineAccessTtl, body.AccessExpiresAt);
         Assert.Equal(clock.GetUtcNow() + TokenService.MachineRefreshTtl, body.RefreshExpiresAt);
@@ -91,7 +91,7 @@ public sealed class EnrollmentEndpointsTests(PostgresFixture pg) : IAsyncLifetim
         Assert.Equal(HttpStatusCode.Unauthorized, (await PostEnrollAsync(client, expired, ct)).StatusCode);
 
         // Garbage: a well-formed-looking token that was never issued.
-        var garbage = $"dkt_e_{RandomNumberGenerator.GetHexString(64)}";
+        var garbage = $"lbr_e_{RandomNumberGenerator.GetHexString(64)}";
         Assert.Equal(HttpStatusCode.Unauthorized, (await PostEnrollAsync(client, garbage, ct)).StatusCode);
 
         // Wrong class: a real credential of another kind is not an enrollment token.
@@ -118,7 +118,7 @@ public sealed class EnrollmentEndpointsTests(PostgresFixture pg) : IAsyncLifetim
 
         // Missing name/purpose/os/permissionLevel is the caller's own bug — a 400,
         // distinct from a token refusal, and no oracle for the token's validity.
-        var resp = await client.PostAsJsonAsync("/enroll", new { enrollmentToken = "dkt_e_whatever" }, ct);
+        var resp = await client.PostAsJsonAsync("/enroll", new { enrollmentToken = "lbr_e_whatever" }, ct);
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
 
         await app.StopAsync(ct);
@@ -227,7 +227,7 @@ public sealed class EnrollmentEndpointsTests(PostgresFixture pg) : IAsyncLifetim
         builder.Logging.ClearProviders();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
 
-        builder.Services.AddDbContext<DocketDbContext>(o =>
+        builder.Services.AddDbContext<LandbridgeDbContext>(o =>
             o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
         builder.Services.AddScoped<TokenService>();
         builder.Services.AddSingleton(clock);

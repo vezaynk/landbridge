@@ -1,18 +1,18 @@
-using Docket.Contracts;
-using Docket.ControlPlane;
-using Docket.ControlPlane.Auth;
-using Docket.ControlPlane.Tests;
-using Docket.Core;
-using Docket.Mcp.Auth;
-using Docket.Mcp.Tools;
-using Docket.Runner;
+using Landbridge.Contracts;
+using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.ControlPlane.Tests;
+using Landbridge.Core;
+using Landbridge.Mcp.Auth;
+using Landbridge.Mcp.Tools;
+using Landbridge.Runner;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Time.Testing;
 using ModelContextProtocol;
-using HarnessProgram = Docket.Runner.TestHarness.Program;
+using HarnessProgram = Landbridge.Runner.TestHarness.Program;
 
-namespace Docket.Mcp.Tests;
+namespace Landbridge.Mcp.Tests;
 
 /// <summary>
 /// §6/§11 continuation targeting through the surfaces a Lead actually touches: the
@@ -40,7 +40,7 @@ public sealed class ContinuationEndToEndTests(PostgresFixture pg) : IAsyncLifeti
     private static IHttpContextAccessor AccessorFor(TeamId team) =>
         new HttpContextAccessor
         {
-            HttpContext = new DefaultHttpContext { User = DocketClaims.ToClaimsPrincipal(new Principal.Lead(team)) },
+            HttpContext = new DefaultHttpContext { User = LandbridgeClaims.ToClaimsPrincipal(new Principal.Lead(team)) },
         };
 
     private LeadTools LeadFor(TeamId team, RunnerConnectionRegistry registry) =>
@@ -324,7 +324,7 @@ public sealed class ContinuationEndToEndTests(PostgresFixture pg) : IAsyncLifeti
 
     private static string NewWorkRoot()
     {
-        var dir = Path.Combine(Path.GetTempPath(), "docket-continuation-crown", Guid.NewGuid().ToString("N"));
+        var dir = Path.Combine(Path.GetTempPath(), "landbridge-continuation-crown", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
         return dir;
     }

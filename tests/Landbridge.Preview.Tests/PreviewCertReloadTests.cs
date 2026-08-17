@@ -6,7 +6,7 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using Microsoft.Extensions.Logging.Abstractions;
 
-namespace Docket.Preview.Tests;
+namespace Landbridge.Preview.Tests;
 
 /// <summary>
 /// Guards the wildcard-cert PEM hot-reload (spec §8.4): an ACME renewal drops a new
@@ -26,8 +26,8 @@ public sealed class PreviewCertReloadTests
     {
         using var dir = new TempDir();
         var (certPath, keyPath) = (dir.Path("wild.crt"), dir.Path("wild.key"));
-        var a = TestCert.Make("docket-preview-A");
-        var b = TestCert.Make("docket-preview-B");
+        var a = TestCert.Make("landbridge-preview-A");
+        var b = TestCert.Make("landbridge-preview-B");
         await File.WriteAllTextAsync(certPath, a.CertPem, Ct);
         await File.WriteAllTextAsync(keyPath, a.KeyPem, Ct);
 
@@ -64,8 +64,8 @@ public sealed class PreviewCertReloadTests
     {
         using var dir = new TempDir();
         var (certPath, keyPath) = (dir.Path("wild.crt"), dir.Path("wild.key"));
-        var a = TestCert.Make("docket-preview-A");
-        var b = TestCert.Make("docket-preview-B");
+        var a = TestCert.Make("landbridge-preview-A");
+        var b = TestCert.Make("landbridge-preview-B");
         await File.WriteAllTextAsync(certPath, a.CertPem, Ct);
         await File.WriteAllTextAsync(keyPath, a.KeyPem, Ct);
 
@@ -92,8 +92,8 @@ public sealed class PreviewCertReloadTests
     {
         using var dir = new TempDir();
         var (certPath, keyPath) = (dir.Path("wild.crt"), dir.Path("wild.key"));
-        var a = TestCert.Make("docket-preview-A");
-        var b = TestCert.Make("docket-preview-B");
+        var a = TestCert.Make("landbridge-preview-A");
+        var b = TestCert.Make("landbridge-preview-B");
         await File.WriteAllTextAsync(certPath, a.CertPem, Ct);
         await File.WriteAllTextAsync(keyPath, a.KeyPem, Ct);
 
@@ -181,7 +181,7 @@ public sealed class PreviewCertReloadTests
 
     private sealed class TempDir : IDisposable
     {
-        private readonly string _dir = Directory.CreateTempSubdirectory("docket-preview-cert-").FullName;
+        private readonly string _dir = Directory.CreateTempSubdirectory("landbridge-preview-cert-").FullName;
         public string Path(string name) => System.IO.Path.Combine(_dir, name);
         public void Dispose()
         {

@@ -1,23 +1,23 @@
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 
-namespace Docket.HarnessSupport;
+namespace Landbridge.HarnessSupport;
 
 /// <summary>
 /// The Linux half of the harness dead-man's switch (§10): arm
 /// <c>prctl(PR_SET_PDEATHSIG, SIGKILL)</c> so the kernel SIGKILLs this process the
-/// instant its parent — <c>docketd</c>, its direct spawner — dies. Immediate, no
-/// polling, no cooperation required, and it fires even when docketd itself is
+/// instant its parent — <c>landbridged</c>, its direct spawner — dies. Immediate, no
+/// polling, no cooperation required, and it fires even when landbridged itself is
 /// SIGKILLed.
 ///
 /// This complements, and never replaces, the portable stdin-EOF watch each harness
 /// runs: EOF covers every OS and a clean pipe close; PDEATHSIG makes the
-/// docketd→harness case instantaneous on Linux. It covers the <b>direct child
+/// landbridged→harness case instantaneous on Linux. It covers the <b>direct child
 /// only</b>. Grandchildren the harness spawns are not signalled by this call — the
-/// harness kills them itself on the EOF path, and docketd's <c>StrayReaper</c> is
+/// harness kills them itself on the EOF path, and landbridged's <c>StrayReaper</c> is
 /// the restart backstop.
 ///
-/// Shared by <c>Docket.Runner.TestHarness</c> and <c>Docket.WorkerHarness</c> as a
+/// Shared by <c>Landbridge.Runner.TestHarness</c> and <c>Landbridge.WorkerHarness</c> as a
 /// linked source file so both reference harnesses carry the identical convention a
 /// BYO harness would copy. AOT-clean (<see cref="LibraryImportAttribute"/>,
 /// blittable signatures).
@@ -51,7 +51,7 @@ internal static partial class ParentDeathSignal
     /// planted "stray" must SURVIVE its spawner (the whole point of a stray).
     /// Inherited by the whole planted tree via the environment.
     /// </summary>
-    public const string DisableEnvVar = "DOCKET_TEST_DISABLE_PDEATHSIG";
+    public const string DisableEnvVar = "LANDBRIDGE_TEST_DISABLE_PDEATHSIG";
 
     public static bool ArmAndParentAlreadyDead()
     {

@@ -2,12 +2,12 @@ using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 
-namespace Docket.ControlPlane;
+namespace Landbridge.ControlPlane;
 
 /// <summary>
 /// The in-memory half of the gated-preview browser auth flow (spec §8.4). A gated
 /// preview lives on <c>*.preview.&lt;domain&gt;</c>, a different origin from the §12
-/// dashboard, so the operator's host-scoped <c>docket_session</c> cookie never
+/// dashboard, so the operator's host-scoped <c>landbridge_session</c> cookie never
 /// reaches it. Instead: the frontend redirects the browser to the dashboard
 /// origin, the operator session confirms there and the plane mints a <b>one-time
 /// short-lived code</b>; the browser carries the code back to the preview origin,
@@ -44,7 +44,7 @@ public sealed class PreviewAuthStore(TimeProvider clock)
     /// </summary>
     public string MintCode(string label)
     {
-        var code = "dkt_pc_" + RandomNumberGenerator.GetHexString(48, lowercase: true);
+        var code = "lbr_pc_" + RandomNumberGenerator.GetHexString(48, lowercase: true);
         _codes[code] = new Entry(Hash(label), clock.GetUtcNow() + CodeTtl);
         return code;
     }
@@ -63,7 +63,7 @@ public sealed class PreviewAuthStore(TimeProvider clock)
         if (entry.ExpiresAt <= clock.GetUtcNow() || entry.LabelHash != Hash(label))
             return null;
 
-        var session = "dkt_ps_" + RandomNumberGenerator.GetHexString(48, lowercase: true);
+        var session = "lbr_ps_" + RandomNumberGenerator.GetHexString(48, lowercase: true);
         _sessions[session] = new Entry(entry.LabelHash, clock.GetUtcNow() + SessionTtl);
         return session;
     }

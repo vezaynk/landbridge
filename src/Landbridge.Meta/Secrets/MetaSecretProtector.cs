@@ -2,7 +2,7 @@ using System.Buffers.Text;
 using System.Security.Cryptography;
 using System.Text;
 
-namespace Docket.Meta.Secrets;
+namespace Landbridge.Meta.Secrets;
 
 /// <summary>
 /// Raised when secret protection is misconfigured or a stored value cannot be
@@ -92,7 +92,7 @@ public sealed class MetaSecretProtector
 
         if (keys.Count == 0)
             throw new MetaSecretKeyException(
-                $"{KeysConfigKey} is not configured. docket-meta refuses to start without it: the instance " +
+                $"{KeysConfigKey} is not configured. landbridge-meta refuses to start without it: the instance " +
                 "database passwords, relay bearers, and host mTLS client keys it retains would otherwise be " +
                 "written to its Postgres in plaintext. Generate a key with: openssl rand -base64 32 " +
                 "(see docs/META.md, Key management).");

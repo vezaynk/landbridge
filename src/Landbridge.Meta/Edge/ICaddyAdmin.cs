@@ -1,4 +1,4 @@
-namespace Docket.Meta.Edge;
+namespace Landbridge.Meta.Edge;
 
 /// <summary>
 /// The edge router seam (design note §4). Meta owns adding/removing an Instance's

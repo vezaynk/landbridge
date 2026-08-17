@@ -1,4 +1,4 @@
-namespace Docket.HarnessBump.Tests;
+namespace Landbridge.HarnessBump.Tests;
 
 /// <summary>
 /// The comparison rules, exercised against the version strings the three harnesses really

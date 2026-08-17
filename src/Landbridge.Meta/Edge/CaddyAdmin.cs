@@ -3,7 +3,7 @@ using System.Net.Http.Json;
 using System.Text.Json.Nodes;
 using Microsoft.Extensions.Options;
 
-namespace Docket.Meta.Edge;
+namespace Landbridge.Meta.Edge;
 
 /// <summary>
 /// The real <see cref="ICaddyAdmin"/> over Caddy's admin API (pure HTTP, design note

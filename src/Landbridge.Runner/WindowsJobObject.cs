@@ -2,12 +2,12 @@ using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Runtime.Versioning;
 
-namespace Docket.Runner;
+namespace Landbridge.Runner;
 
 /// <summary>
 /// A Windows Job Object with <c>JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE</c> — the Windows
-/// half of stray cleanup (§10 / §10 Windows containment). docketd seals every worker it spawns into its
-/// own job (one job per task) and owns the only handle. When docketd dies by
+/// half of stray cleanup (§10 / §10 Windows containment). landbridged seals every worker it spawns into its
+/// own job (one job per task) and owns the only handle. When landbridged dies by
 /// <em>any</em> cause — clean exit, unhandled crash, or the process being killed —
 /// the OS closes that handle, and kill-on-close makes the kernel terminate every
 /// process still in the job: the worker and all its descendants, grandchildren that
@@ -33,7 +33,7 @@ internal sealed partial class WindowsJobObject
     private const int JobObjectExtendedLimitInformation = 9;
 
     // JOBOBJECT_BASIC_LIMIT_INFORMATION.LimitFlags: kill every process in the job
-    // when its last handle closes. This is the whole point — it makes docketd's
+    // when its last handle closes. This is the whole point — it makes landbridged's
     // death the worker tree's death with nothing to run and nothing to discover.
     private const uint JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE = 0x2000;
 
@@ -124,7 +124,7 @@ internal sealed partial class WindowsJobObject
 
     /// <summary>
     /// Closes the job handle. With kill-on-close this alone terminates every process
-    /// still in the job — the same thing the OS does for docketd on death. Used on the
+    /// still in the job — the same thing the OS does for landbridged on death. Used on the
     /// natural-exit cleanup path and to unwind a partly-built job. Idempotent.
     /// </summary>
     [SupportedOSPlatform("windows")]

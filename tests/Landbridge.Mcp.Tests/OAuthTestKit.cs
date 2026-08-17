@@ -3,10 +3,10 @@ using System.Net.Sockets;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
-using Docket.ControlPlane;
-using Docket.ControlPlane.Auth;
-using Docket.Mcp.Auth;
-using Docket.Mcp.Tools;
+using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.Mcp.Auth;
+using Landbridge.Mcp.Tools;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
@@ -18,11 +18,11 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Client;
 
-namespace Docket.Mcp.Tests;
+namespace Landbridge.Mcp.Tests;
 
 /// <summary>
 /// Hosts and helpers for the OAuth 2.1 human-flow tests (spec §5). The plane is
-/// the real <c>docket-mcp</c> pipeline (auth scheme + tools + MCP endpoint) plus
+/// the real <c>landbridge-mcp</c> pipeline (auth scheme + tools + MCP endpoint) plus
 /// the new OAuth surface (well-known metadata, authorize, token), mirroring
 /// <c>Program.cs</c> and pointed at the fixture's ephemeral Postgres. Because the
 /// OAuth canonical URL (resource id / issuer) is derived from configuration at
@@ -66,7 +66,7 @@ internal static class OAuthTestKit
 
         var cfg = new Dictionary<string, string?>
         {
-            ["Docket:PublicMcpUrl"] = url,
+            ["Landbridge:PublicMcpUrl"] = url,
             // Dev/test: let the SSRF fetcher accept the loopback CIMD test server.
             [CimdClient.AllowInsecureKey] = "true",
         };
@@ -74,9 +74,9 @@ internal static class OAuthTestKit
             cfg[ConfiguredOperatorVerifier.PassphraseHashKey] = PassphraseHash;
         builder.Configuration.AddInMemoryCollection(cfg);
 
-        builder.Services.AddDbContext<DocketDbContext>(o =>
+        builder.Services.AddDbContext<LandbridgeDbContext>(o =>
             o.UseNpgsql(connectionString).UseSnakeCaseNamingConvention());
-        builder.Services.AddDocketStore();
+        builder.Services.AddLandbridgeStore();
         builder.Services.AddScoped<TokenService>();
         builder.Services.AddScoped<RelayGrantService>();
         builder.Services.AddScoped<PreviewMappingService>(); // §8.4: WorkerTools.open_preview
@@ -84,7 +84,7 @@ internal static class OAuthTestKit
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<RunnerConnectionRegistry>();
         // §8.3: the forward orchestrator + the lead↔machine binding LeadTools needs.
-        builder.Services.AddDocketForwarding();
+        builder.Services.AddLandbridgeForwarding();
         builder.Services.AddHttpContextAccessor();
 
         builder.Services.AddSingleton(OAuthServerConfig.FromPublicMcpUrl(url));
@@ -92,9 +92,9 @@ internal static class OAuthTestKit
         builder.Services.AddSingleton<ICimdClient>(sp =>
             new CimdClient(sp.GetRequiredService<IConfiguration>().GetValue<bool>(CimdClient.AllowInsecureKey)));
 
-        builder.Services.AddAuthentication(DocketAuthenticationHandler.SchemeName)
-            .AddScheme<AuthenticationSchemeOptions, DocketAuthenticationHandler>(
-                DocketAuthenticationHandler.SchemeName, configureOptions: null);
+        builder.Services.AddAuthentication(LandbridgeAuthenticationHandler.SchemeName)
+            .AddScheme<AuthenticationSchemeOptions, LandbridgeAuthenticationHandler>(
+                LandbridgeAuthenticationHandler.SchemeName, configureOptions: null);
         builder.Services.AddAuthorization();
 
         builder.Services.AddMcpServer()

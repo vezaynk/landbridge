@@ -1,16 +1,16 @@
 using System.Text;
-using Docket.Contracts;
+using Landbridge.Contracts;
 
-namespace Docket.Runner;
+namespace Landbridge.Runner;
 
 /// <summary>
 /// Answers one <see cref="ReadTranscriptCommand"/> with one
 /// <see cref="TranscriptChunkEvent"/> (spec §12 serving). Pure and synchronous: it reads
 /// a byte range off local disk and shapes the reply, holding no per-request state — the
-/// plane's cursor is the whole conversation, so a docketd restart mid-read costs the
+/// plane's cursor is the whole conversation, so a landbridged restart mid-read costs the
 /// operator a refresh and nothing else.
 ///
-/// <para><b>Verbatim.</b> The bytes go out exactly as captured. Docket does not redact
+/// <para><b>Verbatim.</b> The bytes go out exactly as captured. Landbridge does not redact
 /// transcripts — how to do that well is unresolved (§13, §16 open question 8) — so a
 /// transcript may carry credentials the agent echoed, and the compensating controls live
 /// on the plane: a human operator session only, and only for a task in a terminal state,

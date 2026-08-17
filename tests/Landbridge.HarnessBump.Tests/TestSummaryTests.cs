@@ -1,4 +1,4 @@
-namespace Docket.HarnessBump.Tests;
+namespace Landbridge.HarnessBump.Tests;
 
 /// <summary>
 /// The guard against a vacuous green. A real-harness job whose facts all SKIP — because the

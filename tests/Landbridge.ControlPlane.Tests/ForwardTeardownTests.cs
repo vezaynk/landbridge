@@ -1,12 +1,12 @@
 using System.Collections.Concurrent;
-using Docket.Contracts;
-using Docket.ControlPlane.Auth;
-using Docket.Core;
+using Landbridge.Contracts;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.Core;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.ControlPlane.Tests;
+namespace Landbridge.ControlPlane.Tests;
 
 /// <summary>
 /// §8.3's other bound, at the control plane: "an established splice persists <b>until the
@@ -100,7 +100,7 @@ public sealed class ForwardTeardownTests(PostgresFixture pg) : IAsyncLifetime
         Assert.IsType<StoreResult.Applied>(await NewStore(db, clock, rig).ApplyAsync(
             producer.Session, new Cancel(new LeadClaim(team), CancelDisposition.Preserve)));
 
-        // An §8.4 preview consumer is a browser, so there is no consumer docketd to command
+        // An §8.4 preview consumer is a browser, so there is no consumer landbridged to command
         // and the grant records no consumer task — the producer end is the whole of what the
         // plane can close, and closing it ends the browser's half through the relay's pairing.
         var close = Assert.Single(rig.Closes);
@@ -161,7 +161,7 @@ public sealed class ForwardTeardownTests(PostgresFixture pg) : IAsyncLifetime
     // ── Rig ─────────────────────────────────────────────────────────────────────
 
     /// <summary>
-    /// The runner-channel seam two machines' <c>docketd</c> would occupy: every
+    /// The runner-channel seam two machines' <c>landbridged</c> would occupy: every
     /// <c>close-forward</c> the plane writes, with the machine it was written to.
     /// </summary>
     private sealed class Rig
@@ -189,7 +189,7 @@ public sealed class ForwardTeardownTests(PostgresFixture pg) : IAsyncLifetime
         public ConcurrentBag<(string Machine, CloseForwardCommand Command)> Closes { get; } = [];
     }
 
-    private static SessionStore NewStore(DocketDbContext db, TimeProvider clock, Rig rig) =>
+    private static SessionStore NewStore(LandbridgeDbContext db, TimeProvider clock, Rig rig) =>
         new(db, clock, policy: null, forwards: rig.Teardown);
 
     /// <summary>
@@ -197,7 +197,7 @@ public sealed class ForwardTeardownTests(PostgresFixture pg) : IAsyncLifetime
     /// resolve its machine the way a live forward's ends are resolved (§8.3).
     /// </summary>
     private static async Task<(SessionId Session, WorkerInstanceId Instance)> WorkingOnAsync(
-        DocketDbContext db, TimeProvider clock, TeamId team, string machine, Rig rig)
+        LandbridgeDbContext db, TimeProvider clock, TeamId team, string machine, Rig rig)
     {
         var store = NewStore(db, clock, rig);
         var created = (StoreResult.Applied)await store.CreateAsync(

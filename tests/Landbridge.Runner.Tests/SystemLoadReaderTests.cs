@@ -1,4 +1,4 @@
-namespace Docket.Runner.Tests;
+namespace Landbridge.Runner.Tests;
 
 /// <summary>
 /// The real CPU-observing reader (§10). Covers the shared delta math, the

@@ -1,4 +1,4 @@
-namespace Docket.Core.Tests;
+namespace Landbridge.Core.Tests;
 
 /// <summary>
 /// §9 check 14 (incumbent-only transitions), the zombie-replay scenario it

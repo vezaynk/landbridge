@@ -2,11 +2,11 @@ using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 
-namespace Docket.Runner.Tests;
+namespace Landbridge.Runner.Tests;
 
 /// <summary>
-/// Zero-cost proof that <c>docket-acp-bridge</c> is a faithful ACP pipe:
-/// listen wraps <c>Docket.Runner.TestHarness --acp</c>, connect speaks
+/// Zero-cost proof that <c>landbridge-acp-bridge</c> is a faithful ACP pipe:
+/// listen wraps <c>Landbridge.Runner.TestHarness --acp</c>, connect speaks
 /// initialize + session/new over the socket, and the agent answers.
 /// </summary>
 public sealed class AcpBridgeLoopbackTests
@@ -77,7 +77,7 @@ public sealed class AcpBridgeLoopbackTests
 }
 
 /// <summary>
-/// Starts <c>docket-acp-bridge listen</c> and waits for the <c>listening</c> line.
+/// Starts <c>landbridge-acp-bridge listen</c> and waits for the <c>listening</c> line.
 /// </summary>
 internal sealed class AcpBridgeFarSide : IDisposable
 {
@@ -92,12 +92,12 @@ internal sealed class AcpBridgeFarSide : IDisposable
 
     public static string BridgePath()
     {
-        var dll = typeof(Docket.AcpBridge.Program).Assembly.Location;
+        var dll = typeof(Landbridge.AcpBridge.Program).Assembly.Location;
         var dir = Path.GetDirectoryName(dll)!;
         var stem = Path.GetFileNameWithoutExtension(dll);
         var apphost = Path.Combine(dir, OperatingSystem.IsWindows() ? stem + ".exe" : stem);
         if (!File.Exists(apphost))
-            throw new FileNotFoundException("docket-acp-bridge apphost not found at " + apphost);
+            throw new FileNotFoundException("landbridge-acp-bridge apphost not found at " + apphost);
         return apphost;
     }
 

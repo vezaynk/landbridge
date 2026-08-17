@@ -1,7 +1,7 @@
-using Docket.Core;
+using Landbridge.Core;
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.Runner.Tests;
+namespace Landbridge.Runner.Tests;
 
 /// <summary>Argv profile hooks: fail-closed <c>before_spawn</c>, best-effort <c>after_exit</c>.</summary>
 public class ProfileHookLoadTests
@@ -86,7 +86,7 @@ public sealed class ProfileHookSpawnTests : IDisposable
     {
         var task = SessionId.New();
         Supervisor().Spawn(
-            new DispatchCommand(task, "default", WorkerToken: "dkt_w_secret"),
+            new DispatchCommand(task, "default", WorkerToken: "lbr_w_secret"),
             TestKit.Profile("echo-env", hooks: new ProfileHooks(
                 BeforeSpawn: [TestKit.HarnessPath(), "hook-env"])),
             "machine-42");
@@ -94,10 +94,10 @@ public sealed class ProfileHookSpawnTests : IDisposable
         var path = Path.Combine(_workRoot, task.ToString(), "hook-env");
         Assert.True(await TestKit.WaitUntilAsync(() => File.Exists(path), TimeSpan.FromSeconds(10)));
         var env = await File.ReadAllTextAsync(path);
-        Assert.Contains("DOCKET_HOOK=before_spawn", env, StringComparison.Ordinal);
-        Assert.Contains("DOCKET_MACHINE_ID=machine-42", env, StringComparison.Ordinal);
-        Assert.DoesNotContain("DOCKET_SESSION_ID=", env, StringComparison.Ordinal);
-        Assert.DoesNotContain("DOCKET_WORKER_TOKEN=", env, StringComparison.Ordinal);
+        Assert.Contains("LANDBRIDGE_HOOK=before_spawn", env, StringComparison.Ordinal);
+        Assert.Contains("LANDBRIDGE_MACHINE_ID=machine-42", env, StringComparison.Ordinal);
+        Assert.DoesNotContain("LANDBRIDGE_SESSION_ID=", env, StringComparison.Ordinal);
+        Assert.DoesNotContain("LANDBRIDGE_WORKER_TOKEN=", env, StringComparison.Ordinal);
 
         Assert.True(_supervisor!.Kill(task));
     }
@@ -113,7 +113,7 @@ public sealed class ProfileHookSpawnTests : IDisposable
                 env: new Dictionary<string, string>
                 {
                     ["CODEX_HOME"] = "{work_dir}/.codex",
-                    ["DOCKET_PROFILE_ENV_MARKER"] = "from-profile",
+                    ["LANDBRIDGE_PROFILE_ENV_MARKER"] = "from-profile",
                 },
                 hooks: new ProfileHooks(BeforeSpawn: [TestKit.HarnessPath(), "hook-env"])),
             "machine-42");
@@ -125,9 +125,9 @@ public sealed class ProfileHookSpawnTests : IDisposable
         // Verbatim substitution — same rule as ProfileEnvSpawnTests. Path.Combine
         // on Windows would look for a backslash the config never wrote.
         Assert.Contains($"CODEX_HOME={workDir}/.codex", env, StringComparison.Ordinal);
-        Assert.Contains("DOCKET_PROFILE_ENV_MARKER=from-profile", env, StringComparison.Ordinal);
-        Assert.DoesNotContain("DOCKET_SESSION_ID=", env, StringComparison.Ordinal);
-        Assert.DoesNotContain("DOCKET_WORKER_TOKEN=", env, StringComparison.Ordinal);
+        Assert.Contains("LANDBRIDGE_PROFILE_ENV_MARKER=from-profile", env, StringComparison.Ordinal);
+        Assert.DoesNotContain("LANDBRIDGE_SESSION_ID=", env, StringComparison.Ordinal);
+        Assert.DoesNotContain("LANDBRIDGE_WORKER_TOKEN=", env, StringComparison.Ordinal);
 
         Assert.True(_supervisor!.Kill(task));
     }

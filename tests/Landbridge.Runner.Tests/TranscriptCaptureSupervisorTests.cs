@@ -1,8 +1,8 @@
-using Docket.Core;
+using Landbridge.Core;
 using Microsoft.Extensions.Time.Testing;
-using HarnessProgram = Docket.Runner.TestHarness.Program;
+using HarnessProgram = Landbridge.Runner.TestHarness.Program;
 
-namespace Docket.Runner.Tests;
+namespace Landbridge.Runner.Tests;
 
 /// <summary>
 /// §12 transcript capture end-to-end through <see cref="ProcessSupervisor"/> against a

@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace Docket.Meta.Substrate;
+namespace Landbridge.Meta.Substrate;
 
 /// <summary>
 /// A pull that could not be satisfied, translated into something an operator can act on.

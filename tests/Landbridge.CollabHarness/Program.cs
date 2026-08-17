@@ -5,22 +5,22 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using Docket.HarnessSupport;
+using Landbridge.HarnessSupport;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 
-namespace Docket.CollabHarness;
+namespace Landbridge.CollabHarness;
 
 /// <summary>
 /// The scripted collaborator for the multi-machine E2E suite (spec §7/§8.3/§10) —
 /// a REAL process speaking REAL MCP back to the control plane, with no LLM, exactly
-/// like <c>Docket.WorkerHarness</c>. Where that harness proves one echo forward, this
+/// like <c>Landbridge.WorkerHarness</c>. Where that harness proves one echo forward, this
 /// one carries the several small roles the four multi-machine scenarios need, each
 /// selected entirely by the task's opaque prose <b>description</b> (§7) so one
 /// <c>default</c> profile drives a whole fleet off the wire.
 ///
 /// <para>It reads the injected <c>--mcp-config</c> (§13) — the server keyed
-/// <c>docket</c>, bearer in its <c>Authorization</c> header — connects, and calls
+/// <c>landbridge</c>, bearer in its <c>Authorization</c> header — connects, and calls
 /// <c>get_session</c> to learn its assignment. Then it branches on the description:
 /// <list type="bullet">
 /// <item><c>handshake-serve</c> — mint a nonce, bind a loopback server that hands the
@@ -73,14 +73,14 @@ public static class Program
         using var cts = new CancellationTokenSource();
         var ct = cts.Token;
 
-        // Dead-man's switch (§10). Linux: SIGKILL us the instant docketd (our parent)
-        // dies. Portable: docketd holds the write end of our stdin for our lifetime,
-        // so EOF means docketd is gone — watch it and cancel the run.
+        // Dead-man's switch (§10). Linux: SIGKILL us the instant landbridged (our parent)
+        // dies. Portable: landbridged holds the write end of our stdin for our lifetime,
+        // so EOF means landbridged is gone — watch it and cancel the run.
         if (ParentDeathSignal.ArmAndParentAlreadyDead())
             return 1;
 
         // ACP mode: stdin is the JSON-RPC request channel, so the EOF watch must not run —
-        // it would eat docketd's requests. The read loop's own EOF is the dead-man's switch,
+        // it would eat landbridged's requests. The read loop's own EOF is the dead-man's switch,
         // which is also ACP's own shutdown rule. The scripted work below is unchanged.
         if (args.Contains("--acp", StringComparer.Ordinal))
             return await AcpAgentLoop.RunAsync(
@@ -186,7 +186,7 @@ public static class Program
     /// <para><b>Client-first, deliberately.</b> The server waits for the consumer's
     /// request line before answering, exactly like the compute/datastore services. A
     /// server that spoke first and closed immediately raced the forward's mechanics: the
-    /// producer docketd dials this service the instant it gets its open-forward command,
+    /// producer landbridged dials this service the instant it gets its open-forward command,
     /// so an unsolicited write+close could reach — and tear down — the producer end
     /// <em>before</em> the consumer end was paired at the relay, delivering the consumer
     /// an EOF instead of the nonce (a CI-only failure under slower scheduling). Requiring
@@ -511,7 +511,7 @@ public static class Program
 
     /// <summary>
     /// Portable dead-man watch: reads stdin to EOF and cancels <paramref name="cts"/>
-    /// when it arrives. docketd holds the write end for our lifetime, so EOF is its
+    /// when it arrives. landbridged holds the write end for our lifetime, so EOF is its
     /// death; any bytes are ignored (MCP, not stdin, is our channel). On a normal run
     /// the process exits before this ever completes.
     /// </summary>
@@ -539,7 +539,7 @@ public static class Program
     /// <summary>
     /// Resolves the plane URL and Authorization header. Primary source is the injected
     /// <c>--mcp-config</c> file (proves the §13 injection path); falls back to
-    /// <c>DOCKET_WORKER_TOKEN</c> + <c>DOCKET_MCP_URL</c> if no config path was passed.
+    /// <c>LANDBRIDGE_WORKER_TOKEN</c> + <c>LANDBRIDGE_MCP_URL</c> if no config path was passed.
     /// </summary>
     private static (string Url, string Authorization) ResolveConnection(string[] args)
     {
@@ -559,10 +559,10 @@ public static class Program
             return (url, authorization);
         }
 
-        var token = Environment.GetEnvironmentVariable("DOCKET_WORKER_TOKEN")
-            ?? throw new InvalidOperationException("no --mcp-config and no DOCKET_WORKER_TOKEN");
-        var mcpUrl = Environment.GetEnvironmentVariable("DOCKET_MCP_URL")
-            ?? throw new InvalidOperationException("no --mcp-config and no DOCKET_MCP_URL");
+        var token = Environment.GetEnvironmentVariable("LANDBRIDGE_WORKER_TOKEN")
+            ?? throw new InvalidOperationException("no --mcp-config and no LANDBRIDGE_WORKER_TOKEN");
+        var mcpUrl = Environment.GetEnvironmentVariable("LANDBRIDGE_MCP_URL")
+            ?? throw new InvalidOperationException("no --mcp-config and no LANDBRIDGE_MCP_URL");
         return (mcpUrl, $"Bearer {token}");
     }
 

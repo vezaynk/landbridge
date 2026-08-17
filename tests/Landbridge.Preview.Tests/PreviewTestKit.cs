@@ -2,7 +2,7 @@ using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
 using System.Net.WebSockets;
-using Docket.Preview;
+using Landbridge.Preview;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -12,7 +12,7 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
-namespace Docket.Preview.Tests;
+namespace Landbridge.Preview.Tests;
 
 /// <summary>
 /// L2 doubles for the HTTP preview frontend (spec §8.4): a fake control plane

@@ -1,8 +1,8 @@
 using System.Net.WebSockets;
-using Docket.Contracts;
+using Landbridge.Contracts;
 using Microsoft.Extensions.Options;
 
-namespace Docket.Relay;
+namespace Landbridge.Relay;
 
 /// <summary>
 /// The relay's single tunnel endpoint (spec §8.3). A connecting party upgrades
@@ -19,7 +19,7 @@ namespace Docket.Relay;
 /// </summary>
 public static class TunnelEndpoint
 {
-    // Header names + role strings live in Docket.Contracts (RelayTunnel) so the
+    // Header names + role strings live in Landbridge.Contracts (RelayTunnel) so the
     // runner's tunnel client presents exactly what this endpoint reads (§8.3).
 
     public static void MapRelayTunnel(this WebApplication app) =>
@@ -32,7 +32,7 @@ public static class TunnelEndpoint
         IOptions<RelayOptions> options,
         ILoggerFactory loggerFactory)
     {
-        var logger = loggerFactory.CreateLogger("Docket.Relay.Tunnel");
+        var logger = loggerFactory.CreateLogger("Landbridge.Relay.Tunnel");
         var ct = context.RequestAborted;
 
         if (!context.WebSockets.IsWebSocketRequest)

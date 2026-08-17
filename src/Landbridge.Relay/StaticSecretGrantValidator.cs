@@ -3,7 +3,7 @@ using System.Text;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
-namespace Docket.Relay;
+namespace Landbridge.Relay;
 
 /// <summary>Options for <see cref="StaticSecretGrantValidator"/> (config section <c>Relay:Grant</c>).</summary>
 public sealed class StaticSecretGrantValidatorOptions

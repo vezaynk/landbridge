@@ -1,4 +1,4 @@
-namespace Docket.Core;
+namespace Landbridge.Core;
 
 /// <summary>
 /// Credential classes, spec §5. Authority is structural: what a caller may do

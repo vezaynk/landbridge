@@ -1,8 +1,8 @@
-using Docket.Meta.Data;
-using Docket.Meta.Provisioning;
+using Landbridge.Meta.Data;
+using Landbridge.Meta.Provisioning;
 using Microsoft.EntityFrameworkCore;
 
-namespace Docket.Meta.Tests;
+namespace Landbridge.Meta.Tests;
 
 /// <summary>
 /// The provisioning saga (design note §2): happy path, credential injection,
@@ -31,18 +31,18 @@ public class SagaTests
         Assert.All(row.Steps, s => Assert.Equal(StepStatus.Done, s.Status));
         Assert.Equal(8, row.Steps.Count);
 
-        Assert.Contains("docket-acme-net", h.Substrate.Networks.Keys);
-        Assert.Contains("docket-acme-pgdata", h.Substrate.Volumes);
-        Assert.Contains("docket-acme-pg", h.Substrate.Containers.Keys);
-        Assert.Contains("docket-acme-mcp", h.Substrate.Containers.Keys);
-        Assert.Contains("docket-acme-relay", h.Substrate.Containers.Keys);
+        Assert.Contains("landbridge-acme-net", h.Substrate.Networks.Keys);
+        Assert.Contains("landbridge-acme-pgdata", h.Substrate.Volumes);
+        Assert.Contains("landbridge-acme-pg", h.Substrate.Containers.Keys);
+        Assert.Contains("landbridge-acme-mcp", h.Substrate.Containers.Keys);
+        Assert.Contains("landbridge-acme-relay", h.Substrate.Containers.Keys);
 
         // Two public routes: mcp + relay (deviation #2).
-        Assert.True(h.Caddy.Routes.ContainsKey("docket-acme-mcp"));
-        Assert.True(h.Caddy.Routes.ContainsKey("docket-acme-relay"));
-        Assert.Equal("acme.docket.example.com", h.Caddy.Routes["docket-acme-mcp"].Host);
-        Assert.Equal("relay-acme.docket.example.com", h.Caddy.Routes["docket-acme-relay"].Host);
-        Assert.Equal("https://acme.docket.example.com", row.PublicUrl);
+        Assert.True(h.Caddy.Routes.ContainsKey("landbridge-acme-mcp"));
+        Assert.True(h.Caddy.Routes.ContainsKey("landbridge-acme-relay"));
+        Assert.Equal("acme.landbridge.example.com", h.Caddy.Routes["landbridge-acme-mcp"].Host);
+        Assert.Equal("relay-acme.landbridge.example.com", h.Caddy.Routes["landbridge-acme-relay"].Host);
+        Assert.Equal("https://acme.landbridge.example.com", row.PublicUrl);
     }
 
     [Fact]
@@ -52,22 +52,22 @@ public class SagaTests
         var i = await CreateAsync(h);
         await h.Provisioner.ProvisionAsync(i.Id, default);
 
-        var mcp = h.Substrate.Containers["docket-acme-mcp"].Spec.Env;
-        Assert.Equal(i.PassphraseHash, mcp["Docket__Operator__PassphraseHash"]);
-        Assert.Equal("true", mcp["Docket__MigrateOnStartup"]);
-        Assert.Equal(i.RelayBearer, mcp["Docket__RelayValidation__Bearer"]);
-        Assert.Contains("Password=" + i.DbPassword, mcp["ConnectionStrings__Docket"]);
-        Assert.Contains("Host=docket-acme-pg", mcp["ConnectionStrings__Docket"]);
-        Assert.Equal("https://relay-acme.docket.example.com", mcp["Docket__RelayUrl"]);
+        var mcp = h.Substrate.Containers["landbridge-acme-mcp"].Spec.Env;
+        Assert.Equal(i.PassphraseHash, mcp["Landbridge__Operator__PassphraseHash"]);
+        Assert.Equal("true", mcp["Landbridge__MigrateOnStartup"]);
+        Assert.Equal(i.RelayBearer, mcp["Landbridge__RelayValidation__Bearer"]);
+        Assert.Contains("Password=" + i.DbPassword, mcp["ConnectionStrings__Landbridge"]);
+        Assert.Contains("Host=landbridge-acme-pg", mcp["ConnectionStrings__Landbridge"]);
+        Assert.Equal("https://relay-acme.landbridge.example.com", mcp["Landbridge__RelayUrl"]);
         // The dev-only gates are never set on a meta-provisioned instance (ruling #1 area).
-        Assert.False(mcp.ContainsKey("Docket__DevSeed__TokenFile"));
-        Assert.False(mcp.ContainsKey("Docket__Oauth__AllowInsecureClientMetadata"));
+        Assert.False(mcp.ContainsKey("Landbridge__DevSeed__TokenFile"));
+        Assert.False(mcp.ContainsKey("Landbridge__Oauth__AllowInsecureClientMetadata"));
         // No signing key is injected (ruling #1: opaque tokens, no consumer).
         Assert.DoesNotContain(mcp.Keys, k => k.Contains("SigningKey", StringComparison.OrdinalIgnoreCase));
 
-        var relay = h.Substrate.Containers["docket-acme-relay"].Spec.Env;
+        var relay = h.Substrate.Containers["landbridge-acme-relay"].Spec.Env;
         Assert.Equal(i.RelayBearer, relay["Relay__ControlPlane__Bearer"]);
-        Assert.Equal("http://docket-acme-mcp:8080", relay["Relay__ControlPlane__Url"]);
+        Assert.Equal("http://landbridge-acme-mcp:8080", relay["Relay__ControlPlane__Url"]);
     }
 
     [Fact]
@@ -80,9 +80,9 @@ public class SagaTests
         await h.Provisioner.ProvisionAsync(i.Id, default);
         await h.Provisioner.ProvisionAsync(i.Id, default); // re-run: every step already Done
 
-        Assert.Equal(1, ops["net:docket-acme-net"]);
-        Assert.Equal(1, ops["run:docket-acme-mcp"]);
-        Assert.Equal(1, ops["run:docket-acme-relay"]);
+        Assert.Equal(1, ops["net:landbridge-acme-net"]);
+        Assert.Equal(1, ops["run:landbridge-acme-mcp"]);
+        Assert.Equal(1, ops["run:landbridge-acme-relay"]);
         Assert.Single(h.Substrate.Networks);
         Assert.Equal(3, h.Substrate.Containers.Count);
     }
@@ -98,7 +98,7 @@ public class SagaTests
         h.Substrate.BeforeOp = async op =>
         {
             await prior(op);
-            if (fail && op == "run:docket-acme-relay")
+            if (fail && op == "run:landbridge-acme-relay")
                 throw new InvalidOperationException("boom");
         };
 
@@ -114,9 +114,9 @@ public class SagaTests
         Assert.Equal(InstanceState.Ready, ready.State);
         Assert.Null(ready.FailedStep);
         // Earlier steps ran once; only the failed relay step retried.
-        Assert.Equal(1, ops["net:docket-acme-net"]);
-        Assert.Equal(1, ops["run:docket-acme-mcp"]);
-        Assert.Equal(2, ops["run:docket-acme-relay"]);
+        Assert.Equal(1, ops["net:landbridge-acme-net"]);
+        Assert.Equal(1, ops["run:landbridge-acme-mcp"]);
+        Assert.Equal(2, ops["run:landbridge-acme-relay"]);
     }
 
     [Fact]
@@ -168,7 +168,7 @@ public class SagaTests
         Assert.Equal(InstanceState.Suspended, suspended.State);
         Assert.All(h.Substrate.Containers.Values, c => Assert.False(c.Running));
         Assert.Empty(h.Caddy.Routes);
-        Assert.Contains("docket-acme-pgdata", h.Substrate.Volumes); // data retained
+        Assert.Contains("landbridge-acme-pgdata", h.Substrate.Volumes); // data retained
 
         await h.Provisioner.ResumeAsync(i.Id, default);
         var resumed = await h.Db.Instances.SingleAsync(x => x.Id == i.Id);
@@ -191,13 +191,13 @@ public class SagaTests
         Assert.Equal("v2", row.ImageTag);
         Assert.Equal(InstanceState.Ready, row.State);
         // mcp + relay were removed and recreated on the new tag …
-        Assert.Contains("container:docket-acme-mcp", h.Substrate.Removed);
-        Assert.Contains("container:docket-acme-relay", h.Substrate.Removed);
-        Assert.Equal("docket-mcp:v2", h.Substrate.Containers["docket-acme-mcp"].Spec.Image);
+        Assert.Contains("container:landbridge-acme-mcp", h.Substrate.Removed);
+        Assert.Contains("container:landbridge-acme-relay", h.Substrate.Removed);
+        Assert.Equal("landbridge-mcp:v2", h.Substrate.Containers["landbridge-acme-mcp"].Spec.Image);
         // … Postgres and its volume were untouched.
-        Assert.DoesNotContain("container:docket-acme-pg", h.Substrate.Removed);
-        Assert.Contains("docket-acme-pgdata", h.Substrate.Volumes);
-        Assert.False(ops.ContainsKey("rm:docket-acme-pg"));
+        Assert.DoesNotContain("container:landbridge-acme-pg", h.Substrate.Removed);
+        Assert.Contains("landbridge-acme-pgdata", h.Substrate.Volumes);
+        Assert.False(ops.ContainsKey("rm:landbridge-acme-pg"));
     }
 
     /// <summary>Attaches a counting hook, preserving any existing one; returns the live counter.</summary>

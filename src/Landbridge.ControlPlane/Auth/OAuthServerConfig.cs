@@ -1,4 +1,4 @@
-namespace Docket.ControlPlane.Auth;
+namespace Landbridge.ControlPlane.Auth;
 
 /// <summary>
 /// The single source of truth for this Instance's OAuth 2.1 identity (spec §5).
@@ -7,9 +7,9 @@ namespace Docket.ControlPlane.Auth;
 /// id, the RFC 8414 issuer, the two endpoint URLs, and the resource-metadata URI
 /// the 401 challenge points at.
 ///
-/// <para>Resolved once at startup from <c>Docket:PublicMcpUrl</c> — the same
+/// <para>Resolved once at startup from <c>Landbridge:PublicMcpUrl</c> — the same
 /// public URL a worker dials the plane with (§13) — so the challenge handler
-/// (<c>DocketAuthenticationHandler</c>), the two well-known metadata endpoints,
+/// (<c>LandbridgeAuthenticationHandler</c>), the two well-known metadata endpoints,
 /// and the authorize/token validation can never disagree about who this server
 /// is. Registered as a singleton; injected wherever a canonical URL is needed.</para>
 ///

@@ -1,11 +1,11 @@
-using Docket.Core;
+using Landbridge.Core;
 
-namespace Docket.ControlPlane.Auth;
+namespace Landbridge.ControlPlane.Auth;
 
 /// <summary>
 /// Which end of a forward a grant is being presented for (spec §8.3). Mirrors
 /// the relay's own role enum, but kept as the control plane's own type so the
-/// plane never takes a dependency on <c>Docket.Relay</c> — the two agree only on
+/// plane never takes a dependency on <c>Landbridge.Relay</c> — the two agree only on
 /// the wire strings <c>consumer</c>/<c>producer</c>.
 /// </summary>
 public enum RelayGrantRole
@@ -21,7 +21,7 @@ public enum RelayGrantRole
 ///
 /// <para>A grant is <b>not</b> a <see cref="CredentialRow"/> / Principal — it
 /// authenticates nothing to the MCP surface. It lives in its own table with its
-/// own <c>dkt_g_</c> prefix, and only its SHA-256 lands here, exactly like the
+/// own <c>lbr_g_</c> prefix, and only its SHA-256 lands here, exactly like the
 /// opaque tokens of §5. It is single-use <em>per role</em>: the consumer opens
 /// its tunnel once and the producer opens its tunnel once, so each side has its
 /// own "used" stamp and a replay of either side is refused.</para>
@@ -36,7 +36,7 @@ public enum RelayGrantRole
 /// half is not a row.</b> Nothing here can end a splice that is already running — that is
 /// what §8.3's "until the owning task leaves working" needs, and it takes a command to the
 /// two machines holding the sockets (<c>close-forward</c>,
-/// <see cref="Docket.ControlPlane.ForwardTeardownService"/>), issued from the same effect.
+/// <see cref="Landbridge.ControlPlane.ForwardTeardownService"/>), issued from the same effect.
 /// Read a revoked row as "no further tunnel may open on this", never as "the tunnel that
 /// did open is gone".</para>
 ///

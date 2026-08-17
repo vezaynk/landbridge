@@ -1,7 +1,7 @@
-namespace Docket.Runner.Tests;
+namespace Landbridge.Runner.Tests;
 
 /// <summary>
-/// docketd's persisted machine credentials (spec §5, §13): the round-trip is
+/// landbridged's persisted machine credentials (spec §5, §13): the round-trip is
 /// AOT-safe (source-gen JSON), the file is written atomically and owner-only
 /// (0600), the state-dir resolution honours its documented precedence, and the
 /// runner WebSocket URL derives correctly from the enrolled HTTP base.
@@ -11,11 +11,11 @@ public class CredentialStoreTests
     private static readonly DateTimeOffset AccessExp = DateTimeOffset.Parse("2026-07-29T13:00:00+00:00");
     private static readonly DateTimeOffset RefreshExp = DateTimeOffset.Parse("2026-10-27T12:00:00+00:00");
 
-    private static MachineCredentialFile Sample(string access = "dkt_m_aaa", string refresh = "dkt_r_bbb") =>
+    private static MachineCredentialFile Sample(string access = "lbr_m_aaa", string refresh = "lbr_r_bbb") =>
         new("11111111-1111-1111-1111-111111111111", "https://plane.example.com", access, AccessExp, refresh, RefreshExp);
 
     private static string FreshDir() =>
-        Path.Combine(Path.GetTempPath(), "docket-cred-tests", Guid.NewGuid().ToString("N"));
+        Path.Combine(Path.GetTempPath(), "landbridge-cred-tests", Guid.NewGuid().ToString("N"));
 
     [Fact]
     public void Save_then_load_round_trips_exactly()
@@ -65,10 +65,10 @@ public class CredentialStoreTests
         var dir = FreshDir();
         try
         {
-            CredentialStore.Save(dir, Sample(access: "dkt_m_first"));
-            CredentialStore.Save(dir, Sample(access: "dkt_m_second"));
+            CredentialStore.Save(dir, Sample(access: "lbr_m_first"));
+            CredentialStore.Save(dir, Sample(access: "lbr_m_second"));
 
-            Assert.Equal("dkt_m_second", CredentialStore.Load(dir)!.AccessToken); // the rename replaced the old file
+            Assert.Equal("lbr_m_second", CredentialStore.Load(dir)!.AccessToken); // the rename replaced the old file
             Assert.Empty(Directory.GetFiles(dir, "*.tmp-*"));                      // the temp was consumed by the rename
             Assert.Single(Directory.GetFiles(dir));                               // only credentials.json remains
         }
@@ -77,9 +77,9 @@ public class CredentialStoreTests
 
     [Theory]
     [InlineData("/explicit", "/env", "/xdg", "/home/user")]  // --state-dir wins (verbatim)
-    [InlineData(null, "/env", "/xdg", "/home/user")]         // then DOCKET_STATE_DIR (verbatim)
-    [InlineData(null, null, "/xdg", "/home/user")]           // then $XDG_STATE_HOME/docket
-    [InlineData(null, null, null, "/home/user")]             // else ~/.docket
+    [InlineData(null, "/env", "/xdg", "/home/user")]         // then LANDBRIDGE_STATE_DIR (verbatim)
+    [InlineData(null, null, "/xdg", "/home/user")]           // then $XDG_STATE_HOME/landbridge
+    [InlineData(null, null, null, "/home/user")]             // else ~/.landbridge
     public void ResolveStateDir_follows_documented_precedence(
         string? arg, string? env, string? xdg, string home)
     {
@@ -89,8 +89,8 @@ public class CredentialStoreTests
         var expected =
             arg is not null ? arg
             : env is not null ? env
-            : xdg is not null ? Path.Combine(xdg, "docket")
-            : Path.Combine(home, ".docket");
+            : xdg is not null ? Path.Combine(xdg, "landbridge")
+            : Path.Combine(home, ".landbridge");
 
         Assert.Equal(expected, CredentialStore.ResolveStateDir(arg, env, xdg, home));
     }

@@ -3,12 +3,12 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
-namespace Docket.Preview;
+namespace Landbridge.Preview;
 
 /// <summary>
 /// Hosts the <see cref="PreviewServer"/> in the ASP.NET generic host (spec §8.4).
 /// Binds the configured port on all interfaces — the preview frontend is a public
-/// TLS frontend, unlike <c>docketd</c> which only ever binds loopback (§10) — loads
+/// TLS frontend, unlike <c>landbridged</c> which only ever binds loopback (§10) — loads
 /// the wildcard cert and keeps it hot-reloaded via <see cref="PreviewCertificateProvider"/>
 /// (renewals are picked up with no restart), then starts the accept loop. Tests
 /// construct a <see cref="PreviewServer"/> directly on a loopback port instead.

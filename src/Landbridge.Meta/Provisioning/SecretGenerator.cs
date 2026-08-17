@@ -1,7 +1,7 @@
 using System.Security.Cryptography;
 using System.Text;
 
-namespace Docket.Meta.Provisioning;
+namespace Landbridge.Meta.Provisioning;
 
 /// <summary>
 /// Mints an Instance's fresh per-instance secrets (design note §5). All values are
@@ -9,7 +9,7 @@ namespace Docket.Meta.Provisioning;
 /// shell-free env map without escaping. The operator passphrase is generated,
 /// returned once to the caller for the shown-once page, and immediately reduced to
 /// its SHA-256 hash — the plaintext is never persisted (mirrors the plane's
-/// <c>Docket:Operator:PassphraseHash</c> discipline, §5/§13).
+/// <c>Landbridge:Operator:PassphraseHash</c> discipline, §5/§13).
 /// </summary>
 public class SecretGenerator
 {

@@ -1,10 +1,10 @@
 using System.Diagnostics;
 using System.Text;
 
-namespace Docket.MultiMachine.Tests;
+namespace Landbridge.MultiMachine.Tests;
 
 /// <summary>
-/// The listen half of <c>docket-acp-bridge</c> as a test fixture: bind loopback,
+/// The listen half of <c>landbridge-acp-bridge</c> as a test fixture: bind loopback,
 /// spawn the agent argv on each WebSocket, expose the <c>ws://</c> URL.
 /// </summary>
 internal sealed class AcpBridgeFarSide : IDisposable
@@ -20,12 +20,12 @@ internal sealed class AcpBridgeFarSide : IDisposable
 
     public static string BridgePath()
     {
-        var dll = typeof(Docket.AcpBridge.Program).Assembly.Location;
+        var dll = typeof(Landbridge.AcpBridge.Program).Assembly.Location;
         var dir = Path.GetDirectoryName(dll)!;
         var stem = Path.GetFileNameWithoutExtension(dll);
         var apphost = Path.Combine(dir, OperatingSystem.IsWindows() ? stem + ".exe" : stem);
         if (!File.Exists(apphost))
-            throw new FileNotFoundException("docket-acp-bridge apphost not found at " + apphost);
+            throw new FileNotFoundException("landbridge-acp-bridge apphost not found at " + apphost);
         return apphost;
     }
 

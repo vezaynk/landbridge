@@ -1,4 +1,4 @@
-namespace Docket.Core;
+namespace Landbridge.Core;
 
 /// <summary>
 /// The enforcement checks of spec §9 (values 1–14, numbered to match) plus

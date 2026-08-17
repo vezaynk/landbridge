@@ -3,10 +3,10 @@ using System.Net.Http.Headers;
 using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Text;
-using Docket.ControlPlane;
-using Docket.ControlPlane.Tests;
-using Docket.Core;
-using Docket.Preview;
+using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Tests;
+using Landbridge.Core;
+using Landbridge.Preview;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -16,15 +16,15 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Options;
 
-namespace Docket.Mcp.Tests;
+namespace Landbridge.Mcp.Tests;
 
 /// <summary>
 /// The §8.4 crown: an HTTP preview end to end with <b>no fakes on the data path</b>.
 /// A real control plane (preview mapping + connect + grant service), a real relay
-/// validating grants against that plane, a real producer <c>docketd</c> that dials
+/// validating grants against that plane, a real producer <c>landbridged</c> that dials
 /// a real upstream HTTP/WS service on demand, and the real preview frontend as the
 /// consumer end. A browser HTTP request and a WebSocket both round-trip
-/// frontend → real relay → producer-docketd → upstream and back, proving the
+/// frontend → real relay → producer-landbridged → upstream and back, proving the
 /// frontend's consumer tunnel client is wire-compatible with the unchanged relay.
 /// </summary>
 [Collection(PostgresCollection.Name)]
@@ -64,7 +64,7 @@ public sealed class PreviewEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         var registry = plane.Services.GetRequiredService<RunnerConnectionRegistry>();
         var sink = plane.Services.GetRequiredService<RunnerEventSink>();
 
-        // ── A real producer docketd, dialing the upstream on demand ─────────────
+        // ── A real producer landbridged, dialing the upstream on demand ─────────────
         var producerChannel = new SinkForwardingChannel(sink);
         await using var producerDaemon = new DaemonHarness("mp", producerChannel);
         await producerDaemon.StartAsync();
@@ -205,12 +205,12 @@ public sealed class PreviewEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         var authRedirect = (await browser.GetAsync($"http://{label}.{Domain}/app", ct)).Headers.Location!.ToString();
         Assert.StartsWith($"{planeBase}/dashboard/preview-auth", authRedirect);
 
-        // Hop 2 — the operator confirms at the dashboard origin (docket_session) → 302 back with a code.
+        // Hop 2 — the operator confirms at the dashboard origin (landbridge_session) → 302 back with a code.
         using var dashboard = new HttpClient(new HttpClientHandler { AllowAutoRedirect = false });
         using var authReq = new HttpRequestMessage(HttpMethod.Get, authRedirect);
-        authReq.Headers.Add("Cookie", $"docket_session={operatorSession}");
+        authReq.Headers.Add("Cookie", $"landbridge_session={operatorSession}");
         var back = (await dashboard.SendAsync(authReq, ct)).Headers.Location!.ToString();
-        Assert.Contains("docket_preview_code=", back);
+        Assert.Contains("landbridge_preview_code=", back);
         Assert.StartsWith($"http://{label}.{Domain}/app", back);
 
         // Hop 3 — browser carries the code back to the preview origin → cookie set, clean redirect.
@@ -218,8 +218,8 @@ public sealed class PreviewEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(HttpStatusCode.Found, exchange.StatusCode);
         Assert.Equal("/app", exchange.Headers.Location!.ToString());
         var setCookie = Assert.Single(exchange.Headers.GetValues("Set-Cookie"));
-        var previewCookie = setCookie.Split(';')[0]; // docket_preview=…
-        Assert.StartsWith("docket_preview=", previewCookie);
+        var previewCookie = setCookie.Split(';')[0]; // landbridge_preview=…
+        Assert.StartsWith("landbridge_preview=", previewCookie);
         exchange.Dispose();
 
         // Hop 4 — the clean URL with the per-label cookie → content, end to end through the real relay.
@@ -308,7 +308,7 @@ internal sealed class PreviewFrontendHarness : IAsyncDisposable
     }
 }
 
-/// <summary>A real upstream HTTP + WebSocket service the producer task registers and docketd dials.</summary>
+/// <summary>A real upstream HTTP + WebSocket service the producer task registers and landbridged dials.</summary>
 internal sealed class PreviewUpstream : IAsyncDisposable
 {
     private readonly WebApplication _app;

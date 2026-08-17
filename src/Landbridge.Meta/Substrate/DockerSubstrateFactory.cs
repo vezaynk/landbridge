@@ -2,9 +2,9 @@ using System.Collections.Concurrent;
 using System.Net.Security;
 using System.Security.Cryptography.X509Certificates;
 using Docker.DotNet;
-using Docket.Meta.Data;
+using Landbridge.Meta.Data;
 
-namespace Docket.Meta.Substrate;
+namespace Landbridge.Meta.Substrate;
 
 /// <summary>
 /// Builds and caches a Docker.DotNet client per host (design note §3). A local host

@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace Docket.Preview;
+namespace Landbridge.Preview;
 
 /// <summary>
 /// Minimal HTTP/1.1 error responses the frontend writes directly to the browser
@@ -18,7 +18,7 @@ internal static class PreviewHttpResponses
 
     public static Task UnauthorizedAsync(Stream s, CancellationToken ct) =>
         WriteAsync(s, 401, "Unauthorized",
-            "This preview requires a valid Docket operator session.", ct);
+            "This preview requires a valid Landbridge operator session.", ct);
 
     public static Task NotFoundAsync(Stream s, CancellationToken ct) =>
         WriteAsync(s, 404, "Not Found", "No such preview.", ct);

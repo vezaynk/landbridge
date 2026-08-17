@@ -1,14 +1,14 @@
-using Docket.Meta;
-using Docket.Meta.Data;
-using Docket.Meta.Provisioning;
-using Docket.Meta.Secrets;
+using Landbridge.Meta;
+using Landbridge.Meta.Data;
+using Landbridge.Meta.Provisioning;
+using Landbridge.Meta.Secrets;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Storage;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.Meta.Tests;
+namespace Landbridge.Meta.Tests;
 
 /// <summary>
 /// Deterministic, zero-Docker wiring for the saga tests (design note §7): an

@@ -1,4 +1,4 @@
-namespace Docket.Core;
+namespace Landbridge.Core;
 
 /// <summary>
 /// Written when a task parks, spec §11: the machine redispatch should prefer, because
@@ -21,7 +21,7 @@ public sealed record ParkRecord(string Machine);
 
 /// <summary>
 /// What dispatch needs to know about a machine, as reported by its runner.
-/// Ready/back-pressure are derived by docketd (§10); profiles are declared
+/// Ready/back-pressure are derived by landbridged (§10); profiles are declared
 /// names the control plane never interprets.
 /// </summary>
 public sealed record MachineSnapshot(

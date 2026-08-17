@@ -1,10 +1,10 @@
 using System.Text.Json;
 
-namespace Docket.Runner;
+namespace Landbridge.Runner;
 
 /// <summary>
 /// The validated runner configuration, spec §10 runner config. Everything
-/// harness-specific is data: <c>docketd</c> contains no harness knowledge, so
+/// harness-specific is data: <c>landbridged</c> contains no harness knowledge, so
 /// supporting a new harness is a config file, never a code change (§10). (§11
 /// wants that config gated by a conformance run before the machine joins; that
 /// run is not built, so today the gate is the enroll skill's manual smoke test.)
@@ -89,7 +89,7 @@ public sealed record RunnerConfig(
     /// §10 operator-declared services. Absent or empty is the normal case, so a
     /// missing section is not a problem — but a declared one is validated strictly,
     /// because a service's name becomes a filesystem path segment (see
-    /// <see cref="IsValidServiceName"/>) and its backend decides whether docketd owns
+    /// <see cref="IsValidServiceName"/>) and its backend decides whether landbridged owns
     /// the process at all.
     /// </summary>
     private static IReadOnlyList<ServiceConfig> ValidateServices(
@@ -133,11 +133,11 @@ public sealed record RunnerConfig(
 
             if (dto.Spawn is null || dto.Spawn.Count == 0)
             {
-                problems.Add($"service '{name}' has an empty spawn argv — docketd needs a command to run (§10)");
+                problems.Add($"service '{name}' has an empty spawn argv — landbridged needs a command to run (§10)");
                 continue;
             }
 
-            // v1 supervises services as docketd's own children. The key exists so a
+            // v1 supervises services as landbridged's own children. The key exists so a
             // config asking for a delegated backend fails loudly instead of being
             // silently ignored and quietly supervised the other way.
             var backend = dto.Backend?.Trim();
@@ -145,7 +145,7 @@ public sealed record RunnerConfig(
             {
                 problems.Add(
                     $"service '{name}' declares backend '{backend}', which is not implemented — " +
-                    $"'{ServiceBackends.Direct}' (docketd supervises the process itself) is the only " +
+                    $"'{ServiceBackends.Direct}' (landbridged supervises the process itself) is the only " +
                     "supported value (§10)");
                 continue;
             }
@@ -288,7 +288,7 @@ public sealed record RunnerConfig(
             }
 
             if (dto.Spawn is null || dto.Spawn.Count == 0)
-                problems.Add($"profile '{name}' has an empty spawn argv — docketd needs a command to run (§10)");
+                problems.Add($"profile '{name}' has an empty spawn argv — landbridged needs a command to run (§10)");
 
             if (dto.MaxConcurrent is { } mc && mc < 1)
                 problems.Add($"profile '{name}' max_concurrent must be >= 1 when set (§10)");
@@ -305,14 +305,14 @@ public sealed record RunnerConfig(
             // prompt on argv — the client sends it as `session/prompt`. So a profile without
             // one spawns an agent that completes the handshake, waits, and does nothing.
             // Required rather than defaulted: there is no generic text that would be right,
-            // since the prompt has to name the docket tools the way this harness spells them.
+            // since the prompt has to name the landbridge tools the way this harness spells them.
             if (string.IsNullOrWhiteSpace(dto.Prompt))
                 problems.Add(
                     $"profile '{name}' has no `prompt` — an ACP agent takes no prompt on argv, so the " +
                     "worker's opening turn has to be declared here and sent as session/prompt (§10)");
 
             // #112 G3: reserved names fail the load rather than being dropped at spawn.
-            // Silently ignoring DOCKET_WORKER_TOKEN would leave an operator believing
+            // Silently ignoring LANDBRIDGE_WORKER_TOKEN would leave an operator believing
             // they had overwritten a per-instance secret.
             if (dto.Env is { Count: > 0 })
             {
@@ -334,7 +334,7 @@ public sealed record RunnerConfig(
 
                     if (HarnessTelemetry.IsReserved(key))
                         problems.Add(
-                            $"profile '{name}' env cannot set {key} — docketd stamps it on every " +
+                            $"profile '{name}' env cannot set {key} — landbridged stamps it on every " +
                             "spawn, not configurably (§10)");
                 }
             }
@@ -459,7 +459,7 @@ public static class MachineSnapshotDefaults
 public sealed record MachineConfig(string WorkRoot, TimeSpan HeartbeatInterval, BackPressureThresholds BackPressure);
 
 /// <summary>
-/// §10 concurrency: docketd stops accepting dispatch when any of these
+/// §10 concurrency: landbridged stops accepting dispatch when any of these
 /// observed signals crosses its threshold. Ratios in [0, 1].
 /// </summary>
 public sealed record BackPressureThresholds(double MaxCpuLoad, double MaxMemoryLoad, double MaxDiskUsage)
@@ -472,14 +472,14 @@ public sealed record BackPressureThresholds(double MaxCpuLoad, double MaxMemoryL
 /// never <b>what</b> work it does — profiles are identifiers a human chose, not
 /// a capability manifest (§10, §15).
 ///
-/// <para><b>Dead-man's switch convention (§10).</b> docketd redirects a worker's stdin to a
+/// <para><b>Dead-man's switch convention (§10).</b> landbridged redirects a worker's stdin to a
 /// pipe and holds the write end for the worker's whole lifetime (see
 /// <see cref="ProcessSupervisor.Spawn"/>). Under ACP that pipe is also the JSON-RPC request
 /// channel, and the two uses coincide exactly: the protocol defines shutdown as the client
-/// closing stdin, so EOF means docketd is gone (crashed or SIGKILLed) and a well-behaved
+/// closing stdin, so EOF means landbridged is gone (crashed or SIGKILLed) and a well-behaved
 /// agent exits, killing anything it spawned, rather than burning tokens against a task the
 /// control plane has already requeued. This is cooperative and immediate;
-/// <see cref="StrayReaper"/> is the non-cooperative backstop that runs on the next docketd
+/// <see cref="StrayReaper"/> is the non-cooperative backstop that runs on the next landbridged
 /// start.
 ///
 /// <para>There is no longer a per-profile opt-out. <c>stdin: closed</c> existed for
@@ -508,11 +508,11 @@ public sealed record ProfileConfig(
     /// §11 / <c>ideas/sessions.md</c>: the turn that wakes this profile's live session when
     /// there is new input on the assignment. Never the input itself — the answer is pulled
     /// over the authenticated MCP call, which is what makes the read a receipt (see
-    /// <see cref="Docket.Contracts.PromptCommand"/>).
+    /// <see cref="Landbridge.Contracts.PromptCommand"/>).
     ///
     /// <para>The default names no tool, because the spelling is per-harness: claude and
-    /// Codex see <c>mcp__docket__get_session</c>, OpenCode <c>docket_get_session</c>, Grok and
-    /// Goose <c>docket__get_session</c>. A profile should say the right one — a worker that was told
+    /// Codex see <c>mcp__landbridge__get_session</c>, OpenCode <c>landbridge_get_session</c>, Grok and
+    /// Goose <c>landbridge__get_session</c>. A profile should say the right one — a worker that was told
     /// to call a tool it does not have goes hunting, and one that was told nothing specific
     /// has been observed reaching for a shell instead.</para>
     /// </summary>
@@ -525,7 +525,7 @@ public sealed record ProfileConfig(
 
     /// <summary>
     /// §10 / #112 G3: extra environment stamped on every spawn (and resume) of this
-    /// profile, after the reserved <c>DOCKET_*</c> variables and before
+    /// profile, after the reserved <c>LANDBRIDGE_*</c> variables and before
     /// <c>telemetry.env</c>. Values take the same <c>{session_id}</c> / <c>{machine_id}</c>
     /// / <c>{work_dir}</c> / <c>{mcp_config}</c> / <c>{mcp_url}</c> /
     /// <c>{worker_token}</c> / <c>{session_id}</c> substitutions
@@ -593,23 +593,23 @@ public sealed record StopConfig(TimeSpan WindDown);
 
 /// <summary>
 /// §10 telemetry ingest: the per-profile opt-in that sends a harness's own
-/// token/cost telemetry to the operator's collector, attributed to the Docket task
+/// token/cost telemetry to the operator's collector, attributed to the Landbridge task
 /// that caused it (<see cref="HarnessTelemetry"/> resolves the spawn environment;
 /// <c>docs/TELEMETRY.md</c> is the operator guide).
 ///
 /// <para><see cref="Otel"/> is off by default and gates everything — it is the
 /// operator's data going to the operator's collector. <see cref="Endpoint"/> beats
-/// the endpoint docketd itself inherited; with neither, telemetry stays off rather
+/// the endpoint landbridged itself inherited; with neither, telemetry stays off rather
 /// than pointing a worker's exporter at nothing.</para>
 ///
 /// <para><see cref="Env"/> holds harness-specific opt-in variables as data, so
-/// docketd's own code stays vendor-neutral (§10 — no harness knowledge). Claude
+/// landbridged's own code stays vendor-neutral (§10 — no harness knowledge). Claude
 /// Code needs <c>CLAUDE_CODE_ENABLE_TELEMETRY=1</c> here; the same map is the seam
 /// for anything else an operator wants on the worker's exporter (headers, export
 /// interval, the trace beta).</para>
 ///
 /// <para><b>Visibility, not enforcement.</b> No ceiling, no accounting, and the
-/// control plane ingests none of it (§10 — Docket does not sit between harness and
+/// control plane ingests none of it (§10 — Landbridge does not sit between harness and
 /// provider, so attribution is best-effort by construction).</para>
 /// </summary>
 public sealed record TelemetryConfig(
@@ -625,7 +625,7 @@ public sealed record TelemetryConfig(
 /// <summary>
 /// §12 transcript capture, plus the two original §10 log-streaming hints.
 ///
-/// <para><b>Capture (this increment).</b> When <see cref="Capture"/> is set docketd tees
+/// <para><b>Capture (this increment).</b> When <see cref="Capture"/> is set landbridged tees
 /// the harness's stdout (its stream-json transcript) and captures stderr to per-instance
 /// files under <c>&lt;state&gt;/transcripts/&lt;task&gt;/</c> (see <see cref="TranscriptStore"/>),
 /// bounded by <see cref="MaxBytes"/> per stream and swept after <see cref="PruneAfterDays"/>
@@ -667,7 +667,7 @@ public sealed record ProfileProcessesConfig(bool AgentInitiated = false, int Max
 /// <summary>Accepted <c>services[].backend</c> values (§10).</summary>
 public static class ServiceBackends
 {
-    /// <summary>docketd spawns and supervises the process itself — the only v1 backend.</summary>
+    /// <summary>landbridged spawns and supervises the process itself — the only v1 backend.</summary>
     public const string Direct = "direct";
 }
 
@@ -692,11 +692,11 @@ public static class ServiceDefaults
 }
 
 /// <summary>
-/// One operator-declared service (§10): a long-lived process <c>docketd</c> supervises
+/// One operator-declared service (§10): a long-lived process <c>landbridged</c> supervises
 /// as its <b>own child</b>, outside any task's process tree. That placement is the
 /// whole point — it is why the service survives the task that uses it without anyone
-/// having to <c>setsid</c> or scrub <c>DOCKET_*</c> to escape supervision, and it keeps
-/// the kill guarantee inside Docket on every OS rather than depending on a system
+/// having to <c>setsid</c> or scrub <c>LANDBRIDGE_*</c> to escape supervision, and it keeps
+/// the kill guarantee inside Landbridge on every OS rather than depending on a system
 /// service manager that macOS and containers may not have.
 ///
 /// <para>This record is also reused for an agent-started <b>process</b> (§10
@@ -716,15 +716,15 @@ public sealed record ServiceConfig(
 
 /// <summary>
 /// §10 readiness: the loopback port that must accept a connection before the service
-/// counts as <see cref="Docket.Contracts.ServiceState.Running"/>. A real check, not a
+/// counts as <see cref="Landbridge.Contracts.ServiceState.Running"/>. A real check, not a
 /// sleep — it is what lets a holder task register only once the port actually answers
-/// (§8.2), and what lets docketd refuse a forward dial for a service that is down.
+/// (§8.2), and what lets landbridged refuse a forward dial for a service that is down.
 /// </summary>
 public sealed record ReadinessConfig(int TcpPort, TimeSpan Timeout);
 
 /// <summary>Thrown by <see cref="RunnerConfig.Load"/> with every validation failure.</summary>
 public sealed class RunnerConfigException(IReadOnlyList<string> errors)
-    : Exception("invalid docketd config:\n  - " + string.Join("\n  - ", errors))
+    : Exception("invalid landbridged config:\n  - " + string.Join("\n  - ", errors))
 {
     public IReadOnlyList<string> Errors { get; } = errors;
 }

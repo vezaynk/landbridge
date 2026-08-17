@@ -1,14 +1,14 @@
-using Docket.Meta.Data;
+using Landbridge.Meta.Data;
 using Microsoft.EntityFrameworkCore;
 
-namespace Docket.Meta.Tests;
+namespace Landbridge.Meta.Tests;
 
 /// <summary>
 /// Validates the hand-authored migration against a real Postgres (design note §2/§7):
 /// the schema applies, and the partial unique index on <c>instances(name)</c> —
 /// filtered to <c>destroyed_at IS NULL</c> — really lets a destroyed tombstone free
 /// its name while blocking two live instances from sharing one. Skippable: runs in
-/// CI (DOCKET_TEST_PG) or where local pg tooling exists, skips otherwise.
+/// CI (LANDBRIDGE_TEST_PG) or where local pg tooling exists, skips otherwise.
 /// </summary>
 [Collection(MetaPostgresCollection.Name)]
 public class MetaMigrationTests(MetaPostgresFixture pg)

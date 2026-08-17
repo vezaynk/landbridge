@@ -1,14 +1,14 @@
 using System.Data.Common;
-using Docket.Contracts;
-using Docket.ControlPlane.Auth;
-using Docket.Core;
+using Landbridge.Contracts;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.Core;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.ControlPlane.Tests;
+namespace Landbridge.ControlPlane.Tests;
 
 /// <summary>
 /// The two control-plane resilience defects the §17.8 chaos suite found, at unit grain.
@@ -135,7 +135,7 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
 
         // And the sweeper can now act on it. The TTL is passed explicitly because the
         // default is infinite — a session is held until park_session, not until a timer — so
-        // this exercises the opt-in auto-park an operator gets from Docket:WaitTtl. What the
+        // this exercises the opt-in auto-park an operator gets from Landbridge:WaitTtl. What the
         // re-adoption bought is the same either way: the sweeper resolved the machine.
         var waitTtl = TimeSpan.FromMinutes(30);
         clock.Advance(waitTtl + TimeSpan.FromMinutes(1));
@@ -390,7 +390,7 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         var connection = LiveConnection(clock, registry, "m1");
         registry.TrackDispatch("m1", seeded.Session);
 
-        // The wedged-but-alive shape, which is the whole of #84: docketd keeps asserting the
+        // The wedged-but-alive shape, which is the whole of #84: landbridged keeps asserting the
         // process exists, so the aliveness clock never fires and only the progress ceiling
         // can reclaim the task — and the process it reclaims from is, by construction, still
         // running. Nothing before this told it to stop.
@@ -982,7 +982,7 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
     /// <summary>
     /// A machine dialing back into a plane that has never heard of it: registered and
     /// ready, tracking nothing. This is exactly the registry state a restarted plane has
-    /// when <c>docketd</c> reconnects — the whole of #86.
+    /// when <c>landbridged</c> reconnects — the whole of #86.
     /// </summary>
     private static RunnerConnectionRegistry ReconnectedMachine(TimeProvider clock, string machineId)
     {
@@ -1038,7 +1038,7 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
     /// A sweeper for these tests. <paramref name="waitTtl"/> is null for the machine-death
     /// paths, which fire regardless — the wait TTL now defaults to infinite (a session is
     /// held until <c>park_session</c>, not until a timer), so a test about the TTL lapsing has
-    /// to ask for one explicitly, exactly as an operator does with <c>Docket:WaitTtl</c>.
+    /// to ask for one explicitly, exactly as an operator does with <c>Landbridge:WaitTtl</c>.
     /// </summary>
     private WaitTtlSweeper NewSweeper(
         TimeProvider clock, RunnerConnectionRegistry registry, TimeSpan? waitTtl = null) =>
@@ -1118,7 +1118,7 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         TimeProvider clock, IInterceptor? interceptor = null)
     {
         var services = new ServiceCollection();
-        services.AddDbContext<DocketDbContext>(o =>
+        services.AddDbContext<LandbridgeDbContext>(o =>
         {
             o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention();
             // Registered on the provider, so every scope the service opens for itself gets
@@ -1126,7 +1126,7 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
             if (interceptor is not null)
                 o.AddInterceptors(interceptor);
         });
-        services.AddDocketStore();
+        services.AddLandbridgeStore();
         services.AddScoped<TokenService>();
         services.AddSingleton(clock);
         return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();

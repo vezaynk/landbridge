@@ -1,7 +1,7 @@
 using System.Net.WebSockets;
-using Docket.Relay;
+using Landbridge.Relay;
 
-namespace Docket.Relay.Tests;
+namespace Landbridge.Relay.Tests;
 
 /// <summary>Test doubles and WebSocket helpers for the relay splice tests.</summary>
 internal static class RelayTestKit

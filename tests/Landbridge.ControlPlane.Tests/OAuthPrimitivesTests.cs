@@ -1,8 +1,8 @@
 using System.Security.Cryptography;
 using System.Text;
-using Docket.ControlPlane.Auth;
+using Landbridge.ControlPlane.Auth;
 
-namespace Docket.ControlPlane.Tests;
+namespace Landbridge.ControlPlane.Tests;
 
 /// <summary>
 /// The pure-logic OAuth primitives (spec §5), no database: PKCE S256 verification,

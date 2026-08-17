@@ -1,9 +1,9 @@
-using Docket.ControlPlane.Auth;
-using Docket.Core;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.Core;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.ControlPlane.Tests;
+namespace Landbridge.ControlPlane.Tests;
 
 /// <summary>
 /// The forward-grant service (spec §8.3): issuance gated on a registered service
@@ -34,7 +34,7 @@ public sealed class RelayGrantServiceTests(PostgresFixture pg) : IAsyncLifetime
     /// checks. Returns the producer's task id.
     /// </summary>
     private static async Task<SessionId> WorkingServiceAsync(
-        DocketDbContext db, TimeProvider clock, TeamId team, string serviceName)
+        LandbridgeDbContext db, TimeProvider clock, TeamId team, string serviceName)
     {
         var store = new SessionStore(db, clock);
         var created = (StoreResult.Applied)await store.CreateAsync(
@@ -60,7 +60,7 @@ public sealed class RelayGrantServiceTests(PostgresFixture pg) : IAsyncLifetime
         var consumer = new WorkerCaller(Team, SessionId.New(), WorkerInstanceId.New());
         var issued = Assert.IsType<RelayGrantResult.Issued>(await grants.IssueAsync(consumer, "db"));
 
-        Assert.StartsWith("dkt_g_", issued.Grant);
+        Assert.StartsWith("lbr_g_", issued.Grant);
         Assert.NotEqual(Guid.Empty, issued.ForwardId);
         Assert.Equal(clock.GetUtcNow() + RelayGrantService.GrantTtl, issued.ExpiresAt);
 
@@ -304,7 +304,7 @@ public sealed class RelayGrantServiceTests(PostgresFixture pg) : IAsyncLifetime
     public async Task The_rate_limit_counts_mints_not_tunnels_that_opened()
     {
         // Authorization, not measured use — the same choice as the §9.9 ceiling. A grant minted
-        // and never presented still spent the Team's allowance, because what Docket authorized
+        // and never presented still spent the Team's allowance, because what Landbridge authorized
         // is knowable and what a peer then did with it is not.
         Skip.IfNot(pg.Available, pg.SkipReason);
         await using var db = pg.NewContext();

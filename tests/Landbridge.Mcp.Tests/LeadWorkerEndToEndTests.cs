@@ -1,10 +1,10 @@
-using Docket.Contracts;
-using Docket.ControlPlane;
-using Docket.ControlPlane.Auth;
-using Docket.ControlPlane.Tests;
-using Docket.Core;
-using Docket.Mcp.Auth;
-using Docket.Mcp.Tools;
+using Landbridge.Contracts;
+using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.ControlPlane.Tests;
+using Landbridge.Core;
+using Landbridge.Mcp.Auth;
+using Landbridge.Mcp.Tools;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -14,14 +14,14 @@ using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 
-namespace Docket.Mcp.Tests;
+namespace Landbridge.Mcp.Tests;
 
 /// <summary>
 /// The payoff (spec §10): a Lead creates a task over a real MCP connection and a
 /// dispatched worker acts on it over its own — end to end, over the wire, with
 /// the actual opaque-token auth handler in the loop.
 ///
-/// The server is the real <c>docket-mcp</c> pipeline (auth scheme, both tool
+/// The server is the real <c>landbridge-mcp</c> pipeline (auth scheme, both tool
 /// sets, MapMcp().RequireAuthorization()) hosted on a loopback Kestrel port and
 /// driven by the MCP C# SDK client. Dispatch itself is invoked directly on the
 /// store — that is control-plane-internal by design: workers are dispatched,
@@ -397,20 +397,20 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         builder.WebHost.UseUrls("http://127.0.0.1:0");
 
         // Mirrors Program.cs wiring, pointed at the fixture's ephemeral database.
-        builder.Services.AddDbContext<DocketDbContext>(o =>
+        builder.Services.AddDbContext<LandbridgeDbContext>(o =>
             o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
-        builder.Services.AddDocketStore();
+        builder.Services.AddLandbridgeStore();
         builder.Services.AddScoped<RelayGrantService>();
         builder.Services.AddScoped<PreviewMappingService>(); // §8.4: WorkerTools.open_preview
         builder.Services.AddScoped<TokenService>();
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<RunnerConnectionRegistry>();
-        builder.Services.AddDocketForwarding(); // §8.3: WorkerTools needs the forward orchestrator
+        builder.Services.AddLandbridgeForwarding(); // §8.3: WorkerTools needs the forward orchestrator
         builder.Services.AddHttpContextAccessor();
 
-        builder.Services.AddAuthentication(DocketAuthenticationHandler.SchemeName)
-            .AddScheme<AuthenticationSchemeOptions, DocketAuthenticationHandler>(
-                DocketAuthenticationHandler.SchemeName, configureOptions: null);
+        builder.Services.AddAuthentication(LandbridgeAuthenticationHandler.SchemeName)
+            .AddScheme<AuthenticationSchemeOptions, LandbridgeAuthenticationHandler>(
+                LandbridgeAuthenticationHandler.SchemeName, configureOptions: null);
         builder.Services.AddAuthorization();
 
         builder.Services.AddMcpServer()

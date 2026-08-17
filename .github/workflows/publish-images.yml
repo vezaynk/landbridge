@@ -1,6 +1,6 @@
-# Publish the two docket runtime images to GHCR (docs/META.md §1.4).
+# Publish the two landbridge runtime images to GHCR (docs/META.md §1.4).
 #
-# docket-meta never builds — it pulls pinned tags (DockerSubstrate.EnsureImageAsync)
+# landbridge-meta never builds — it pulls pinned tags (DockerSubstrate.EnsureImageAsync)
 # and runs them. This workflow is the only thing that produces those tags.
 #
 # DELIBERATE, not per-push: a version tag (v*) or a manual dispatch. Every run
@@ -11,7 +11,7 @@
 #
 # The Dockerfiles are runtime-only by design (no SDK in the container): the build
 # context is a `dotnet publish` OUTPUT directory. So the sequence is publish-then-build,
-# the same order meta's own Docker E2E uses (tests/Docket.Meta.Tests/DockerE2ETests.cs).
+# the same order meta's own Docker E2E uses (tests/Landbridge.Meta.Tests/DockerE2ETests.cs).
 name: Publish images
 
 on:
@@ -67,11 +67,11 @@ jobs:
       # `runtimes/<rid>` assets, and UseAppHost=false drops the one native file (the
       # launcher, which the images do not use — their ENTRYPOINT is `dotnet <dll>`).
       # That is what lets ONE context serve both platforms below.
-      - name: Publish Docket.Mcp
-        run: dotnet publish src/Docket.Mcp -c Release -o out/mcp --nologo -p:UseAppHost=false
+      - name: Publish Landbridge.Mcp
+        run: dotnet publish src/Landbridge.Mcp -c Release -o out/mcp --nologo -p:UseAppHost=false
 
-      - name: Publish Docket.Relay
-        run: dotnet publish src/Docket.Relay -c Release -o out/relay --nologo -p:UseAppHost=false
+      - name: Publish Landbridge.Relay
+        run: dotnet publish src/Landbridge.Relay -c Release -o out/relay --nologo -p:UseAppHost=false
 
       # The default docker driver cannot emit a multi-platform manifest; this builder can.
       # No QEMU: the runtime Dockerfiles have no RUN step, so nothing is ever executed in
@@ -87,29 +87,29 @@ jobs:
       # `provenance: false` keeps each tag a plain two-entry manifest list (amd64 + arm64)
       # so `docker manifest inspect` reads cleanly and meta's plain pull resolves the
       # host's platform with nothing else in the index.
-      - name: Build and push docket-mcp
+      - name: Build and push landbridge-mcp
         uses: docker/build-push-action@v6
         with:
           context: out/mcp
-          file: docker/Docket.Mcp.Dockerfile
+          file: docker/Landbridge.Mcp.Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           provenance: false
           tags: |
-            ghcr.io/${{ github.repository_owner }}/docket-mcp:${{ steps.tags.outputs.version }}
-            ghcr.io/${{ github.repository_owner }}/docket-mcp:${{ steps.tags.outputs.sha }}
+            ghcr.io/${{ github.repository_owner }}/landbridge-mcp:${{ steps.tags.outputs.version }}
+            ghcr.io/${{ github.repository_owner }}/landbridge-mcp:${{ steps.tags.outputs.sha }}
 
-      - name: Build and push docket-relay
+      - name: Build and push landbridge-relay
         uses: docker/build-push-action@v6
         with:
           context: out/relay
-          file: docker/Docket.Relay.Dockerfile
+          file: docker/Landbridge.Relay.Dockerfile
           platforms: linux/amd64,linux/arm64
           push: true
           provenance: false
           tags: |
-            ghcr.io/${{ github.repository_owner }}/docket-relay:${{ steps.tags.outputs.version }}
-            ghcr.io/${{ github.repository_owner }}/docket-relay:${{ steps.tags.outputs.sha }}
+            ghcr.io/${{ github.repository_owner }}/landbridge-relay:${{ steps.tags.outputs.version }}
+            ghcr.io/${{ github.repository_owner }}/landbridge-relay:${{ steps.tags.outputs.sha }}
 
       # An Instance pins ONE tag shared by both images, so the pair is only usable once
       # this whole run is green. Print what to paste into meta.
@@ -120,8 +120,8 @@ jobs:
             echo
             echo "| Image | Tags |"
             echo "|---|---|"
-            echo "| \`ghcr.io/${{ github.repository_owner }}/docket-mcp\` | \`${{ steps.tags.outputs.version }}\`, \`${{ steps.tags.outputs.sha }}\` |"
-            echo "| \`ghcr.io/${{ github.repository_owner }}/docket-relay\` | \`${{ steps.tags.outputs.version }}\`, \`${{ steps.tags.outputs.sha }}\` |"
+            echo "| \`ghcr.io/${{ github.repository_owner }}/landbridge-mcp\` | \`${{ steps.tags.outputs.version }}\`, \`${{ steps.tags.outputs.sha }}\` |"
+            echo "| \`ghcr.io/${{ github.repository_owner }}/landbridge-relay\` | \`${{ steps.tags.outputs.version }}\`, \`${{ steps.tags.outputs.sha }}\` |"
             echo
             echo "Platforms: \`linux/amd64\`, \`linux/arm64\`."
             echo "Pin \`${{ steps.tags.outputs.sha }}\` on an Instance for an immutable image."

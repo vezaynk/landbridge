@@ -1,12 +1,12 @@
 using System.Collections.Concurrent;
-using Docket.Contracts;
-using Docket.ControlPlane.Auth;
-using Docket.Core;
+using Landbridge.Contracts;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.Core;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.ControlPlane.Tests;
+namespace Landbridge.ControlPlane.Tests;
 
 /// <summary>
 /// The §8.3 <b>human path</b> at the control plane: the lead↔machine binding that
@@ -31,8 +31,8 @@ public sealed class LeadMachineForwardTests(PostgresFixture pg) : IAsyncLifetime
     private static MachineSnapshot DispatchTarget() =>
         new("producer-machine", Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });
 
-    /// <summary>An enrolled machine, as <c>/docket-enroll</c> would leave it (§11).</summary>
-    private static async Task<Guid> EnrollAsync(DocketDbContext db, TimeProvider clock, string name)
+    /// <summary>An enrolled machine, as <c>/landbridge-enroll</c> would leave it (§11).</summary>
+    private static async Task<Guid> EnrollAsync(LandbridgeDbContext db, TimeProvider clock, string name)
     {
         var tokens = new TokenService(db, clock);
         var enrollment = await tokens.IssueEnrollmentTokenAsync();
@@ -43,7 +43,7 @@ public sealed class LeadMachineForwardTests(PostgresFixture pg) : IAsyncLifetime
 
     /// <summary>A working producer task in <paramref name="team"/> with a registered service.</summary>
     private static async Task<SessionId> WorkingServiceAsync(
-        DocketDbContext db, TimeProvider clock, TeamId team, string serviceName, int port = 5432)
+        LandbridgeDbContext db, TimeProvider clock, TeamId team, string serviceName, int port = 5432)
     {
         var store = new SessionStore(db, clock);
         var created = (StoreResult.Applied)await store.CreateAsync(
@@ -99,7 +99,7 @@ public sealed class LeadMachineForwardTests(PostgresFixture pg) : IAsyncLifetime
             await bindings.BindAsync(Guid.NewGuid(), Guid.NewGuid()));
 
         Assert.Contains("no enrolled machine", refused.Reason);
-        Assert.Contains("/docket-enroll", refused.Reason);
+        Assert.Contains("/landbridge-enroll", refused.Reason);
     }
 
     [SkippableFact]
@@ -247,7 +247,7 @@ public sealed class LeadMachineForwardTests(PostgresFixture pg) : IAsyncLifetime
             if (command is OpenForwardCommand c)
             {
                 sent.Add((leadMachine.ToString(), c));
-                // The consumer docketd binds loopback and reports the port (§8.3).
+                // The consumer landbridged binds loopback and reports the port (§8.3).
                 waiters.Complete(c.ForwardId, boundPort);
             }
             return Task.CompletedTask;
@@ -290,7 +290,7 @@ public sealed class LeadMachineForwardTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(consumer.Command.ForwardId, producer.Command.ForwardId);
 
         // The grant is minted against the producer with no consumer task bound —
-        // the consumer is a person's docketd, not a worker instance (§8.3).
+        // the consumer is a person's landbridged, not a worker instance (§8.3).
         var row = await db.RelayGrants.AsNoTracking().SingleAsync(g => g.ForwardId == issued.ForwardId);
         Assert.Equal(producerTask.Value, row.ProducerSessionId);
         Assert.Null(row.ConsumerSessionId);
@@ -313,7 +313,7 @@ public sealed class LeadMachineForwardTests(PostgresFixture pg) : IAsyncLifetime
         var leadMachine = await EnrollAsync(db, clock, "shut-laptop");
 
         // Producer is live; the Lead's machine is enrolled and bound but has no
-        // runner connection (docketd down, laptop closed).
+        // runner connection (landbridged down, laptop closed).
         var registry = new RunnerConnectionRegistry(clock);
         registry.Register("producer-machine", new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
         registry.TrackDispatch("producer-machine", producerTask);

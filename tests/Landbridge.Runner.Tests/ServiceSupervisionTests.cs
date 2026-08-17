@@ -1,8 +1,8 @@
-using Docket.Contracts;
-using Docket.Core;
+using Landbridge.Contracts;
+using Landbridge.Core;
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.Runner.Tests;
+namespace Landbridge.Runner.Tests;
 
 /// <summary>
 /// §10 operator-declared services: config validation, supervision, and the two facts
@@ -15,7 +15,7 @@ public class ServiceSupervisionTests
 
     private static string Config(string servicesJson) => $$"""
     {
-      "machine": { "work_root": "/tmp/docketd-fake" },
+      "machine": { "work_root": "/tmp/landbridged-fake" },
       "profiles": [ { "name": "default", "prompt": "go", "spawn": ["noop"] } ],
       "services": {{servicesJson}}
     }
@@ -350,8 +350,8 @@ public class ServiceSupervisionTests
             Assert.True(await TestKit.WaitUntilAsync(() => File.Exists(envFile), TimeSpan.FromSeconds(15)));
             var env = TestKit.ReadLinesShared(envFile);
 
-            Assert.Contains("DOCKET_MACHINE_ID=machine-xyz", env);
-            Assert.DoesNotContain(env, line => line.StartsWith("DOCKET_SESSION_ID=", StringComparison.Ordinal));
+            Assert.Contains("LANDBRIDGE_MACHINE_ID=machine-xyz", env);
+            Assert.DoesNotContain(env, line => line.StartsWith("LANDBRIDGE_SESSION_ID=", StringComparison.Ordinal));
         }
         finally
         {
@@ -396,7 +396,7 @@ public class ServiceSupervisionTests
     {
         // `enabled: false` is the honest stop: desired state stays in config, so there is
         // nothing for a restart to silently undo — unlike a dashboard stop button, which
-        // would need docketd to persist state it deliberately does not keep.
+        // would need landbridged to persist state it deliberately does not keep.
         var cwd = TestKit.NewWorkRoot();
         try
         {
@@ -432,7 +432,7 @@ public class ServiceSupervisionTests
     private static ProfileConfig ProfileWith(bool agentInitiated, int cap = 8) =>
         RunnerConfig.Load($$"""
         {
-          "machine": { "work_root": "/tmp/docketd-fake" },
+          "machine": { "work_root": "/tmp/landbridged-fake" },
           "profiles": [ { "name": "default", "spawn": ["noop"], "prompt": "go",
             "processes": { "agent_initiated": {{(agentInitiated ? "true" : "false")}},
                           "max": {{cap}} } } ]
@@ -493,9 +493,9 @@ public class ServiceSupervisionTests
     [Fact]
     public async Task A_process_is_invisible_to_refuse_at_dial_whatever_it_listens_on()
     {
-        // If a process happens to bind something, that is the agent's business — Docket tracks no
+        // If a process happens to bind something, that is the agent's business — Landbridge tracks no
         // port for it, so it must never answer for one. Otherwise stopping a process could start
-        // refusing dials for a listener Docket never knew about.
+        // refusing dials for a listener Landbridge never knew about.
         var cwd = TestKit.NewWorkRoot();
         try
         {
@@ -786,8 +786,8 @@ public class ServiceSupervisionTests
             var envFile = Path.Combine(cwd, "env");
             Assert.True(await TestKit.WaitUntilAsync(() => File.Exists(envFile), TimeSpan.FromSeconds(15)));
             var env = TestKit.ReadLinesShared(envFile);
-            Assert.Contains("DOCKET_MACHINE_ID=machine-xyz", env);
-            Assert.DoesNotContain(env, l => l.StartsWith("DOCKET_SESSION_ID=", StringComparison.Ordinal));
+            Assert.Contains("LANDBRIDGE_MACHINE_ID=machine-xyz", env);
+            Assert.DoesNotContain(env, l => l.StartsWith("LANDBRIDGE_SESSION_ID=", StringComparison.Ordinal));
         }
         finally
         {

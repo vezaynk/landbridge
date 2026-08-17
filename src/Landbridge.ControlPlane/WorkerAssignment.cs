@@ -1,6 +1,6 @@
 using System.Text.Json.Serialization;
 
-namespace Docket.ControlPlane;
+namespace Landbridge.ControlPlane;
 
 /// <summary>
 /// A dispatched worker's assignment (§7), returned by the <c>get_session</c> worker

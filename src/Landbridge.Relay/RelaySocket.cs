@@ -1,6 +1,6 @@
 using System.Net.WebSockets;
 
-namespace Docket.Relay;
+namespace Landbridge.Relay;
 
 /// <summary>Best-effort WebSocket teardown helpers used across the relay.</summary>
 internal static class RelaySocket

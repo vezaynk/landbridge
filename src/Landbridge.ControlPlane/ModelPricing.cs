@@ -1,4 +1,4 @@
-namespace Docket.ControlPlane;
+namespace Landbridge.ControlPlane;
 
 /// <summary>
 /// The model → price step for turning reported TOKENS into a dollar figure, for harnesses that
@@ -8,7 +8,7 @@ namespace Docket.ControlPlane;
 /// situations. Claude computes and reports its own cost per model, so its dollars are the
 /// harness's own claim and this class is never consulted for them. Codex reports no cost
 /// anywhere — not on its stream, not in its metrics — so a dollar figure for a Codex worker
-/// could only be one Docket invented from a rate card it would then own, keep current, and be
+/// could only be one Landbridge invented from a rate card it would then own, keep current, and be
 /// wrong about quietly. Prices change, per-model rates differ by cache tier and by contract,
 /// and a stale multiplier produces a number that looks authoritative and is not.</para>
 ///
@@ -23,7 +23,7 @@ namespace Docket.ControlPlane;
 /// <para><b>What filling this in would take.</b> A rate per (model, token bucket) — input,
 /// output, cache read and cache write are priced differently, which is the whole reason those
 /// four are stored separately — plus a decision about where the rates live (operator config,
-/// since Docket must not ship a price list it cannot keep current) and an effective-date, since
+/// since Landbridge must not ship a price list it cannot keep current) and an effective-date, since
 /// re-deriving an old task's cost at today's rate would silently rewrite history. Every derived
 /// figure must then carry <see cref="UsageCostProvenance.Derived"/> all the way to the pixel,
 /// so it never renders like a reported one.</para>
@@ -51,7 +51,7 @@ public sealed class ModelPricing
 
 /// <summary>
 /// Where a dollar figure in the §12 measured view came from. Rendered, not merely stored: a
-/// number Docket multiplied into existence must never look like one a harness stated (§2
+/// number Landbridge multiplied into existence must never look like one a harness stated (§2
 /// principle 2).
 /// </summary>
 public enum UsageCostProvenance
@@ -60,7 +60,7 @@ public enum UsageCostProvenance
     /// its per-model <c>costUSD</c> land here.</summary>
     Reported,
 
-    /// <summary>Docket derived this from token counts and a rate card
+    /// <summary>Landbridge derived this from token counts and a rate card
     /// (<see cref="ModelPricing"/>). Nothing produces this today.</summary>
     Derived,
 

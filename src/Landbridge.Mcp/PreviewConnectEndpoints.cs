@@ -1,21 +1,21 @@
 using System.Security.Cryptography;
 using System.Text;
-using Docket.ControlPlane;
+using Landbridge.ControlPlane;
 
-namespace Docket.Mcp;
+namespace Landbridge.Mcp;
 
 /// <summary>
 /// The preview-frontend-facing connect endpoint (spec §8.4). Plain HTTP, in the
 /// same narrow non-MCP style as <see cref="RelayValidationEndpoints"/>: the
 /// preview frontend calls it once per browser connection to resolve a subdomain
 /// label, authorize it, mint a fresh consumer grant + forward id, and arm the
-/// producer <c>docketd</c> to dial on demand. All the logic lives in
+/// producer <c>landbridged</c> to dial on demand. All the logic lives in
 /// <see cref="PreviewConnectService"/>; this is the transport shell that
 /// authenticates the frontend and maps the typed result onto HTTP.
 ///
 /// <para><b>Two independent auth layers, both fail-closed.</b> (1) The
 /// <em>frontend</em> authenticates to the plane with a shared bearer
-/// (<c>Docket:PreviewConnect:Bearer</c>), compared in constant time — with none
+/// (<c>Landbridge:PreviewConnect:Bearer</c>), compared in constant time — with none
 /// configured the endpoint refuses every call with 503, exactly like
 /// <see cref="RelayValidationEndpoints"/>. (2) The <em>browser's</em> §12 operator
 /// session rides in the body as <c>operatorSession</c> and is validated by the
@@ -25,13 +25,13 @@ namespace Docket.Mcp;
 public static class PreviewConnectEndpoints
 {
     /// <summary>Config key for the shared bearer the preview frontend must present (§8.4).</summary>
-    public const string BearerConfigKey = "Docket:PreviewConnect:Bearer";
+    public const string BearerConfigKey = "Landbridge:PreviewConnect:Bearer";
 
     /// <summary>Config key for the relay base URL the plane hands the frontend and producer (§8.4).</summary>
-    public const string RelayUrlConfigKey = "Docket:RelayUrl";
+    public const string RelayUrlConfigKey = "Landbridge:RelayUrl";
 
     /// <summary>Env fallback for <see cref="RelayUrlConfigKey"/>, mirroring the worker forward path.</summary>
-    public const string RelayUrlEnvVar = "DOCKET_RELAY_URL";
+    public const string RelayUrlEnvVar = "LANDBRIDGE_RELAY_URL";
 
     /// <summary>The relay URL used when neither config nor env supplies one (mirrors <c>WorkerTools.DefaultRelayUrl</c>).</summary>
     public const string DefaultRelayUrl = "http://127.0.0.1:5100";
@@ -39,7 +39,7 @@ public static class PreviewConnectEndpoints
     /// <summary>
     /// POST /preview/connect body: which label is being connected, the browser's §12
     /// operator session (bearer/tooling path), and its per-label preview session
-    /// (the <c>docket_preview</c> cookie from the §8.4 redirect flow) (§8.4).
+    /// (the <c>landbridge_preview</c> cookie from the §8.4 redirect flow) (§8.4).
     /// </summary>
     public sealed record ConnectRequest(string? Label, string? OperatorSession, string? PreviewSession);
 
@@ -81,7 +81,7 @@ public static class PreviewConnectEndpoints
         ILoggerFactory loggerFactory,
         CancellationToken ct)
     {
-        var logger = loggerFactory.CreateLogger("Docket.Mcp.PreviewConnect");
+        var logger = loggerFactory.CreateLogger("Landbridge.Mcp.PreviewConnect");
 
         if (AuthenticateFrontend(http, config, logger) is { } failure)
             return failure;
@@ -123,7 +123,7 @@ public static class PreviewConnectEndpoints
         IConfiguration config,
         ILoggerFactory loggerFactory)
     {
-        var logger = loggerFactory.CreateLogger("Docket.Mcp.PreviewExchange");
+        var logger = loggerFactory.CreateLogger("Landbridge.Mcp.PreviewExchange");
 
         if (AuthenticateFrontend(http, config, logger) is { } failure)
             return failure;

@@ -1,7 +1,7 @@
 using System.Net.WebSockets;
 using System.Text;
 
-namespace Docket.Preview.Tests;
+namespace Landbridge.Preview.Tests;
 
 /// <summary>
 /// Frontend-edge guard for the websocket close handshake (spec §8.4: a graceful
@@ -9,8 +9,8 @@ namespace Docket.Preview.Tests;
 /// both a browser-initiated and a server-initiated close, sequential and
 /// concurrent, against the fake bridge — so the frontend's own splice teardown
 /// never truncates a close. (The relay/producer teardown fix that this depends on
-/// end-to-end lives in Docket.Relay/Docket.Runner and is guarded there + by the
-/// L3 stress in Docket.Mcp.Tests.)
+/// end-to-end lives in Landbridge.Relay/Landbridge.Runner and is guarded there + by the
+/// L3 stress in Landbridge.Mcp.Tests.)
 /// </summary>
 public sealed class PreviewCloseHandshakeTests
 {

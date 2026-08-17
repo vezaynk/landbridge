@@ -1,4 +1,4 @@
-namespace Docket.Mcp.Dashboard;
+namespace Landbridge.Mcp.Dashboard;
 
 /// <summary>
 /// The dashboard's one self-contained stylesheet (§12: one static CSS file, no
