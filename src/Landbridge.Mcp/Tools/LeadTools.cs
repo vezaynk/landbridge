@@ -82,7 +82,7 @@ public sealed class LeadTools(
     [McpServerTool(Name = "create_session"),
      Description("Create a session for this Team. Only a Lead may create sessions. The description (prose " +
                  "instructions) and completion criteria must both be non-empty; the control plane never " +
-                 "parses either. Assign a workspace so concurrent sessions don't collide. Pass 'continues' to " +
+                 "parses either. The worker isolates itself on the machine. Pass 'continues' to " +
                  "resume a prior session's harness conversation under a new session id. Returns the new session id.")]
     public async Task<string> CreateSession(
         [Description("Opaque, non-empty prose instructions for the worker: what to accomplish and the " +
@@ -100,8 +100,9 @@ public sealed class LeadTools(
                      "Call list_profiles first if you are setting this — a name no machine declares makes " +
                      "a session nothing can ever claim. With 'continues', defaults to the continued session's profile.")]
         string? profile = null,
-        [Description("Optional opaque workspace blob: where the work happens, how it is isolated, which " +
-                     "ports it may use. Assigned by the Lead so concurrent sessions never collide (§7).")]
+        [Description("Optional opaque context for the worker: which repo, package, or base ref. " +
+                     "Not isolation — the worker stays in its session directory, uses a worktree, " +
+                     "and binds a random port. Omit when the description already has what they need.")]
         string? workspace = null,
         CancellationToken ct = default,
         [Description("Optional: continue a prior session in THIS Team — the new session resumes that " +

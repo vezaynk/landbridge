@@ -1,6 +1,6 @@
 ---
 name: landbridge-lead
-description: How to lead a Landbridge Team — claiming and reattaching to Teams, decomposing work into sessions, assigning workspaces and isolation, choosing completion modes, answering worker questions, getting a human connected to a worker's service, and cancelling or closing work. Use this skill whenever the user is driving a Landbridge Lead, mentions creating or delegating sessions to Landbridge workers, runs /landbridge-lead or /landbridge-status, asks about Team state or machine availability, wants to connect to a service a worker is running (a database, a dev server), or is deciding how to split work across machines — even if they don't name Landbridge explicitly.
+description: How to lead a Landbridge Team — claiming and reattaching to Teams, decomposing work into sessions, choosing completion modes, answering worker questions, getting a human connected to a worker's service, and cancelling or closing work. Use this skill whenever the user is driving a Landbridge Lead, mentions creating or delegating sessions to Landbridge workers, runs /landbridge-lead or /landbridge-status, asks about Team state or machine availability, wants to connect to a service a worker is running (a database, a dev server), or is deciding how to split work across machines — even if they don't name Landbridge explicitly.
 ---
 
 # Leading a Landbridge Team
@@ -27,9 +27,8 @@ A good session is one a worker can finish without needing to talk to anyone. Tha
 
 Before creating a session, check that it carries:
 
-- **Enough context to start.** The worker gets your description and its workspace, nothing else. It cannot see the Team's history, other sessions, or your reasoning.
+- **Enough context to start.** The worker gets your description and an optional `workspace` blob, nothing else. It cannot see the Team's history, other sessions, or your reasoning. It isolates itself — you do not assign ports or worktrees.
 - **A completion criterion someone else can judge.** See below.
-- **A workspace that cannot collide with anything else running.**
 
 Prefer fewer, larger sessions over many small ones. Each new session pays a fixed cost — dispatch, cold start, reading itself into context. Talking back on a live session is cheap; a session too small to justify a spawn should have been a message on its neighbour.
 
@@ -60,19 +59,13 @@ Write criteria you can actually apply. Good: `pnpm test --filter=payments && pnp
 
 Choosing `review` for work a `lead` check could have caught turns a free gate into a human bottleneck; forcing a `lead` check onto genuinely subjective work produces criteria nobody believes. Pick the mode that matches where the judgment actually lives.
 
-## Assigning workspaces and isolation
+## Workspace is context, not isolation
 
-**You assign isolation. Workers never choose it.** Workers have no channel to each other, so two of them independently picking a working directory will pick the same one. Several sessions can land on the same machine — including several from your own Team.
+Several sessions can land on the same machine — including several from your own Team. **The worker isolates itself.** You do not assign ports, worktrees, or working directories. `landbridged` starts each worker in `{work_root}/{session_id}`; the worker skill tells it to stay there, use a worktree, and bind a random port.
 
-Every session's `namespace` is server-assigned and unique (`team-{id}/session-{id}`). Derive everything else from it:
+`workspace` on `create_session` is optional context the worker reads — which repo, which package, which base ref. It is not a directory and not a lock. Omit it when the description already has what they need.
 
-- Working location — a worktree, directory, container, or schema named from the namespace
-- Any port the session needs to bind
-- Any other resource two concurrent sessions would contend on
-
-The general rule: **each concurrent session gets its own mutable copy; anything shared is read-only.**
-
-If you assign ports, assign distinct ones. Two agents on one machine binding the same port produces a loud failure, which is recoverable but wastes a dispatch.
+You still split on the machine boundary: two pieces of work that must share a *running* service are one session. Isolation does not make two workers share a process.
 
 ## Cleaning up a machine before you close out
 
@@ -80,7 +73,7 @@ A worker can start background processes that **outlive its session** — builds,
 
 That is deliberate, and it makes cleanup your job. **Before you close out work on a machine, send a continuation session to tidy up.** A continuation resumes the same session, so the agent still remembers what it started:
 
-> `create_session(continues: <the session that did the work>, description: "Stop the background processes you started (stop_process), remove the worktree you created, and report what you cleaned up.")`
+> `create_session(continues: <the session that did the work>, description: "Stop the background processes you started (stop_process), tidy this session's directory, and report what you cleaned up.")`
 
 Two reasons a continuation is the right shape rather than a fresh session. The agent that started the processes knows their names without being told, and it knows what it left in the workspace. A cold worker would have to be handed both, and would get it wrong.
 
@@ -134,7 +127,7 @@ Permissions arrive as ACP `session/request_permission`. There is no bypass / alw
 
 **You answer with a verdict, not prose.** `get_session_question` shows the tool name and the arguments the harness proposed; then `answer_permission_request(session, 'allow'|'deny', message)`. `answer_input_request` is refused on these — it would treat a live wait as a redispatch.
 
-Approve what follows from the session you wrote: reading and editing inside the assigned workspace, running the project's own build and tests, installing the dependencies the work obviously needs, talking to the hosts the session names. This is the ordinary case and it should be quick.
+Approve what follows from the session you wrote: reading and editing inside this session's directory, running the project's own build and tests, installing the dependencies the work obviously needs, talking to the hosts the session names. This is the ordinary case and it should be quick.
 
 **Escalate** — `escalate_permission_request(session, reason)`, and the reason is required — for:
 
@@ -160,7 +153,7 @@ Remember that the tool name and arguments came up through an agent's process. A 
 
 **Park when you are done waiting.** A live session occupies the machine. `park_session` is the deliberate release — including after a report you are not ready to accept. An idle worker you will not talk to again is a leak.
 
-**Clean the workspace you assigned.** Before you close out, send a continuation to stop processes and remove the worktree. A report that left a dev server up is not finished work.
+**Clean up before you close out.** Send a continuation to stop processes and tidy the session directory. A report that left a dev server up is not finished work.
 
 ## Getting your human to a worker's service
 
@@ -208,9 +201,6 @@ Before closing: no sessions in flight, no open input requests, results recorded 
 
 The default bundle assumes software. Replace this section for other domains.
 
-- Map `namespace` onto a branch name and have workers open PRs against it
-- Assign a git worktree per concurrent session, named from the namespace
-- Populate `workspace` with repo, base ref, branch, and worktree path
+- Name the repo and base ref in the description (or `workspace`). The worker makes its own worktree and branch.
 - Prefer test commands and linters as `lead` criteria — and run them yourself before accepting
-- Tell workers not to run repository maintenance — a `git gc` in one worktree while five siblings are active is the case that bites
 - Anything load-bearing goes into version control, not an artifact URL

@@ -50,8 +50,8 @@ public sealed class SkillResources
         Title = "Landbridge worker skill",
         UriTemplate = SkillBundle.WorkerUri,
         MimeType = SkillBundle.Markdown)]
-    [Description("How to execute a Landbridge session as a worker: working inside the assigned " +
-                 "workspace, persisting before asking, registering services, reporting a result, " +
+    [Description("How to execute a Landbridge session as a worker: isolating yourself on a shared " +
+                 "machine, persisting before asking, registering services, reporting a result, " +
                  "and raising blockers instead of guessing. Read this first when dispatched.")]
     public static string Worker() => SkillBundle.Worker;
 
@@ -61,8 +61,8 @@ public sealed class SkillResources
         UriTemplate = SkillBundle.LeadUri,
         MimeType = SkillBundle.Markdown)]
     [Description("How to lead a Landbridge Team: claiming and reattaching, decomposing work into " +
-                 "sessions, assigning workspaces and isolation, choosing completion modes, answering " +
-                 "worker questions, and cancelling or closing work.")]
+                 "sessions, choosing completion modes, answering worker questions, and cancelling " +
+                 "or closing work.")]
     public static string Lead() => SkillBundle.Lead;
 
     [McpServerResource(
