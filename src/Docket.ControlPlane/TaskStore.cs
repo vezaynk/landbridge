@@ -292,7 +292,6 @@ public sealed class TaskStore(
                     t.CurrentInstanceId,
                     t.InputKind,
                     t.PermissionVerdict,
-                    t.InputAnswer,
                 })
                 .FirstOrDefaultAsync(ct);
 
@@ -302,7 +301,16 @@ public sealed class TaskStore(
                 return null;
 
             if (seen.PermissionVerdict is { } verdict && seen.InputKind == InputRequestKind.Permission)
-                return new PermissionOutcome(verdict, seen.InputAnswer);
+            {
+                // The note lives on the event, not InputAnswer (that is the Lead's
+                // get_task prose). Same transaction as the verdict, so it is here.
+                var message = await db.TaskEvents.AsNoTracking()
+                    .Where(e => e.TaskId == caller.Task.Value && e.Kind == nameof(AnswerPermission))
+                    .OrderByDescending(e => e.Seq)
+                    .Select(e => e.Detail)
+                    .FirstOrDefaultAsync(ct);
+                return new PermissionOutcome(verdict, message);
+            }
 
             // Parked by the sweeper, or moved on for any other reason, with no verdict.
             if (seen.State != TaskState.BlockedOnInput)
@@ -1037,7 +1045,12 @@ public sealed class TaskStore(
             // answer. Engine-capped above; stored verbatim, never parsed.
             row.InputKind = ri.Kind;
             row.InputQuestion = ri.Question;
-            row.InputAnswer = null;
+            // A permission ask is not a new prose question. Clearing InputAnswer
+            // here used to wipe a WakeParked Lead note the moment Goose (in
+            // approve mode) asked allow-once for get_task; the worker then
+            // resumed seeing "e2e auto-allow" as its assignment answer.
+            if (ri.Kind != InputRequestKind.Permission)
+                row.InputAnswer = null;
             // §11 permission bridge: the tool this request is about, and a clean slate for
             // the decision. Retiring the previous verdict and escalation matters more here
             // than retiring an answer does: a stale verdict is what the relaying worker tool
@@ -1064,7 +1077,9 @@ public sealed class TaskStore(
         if (command is AnswerPermission decided)
         {
             row.PermissionVerdict = decided.Verdict;
-            row.InputAnswer = decided.Message;
+            // The permission note is on the event row (Detail), not InputAnswer.
+            // InputAnswer is the Lead's prose to the worker (get_task). Mixing
+            // them made approve-mode MCP tools overwrite a WakeParked answer.
         }
         else if (command is EscalatePermission escalated)
         {

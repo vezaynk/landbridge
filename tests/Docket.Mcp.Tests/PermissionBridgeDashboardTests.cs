@@ -77,7 +77,7 @@ public sealed class PermissionBridgeDashboardTests(PostgresFixture pg) : IAsyncL
         Assert.Equal(TaskState.Working, row.State);
         Assert.Equal(caller.Instance.Value, row.CurrentInstanceId);
         Assert.Equal(PermissionVerdict.Allow, row.PermissionVerdict);
-        Assert.Equal("routine for this task", row.InputAnswer);
+        Assert.Null(row.InputAnswer);
 
         // Gone from the inbox once decided.
         Assert.Contains("No pending permission requests",
