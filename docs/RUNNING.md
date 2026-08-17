@@ -48,7 +48,7 @@ Two dashboards:
 The loop stands up a *standing fleet* and does **not** auto-create a task. Create
 work as a Lead over MCP, exactly as in production. The dispatched worker is
 `Docket.WorkerHarness`, a scripted no-LLM MCP client that exercises the full
-dispatch → `get_task` → `report_result` protocol; see
+dispatch → `get_session` → `report_result` protocol; see
 [running a real harness](#pointing-a-worker-at-a-real-harness) to swap it for
 `claude -p`.
 
@@ -189,7 +189,7 @@ The dev-loop template is
 [`src/Docket.AppHost/docketd.dev.json`](../src/Docket.AppHost/docketd.dev.json).
 
 `machine`: `work_root` (per-task scratch dirs — `docketd` spawns each task in
-`{work_root}/{task_id}`, which is *not* the workspace), `heartbeat_seconds`
+`{work_root}/{session_id}`, which is *not* the workspace), `heartbeat_seconds`
 (default 15s), and `back_pressure` thresholds (`max_cpu_load` / `max_memory_load`
 / `max_disk_usage` in `[0,1]`).
 
@@ -209,10 +209,10 @@ block. There is no `stdin`, `resume`, `events`, or `protocol` key.
   how many they may hold at once.
 
 `docketd` substitutes `{...}` tokens
-into each `spawn` arg at dispatch: `{task_id}`, `{machine_id}`, `{work_dir}`
-(`= {work_root}/{task_id}`, the cwd), and `{mcp_config}` (the path to the worker MCP config `docketd`
+into each `spawn` arg at dispatch: `{session_id}`, `{machine_id}`, `{work_dir}`
+(`= {work_root}/{session_id}`, the cwd), and `{mcp_config}` (the path to the worker MCP config `docketd`
 writes to `{work_dir}/mcp.json`, mode `0600`). It also stamps `DOCKET_MACHINE_ID`,
-`DOCKET_TASK_ID`, and `DOCKET_WORKER_TOKEN` on the child.
+`DOCKET_SESSION_ID`, and `DOCKET_WORKER_TOKEN` on the child.
 
 > Note: `{work_root}` and `{worker_harness}` in `docketd.dev.json` are
 > **AppHost** placeholders resolved *before* the file reaches `docketd` (the
@@ -235,8 +235,8 @@ runner-config reference):
 
 ```json
 "spawn": ["claude-agent-acp"],
-"prompt": "You are a Docket worker. First call mcp__docket__get_task. When done, call mcp__docket__report_result. If blocked, call mcp__docket__request_input.",
-"follow_up": "There is new input on your assignment. Call mcp__docket__get_task to read it, then continue."
+"prompt": "You are a Docket worker on a live session. First call mcp__docket__get_session. When you think you are done, call mcp__docket__report_result and stay up; the Lead may reply. If blocked, call mcp__docket__request_input. You do not complete the session yourself.",
+"follow_up": "There is new input on your assignment. Call mcp__docket__get_session to read it, then continue."
 ```
 
 The load-bearing parts:
@@ -308,7 +308,7 @@ Point `machine.work_root` at a path inside the state dir
 (`/var/lib/docketd/work`, as in the [runner-config
 reference](../ideas/skills/references/runner-config.md)) so one directory covers
 credentials, transcripts, and per-task scratch. `docketd` creates each
-`{work_root}/{task_id}` itself; the root needs to exist and be writable by the
+`{work_root}/{session_id}` itself; the root needs to exist and be writable by the
 service account.
 
 ### Linux (systemd)
@@ -493,7 +493,7 @@ this branch.
 | `ConnectionStrings:Docket` (or env `DOCKET_DB`) | `Host=localhost;Database=docket;Username=docket` | Postgres connection string. |
 | `Docket:PublicMcpUrl` (or env `DOCKET_PUBLIC_MCP_URL`) | `http://127.0.0.1:5000` | The plane's public MCP endpoint dialed by workers; also the OAuth 2.1 canonical resource id / issuer. Set to the real public **https** URL in production. |
 | `Docket:Operator:PassphraseHash` | *(empty → fail-closed)* | SHA-256 hex of the operator passphrase gating `/oauth/authorize` and dashboard login. Store the hash, never the plaintext. |
-| `Docket:WaitTtl` | infinite | How long a `blocked_on_input` task waits before parking (spec §11). Off by default; a live ACP session is held until a Lead answers or `park_task`. Set a TimeSpan (e.g. `00:30:00`) to restore a timer. |
+| `Docket:WaitTtl` | infinite | How long a `blocked_on_input` task waits before parking (spec §11). Off by default; a live ACP session is held until a Lead answers or `park_session`. Set a TimeSpan (e.g. `00:30:00`) to restore a timer. |
 | `Docket:MachineLivenessTtl` | `00:01:30` | Heartbeat-age window past which a machine is treated as rebooted and its waiting tasks requeue (≈ six missed 15s heartbeats). |
 | `Docket:WaitTtlSweepInterval` | `00:01:00` | How often the `WaitTtlSweeper` background loop runs. |
 | `Docket:PerTaskLivenessWindow` | `00:01:00` | §10 clock one (**aliveness**): how long `docketd` may go without asserting a task's harness process is alive before the task is requeued. `docketd` asserts every heartbeat, so this is not gated on `events.source`. |

@@ -49,8 +49,15 @@ public static class DashboardTranscriptEndpoints
 
     public static IEndpointRouteBuilder MapDashboardTranscripts(this IEndpointRouteBuilder app)
     {
-        app.MapGet("/dashboard/tasks/{taskId}/transcripts", HandleIndexAsync);
-        app.MapGet("/dashboard/tasks/{taskId}/transcript", HandleStreamAsync);
+        app.MapGet("/dashboard/sessions/{sessionId}/transcripts", HandleIndexAsync);
+        app.MapGet("/dashboard/sessions/{sessionId}/transcript", HandleStreamAsync);
+        app.MapGet("/dashboard/tasks/{sessionId}/transcripts",
+            (string sessionId) => Results.Redirect($"/dashboard/sessions/{sessionId}/transcripts", permanent: true));
+        app.MapGet("/dashboard/tasks/{sessionId}/transcript", (string sessionId, HttpContext http) =>
+        {
+            var qs = http.Request.QueryString.HasValue ? http.Request.QueryString.Value : "";
+            return Results.Redirect($"/dashboard/sessions/{sessionId}/transcript{qs}", permanent: true);
+        });
         return app;
     }
 
@@ -59,16 +66,16 @@ public static class DashboardTranscriptEndpoints
     /// machine still holds. One inventory request per connected machine (§12).
     /// </summary>
     private static async Task<IResult> HandleIndexAsync(
-        string taskId, HttpContext http, TokenService tokens, DashboardQueries queries,
+        string sessionId, HttpContext http, TokenService tokens, DashboardQueries queries,
         TranscriptRelayService relay, TimeProvider clock, CancellationToken ct)
     {
         if (await RequireHumanAsync(http, tokens, ct) is { } refusal)
             return refusal;
-        if (!Guid.TryParse(taskId, out var id))
-            return Results.BadRequest(new { error = "invalid task id" });
+        if (!Guid.TryParse(sessionId, out var id))
+            return Results.BadRequest(new { error = "invalid session id" });
 
         var locations = await queries.GetTranscriptLocationsAsync(id, ct);
-        var task = new TaskId(id);
+        var task = new SessionId(id);
 
         // Ask each distinct connected machine once, even if it ran several attempts: the
         // inventory is per task, not per attempt, and the ordinals come back with it.
@@ -96,13 +103,13 @@ public static class DashboardTranscriptEndpoints
     /// response. Nothing is buffered beyond one range and nothing is persisted (§12).
     /// </summary>
     private static async Task<IResult> HandleStreamAsync(
-        string taskId, HttpContext http, TokenService tokens, TranscriptRelayService relay,
+        string sessionId, HttpContext http, TokenService tokens, TranscriptRelayService relay,
         TimeProvider clock, CancellationToken ct)
     {
         if (await RequireHumanAsync(http, tokens, ct) is { } refusal)
             return refusal;
-        if (!Guid.TryParse(taskId, out var id))
-            return Results.BadRequest(new { error = "invalid task id" });
+        if (!Guid.TryParse(sessionId, out var id))
+            return Results.BadRequest(new { error = "invalid session id" });
 
         var machine = http.Request.Query["machine"].ToString();
         var stream = http.Request.Query["stream"].ToString() is { Length: > 0 } s ? s : TranscriptStreams.Stdout;
@@ -113,7 +120,7 @@ public static class DashboardTranscriptEndpoints
         if (!TranscriptStreams.IsKnown(stream))
             return Results.BadRequest(new { error = "stream must be stdout or stderr" });
 
-        var task = new TaskId(id);
+        var task = new SessionId(id);
 
         // The first range decides the status code, so it is fetched before any byte of the
         // response is committed: an unreadable transcript must be an HTTP error, not a 200
@@ -206,7 +213,7 @@ public static class DashboardTranscriptEndpoints
     {
         var status = unavailable.Reason switch
         {
-            TranscriptUnavailable.NoSuchTask => StatusCodes.Status404NotFound,
+            TranscriptUnavailable.NoSuchSession => StatusCodes.Status404NotFound,
             // Not an error in the task's world — the transcript is simply not readable yet.
             TranscriptUnavailable.NotTerminal => StatusCodes.Status409Conflict,
             TranscriptUnavailable.Busy => StatusCodes.Status409Conflict,

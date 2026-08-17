@@ -15,7 +15,7 @@ namespace Docket.ControlPlane;
 /// commands, exactly as §6 says the control plane does.
 ///
 /// The store is scoped (one DbContext per operation), so the sink resolves a
-/// fresh <see cref="TaskStore"/> from a scope per event rather than holding one.
+/// fresh <see cref="SessionStore"/> from a scope per event rather than holding one.
 /// </summary>
 public sealed class RunnerEventSink(
     IServiceScopeFactory scopes,
@@ -32,7 +32,7 @@ public sealed class RunnerEventSink(
             case StartedEvent s:
                 // §10: started confirms the harness is up; the task stays tracked
                 // (requeue-on-disconnect still applies), activity refreshes.
-                registry.RecordProgress(s.Task);
+                registry.RecordProgress(s.Session);
                 break;
 
             case SessionStartedEvent ss:
@@ -41,8 +41,8 @@ public sealed class RunnerEventSink(
                 // ResultReference/TraceContext) so a later park carries it and
                 // redispatch resumes the transcript. A session-init is also forward
                 // progress, so refresh activity like the other liveness signals.
-                registry.RecordProgress(ss.Task);
-                await WithStoreAsync(store => store.StampHarnessSessionRefAsync(ss.Task, ss.SessionRef, ct));
+                registry.RecordProgress(ss.Session);
+                await WithStoreAsync(store => store.StampHarnessSessionRefAsync(ss.Session, ss.SessionRef, ct));
                 break;
 
             case AliveEvent a:
@@ -51,11 +51,11 @@ public sealed class RunnerEventSink(
                 // progress, and treating it as progress would make a wedged agent
                 // undetectable. It is what keeps an idle-but-alive worker (a long
                 // build, a service being babysat) from being requeued every minute.
-                registry.RecordAlive(a.Task);
+                registry.RecordAlive(a.Session);
                 break;
 
             case ToolCallEvent t:
-                registry.RecordProgress(t.Task);
+                registry.RecordProgress(t.Session);
                 break;
 
             case SubagentSpawnedEvent sub:
@@ -63,9 +63,9 @@ public sealed class RunnerEventSink(
                 // liveness like any inbound signal, and — §12, #50 — persist it as a
                 // task event row so it shows on the dashboard as progress (subagent
                 // lineage), rather than being visible only as a liveness ping.
-                registry.RecordProgress(sub.Task);
+                registry.RecordProgress(sub.Session);
                 await WithStoreAsync(store =>
-                    store.RecordSubagentSpawnAsync(sub.Task, sub.AgentId, sub.ParentAgentId, ct));
+                    store.RecordSubagentSpawnAsync(sub.Session, sub.AgentId, sub.ParentAgentId, ct));
                 break;
 
             case TurnEndedEvent te:
@@ -96,9 +96,9 @@ public sealed class RunnerEventSink(
                 // but no longer log-only.
                 logger.LogWarning(
                     "runner auth-failed: task={Task} op={Operation} target={Target} code={Code} scope={Scope}",
-                    af.Task, af.Operation, af.Target, af.ErrorCode, af.MissingScope);
+                    af.Session, af.Operation, af.Target, af.ErrorCode, af.MissingScope);
                 await WithStoreAsync(store =>
-                    store.RecordAuthFailureAsync(af.Task, af.Operation, af.Target, af.ErrorCode, af.MissingScope, ct));
+                    store.RecordAuthFailureAsync(af.Session, af.Operation, af.Target, af.ErrorCode, af.MissingScope, ct));
                 break;
 
             case ForwardOpenedEvent fo:
@@ -141,7 +141,7 @@ public sealed class RunnerEventSink(
                 // service backing this registration is not running" is actionable in a
                 // way "an end closed" is not.
                 forwards.Fail(fc.ForwardId, fc.Refusal ?? "the producer or consumer end closed");
-                logger.LogInformation("runner forward-closed: task={Task} forward={ForwardId}", fc.Task, fc.ForwardId);
+                logger.LogInformation("runner forward-closed: task={Task} forward={ForwardId}", fc.Session, fc.ForwardId);
                 break;
         }
     }
@@ -182,28 +182,28 @@ public sealed class RunnerEventSink(
         // used — the agent's own `stopReason`. `cancelled` looks like it identifies exactly
         // this case and does not: grok answers `cancelled` on turns the plane never touched
         // (measured 2026-08-16), which would make every wedged grok worker invisible here.
-        if (registry.HasCommandedExit(te.Task))
+        if (registry.HasCommandedExit(te.Session))
         {
             logger.LogDebug(
-                "runner turn-ended for task {Task} is the plane's own kill echoing back", te.Task);
+                "runner turn-ended for task {Task} is the plane's own kill echoing back", te.Session);
             return;
         }
 
         await WithStoreAsync(async store =>
         {
-            if (await store.GetStateAsync(te.Task, ct) != TaskState.Working)
+            if (await store.GetStateAsync(te.Session, ct) != SessionState.Working)
                 return;
             // A question is a turn, not a death. The session is idle for the Lead;
             // requeueing it would kill the process the Lead is about to doorbell.
-            if (await store.IsAwaitingLeadAsync(te.Task, ct))
+            if (await store.IsAwaitingLeadAsync(te.Session, ct))
                 return;
 
             logger.LogInformation(
                 "runner turn-ended for task {Task} with stopReason {StopReason} while still working — "
                 + "the worker ended its turn without reporting a result or asking a question",
-                te.Task, te.StopReason ?? "(none)");
+                te.Session, te.StopReason ?? "(none)");
             await store.ApplyAsync(
-                te.Task, new LivenessLost(LivenessLossReason.TurnEndedWithoutResult), ct);
+                te.Session, new LivenessLost(LivenessLossReason.TurnEndedWithoutResult), ct);
         });
     }
 
@@ -218,34 +218,34 @@ public sealed class RunnerEventSink(
         // taking a second requeue off the §9 check 7 cap and leaving the successor with no
         // clock over it. Consuming the expectation here is what makes the plane's own kill
         // safe to send at all; see RunnerConnectionRegistry.SendKillAsync.
-        if (registry.ConsumeCommandedExit(e.Task))
+        if (registry.ConsumeCommandedExit(e.Session))
         {
             logger.LogDebug(
                 "runner exited for task {Task} (code {Code}) is the plane's own kill echoing back",
-                e.Task, e.ExitCode);
+                e.Session, e.ExitCode);
             return;
         }
 
-        TaskState? state = null;
+        SessionState? state = null;
         var awaitingLead = false;
         await WithStoreAsync(async store =>
         {
-            state = await store.GetStateAsync(e.Task, ct);
+            state = await store.GetStateAsync(e.Session, ct);
             // A question is a turn, not a death. If the process died while the
             // session was idle for the Lead, keep the row working and mark the
             // process gone so the answer redispatches instead of PromptCommand
             // into a corpse. Permission still lives in blocked_on_input below.
-            if (state == TaskState.Working)
+            if (state == SessionState.Working)
             {
-                awaitingLead = await store.IsAwaitingLeadAsync(e.Task, ct);
+                awaitingLead = await store.IsAwaitingLeadAsync(e.Session, ct);
                 if (!awaitingLead)
-                    await store.ApplyAsync(e.Task, new LivenessLost(LivenessLossReason.ProcessExited), ct);
+                    await store.ApplyAsync(e.Session, new LivenessLost(LivenessLossReason.ProcessExited), ct);
             }
-            else if (state == TaskState.Verifying)
+            else if (state == SessionState.Verifying)
             {
                 // A report keeps the process. If it then dies, that is an infra
                 // fail — the Lead cannot reply into a corpse.
-                await store.ApplyAsync(e.Task, new LivenessLost(LivenessLossReason.ProcessExited), ct);
+                await store.ApplyAsync(e.Session, new LivenessLost(LivenessLossReason.ProcessExited), ct);
             }
         });
 
@@ -254,10 +254,10 @@ public sealed class RunnerEventSink(
         // (MachineFor). Mark the process gone so an answer redispatches instead
         // of sending PromptCommand into a dead session. A still-up session never
         // reaches this handler. Every other state is done here or already handled.
-        if (state == TaskState.BlockedOnInput || awaitingLead)
-            registry.MarkProcessGone(e.Task);
+        if (state == SessionState.BlockedOnInput || awaitingLead)
+            registry.MarkProcessGone(e.Session);
         else
-            registry.Untrack(e.Task);
+            registry.Untrack(e.Session);
     }
 
     /// <summary>
@@ -274,7 +274,7 @@ public sealed class RunnerEventSink(
     /// nothing is lost by asking early.</para>
     /// </summary>
     public async Task HandleDisconnectAsync(
-        string machineId, IReadOnlyList<TaskId> held, CancellationToken ct = default) =>
+        string machineId, IReadOnlyList<SessionId> held, CancellationToken ct = default) =>
         await RequeueHeldAsync(machineId, held, ct);
 
     private async Task HandleRebootedAsync(RebootedEvent r, CancellationToken ct) =>
@@ -282,10 +282,10 @@ public sealed class RunnerEventSink(
         // requeues against the infrastructure counter (§6). Unlike the disconnect path
         // the connection is live here — docketd announced itself on a working socket —
         // so the held set is read from the registry as before.
-        await RequeueHeldAsync(r.MachineId, registry.TasksOn(r.MachineId), ct);
+        await RequeueHeldAsync(r.MachineId, registry.SessionsOn(r.MachineId), ct);
 
     private async Task RequeueHeldAsync(
-        string machineId, IReadOnlyList<TaskId> held, CancellationToken ct)
+        string machineId, IReadOnlyList<SessionId> held, CancellationToken ct)
     {
         if (held.Count == 0)
             return;
@@ -294,7 +294,7 @@ public sealed class RunnerEventSink(
             foreach (var task in held)
             {
                 var state = await store.GetStateAsync(task, ct);
-                if (state is TaskState.Working or TaskState.BlockedOnInput or TaskState.Verifying)
+                if (state is SessionState.Working or SessionState.BlockedOnInput or SessionState.Verifying)
                     await store.ApplyAsync(task, new LivenessLost(LivenessLossReason.MachineReboot), ct);
             }
         });
@@ -306,10 +306,10 @@ public sealed class RunnerEventSink(
             "requeued {Count} task(s) held by machine {Machine}", held.Count, machineId);
     }
 
-    private async Task WithStoreAsync(Func<TaskStore, Task> action)
+    private async Task WithStoreAsync(Func<SessionStore, Task> action)
     {
         using var scope = scopes.CreateScope();
-        var store = scope.ServiceProvider.GetRequiredService<TaskStore>();
+        var store = scope.ServiceProvider.GetRequiredService<SessionStore>();
         await action(store);
     }
 }

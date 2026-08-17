@@ -47,7 +47,7 @@ internal static class DashboardHtml
     }
 
     /// <summary>A colored state pill; the CSS class is the lower-cased state name.</summary>
-    public static string StateBadge(TaskState state) =>
+    public static string StateBadge(SessionState state) =>
         $"<span class=\"badge state-{state.ToString().ToLowerInvariant()}\">{E(state.ToString())}</span>";
 
     public static string Badge(string text, string cssClass) =>

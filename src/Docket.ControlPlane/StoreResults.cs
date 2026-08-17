@@ -15,14 +15,14 @@ public abstract record StoreResult
     /// The transition committed. <paramref name="TraceContext"/> and
     /// <paramref name="HarnessSessionRef"/> are opaque transport metadata the store
     /// surfaces only where a caller needs it — the dispatch path reads
-    /// <paramref name="TraceContext"/> to parent its span on the Lead's create_task
+    /// <paramref name="TraceContext"/> to parent its span on the Lead's create_session
     /// trace, and <paramref name="HarnessSessionRef"/> to pass a prior session ref
     /// back to the runner for §11 resume. Null everywhere else; neither touches the
-    /// engine (<see cref="TaskRecord"/> stays content-free).
+    /// engine (<see cref="SessionRecord"/> stays content-free).
     /// </summary>
-    /// <param name="WorkDirTask">
+    /// <param name="WorkDirSession">
     /// §7/§11: the task whose machine-local work dir this dispatch runs in, which the caller
-    /// passes on as <c>DispatchCommand.WorkDirTask</c>. A continuation runs under a new task
+    /// passes on as <c>DispatchCommand.WorkDirSession</c>. A continuation runs under a new task
     /// id and inherits its predecessor's directory — a property of continuation itself rather
     /// than of transcript resume (#122), so this is set even on a degrade cold-start where
     /// <paramref name="HarnessSessionRef"/> is null. Resume then additionally needs it, since
@@ -30,11 +30,11 @@ public abstract record StoreResult
     /// Null when that dir is the dispatched task's own, and on every non-dispatch transition.
     /// </param>
     public sealed record Applied(
-        TaskRecord Task,
+        SessionRecord Session,
         IReadOnlyList<Effect> Effects,
         string? TraceContext = null,
         string? HarnessSessionRef = null,
-        TaskId? WorkDirTask = null) : StoreResult;
+        SessionId? WorkDirSession = null) : StoreResult;
 
     /// <summary>The engine refused the transition; nothing was written.</summary>
     public sealed record Rejected(Rule Rule, string Reason) : StoreResult;

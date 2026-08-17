@@ -48,7 +48,7 @@ public sealed class ProfileHookSpawnTests : IDisposable
     [Fact]
     public async Task Before_spawn_runs_and_sees_mcp_url()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         Supervisor().Spawn(
             new DispatchCommand(
                 task, "default",
@@ -69,7 +69,7 @@ public sealed class ProfileHookSpawnTests : IDisposable
     [Fact]
     public void A_failing_before_spawn_does_not_start_the_harness()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         var ex = Assert.Throws<InvalidOperationException>(() =>
             Supervisor().Spawn(
                 TestKit.Dispatch(task),
@@ -84,7 +84,7 @@ public sealed class ProfileHookSpawnTests : IDisposable
     [Fact]
     public async Task Before_spawn_does_not_carry_task_id_or_worker_token()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         Supervisor().Spawn(
             new DispatchCommand(task, "default", WorkerToken: "dkt_w_secret"),
             TestKit.Profile("echo-env", hooks: new ProfileHooks(
@@ -96,7 +96,7 @@ public sealed class ProfileHookSpawnTests : IDisposable
         var env = await File.ReadAllTextAsync(path);
         Assert.Contains("DOCKET_HOOK=before_spawn", env, StringComparison.Ordinal);
         Assert.Contains("DOCKET_MACHINE_ID=machine-42", env, StringComparison.Ordinal);
-        Assert.DoesNotContain("DOCKET_TASK_ID=", env, StringComparison.Ordinal);
+        Assert.DoesNotContain("DOCKET_SESSION_ID=", env, StringComparison.Ordinal);
         Assert.DoesNotContain("DOCKET_WORKER_TOKEN=", env, StringComparison.Ordinal);
 
         Assert.True(_supervisor!.Kill(task));
@@ -105,7 +105,7 @@ public sealed class ProfileHookSpawnTests : IDisposable
     [Fact]
     public async Task Before_spawn_receives_the_profile_env_map()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         Supervisor().Spawn(
             TestKit.Dispatch(task),
             TestKit.Profile(
@@ -126,7 +126,7 @@ public sealed class ProfileHookSpawnTests : IDisposable
         // on Windows would look for a backslash the config never wrote.
         Assert.Contains($"CODEX_HOME={workDir}/.codex", env, StringComparison.Ordinal);
         Assert.Contains("DOCKET_PROFILE_ENV_MARKER=from-profile", env, StringComparison.Ordinal);
-        Assert.DoesNotContain("DOCKET_TASK_ID=", env, StringComparison.Ordinal);
+        Assert.DoesNotContain("DOCKET_SESSION_ID=", env, StringComparison.Ordinal);
         Assert.DoesNotContain("DOCKET_WORKER_TOKEN=", env, StringComparison.Ordinal);
 
         Assert.True(_supervisor!.Kill(task));
@@ -135,7 +135,7 @@ public sealed class ProfileHookSpawnTests : IDisposable
     [Fact]
     public async Task After_exit_runs_on_a_kill()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         var supervisor = Supervisor();
         supervisor.Spawn(
             TestKit.Dispatch(task),

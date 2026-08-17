@@ -247,7 +247,7 @@ public static class DashboardEndpoints
     /// <summary>
     /// POST /dashboard/preview — mint a shareable preview for a registered service
     /// (§12 button, §8.4). Operator-gated; a Lead may mint only for its own Team. The
-    /// service field is <c>{taskId}:{name}</c> from the Team view so the mapping binds
+    /// service field is <c>{sessionId}:{name}</c> from the Team view so the mapping binds
     /// the exact owning task. Returns the URL (HTML result page, or JSON twin).
     /// </summary>
     private static async Task<IResult> HandleCreatePreviewAsync(
@@ -267,10 +267,10 @@ public static class DashboardEndpoints
         if (!OperatorMayAccess(principal, new Docket.Core.TeamId(teamId)))
             return Results.StatusCode(StatusCodes.Status403Forbidden);
 
-        // "{taskId}:{name}" — the option value the Team view emits per service.
+        // "{sessionId}:{name}" — the option value the Team view emits per service.
         var service = form["service"].ToString();
         var sep = service.IndexOf(':');
-        if (sep <= 0 || !Guid.TryParse(service[..sep], out var taskId))
+        if (sep <= 0 || !Guid.TryParse(service[..sep], out var sessionId))
             return Results.BadRequest(new { error = "invalid service selection" });
         var serviceName = service[(sep + 1)..];
 
@@ -279,7 +279,7 @@ public static class DashboardEndpoints
         var ttl = PreviewMint.ResolveTtl(policy, int.TryParse(form["ttl"].ToString(), out var m) ? m : null);
 
         var mint = await previews.CreateAsync(
-            new Docket.Core.TeamId(teamId), new Docket.Core.TaskId(taskId), serviceName, policy, ttl, ct);
+            new Docket.Core.TeamId(teamId), new Docket.Core.SessionId(sessionId), serviceName, policy, ttl, ct);
         var url = PreviewMint.Url(PreviewUrlBase(config), mint.Label);
 
         return WantsJson(http)
@@ -306,7 +306,7 @@ public static class DashboardEndpoints
     /// </summary>
     private static async Task<IResult> HandleDecidePermissionAsync(
         HttpContext http, TokenService tokens,
-        [Microsoft.AspNetCore.Mvc.FromServices] TaskStore store,
+        [Microsoft.AspNetCore.Mvc.FromServices] SessionStore store,
         IConfiguration config,
         CancellationToken ct)
     {
@@ -338,14 +338,14 @@ public static class DashboardEndpoints
         }
 
         var form = await http.Request.ReadFormAsync(ct);
-        if (!Guid.TryParse(form["taskId"].ToString(), out var taskId))
+        if (!Guid.TryParse(form["sessionId"].ToString(), out var sessionId))
             return Results.BadRequest(new { error = "invalid task id" });
         if (!Enum.TryParse<Docket.Core.PermissionVerdict>(
                 form["verdict"].ToString(), ignoreCase: true, out var verdict))
             return Results.BadRequest(new { error = "verdict must be 'allow' or 'deny'" });
 
         var message = form["message"].ToString();
-        var id = new Docket.Core.TaskId(taskId);
+        var id = new Docket.Core.SessionId(sessionId);
         var result = await store.AnswerPermissionAsync(
             new Docket.Core.HumanSession(), id, verdict,
             string.IsNullOrWhiteSpace(message) ? null : message, ct);
@@ -428,7 +428,7 @@ public static class DashboardEndpoints
                     {
                         machineId,
                         channelClosed = revoked.ChannelClosed,
-                        tasksRequeued = revoked.TasksRequeued,
+                        tasksRequeued = revoked.SessionsRequeued,
                         workersRevoked = revoked.WorkersRevoked,
                     }, Json)
                 : Html(DashboardRenderer.MachineRevoked(machineId, revoked));

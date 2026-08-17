@@ -21,7 +21,7 @@ namespace Docket.CollabHarness;
 ///
 /// <para>It reads the injected <c>--mcp-config</c> (§13) — the server keyed
 /// <c>docket</c>, bearer in its <c>Authorization</c> header — connects, and calls
-/// <c>get_task</c> to learn its assignment. Then it branches on the description:
+/// <c>get_session</c> to learn its assignment. Then it branches on the description:
 /// <list type="bullet">
 /// <item><c>handshake-serve</c> — mint a nonce, bind a loopback server that hands the
 /// nonce to any caller, <c>register_service("handshake")</c>, write the nonce to an
@@ -140,12 +140,12 @@ public static class Program
             setupCts.CancelAfter(TimeSpan.FromSeconds(60));
 
             var assignment = await client.CallToolAsync(
-                "get_task", new Dictionary<string, object?>(), cancellationToken: setupCts.Token);
+                "get_session", new Dictionary<string, object?>(), cancellationToken: setupCts.Token);
             if (assignment.IsError == true)
-                throw new InvalidOperationException("get_task returned an error: " + TextOf(assignment));
+                throw new InvalidOperationException("get_session returned an error: " + TextOf(assignment));
 
             var assignmentJson = TextOf(assignment);
-            await File.WriteAllTextAsync(Path.Combine(cwd, "get_task.json"), assignmentJson, ct);
+            await File.WriteAllTextAsync(Path.Combine(cwd, "get_session.json"), assignmentJson, ct);
 
             // ── Branch on the description (§7): the opaque prose is the channel that
             //    tells the collaborator its role, so one 'default' profile drives the
@@ -483,7 +483,7 @@ public static class Program
             throw new InvalidOperationException("report_result returned an error: " + TextOf(reported));
     }
 
-    /// <summary>The task's prose description from a <c>get_task</c> response, or null if absent/malformed.</summary>
+    /// <summary>The task's prose description from a <c>get_session</c> response, or null if absent/malformed.</summary>
     private static string? DescriptionOf(string assignmentJson)
     {
         try

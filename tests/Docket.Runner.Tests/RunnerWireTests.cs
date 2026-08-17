@@ -9,32 +9,32 @@ public class RunnerWireTests
     [Fact]
     public void Decodes_a_known_kill_command()
     {
-        var id = TaskId.New();
-        var json = $$"""{ "type": "kill", "task": { "value": "{{id.Value}}" } }""";
+        var id = SessionId.New();
+        var json = $$"""{ "type": "kill", "session": { "value": "{{id.Value}}" } }""";
 
         var command = RunnerWire.DecodeCommand(json);
 
         var kill = Assert.IsType<KillCommand>(command);
-        Assert.Equal(id, kill.Task);
+        Assert.Equal(id, kill.Session);
     }
 
     [Fact]
     public void Decodes_a_known_dispatch_command()
     {
-        var id = TaskId.New();
-        var json = $$"""{ "type": "dispatch", "task": { "value": "{{id.Value}}" }, "profile": "restricted" }""";
+        var id = SessionId.New();
+        var json = $$"""{ "type": "dispatch", "session": { "value": "{{id.Value}}" }, "profile": "restricted" }""";
 
         var command = RunnerWire.DecodeCommand(json);
 
         var dispatch = Assert.IsType<DispatchCommand>(command);
-        Assert.Equal(id, dispatch.Task);
+        Assert.Equal(id, dispatch.Session);
         Assert.Equal("restricted", dispatch.Profile);
     }
 
     [Fact]
     public void Rejects_a_command_outside_the_vocabulary()
     {
-        var json = """{ "type": "frobnicate", "task": { "value": "00000000-0000-0000-0000-000000000000" } }""";
+        var json = """{ "type": "frobnicate", "session": { "value": "00000000-0000-0000-0000-000000000000" } }""";
 
         // §10: outside the closed vocabulary → refused, not guessed at.
         Assert.Null(RunnerWire.DecodeCommand(json));
@@ -44,7 +44,7 @@ public class RunnerWireTests
     [Fact]
     public void Rejects_an_envelope_with_no_type()
     {
-        Assert.Null(RunnerWire.DecodeCommand("""{ "task": { "value": "x" } }"""));
+        Assert.Null(RunnerWire.DecodeCommand("""{ "session": { "value": "x" } }"""));
         Assert.Null(RunnerWire.DecodeCommand("not json at all"));
     }
 
@@ -53,14 +53,14 @@ public class RunnerWireTests
     {
         // §12 serving: the runner side of the pull. An envelope naming only the required
         // fields reads as an inventory request for the task.
-        var id = TaskId.New();
+        var id = SessionId.New();
         var json = $$"""
-            { "type": "read-transcript", "task": { "value": "{{id.Value}}" }, "request_id": "req-1" }
+            { "type": "read-transcript", "session": { "value": "{{id.Value}}" }, "request_id": "req-1" }
             """;
 
         var read = Assert.IsType<ReadTranscriptCommand>(RunnerWire.DecodeCommand(json));
 
-        Assert.Equal(id, read.Task);
+        Assert.Equal(id, read.Session);
         Assert.Equal("req-1", read.RequestId);
         Assert.Equal(0, read.Ordinal);
         Assert.Equal(TranscriptStreams.Stdout, read.Stream);
@@ -71,14 +71,14 @@ public class RunnerWireTests
     {
         // §8.3: the runner side of ending a splice whose owning task left working. The
         // envelope names the forward; the task rides along as §10 correlation.
-        var id = TaskId.New();
+        var id = SessionId.New();
         var json = $$"""
-            { "type": "close-forward", "task": { "value": "{{id.Value}}" }, "forward_id": "fwd-9" }
+            { "type": "close-forward", "session": { "value": "{{id.Value}}" }, "forward_id": "fwd-9" }
             """;
 
         var close = Assert.IsType<CloseForwardCommand>(RunnerWire.DecodeCommand(json));
 
-        Assert.Equal(id, close.Task);
+        Assert.Equal(id, close.Session);
         Assert.Equal("fwd-9", close.ForwardId);
     }
 

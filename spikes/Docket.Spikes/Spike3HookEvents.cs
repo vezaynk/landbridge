@@ -6,7 +6,7 @@ namespace Docket.Spikes;
 
 /// <summary>
 /// S3 — per-tool-call events with task attribution (spec §10, §17.0c).
-/// Proves PostToolUse hooks fire per tool call, inherit DOCKET_TASK_ID from
+/// Proves PostToolUse hooks fire per tool call, inherit DOCKET_SESSION_ID from
 /// the spawning environment, and can report {task id, tool name} to a
 /// loopback listener — the event source docketd's per-task liveness derives
 /// from. The hook command is this same binary in `hook-relay` mode; there is
@@ -14,7 +14,7 @@ namespace Docket.Spikes;
 /// </summary>
 internal static class Spike3HookEvents
 {
-    private const string TaskId = "spike-task-42";
+    private const string SessionId = "spike-task-42";
 
     public static async Task<int> Run()
     {
@@ -27,7 +27,7 @@ internal static class Spike3HookEvents
         listener.Prefixes.Add(url);
         listener.Start();
 
-        var events = new List<(string TaskId, string Tool)>();
+        var events = new List<(string SessionId, string Tool)>();
         using var done = new CancellationTokenSource();
         var collector = CollectEvents(listener, events, done.Token);
 
@@ -45,14 +45,14 @@ internal static class Spike3HookEvents
             },
         }));
 
-        Console.WriteLine($"== running a worker that must make several tool calls (task id: {TaskId})");
+        Console.WriteLine($"== running a worker that must make several tool calls (task id: {SessionId})");
         var result = await ClaudeCli.Run(
             ["-p", "Create hello.txt containing 'hi', then run 'wc -c hello.txt', then run 'ls'. Use one tool call per action.",
              "--model", SpikeEnv.Model, "--settings", settingsPath, "--allowedTools", "Bash,Write"],
             workDir, TimeSpan.FromMinutes(3),
             environment: new Dictionary<string, string>
             {
-                ["DOCKET_TASK_ID"] = TaskId,
+                ["DOCKET_SESSION_ID"] = SessionId,
                 ["DOCKET_MACHINE_ID"] = "spike-machine",
             });
         await File.WriteAllTextAsync(Path.Combine(outDir, "result.txt"), result.StdOut + result.StdErr);
@@ -70,10 +70,10 @@ internal static class Spike3HookEvents
             return 1;
         }
 
-        var attributed = events.Count(e => e.TaskId == TaskId);
+        var attributed = events.Count(e => e.SessionId == SessionId);
         Console.WriteLine($"   events: {events.Count}, correctly attributed: {attributed}");
-        foreach (var (taskId, tool) in events)
-            Console.WriteLine($"     {taskId} {tool}");
+        foreach (var (sessionId, tool) in events)
+            Console.WriteLine($"     {sessionId} {tool}");
 
         var pass = events.Count >= 3 && attributed == events.Count;
         SpikeEnv.Report(pass, pass
@@ -103,7 +103,7 @@ internal static class Spike3HookEvents
             lock (events)
             {
                 events.Add((
-                    json.RootElement.GetProperty("taskId").GetString() ?? "MISSING",
+                    json.RootElement.GetProperty("sessionId").GetString() ?? "MISSING",
                     json.RootElement.GetProperty("tool").GetString() ?? "?"));
             }
             context.Response.StatusCode = 204;
@@ -123,7 +123,7 @@ internal static class Spike3HookEvents
 
 /// <summary>
 /// The hook side of S3: Claude Code invokes this binary per PostToolUse with
-/// the hook payload on stdin; we attach DOCKET_TASK_ID from the inherited
+/// the hook payload on stdin; we attach DOCKET_SESSION_ID from the inherited
 /// environment and POST to the spike's loopback listener.
 /// </summary>
 internal static class HookRelay
@@ -146,7 +146,7 @@ internal static class HookRelay
 
         var body = JsonSerializer.Serialize(new
         {
-            taskId = Environment.GetEnvironmentVariable("DOCKET_TASK_ID") ?? "MISSING",
+            sessionId = Environment.GetEnvironmentVariable("DOCKET_SESSION_ID") ?? "MISSING",
             tool,
         });
 

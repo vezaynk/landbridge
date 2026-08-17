@@ -26,17 +26,17 @@ public sealed class TaskUsageTests(PostgresFixture pg) : IAsyncLifetime
 
     private readonly FakeTimeProvider _clock = new(DateTimeOffset.Parse("2026-08-12T12:00:00Z"));
 
-    private async Task<(TaskId Task, TeamId Team)> SeedTaskAsync()
+    private async Task<(SessionId Session, TeamId Team)> SeedTaskAsync()
     {
         await using var db = pg.NewContext();
         var team = TeamId.New();
-        var created = (StoreResult.Applied)await new TaskStore(db, _clock).CreateAsync(
-            new CreateTask(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null));
-        return (created.Task.Id, team);
+        var created = (StoreResult.Applied)await new SessionStore(db, _clock).CreateAsync(
+            new CreateSession(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null));
+        return (created.Session.Id, team);
     }
 
     private static UsageReportedEvent Report(
-        TaskId task,
+        SessionId task,
         string? model = "claude-sonnet-5[1m]",
         long input = 100,
         long output = 20,
@@ -54,12 +54,12 @@ public sealed class TaskUsageTests(PostgresFixture pg) : IAsyncLifetime
         var (task, team) = await SeedTaskAsync();
 
         await using (var db = pg.NewContext())
-            await new TaskStore(db, _clock).RecordUsageAsync(Report(task));
+            await new SessionStore(db, _clock).RecordUsageAsync(Report(task));
 
         await using (var db = pg.NewContext())
         {
-            var row = await db.TaskUsage.AsNoTracking().SingleAsync();
-            Assert.Equal(task.Value, row.TaskId);
+            var row = await db.SessionUsage.AsNoTracking().SingleAsync();
+            Assert.Equal(task.Value, row.SessionId);
             // The Team is denormalized off the task so the §12 roll-up is one indexed scan.
             Assert.Equal(team.Value, row.TeamId);
             Assert.Equal(100, row.InputTokens);
@@ -78,11 +78,11 @@ public sealed class TaskUsageTests(PostgresFixture pg) : IAsyncLifetime
 
         for (var i = 0; i < 3; i++)
             await using (var db = pg.NewContext())
-                await new TaskStore(db, _clock).RecordUsageAsync(Report(task, input: 100));
+                await new SessionStore(db, _clock).RecordUsageAsync(Report(task, input: 100));
 
         await using (var db = pg.NewContext())
         {
-            var row = await db.TaskUsage.AsNoTracking().SingleAsync();
+            var row = await db.SessionUsage.AsNoTracking().SingleAsync();
             Assert.Equal(100, row.InputTokens);
         }
     }
@@ -97,13 +97,13 @@ public sealed class TaskUsageTests(PostgresFixture pg) : IAsyncLifetime
         var (task, _) = await SeedTaskAsync();
 
         await using (var db = pg.NewContext())
-            await new TaskStore(db, _clock).RecordUsageAsync(Report(task, input: 500, output: 90));
+            await new SessionStore(db, _clock).RecordUsageAsync(Report(task, input: 500, output: 90));
         await using (var db = pg.NewContext())
-            await new TaskStore(db, _clock).RecordUsageAsync(Report(task, input: 100, output: 20));
+            await new SessionStore(db, _clock).RecordUsageAsync(Report(task, input: 100, output: 20));
 
         await using (var db = pg.NewContext())
         {
-            var row = await db.TaskUsage.AsNoTracking().SingleAsync();
+            var row = await db.SessionUsage.AsNoTracking().SingleAsync();
             Assert.Equal(500, row.InputTokens);
             Assert.Equal(90, row.OutputTokens);
         }
@@ -119,12 +119,12 @@ public sealed class TaskUsageTests(PostgresFixture pg) : IAsyncLifetime
         var (task, _) = await SeedTaskAsync();
 
         await using (var db = pg.NewContext())
-            await new TaskStore(db, _clock).RecordUsageAsync(Report(task, cost: 0.90m));
+            await new SessionStore(db, _clock).RecordUsageAsync(Report(task, cost: 0.90m));
         await using (var db = pg.NewContext())
-            await new TaskStore(db, _clock).RecordUsageAsync(Report(task, cost: 0.42m));
+            await new SessionStore(db, _clock).RecordUsageAsync(Report(task, cost: 0.42m));
 
         await using (var db = pg.NewContext())
-            Assert.Equal(0.42m, (await db.TaskUsage.AsNoTracking().SingleAsync()).CostUsd);
+            Assert.Equal(0.42m, (await db.SessionUsage.AsNoTracking().SingleAsync()).CostUsd);
     }
 
     [SkippableFact]
@@ -134,12 +134,12 @@ public sealed class TaskUsageTests(PostgresFixture pg) : IAsyncLifetime
         var (task, _) = await SeedTaskAsync();
 
         await using (var db = pg.NewContext())
-            await new TaskStore(db, _clock).RecordUsageAsync(Report(task, cost: 0.77m));
+            await new SessionStore(db, _clock).RecordUsageAsync(Report(task, cost: 0.77m));
         await using (var db = pg.NewContext())
-            await new TaskStore(db, _clock).RecordUsageAsync(Report(task, cost: null));
+            await new SessionStore(db, _clock).RecordUsageAsync(Report(task, cost: null));
 
         await using (var db = pg.NewContext())
-            Assert.Equal(0.77m, (await db.TaskUsage.AsNoTracking().SingleAsync()).CostUsd);
+            Assert.Equal(0.77m, (await db.SessionUsage.AsNoTracking().SingleAsync()).CostUsd);
     }
 
     [SkippableFact]
@@ -152,14 +152,14 @@ public sealed class TaskUsageTests(PostgresFixture pg) : IAsyncLifetime
 
         await using (var db = pg.NewContext())
         {
-            var store = new TaskStore(db, _clock);
+            var store = new SessionStore(db, _clock);
             await store.RecordUsageAsync(Report(task, model: "claude-sonnet-5[1m]", input: 100, cost: 0.90m));
             await store.RecordUsageAsync(Report(task, model: "claude-haiku-4-5-20251001", input: 521, cost: 0.0006m));
         }
 
         await using (var db = pg.NewContext())
         {
-            var rows = await db.TaskUsage.AsNoTracking().OrderBy(u => u.Model).ToListAsync();
+            var rows = await db.SessionUsage.AsNoTracking().OrderBy(u => u.Model).ToListAsync();
             Assert.Equal(2, rows.Count);
             Assert.Equal(521, rows[0].InputTokens);
             Assert.Equal(100, rows[1].InputTokens);
@@ -176,14 +176,14 @@ public sealed class TaskUsageTests(PostgresFixture pg) : IAsyncLifetime
 
         await using (var db = pg.NewContext())
         {
-            var store = new TaskStore(db, _clock);
+            var store = new SessionStore(db, _clock);
             await store.RecordUsageAsync(Report(task, model: null, input: 10, cost: null));
             await store.RecordUsageAsync(Report(task, model: "gpt-5.1-codex", input: 20, cost: null));
         }
 
         await using (var db = pg.NewContext())
         {
-            var rows = await db.TaskUsage.AsNoTracking().Where(u => u.TeamId == team.Value).ToListAsync();
+            var rows = await db.SessionUsage.AsNoTracking().Where(u => u.TeamId == team.Value).ToListAsync();
             Assert.Equal(2, rows.Count);
             var view = TeamUsageView.From(rows);
             Assert.True(view.Measured);
@@ -205,7 +205,7 @@ public sealed class TaskUsageTests(PostgresFixture pg) : IAsyncLifetime
     /// the expensive way. A harness that names no model (OpenCode reports none anywhere) writes
     /// the empty string storage requires, because a composite primary key cannot hold a NULL; the
     /// invariant every reader above the row depends on is that <c>model is null ⟺ unnamed</c>, and
-    /// <see cref="TaskUsageView.From"/> is the one place that translation happens. A reader that
+    /// <see cref="SessionUsageView.From"/> is the one place that translation happens. A reader that
     /// bypasses it sees <c>""</c> and can only interpret it as a harness that reported a model
     /// whose name is blank — the exact misreading the deleted attribution enum used to guard
     /// against, now guarded by this invariant instead. So it is worth a test that costs nothing.</para>
@@ -217,12 +217,12 @@ public sealed class TaskUsageTests(PostgresFixture pg) : IAsyncLifetime
         var (task, _) = await SeedTaskAsync();
 
         await using (var db = pg.NewContext())
-            await new TaskStore(db, _clock).RecordUsageAsync(
+            await new SessionStore(db, _clock).RecordUsageAsync(
                 Report(task, model: null, input: 900, output: 120, cost: 0.0123m));
 
         await using (var db = pg.NewContext())
         {
-            var row = await db.TaskUsage.AsNoTracking().SingleAsync(u => u.TaskId == task.Value);
+            var row = await db.SessionUsage.AsNoTracking().SingleAsync(u => u.SessionId == task.Value);
 
             // Storage: the empty string, deliberately. Asserted so a future change that made this
             // column nullable has to come here and say so rather than silently drifting.
@@ -230,14 +230,14 @@ public sealed class TaskUsageTests(PostgresFixture pg) : IAsyncLifetime
 
             // The view: null. Everything else passes through untouched, so this is the one field
             // the mapping is allowed to change.
-            var view = TaskUsageView.From(row);
+            var view = SessionUsageView.From(row);
             Assert.Null(view.Model);
             Assert.Equal(900, view.InputTokens);
             Assert.Equal(0.0123m, view.CostUsd);
 
             // And a named model is NOT rewritten — the mapping keys off emptiness, not presence,
             // so the fix for the unnamed case cannot quietly erase an attributed one.
-            var named = TaskUsageView.From(new TaskUsageRow { Model = "anthropic/claude-haiku-4-5-20251001" });
+            var named = SessionUsageView.From(new SessionUsageRow { Model = "anthropic/claude-haiku-4-5-20251001" });
             Assert.Equal("anthropic/claude-haiku-4-5-20251001", named.Model);
         }
     }
@@ -251,7 +251,7 @@ public sealed class TaskUsageTests(PostgresFixture pg) : IAsyncLifetime
         await SeedTaskAsync();
 
         await using var db = pg.NewContext();
-        var view = TeamUsageView.From(await db.TaskUsage.AsNoTracking().ToListAsync());
+        var view = TeamUsageView.From(await db.SessionUsage.AsNoTracking().ToListAsync());
 
         Assert.False(view.Measured);
         Assert.Equal(0, view.TotalTokens);
@@ -267,10 +267,10 @@ public sealed class TaskUsageTests(PostgresFixture pg) : IAsyncLifetime
         Skip.IfNot(pg.Available, pg.SkipReason);
 
         await using (var db = pg.NewContext())
-            await new TaskStore(db, _clock).RecordUsageAsync(Report(TaskId.New()));
+            await new SessionStore(db, _clock).RecordUsageAsync(Report(SessionId.New()));
 
         await using (var db = pg.NewContext())
-            Assert.Empty(await db.TaskUsage.AsNoTracking().ToListAsync());
+            Assert.Empty(await db.SessionUsage.AsNoTracking().ToListAsync());
     }
 
     [SkippableFact]
@@ -281,15 +281,15 @@ public sealed class TaskUsageTests(PostgresFixture pg) : IAsyncLifetime
         Skip.IfNot(pg.Available, pg.SkipReason);
         await using var seed = pg.NewContext();
         var team = TeamId.New();
-        var store = new TaskStore(seed, _clock);
+        var store = new SessionStore(seed, _clock);
         var a = ((StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(new LeadClaim(team), team, "a", CompletionMode.Lead, null))).Task.Id;
+            new CreateSession(new LeadClaim(team), team, "a", CompletionMode.Lead, null))).Session.Id;
         var b = ((StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(new LeadClaim(team), team, "b", CompletionMode.Lead, null))).Task.Id;
+            new CreateSession(new LeadClaim(team), team, "b", CompletionMode.Lead, null))).Session.Id;
 
         await using (var db = pg.NewContext())
         {
-            var s = new TaskStore(db, _clock);
+            var s = new SessionStore(db, _clock);
             await s.RecordUsageAsync(Report(a, model: "claude-sonnet-5[1m]", input: 100, cost: 0.50m));
             await s.RecordUsageAsync(Report(b, model: "gpt-5.1-codex", input: 300, cost: null));
         }
@@ -297,7 +297,7 @@ public sealed class TaskUsageTests(PostgresFixture pg) : IAsyncLifetime
         await using (var db = pg.NewContext())
         {
             var view = TeamUsageView.From(
-                await db.TaskUsage.AsNoTracking().Where(u => u.TeamId == team.Value).ToListAsync());
+                await db.SessionUsage.AsNoTracking().Where(u => u.TeamId == team.Value).ToListAsync());
             Assert.Equal(400, view.InputTokens);
             Assert.Equal(0.50m, view.ReportedCostUsd);
             Assert.True(view.CostIsPartial);

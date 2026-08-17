@@ -21,7 +21,7 @@ public static class Program
         Console.Error.WriteLine("usage: docket-spikes <s1|s2|s3>");
         Console.Error.WriteLine("  s1  resume-after-park: directory-scoped resume with context retention");
         Console.Error.WriteLine("  s2  stop as an injected stream-json turn: wind-down, not abort");
-        Console.Error.WriteLine("  s3  per-tool-call hook events carrying DOCKET_TASK_ID");
+        Console.Error.WriteLine("  s3  per-tool-call hook events carrying DOCKET_SESSION_ID");
         Console.Error.WriteLine("env: DOCKET_SPIKE_MODEL (default: haiku)");
         return 2;
     }

@@ -7,7 +7,7 @@ namespace Docket.Runner.Tests;
 /// <summary>
 /// Which directory a task's harness runs in (§7, §11). Ordinarily its own; for a
 /// <c>continues:</c> continuation, its predecessor's — named by the plane as
-/// <see cref="DispatchCommand.WorkDirTask"/>, because a continuation runs under a NEW task id
+/// <see cref="DispatchCommand.WorkDirSession"/>, because a continuation runs under a NEW task id
 /// and the runner's own directory for it would be empty.
 ///
 /// <para>Inheritance is a property of <b>continuation</b>, not of resume, and one of these
@@ -31,7 +31,7 @@ public sealed class WorkDirectoryTests : IDisposable
     private ProcessSupervisor NewSupervisor(StrayReaper? reaper = null) =>
         new(TestKit.Machine(_workRoot), _ring, _clock, reaper);
 
-    private async Task<string[]> ArgvIn(TaskId dirTask)
+    private async Task<string[]> ArgvIn(SessionId dirTask)
     {
         var path = Path.Combine(_workRoot, dirTask.ToString(), "argv");
         Assert.True(await TestKit.WaitUntilAsync(() => File.Exists(path), TimeSpan.FromSeconds(15)),
@@ -48,14 +48,14 @@ public sealed class WorkDirectoryTests : IDisposable
     [Fact]
     public async Task A_resume_that_names_another_tasks_directory_runs_there()
     {
-        var predecessor = TaskId.New();
-        var continuation = TaskId.New();
+        var predecessor = SessionId.New();
+        var continuation = SessionId.New();
         var supervisor = NewSupervisor();
 
         supervisor.Spawn(
             new DispatchCommand(
                 continuation, "default", McpConfigJson: """{"mcpServers":{}}""",
-                ResumeSessionRef: "sess-abc", WorkDirTask: predecessor),
+                ResumeSessionRef: "sess-abc", WorkDirSession: predecessor),
             TestKit.Profile("echo-argv"), "m");
 
         // The harness ran in the PREDECESSOR's dir — it wrote its argv marker there. The
@@ -86,8 +86,8 @@ public sealed class WorkDirectoryTests : IDisposable
     [Fact]
     public async Task A_cold_start_still_runs_in_the_named_directory()
     {
-        var predecessor = TaskId.New();
-        var task = TaskId.New();
+        var predecessor = SessionId.New();
+        var task = SessionId.New();
         var supervisor = NewSupervisor();
 
         // Something the predecessor left behind — the reason to be in its directory at all.
@@ -99,7 +99,7 @@ public sealed class WorkDirectoryTests : IDisposable
         supervisor.Spawn(
             new DispatchCommand(
                 task, "default", McpConfigJson: """{"mcpServers":{}}""",
-                WorkDirTask: predecessor),
+                WorkDirSession: predecessor),
             TestKit.Profile("echo-argv"), "m");
 
         var argv = await ArgvIn(predecessor);          // it ran in the predecessor's dir…
@@ -122,7 +122,7 @@ public sealed class WorkDirectoryTests : IDisposable
     [Fact]
     public async Task A_same_task_resume_still_uses_its_own_directory_and_config_name()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         var supervisor = NewSupervisor();
 
         supervisor.Spawn(
@@ -150,8 +150,8 @@ public sealed class WorkDirectoryTests : IDisposable
     [Fact]
     public async Task A_continuation_sharing_a_directory_does_not_supersede_or_reap_the_task_that_owns_it()
     {
-        var predecessor = TaskId.New();
-        var continuation = TaskId.New();
+        var predecessor = SessionId.New();
+        var continuation = SessionId.New();
         var inventory = new DirSharingInventory();
         var supervisor = NewSupervisor(new StrayReaper(inventory, selfPid: Environment.ProcessId));
 
@@ -160,7 +160,7 @@ public sealed class WorkDirectoryTests : IDisposable
 
         supervisor.Spawn(
             new DispatchCommand(
-                continuation, "default", ResumeSessionRef: "sess-abc", WorkDirTask: predecessor),
+                continuation, "default", ResumeSessionRef: "sess-abc", WorkDirSession: predecessor),
             TestKit.Profile("echo-argv"), "m");
         Assert.True(supervisor.TryGet(continuation, out var guest));
 
@@ -172,7 +172,7 @@ public sealed class WorkDirectoryTests : IDisposable
         Assert.Equal(0, supervisor.SupersededExits);
         Assert.Equal(owner.WorkDir, guest.WorkDir);
 
-        // The owner dying reports its OWN exit and reaps only by its own DOCKET_TASK_ID, so
+        // The owner dying reports its OWN exit and reaps only by its own DOCKET_SESSION_ID, so
         // the guest sharing its directory is untouched.
         inventory.Processes = [new TaggedProcess(guest.Process.Id, "m", continuation.ToString())];
         Assert.True(supervisor.Kill(predecessor));

@@ -50,7 +50,7 @@ public sealed class SkillResources
         Title = "Docket worker skill",
         UriTemplate = SkillBundle.WorkerUri,
         MimeType = SkillBundle.Markdown)]
-    [Description("How to execute a Docket task as a worker: working inside the assigned " +
+    [Description("How to execute a Docket session as a worker: working inside the assigned " +
                  "workspace, persisting before asking, registering services, reporting a result, " +
                  "and raising blockers instead of guessing. Read this first when dispatched.")]
     public static string Worker() => SkillBundle.Worker;
@@ -61,7 +61,7 @@ public sealed class SkillResources
         UriTemplate = SkillBundle.LeadUri,
         MimeType = SkillBundle.Markdown)]
     [Description("How to lead a Docket Team: claiming and reattaching, decomposing work into " +
-                 "tasks, assigning workspaces and isolation, choosing completion modes, answering " +
+                 "sessions, assigning workspaces and isolation, choosing completion modes, answering " +
                  "worker questions, and cancelling or closing work.")]
     public static string Lead() => SkillBundle.Lead;
 

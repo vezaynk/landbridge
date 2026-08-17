@@ -158,7 +158,7 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
         using var home = profile.AttachTo(rig);
         await rig.AddMachineAsync("A");
 
-        var task = await rig.CreateTaskAsync(EchoDescription("A", NewToken()), ct);
+        var task = await rig.CreateSessionAsync(EchoDescription("A", NewToken()), ct);
 
         // Wait until the worker is demonstrably mid-turn — it reported a thread ref, so its
         // harness is up and streaming — before stopping it. Stopping earlier would race the spawn.
@@ -206,7 +206,7 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
     /// <para>The per-machine spawn override is what makes this expressible: the fleet's
     /// profile is one shape, but each machine's <c>default</c> profile spawns its own harness
     /// (see <see cref="FleetRig.AddMachineAsync"/>). Everything else — dispatch, the worker
-    /// token, <c>get_task</c>, <c>report_result</c>, the result reference — is identical for
+    /// token, <c>get_session</c>, <c>report_result</c>, the result reference — is identical for
     /// both, which is the point being made.</para>
     ///
     /// <para>Needs BOTH CLIs, so it skips when either is missing rather than half-testing. The
@@ -237,7 +237,7 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
 
         // Step A, on the claude machine: mint + report an unforgeable token.
         var token = NewToken();
-        var stepA = await rig.CreateTaskAsync(EchoDescription("A", token), ct);
+        var stepA = await rig.CreateSessionAsync(EchoDescription("A", token), ct);
         Assert.True(
             await rig.DispatchUntilVerifyingAsync(stepA, "A", MaxAttempts, PerLegBudget, ct),
             "the real claude worker never drove step A to verifying.\n"
@@ -248,7 +248,7 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
         Assert.Contains(token, referenceA);
 
         // Step B, on the codex machine: report the token the claude worker produced.
-        var stepB = await rig.CreateTaskAsync(EchoDescription("B", token), ct);
+        var stepB = await rig.CreateSessionAsync(EchoDescription("B", token), ct);
         Assert.True(
             await rig.DispatchUntilVerifyingAsync(stepB, "B", MaxAttempts, PerLegBudget, ct),
             "the real codex worker never confirmed the cross-harness handoff.\n"
@@ -342,7 +342,7 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
     /// on for every rig profile) is where Codex's own stderr — the line that usually settles
     /// it — will be.</para>
     /// </summary>
-    private static string CodexFailureHypotheses(FleetRig rig, TaskId task)
+    private static string CodexFailureHypotheses(FleetRig rig, SessionId task)
     {
         var observed = rig.WorkerObserved(task);
         if (observed is null or { Starts: 0 })
@@ -413,9 +413,9 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
         return """
                HYPOTHESIS: the worker started and exited CLEANLY, so the harness, auth, and MCP
                wiring all worked and the agent simply did not complete the assignment. Read the
-               transcript tail for which tools it called: no get_task/report_result pair means
+               transcript tail for which tools it called: no get_session/report_result pair means
                the tools were unavailable or unused — check `enabled_tools` in config.toml holds
-               the BARE names (get_task, report_result), not the mcp__docket__* spelling the
+               the BARE names (get_session, report_result), not the mcp__docket__* spelling the
                model sees. A turn that ended early is ordinary agent flakiness and the fact
                already redispatches for it (MaxAttempts).
 

@@ -81,13 +81,13 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
             var snapshot = new MachineSnapshot("m1", Ready: true, UnderBackPressure: false, Set("default"));
 
             // ── Create + initial dispatch (cold: no resume ref yet) ─────────────
-            TaskId taskId;
+            SessionId sessionId;
             await using (var db = pg.NewContext())
             {
-                var store = new TaskStore(db, clock);
+                var store = new SessionStore(db, clock);
                 var created = (StoreResult.Applied)await store.CreateAsync(
-                    new CreateTask(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null), ct);
-                taskId = created.Task.Id;
+                    new CreateSession(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null), ct);
+                sessionId = created.Session.Id;
             }
 
             registry.Register("m1", Set("default"), (_, _) => Task.CompletedTask);
@@ -96,31 +96,31 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
             WorkerInstanceId instance1;
             await using (var db = pg.NewContext())
             {
-                var store = new TaskStore(db, clock);
+                var store = new SessionStore(db, clock);
                 instance1 = WorkerInstanceId.New();
                 var applied = (StoreResult.Applied)await store.DispatchNextAsync(snapshot, instance1, ct);
                 // First dispatch: nothing worked before, so no session ref surfaces.
                 Assert.Null(applied.HarnessSessionRef);
             }
-            registry.TrackDispatch("m1", taskId);
+            registry.TrackDispatch("m1", sessionId);
 
             var coldDispatch = new DispatchCommand(
-                taskId, "default", WorkerToken: "worker-1",
+                sessionId, "default", WorkerToken: "worker-1",
                 McpConfigJson: """{"mcpServers":{}}""", ResumeSessionRef: null);
             supervisor.Spawn(coldDispatch, profile, "m1");
 
             // ── The harness reports its session id → sink stamps the row ────────
             Assert.True(
-                await WaitUntilAsync(async () => await HarnessSessionRefAsync(clock, taskId) == HarnessProgram.EmitStreamSessionId, TimeSpan.FromSeconds(30)),
+                await WaitUntilAsync(async () => await HarnessSessionRefAsync(clock, sessionId) == HarnessProgram.EmitStreamSessionId, TimeSpan.FromSeconds(30)),
                 "the harness session ref never reached the task row");
 
             // ── Block on input, then let the wait TTL expire → park ─────────────
             await using (var db = pg.NewContext())
             {
-                var store = new TaskStore(db, clock);
-                var caller = new WorkerCaller(team, taskId, instance1);
+                var store = new SessionStore(db, clock);
+                var caller = new WorkerCaller(team, sessionId, instance1);
                 Assert.IsType<StoreResult.Applied>(
-                    await store.ApplyAsync(taskId, new RequestInput(caller, InputRequestKind.Question, Question), ct));
+                    await store.ApplyAsync(sessionId, new RequestInput(caller, InputRequestKind.Question, Question), ct));
             }
 
             var sweeper = new WaitTtlSweeper(
@@ -131,8 +131,8 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
 
             await using (var db = pg.NewContext())
             {
-                var row = await db.Tasks.AsNoTracking().SingleAsync(t => t.Id == taskId.Value, ct);
-                Assert.Equal(TaskState.Parked, row.State);
+                var row = await db.Sessions.AsNoTracking().SingleAsync(t => t.Id == sessionId.Value, ct);
+                Assert.Equal(SessionState.Parked, row.State);
                 Assert.Equal("m1", row.ParkMachine);
                 // The crown's spine: the harness session ref survives the park on the row
                 // dispatch reads it from.
@@ -145,17 +145,17 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
             // branch too, or a Lead loses its answer to a race with the sweeper (§11).
             await using (var db = pg.NewContext())
             {
-                var store = new TaskStore(db, clock);
+                var store = new SessionStore(db, clock);
                 Assert.IsType<StoreResult.Applied>(
                     await store.AnswerOrWakeAsync(
-                        new LeadClaim(team), taskId, leaseMachine: null, Answer, sessionLive: false, ct));
+                        new LeadClaim(team), sessionId, leaseMachine: null, Answer, sessionLive: false, ct));
             }
 
             // Stop routing events, then retire the first harness. With the drain
             // stopped its exit can't race the redispatch back onto submitted.
             await drainCts.CancelAsync();
             await drainLoop;
-            supervisor.Kill(taskId);
+            supervisor.Kill(sessionId);
             Assert.True(await WaitUntilAsync(() => Task.FromResult(supervisor.RunningTotal == 0), TimeSpan.FromSeconds(15)),
                 "the first harness never exited");
 
@@ -164,31 +164,31 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
             string? resumeRef;
             await using (var db = pg.NewContext())
             {
-                var store = new TaskStore(db, clock);
+                var store = new SessionStore(db, clock);
                 instance2 = WorkerInstanceId.New();
                 var applied = (StoreResult.Applied)await store.DispatchNextAsync(snapshot, instance2, ct);
                 resumeRef = applied.HarnessSessionRef;
                 // Dispatch surfaces the ref the first session reported.
                 Assert.Equal(HarnessProgram.EmitStreamSessionId, resumeRef);
 
-                // §11: the successor's own get_task read carries the answer it was
+                // §11: the successor's own get_session read carries the answer it was
                 // resumed FOR, and the question that gives it meaning — the whole point
                 // of the park→answer→redispatch loop. Read through the same store method
-                // the worker's get_task tool delegates to, as the new incumbent instance.
-                var assignment = await store.GetAssignmentAsync(new WorkerCaller(team, taskId, instance2), ct);
+                // the worker's get_session tool delegates to, as the new incumbent instance.
+                var assignment = await store.GetAssignmentAsync(new WorkerCaller(team, sessionId, instance2), ct);
                 Assert.NotNull(assignment);
                 Assert.Equal(Question, assignment!.Question);
                 Assert.Equal(Answer, assignment.Answer);
             }
 
             var resumeDispatch = new DispatchCommand(
-                taskId, "default", WorkerToken: "worker-2",
+                sessionId, "default", WorkerToken: "worker-2",
                 McpConfigJson: """{"mcpServers":{}}""", ResumeSessionRef: resumeRef);
             // The cold spawn already wrote acp_session.json in this same work dir, so clear
             // it first: otherwise the wait below is satisfied by the previous instance's
             // record and the assertion reads a session/new that has nothing to do with the
             // resume under test.
-            var sessionRecord = Path.Combine(workRoot, taskId.ToString(), "acp_session.json");
+            var sessionRecord = Path.Combine(workRoot, sessionId.ToString(), "acp_session.json");
             File.Delete(sessionRecord);
             supervisor.Spawn(resumeDispatch, profile, "m1");
 
@@ -214,7 +214,7 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
             // /proc/<pid>/cmdline, the same reason enrollment tokens never ride it. Under
             // ACP this is stronger than it was: the argv is now just an entry point, so
             // there is no per-dispatch content on it to leak in the first place.
-            var argvPath = Path.Combine(workRoot, taskId.ToString(), "argv");
+            var argvPath = Path.Combine(workRoot, sessionId.ToString(), "argv");
             var wholeArgv = File.Exists(argvPath)
                 ? string.Join(' ', await File.ReadAllLinesAsync(argvPath, ct))
                 : "";
@@ -244,10 +244,10 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
         return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
     }
 
-    private async Task<string?> HarnessSessionRefAsync(TimeProvider clock, TaskId id)
+    private async Task<string?> HarnessSessionRefAsync(TimeProvider clock, SessionId id)
     {
         await using var db = pg.NewContext();
-        return await db.Tasks.AsNoTracking()
+        return await db.Sessions.AsNoTracking()
             .Where(t => t.Id == id.Value)
             .Select(t => t.HarnessSessionRef)
             .SingleAsync();
@@ -312,5 +312,5 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
 
     private static MachineHeartbeat Heartbeat(string machineId, params string[] profiles) =>
         new(machineId, Ready: true, UnderBackPressure: false,
-            new SystemLoad(0, 0, 0), RunningTasks: 0, profiles, DateTimeOffset.UtcNow);
+            new SystemLoad(0, 0, 0), RunningSessions: 0, profiles, DateTimeOffset.UtcNow);
 }

@@ -61,7 +61,7 @@ public abstract record RunnerCommand : RunnerMessage
 /// fallback). Opaque transport metadata: the runner substitutes it into
 /// <c>resume.args</c> and never interprets it (§11 resume seam).</para>
 ///
-/// <para><see cref="WorkDirTask"/> is additive and wire-compatible in the same way, and
+/// <para><see cref="WorkDirSession"/> is additive and wire-compatible in the same way, and
 /// names the task whose working directory this dispatch runs in. It is <b>not</b> about
 /// resume: a <c>continues:</c> continuation runs where its predecessor worked whether or
 /// not it resumes that transcript, because the workspace <em>is</em> the work (§7, §11) —
@@ -96,13 +96,13 @@ public abstract record RunnerCommand : RunnerMessage
 /// <c>docketd</c> would notice.</para>
 /// </summary>
 public sealed record DispatchCommand(
-    TaskId Task,
+    SessionId Session,
     string Profile,
     string WorkerToken = "",
     string? McpConfigJson = null,
     Dictionary<string, string>? SpawnSubstitutions = null,
     string? ResumeSessionRef = null,
-    TaskId? WorkDirTask = null) : RunnerCommand;
+    SessionId? WorkDirSession = null) : RunnerCommand;
 
 /// <summary>
 /// <c>stop(ttl, disposition)</c> — graceful wind-down (§10, §11). Delivered as
@@ -111,13 +111,13 @@ public sealed record DispatchCommand(
 /// without waiting for ack (§9 check 12).
 /// </summary>
 public sealed record StopCommand(
-    TaskId Task,
+    SessionId Session,
     TimeSpan Ttl,
     StopDisposition Disposition = StopDisposition.Preserve,
     string? Reason = null) : RunnerCommand;
 
 /// <summary><c>kill</c> — take the task's whole process group down now (§10).</summary>
-public sealed record KillCommand(TaskId Task) : RunnerCommand;
+public sealed record KillCommand(SessionId Session) : RunnerCommand;
 
 /// <summary>
 /// <c>prompt</c> — wake a worker whose session is <b>still open</b> so it re-reads its
@@ -126,7 +126,7 @@ public sealed record KillCommand(TaskId Task) : RunnerCommand;
 ///
 /// <para><b>It carries no message, and that is the whole design.</b> The content a worker is
 /// being woken for — an answered question, and later a Lead's message — stays where §11 put
-/// it: on the assignment, fetched by the worker's own authenticated <c>get_task</c> call.
+/// it: on the assignment, fetched by the worker's own authenticated <c>get_session</c> call.
 /// Three properties depend on that pull, and pushing the text in this envelope would cost
 /// all three:
 /// <list type="number">
@@ -144,7 +144,7 @@ public sealed record KillCommand(TaskId Task) : RunnerCommand;
 ///     message content in a profile-shaped turn would mix the two.</item>
 /// </list>
 /// So the runner sends the profile's <c>follow_up</c> turn, the worker calls
-/// <c>get_task</c>, and the pull is the receipt exactly as it was under the task model. The
+/// <c>get_session</c>, and the pull is the receipt exactly as it was under the task model. The
 /// session is what makes the wake-up cheap — no respawn, no cold start, no replay — not what
 /// carries the payload.</para>
 ///
@@ -154,7 +154,7 @@ public sealed record KillCommand(TaskId Task) : RunnerCommand;
 /// stream profile is forced to <c>stop.mode: signal</c>). Such a task is woken the old way,
 /// by redispatch.</para>
 /// </summary>
-public sealed record PromptCommand(TaskId Task) : RunnerCommand;
+public sealed record PromptCommand(SessionId Session) : RunnerCommand;
 
 /// <summary>
 /// <c>open-forward</c> — the control plane asks this runner to stand up one end
@@ -186,7 +186,7 @@ public sealed record PromptCommand(TaskId Task) : RunnerCommand;
 /// <param name="RelayUrl">The relay base URL this end dials (http/https → ws/wss <c>/tunnel</c>).</param>
 /// <param name="Port">Producer: the registered service's loopback port to dial. Consumer: <c>0</c> (it binds one).</param>
 public sealed record OpenForwardCommand(
-    TaskId Task,
+    SessionId Session,
     string ForwardId,
     string ServiceName,
     string Role = "",
@@ -204,7 +204,7 @@ public sealed record OpenForwardCommand(
 /// handle anywhere in the system, so it survived until one of its peers happened to
 /// drop. Where the worker was killed (a liveness loss tree-kills it, #84) its sockets
 /// died by RST and the splice ended by accident; where nothing was killed —
-/// <c>report_result</c>, <c>cancel_task</c> — the tunnel stayed up past the task that
+/// <c>report_result</c>, <c>cancel_session</c> — the tunnel stayed up past the task that
 /// authorized it, and so did the consumer end's idle loopback listener.
 ///
 /// <para><b>This is not the severing §8.3 forbids.</b> That prohibition is about
@@ -219,13 +219,13 @@ public sealed record OpenForwardCommand(
 /// goes on serving its splice exactly as it does today — the pre-fix behaviour, not a
 /// crash. A newer <c>docketd</c> talking to an older plane simply never receives one.</para>
 /// </summary>
-/// <param name="Task">
-/// The task this forward serves — <b>correlation, not the close key.</b> §10 requires a
-/// task id on every message and this is it: the runner logs it and its handle span keys
+/// <param name="Session">
+/// The session this forward serves — <b>correlation, not the close key.</b> §10 requires a
+/// session id on every message and this is it: the runner logs it and its handle span keys
 /// off it, exactly as <see cref="OpenForwardCommand.ServiceName"/> travels for
 /// diagnostics while <see cref="OpenForwardCommand.Port"/> does the resolving. Which end
 /// of the forward it names therefore follows whichever end the plane addressed (a
-/// worker's consumer end names its own task, a Lead's names the producer's — see
+/// worker's consumer end names its own session, a Lead's names the producer's — see
 /// <c>ForwardOrchestrator</c>), and a runner that resolved by it instead would have to
 /// know that distinction.
 /// </param>
@@ -236,7 +236,7 @@ public sealed record OpenForwardCommand(
 /// best-effort against a live machine, and a forward that already ended is exactly what
 /// the plane wanted.
 /// </param>
-public sealed record CloseForwardCommand(TaskId Task, string ForwardId) : RunnerCommand;
+public sealed record CloseForwardCommand(SessionId Session, string ForwardId) : RunnerCommand;
 
 /// <summary>
 /// <c>read-transcript</c> — read one byte range of one captured transcript stream
@@ -259,7 +259,7 @@ public sealed record CloseForwardCommand(TaskId Task, string ForwardId) : Runner
 /// <param name="Offset">Byte offset into the on-disk file to resume at.</param>
 /// <param name="MaxBytes">Cap on the bytes this reply may carry.</param>
 public sealed record ReadTranscriptCommand(
-    TaskId Task,
+    SessionId Session,
     string RequestId,
     int Ordinal = 0,
     string Stream = TranscriptStreams.Stdout,
@@ -312,7 +312,7 @@ public sealed record ReadTranscriptCommand(
 /// out of scope. Opening stdin buys you a writable pipe, not interactivity.</para>
 /// </param>
 public sealed record StartProcessCommand(
-    TaskId Task,
+    SessionId Session,
     string RequestId,
     string Name,
     IReadOnlyList<string> Spawn,
@@ -326,7 +326,7 @@ public sealed record StartProcessCommand(
 /// cleanup continuation — a <em>new</em> task id — tidy up what an earlier task started.
 /// </summary>
 public sealed record StopProcessCommand(
-    TaskId Task, string RequestId, string Name) : RunnerCommand;
+    SessionId Session, string RequestId, string Name) : RunnerCommand;
 
 /// <summary>
 /// <c>write-process</c> (§10) — write to an agent-started process's stdin.
@@ -343,7 +343,7 @@ public sealed record StopProcessCommand(
 /// <param name="AppendNewline">Append a newline, the default: line-oriented is the 95% case
 /// (REPLs, command-driven daemons) and a partial write is the exception.</param>
 public sealed record WriteProcessCommand(
-    TaskId Task, string RequestId, string Name, string Data, bool AppendNewline = true) : RunnerCommand;
+    SessionId Session, string RequestId, string Name, string Data, bool AppendNewline = true) : RunnerCommand;
 
 /// <summary>Limits on <c>write-process</c> payloads (§10), shared by both sides.</summary>
 public static class ProcessStdin
@@ -357,7 +357,7 @@ public static class ProcessStdin
 /// agent is on that machine, so it reads its own process's output with ordinary file tools —
 /// no serving path, no redaction question (§16 open question 8).</param>
 public sealed record ProcessStartedEvent(
-    TaskId Task,
+    SessionId Session,
     string RequestId,
     string Name,
     bool Started,
@@ -367,13 +367,13 @@ public sealed record ProcessStartedEvent(
 /// <summary>The reply to <see cref="StopProcessCommand"/> (§10).</summary>
 /// <param name="ExitCode">The code it ended with, when the machine observed one.</param>
 public sealed record ProcessStoppedEvent(
-    TaskId Task, string RequestId, string Name, bool Stopped,
+    SessionId Session, string RequestId, string Name, bool Stopped,
     int? ExitCode = null, string? Refusal = null) : RunnerEvent;
 
 /// <summary>The reply to <see cref="WriteProcessCommand"/> (§10). Confirms the pipe accepted
 /// the bytes, never that the program understood them.</summary>
 public sealed record ProcessWrittenEvent(
-    TaskId Task, string RequestId, string Name, bool Written,
+    SessionId Session, string RequestId, string Name, bool Written,
     int Bytes = 0, string? Refusal = null) : RunnerEvent;
 
 /// <summary>The closed refusal vocabulary for the §10 process commands.</summary>
@@ -457,7 +457,7 @@ public abstract record RunnerEvent : RunnerMessage
 /// <summary><c>started</c> — the harness is up. Distinct from dispatch ack: a
 /// death after <c>started</c> means side effects may exist, so requeue is not
 /// free (§10).</summary>
-public sealed record StartedEvent(TaskId Task, DateTimeOffset At) : RunnerEvent;
+public sealed record StartedEvent(SessionId Session, DateTimeOffset At) : RunnerEvent;
 
 /// <summary>
 /// <c>session-started</c> — the harness reported its opaque session ref (§11
@@ -468,14 +468,14 @@ public sealed record StartedEvent(TaskId Task, DateTimeOffset At) : RunnerEvent;
 /// can carry it and redispatch can resume the transcript. A frozen-vocabulary
 /// addition, precedented by <see cref="ForwardOpenedEvent"/>.
 /// </summary>
-public sealed record SessionStartedEvent(TaskId Task, string SessionRef, DateTimeOffset At) : RunnerEvent;
+public sealed record SessionStartedEvent(SessionId Session, string SessionRef, DateTimeOffset At) : RunnerEvent;
 
 /// <summary><c>alive</c> — per-task liveness signal (§10 concurrency).</summary>
-public sealed record AliveEvent(TaskId Task, DateTimeOffset At) : RunnerEvent;
+public sealed record AliveEvent(SessionId Session, DateTimeOffset At) : RunnerEvent;
 
 /// <summary><c>tool-call</c> — a progress signal derived from harness hooks; the
 /// per-task no-progress clock keys off it (§2.2, §10). Carries no token counts.</summary>
-public sealed record ToolCallEvent(TaskId Task, string Tool, DateTimeOffset At) : RunnerEvent;
+public sealed record ToolCallEvent(SessionId Session, string Tool, DateTimeOffset At) : RunnerEvent;
 
 /// <summary>
 /// <c>usage-reported</c> — <b>the harness's own account of what a dispatch consumed</b>
@@ -529,7 +529,7 @@ public sealed record ToolCallEvent(TaskId Task, string Tool, DateTimeOffset At) 
 /// exists to avoid.</para>
 /// </summary>
 public sealed record UsageReportedEvent(
-    TaskId Task,
+    SessionId Session,
     string? Model,
     long InputTokens,
     long OutputTokens,
@@ -542,7 +542,7 @@ public sealed record UsageReportedEvent(
 /// <summary><c>subagent-spawned</c> — subagent lineage where the harness emits
 /// it; progressive enhancement, not a given (§10 telemetry ingest).</summary>
 public sealed record SubagentSpawnedEvent(
-    TaskId Task, string? AgentId, string? ParentAgentId, DateTimeOffset At) : RunnerEvent;
+    SessionId Session, string? AgentId, string? ParentAgentId, DateTimeOffset At) : RunnerEvent;
 
 /// <summary>
 /// <c>turn-ended</c> — an ACP worker finished a turn and its session is still open
@@ -561,18 +561,18 @@ public sealed record SubagentSpawnedEvent(
 /// <para>Null when the turn ended without the agent saying why — a stream that died
 /// mid-turn, or an agent that omits the field. Not invented, per §2 principle 2.</para>
 /// </summary>
-public sealed record TurnEndedEvent(TaskId Task, string? StopReason, DateTimeOffset At) : RunnerEvent;
+public sealed record TurnEndedEvent(SessionId Session, string? StopReason, DateTimeOffset At) : RunnerEvent;
 
 /// <summary><c>exited</c> — the harness process ended (§10). Observed directly
 /// by process supervision, not inferred.</summary>
-public sealed record ExitedEvent(TaskId Task, int ExitCode, DateTimeOffset At) : RunnerEvent;
+public sealed record ExitedEvent(SessionId Session, int ExitCode, DateTimeOffset At) : RunnerEvent;
 
 /// <summary><c>auth-failed</c> — reports structured facts (§11): operation,
 /// target, error code, missing scope — which is what a remediation menu would render from
 /// (§11). The plane persists the facts and shows them on the event log; no remediation menu
 /// is built.</summary>
 public sealed record AuthFailedEvent(
-    TaskId Task, string Operation, string Target, string ErrorCode, string? MissingScope) : RunnerEvent;
+    SessionId Session, string Operation, string Target, string ErrorCode, string? MissingScope) : RunnerEvent;
 
 /// <summary>
 /// <c>forward-opened</c> — the consumer end bound its loopback listener and is
@@ -580,7 +580,7 @@ public sealed record AuthFailedEvent(
 /// client connects to; the control plane hands it back from <c>open_forward</c>.
 /// Only the consumer end emits this — the producer dials an already-known port.
 /// </summary>
-public sealed record ForwardOpenedEvent(TaskId Task, string ForwardId, int Port) : RunnerEvent;
+public sealed record ForwardOpenedEvent(SessionId Session, string ForwardId, int Port) : RunnerEvent;
 
 /// <summary><c>forward-closed</c> — a relay forward for this task closed (§8.3).</summary>
 /// <summary>
@@ -597,7 +597,7 @@ public sealed record ForwardOpenedEvent(TaskId Task, string ForwardId, int Port)
 /// handed a bare connection error.
 /// </param>
 public sealed record ForwardClosedEvent(
-    TaskId Task, string ForwardId, string? Refusal = null) : RunnerEvent;
+    SessionId Session, string ForwardId, string? Refusal = null) : RunnerEvent;
 
 /// <summary>
 /// <c>rebooted</c> — the runner restarted and adopted nothing (§10 runner
@@ -632,7 +632,7 @@ public sealed record RebootedEvent(string MachineId, DateTimeOffset At) : Runner
 /// <param name="Refusal">Null on success, else why nothing could be read.</param>
 /// <param name="Instances">The task's captured instances, on an inventory reply.</param>
 public sealed record TranscriptChunkEvent(
-    TaskId Task,
+    SessionId Session,
     string RequestId,
     string Text = "",
     long NextOffset = 0,

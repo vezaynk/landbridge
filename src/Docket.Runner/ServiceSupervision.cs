@@ -48,12 +48,12 @@ public abstract record ProcessOutcome
 /// kill guarantee inside Docket.</para>
 ///
 /// <para><b>Restart equals reboot, here too.</b> Every service is tagged with
-/// <c>DOCKET_MACHINE_ID</c> and <em>not</em> <c>DOCKET_TASK_ID</c>. That combination is
+/// <c>DOCKET_MACHINE_ID</c> and <em>not</em> <c>DOCKET_SESSION_ID</c>. That combination is
 /// load-bearing in both directions: the restart sweep
 /// (<see cref="StrayReaper.Reap"/>, keyed on machine id) kills the previous
 /// generation's services before this one starts them, so a SIGKILLed daemon cannot
 /// leave a port-holding orphan that the new daemon then collides with; and per-task
-/// exit cleanup (<see cref="StrayReaper.ReapTask"/>, which requires a matching task id)
+/// exit cleanup (<see cref="StrayReaper.ReapSession"/>, which requires a matching task id)
 /// steps over them, so an ordinary task ending never takes a service down. No PID
 /// registry, no re-adoption — services are restartable, so restarting them is cheaper
 /// and more predictable than reasoning about which survivors are still healthy.</para>
@@ -292,7 +292,7 @@ public sealed class ServiceSupervisor : IAsyncDisposable
             _state[command.Name] = new SupervisedService(config)
             {
                 State = ServiceState.Stopped,
-                Owner = command.Task,
+                Owner = command.Session,
                 StdinOpen = command.OpenStdin,
             };
         }
@@ -558,13 +558,13 @@ public sealed class ServiceSupervisor : IAsyncDisposable
         // the restart sweep reaps the previous generation, and deliberately NO task id
         // so per-task exit cleanup steps over them.
         psi.Environment["DOCKET_MACHINE_ID"] = _machineId;
-        // §10: machine id only, and DELIBERATELY no DOCKET_TASK_ID — for services and
+        // §10: machine id only, and DELIBERATELY no DOCKET_SESSION_ID — for services and
         // agent-started processes alike. The task-id tag is what the per-task exit sweep reaps
         // by, so carrying it would kill a process the moment its declaring worker's turn ended:
         // exactly the loss this feature exists to prevent. Both kinds are therefore bound to
         // the machine generation and nothing smaller, and both are ended only by an explicit
         // stop, their own exit, or this daemon's restart sweep.
-        psi.Environment.Remove("DOCKET_TASK_ID");
+        psi.Environment.Remove("DOCKET_SESSION_ID");
 
         var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
 
@@ -755,7 +755,7 @@ public sealed class ServiceSupervisor : IAsyncDisposable
 
         /// <summary>The task that declared this service, or null for a config-declared one.
         /// Provenance for a process; a config service has none.</summary>
-        public TaskId? Owner { get; init; }
+        public SessionId? Owner { get; init; }
 
         /// <summary>
         /// §10: whether this entry has a usable stdin pipe. For an agent-started process this is

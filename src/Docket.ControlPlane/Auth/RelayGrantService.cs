@@ -17,7 +17,7 @@ namespace Docket.ControlPlane.Auth;
 /// own <c>dkt_g_</c> prefix.</para>
 ///
 /// <para>Revocation is not this service's job — it rides the existing
-/// <see cref="ClearServicesAndForwards"/> effect in <see cref="TaskStore"/>,
+/// <see cref="ClearServicesAndForwards"/> effect in <see cref="SessionStore"/>,
 /// which revokes a task's live grants next to where it already clears that task's
 /// registered services (§6). That effect fires on leaving <c>working</c> in every case
 /// but one: a producer blocked on a <b>permission</b> request is still alive inside its
@@ -74,7 +74,7 @@ public sealed class RelayGrantService(
         WorkerCaller consumer, string serviceName, CancellationToken ct = default) =>
         // The §8.3 consumer is a worker task; bind it for attribution.
         MintAsync(consumer.Team, serviceName, producer: null,
-            consumer.Task.Value, consumer.Instance.Value, ct);
+            consumer.Session.Value, consumer.Instance.Value, ct);
 
     /// <summary>
     /// Issues a grant for an §8.4 HTTP preview: the consumer is the preview
@@ -83,12 +83,12 @@ public sealed class RelayGrantService(
     /// <see cref="IssueAsync"/> (registered service owned by a working task in
     /// <paramref name="team"/>), and the resulting grant validates and revokes
     /// through the same paths (validation ignores the consumer binding; revocation
-    /// keys on <c>ProducerTaskId</c> via <see cref="ClearServicesAndForwards"/>).
+    /// keys on <c>ProducerSessionId</c> via <see cref="ClearServicesAndForwards"/>).
     /// The producer machine dials on demand — a fresh grant + forward id per
     /// browser connection (§8.4) — so the plane calls this once per connection.
     ///
     /// <para><b><paramref name="producer"/> is the authority, not a hint.</b> A preview URL
-    /// is minted against one task's service (<c>PreviewMappingRow.TaskId</c>), and this
+    /// is minted against one task's service (<c>PreviewMappingRow.SessionId</c>), and this
     /// resolves that exact registration rather than whatever now answers to
     /// <paramref name="serviceName"/> in the Team. Without it the mapping's task was written
     /// and never read, so a label minted for task A's <c>web</c> could splice a browser to
@@ -98,8 +98,8 @@ public sealed class RelayGrantService(
     /// record of what it was minted for and is held to it.</para>
     /// </summary>
     public Task<RelayGrantResult> IssueForPreviewAsync(
-        TeamId team, TaskId producer, string serviceName, CancellationToken ct = default) =>
-        MintAsync(team, serviceName, producer.Value, consumerTaskId: null, consumerInstanceId: null, ct);
+        TeamId team, SessionId producer, string serviceName, CancellationToken ct = default) =>
+        MintAsync(team, serviceName, producer.Value, consumerSessionId: null, consumerInstanceId: null, ct);
 
     /// <summary>
     /// Issues a grant for the §8.3 <b>human</b> path: the consumer is the Lead's own
@@ -114,7 +114,7 @@ public sealed class RelayGrantService(
     /// </summary>
     public Task<RelayGrantResult> IssueForLeadAsync(
         TeamId team, string serviceName, CancellationToken ct = default) =>
-        MintAsync(team, serviceName, producer: null, consumerTaskId: null, consumerInstanceId: null, ct);
+        MintAsync(team, serviceName, producer: null, consumerSessionId: null, consumerInstanceId: null, ct);
 
     /// <summary>
     /// The shared check-11 gate + mint behind <see cref="IssueAsync"/> (§8.3) and
@@ -129,7 +129,7 @@ public sealed class RelayGrantService(
     /// </param>
     private async Task<RelayGrantResult> MintAsync(
         TeamId team, string serviceName, Guid? producer,
-        Guid? consumerTaskId, Guid? consumerInstanceId,
+        Guid? consumerSessionId, Guid? consumerInstanceId,
         CancellationToken ct)
     {
         var now = clock.GetUtcNow();
@@ -163,7 +163,7 @@ public sealed class RelayGrantService(
         // not-registered rather than resolving whatever holds the name now.
         var registered = await db.RegisteredServices.AsNoTracking()
             .AnyAsync(s => s.TeamId == team.Value && s.Name == serviceName
-                           && (producer == null || s.TaskId == producer), ct);
+                           && (producer == null || s.SessionId == producer), ct);
         if (!registered)
             return new RelayGrantResult.Refused(Rule.ForwardsRequireRegistration,
                 $"no service '{serviceName}' is registered in your Team");
@@ -183,11 +183,11 @@ public sealed class RelayGrantService(
         // the name first rather than a different port per call.
         var holder = await (
                 from s in db.RegisteredServices.AsNoTracking()
-                join t in db.Tasks.AsNoTracking() on s.TaskId equals t.Id
+                join t in db.Sessions.AsNoTracking() on s.SessionId equals t.Id
                 where s.TeamId == team.Value
                       && s.Name == serviceName
-                      && (producer == null || s.TaskId == producer)
-                      && t.State == TaskState.Working
+                      && (producer == null || s.SessionId == producer)
+                      && t.State == SessionState.Working
                 orderby s.Seq
                 select new { t.Id, s.Port })
             .FirstOrDefaultAsync(ct);
@@ -202,17 +202,17 @@ public sealed class RelayGrantService(
             Id = Guid.NewGuid(),
             GrantHash = hash,
             ForwardId = forwardId,
-            ConsumerTaskId = consumerTaskId,
+            ConsumerSessionId = consumerSessionId,
             ConsumerInstanceId = consumerInstanceId,
             ServiceName = serviceName,
-            ProducerTaskId = holder.Id,
+            ProducerSessionId = holder.Id,
             TeamId = team.Value,
             CreatedAt = now,
             ExpiresAt = now + GrantTtl,
         });
         await db.SaveChangesAsync(ct);
         return new RelayGrantResult.Issued(
-            grant, forwardId, now + GrantTtl, new TaskId(holder.Id), holder.Port);
+            grant, forwardId, now + GrantTtl, new SessionId(holder.Id), holder.Port);
     }
 
     /// <summary>

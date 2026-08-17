@@ -23,7 +23,7 @@ namespace Docket.Mcp.Tests;
 /// <summary>
 /// The §12 dashboard over real HTTP against the ephemeral Postgres fixture: the
 /// three views plus the event log, their cookie/bearer auth gate, and the JSON
-/// twin. Seeds state through the real <see cref="TaskStore"/> / <see cref="TokenService"/>
+/// twin. Seeds state through the real <see cref="SessionStore"/> / <see cref="TokenService"/>
 /// and the in-memory <see cref="RunnerConnectionRegistry"/>, then drives the pages
 /// with an <see cref="HttpClient"/> — no browser, no MCP client.
 /// </summary>
@@ -230,15 +230,15 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         await app.StartAsync(ct);
 
         var team = TeamId.New();
-        var (taskId, ns) = await SeedWorkingTaskAsync(team, CompletionMode.Lead, ct);
+        var (sessionId, ns) = await SeedWorkingTaskAsync(team, CompletionMode.Lead, ct);
 
         // Register the machine into the live registry and track the dispatched task.
         var registry = app.Services.GetRequiredService<RunnerConnectionRegistry>();
         registry.Register("box-1", new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
         registry.ApplyHeartbeat("box-1", new MachineHeartbeat(
             "box-1", Ready: true, UnderBackPressure: false, new SystemLoad(0, 0, 0),
-            RunningTasks: 1, ["default"], DateTimeOffset.UtcNow));
-        registry.TrackDispatch("box-1", taskId);
+            RunningSessions: 1, ["default"], DateTimeOffset.UtcNow));
+        registry.TrackDispatch("box-1", sessionId);
 
         var body = await GetAuthedAsync(app, "/dashboard/machines", ct);
         Assert.Contains("box-1", body, StringComparison.Ordinal);
@@ -270,7 +270,7 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         var started = DateTimeOffset.UtcNow.AddMinutes(-20);
         registry.ApplyHeartbeat("svc-box", new MachineHeartbeat(
             "svc-box", Ready: true, UnderBackPressure: false, new SystemLoad(0, 0, 0),
-            RunningTasks: 0, ["default"], DateTimeOffset.UtcNow,
+            RunningSessions: 0, ["default"], DateTimeOffset.UtcNow,
             Services:
             [
                 new ServiceStatus("web-dev", ServiceState.Running, 5173, started),
@@ -334,11 +334,11 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         registry.Register("mixed-box", new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
         registry.ApplyHeartbeat("mixed-box", new MachineHeartbeat(
             "mixed-box", Ready: true, UnderBackPressure: false, new SystemLoad(0, 0, 0),
-            RunningTasks: 0, ["default"], DateTimeOffset.UtcNow,
+            RunningSessions: 0, ["default"], DateTimeOffset.UtcNow,
             Services: [new ServiceStatus("web-dev", ServiceState.Running, 5173)]));
         registry.ApplyHeartbeat("mixed-box", new MachineHeartbeat(
             "mixed-box", Ready: true, UnderBackPressure: false, new SystemLoad(0, 0, 0),
-            RunningTasks: 0, ["default"], DateTimeOffset.UtcNow));
+            RunningSessions: 0, ["default"], DateTimeOffset.UtcNow));
 
         var html = await GetAuthedAsync(app, "/dashboard/machines", ct);
         Assert.Contains("web-dev", html, StringComparison.Ordinal);
@@ -365,13 +365,13 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         registry.Register("idle-box", new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
         registry.ApplyHeartbeat("idle-box", new MachineHeartbeat(
             "idle-box", Ready: false, UnderBackPressure: true, new SystemLoad(0, 0, 0),
-            RunningTasks: 0, ["default"], DateTimeOffset.UtcNow));
+            RunningSessions: 0, ["default"], DateTimeOffset.UtcNow));
 
         // HTML: the machine and its back-pressure badge appear, with an empty task list.
         var html = await GetAuthedAsync(app, "/dashboard/machines", ct);
         Assert.Contains("idle-box", html, StringComparison.Ordinal);
         Assert.Contains("back-pressure", html, StringComparison.Ordinal);
-        Assert.Contains("No tasks running on this machine.", html, StringComparison.Ordinal);
+        Assert.Contains("No sessions running on this machine.", html, StringComparison.Ordinal);
 
         // JSON twin: same machine, flagged back-pressured, not ready, zero tasks.
         var json = await GetAuthedAsync(app, "/dashboard/machines?format=json", ct);
@@ -380,7 +380,7 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             m.GetProperty("machineId").GetString() == "idle-box"
             && m.GetProperty("underBackPressure").GetBoolean()
             && !m.GetProperty("ready").GetBoolean()
-            && m.GetProperty("runningTasks").GetArrayLength() == 0);
+            && m.GetProperty("runningSessions").GetArrayLength() == 0);
 
         await app.StopAsync(ct);
     }
@@ -476,7 +476,7 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
                  && r.GetProperty("question").GetString() == BlockedQuestion
                  && r.GetProperty("kind").GetString() == "AuthHelp");
 
-        var tasks = root.GetProperty("tasks");
+        var tasks = root.GetProperty("sessions");
         Assert.Contains(tasks.EnumerateArray(),
             t => t.GetProperty("namespace").GetString() == parkedNs && t.GetProperty("parks").GetInt32() >= 1);
         Assert.Contains(tasks.EnumerateArray(),
@@ -554,11 +554,11 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         // supposed to collapse them into one entry instead of repeating itself.
         var teamD = TeamId.New();
         const string authTarget = "github.com/acme/private-infra";
-        var (authTaskId, authNs, _) = await SeedWorkingTaskWithCallerAsync(teamD, CompletionMode.Lead, ct);
+        var (authSessionId, authNs, _) = await SeedWorkingTaskWithCallerAsync(teamD, CompletionMode.Lead, ct);
         await WithStoreAsync(async store =>
         {
-            await store.RecordAuthFailureAsync(authTaskId, "clone", authTarget, "insufficient_scope", "repo", ct);
-            await store.RecordAuthFailureAsync(authTaskId, "clone", authTarget, "insufficient_scope", "repo", ct);
+            await store.RecordAuthFailureAsync(authSessionId, "clone", authTarget, "insufficient_scope", "repo", ct);
+            await store.RecordAuthFailureAsync(authSessionId, "clone", authTarget, "insufficient_scope", "repo", ct);
         });
 
         // Infrastructure gave up: Failed is inbox, unlike a deliberate park.
@@ -571,11 +571,11 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         // item: no scope a person grants changes a canceled task. The event log keeps it.
         var teamE = TeamId.New();
         const string staleTarget = "github.com/acme/abandoned";
-        var (staleTaskId, _, _) = await SeedWorkingTaskWithCallerAsync(teamE, CompletionMode.Lead, ct);
+        var (staleSessionId, _, _) = await SeedWorkingTaskWithCallerAsync(teamE, CompletionMode.Lead, ct);
         await WithStoreAsync(async store =>
         {
-            await store.RecordAuthFailureAsync(staleTaskId, "push", staleTarget, "forbidden", null, ct);
-            await store.ApplyAsync(staleTaskId, new Cancel(new HumanSession(), CancelDisposition.Preserve), ct);
+            await store.RecordAuthFailureAsync(staleSessionId, "push", staleTarget, "forbidden", null, ct);
+            await store.ApplyAsync(staleSessionId, new Cancel(new HumanSession(), CancelDisposition.Preserve), ct);
         });
 
         var body = await GetAuthedAsync(app, "/dashboard/inbox", ct);
@@ -688,12 +688,12 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
 
         // A task that hits an auth failure and spawns a subagent (both out-of-band,
         // no transition), and a task that blocks with a typed input-request kind.
-        var (authTaskId, _, _) = await SeedWorkingTaskWithCallerAsync(team, CompletionMode.Lead, ct);
+        var (authSessionId, _, _) = await SeedWorkingTaskWithCallerAsync(team, CompletionMode.Lead, ct);
         await WithStoreAsync(async store =>
         {
             await store.RecordAuthFailureAsync(
-                authTaskId, "clone", "github.com/acme/repo", "insufficient_scope", "repo", ct);
-            await store.RecordSubagentSpawnAsync(authTaskId, "sub-1", "root", ct);
+                authSessionId, "clone", "github.com/acme/repo", "insufficient_scope", "repo", ct);
+            await store.RecordSubagentSpawnAsync(authSessionId, "sub-1", "root", ct);
         });
 
         var (blockedId, _, blockedCaller) = await SeedWorkingTaskWithCallerAsync(team, CompletionMode.Lead, ct);
@@ -965,7 +965,7 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     /// <summary>Creates one task and dispatches it to working; returns its id and namespace.</summary>
-    private async Task<(TaskId Id, string Namespace)> SeedWorkingTaskAsync(
+    private async Task<(SessionId Id, string Namespace)> SeedWorkingTaskAsync(
         TeamId team, CompletionMode mode, CancellationToken ct)
     {
         var (id, ns, _) = await SeedWorkingTaskWithCallerAsync(team, mode, ct);
@@ -973,23 +973,23 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     /// <summary>As above, also returning the incumbent worker caller for further transitions.</summary>
-    private async Task<(TaskId Id, string Namespace, WorkerCaller Caller)> SeedWorkingTaskWithCallerAsync(
+    private async Task<(SessionId Id, string Namespace, WorkerCaller Caller)> SeedWorkingTaskWithCallerAsync(
         TeamId team, CompletionMode mode, CancellationToken ct)
     {
         await using var db = pg.NewContext();
-        var store = new TaskStore(db, TimeProvider.System);
+        var store = new SessionStore(db, TimeProvider.System);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(new LeadClaim(team), team, "criteria", mode, null), ct);
+            new CreateSession(new LeadClaim(team), team, "criteria", mode, null), ct);
         var instance = WorkerInstanceId.New();
         // Deterministic: this is the only submitted task at the moment it dispatches.
         await store.DispatchNextAsync(AnyMachine, instance, ct);
-        return (created.Task.Id, created.Task.Namespace, new WorkerCaller(team, created.Task.Id, instance));
+        return (created.Session.Id, created.Session.Namespace, new WorkerCaller(team, created.Session.Id, instance));
     }
 
-    private async Task WithStoreAsync(Func<TaskStore, Task> action)
+    private async Task WithStoreAsync(Func<SessionStore, Task> action)
     {
         await using var db = pg.NewContext();
-        await action(new TaskStore(db, TimeProvider.System));
+        await action(new SessionStore(db, TimeProvider.System));
     }
 
     private static string ShortId(Guid value)

@@ -55,17 +55,17 @@ When `otel` is true **and** a destination resolves:
 | `OTEL_EXPORTER_OTLP_PROTOCOL` | only when nothing upstream named one — `grpc` for a `:4317` endpoint, `http/protobuf` otherwise |
 | `OTEL_METRICS_EXPORTER` | `otlp` |
 | `OTEL_LOGS_EXPORTER` | `otlp` |
-| `OTEL_RESOURCE_ATTRIBUTES` | whatever was already there, plus `docket.task_id=<task>,docket.machine_id=<machine>` |
+| `OTEL_RESOURCE_ATTRIBUTES` | whatever was already there, plus `docket.session_id=<task>,docket.machine_id=<machine>` |
 | everything in `telemetry.env` | verbatim |
 
 Then `telemetry.env` is applied over those defaults, so you can override any of
 them — a gRPC-only collector, events without metrics, a shorter export interval.
 `profiles[].env` is a different map (harness homes, API keys, anything that is
 not telemetry) and is stamped first; when `otel` is on, `telemetry.env` overlays
-it. Neither map can set `DOCKET_MACHINE_ID`, `DOCKET_TASK_ID`,
+it. Neither map can set `DOCKET_MACHINE_ID`, `DOCKET_SESSION_ID`,
 `DOCKET_WORKER_TOKEN`, or `DOCKET_TRACEPARENT`.
 The one thing it cannot override is attribution: an `OTEL_RESOURCE_ATTRIBUTES`
-you set becomes the *base* that `docket.task_id` is appended to, never a
+you set becomes the *base* that `docket.session_id` is appended to, never a
 replacement for it.
 
 **Everything else you don't see here arrives by inheritance.** A worker is
@@ -173,7 +173,7 @@ Every metric also carries a standard set — `session.id`, `user.id`,
 attributes — each gated by an `OTEL_METRICS_INCLUDE_*` variable you can set in
 `telemetry.env` to trade cardinality for granularity.
 `OTEL_METRICS_INCLUDE_RESOURCE_ATTRIBUTES` defaults to on, which is what puts
-`docket.task_id` on each datapoint and not only in the OTLP resource block.
+`docket.session_id` on each datapoint and not only in the OTLP resource block.
 
 **Events** (`OTEL_LOGS_EXPORTER=otlp`) are OTel log records, and are where
 per-request detail lives. `claude_code.api_request` carries `model`,
@@ -203,7 +203,7 @@ none of that is something a profile can configure into existence.
 
 Codex is the worked case: its published documentation describes no OTLP telemetry and no
 equivalent enable flag, so `telemetry: { "otel": true }` on a Codex profile sets the
-vendor-neutral `OTEL_*` variables and appends `docket.task_id`, on a process that may
+vendor-neutral `OTEL_*` variables and appends `docket.session_id`, on a process that may
 ignore all of it. That is the "a harness that exports nothing is normal, not broken" case
 in [Caveats](#caveats) rather than a wiring bug — so before reading an empty dashboard as
 one, check what your harness documents it emits, and under which variable. The table
@@ -247,7 +247,7 @@ self-reported `total_cost_usd` also can.
 §10: *"Token attribution must carry a task id"* — otherwise a machine running
 several tasks at once produces one undifferentiated pile of spend.
 
-`docket.task_id` is that id. It rides `OTEL_RESOURCE_ATTRIBUTES`, so it lands on
+`docket.session_id` is that id. It rides `OTEL_RESOURCE_ATTRIBUTES`, so it lands on
 every metric datapoint and every event the harness emits, and grouping by it in
 your collector gives spend per Docket task — on a machine running several tasks
 at once, in whatever mix of profiles.
@@ -261,7 +261,7 @@ plane owns that mapping; joining spend to a Team means joining on task id agains
 the plane's own records. Adding a Team id here would mean a new wire field, and
 there is nothing built that would read it yet.
 
-The task id also reaches a worker as `DOCKET_TASK_ID` (§10, on every spawn,
+The task id also reaches a worker as `DOCKET_SESSION_ID` (§10, on every spawn,
 telemetry or not). Same id, different consumers: the environment variable is for
 hooks and stray-process cleanup, the resource attribute is for your collector.
 
@@ -316,7 +316,7 @@ machines Docket runs on:
 - **Managed settings win.** On a machine whose MDM sets `OTEL_EXPORTER_OTLP_*`, Claude Code
   drops the conflicting developer values, so a plane-hosted receiver would sit empty while
   the config looked right. A managed `OTEL_RESOURCE_ATTRIBUTES` also threatens the
-  `docket.task_id` attribution the whole scheme depends on.
+  `docket.session_id` attribution the whole scheme depends on.
 - **Release-build Codex exports to OpenAI by default.** Its built-in metrics exporter is
   Statsig (`ab.chatgpt.com`) unless its `config.toml` disables it. Nothing Docket sets
   changes that; if you do not want it, configure Codex.
@@ -338,14 +338,14 @@ to hold it. Docket does not set them and a profile should not either.
   conflicting developer-set `OTEL_EXPORTER_OTLP_*` values at startup. On a
   corporate machine whose MDM already points Claude Code at a company collector,
   a profile's `endpoint` will **not** redirect it — the telemetry goes where the
-  policy says, and `docket.task_id` rides along there instead. Verified on a
+  policy says, and `docket.session_id` rides along there instead. Verified on a
   managed macOS machine: a worker spawned with a local `endpoint` sent nothing to
   the local collector. Check
   `/Library/Application Support/ClaudeCode/managed-settings.json` before
   concluding the wiring is broken.
 - **A harness that exports nothing is normal, not broken** (§10). Profiles
   without an OTel-emitting harness render as "not reported"; nothing degrades.
-- **Cardinality is your collector's problem.** `docket.task_id` is unbounded over
+- **Cardinality is your collector's problem.** `docket.session_id` is unbounded over
   time — one value per task, forever. That is the point for attribution and a
   real cost in a long-lived metrics store, so aggregate and expire on your side.
   `OTEL_METRICS_INCLUDE_RESOURCE_ATTRIBUTES=false` keeps the id in the resource

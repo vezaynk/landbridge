@@ -95,7 +95,7 @@ builder.Services.AddMcpServer()
 // event listener owns its own session-mode Postgres connection (§3.1 LISTEN).
 builder.Services.AddSingleton<RunnerConnectionRegistry>();
 builder.Services.AddSingleton<RunnerEventSink>();
-builder.Services.AddSingleton(new TaskEventListener(connectionString));
+builder.Services.AddSingleton(new SessionEventListener(connectionString));
 
 // §8.3: open_forward drives both docketd ends of a forward. The orchestrator +
 // forward-opened waiter are singletons sharing the connection registry above; the
@@ -122,7 +122,7 @@ builder.Services.AddSingleton(sp => new DispatchService(
     sp.GetRequiredService<RunnerConnectionRegistry>(),
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILogger<DispatchService>>(),
-    sp.GetRequiredService<TaskEventListener>(),
+    sp.GetRequiredService<SessionEventListener>(),
     livenessWindow: builder.Configuration.GetValue<TimeSpan?>("Docket:PerTaskLivenessWindow"),
     publicMcpUrl: publicMcpUrl,
     noProgressCeiling: builder.Configuration.GetValue<TimeSpan?>("Docket:NoProgressCeiling")));
@@ -130,7 +130,7 @@ builder.Services.AddHostedService(sp => sp.GetRequiredService<DispatchService>()
 
 // §11 wait-TTL sweeper: requeues a task whose machine went silent while it
 // waited. Auto-park on wait TTL is off by default (a live ACP session is held
-// until a Lead answers or park_task); set Docket:WaitTtl to restore a timer.
+// until a Lead answers or park_session); set Docket:WaitTtl to restore a timer.
 builder.Services.AddHostedService(sp => new WaitTtlSweeper(
     sp.GetRequiredService<IServiceScopeFactory>(),
     sp.GetRequiredService<RunnerConnectionRegistry>(),

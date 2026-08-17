@@ -73,9 +73,9 @@ public sealed class TranscriptDashboardEndToEndTests(PostgresFixture pg) : IAsyn
         var leadToken = await IssueLeadTokenAsync(team, ct);
 
         using var client = Client(app);
-        var transcripts = await GetAsync(client, $"/dashboard/tasks/{task.Value}/transcripts", leadToken, ct);
+        var transcripts = await GetAsync(client, $"/dashboard/sessions/{task.Value}/transcripts", leadToken, ct);
         var stream = await GetAsync(
-            client, $"/dashboard/tasks/{task.Value}/transcript?machine={MachineId}&ordinal=1&stream=stdout",
+            client, $"/dashboard/sessions/{task.Value}/transcript?machine={MachineId}&ordinal=1&stream=stdout",
             leadToken, ct);
         var teamsView = await GetAsync(client, "/dashboard/teams?format=json", leadToken, ct);
 
@@ -102,7 +102,7 @@ public sealed class TranscriptDashboardEndToEndTests(PostgresFixture pg) : IAsyn
         await app.StartAsync(ct);
         using var client = Client(app);
 
-        var res = await client.GetAsync($"/dashboard/tasks/{Guid.NewGuid()}/transcripts", ct);
+        var res = await client.GetAsync($"/dashboard/sessions/{Guid.NewGuid()}/transcripts", ct);
 
         Assert.Equal(HttpStatusCode.Redirect, res.StatusCode);
         Assert.Contains("/dashboard/login", res.Headers.Location!.ToString(), StringComparison.Ordinal);
@@ -125,7 +125,7 @@ public sealed class TranscriptDashboardEndToEndTests(PostgresFixture pg) : IAsyn
 
         using var client = Client(app);
         var res = await GetAsync(
-            client, $"/dashboard/tasks/{task.Value}/transcript?machine={MachineId}&ordinal=1&stream=stdout",
+            client, $"/dashboard/sessions/{task.Value}/transcript?machine={MachineId}&ordinal=1&stream=stdout",
             human, ct);
         var body = await res.Content.ReadAsStringAsync(ct);
         var teamPage = await GetAsync(client, $"/dashboard/teams/{team.Value}", human, ct);
@@ -134,7 +134,7 @@ public sealed class TranscriptDashboardEndToEndTests(PostgresFixture pg) : IAsyn
         Assert.Equal(HttpStatusCode.Conflict, res.StatusCode);
         Assert.Contains("terminal state", body);
         // And the Team view does not offer a link it would then refuse.
-        Assert.DoesNotContain($"/dashboard/tasks/{task.Value}/transcripts", teamHtml);
+        Assert.DoesNotContain($"/dashboard/sessions/{task.Value}/transcripts", teamHtml);
         Assert.Contains("not yet", teamHtml);
     }
 
@@ -158,7 +158,7 @@ public sealed class TranscriptDashboardEndToEndTests(PostgresFixture pg) : IAsyn
 
         using var client = Client(app);
         var res = await GetAsync(
-            client, $"/dashboard/tasks/{task.Value}/transcript?machine={MachineId}&ordinal=1&stream=stdout",
+            client, $"/dashboard/sessions/{task.Value}/transcript?machine={MachineId}&ordinal=1&stream=stdout",
             human, ct);
         var body = await res.Content.ReadAsStringAsync(ct);
 
@@ -191,13 +191,13 @@ public sealed class TranscriptDashboardEndToEndTests(PostgresFixture pg) : IAsyn
         var human = await IssueHumanTokenAsync(ct);
 
         using var client = Client(app);
-        var res = await GetAsync(client, $"/dashboard/tasks/{task.Value}/transcripts", human, ct);
+        var res = await GetAsync(client, $"/dashboard/sessions/{task.Value}/transcripts", human, ct);
         var html = await res.Content.ReadAsStringAsync(ct);
 
         Assert.Equal(HttpStatusCode.OK, res.StatusCode);
         Assert.Contains(MachineId, html);
         Assert.Contains("machine connected", html);
-        Assert.Contains($"/dashboard/tasks/{task.Value}/transcript?machine={MachineId}&amp;ordinal=1", html);
+        Assert.Contains($"/dashboard/sessions/{task.Value}/transcript?machine={MachineId}&amp;ordinal=1", html);
         // A 5s meta-refresh here would re-ask every machine for an inventory over the control
         // channel every five seconds — every other §12 view has one; this must not.
         Assert.DoesNotContain("http-equiv=\"refresh\"", html);
@@ -220,10 +220,10 @@ public sealed class TranscriptDashboardEndToEndTests(PostgresFixture pg) : IAsyn
         var human = await IssueHumanTokenAsync(ct);
 
         using var client = Client(app);
-        var index = await GetAsync(client, $"/dashboard/tasks/{task.Value}/transcripts", human, ct);
+        var index = await GetAsync(client, $"/dashboard/sessions/{task.Value}/transcripts", human, ct);
         var indexHtml = await index.Content.ReadAsStringAsync(ct);
         var stream = await GetAsync(
-            client, $"/dashboard/tasks/{task.Value}/transcript?machine={MachineId}&ordinal=1&stream=stdout",
+            client, $"/dashboard/sessions/{task.Value}/transcript?machine={MachineId}&ordinal=1&stream=stdout",
             human, ct);
 
         // The index still renders (the dispatch history is plane-side) and says why.
@@ -249,11 +249,11 @@ public sealed class TranscriptDashboardEndToEndTests(PostgresFixture pg) : IAsyn
         var human = await IssueHumanTokenAsync(ct);
 
         using var client = Client(app);
-        var noMachine = await GetAsync(client, $"/dashboard/tasks/{task.Value}/transcript?ordinal=1", human, ct);
+        var noMachine = await GetAsync(client, $"/dashboard/sessions/{task.Value}/transcript?ordinal=1", human, ct);
         var badOrdinal = await GetAsync(
-            client, $"/dashboard/tasks/{task.Value}/transcript?machine={MachineId}&ordinal=0", human, ct);
+            client, $"/dashboard/sessions/{task.Value}/transcript?machine={MachineId}&ordinal=0", human, ct);
         var badStream = await GetAsync(
-            client, $"/dashboard/tasks/{task.Value}/transcript?machine={MachineId}&ordinal=1&stream=../etc/passwd",
+            client, $"/dashboard/sessions/{task.Value}/transcript?machine={MachineId}&ordinal=1&stream=../etc/passwd",
             human, ct);
 
         Assert.Equal(HttpStatusCode.BadRequest, noMachine.StatusCode);
@@ -286,7 +286,7 @@ public sealed class TranscriptDashboardEndToEndTests(PostgresFixture pg) : IAsyn
             if (read.Ordinal == 0)
             {
                 reply = new TranscriptChunkEvent(
-                    read.Task, read.RequestId, Eof: true,
+                    read.Session, read.RequestId, Eof: true,
                     Instances: [new TranscriptInstance(1, bytes.Length, 0, DateTimeOffset.UtcNow)]);
             }
             else
@@ -294,7 +294,7 @@ public sealed class TranscriptDashboardEndToEndTests(PostgresFixture pg) : IAsyn
                 var offset = (int)Math.Min(read.Offset, bytes.Length);
                 var take = Math.Min(rangeBytes, bytes.Length - offset);
                 reply = new TranscriptChunkEvent(
-                    read.Task, read.RequestId,
+                    read.Session, read.RequestId,
                     Text: System.Text.Encoding.UTF8.GetString(bytes, offset, take),
                     NextOffset: offset + take,
                     Eof: offset + take >= bytes.Length);
@@ -303,7 +303,7 @@ public sealed class TranscriptDashboardEndToEndTests(PostgresFixture pg) : IAsyn
         });
         registry.ApplyHeartbeat(MachineId, new MachineHeartbeat(
             MachineId, Ready: true, UnderBackPressure: false, new SystemLoad(0, 0, 0),
-            RunningTasks: 0, Profiles: ["default"], At: DateTimeOffset.UtcNow, TranscriptsServable: true));
+            RunningSessions: 0, Profiles: ["default"], At: DateTimeOffset.UtcNow, TranscriptsServable: true));
         return sent;
     }
 
@@ -367,25 +367,25 @@ public sealed class TranscriptDashboardEndToEndTests(PostgresFixture pg) : IAsyn
         return ((LeadClaimResult.Claimed)claim).Token.Token;
     }
 
-    private async Task<(TaskId Id, WorkerCaller Caller)> SeedWorkingTaskAsync(
+    private async Task<(SessionId Id, WorkerCaller Caller)> SeedWorkingTaskAsync(
         TeamId team, CancellationToken ct)
     {
         await using var db = pg.NewContext();
-        var store = new TaskStore(db, TimeProvider.System);
-        var created = (StoreResult.Applied)await store.CreateAsync(new CreateTask(
+        var store = new SessionStore(db, TimeProvider.System);
+        var created = (StoreResult.Applied)await store.CreateAsync(new CreateSession(
             new LeadClaim(team), team, "criteria", CompletionMode.Lead, Profile: null));
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(Snapshot, instance, ct);
-        return (created.Task.Id, new WorkerCaller(team, created.Task.Id, instance));
+        return (created.Session.Id, new WorkerCaller(team, created.Session.Id, instance));
     }
 
     /// <summary>Create → dispatch → report → accept, so the instance row records the machine
     /// and the task is terminal — the state a transcript is readable in.</summary>
-    private async Task<TaskId> SeedCompletedTaskAsync(TeamId team, CancellationToken ct)
+    private async Task<SessionId> SeedCompletedTaskAsync(TeamId team, CancellationToken ct)
     {
         var (id, caller) = await SeedWorkingTaskAsync(team, ct);
         await using var db = pg.NewContext();
-        var store = new TaskStore(db, TimeProvider.System);
+        var store = new SessionStore(db, TimeProvider.System);
         await store.ApplyAsync(id, new ReportResult(caller, "result-ref"), ct);
         await store.ApplyAsync(id, new VerdictAccept(new LeadClaim(team)), ct);
         return id;

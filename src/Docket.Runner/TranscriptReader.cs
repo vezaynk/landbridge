@@ -55,15 +55,15 @@ public sealed class TranscriptReader(TranscriptStore store)
 
     private TranscriptChunkEvent Inventory(ReadTranscriptCommand command)
     {
-        var instances = store.Inventory(command.Task);
+        var instances = store.Inventory(command.Session);
         return instances is null
             ? Refuse(command, TranscriptRefusals.NoTranscript)
-            : new TranscriptChunkEvent(command.Task, command.RequestId, Instances: instances, Eof: true);
+            : new TranscriptChunkEvent(command.Session, command.RequestId, Instances: instances, Eof: true);
     }
 
     private TranscriptChunkEvent ReadRange(ReadTranscriptCommand command)
     {
-        var path = store.ResolveFile(command.Task, command.Ordinal, command.Stream);
+        var path = store.ResolveFile(command.Session, command.Ordinal, command.Stream);
         if (path is null)
         {
             // Distinguish "nothing for this task here" from "that instance/stream was
@@ -71,7 +71,7 @@ public sealed class TranscriptReader(TranscriptStore store)
             // the second is a real task with one silent stream (§12).
             return Refuse(
                 command,
-                store.Holds(command.Task) ? TranscriptRefusals.UnknownInstance : TranscriptRefusals.NoTranscript);
+                store.Holds(command.Session) ? TranscriptRefusals.UnknownInstance : TranscriptRefusals.NoTranscript);
         }
 
         try
@@ -88,7 +88,7 @@ public sealed class TranscriptReader(TranscriptStore store)
                 // Past the end: not an error, just nothing more to send. Reported at the
                 // offset asked for so the caller's cursor does not move backwards.
                 return new TranscriptChunkEvent(
-                    command.Task, command.RequestId, NextOffset: command.Offset, Eof: true);
+                    command.Session, command.RequestId, NextOffset: command.Offset, Eof: true);
             }
 
             file.Seek(command.Offset, SeekOrigin.Begin);
@@ -116,7 +116,7 @@ public sealed class TranscriptReader(TranscriptStore store)
 
             var next = command.Offset + usable;
             return new TranscriptChunkEvent(
-                command.Task,
+                command.Session,
                 command.RequestId,
                 Text: Encoding.UTF8.GetString(buffer, 0, usable),
                 NextOffset: next,
@@ -129,7 +129,7 @@ public sealed class TranscriptReader(TranscriptStore store)
     }
 
     private static TranscriptChunkEvent Refuse(ReadTranscriptCommand command, string refusal) =>
-        new(command.Task, command.RequestId, Refusal: refusal);
+        new(command.Session, command.RequestId, Refusal: refusal);
 
     /// <summary>
     /// The usable prefix of <paramref name="buffer"/>, excluding a trailing UTF-8

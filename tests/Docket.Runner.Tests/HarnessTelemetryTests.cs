@@ -64,7 +64,7 @@ public sealed class HarnessTelemetryTests
         Assert.Equal("http/protobuf", env["OTEL_EXPORTER_OTLP_PROTOCOL"]);
 
         // §10: "Token attribution must carry a task id." This is that.
-        Assert.Equal($"docket.task_id={Task},docket.machine_id={Machine}", env["OTEL_RESOURCE_ATTRIBUTES"]);
+        Assert.Equal($"docket.session_id={Task},docket.machine_id={Machine}", env["OTEL_RESOURCE_ATTRIBUTES"]);
     }
 
     [Fact]
@@ -124,7 +124,7 @@ public sealed class HarnessTelemetryTests
 
         Assert.False(requestedWithoutEndpoint);
         Assert.Equal("http://localhost:19015", env["OTEL_EXPORTER_OTLP_ENDPOINT"]);
-        Assert.Contains($"docket.task_id={Task}", env["OTEL_RESOURCE_ATTRIBUTES"]);
+        Assert.Contains($"docket.session_id={Task}", env["OTEL_RESOURCE_ATTRIBUTES"]);
     }
 
     [Fact]
@@ -184,7 +184,7 @@ public sealed class HarnessTelemetryTests
             out _);
 
         Assert.Equal(
-            $"deployment.environment=prod,cost_center=eng-123,docket.task_id={Task},docket.machine_id={Machine}",
+            $"deployment.environment=prod,cost_center=eng-123,docket.session_id={Task},docket.machine_id={Machine}",
             env["OTEL_RESOURCE_ATTRIBUTES"]);
     }
 
@@ -199,7 +199,7 @@ public sealed class HarnessTelemetryTests
             Task, Machine, NoInheritance, out _);
 
         Assert.Equal(
-            $"team.id=platform,docket.task_id={Task},docket.machine_id={Machine}",
+            $"team.id=platform,docket.session_id={Task},docket.machine_id={Machine}",
             env["OTEL_RESOURCE_ATTRIBUTES"]);
     }
 
@@ -220,20 +220,20 @@ public sealed class HarnessTelemetryTests
         Assert.Equal("grpc", env["OTEL_EXPORTER_OTLP_PROTOCOL"]);
         Assert.Equal("none", env["OTEL_LOGS_EXPORTER"]);
         Assert.Equal("otlp", env["OTEL_METRICS_EXPORTER"]);
-        Assert.Contains($"docket.task_id={Task}", env["OTEL_RESOURCE_ATTRIBUTES"]);
+        Assert.Contains($"docket.session_id={Task}", env["OTEL_RESOURCE_ATTRIBUTES"]);
     }
 
     [Fact]
     public void Telemetry_env_cannot_reach_the_variables_docketd_owns()
     {
-        // §10 fixes DOCKET_MACHINE_ID/DOCKET_TASK_ID on every spawn "not configurably":
+        // §10 fixes DOCKET_MACHINE_ID/DOCKET_SESSION_ID on every spawn "not configurably":
         // stray-process cleanup scans for them, so a profile that could overwrite one
         // would break restart-equals-reboot, not just mislabel a metric.
         var env = HarnessTelemetry.SpawnEnvironment(
             new TelemetryConfig(Otel: true, Endpoint: "http://127.0.0.1:4318",
                 Env: new Dictionary<string, string>
                 {
-                    ["DOCKET_TASK_ID"] = "not-this-task",
+                    ["DOCKET_SESSION_ID"] = "not-this-task",
                     ["DOCKET_MACHINE_ID"] = "not-this-machine",
                     ["DOCKET_WORKER_TOKEN"] = "forged",
                     ["DOCKET_TRACEPARENT"] = "forged",
@@ -253,7 +253,7 @@ public sealed class HarnessTelemetryTests
             Task, "shared box,user.email=someone@example.com", NoInheritance, out _);
 
         Assert.Equal(
-            $"docket.task_id={Task},docket.machine_id=shared_box_user.email_someone_example.com",
+            $"docket.session_id={Task},docket.machine_id=shared_box_user.email_someone_example.com",
             env["OTEL_RESOURCE_ATTRIBUTES"]);
     }
 }
@@ -277,7 +277,7 @@ public sealed class HarnessTelemetrySpawnTests : IDisposable
     [Fact]
     public async Task An_opted_in_profile_hands_its_worker_a_configured_exporter_and_the_task_id()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         var supervisor = Supervisor();
 
         supervisor.Spawn(
@@ -307,12 +307,12 @@ public sealed class HarnessTelemetrySpawnTests : IDisposable
 
         // Every metric and event the harness emits will carry this, which is what lets
         // a collector bucket token/cost per Docket task (§10 attribution).
-        Assert.Contains($"docket.task_id={task}", env["OTEL_RESOURCE_ATTRIBUTES"]);
+        Assert.Contains($"docket.session_id={task}", env["OTEL_RESOURCE_ATTRIBUTES"]);
         Assert.Contains("docket.machine_id=machine-42", env["OTEL_RESOURCE_ATTRIBUTES"]);
 
-        // The task id is on the spawn twice for two different consumers: DOCKET_TASK_ID
+        // The task id is on the spawn twice for two different consumers: DOCKET_SESSION_ID
         // for hooks and stray cleanup (§10), the resource attribute for the collector.
-        Assert.Equal(task.ToString(), env["DOCKET_TASK_ID"]);
+        Assert.Equal(task.ToString(), env["DOCKET_SESSION_ID"]);
 
         Assert.True(supervisor.Kill(task));
     }
@@ -320,7 +320,7 @@ public sealed class HarnessTelemetrySpawnTests : IDisposable
     [Fact]
     public async Task A_profile_that_did_not_opt_in_gets_no_telemetry_variables()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         var supervisor = Supervisor();
 
         // The default profile: telemetry.otel unset. Whatever the ambient environment
@@ -337,7 +337,7 @@ public sealed class HarnessTelemetrySpawnTests : IDisposable
     [Fact]
     public async Task Telemetry_requested_with_no_destination_leaves_the_worker_untouched()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         var supervisor = Supervisor();
 
         // otel on, no endpoint configured. Whether one is inherited is the ambient
@@ -357,7 +357,7 @@ public sealed class HarnessTelemetrySpawnTests : IDisposable
         if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("OTEL_EXPORTER_OTLP_ENDPOINT")))
             AssertDocketdSetNothing(env, task);
         else
-            Assert.Contains($"docket.task_id={task}", env["OTEL_RESOURCE_ATTRIBUTES"]);
+            Assert.Contains($"docket.session_id={task}", env["OTEL_RESOURCE_ATTRIBUTES"]);
 
         Assert.True(supervisor.Kill(task));
     }
@@ -369,9 +369,9 @@ public sealed class HarnessTelemetrySpawnTests : IDisposable
     /// harness flag) set — a developer running under a harness that sets its own, or a
     /// docketd exporting its traces — passes them down regardless of this profile.
     /// So compare against docketd's own environment rather than asserting absence, and
-    /// assert absence only for <c>docket.task_id</c>, which nothing but this code adds.
+    /// assert absence only for <c>docket.session_id</c>, which nothing but this code adds.
     /// </summary>
-    private static void AssertDocketdSetNothing(Dictionary<string, string> env, TaskId task)
+    private static void AssertDocketdSetNothing(Dictionary<string, string> env, SessionId task)
     {
         string[] resolvable =
         [
@@ -390,14 +390,14 @@ public sealed class HarnessTelemetrySpawnTests : IDisposable
             Assert.Equal(ambient, onChild);
         }
 
-        Assert.DoesNotContain("docket.task_id",
+        Assert.DoesNotContain("docket.session_id",
             env.TryGetValue("OTEL_RESOURCE_ATTRIBUTES", out var attrs) ? attrs : "");
         Assert.DoesNotContain(task.ToString(),
             env.TryGetValue("OTEL_RESOURCE_ATTRIBUTES", out var same) ? same : "");
     }
 
     /// <summary>Reads the <c>echo-env</c> marker into a map of the child's actual environment.</summary>
-    private async Task<Dictionary<string, string>> ReadEnvMarker(TaskId task)
+    private async Task<Dictionary<string, string>> ReadEnvMarker(SessionId task)
     {
         var path = Path.Combine(_workRoot, task.ToString(), "env");
         Assert.True(await TestKit.WaitUntilAsync(() => File.Exists(path), TimeSpan.FromSeconds(15)),

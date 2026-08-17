@@ -29,7 +29,7 @@
   </ItemGroup>
 
   <!-- §1 tracing: the worker roots its span on DOCKET_TRACEPARENT and, when a
-       collector is configured, exports it — and its get_task/report_result MCP
+       collector is configured, exports it — and its get_session/report_result MCP
        calls (via HttpClient instrumentation) — so the plane continues the one
        trace. Versions match Docket.ServiceDefaults. -->
   <ItemGroup>

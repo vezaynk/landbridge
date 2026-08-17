@@ -56,7 +56,7 @@ public sealed class WindowsJobObjectTests : IDisposable
 
         var supervisor = new ProcessSupervisor(
             TestKit.Machine(_workRoot), new OutboundEventRing(capacity: 256), new FakeTimeProvider());
-        var task = TaskId.New();
+        var task = SessionId.New();
 
         supervisor.Spawn(TestKit.Dispatch(task), TestKit.Profile("run"), "m");
 

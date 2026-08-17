@@ -178,16 +178,16 @@ public sealed class TeamForwardUsageTests(PostgresFixture pg) : IAsyncLifetime
     private static async Task<Guid> IssuedForwardAsync(
         DocketDbContext db, TimeProvider clock, TeamId team, string serviceName)
     {
-        var store = new TaskStore(db, clock);
+        var store = new SessionStore(db, clock);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null));
+            new CreateSession(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null));
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(Machine(), instance);
-        var caller = new WorkerCaller(team, created.Task.Id, instance);
+        var caller = new WorkerCaller(team, created.Session.Id, instance);
         // Registering the same name twice is fine; the second call refreshes the row.
         await store.RegisterServiceAsync(caller, serviceName, 5432);
         var issued = (RelayGrantResult.Issued)await new RelayGrantService(db, clock)
-            .IssueAsync(new WorkerCaller(team, TaskId.New(), WorkerInstanceId.New()), serviceName);
+            .IssueAsync(new WorkerCaller(team, SessionId.New(), WorkerInstanceId.New()), serviceName);
         return issued.ForwardId;
     }
 }

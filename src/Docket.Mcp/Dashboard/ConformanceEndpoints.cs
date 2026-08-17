@@ -9,9 +9,10 @@ using Microsoft.Extensions.Configuration;
 namespace Docket.Mcp.Dashboard;
 
 /// <summary>
-/// Operator-only stand-in for the unbuilt §11 conformance run: mint dummy tasks
-/// aimed at one profile, then poll their states. The plane still does not judge
-/// the work — a task that reaches <c>verifying</c> is a worker that called
+/// Operator-only stand-in for the unbuilt §11 conformance run: mint dummy sessions
+/// aimed at one profile, then poll their states. POST takes <c>profile</c> (JSON
+/// body or form field); omit is <c>default</c>. The plane still does not judge
+/// the work — a session that reaches <c>verifying</c> is a worker that called
 /// <c>report_result</c>. Human-only, like the Machine Group: a Lead cannot
 /// enumerate profiles and must not mint fleet-wide work.
 /// </summary>
@@ -43,6 +44,7 @@ internal static class ConformanceEndpoints
                 {
                     post = "/dashboard/conformance",
                     profile = MachineSnapshot.DefaultProfile,
+                    profileField = "optional; omit or empty is default; exact-match name from the runner config",
                     kinds = ConformanceCatalog.Kinds,
                 }, Json));
             }
@@ -52,12 +54,12 @@ internal static class ConformanceEndpoints
     }
 
     /// <summary>
-    /// POST /dashboard/conformance — create the dummy set for <c>profile</c>.
-    /// Same-origin, human-only. The run id is a new Team id; progress is
-    /// <c>GET /dashboard/conformance/{runId}</c>.
+    /// POST /dashboard/conformance — create the dummy set for <c>profile</c>
+    /// (JSON or form; omit is <c>default</c>). Same-origin, human-only. The run
+    /// id is a new Team id; progress is <c>GET /dashboard/conformance/{runId}</c>.
     /// </summary>
     private static async Task<IResult> HandleStartAsync(
-        HttpContext http, TokenService tokens, TaskStore store,
+        HttpContext http, TokenService tokens, SessionStore store,
         RunnerConnectionRegistry registry, IConfiguration config, CancellationToken ct)
     {
         if (CrossOriginRefusal(http, config) is { } refusal)
@@ -65,27 +67,25 @@ internal static class ConformanceEndpoints
 
         return await GatedHuman(http, tokens, ct, async _ =>
         {
-            // Always `default`: that is the required catch-all every enrolled
-            // machine declares, and the name omitted-profile dispatch already uses.
-            var profile = MachineSnapshot.DefaultProfile;
+            var profile = await ReadProfileAsync(http, ct);
 
             var runId = TeamId.New();
             var lead = new LeadClaim(runId);
             var specs = ConformanceCatalog.For(runId.Value);
-            var created = new List<ConformanceTaskView>(specs.Count);
+            var created = new List<ConformanceSessionView>(specs.Count);
             foreach (var spec in specs)
             {
                 var result = await store.CreateAsync(
-                    new CreateTask(
+                    new CreateSession(
                         lead, runId, spec.CompletionCriteria, CompletionMode.Lead, profile,
                         Description: spec.Description,
                         Workspace: ConformanceCatalog.WorkspaceOf(spec.Kind)),
                     ct);
                 if (result is not StoreResult.Applied applied)
-                    return Results.Json(new { error = "failed to create a dummy task", detail = result.ToString() },
+                    return Results.Json(new { error = "failed to create a dummy session", detail = result.ToString() },
                         Json, statusCode: StatusCodes.Status500InternalServerError);
-                created.Add(new ConformanceTaskView(
-                    applied.Task.Id.Value, spec.Kind, applied.Task.State, applied.Task.Attempt,
+                created.Add(new ConformanceSessionView(
+                    applied.Session.Id.Value, spec.Kind, applied.Session.State, applied.Session.Attempt,
                     ResultReference: null, LastRequeueReason: null));
             }
 
@@ -118,7 +118,7 @@ internal static class ConformanceEndpoints
             }
 
             var profile = rows[0].Profile ?? "";
-            var tasks = rows.Select(r => new ConformanceTaskView(
+            var tasks = rows.Select(r => new ConformanceSessionView(
                 r.Id,
                 ConformanceCatalog.KindOf(r.Workspace) ?? "unknown",
                 r.State, r.Attempt, r.ResultReference, r.LastRequeueReason?.ToString())).ToList();
@@ -127,6 +127,29 @@ internal static class ConformanceEndpoints
                 ? Results.Json(model, Json)
                 : Html(DashboardRenderer.ConformanceRun(model));
         });
+    }
+
+    /// <summary>
+    /// JSON body <c>{ "profile": "goose" }</c> or form field <c>profile</c>.
+    /// Omit, empty, or whitespace is <see cref="MachineSnapshot.DefaultProfile"/>.
+    /// Exact string — the same match dispatch uses. A name no machine declares
+    /// is accepted and sits in Submitted, which is the quiet failure enroll hunts.
+    /// </summary>
+    private static async Task<string> ReadProfileAsync(HttpContext http, CancellationToken ct)
+    {
+        string? raw = null;
+        if (http.Request.HasJsonContentType())
+        {
+            var body = await http.Request.ReadFromJsonAsync<ConformanceStartBody>(Json, ct);
+            raw = body?.Profile;
+        }
+        else if (http.Request.HasFormContentType)
+        {
+            var form = await http.Request.ReadFormAsync(ct);
+            raw = form["profile"].ToString();
+        }
+
+        return string.IsNullOrWhiteSpace(raw) ? MachineSnapshot.DefaultProfile : raw.Trim();
     }
 
     private static IReadOnlyList<string> MachinesDeclaring(RunnerConnectionRegistry registry, string profile)
@@ -192,10 +215,12 @@ internal static class ConformanceEndpoints
         "this form is same-origin only: the request carried no Origin from the dashboard's own host";
 }
 
-internal sealed record ConformanceTaskView(
-    Guid TaskId,
+internal sealed record ConformanceStartBody(string? Profile);
+
+internal sealed record ConformanceSessionView(
+    Guid SessionId,
     string Kind,
-    TaskState State,
+    SessionState State,
     int Attempt,
     string? ResultReference,
     string? LastRequeueReason);
@@ -211,10 +236,10 @@ internal sealed record ConformanceRunView(
     int Failed,
     bool WorkerDone,
     IReadOnlyList<string> MachinesDeclaring,
-    IReadOnlyList<ConformanceTaskView> Tasks)
+    IReadOnlyList<ConformanceSessionView> Sessions)
 {
     public static ConformanceRunView From(
-        Guid runId, string profile, IReadOnlyList<ConformanceTaskView> tasks,
+        Guid runId, string profile, IReadOnlyList<ConformanceSessionView> tasks,
         IReadOnlyList<string> machines)
     {
         var pending = 0;

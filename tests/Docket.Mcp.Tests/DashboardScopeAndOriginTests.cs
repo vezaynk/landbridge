@@ -137,7 +137,7 @@ public sealed class DashboardScopeAndOriginTests(PostgresFixture pg) : IAsyncLif
         // ── The inbox: its own open question, not the other Team's.
         using var inbox = await GetJsonAsync(client, "/dashboard/inbox?format=json", lead, ct);
         var question = Assert.Single(inbox.RootElement.GetProperty("questions").EnumerateArray());
-        Assert.Equal(myBlocked.Value, question.GetProperty("taskId").GetGuid());
+        Assert.Equal(myBlocked.Value, question.GetProperty("sessionId").GetGuid());
         // The other Team's question text is the thing a human answers from here, so its absence
         // is asserted against the whole document rather than one array.
         Assert.DoesNotContain(TheirSecret, inbox.RootElement.GetRawText(), StringComparison.Ordinal);
@@ -187,13 +187,13 @@ public sealed class DashboardScopeAndOriginTests(PostgresFixture pg) : IAsyncLif
         await app.StartAsync(ct);
 
         var team = TeamId.New();
-        var (taskId, _) = await SeedWorkingTaskAsync(team, ct);
+        var (sessionId, _) = await SeedWorkingTaskAsync(team, ct);
         var registry = app.Services.GetRequiredService<RunnerConnectionRegistry>();
         registry.Register("box-1", new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
         registry.ApplyHeartbeat("box-1", new MachineHeartbeat(
             "box-1", Ready: true, UnderBackPressure: false, new SystemLoad(0, 0, 0),
-            RunningTasks: 1, ["default"], DateTimeOffset.UtcNow));
-        registry.TrackDispatch("box-1", taskId);
+            RunningSessions: 1, ["default"], DateTimeOffset.UtcNow));
+        registry.TrackDispatch("box-1", sessionId);
 
         using var client = Client(app);
         var lead = await IssueLeadTokenAsync(team, ct);
@@ -244,27 +244,27 @@ public sealed class DashboardScopeAndOriginTests(PostgresFixture pg) : IAsyncLif
         // Same site, different origin: the worker's own preview page. Lax does not stop this.
         var forged = await PostAsync(
             client, "/dashboard/permission", human, "http://abcd1234.preview.localhost", ct,
-            [("taskId", task.Value.ToString()), ("verdict", "allow")]);
+            [("sessionId", task.Value.ToString()), ("verdict", "allow")]);
         Assert.Equal(HttpStatusCode.Forbidden, forged.StatusCode);
 
         // Nothing was decided: the worker is still blocked and still waiting on a person.
         await using (var db = pg.NewContext())
         {
-            var row = await db.Tasks.AsNoTracking().SingleAsync(t => t.Id == task.Value, ct);
+            var row = await db.Sessions.AsNoTracking().SingleAsync(t => t.Id == task.Value, ct);
             Assert.Null(row.PermissionVerdict);
-            Assert.Equal(TaskState.BlockedOnInput, row.State);
+            Assert.Equal(SessionState.BlockedOnInput, row.State);
         }
 
         // The same verdict from the dashboard's own page goes through, so the check is a rule
         // about where the POST came from and not a removal of the §11 human path.
         var honest = await PostAsync(
             client, "/dashboard/permission", human, SelfOrigin(app), ct,
-            [("taskId", task.Value.ToString()), ("verdict", "allow")]);
+            [("sessionId", task.Value.ToString()), ("verdict", "allow")]);
         Assert.Equal(HttpStatusCode.OK, honest.StatusCode);
 
         await using (var db = pg.NewContext())
         {
-            var row = await db.Tasks.AsNoTracking().SingleAsync(t => t.Id == task.Value, ct);
+            var row = await db.Sessions.AsNoTracking().SingleAsync(t => t.Id == task.Value, ct);
             Assert.Equal(PermissionVerdict.Allow, row.PermissionVerdict);
         }
 
@@ -388,7 +388,7 @@ public sealed class DashboardScopeAndOriginTests(PostgresFixture pg) : IAsyncLif
         registry.ApplyHeartbeat(
             machineId.ToString(),
             new MachineHeartbeat(machineId.ToString(), Ready: true, UnderBackPressure: false,
-                new SystemLoad(0, 0, 0), RunningTasks: 0, ["default"], DateTimeOffset.UtcNow));
+                new SystemLoad(0, 0, 0), RunningSessions: 0, ["default"], DateTimeOffset.UtcNow));
 
         var human = await IssueHumanTokenAsync(ct);
         using var client = Client(app);
@@ -530,55 +530,55 @@ public sealed class DashboardScopeAndOriginTests(PostgresFixture pg) : IAsyncLif
     }
 
     /// <summary>One task created and dispatched to working; returns its id and namespace.</summary>
-    private async Task<(TaskId Id, string Namespace)> SeedWorkingTaskAsync(TeamId team, CancellationToken ct)
+    private async Task<(SessionId Id, string Namespace)> SeedWorkingTaskAsync(TeamId team, CancellationToken ct)
     {
         var (id, ns, _) = await SeedWorkingTaskWithCallerAsync(team, ct);
         return (id, ns);
     }
 
-    private async Task<(TaskId Id, string Namespace, WorkerCaller Caller)> SeedWorkingTaskWithCallerAsync(
+    private async Task<(SessionId Id, string Namespace, WorkerCaller Caller)> SeedWorkingTaskWithCallerAsync(
         TeamId team, CancellationToken ct)
     {
         await using var db = pg.NewContext();
-        var store = new TaskStore(db, TimeProvider.System);
+        var store = new SessionStore(db, TimeProvider.System);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null), ct);
+            new CreateSession(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null), ct);
         var instance = WorkerInstanceId.New();
         // Deterministic: this is the only submitted task at the moment it dispatches.
         Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(AnyMachine, instance, ct));
-        return (created.Task.Id, created.Task.Namespace, new WorkerCaller(team, created.Task.Id, instance));
+        return (created.Session.Id, created.Session.Namespace, new WorkerCaller(team, created.Session.Id, instance));
     }
 
     /// <summary>A task whose worker reported <paramref name="report"/> — prose on the Team page.</summary>
-    private async Task<(TaskId Id, string Namespace)> SeedReportedTaskAsync(
+    private async Task<(SessionId Id, string Namespace)> SeedReportedTaskAsync(
         TeamId team, string report, CancellationToken ct)
     {
         var (id, ns, caller) = await SeedWorkingTaskWithCallerAsync(team, ct);
         await using var db = pg.NewContext();
-        var store = new TaskStore(db, TimeProvider.System);
+        var store = new SessionStore(db, TimeProvider.System);
         Assert.IsType<StoreResult.Applied>(
             await store.ApplyAsync(id, new ReportResult(caller, "git:done", report), ct));
         return (id, ns);
     }
 
     /// <summary>A task blocked on an open question — an inbox row carrying prose.</summary>
-    private async Task<(TaskId Id, string Namespace)> SeedBlockedTaskAsync(
+    private async Task<(SessionId Id, string Namespace)> SeedBlockedTaskAsync(
         TeamId team, string question, CancellationToken ct)
     {
         var (id, ns, caller) = await SeedWorkingTaskWithCallerAsync(team, ct);
         await using var db = pg.NewContext();
-        var store = new TaskStore(db, TimeProvider.System);
+        var store = new SessionStore(db, TimeProvider.System);
         Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(
             id, new RequestInput(caller, InputRequestKind.Question, question), ct));
         return (id, ns);
     }
 
     /// <summary>A task whose worker is blocked asking permission for a tool call (§11).</summary>
-    private async Task<TaskId> SeedPermissionRequestAsync(TeamId team, CancellationToken ct)
+    private async Task<SessionId> SeedPermissionRequestAsync(TeamId team, CancellationToken ct)
     {
         var (id, _, caller) = await SeedWorkingTaskWithCallerAsync(team, ct);
         await using var db = pg.NewContext();
-        var store = new TaskStore(db, TimeProvider.System);
+        var store = new SessionStore(db, TimeProvider.System);
         Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(
             id, new RequestInput(caller, InputRequestKind.Permission, """{"command":"rm -rf /"}""", "Bash"), ct));
         return id;

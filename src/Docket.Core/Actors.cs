@@ -17,7 +17,7 @@ public sealed record LeadClaim(TeamId Team) : Actor;
 /// A dispatched worker. Minted at dispatch, scoped to
 /// {team, task, worker, instance}; a worker never authenticates (§5).
 /// </summary>
-public sealed record WorkerCaller(TeamId Team, TaskId Task, WorkerInstanceId Instance) : Actor;
+public sealed record WorkerCaller(TeamId Team, SessionId Session, WorkerInstanceId Instance) : Actor;
 
 /// <summary>The control plane acting on its own timers and dispatch decisions.</summary>
 public sealed record ControlPlaneActor : Actor

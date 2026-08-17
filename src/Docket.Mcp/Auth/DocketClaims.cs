@@ -32,7 +32,7 @@ public static class DocketClaims
             case Principal.Worker w:
                 claims.Add(new Claim(Kind, nameof(Principal.Worker)));
                 claims.Add(new Claim(Team, w.Caller.Team.Value.ToString()));
-                claims.Add(new Claim(Task, w.Caller.Task.Value.ToString()));
+                claims.Add(new Claim(Task, w.Caller.Session.Value.ToString()));
                 claims.Add(new Claim(Instance, w.Caller.Instance.Value.ToString()));
                 break;
             case Principal.Machine m:
@@ -68,7 +68,7 @@ public static class DocketClaims
         {
             nameof(Principal.Worker) => new Principal.Worker(new WorkerCaller(
                 new TeamId(Guid.Parse(user.FindFirst(Team)!.Value)),
-                new TaskId(Guid.Parse(user.FindFirst(Task)!.Value)),
+                new SessionId(Guid.Parse(user.FindFirst(Task)!.Value)),
                 new WorkerInstanceId(Guid.Parse(user.FindFirst(Instance)!.Value)))),
             nameof(Principal.Machine) => new Principal.Machine(Guid.Parse(user.FindFirst(Machine)!.Value)),
             nameof(Principal.Human) => new Principal.Human(Guid.Parse(user.FindFirst(Human)!.Value)),

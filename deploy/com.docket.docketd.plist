@@ -141,7 +141,7 @@
          Setting it true would leave orphaned agents holding ports and burning
          tokens until docketd's next start swept them. A worker that calls setsid
          escapes the group regardless; that is precisely what docketd's stray
-         reaper and its per-task DOCKET_TASK_ID sweep exist to catch. -->
+         reaper and its per-session DOCKET_SESSION_ID sweep exist to catch. -->
 
     <!-- LimitLoadToSessionType Aqua is the default for ~/Library/LaunchAgents
          and is left implicit. It is also the LaunchAgent's central limitation:

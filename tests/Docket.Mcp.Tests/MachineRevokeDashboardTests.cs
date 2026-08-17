@@ -219,7 +219,7 @@ public sealed class MachineRevokeDashboardTests(PostgresFixture pg) : IAsyncLife
 
     private static MachineHeartbeat Ready(string machineId) =>
         new(machineId, Ready: true, UnderBackPressure: false,
-            new SystemLoad(0, 0, 0), RunningTasks: 0, ["default"], DateTimeOffset.UtcNow);
+            new SystemLoad(0, 0, 0), RunningSessions: 0, ["default"], DateTimeOffset.UtcNow);
 
     private WebApplication BuildPlane()
     {

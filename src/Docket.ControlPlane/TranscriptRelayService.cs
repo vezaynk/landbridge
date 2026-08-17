@@ -26,7 +26,7 @@ namespace Docket.ControlPlane;
 /// asking (a human operator, §12), this decides <em>what</em> may be asked for.</para>
 ///
 /// <para>A singleton alongside <see cref="RunnerConnectionRegistry"/> and
-/// <see cref="TranscriptWaiters"/>, resolving a scoped <see cref="TaskStore"/> per call for
+/// <see cref="TranscriptWaiters"/>, resolving a scoped <see cref="SessionStore"/> per call for
 /// the state read — the <see cref="RunnerEventSink"/> pattern. Which machines ran a task is
 /// a query the caller supplies (<see cref="DashboardQueries"/>); this class only talks to a
 /// machine.</para>
@@ -61,7 +61,7 @@ public sealed class TranscriptRelayService(
     /// instances and each stream's size, or why nothing can be listed.
     /// </summary>
     public Task<TranscriptResult> ListAsync(
-        TaskId task, string machine, CancellationToken ct = default) =>
+        SessionId task, string machine, CancellationToken ct = default) =>
         AskAsync(task, machine, new ReadTranscriptCommand(task, NewRequestId(), Ordinal: 0), ct);
 
     /// <summary>
@@ -69,21 +69,21 @@ public sealed class TranscriptRelayService(
     /// reply returned (<see cref="TranscriptChunkEvent.NextOffset"/>); start at 0.
     /// </summary>
     public Task<TranscriptResult> ReadAsync(
-        TaskId task, string machine, int ordinal, string stream, long offset,
+        SessionId task, string machine, int ordinal, string stream, long offset,
         int maxBytes = TranscriptStreams.DefaultMaxBytes, CancellationToken ct = default) =>
         AskAsync(task, machine, new ReadTranscriptCommand(task, NewRequestId(), ordinal, stream, offset, maxBytes), ct);
 
     private async Task<TranscriptResult> AskAsync(
-        TaskId task, string machine, ReadTranscriptCommand command, CancellationToken ct)
+        SessionId task, string machine, ReadTranscriptCommand command, CancellationToken ct)
     {
         // The gate, before anything else: no state read of a machine, no command sent.
         using (var scope = scopes.CreateScope())
         {
-            var store = scope.ServiceProvider.GetRequiredService<TaskStore>();
+            var store = scope.ServiceProvider.GetRequiredService<SessionStore>();
             var state = await store.GetStateAsync(task, ct);
             if (state is null)
                 return new TranscriptResult.Unavailable(
-                    TranscriptUnavailable.NoSuchTask, "No such task.");
+                    TranscriptUnavailable.NoSuchSession, "No such task.");
             if (!state.Value.IsTerminal())
             {
                 return new TranscriptResult.Unavailable(
@@ -171,9 +171,9 @@ public sealed class TranscriptRelayService(
                 TranscriptUnavailable.MachineRefused, $"Machine '{machine}' refused the read: {unknown}."),
         };
 
-    private static string Humanize(TaskState state) => state switch
+    private static string Humanize(SessionState state) => state switch
     {
-        TaskState.BlockedOnInput => "blocked on input",
+        SessionState.BlockedOnInput => "blocked on input",
         _ => state.ToString().ToLowerInvariant(),
     };
 
@@ -205,7 +205,7 @@ public abstract record TranscriptResult
 public enum TranscriptUnavailable
 {
     /// <summary>No task with that id.</summary>
-    NoSuchTask,
+    NoSuchSession,
 
     /// <summary>The task can still run again, so its transcript is not served (§12/§13).</summary>
     NotTerminal,

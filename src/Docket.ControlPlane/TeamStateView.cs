@@ -13,9 +13,9 @@ namespace Docket.ControlPlane;
 /// </summary>
 public sealed record TeamStateView(
     Guid TeamId,
-    int TotalTasks,
-    IReadOnlyDictionary<TaskState, int> CountsByState,
-    IReadOnlyList<TeamTaskSummary> Tasks,
+    int TotalSessions,
+    IReadOnlyDictionary<SessionState, int> CountsByState,
+    IReadOnlyList<TeamSessionSummary> Sessions,
     LeadMachineView? BoundMachine = null);
 
 /// <summary>
@@ -44,7 +44,7 @@ public sealed record LeadMachineView(Guid MachineId, string MachineName, DateTim
 /// <para><b>Fleet-wide, and that is the correct scope for this one read.</b> Every other
 /// Lead read is Team-scoped because it carries Team content; a profile name is
 /// operator-declared machine configuration that no Team owns, and it is the Lead's own
-/// <c>create_task</c> argument. Scoping it to a Team would be scoping a fact that has no
+/// <c>create_session</c> argument. Scoping it to a Team would be scoping a fact that has no
 /// Team — and would leave the Lead guessing again.</para>
 ///
 /// <para><see cref="ConnectedMachines"/> is a count, not an enumeration, and it exists for
@@ -53,7 +53,7 @@ public sealed record LeadMachineView(Guid MachineId, string MachineName, DateTim
 /// anything (a machine's profiles arrive on its first heartbeat, §10). Those are different
 /// problems and a Lead that cannot tell them apart waits on the wrong one.</para>
 /// </summary>
-/// <param name="DefaultProfile">The profile an omitted <c>create_task(profile:)</c> resolves
+/// <param name="DefaultProfile">The profile an omitted <c>create_session(profile:)</c> resolves
 /// to — <c>default</c>. Carried rather than left implicit because it is the one profile name
 /// a Lead uses without typing it: if it is absent from <see cref="Profiles"/>, or present but
 /// not <see cref="ProfileRoutingEntry.Dispatchable"/>, then plain profile-less tasks are not
@@ -66,7 +66,7 @@ public sealed record ProfileRoutingView(
 /// <summary>
 /// One declared profile and where it can run. A profile appears here if and only if some
 /// currently-connected machine declares it, so the list is the exact set of names
-/// <c>create_task(profile:)</c> can match — a name absent from it is a name no task should
+/// <c>create_session(profile:)</c> can match — a name absent from it is a name no task should
 /// carry.
 /// </summary>
 /// <param name="Dispatchable">Whether at least one machine declaring this profile can take a
@@ -100,38 +100,38 @@ public sealed record ProfileMachineView(
 
 /// <summary>
 /// One task's structural summary. <see cref="Namespace"/> is the server-assigned
-/// <c>team-{id}/task-{id}</c> identifier (§7), not content. <see cref="Parked"/>
+/// <c>team-{id}/session-{id}</c> identifier (§7), not content. <see cref="Parked"/>
 /// surfaces §12's "parks per task" signal — whether decomposition is starving on
-/// human attention. <see cref="ContinuesTaskId"/> is the Y-continues-X lineage
+/// human attention. <see cref="ContinuesSessionId"/> is the Y-continues-X lineage
 /// (§6/§11): the prior task whose harness session this one resumed, or null for an
 /// ordinary task — an identifier, never prose. <see cref="CompletionProvenance"/>
 /// records who adjudicated a completed task (§9 check 4), null until then.
 /// <see cref="HasReport"/> is a <em>flag</em> — not the text — that the worker left
 /// an in-band report (§10); the Lead fetches the report itself deliberately, one
-/// task at a time, via <c>get_task_report</c> (keeps this bulk view prose-free).
+/// task at a time, via <c>get_session_report</c> (keeps this bulk view prose-free).
 /// <see cref="InputKind"/> and <see cref="HasQuestion"/> split the worker's input
 /// request the same way (§11): the typed kind rides along because it is structure and
 /// it is the triage fact — <c>auth_help</c> needs a human, a <c>question</c> the Lead
 /// can take — while the question's text does not, and is pulled per task with
-/// <c>get_task_question</c>. <see cref="HasQuestion"/> is a live wait (the row still
+/// <c>get_session_question</c>. <see cref="HasQuestion"/> is a live wait (the row still
 /// has <c>BlockedAt</c>), not "this task ever asked": a working task with no flag
 /// is still turning, one with the flag is idle for the Lead.
 /// <see cref="InfrastructureRequeues"/> and <see cref="LastRequeueReason"/> are the §6
 /// infrastructure counter and the signal behind its last increment (#73) — both
 /// structure, and both here because a task quietly on its fourth machine is a shape of
 /// trouble <see cref="Attempt"/> alone does not name. On a
-/// <see cref="TaskState.Canceled"/> task a non-null reason is what distinguishes the
+/// <see cref="SessionState.Canceled"/> task a non-null reason is what distinguishes the
 /// requeue cap (§9 check 7) from a cancel someone asked for; the cap it was measured
-/// against comes with the per-task <c>get_task_report</c> fetch.
+/// against comes with the per-task <c>get_session_report</c> fetch.
 /// </summary>
-public sealed record TeamTaskSummary(
-    Guid TaskId,
+public sealed record TeamSessionSummary(
+    Guid SessionId,
     string Namespace,
-    TaskState State,
+    SessionState State,
     CompletionMode Mode,
     int Attempt,
     bool Parked,
-    Guid? ContinuesTaskId,
+    Guid? ContinuesSessionId,
     VerdictProvenance? CompletionProvenance,
     bool HasReport,
     InputRequestKind? InputKind,
@@ -141,7 +141,7 @@ public sealed record TeamTaskSummary(
 
 /// <summary>
 /// One task's worker report (§10), returned by the Lead's deliberate per-task
-/// <c>get_task_report</c> fetch (§13: free text pulled one item at a time, not on
+/// <c>get_session_report</c> fetch (§13: free text pulled one item at a time, not on
 /// the bulk status read). <see cref="Report"/> is the opaque worker-authored text,
 /// null when the task has left none. Team-scoped at the store, so this is only ever
 /// built for a task in the caller's own Team.
@@ -163,19 +163,19 @@ public sealed record TeamTaskSummary(
 /// is no report to explain it. A count that has reached the limit means the cap ended
 /// the task; a non-positive limit means the cap is configured off.</para>
 /// </summary>
-public sealed record TaskReportView(
-    Guid TaskId,
+public sealed record SessionReportView(
+    Guid SessionId,
     string Namespace,
     string? Report,
     string? ResultReference,
     int InfrastructureRequeues = 0,
-    int InfrastructureRequeueLimit = TaskRecord.DefaultInfrastructureRequeueLimit,
+    int InfrastructureRequeueLimit = SessionRecord.DefaultInfrastructureRequeueLimit,
     LivenessLossReason? LastRequeueReason = null);
 
 /// <summary>
 /// One task's input exchange (§10/§11), returned by the Lead's deliberate per-task
-/// <c>get_task_question</c> fetch — the question read path, shaped exactly like
-/// <see cref="TaskReportView"/> because it is the same discipline: free text pulled
+/// <c>get_session_question</c> fetch — the question read path, shaped exactly like
+/// <see cref="SessionReportView"/> because it is the same discipline: free text pulled
 /// one item at a time, never on the bulk status read (§13).
 /// <see cref="Question"/> is the opaque worker-authored ask (null when the task asked
 /// nothing), <see cref="Answer"/> the opaque answer already given (null while the
@@ -195,10 +195,10 @@ public sealed record TaskReportView(
 /// <param name="EscalationReason">Why a pending permission request was marked human-only,
 /// null if it was not — and, for a Lead reading this, the signal that it can no longer
 /// decide this one itself.</param>
-public sealed record TaskQuestionView(
-    Guid TaskId,
+public sealed record SessionQuestionView(
+    Guid SessionId,
     string Namespace,
-    TaskState State,
+    SessionState State,
     InputRequestKind? Kind,
     string? Question,
     string? Answer,
@@ -217,10 +217,10 @@ public sealed record TaskQuestionView(
 /// it over.
 /// </summary>
 public sealed record PermissionRequestView(
-    Guid TaskId,
+    Guid SessionId,
     string Namespace,
     Guid TeamId,
-    TaskState State,
+    SessionState State,
     DateTimeOffset? BlockedAt,
     string? Tool,
     string? Input,
@@ -239,8 +239,8 @@ public sealed record PermissionRequestView(
 public sealed record PermissionOutcome(PermissionVerdict Verdict, string? Message);
 
 /// <summary>
-/// The seed facts a <c>create_task(continues:)</c> reads off the continued task's
-/// row (§6/§11), returned by <see cref="TaskStore.ReadContinuationSourceAsync"/>:
+/// The seed facts a <c>create_session(continues:)</c> reads off the continued task's
+/// row (§6/§11), returned by <see cref="SessionStore.ReadContinuationSourceAsync"/>:
 /// the owning Team, the profile to default to, the opaque harness session ref to
 /// resume, and two fallbacks for the preferred machine. Identifiers and opaque refs
 /// only — no prose.
@@ -273,19 +273,19 @@ public sealed record ContinuationSource(
 /// (<see cref="DispatchService.RehydrateMachineAsync"/>, #86), so the sweeper resolves a
 /// machine again once the machine is back rather than skipping the task forever.
 /// </summary>
-public sealed record BlockedTaskView(
-    Guid TaskId,
+public sealed record BlockedSessionView(
+    Guid SessionId,
     DateTimeOffset? BlockedAt,
     int Attempt,
     string? HarnessSessionRef);
 
 /// <summary>
 /// What a task's row says about the dispatch currently on it (§10, §9.14), returned by
-/// <see cref="TaskStore.GetIncumbentDispatchAsync"/>: the state, and the worker instance
+/// <see cref="SessionStore.GetIncumbentDispatchAsync"/>: the state, and the worker instance
 /// working it (null in every state that holds no incumbent). Read as one pair because that
 /// is what the §10 liveness scan decides against and what the <see cref="LivenessLost"/> it
 /// then sends is fenced on — a state read and an instance read taken a moment apart would
 /// fence nothing, since the fence's whole content is that the pair has not changed since the
 /// scan looked. Null from the store means no such task.
 /// </summary>
-public sealed record IncumbentDispatchView(TaskState State, WorkerInstanceId? Instance);
+public sealed record IncumbentDispatchView(SessionState State, WorkerInstanceId? Instance);

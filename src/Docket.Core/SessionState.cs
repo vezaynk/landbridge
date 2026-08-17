@@ -1,7 +1,7 @@
 namespace Docket.Core;
 
 /// <summary>Task states, spec §6.</summary>
-public enum TaskState
+public enum SessionState
 {
     Submitted,
     Working,
@@ -22,11 +22,11 @@ public enum TaskState
     Failed,
 }
 
-public static class TaskStateExtensions
+public static class SessionStateExtensions
 {
     /// <summary>Spec §6: terminal states are final and never resumed.</summary>
-    public static bool IsTerminal(this TaskState state) =>
-        state is TaskState.Completed or TaskState.Rejected or TaskState.Canceled;
+    public static bool IsTerminal(this SessionState state) =>
+        state is SessionState.Completed or SessionState.Rejected or SessionState.Canceled;
 }
 
 /// <summary>
@@ -47,7 +47,7 @@ public enum CompletionMode
 /// <summary>
 /// Spec §9 check 4: who supplied the completing verdict, recorded on the task so
 /// the completion is legible (rendered on the §12 dashboard task view). Null until
-/// a task reaches <see cref="TaskState.Completed"/>.
+/// a task reaches <see cref="SessionState.Completed"/>.
 /// </summary>
 public enum VerdictProvenance
 {
@@ -115,7 +115,7 @@ public enum PermissionAnswerer
 
 /// <summary>
 /// Cancellation dispositions, spec §11. preserve_and_park is not here: it is
-/// the stop path into <see cref="TaskState.Parked"/>, not a terminal cancel.
+/// the stop path into <see cref="SessionState.Parked"/>, not a terminal cancel.
 ///
 /// <para><c>Budget</c> was a third value, reserved to the control plane for the dollar
 /// ceiling's exhaustion cancel; both went with the budget subsystem (2026-08-12, §9's
@@ -187,7 +187,7 @@ public enum LivenessLossReason
 /// predecessor's transcript is gone at dispatch. <see cref="Degrade"/> cold-starts
 /// a fresh session on any profile-matching machine (conversational memory is lost;
 /// the plane logs an event so the Lead knows); <see cref="Pin"/> waits in
-/// <see cref="TaskState.Submitted"/> for that machine to return, like a pinned
+/// <see cref="SessionState.Submitted"/> for that machine to return, like a pinned
 /// profile. Null on the row for a non-continuation task.
 /// </summary>
 public enum MachineGonePolicy

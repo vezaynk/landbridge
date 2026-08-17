@@ -19,7 +19,7 @@ using Microsoft.Extensions.Logging;
 namespace Docket.Mcp.Tests;
 
 /// <summary>
-/// Operator dummy-task mint + progress for a newly enrolled profile
+/// Operator dummy-session mint + progress for a named profile
 /// (<c>POST /dashboard/conformance</c>, <c>GET /dashboard/conformance/{runId}</c>).
 /// Human-only, same-origin on the write, and the plane does not judge the answers.
 /// </summary>
@@ -110,7 +110,7 @@ public sealed class ConformanceEndpointsTests(PostgresFixture pg) : IAsyncLifeti
         Assert.False(root.GetProperty("workerDone").GetBoolean());
         Assert.Empty(root.GetProperty("machinesDeclaring").EnumerateArray());
 
-        var kinds = root.GetProperty("tasks").EnumerateArray()
+        var kinds = root.GetProperty("sessions").EnumerateArray()
             .Select(t => t.GetProperty("kind").GetString()!)
             .ToArray();
         Assert.Equal(new[] { "identity", "write", "shell" }, kinds);
@@ -128,7 +128,69 @@ public sealed class ConformanceEndpointsTests(PostgresFixture pg) : IAsyncLifeti
         using var progressDoc = JsonDocument.Parse(await progress.Content.ReadAsStringAsync(ct));
         Assert.Equal(runId, progressDoc.RootElement.GetProperty("runId").GetGuid());
         Assert.Equal(3, progressDoc.RootElement.GetProperty("pending").GetInt32());
-        Assert.Equal("Submitted", progressDoc.RootElement.GetProperty("tasks")[0].GetProperty("state").GetString());
+        Assert.Equal("Submitted", progressDoc.RootElement.GetProperty("sessions")[0].GetProperty("state").GetString());
+
+        await app.StopAsync(ct);
+    }
+
+    [SkippableFact]
+    public async Task Post_mints_the_dummy_set_against_the_named_profile()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var ct = cts.Token;
+        await using var app = BuildPlane();
+        await app.StartAsync(ct);
+
+        var created = await PostConformanceAsync(app, new { profile = "goose" }, ct);
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+        using var createdDoc = JsonDocument.Parse(await created.Content.ReadAsStringAsync(ct));
+        Assert.Equal("goose", createdDoc.RootElement.GetProperty("profile").GetString());
+        Assert.Equal(3, createdDoc.RootElement.GetProperty("total").GetInt32());
+
+        var runId = createdDoc.RootElement.GetProperty("runId").GetGuid();
+        await using var db = pg.NewContext();
+        var profiles = await db.Sessions.AsNoTracking()
+            .Where(s => s.TeamId == runId)
+            .Select(s => s.Profile)
+            .ToListAsync(ct);
+        Assert.Equal(3, profiles.Count);
+        Assert.All(profiles, p => Assert.Equal("goose", p));
+
+        await app.StopAsync(ct);
+    }
+
+    [SkippableFact]
+    public async Task Post_form_field_names_the_profile()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var ct = cts.Token;
+        await using var app = BuildPlane();
+        await app.StartAsync(ct);
+
+        var human = await IssueHumanTokenAsync(ct);
+        using var client = Client(app);
+        using var req = new HttpRequestMessage(HttpMethod.Post, "/dashboard/conformance")
+        {
+            Content = new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["profile"] = "claude",
+            }),
+        };
+        req.Headers.Add("Cookie", $"{DashboardAuth.CookieName}={human}");
+        req.Headers.Add("Origin", new Uri(BaseUrl(app)).GetLeftPart(UriPartial.Authority));
+        var res = await client.SendAsync(req, ct);
+        Assert.Equal(HttpStatusCode.Redirect, res.StatusCode);
+        var location = res.Headers.Location!.ToString();
+        Assert.StartsWith("/dashboard/conformance/", location, StringComparison.Ordinal);
+
+        var runId = Guid.Parse(location.Split('/')[^1]);
+        await using var db = pg.NewContext();
+        Assert.Equal("claude", await db.Sessions.AsNoTracking()
+            .Where(s => s.TeamId == runId)
+            .Select(s => s.Profile)
+            .FirstAsync(ct));
 
         await app.StopAsync(ct);
     }

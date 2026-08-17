@@ -13,9 +13,9 @@ There is no `/docket-enroll` command on this build. No slash command or MCP prom
 
 ## What you are producing
 
-A `docketd` config that tells a generic daemon how to drive *this* machine's harness. The daemon knows nothing about harnesses, toolchains, or task content — everything specific lives in the config you write.
+A `docketd` config that tells a generic daemon how to drive *this* machine's harness. The daemon knows nothing about harnesses, toolchains, or session content — everything specific lives in the config you write.
 
-The first profile — and the one dummy tasks land on — is named `default`. The schema requires exactly one entry with that name: it is the fallback dispatch uses when a task omits `profile`. Extra profiles are fine later (a second harness, a restricted posture); do not invent a machine-specific name for the first one.
+The first profile — and the one omitted-`profile` dispatch lands on — is named `default`. The schema requires exactly one entry with that name. **It is a real harness, not a placeholder:** omitted-profile work uses it, so write the ACP entry point you actually intend to run. Extra profiles are a second harness or a restricted posture; name them for what they are (`claude`, `goose`, `restricted`). Every name this machine declares must be exercised before real work uses it — a badge on the Machine Group is not a passing check.
 
 The config must cover:
 
@@ -36,11 +36,11 @@ The plane's MCP server is handed over on `session/new` — do not write a bearer
 and nothing the plane can push. Adding, renaming, editing, or deleting a
 profile is invisible until you restart the daemon. The next heartbeat is what
 publishes the new names to the Machine Group — the only channel the plane uses
-for routing. Until that beat lands, a task aimed at a new name sits in
+for routing. Until that beat lands, a session aimed at a new name sits in
 `Submitted` with `Attempt` at 0, the same quiet failure as a typo. A restart
-kills every agent on this machine and their tasks fail (parked, waiting on the
-Lead); that is the cost of a profile change, not a bug. Say so to the human
-before they edit a live box.
+kills every agent on this machine and their sessions fail (`Failed`, waiting
+on the Lead); that is the cost of a profile change, not a bug. Say so to the
+human before they edit a live box.
 
 ## Wiring the docket MCP server
 
@@ -86,7 +86,7 @@ Two bars, neither negotiable, neither degrading gracefully. Confirm both by runn
 
 **3. Do not put bypass / always-approve / yolo in `spawn`.** Permissions are `session/request_permission`. docketd posts the worker bearer at `POST /worker/permission` and a Lead or human decides. A bypass flag on argv skips a dialog Docket is now the one answering.
 
-Then test **park**: `park_task` a live task and confirm the process is gone. Wait TTL is off by default — a forgotten question holds the lease until you answer or park.
+Then test **park**: `park_session` a live session and confirm the process is gone. Wait TTL is off by default — a forgotten question holds the lease until you answer or park.
 
 If either bar fails, stop. Report to the human rather than working around it.
 
@@ -96,7 +96,7 @@ Do not assume the harness or its version. Find out:
 
 1. Which harness is installed, and its version.
 2. The ACP entry point (`claude-agent-acp`, `codex-acp`, `opencode acp`, `grok agent stdio`, `goose acp`). A CLI that only has `-p` / `exec` / `run` is not enough.
-3. How this harness spells docket's MCP tools (`mcp__docket__get_task` / `docket_get_task` / `docket__get_task`). That spelling is what `prompt` and `follow_up` must use. Goose is expected to use `docket__get_task`.
+3. How this harness spells docket's MCP tools (`mcp__docket__get_session` / `docket_get_session` / `docket__get_session`). That spelling is what `prompt` and `follow_up` must use. Goose is expected to use `docket__get_session`.
 4. Whether `initialize` declares `loadSession` and `mcpCapabilities.http`. Run `tools/acp-probe` against a harness this repo has not measured. `loadSession` defaults to false in the spec; without it every redispatch is a cold start.
 5. Whether the agent asks the client for `fs/*` or `terminal/*`. This client declares those UNSUPPORTED. An agent that routes all I/O through the client cannot work here.
 
@@ -132,37 +132,37 @@ worker that never emits a tool call (the Lead then decides whether to resume).
 
 This is a system-level change, which you report rather than perform. Prepare the unit or plist, explain exactly what it does and where it goes, and have the human run the install and enable commands themselves. Confirm it came up before continuing.
 
-## Smoke-test the machine before real work reaches it
+## Smoke-test every profile before real work reaches it
 
-**There is no automated gate that judges results.** Spec §11's conformance run would dispatch trivial work *and* decide pass/fail; that judging half is future work. What exists today is `POST /dashboard/conformance`: the plane mints dummy tasks aimed at `default` and reports their states. A machine that enrolls is otherwise simply a machine that connected — no unclaimable state, no probe. Whatever you do not check here, nobody checks.
+**There is no automated gate that judges results.** Spec §11's conformance run would dispatch trivial work *and* decide pass/fail; that judging half is future work. What exists today is a dispatch check you run by hand. A machine that enrolls is otherwise simply a machine that connected — no unclaimable state, no probe. **Whatever you do not dispatch here, nobody checks** — including a second profile that only exists as a badge.
 
-So check it once, by hand, with the human. The failure you are hunting is the quiet one — a machine that heartbeats, reads as `ready`, accepts a dispatch, and produces nothing.
+The failure you are hunting is the quiet one — a machine that heartbeats, reads as `ready`, accepts a dispatch, and produces nothing. `spawn`, `PATH`, credentials, and tool spelling are per profile, so a green `default` says nothing about `goose`.
 
-**`default` is shared.** A task aimed at `default` is claimed by any ready machine that declares it. If this is the only ready box, the dummy set lands here. If the Group already has others, drain or pause them first, or the check proves the fleet rather than this enrollment. **Restart `docketd`** (or start it, if it is not running yet) after writing the config — editing the file under a running daemon changes nothing, and the plane will not list the `default` badge until the post-restart heartbeat.
+**Restart `docketd`** (or start it, if it is not running yet) after writing the config — editing the file under a running daemon changes nothing, and the plane will not list a badge until the post-restart heartbeat. Confirm every name you wrote appears on `/dashboard/machines` for this machine id. **A profile that is shared is claimed by any ready machine that declares it.** If this is the only ready box, the session lands here. If the Group already has others declaring the same name, drain or pause them first, or the check proves the fleet rather than this enrollment.
 
-**Run `docketd` in the foreground for this, or tail its journal.** Its stdout is the only place several of these failures appear at all. On start it prints one line — `docketd up: machine=… profiles=[…] strays_reaped=… control=…`. A config that does not parse never gets that far; `docketd` prints the error and exits non-zero before it connects.
+**Run `docketd` in the foreground for this, or tail its journal.** Its stdout is the only place several of these failures appear at all. On start it prints one line — `docketd up: machine=… profiles=[…] strays_reaped=… control=…`. A config that does not parse never gets that far; `docketd` prints the error and exits non-zero before it connects. Set `logs.capture: true` on every profile you are about to check; the transcript is the only place a fast crash explains itself.
 
-Then mint the dummy-task set (next section), or have the human's Lead create one trivial task (`create_task`, omit `profile` so it uses `default`) — "report this machine's hostname and working directory" is enough — and follow it:
+**Walk the list in the config, one profile at a time.** For each name, mint the dummy set against that profile (next section). Then follow that run:
 
 | Watch | Where | Healthy |
 |---|---|---|
 | The machine is present at all | `/dashboard/machines` | a section for this machine id, `heartbeat Ns ago` inside your `heartbeat_seconds` |
-| It declares the profile | same page, profile badges | `default` is listed; `no profiles declared` means no heartbeat has landed yet |
+| It declares this profile | same page, profile badges | the name is listed; `no profiles declared` means no heartbeat has landed yet |
 | It will accept work | same page, badge | `ready` — `not ready` or `back-pressure` means nothing will dispatch |
-| The task moves | `/dashboard/teams/{team}`, or the Lead's `get_team_state` | `Submitted` → `Working` → `Verifying`, with `Attempt` reaching 1 and staying there |
-| The work actually happened | the task's report | the value it was asked for, not a restatement of the ask |
+| The session moves | `/dashboard/teams/{team}`, or the Lead's `get_team_state` | `Submitted` → `Working` → `Verifying`, with `Attempt` reaching 1 and staying there |
+| The work actually happened | the session's report | the value it was asked for, not a restatement of the ask |
 
 Both views take `?format=json` if you would rather read them structured — the Team view with a Lead bearer token, the Machine Group view with an operator session only (machine enumeration is human-only by design, so a Lead token gets a 403 there). There is no MCP tool that lists machines and none that reads events — for those two the dashboard is the only surface.
 
 The failures worth naming, and what each really looks like:
 
-- **Nothing dispatches: the task sits in `Submitted` with `Attempt` at 0.** No reason is surfaced anywhere — this is the quietest failure in the system. It is a profile-name mismatch (exact string equality; check the spelling against the badges the machine actually published), or the machine is not `ready`, or it never connected. A machine that is not connected does not show as offline; it is absent from `/dashboard/machines` entirely.
-- **Wrong `spawn` argv, or the harness binary is not on `docketd`'s `PATH`.** `docketd` prints `command handler threw: …` on its own stdout and nothing else happens — no event, no row, no change on any page. The task stays `Working` until the per-task liveness window (60s) expires and fails it (`Failed`, last reason `LivenessTimeout`), and that record says nothing about the spawn. An unwritable `work_root` surfaces identically, since `docketd` creates the work dir (and writes `mcp.json` when the profile names `{mcp_config}`). **If a task fails with no explanation, read `docketd`'s stdout before anything else.**
-- **The harness starts and exits immediately** — a rejected flag, a permission mode managed settings forbid, a missing credential. The exit code rides the `exited` event but is stored and displayed nowhere, so a fast crash is indistinguishable from a hang: same liveness timeout, same `Failed`. Set `logs.capture: true` on `default`; the transcript is the only place the reason exists.
+- **Nothing dispatches: the session sits in `Submitted` with `Attempt` at 0.** No reason is surfaced anywhere — this is the quietest failure in the system. It is a profile-name mismatch (exact string equality; check the spelling against the badges the machine actually published), or the machine is not `ready`, or it never connected. A machine that is not connected does not show as offline; it is absent from `/dashboard/machines` entirely.
+- **Wrong `spawn` argv, or the harness binary is not on `docketd`'s `PATH`.** `docketd` prints `command handler threw: …` on its own stdout and nothing else happens — no event, no row, no change on any page. The session stays `Working` until the per-session liveness window (60s) expires and fails it (`Failed`, last reason `LivenessTimeout`), and that record says nothing about the spawn. An unwritable `work_root` surfaces identically, since `docketd` creates the work dir (and writes `mcp.json` when the profile names `{mcp_config}`). **If a session fails with no explanation, read `docketd`'s stdout before anything else.**
+- **The harness starts and exits immediately** — a rejected flag, a permission mode managed settings forbid, a missing credential. The exit code rides the `exited` event but is stored and displayed nowhere, so a fast crash is indistinguishable from a hang: same liveness timeout, same `Failed`. The transcript is the only place the reason exists.
 - **The worker cannot authenticate to the plane.** Do not wait for an `auth-failed` event. The plane can record one, but `docketd` never emits one, so none will arrive. A rejected worker token appears as a 401 inside the harness's own output and `report_result` simply never lands — the transcript again.
 - **`Failed` after one attempt.** The plane does not requeue. Handshake flakes, spawn failures, and dead processes land as `Failed` with a plane-authored reason and wait for the Lead. If you see `Attempt` climbing, a Lead is resuming those failures on purpose — read the last reason, not the count.
 
-**Then test the kill path, and do not skip it because dispatch worked.** Have the human cancel the task mid-flight (`cancel_task`, disposition `preserve`) and confirm the process is actually gone — that is the assertion that matters, and it holds on every profile. A machine that dispatches but cannot be stopped looks fine right up until someone needs to stop a runaway agent — the worst possible moment to find out.
+**Then test the kill path on that same profile, and do not skip it because dispatch worked.** Have the human cancel the session mid-flight (`cancel_session`, disposition `preserve`) and confirm the process is actually gone — that is the assertion that matters, and spawn differs per profile, so a stop that worked on `default` is not evidence for `goose`. A machine that dispatches but cannot be stopped looks fine right up until someone needs to stop a runaway agent — the worst possible moment to find out. When you are done, `park_session` or accept anything still in `verifying` — a report keeps the process.
 
 **What to expect from stop.** A stop is `session/cancel` plus the wind-down deadline. The runner reports that the cancel was *sent*, never that the agent obeyed it (cancel is a notification with no reply). Confirm the process is gone after the deadline. There is no `stop.mode` to choose.
 
@@ -170,22 +170,25 @@ Two things you cannot verify by hand, so do not claim them either way: whether t
 
 **Failures here are configuration bugs, and they are worth fixing carefully rather than working around.** Fix the config, restart `docketd`, and run the check again — remembering that a restart kills every agent on this machine, and that the file is not re-read in place.
 
-## Profile check — dummy tasks from the plane
+## Profile check — dummy sessions from the plane
 
-The control plane will mint a fixed set of dummy tasks aimed at `default` and expose their states. This is the stand-in for the unbuilt §11 conformance run. It does **not** judge the answers — a task that reaches `verifying` is a worker that called `report_result`.
+The control plane will mint a fixed set of dummy sessions aimed at **one profile you name** and expose their states. This is the stand-in for the unbuilt §11 conformance run. It does **not** judge the answers — a session that reaches `verifying` is a worker that called `report_result`. A report keeps the process. One POST is one profile; walk the config and POST once per name.
 
-After `docketd` is up and `default` is on the Machine Group badges, have the human (operator session, not a Lead token) start a run:
+After `docketd` is up and the name is on this machine's badges, have the human (operator session, not a Lead token) start a run. `profile` is the exact string from the runner config. Omit it (or send empty) only for `default`:
 
 ```
 POST /dashboard/conformance
 Origin: <the plane's own origin>
+Content-Type: application/json
+
+{ "profile": "<exact name>" }
 ```
 
-A browser can do the same from `/dashboard/conformance`. Same-origin only, human-only (a Lead token is 403). The tasks are always aimed at `default`. The response is `201` with a `runId`, a `progressUrl`, how many connected machines currently declare `default` (`machinesDeclaring`), and the three tasks:
+A browser can do the same from `/dashboard/conformance` — the form has a profile field. Same-origin only, human-only (a Lead token is 403). The response is `201` with a `runId`, a `progressUrl`, how many connected machines currently declare that profile (`machinesDeclaring`), and the three sessions:
 
 | kind | What the worker must do |
 |---|---|
-| `identity` | Report hostname, cwd, and the first 8 hex of `$DOCKET_TASK_ID` |
+| `identity` | Report hostname, cwd, and the first 8 hex of `$DOCKET_SESSION_ID` |
 | `write` | Write `smoke.txt` in the workspace containing only the hostname |
 | `shell` | `echo` a nonce (`dkt-smoke-` plus the run id prefix) and report that line |
 
@@ -195,11 +198,11 @@ Poll progress:
 GET /dashboard/conformance/{runId}?format=json
 ```
 
-`workerDone` is true when every task is `verifying` or `completed` and none failed. `pending` includes `submitted` (no machine claimed it — usually the profile name is not on a heartbeat yet) and `working`. `failed` is `canceled`, `rejected`, or `Failed` (infrastructure gave up). A `machinesDeclaring` of `[]` with tasks stuck in `submitted` is the restart-the-daemon miss from above.
+`workerDone` is true when every session is `verifying` or `completed` and none failed. `pending` includes `submitted` (no machine claimed it — usually the profile name is not on a heartbeat yet) and `working`. `failed` is `canceled`, `rejected`, or `Failed` (infrastructure gave up). A `machinesDeclaring` of `[]` with sessions stuck in `submitted` is the restart-the-daemon miss from above.
 
-Do not skip the kill-path check above because the dummy set reached `verifying`. Dummy tasks never exercise `stop`.
+Do not skip the kill-path check above because the dummy set reached `verifying`. Dummy sessions never exercise `stop`. When you are done, `park_session` or accept each dummy — or those workers keep the machine. Then POST again with the next name in the config.
 
-> **Future work (spec §11).** The conformance run automates the above and goes past it: per declared profile, the control plane would judge event attribution by task id, heartbeat cadence against the config, two concurrent tasks tracked independently, `stop` acknowledgement (and message delivery demonstrably reaching the agent as a turn), `TTL=0` killing one process while its sibling survives, a relay forward round-tripping and its listener closing on release, an approval-prone task completing without hanging, and a parked task resuming from its recorded directory with context intact — admitting the machine as `ready` on a pass, or leaving it registered-but-unclaimable with the failing step named. None of that exists yet. The manual pass above is its stand-in, not a preview of it.
+> **Future work (spec §11).** The conformance run automates the above and goes past it: per declared profile, the control plane would judge event attribution by session id, heartbeat cadence against the config, two concurrent sessions tracked independently, `stop` acknowledgement (and message delivery demonstrably reaching the agent as a turn), `TTL=0` killing one process while its sibling survives, a relay forward round-tripping and its listener closing on release, an approval-prone session completing without hanging, and a parked session resuming from its recorded directory with context intact — admitting the machine as `ready` on a pass, or leaving it registered-but-unclaimable with the failing step named. None of that exists yet. The manual per-profile pass above is its stand-in, not a preview of it.
 
 ## After enrollment
 
@@ -207,7 +210,7 @@ Nothing about this setup is meant to be hand-maintained. Re-running this flow �
 
 Spec §11 also wants the config stamped with the version of this skill, so the control plane can flag stale machines for a re-run. **That does not exist**: nothing writes a version, nothing serves one, and a `skill_version` key added by hand is silently dropped when the config parses. Until it lands, a machine's config is only as current as whoever last re-ran this — so when you notice a config written against older guidance, say so to the human rather than assuming the plane will catch it.
 
-Note that `docketd` keeps no state a restart would try to reconcile: no task ledger, no process re-adoption. If it restarts, every agent on this machine is killed and their tasks fail (`Failed`) — that is deliberate, not a fault. On start it also kills any stray harness processes it finds, which is what makes the guarantee survive an unclean shutdown. The state dir is the exception, and a narrow one: it holds the machine credentials and, where capture is on, the transcripts, which must outlive both a task teardown and a restart.
+Note that `docketd` keeps no state a restart would try to reconcile: no session ledger, no process re-adoption. If it restarts, every agent on this machine is killed and their sessions fail (`Failed`) — that is deliberate, not a fault. On start it also kills any stray harness processes it finds, which is what makes the guarantee survive an unclean shutdown. The state dir is the exception, and a narrow one: it holds the machine credentials and, where capture is on, the transcripts, which must outlive both a session teardown and a restart.
 
 ## A note on what this machine is
 

@@ -155,7 +155,7 @@ internal static class RelayGrantTestKit
     /// </summary>
     public static LeadTools LeadToolsFor(
         DocketDbContext db, TimeProvider clock, RunnerConnectionRegistry registry, IHttpContextAccessor http) =>
-        new(new TaskStore(db, clock),
+        new(new SessionStore(db, clock),
             registry,
             new LeadMachineBindingService(db, clock),
             new RelayGrantService(db, clock),
@@ -182,7 +182,7 @@ internal static class RelayGrantTestKit
                 ["Docket:PermissionPollIntervalMs"] = ms.ToString(),
             });
         return new WorkerTools(
-            new TaskStore(db, clock),
+            new SessionStore(db, clock),
             new RelayGrantService(db, clock),
             new ForwardOrchestrator(registry, new ForwardWaiters(), NullLogger<ForwardOrchestrator>.Instance),
             new PreviewMappingService(db, clock),
@@ -199,21 +199,21 @@ internal static class RelayGrantTestKit
     /// this is the only submitted task at the moment it runs — call it before
     /// seeding any other task.
     /// </summary>
-    public static async Task<TaskId> RegisterWorkingServiceAsync(
+    public static async Task<SessionId> RegisterWorkingServiceAsync(
         PostgresFixture pg, TeamId team, string serviceName, CancellationToken ct, int port = 5432)
     {
         await using var db = pg.NewContext();
-        var store = new TaskStore(db, TimeProvider.System);
+        var store = new SessionStore(db, TimeProvider.System);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null), ct);
+            new CreateSession(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null), ct);
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(Machine, instance, ct);
-        await store.RegisterServiceAsync(new WorkerCaller(team, created.Task.Id, instance), serviceName, port, ct);
-        return created.Task.Id;
+        await store.RegisterServiceAsync(new WorkerCaller(team, created.Session.Id, instance), serviceName, port, ct);
+        return created.Session.Id;
     }
 
     /// <summary>A dispatched-to-working worker: its task, instance, and minted token.</summary>
-    public sealed record SeededWorker(TaskId Task, WorkerInstanceId Instance, string Token);
+    public sealed record SeededWorker(SessionId Session, WorkerInstanceId Instance, string Token);
 
     /// <summary>
     /// Creates a consumer task, dispatches it to working, and returns its task id,
@@ -224,14 +224,14 @@ internal static class RelayGrantTestKit
         PostgresFixture pg, TeamId team, CancellationToken ct)
     {
         await using var db = pg.NewContext();
-        var store = new TaskStore(db, TimeProvider.System);
+        var store = new SessionStore(db, TimeProvider.System);
         var tokens = new TokenService(db, TimeProvider.System);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null), ct);
+            new CreateSession(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null), ct);
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(Machine, instance, ct);
-        var token = (await tokens.MintWorkerTokenAsync(team, created.Task.Id, instance, ct)).Token;
-        return new SeededWorker(created.Task.Id, instance, token);
+        var token = (await tokens.MintWorkerTokenAsync(team, created.Session.Id, instance, ct)).Token;
+        return new SeededWorker(created.Session.Id, instance, token);
     }
 
     /// <summary>The worker token only — the common case for tests that don't need the ids.</summary>
@@ -259,7 +259,7 @@ internal static class RelayGrantTestKit
     {
         await using var db = pg.NewContext();
         var grants = new RelayGrantService(db, TimeProvider.System);
-        var consumer = new WorkerCaller(team, TaskId.New(), WorkerInstanceId.New());
+        var consumer = new WorkerCaller(team, SessionId.New(), WorkerInstanceId.New());
         return (RelayGrantResult.Issued)await grants.IssueAsync(consumer, serviceName, ct);
     }
 

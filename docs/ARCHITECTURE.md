@@ -22,7 +22,7 @@ adjudicated by the Lead over MCP (§7, §9 check 4) — there is no verifier pro
   │  MCP tools  ·  /runner WS  ·  OAuth AS  ·  /enroll                       │
   │  /relay/validate  ·  /dashboard         (spec §5, §10, §12)              │
   │                                                                          │
-  │  Docket.ControlPlane:  TaskStore ─► Docket.Core (pure state machine)     │
+  │  Docket.ControlPlane:  SessionStore ─► Docket.Core (pure state machine)     │
   │  DispatchService · WaitTtlSweeper · TokenService · DashboardQueries      │
   └───────────────┬──────────────────────────────────────────┬─────────────┘
                   │  Postgres (per Instance)                   │ runner channel
@@ -33,7 +33,7 @@ adjudicated by the Lead over MCP (§7, §9 check 4) — there is no verifier pro
           │  relay_grants │                            │  spawns worker harness│
           └───────────────┘                            └───────┬───────────────┘
                                                                │ spawns
-                                        DOCKET_TASK_ID, mcp.json (0600) ▼
+                                        DOCKET_SESSION_ID, mcp.json (0600) ▼
                                                         ┌──────────────────────┐
                                                         │  worker harness       │
                                                         │  (claude -p, MCP      │
@@ -66,8 +66,8 @@ It validates that fields exist, checks identities, counts, and enforces
 transitions — it never parses a task description or evaluates completion
 criteria.
 
-`Docket.Core` embodies this literally. `TaskStateMachine` is a pure function:
-`Apply(TaskRecord, TaskCommand)` returns a `TransitionResult` that is either
+`Docket.Core` embodies this literally. `SessionStateMachine` is a pure function:
+`Apply(SessionRecord, SessionCommand)` returns a `TransitionResult` that is either
 `Transitioned(newRecord, effects)` or `Rejected(rule, reason)`. It has no clock,
 no I/O, and no dependencies — its `.csproj` references nothing (verify: no
 `PackageReference`, no `ProjectReference`). Callers supply facts as command
@@ -84,7 +84,7 @@ record as plain columns the plane stores and returns but never dereferences:
 |---|---|---|
 | `CompletionCriteria` | the completion bar | the Lead or a human adjudicating (§7, §9 check 4) |
 | `Workspace` | where/how work is isolated, port assignments | the worker's skill (§7) |
-| `ResultReference` | where the finished work lives (a commit/URL) | the Lead reading it before adjudicating, via `get_task_report`, and a human on the §12 dashboard (§8.1, §7) |
+| `ResultReference` | where the finished work lives (a commit/URL) | the Lead reading it before adjudicating, via `get_session_report`, and a human on the §12 dashboard (§8.1, §7) |
 | `CompletionProvenance` | who adjudicated a completed task (`lead-session` \| `human`) | the §12 dashboard (§9 check 4) |
 | `ParkRecord{Machine, Directory, HarnessSessionRef, Attempt}` | resume affinity | `docketd` on redispatch (§11) |
 | `TraceContext` | W3C `traceparent` for cross-process tracing | OpenTelemetry, not the domain |
@@ -115,7 +115,7 @@ lead claim, not because an `if` rejected it.
 
 ```
   human session ──claim_lead──► Lead token (scoped {team})
-                                     │ create_task
+                                     │ create_session
                                      ▼
                               submitted task
                                      │ control-plane dispatch (SKIP LOCKED)
@@ -173,7 +173,7 @@ Additional states: `blocked_on_input`, `parked`, `canceled`. In
 `blocked_on_input` and `parked` the harness process is *expected* to be gone —
 per-task liveness is suspended and process exit is not a failure (§11).
 
-Two counters, not one (`TaskRecord.InfrastructureRequeues` vs
+Two counters, not one (`SessionRecord.InfrastructureRequeues` vs
 `VerificationFailures`): a machine rebooting three times must not exhaust the
 retries a task has for failing its criteria. **Only the verification counter drives
 `rejected`** (default limit 3). Both are capped, but they end differently: the
@@ -271,7 +271,7 @@ Spec §10's as-built note has the two CLI facts.
 
 Stray cleanup keys off two environment variables `docketd` stamps on every child
 it spawns, non-configurably: `DOCKET_MACHINE_ID` (the start-of-day sweep) and
-`DOCKET_TASK_ID` (the per-task-exit sweep, which catches a dev server that
+`DOCKET_SESSION_ID` (the per-task-exit sweep, which catches a dev server that
 `setsid`'d out of the task's process group and would otherwise hold a port a
 later consumer's forward could reach). Discovery is per-OS: `/proc/<pid>/environ`
 on Linux, `KERN_PROCARGS2` on macOS, and on Windows a kill-on-close **Job Object**
@@ -363,7 +363,7 @@ section renders them with an allow/deny form. What genuinely has no source is th
 **subagent tree nested under a machine**, which renders as an honest empty state rather
 than fabricated numbers. Cross-process tracing is real: the host exports
 OpenTelemetry (traces/metrics/logs via `Docket.ServiceDefaults`), and a stored
-`traceparent` lets one trace span `create_task → dispatch → runner → worker`.
+`traceparent` lets one trace span `create_session → dispatch → runner → worker`.
 
 ## Where to go next
 

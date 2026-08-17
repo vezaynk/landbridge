@@ -51,7 +51,7 @@ public class ServiceSupervisionTests
 
     /// <summary>
     /// The name validator is a security control, not hygiene: the name becomes a
-    /// directory under the state dir, occupying the slot a TaskId Guid fills for
+    /// directory under the state dir, occupying the slot a SessionId Guid fills for
     /// transcripts — and the Guid is the whole reason that path builder is closed.
     /// </summary>
     [Theory]
@@ -351,7 +351,7 @@ public class ServiceSupervisionTests
             var env = TestKit.ReadLinesShared(envFile);
 
             Assert.Contains("DOCKET_MACHINE_ID=machine-xyz", env);
-            Assert.DoesNotContain(env, line => line.StartsWith("DOCKET_TASK_ID=", StringComparison.Ordinal));
+            Assert.DoesNotContain(env, line => line.StartsWith("DOCKET_SESSION_ID=", StringComparison.Ordinal));
         }
         finally
         {
@@ -441,7 +441,7 @@ public class ServiceSupervisionTests
 
     private static StartProcessCommand Ask(
         string name, IReadOnlyList<string>? spawn = null, string? cwd = null, bool openStdin = false) =>
-        new(TaskId.New(), "req-1", name, spawn ?? [TestKit.HarnessPath(), "sleeper"],
+        new(SessionId.New(), "req-1", name, spawn ?? [TestKit.HarnessPath(), "sleeper"],
             WorkingDirectory: cwd, Env: null, OpenStdin: openStdin);
 
     [Fact]
@@ -787,7 +787,7 @@ public class ServiceSupervisionTests
             Assert.True(await TestKit.WaitUntilAsync(() => File.Exists(envFile), TimeSpan.FromSeconds(15)));
             var env = TestKit.ReadLinesShared(envFile);
             Assert.Contains("DOCKET_MACHINE_ID=machine-xyz", env);
-            Assert.DoesNotContain(env, l => l.StartsWith("DOCKET_TASK_ID=", StringComparison.Ordinal));
+            Assert.DoesNotContain(env, l => l.StartsWith("DOCKET_SESSION_ID=", StringComparison.Ordinal));
         }
         finally
         {

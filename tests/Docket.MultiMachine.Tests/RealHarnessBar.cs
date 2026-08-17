@@ -29,8 +29,8 @@ internal static class RealHarnessBar
     public static readonly TimeSpan PerLegBudget = TimeSpan.FromSeconds(60);
 
     /// <summary>
-    /// A real worker reads <c>get_task</c>, reports the live-description token,
-    /// and drives the task to <see cref="TaskState.Verifying"/> on a two-machine
+    /// A real worker reads <c>get_session</c>, reports the live-description token,
+    /// and drives the task to <see cref="SessionState.Verifying"/> on a two-machine
     /// fleet. The same run asserts the §11 session ref landed — without it every
     /// later resume would silently cold-start.
     /// </summary>
@@ -46,7 +46,7 @@ internal static class RealHarnessBar
         await rig.AddMachineAsync("B");
 
         var token = RealHarnessProfiles.NewToken();
-        var task = await rig.CreateTaskAsync(RealHarnessProfiles.EchoDescription("A", token), ct);
+        var task = await rig.CreateSessionAsync(RealHarnessProfiles.EchoDescription("A", token), ct);
 
         Assert.True(
             await rig.DispatchUntilVerifyingAsync(task, "A", MaxAttempts, PerLegBudget, ct),
@@ -82,7 +82,7 @@ internal static class RealHarnessBar
         await rig.AddMachineAsync("A");
 
         var token = RealHarnessProfiles.NewToken();
-        var task = await rig.CreateTaskAsync(RealHarnessProfiles.EchoDescription("A", token), ct);
+        var task = await rig.CreateSessionAsync(RealHarnessProfiles.EchoDescription("A", token), ct);
 
         Assert.True(
             await rig.DispatchUntilVerifyingAsync(task, "A", MaxAttempts, PerLegBudget, ct),
@@ -148,7 +148,7 @@ internal static class RealHarnessBar
         using var attach = profile.AttachTo(rig);
         await rig.AddMachineAsync("A");
 
-        var task = await rig.CreateTaskAsync(profile.AskThenStopDescription, ct);
+        var task = await rig.CreateSessionAsync(profile.AskThenStopDescription, ct);
 
         Assert.True(
             await rig.DispatchUntilAsync(
@@ -156,7 +156,7 @@ internal static class RealHarnessBar
                 async () =>
                 {
                     var state = await rig.StateAsync(task, ct);
-                    if (state is TaskState.Verifying or TaskState.Completed)
+                    if (state is SessionState.Verifying or SessionState.Completed)
                         return true;
                     return await rig.HasPendingQuestionAsync(task, ct);
                 },
@@ -184,7 +184,7 @@ internal static class RealHarnessBar
         // Since ideas/sessions.md stage 2 an answer to a live session is a follow-up prompt
         // on the same process — no second instance, no session/load, nothing resumed — so
         // answering first would quietly turn a resume proof into a re-prompt proof that
-        // still went green. park_task is the deliberate release, and the only route left to
+        // still went green. park_session is the deliberate release, and the only route left to
         // the §11 path this test exists to hold: the session is cancelled, the token
         // revoked, the machine freed, and the wake below has to reopen the transcript.
         await rig.ParkTaskAsync(task, ct);

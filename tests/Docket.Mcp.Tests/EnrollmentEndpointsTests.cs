@@ -98,7 +98,7 @@ public sealed class EnrollmentEndpointsTests(PostgresFixture pg) : IAsyncLifetim
         string worker;
         await using (var db = pg.NewContext())
             worker = (await new TokenService(db, clock).MintWorkerTokenAsync(
-                TeamId.New(), TaskId.New(), WorkerInstanceId.New(), ct)).Token;
+                TeamId.New(), SessionId.New(), WorkerInstanceId.New(), ct)).Token;
         Assert.Equal(HttpStatusCode.Unauthorized, (await PostEnrollAsync(client, worker, ct)).StatusCode);
 
         await app.StopAsync(ct);

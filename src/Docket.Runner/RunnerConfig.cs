@@ -219,7 +219,7 @@ public sealed record RunnerConfig(
 
     /// <summary>
     /// <b>A security control, not hygiene.</b> A service name becomes a directory
-    /// name under the state dir, so it occupies the slot a <c>TaskId</c> Guid used to
+    /// name under the state dir, so it occupies the slot a <c>SessionId</c> Guid used to
     /// fill — and the Guid is precisely why the transcript path builder could be
     /// called closed. An arbitrary string there would reopen it: <c>..</c>, a
     /// separator, an absolute path, a NUL, or a Windows reserved name would all steer
@@ -511,8 +511,8 @@ public sealed record ProfileConfig(
     /// <see cref="Docket.Contracts.PromptCommand"/>).
     ///
     /// <para>The default names no tool, because the spelling is per-harness: claude and
-    /// Codex see <c>mcp__docket__get_task</c>, OpenCode <c>docket_get_task</c>, Grok and
-    /// Goose <c>docket__get_task</c>. A profile should say the right one — a worker that was told
+    /// Codex see <c>mcp__docket__get_session</c>, OpenCode <c>docket_get_session</c>, Grok and
+    /// Goose <c>docket__get_session</c>. A profile should say the right one — a worker that was told
     /// to call a tool it does not have goes hunting, and one that was told nothing specific
     /// has been observed reaching for a shell instead.</para>
     /// </summary>
@@ -526,7 +526,7 @@ public sealed record ProfileConfig(
     /// <summary>
     /// §10 / #112 G3: extra environment stamped on every spawn (and resume) of this
     /// profile, after the reserved <c>DOCKET_*</c> variables and before
-    /// <c>telemetry.env</c>. Values take the same <c>{task_id}</c> / <c>{machine_id}</c>
+    /// <c>telemetry.env</c>. Values take the same <c>{session_id}</c> / <c>{machine_id}</c>
     /// / <c>{work_dir}</c> / <c>{mcp_config}</c> / <c>{mcp_url}</c> /
     /// <c>{worker_token}</c> / <c>{session_id}</c> substitutions
     /// <see cref="Spawn"/> does. Never null: an absent <c>env</c> block is an empty map.

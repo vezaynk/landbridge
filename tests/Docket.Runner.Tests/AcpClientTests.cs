@@ -29,7 +29,7 @@ namespace Docket.Runner.Tests;
 /// </summary>
 public sealed class AcpClientTests
 {
-    private static readonly TaskId Task1 = TaskId.New();
+    private static readonly SessionId Task1 = SessionId.New();
 
     // ── the conversation ────────────────────────────────────────────────────────
 
@@ -672,7 +672,7 @@ public sealed class AcpClientTests
 
     /// <summary>
     /// Each report is the session's running total, not the turn's own. That is a deliberate
-    /// fit to the store: <c>TaskStore.RecordUsageAsync</c> keeps a high-water mark per bucket,
+    /// fit to the store: <c>SessionStore.RecordUsageAsync</c> keeps a high-water mark per bucket,
     /// so per-turn reports would leave the row holding the single largest turn instead of what
     /// the dispatch actually spent. Cumulative numbers make the max a no-op.
     /// </summary>
@@ -854,7 +854,7 @@ public sealed class AcpClientTests
 
     /// <summary>
     /// The plane's only channel to the worker is MCP (§5), so an agent that cannot be handed
-    /// an HTTP MCP server is an agent that cannot call <c>get_task</c> or
+    /// an HTTP MCP server is an agent that cannot call <c>get_session</c> or
     /// <c>report_result</c>. It will run and report nothing, which reads as a lazy model
     /// rather than a wiring fault unless the machine says so.
     /// </summary>

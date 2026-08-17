@@ -25,16 +25,16 @@ namespace Docket.Mcp.Tests;
 /// <summary>
 /// The §1 proof, deterministic and collector-free: ONE trace spans the whole loop.
 /// A Lead creates a task over real MCP; the real <see cref="DispatchService"/>
-/// opens its dispatch span parented on the create_task trace context the store
+/// opens its dispatch span parented on the create_session trace context the store
 /// captured; the real <see cref="ProcessSupervisor"/> spawns the real
 /// <c>Docket.WorkerHarness</c>, which roots its own span on the
 /// <c>DOCKET_TRACEPARENT</c> docketd injected and records it to <c>trace.json</c>.
 ///
 /// The chain is asserted end to end without a dashboard: the stored
-/// <c>TaskRow.TraceContext</c>, the dispatch span (captured through an
+/// <c>SessionRow.TraceContext</c>, the dispatch span (captured through an
 /// <see cref="ActivityListener"/>), and the worker's <c>trace.json</c> all carry
 /// the <b>same trace id</b>, with the parent/child span links matching at each hop
-/// — so the context provably survived create_task → row → dispatch span → worker
+/// — so the context provably survived create_session → row → dispatch span → worker
 /// env → worker span. (The wire → docketd hop is unit-tested by the RunnerWire
 /// traceparent round-trip and validated live against the Aspire dashboard; here,
 /// as in the walking skeleton, the supervisor stands in for the socket.)
@@ -50,14 +50,14 @@ public sealed class TraceContinuityEndToEndTests(PostgresFixture pg, ITestOutput
     public Task DisposeAsync() => Task.CompletedTask;
 
     [SkippableFact]
-    public async Task One_trace_id_spans_create_task_dispatch_and_the_spawned_worker()
+    public async Task One_trace_id_spans_create_session_dispatch_and_the_spawned_worker()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var ct = cts.Token;
 
         // ── A process-wide listener so activities are created + sampled with real
-        //    ids (AspNetCore's create_task request span and DispatchService's
+        //    ids (AspNetCore's create_session request span and DispatchService's
         //    dispatch span). Records stopped activities so the dispatch span can be
         //    inspected after the run. The spawned worker is a separate process, so
         //    its span is read from trace.json, not from here.
@@ -86,10 +86,10 @@ public sealed class TraceContinuityEndToEndTests(PostgresFixture pg, ITestOutput
         }
 
         // ── Lead: create a task over real MCP (its server span is the trace root) ──
-        TaskId taskId;
+        SessionId sessionId;
         await using (var lead = await ConnectAsync(new Uri(baseUrl + "/"), leadToken, ct))
         {
-            var created = await lead.CallToolAsync("create_task", new Dictionary<string, object?>
+            var created = await lead.CallToolAsync("create_session", new Dictionary<string, object?>
             {
                 ["description"] = "trace me end to end",
                 ["completionCriteria"] = "the trace connects",
@@ -98,7 +98,7 @@ public sealed class TraceContinuityEndToEndTests(PostgresFixture pg, ITestOutput
                 ["workspace"] = "git:repo@main#trace",
             }, cancellationToken: ct);
             Assert.NotEqual(true, created.IsError);
-            taskId = new TaskId(Guid.Parse(Assert.Single(created.Content.OfType<TextContentBlock>()).Text));
+            sessionId = new SessionId(Guid.Parse(Assert.Single(created.Content.OfType<TextContentBlock>()).Text));
         }
 
         var workRoot = NewWorkRoot();
@@ -131,7 +131,7 @@ public sealed class TraceContinuityEndToEndTests(PostgresFixture pg, ITestOutput
             });
             registry.ApplyHeartbeat("m1", new MachineHeartbeat(
                 "m1", Ready: true, UnderBackPressure: false,
-                new SystemLoad(0, 0, 0), RunningTasks: 0, ["default"], DateTimeOffset.UtcNow));
+                new SystemLoad(0, 0, 0), RunningSessions: 0, ["default"], DateTimeOffset.UtcNow));
 
             var dispatch = new DispatchService(
                 app.Services.GetRequiredService<IServiceScopeFactory>(),
@@ -139,9 +139,9 @@ public sealed class TraceContinuityEndToEndTests(PostgresFixture pg, ITestOutput
                 publicMcpUrl: baseUrl);
             await dispatch.RunDispatchPassAsync(ct);
 
-            var workDir = Path.Combine(workRoot, taskId.ToString());
+            var workDir = Path.Combine(workRoot, sessionId.ToString());
             var reached = await WaitUntilAsync(
-                async () => await StateAsync(taskId, ct) == TaskState.Verifying,
+                async () => await StateAsync(sessionId, ct) == SessionState.Verifying,
                 TimeSpan.FromSeconds(60));
             if (!reached)
             {
@@ -150,20 +150,20 @@ public sealed class TraceContinuityEndToEndTests(PostgresFixture pg, ITestOutput
                 Assert.Fail($"worker harness never drove the task to verifying. Harness diagnostic:\n{detail}");
             }
 
-            // ── The stored create_task trace context (opaque metadata on the row) ──
+            // ── The stored create_session trace context (opaque metadata on the row) ──
             string? storedTraceContext;
             await using (var v = pg.NewContext())
-                storedTraceContext = (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == taskId.Value, ct)).TraceContext;
+                storedTraceContext = (await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == sessionId.Value, ct)).TraceContext;
 
-            Assert.False(string.IsNullOrEmpty(storedTraceContext), "the row did not capture the create_task trace context");
+            Assert.False(string.IsNullOrEmpty(storedTraceContext), "the row did not capture the create_session trace context");
             Assert.True(ActivityContext.TryParse(storedTraceContext, null, out var createContext),
-                $"TaskRow.TraceContext is not a W3C traceparent: {storedTraceContext}");
+                $"SessionRow.TraceContext is not a W3C traceparent: {storedTraceContext}");
             var createTraceId = createContext.TraceId.ToHexString();
 
             // ── The dispatch span: parented on the create context, same trace ──
             var dispatchSpan = Assert.Single(stopped, a =>
                 a.Source.Name == DispatchService.ActivitySourceName &&
-                a.OperationName == $"dispatch {taskId}");
+                a.OperationName == $"dispatch {sessionId}");
             Assert.Equal(createTraceId, dispatchSpan.TraceId.ToHexString());
             Assert.Equal(createContext.SpanId.ToHexString(), dispatchSpan.ParentSpanId.ToHexString());
 
@@ -174,14 +174,14 @@ public sealed class TraceContinuityEndToEndTests(PostgresFixture pg, ITestOutput
             var workerTraceId = (string?)marker["traceId"];
             var workerParentSpanId = (string?)marker["parentSpanId"];
 
-            // THE PROOF: the worker's span shares the create_task trace id — the
-            // context survived create_task → row → dispatch span → worker env →
+            // THE PROOF: the worker's span shares the create_session trace id — the
+            // context survived create_session → row → dispatch span → worker env →
             // worker span — and it parented on the dispatch span exactly.
             Assert.Equal(createTraceId, workerTraceId);
             Assert.Equal(dispatchSpan.SpanId.ToHexString(), workerParentSpanId);
 
             output.WriteLine($"one trace id across all hops: {createTraceId}");
-            output.WriteLine($"  create_task span      : {createContext.SpanId.ToHexString()} (TaskRow.TraceContext)");
+            output.WriteLine($"  create_session span      : {createContext.SpanId.ToHexString()} (SessionRow.TraceContext)");
             output.WriteLine($"  dispatch span         : {dispatchSpan.SpanId.ToHexString()} (parent {dispatchSpan.ParentSpanId.ToHexString()})");
             output.WriteLine($"  worker span           : {(string?)marker["spanId"]} (parent {workerParentSpanId})");
         }
@@ -193,10 +193,10 @@ public sealed class TraceContinuityEndToEndTests(PostgresFixture pg, ITestOutput
         }
     }
 
-    private async Task<TaskState?> StateAsync(TaskId id, CancellationToken ct)
+    private async Task<SessionState?> StateAsync(SessionId id, CancellationToken ct)
     {
         await using var db = pg.NewContext();
-        return await new TaskStore(db, TimeProvider.System).GetStateAsync(id, ct);
+        return await new SessionStore(db, TimeProvider.System).GetStateAsync(id, ct);
     }
 
     private WebApplication BuildServer()

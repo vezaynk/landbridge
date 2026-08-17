@@ -42,7 +42,7 @@ public sealed class RelayForwardingTests
         await daemon.StartAsync();
         await using var relay = await FakeRelay.StartAsync();
 
-        var task = TaskId.New();
+        var task = SessionId.New();
         const string forwardId = "fwd-consumer";
         var outcome = await daemon.HandleAsync(new OpenForwardCommand(
             task, forwardId, "db", RelayTunnel.ConsumerRole, "dkt_g_x", relay.HttpUrl, Port: 0));
@@ -90,7 +90,7 @@ public sealed class RelayForwardingTests
         await daemon.StartAsync();
         await using var relay = await FakeRelay.StartAsync();
 
-        var task = TaskId.New();
+        var task = SessionId.New();
         const string forwardId = "fwd-lonely";
         await daemon.HandleAsync(new OpenForwardCommand(
             task, forwardId, "db", RelayTunnel.ConsumerRole, "dkt_g_x", relay.HttpUrl, Port: 0));
@@ -117,7 +117,7 @@ public sealed class RelayForwardingTests
         await daemon.StartAsync();
         await using var relay = await FakeRelay.StartAsync();
 
-        var task = TaskId.New();
+        var task = SessionId.New();
         const string forwardId = "fwd-producer";
         await daemon.HandleAsync(new OpenForwardCommand(
             task, forwardId, "db", RelayTunnel.ProducerRole, "dkt_g_x", relay.HttpUrl, service.Port));
@@ -161,7 +161,7 @@ public sealed class RelayForwardingTests
         await daemon.StartAsync();
         await using var relay = await FakeRelay.StartAsync();
 
-        var task = TaskId.New();
+        var task = SessionId.New();
         const string forwardId = "fwd-closable";
         await daemon.HandleAsync(new OpenForwardCommand(
             task, forwardId, "db", RelayTunnel.ConsumerRole, "dkt_g_x", relay.HttpUrl, Port: 0));
@@ -215,7 +215,7 @@ public sealed class RelayForwardingTests
         await daemon.StartAsync();
         await using var relay = await FakeRelay.StartAsync();
 
-        var task = TaskId.New();
+        var task = SessionId.New();
         const string forwardId = "fwd-idle-listener";
         await daemon.HandleAsync(new OpenForwardCommand(
             task, forwardId, "db", RelayTunnel.ConsumerRole, "dkt_g_x", relay.HttpUrl, Port: 0));
@@ -251,7 +251,7 @@ public sealed class RelayForwardingTests
         // grant rows say a leaving task held, and a forward that already ended on its own is
         // exactly the outcome it wanted. Acked, never thrown, and no event invented for it.
         var outcome = Assert.IsType<CommandOutcome.Acknowledged>(
-            await daemon.HandleAsync(new CloseForwardCommand(TaskId.New(), "fwd-never-existed")));
+            await daemon.HandleAsync(new CloseForwardCommand(SessionId.New(), "fwd-never-existed")));
 
         Assert.Contains("not held", outcome.Detail);
         Assert.DoesNotContain(channel.Events, e => e.Event is ForwardClosedEvent);
@@ -273,7 +273,7 @@ public sealed class RelayForwardingTests
         // A port with nothing listening: a service that died between registration
         // and dial must surface as forward-closed, not a hang (§8.3).
         var deadPort = ReserveClosedPort();
-        var task = TaskId.New();
+        var task = SessionId.New();
         const string forwardId = "fwd-deadservice";
         await daemon.HandleAsync(new OpenForwardCommand(
             task, forwardId, "db", RelayTunnel.ProducerRole, "dkt_g_x", "http://127.0.0.1:1", deadPort));
@@ -316,7 +316,7 @@ public sealed class RelayForwardingTests
             await using var service = await TcpSender.StartAsync(payload); // sends payload, then closes
             var forwardId = $"fwd-final-{i}";
             await daemon.HandleAsync(new OpenForwardCommand(
-                TaskId.New(), forwardId, "db", RelayTunnel.ProducerRole, "dkt_g_x", relay.HttpUrl, service.Port));
+                SessionId.New(), forwardId, "db", RelayTunnel.ProducerRole, "dkt_g_x", relay.HttpUrl, service.Port));
 
             var relaySocket = await relay.NextAsync(ct);
             var received = await ReceiveExactlyAsync(relaySocket, payload.Length, ct);
@@ -361,7 +361,7 @@ public sealed class RelayForwardingTests
 
         const string forwardId = "fwd-refused";
         await daemon.HandleAsync(new OpenForwardCommand(
-            TaskId.New(), forwardId, "db", RelayTunnel.ProducerRole, "dkt_g_x",
+            SessionId.New(), forwardId, "db", RelayTunnel.ProducerRole, "dkt_g_x",
             "http://127.0.0.1:1/relay", impostor.Port));
 
         var closed = await WaitForEventAsync<ForwardClosedEvent>(channel, forwardId, ct);
@@ -395,7 +395,7 @@ public sealed class RelayForwardingTests
 
         const string forwardId = "fwd-undeclared";
         await daemon.HandleAsync(new OpenForwardCommand(
-            TaskId.New(), forwardId, "db", RelayTunnel.ProducerRole, "dkt_g_x",
+            SessionId.New(), forwardId, "db", RelayTunnel.ProducerRole, "dkt_g_x",
             relay.HttpUrl, service.Port));
 
         // It dialed: the relay end sees a tunnel, and no refusal is reported.

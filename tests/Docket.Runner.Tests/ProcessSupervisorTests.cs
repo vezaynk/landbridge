@@ -29,7 +29,7 @@ public sealed class ProcessSupervisorTests : IDisposable
     [Fact]
     public async Task Spawn_starts_the_harness_injects_env_and_uses_the_task_work_dir()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         var supervisor = Supervisor();
 
         supervisor.Spawn(TestKit.Dispatch(task), TestKit.Profile("run"), "machine-42");
@@ -37,7 +37,7 @@ public sealed class ProcessSupervisorTests : IDisposable
         Assert.Equal(1, supervisor.RunningTotal);
         Assert.Equal(1, supervisor.RunningFor("default"));
 
-        // §10: spawned into {work_root}/{task_id} with DOCKET_* injected. The
+        // §10: spawned into {work_root}/{session_id} with DOCKET_* injected. The
         // harness writes those into a marker in its own working directory.
         var marker = Path.Combine(_workRoot, task.ToString(), "started");
         Assert.True(await TestKit.WaitUntilAsync(() => File.Exists(marker), TimeSpan.FromSeconds(15)),
@@ -53,12 +53,12 @@ public sealed class ProcessSupervisorTests : IDisposable
     [Fact]
     public async Task Spawn_emits_a_started_event()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         Supervisor().Spawn(TestKit.Dispatch(task), TestKit.Profile("run"), "m");
         Supervisor().Kill(task);
 
         var events = await DrainedEventsAsync();
-        Assert.Contains(events, e => e is StartedEvent s && s.Task == task);
+        Assert.Contains(events, e => e is StartedEvent s && s.Session == task);
     }
 
 
@@ -67,7 +67,7 @@ public sealed class ProcessSupervisorTests : IDisposable
     [Fact]
     public async Task Stop_signal_mode_hard_kills_at_the_ttl_deadline_with_no_injection()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         var supervisor = Supervisor();
         // No message seam (signal mode): nothing is injected, but the plane granted a
         // TTL>0 grace the Lead chose on the wire, so the worker gets the FULL ttl to
@@ -98,8 +98,8 @@ public sealed class ProcessSupervisorTests : IDisposable
     [Fact]
     public async Task Kill_takes_the_whole_tree_down_and_leaves_siblings_alive()
     {
-        var taskA = TaskId.New();
-        var taskB = TaskId.New();
+        var taskA = SessionId.New();
+        var taskB = SessionId.New();
         var supervisor = Supervisor();
         supervisor.Spawn(TestKit.Dispatch(taskA), TestKit.Profile("spawn-child"), "m");
         supervisor.Spawn(TestKit.Dispatch(taskB), TestKit.Profile("spawn-child"), "m");
@@ -123,14 +123,14 @@ public sealed class ProcessSupervisorTests : IDisposable
     }
 
     /// <summary>
-    /// §10 per-task liveness, process-alive half: <see cref="ProcessSupervisor.LiveTasks"/> is
+    /// §10 per-task liveness, process-alive half: <see cref="ProcessSupervisor.LiveSessions"/> is
     /// the set <c>RunnerDaemon.EmitAliveEvents</c> turns into one <c>alive</c> per task on every
     /// heartbeat, and it is the only channel by which a fact only the runner can observe reaches
     /// the plane. So this pins the property the wire actually depends on.
     ///
     /// <para>The subtlety worth a test is that it must be <em>narrower</em> than
-    /// <see cref="ProcessSupervisor.RunningTasks"/>: a task whose process has died but whose
-    /// bookkeeping has not yet been torn down still appears in <c>RunningTasks</c>, and
+    /// <see cref="ProcessSupervisor.RunningSessions"/>: a task whose process has died but whose
+    /// bookkeeping has not yet been torn down still appears in <c>RunningSessions</c>, and
     /// reporting that one as alive would refresh the aliveness clock for a worker that is gone
     /// and hold off a requeue that should happen. Killing one of two tasks is what separates
     /// the two collections.</para>
@@ -143,40 +143,40 @@ public sealed class ProcessSupervisorTests : IDisposable
     public async Task Live_tasks_carries_only_processes_still_alive_and_is_narrower_than_running()
     {
         var supervisor = Supervisor();
-        var alive = TaskId.New();
-        var doomed = TaskId.New();
+        var alive = SessionId.New();
+        var doomed = SessionId.New();
         supervisor.Spawn(TestKit.Dispatch(alive), TestKit.Profile("run"), "m");
         supervisor.Spawn(TestKit.Dispatch(doomed), TestKit.Profile("run"), "m");
 
         Assert.True(
-            await TestKit.WaitUntilAsync(() => supervisor.LiveTasks.Count == 2, TimeSpan.FromSeconds(10)),
+            await TestKit.WaitUntilAsync(() => supervisor.LiveSessions.Count == 2, TimeSpan.FromSeconds(10)),
             "both spawned workers should report process-alive");
-        Assert.Contains(alive, supervisor.LiveTasks);
-        Assert.Contains(doomed, supervisor.LiveTasks);
+        Assert.Contains(alive, supervisor.LiveSessions);
+        Assert.Contains(doomed, supervisor.LiveSessions);
 
         supervisor.Kill(doomed);
 
-        // The killed task drops out of LiveTasks — so no further `alive` is emitted for it and
+        // The killed task drops out of LiveSessions — so no further `alive` is emitted for it and
         // the plane's aliveness clock is free to expire — while its sibling keeps reporting.
         Assert.True(
             await TestKit.WaitUntilAsync(
-                () => !supervisor.LiveTasks.Contains(doomed), TimeSpan.FromSeconds(10)),
+                () => !supervisor.LiveSessions.Contains(doomed), TimeSpan.FromSeconds(10)),
             "a killed task must stop reporting process-alive");
-        Assert.Contains(alive, supervisor.LiveTasks);
+        Assert.Contains(alive, supervisor.LiveSessions);
 
         supervisor.Kill(alive);
         Assert.True(
-            await TestKit.WaitUntilAsync(() => supervisor.LiveTasks.Count == 0, TimeSpan.FromSeconds(10)));
+            await TestKit.WaitUntilAsync(() => supervisor.LiveSessions.Count == 0, TimeSpan.FromSeconds(10)));
     }
 
     [Fact]
     public async Task Kill_all_stops_everything_the_supervisor_started()
     {
         var supervisor = Supervisor();
-        var tasks = new List<TaskId>();
+        var tasks = new List<SessionId>();
         for (var i = 0; i < 3; i++)
         {
-            var t = TaskId.New();
+            var t = SessionId.New();
             tasks.Add(t);
             supervisor.Spawn(TestKit.Dispatch(t), TestKit.Profile("run"), "m");
         }
@@ -192,7 +192,7 @@ public sealed class ProcessSupervisorTests : IDisposable
 
 
 
-    private async Task<string[]> ReadArgvMarker(TaskId task)
+    private async Task<string[]> ReadArgvMarker(SessionId task)
     {
         var path = Path.Combine(_workRoot, task.ToString(), "argv");
         Assert.True(await TestKit.WaitUntilAsync(() => File.Exists(path), TimeSpan.FromSeconds(15)),
@@ -200,7 +200,7 @@ public sealed class ProcessSupervisorTests : IDisposable
         return await File.ReadAllLinesAsync(path);
     }
 
-    private async Task<int> ReadChildPid(TaskId task)
+    private async Task<int> ReadChildPid(SessionId task)
     {
         var path = Path.Combine(_workRoot, task.ToString(), "child.pid");
         Assert.True(await TestKit.WaitUntilAsync(() => File.Exists(path), TimeSpan.FromSeconds(15)),

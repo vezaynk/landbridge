@@ -97,10 +97,10 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
         await using var fleet = new ChaosFleet(pg, new ChaosFleetOptions());
         await fleet.StartAsync(ct);
 
-        var task = await fleet.CreateTaskAsync("chaos baseline", profile: null, ct);
-        await AssertReachesAsync(fleet, task, TaskState.Verifying, "the scripted worker never reported", ct);
+        var task = await fleet.CreateSessionAsync("chaos baseline", profile: null, ct);
+        await AssertReachesAsync(fleet, task, SessionState.Verifying, "the scripted worker never reported", ct);
         await fleet.AcceptAsync(task, ct);
-        await AssertReachesAsync(fleet, task, TaskState.Completed, "the Lead's accept never committed", ct);
+        await AssertReachesAsync(fleet, task, SessionState.Completed, "the Lead's accept never committed", ct);
     }
 
     /// <summary>
@@ -145,11 +145,11 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
         });
         await fleet.StartAsync(ct);
 
-        var first = await fleet.CreateTaskAsync("chaos sibling A", ChaosProfiles.Wedge, ct);
-        var second = await fleet.CreateTaskAsync("chaos sibling B", ChaosProfiles.Wedge, ct);
+        var first = await fleet.CreateSessionAsync("chaos sibling A", ChaosProfiles.Wedge, ct);
+        var second = await fleet.CreateSessionAsync("chaos sibling B", ChaosProfiles.Wedge, ct);
         var siblings = new[] { first, second };
         foreach (var task in siblings)
-            await AssertReachesAsync(fleet, task, TaskState.Working, "a sibling never reached working", ct);
+            await AssertReachesAsync(fleet, task, SessionState.Working, "a sibling never reached working", ct);
 
         // Both workers must really be running before the kill. `working` is committed before
         // the DispatchCommand is sent, so a task can be working with its command still in
@@ -164,7 +164,7 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
                 $"sibling {task} never wrote its start marker, so it was not actually in " +
                 $"flight when docketd was killed\n" + await fleet.DiagnoseAsync(siblings, ct));
 
-        var beforeKill = new Dictionary<TaskId, TaskFacts>();
+        var beforeKill = new Dictionary<SessionId, TaskFacts>();
         foreach (var task in siblings)
             beforeKill[task] = (await fleet.FactsAsync(task, ct))!.Value;
 
@@ -177,7 +177,7 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
         // ── 1. Both siblings failed by the one death. The plane does not requeue.
         foreach (var task in siblings)
         {
-            await AssertReachesAsync(fleet, task, TaskState.Failed,
+            await AssertReachesAsync(fleet, task, SessionState.Failed,
                 "a sibling was not failed after docketd was SIGKILLed", ct, siblings);
             var facts = (await fleet.FactsAsync(task, ct))!.Value;
             Assert.True(facts.InfrastructureRequeues == beforeKill[task].InfrastructureRequeues + 1,
@@ -236,7 +236,7 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
         foreach (var task in siblings)
         {
             await fleet.ResumeFailedAsync(task, ct);
-            await AssertReachesAsync(fleet, task, TaskState.Working,
+            await AssertReachesAsync(fleet, task, SessionState.Working,
                 "a failed sibling was never redispatched after docketd came back", ct, siblings);
             var facts = (await fleet.FactsAsync(task, ct))!.Value;
             Assert.NotEqual(beforeKill[task].CurrentInstanceId, facts.CurrentInstanceId);
@@ -244,11 +244,11 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
         }
 
         // ── 4. The whole loop still works, not just the requeue path.
-        var after = await fleet.CreateTaskAsync("chaos post-restart", profile: null, ct);
-        await AssertReachesAsync(fleet, after, TaskState.Verifying,
+        var after = await fleet.CreateSessionAsync("chaos post-restart", profile: null, ct);
+        await AssertReachesAsync(fleet, after, SessionState.Verifying,
             "a task created after the restart never reached verifying", ct, siblings.Append(after));
         await fleet.AcceptAsync(after, ct);
-        await AssertReachesAsync(fleet, after, TaskState.Completed,
+        await AssertReachesAsync(fleet, after, SessionState.Completed,
             "a task created after the restart never completed", ct, siblings.Append(after));
     }
 
@@ -285,8 +285,8 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
         });
         await fleet.StartAsync(ct);
 
-        var task = await fleet.CreateTaskAsync("chaos stale token", ChaosProfiles.Wedge, ct);
-        await AssertReachesAsync(fleet, task, TaskState.Working, "the task never reached working", ct);
+        var task = await fleet.CreateSessionAsync("chaos stale token", ChaosProfiles.Wedge, ct);
+        await AssertReachesAsync(fleet, task, SessionState.Working, "the task never reached working", ct);
 
         string? stale = null;
         Assert.True(
@@ -300,12 +300,12 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
         await using (var worker = await fleet.ConnectMcpAsync(stale!, ct))
         {
             var assignment = await worker.CallToolAsync(
-                "get_task", new Dictionary<string, object?>(), cancellationToken: ct);
+                "get_session", new Dictionary<string, object?>(), cancellationToken: ct);
             Assert.NotEqual(true, assignment.IsError);
         }
 
         await fleet.SigkillDocketdAsync();
-        await AssertReachesAsync(fleet, task, TaskState.Failed,
+        await AssertReachesAsync(fleet, task, SessionState.Failed,
             "the task was not failed, so its instance was never revoked", ct);
 
         var refused = await IsRefusedAsync(fleet, stale!, ct);
@@ -356,8 +356,8 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
         });
         await fleet.StartAsync(ct);
 
-        var task = await fleet.CreateTaskAsync("chaos wedged worker", ChaosProfiles.Wedge, ct);
-        await AssertReachesAsync(fleet, task, TaskState.Working, "the wedged worker never started", ct);
+        var task = await fleet.CreateSessionAsync("chaos wedged worker", ChaosProfiles.Wedge, ct);
+        await AssertReachesAsync(fleet, task, SessionState.Working, "the wedged worker never started", ct);
         var working = (await fleet.FactsAsync(task, ct))!.Value;
 
         // The sweep period is the aliveness window, so the reclaim lands within roughly
@@ -456,8 +456,8 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
         });
         await fleet.StartAsync(ct);
 
-        var task = await fleet.CreateTaskAsync("chaos plane restart", ChaosProfiles.Wedge, ct);
-        await AssertReachesAsync(fleet, task, TaskState.Working, "the task never reached working", ct);
+        var task = await fleet.CreateSessionAsync("chaos plane restart", ChaosProfiles.Wedge, ct);
+        await AssertReachesAsync(fleet, task, SessionState.Working, "the task never reached working", ct);
 
         // MID-TASK means the worker is really running, and `working` alone does not say
         // that: the store commits submitted→working before the DispatchCommand is sent, so
@@ -511,7 +511,7 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
         // ── 3. Nothing lost: the Lead resumes, and it goes back out to the machine
         // that is still there.
         await fleet.ResumeFailedAsync(task, ct);
-        await AssertReachesAsync(fleet, task, TaskState.Working,
+        await AssertReachesAsync(fleet, task, SessionState.Working,
             "the reclaimed task was never redispatched after the plane restart", ct);
         var afterRestart = (await fleet.FactsAsync(task, ct))!.Value;
         Assert.Equal(1, afterRestart.InfrastructureRequeues);
@@ -564,8 +564,8 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
         });
         await fleet.StartAsync(ct);
 
-        var task = await fleet.CreateTaskAsync("chaos wedge kill", ChaosProfiles.Wedge, ct);
-        await AssertReachesAsync(fleet, task, TaskState.Working, "the wedged worker never started", ct);
+        var task = await fleet.CreateSessionAsync("chaos wedge kill", ChaosProfiles.Wedge, ct);
+        await AssertReachesAsync(fleet, task, SessionState.Working, "the wedged worker never started", ct);
 
         // Read while this attempt is live: the work dir is per task, so redispatch overwrites
         // the marker and the predecessor's pid is only readable before its requeue.
@@ -603,7 +603,7 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
         // ── 2. And the machine is still good for work — a kill takes down one dispatch, not
         // the daemon's ability to accept the next one. The Lead resumes; dispatch places it.
         await fleet.ResumeFailedAsync(task, ct);
-        await AssertReachesAsync(fleet, task, TaskState.Working,
+        await AssertReachesAsync(fleet, task, SessionState.Working,
             "the reclaimed task was never redispatched after its worker was killed", ct);
         Assert.True(
             await ChaosFleet.WaitUntilAsync(
@@ -618,7 +618,7 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
                 async () =>
                 {
                     var facts = await fleet.FactsAsync(task, ct);
-                    return facts is { } f && f.State == TaskState.Failed
+                    return facts is { } f && f.State == SessionState.Failed
                         && f.InfrastructureRequeues >= working.InfrastructureRequeues + 2;
                 },
                 TransitionBudget, ct),
@@ -701,8 +701,8 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
             "the plane never saw two connections for this machine, so the overlap this scenario " +
             "is about never existed\n" + await fleet.DiagnoseAsync([], ct));
 
-        var held = await fleet.CreateTaskAsync("chaos reattach", ChaosProfiles.Wedge, ct);
-        await AssertReachesAsync(fleet, held, TaskState.Working, "the task never reached working", ct);
+        var held = await fleet.CreateSessionAsync("chaos reattach", ChaosProfiles.Wedge, ct);
+        await AssertReachesAsync(fleet, held, SessionState.Working, "the task never reached working", ct);
         Assert.True(
             await ChaosFleet.WaitUntilAsync(
                 () => Task.FromResult(fleet.WorkerStarted(held)), TransitionBudget, ct),
@@ -723,19 +723,19 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
 
         // ── The machine is still there: a fresh task runs the whole loop. Pre-fix the
         // teardown left docketd registered nowhere, so nothing could be dispatched at all.
-        var after = await fleet.CreateTaskAsync("chaos post-reattach", profile: null, ct);
-        await AssertReachesAsync(fleet, after, TaskState.Verifying,
+        var after = await fleet.CreateSessionAsync("chaos post-reattach", profile: null, ct);
+        await AssertReachesAsync(fleet, after, SessionState.Verifying,
             "a task created after the superseded teardown never reached verifying, so the live " +
             "connection was unregistered with it", ct, [held, after]);
         await fleet.AcceptAsync(after, ct);
-        await AssertReachesAsync(fleet, after, TaskState.Completed,
+        await AssertReachesAsync(fleet, after, SessionState.Completed,
             "a task created after the superseded teardown never completed", ct, [held, after]);
 
         // ── And the work that was already in flight never noticed: same attempt, same
         // incumbent instance, no requeue at all — not the "one at most" a real disconnect
         // costs, because nothing about this machine actually went away.
         var facts = (await fleet.FactsAsync(held, ct))!.Value;
-        Assert.Equal(TaskState.Working, facts.State);
+        Assert.Equal(SessionState.Working, facts.State);
         Assert.Equal(0, facts.InfrastructureRequeues);
         Assert.Empty(await fleet.RequeueReasonsAsync(held, ct));
         Assert.Equal(beforeTeardown.CurrentInstanceId, facts.CurrentInstanceId);
@@ -755,8 +755,8 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
     /// self-explaining costs more than it buys.
     /// </summary>
     private static async Task AssertReachesAsync(
-        ChaosFleet fleet, TaskId task, TaskState expected, string because,
-        CancellationToken ct, IEnumerable<TaskId>? context = null)
+        ChaosFleet fleet, SessionId task, SessionState expected, string because,
+        CancellationToken ct, IEnumerable<SessionId>? context = null)
     {
         if (await fleet.WaitForStateAsync(task, expected, TransitionBudget, ct))
             return;
@@ -778,7 +778,7 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
         {
             await using var client = await fleet.ConnectMcpAsync(bearer, ct);
             var result = await client.CallToolAsync(
-                "get_task", new Dictionary<string, object?>(), cancellationToken: ct);
+                "get_session", new Dictionary<string, object?>(), cancellationToken: ct);
             return result.IsError == true;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)

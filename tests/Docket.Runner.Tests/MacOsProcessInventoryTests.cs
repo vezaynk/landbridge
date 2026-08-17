@@ -14,14 +14,14 @@ public class MacOsProcessInventoryTests(Xunit.Abstractions.ITestOutputHelper out
 {
     private readonly List<Process> _spawned = [];
 
-    private Process SpawnChild(string? machineId, string? taskId = null)
+    private Process SpawnChild(string? machineId, string? sessionId = null)
     {
         var psi = new ProcessStartInfo(TestKit.HarnessPath()) { UseShellExecute = false };
         psi.ArgumentList.Add("child"); // bare sleeper — no markers, just lives until killed
         if (machineId is not null)
             psi.Environment["DOCKET_MACHINE_ID"] = machineId;
-        if (taskId is not null)
-            psi.Environment["DOCKET_TASK_ID"] = taskId;
+        if (sessionId is not null)
+            psi.Environment["DOCKET_SESSION_ID"] = sessionId;
         var process = Process.Start(psi)!;
         _spawned.Add(process);
         return process;
@@ -34,9 +34,9 @@ public class MacOsProcessInventoryTests(Xunit.Abstractions.ITestOutputHelper out
 
         // Fresh guids so nothing but our own child can match this run.
         var machineId = Guid.NewGuid().ToString();
-        var taskId = Guid.NewGuid().ToString();
+        var sessionId = Guid.NewGuid().ToString();
 
-        var tagged = SpawnChild(machineId, taskId);
+        var tagged = SpawnChild(machineId, sessionId);
         var untagged = SpawnChild(machineId: null); // no DOCKET_MACHINE_ID — must never be listed
 
         var inventory = new MacOsProcessInventory();
@@ -60,9 +60,9 @@ public class MacOsProcessInventoryTests(Xunit.Abstractions.ITestOutputHelper out
             TimeSpan.FromSeconds(10));
 
         Assert.True(appeared, $"MacOsProcessInventory never discovered tagged pid {tagged.Id}");
-        output.WriteLine($"discovered pid={match.Pid} machineId={match.MachineId} taskId={match.TaskId}");
+        output.WriteLine($"discovered pid={match.Pid} machineId={match.MachineId} sessionId={match.SessionId}");
         Assert.Equal(machineId, match.MachineId);
-        Assert.Equal(taskId, match.TaskId);
+        Assert.Equal(sessionId, match.SessionId);
 
         // The untagged child (no DOCKET_MACHINE_ID) must not be discovered at all.
         Assert.DoesNotContain(inventory.ListDocketProcesses(), p => p.Pid == untagged.Id);

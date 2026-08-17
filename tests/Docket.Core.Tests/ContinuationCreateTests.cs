@@ -9,7 +9,7 @@ namespace Docket.Core.Tests;
 /// </summary>
 public class ContinuationCreateTests
 {
-    private static readonly TaskId Continued = new(Guid.Parse("44444444-4444-4444-4444-444444444444"));
+    private static readonly SessionId Continued = new(Guid.Parse("44444444-4444-4444-4444-444444444444"));
 
     private static Continuation Cont(
         TeamId? continuedTeam = null,
@@ -20,15 +20,15 @@ public class ContinuationCreateTests
         new(Continued, continuedTeam ?? Given.Team, preferredMachine, sessionRef, policy, declaredProfiles);
 
     private static TransitionResult Create(string? profile, Continuation continuation) =>
-        TaskStateMachine.Create(
-            new CreateTask(Given.Lead, Given.Team, "criteria", CompletionMode.Lead,
+        SessionStateMachine.Create(
+            new CreateSession(Given.Lead, Given.Team, "criteria", CompletionMode.Lead,
                 Profile: profile, Continues: continuation),
             Given.Id, "team-x/task-y");
 
     [Fact]
     public void Continuation_in_the_same_team_creates_submitted()
     {
-        Expect.Transitioned(Create(profile: null, Cont()), TaskState.Submitted);
+        Expect.Transitioned(Create(profile: null, Cont()), SessionState.Submitted);
     }
 
     [Fact]
@@ -44,7 +44,7 @@ public class ContinuationCreateTests
     {
         Expect.Transitioned(
             Create(profile: "gpu", Cont(declaredProfiles: new HashSet<string> { "gpu", "default" })),
-            TaskState.Submitted);
+            SessionState.Submitted);
     }
 
     [Fact]
@@ -73,6 +73,6 @@ public class ContinuationCreateTests
         // own profile routing applies later.
         Expect.Transitioned(
             Create(profile: "anything", Cont(declaredProfiles: null)),
-            TaskState.Submitted);
+            SessionState.Submitted);
     }
 }

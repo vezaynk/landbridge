@@ -6,16 +6,16 @@ namespace Docket.Core;
 /// status) as command fields, and side effects come back as data. Every
 /// rejection names the §9 check or §6 invariant that refused it.
 /// </summary>
-public static class TaskStateMachine
+public static class SessionStateMachine
 {
     /// <summary>
     /// → submitted. The store supplies the server-assigned namespace (§9
     /// check 2) and the id; the engine gates on the creation checks.
     /// </summary>
-    public static TransitionResult Create(CreateTask command, TaskId id, string serverAssignedNamespace)
+    public static TransitionResult Create(CreateSession command, SessionId id, string serverAssignedNamespace)
     {
         if (command.Actor is not LeadClaim lead || lead.Team != command.Team)
-            return TransitionResult.Reject(Rule.OnlyLeadCreatesTasks,
+            return TransitionResult.Reject(Rule.OnlyLeadCreatesSessions,
                 "task creation requires a lead claim for this Team");
 
         if (string.IsNullOrWhiteSpace(command.CompletionCriteria))
@@ -49,7 +49,7 @@ public static class TaskStateMachine
                     $"preferred machine does not declare profile '{requiredProfile}' the continuation requires");
         }
 
-        return TransitionResult.Ok(new TaskRecord
+        return TransitionResult.Ok(new SessionRecord
         {
             Id = id,
             Team = command.Team,
@@ -59,7 +59,7 @@ public static class TaskStateMachine
         });
     }
 
-    public static TransitionResult Apply(TaskRecord task, TaskCommand command)
+    public static TransitionResult Apply(SessionRecord task, SessionCommand command)
     {
         if (task.State.IsTerminal())
             return TransitionResult.Reject(Rule.TerminalStatesAreFinal,
@@ -83,17 +83,17 @@ public static class TaskStateMachine
             WakeParked c => ApplyWakeParked(task, c),
             StopPreserveAndPark c => ApplyStopPreserveAndPark(task, c),
             Cancel c => ApplyCancel(task, c),
-            CreateTask => TransitionResult.Reject(Rule.InvalidSourceState,
-                "CreateTask applies to no existing record; use Create"),
+            CreateSession => TransitionResult.Reject(Rule.InvalidSourceState,
+                "CreateSession applies to no existing record; use Create"),
             _ => TransitionResult.Reject(Rule.InvalidSourceState,
                 $"unrecognized command {command.GetType().Name}"),
         };
     }
 
-    private static TransitionResult ApplyDispatch(TaskRecord task, Dispatch c)
+    private static TransitionResult ApplyDispatch(SessionRecord task, Dispatch c)
     {
-        if (task.State != TaskState.Submitted)
-            return WrongState(task, TaskState.Submitted);
+        if (task.State != SessionState.Submitted)
+            return WrongState(task, SessionState.Submitted);
 
         if (!c.Machine.Ready)
             return TransitionResult.Reject(Rule.MachineIneligibleForDispatch,
@@ -111,16 +111,16 @@ public static class TaskStateMachine
         return TransitionResult.Ok(
             task with
             {
-                State = TaskState.Working,
+                State = SessionState.Working,
                 CurrentInstance = c.NewInstance,
                 Attempt = task.Attempt + 1,
             },
             new MintWorkerInstanceToken(c.NewInstance, c.Machine.MachineId));
     }
 
-    private static TransitionResult ApplyLivenessLost(TaskRecord task, LivenessLost c)
+    private static TransitionResult ApplyLivenessLost(SessionRecord task, LivenessLost c)
     {
-        if (task.State is not (TaskState.Working or TaskState.BlockedOnInput or TaskState.Verifying))
+        if (task.State is not (SessionState.Working or SessionState.BlockedOnInput or SessionState.Verifying))
             return TransitionResult.Reject(Rule.InvalidSourceState,
                 $"liveness loss applies to working, blocked_on_input, or verifying, not {task.State}");
 
@@ -136,7 +136,7 @@ public static class TaskStateMachine
         // fact about the machine rather than about one attempt, and still applies from
         // blocked_on_input.
         if (c.Instance is { } judged
-            && (task.State is not (TaskState.Working or TaskState.Verifying)
+            && (task.State is not (SessionState.Working or SessionState.Verifying)
                 || task.CurrentInstance != judged))
             return TransitionResult.Reject(Rule.IncumbentInstanceOnly,
                 $"liveness loss was decided about instance {judged}, which is no longer the "
@@ -153,7 +153,7 @@ public static class TaskStateMachine
         return TransitionResult.Ok(
             task with
             {
-                State = TaskState.Failed,
+                State = SessionState.Failed,
                 CurrentInstance = null,
                 InfrastructureRequeues = task.InfrastructureRequeues + 1,
                 LastRequeueReason = c.Reason,
@@ -161,10 +161,10 @@ public static class TaskStateMachine
             effects.ToArray());
     }
 
-    private static TransitionResult ApplyReportResult(TaskRecord task, ReportResult c)
+    private static TransitionResult ApplyReportResult(SessionRecord task, ReportResult c)
     {
-        if (task.State != TaskState.Working)
-            return WrongState(task, TaskState.Working);
+        if (task.State != SessionState.Working)
+            return WrongState(task, SessionState.Working);
 
         if (RequireIncumbent(task, c.Actor) is { } rejection)
             return rejection;
@@ -187,13 +187,13 @@ public static class TaskStateMachine
         // machine — killing the ACP host would take a compile or a descendant
         // server with it. Services stay registered. The Lead accepts, replies
         // (LeadMessage), or parks.
-        return TransitionResult.Ok(task with { State = TaskState.Verifying });
+        return TransitionResult.Ok(task with { State = SessionState.Verifying });
     }
 
-    private static TransitionResult ApplyVerdict(TaskRecord task, Actor actor, bool humanConfirmed, bool accepted)
+    private static TransitionResult ApplyVerdict(SessionRecord task, Actor actor, bool humanConfirmed, bool accepted)
     {
-        if (task.State != TaskState.Verifying)
-            return WrongState(task, TaskState.Verifying);
+        if (task.State != SessionState.Verifying)
+            return WrongState(task, SessionState.Verifying);
 
         // §9 check 4 (doer/judge split): completion comes from a Lead or human
         // credential, NEVER the task's own worker — a WorkerCaller is refused here
@@ -228,7 +228,7 @@ public static class TaskStateMachine
 
         if (accepted)
             return TransitionResult.Ok(
-                task with { State = TaskState.Completed, CurrentInstance = null, CompletionProvenance = provenance },
+                task with { State = SessionState.Completed, CurrentInstance = null, CompletionProvenance = provenance },
                 effects.ToArray());
 
         // A fail is not a redispatch. The assignment is rejected; the session
@@ -238,17 +238,17 @@ public static class TaskStateMachine
         return TransitionResult.Ok(
             task with
             {
-                State = TaskState.Rejected,
+                State = SessionState.Rejected,
                 VerificationFailures = task.VerificationFailures + 1,
                 CurrentInstance = null,
             },
             effects.ToArray());
     }
 
-    private static TransitionResult ApplyRequestInput(TaskRecord task, RequestInput c)
+    private static TransitionResult ApplyRequestInput(SessionRecord task, RequestInput c)
     {
-        if (task.State != TaskState.Working)
-            return WrongState(task, TaskState.Working);
+        if (task.State != SessionState.Working)
+            return WrongState(task, SessionState.Working);
 
         if (RequireIncumbent(task, c.Actor) is { } rejection)
             return rejection;
@@ -281,15 +281,15 @@ public static class TaskStateMachine
         // stay either way. Park / wait-TTL / a dead-session AnswerInput are the
         // edges that release them.
         if (c.Kind == InputRequestKind.Permission)
-            return TransitionResult.Ok(task with { State = TaskState.BlockedOnInput });
+            return TransitionResult.Ok(task with { State = SessionState.BlockedOnInput });
 
         return TransitionResult.Ok(task);
     }
 
-    private static TransitionResult ApplyAnswerInput(TaskRecord task, AnswerInput c)
+    private static TransitionResult ApplyAnswerInput(SessionRecord task, AnswerInput c)
     {
-        if (task.State is not (TaskState.BlockedOnInput or TaskState.Working))
-            return WrongState(task, TaskState.BlockedOnInput);
+        if (task.State is not (SessionState.BlockedOnInput or SessionState.Working))
+            return WrongState(task, SessionState.BlockedOnInput);
 
         if (!IsLeadOrHuman(task, c.Actor))
             return TransitionResult.Reject(Rule.ActorLacksAuthority,
@@ -330,7 +330,7 @@ public static class TaskStateMachine
         return TransitionResult.Ok(
             task with
             {
-                State = TaskState.Submitted,
+                State = SessionState.Submitted,
                 CurrentInstance = null,
                 Park = c.Park ?? task.Park,
             },
@@ -343,17 +343,17 @@ public static class TaskStateMachine
     /// left, so there is nothing to dispatch to — the incumbent instance and its token are
     /// carried through untouched and the worker resumes inside the tool call it blocked in.
     /// </summary>
-    private static TransitionResult ApplyAnswerPermission(TaskRecord task, AnswerPermission c)
+    private static TransitionResult ApplyAnswerPermission(SessionRecord task, AnswerPermission c)
     {
-        if (task.State != TaskState.BlockedOnInput)
+        if (task.State != SessionState.BlockedOnInput)
         {
             // A question stays working; a verdict on it is the crossed-path
             // refusal, not a wrong-state one.
-            if (task.State == TaskState.Working && c.PendingKind != InputRequestKind.Permission)
+            if (task.State == SessionState.Working && c.PendingKind != InputRequestKind.Permission)
                 return TransitionResult.Reject(Rule.PermissionVerdictAnswersPermissionRequests,
                     "a permission verdict answers a permission request; this task is waiting on "
                     + (c.PendingKind is { } kind ? $"{kind} input" : "input of no recorded kind"));
-            return WrongState(task, TaskState.BlockedOnInput);
+            return WrongState(task, SessionState.BlockedOnInput);
         }
 
         if (c.PendingKind != InputRequestKind.Permission)
@@ -393,7 +393,7 @@ public static class TaskStateMachine
             is { } tooLong)
             return tooLong;
 
-        return TransitionResult.Ok(task with { State = TaskState.Working });
+        return TransitionResult.Ok(task with { State = SessionState.Working });
     }
 
     /// <summary>
@@ -401,10 +401,10 @@ public static class TaskStateMachine
     /// rather than a state change: the task is still waiting on exactly the same request,
     /// but from here only a human may decide it.
     /// </summary>
-    private static TransitionResult ApplyEscalatePermission(TaskRecord task, EscalatePermission c)
+    private static TransitionResult ApplyEscalatePermission(SessionRecord task, EscalatePermission c)
     {
-        if (task.State != TaskState.BlockedOnInput)
-            return WrongState(task, TaskState.BlockedOnInput);
+        if (task.State != SessionState.BlockedOnInput)
+            return WrongState(task, SessionState.BlockedOnInput);
 
         if (c.PendingKind != InputRequestKind.Permission)
             return TransitionResult.Reject(Rule.PermissionVerdictAnswersPermissionRequests,
@@ -431,10 +431,10 @@ public static class TaskStateMachine
         return TransitionResult.Ok(task);
     }
 
-    private static TransitionResult ApplyWaitTtlExpired(TaskRecord task, WaitTtlExpired c)
+    private static TransitionResult ApplyWaitTtlExpired(SessionRecord task, WaitTtlExpired c)
     {
-        if (task.State is not (TaskState.BlockedOnInput or TaskState.Working))
-            return WrongState(task, TaskState.BlockedOnInput);
+        if (task.State is not (SessionState.BlockedOnInput or SessionState.Working))
+            return WrongState(task, SessionState.BlockedOnInput);
 
         var effects = new List<Effect> { new WriteParkRecord(c.Park), new ClearServicesAndForwards() };
         if (task.CurrentInstance is { } instance)
@@ -443,17 +443,17 @@ public static class TaskStateMachine
         return TransitionResult.Ok(
             task with
             {
-                State = TaskState.Parked,
+                State = SessionState.Parked,
                 CurrentInstance = null,
                 Park = c.Park,
             },
             effects.ToArray());
     }
 
-    private static TransitionResult ApplyPark(TaskRecord task, Park c)
+    private static TransitionResult ApplyPark(SessionRecord task, Park c)
     {
-        if (task.State is not (TaskState.Working or TaskState.BlockedOnInput or TaskState.Verifying))
-            return WrongState(task, TaskState.Working);
+        if (task.State is not (SessionState.Working or SessionState.BlockedOnInput or SessionState.Verifying))
+            return WrongState(task, SessionState.Working);
 
         var authorized = c.Actor switch
         {
@@ -472,17 +472,17 @@ public static class TaskStateMachine
         return TransitionResult.Ok(
             task with
             {
-                State = TaskState.Parked,
+                State = SessionState.Parked,
                 CurrentInstance = null,
                 Park = c.Record,
             },
             effects.ToArray());
     }
 
-    private static TransitionResult ApplyContinueSession(TaskRecord task, ContinueSession c)
+    private static TransitionResult ApplyContinueSession(SessionRecord task, ContinueSession c)
     {
-        if (task.State is not (TaskState.BlockedOnInput or TaskState.Working))
-            return WrongState(task, TaskState.BlockedOnInput);
+        if (task.State is not (SessionState.BlockedOnInput or SessionState.Working))
+            return WrongState(task, SessionState.BlockedOnInput);
 
         if (!IsLeadOrHuman(task, c.Actor))
             return TransitionResult.Reject(Rule.ActorLacksAuthority,
@@ -502,7 +502,7 @@ public static class TaskStateMachine
             return TransitionResult.Reject(Rule.InvalidSourceState,
                 "continue-session needs the incumbent still on the row");
 
-        return TransitionResult.Ok(task with { State = TaskState.Working });
+        return TransitionResult.Ok(task with { State = SessionState.Working });
     }
 
     /// <summary>
@@ -510,10 +510,10 @@ public static class TaskStateMachine
     /// live; this writes the words and doorbells. Not a dispatch and not a
     /// park. Permission still needs a verdict, not prose.
     /// </summary>
-    private static TransitionResult ApplyLeadMessage(TaskRecord task, LeadMessage c)
+    private static TransitionResult ApplyLeadMessage(SessionRecord task, LeadMessage c)
     {
-        if (task.State is not (TaskState.Working or TaskState.Verifying))
-            return WrongState(task, TaskState.Working);
+        if (task.State is not (SessionState.Working or SessionState.Verifying))
+            return WrongState(task, SessionState.Working);
 
         if (!IsLeadOrHuman(task, c.Actor))
             return TransitionResult.Reject(Rule.ActorLacksAuthority,
@@ -533,13 +533,13 @@ public static class TaskStateMachine
             is { } tooLong)
             return tooLong;
 
-        return TransitionResult.Ok(task with { State = TaskState.Working });
+        return TransitionResult.Ok(task with { State = SessionState.Working });
     }
 
-    private static TransitionResult ApplyWakeParked(TaskRecord task, WakeParked c)
+    private static TransitionResult ApplyWakeParked(SessionRecord task, WakeParked c)
     {
-        if (task.State is not (TaskState.Parked or TaskState.Failed))
-            return WrongState(task, TaskState.Parked);
+        if (task.State is not (SessionState.Parked or SessionState.Failed))
+            return WrongState(task, SessionState.Parked);
 
         // Same cap as the blocked half: one answer path, one gate, so a Lead's answer
         // is accepted or refused identically whether or not the sweeper parked first.
@@ -551,13 +551,13 @@ public static class TaskStateMachine
 
         // The park record survives into submitted: redispatch reads it for
         // machine/directory affinity (§11).
-        return TransitionResult.Ok(task with { State = TaskState.Submitted });
+        return TransitionResult.Ok(task with { State = SessionState.Submitted });
     }
 
-    private static TransitionResult ApplyStopPreserveAndPark(TaskRecord task, StopPreserveAndPark c)
+    private static TransitionResult ApplyStopPreserveAndPark(SessionRecord task, StopPreserveAndPark c)
     {
-        if (task.State != TaskState.Working)
-            return WrongState(task, TaskState.Working);
+        if (task.State != SessionState.Working)
+            return WrongState(task, SessionState.Working);
 
         if (c.Actor is not LeadClaim lead || lead.Team != task.Team)
             return TransitionResult.Reject(Rule.ActorLacksAuthority,
@@ -570,14 +570,14 @@ public static class TaskStateMachine
         return TransitionResult.Ok(
             task with
             {
-                State = TaskState.Parked,
+                State = SessionState.Parked,
                 CurrentInstance = null,
                 Park = c.Park,
             },
             effects.ToArray());
     }
 
-    private static TransitionResult ApplyCancel(TaskRecord task, Cancel c)
+    private static TransitionResult ApplyCancel(SessionRecord task, Cancel c)
     {
         if (c.Disposition is null)
             return TransitionResult.Reject(Rule.CancellationCarriesDisposition,
@@ -600,15 +600,15 @@ public static class TaskStateMachine
         var effects = new List<Effect>();
         if (task.CurrentInstance is { } instance)
             effects.Add(new RevokeWorkerInstanceToken(instance));
-        if (task.State is TaskState.Working or TaskState.Verifying)
+        if (task.State is SessionState.Working or SessionState.Verifying)
             effects.Add(new ClearServicesAndForwards());
         if (c.Disposition == CancelDisposition.Discard)
-            effects.Add(task.State == TaskState.Verifying
+            effects.Add(task.State == SessionState.Verifying
                 ? new DeferWorkspaceDiscardUntilVerdict()
                 : new DiscardWorkspace());
 
         return TransitionResult.Ok(
-            task with { State = TaskState.Canceled, CurrentInstance = null },
+            task with { State = SessionState.Canceled, CurrentInstance = null },
             effects.ToArray());
     }
 
@@ -627,13 +627,13 @@ public static class TaskStateMachine
                 $"{field} exceeds the {maxBytes / 1024} KB in-band cap; {advice}")
             : null;
 
-    private static TransitionResult? RequireIncumbent(TaskRecord task, Actor actor)
+    private static TransitionResult? RequireIncumbent(SessionRecord task, Actor actor)
     {
         if (actor is not WorkerCaller worker)
             return TransitionResult.Reject(Rule.ActorLacksAuthority,
                 "this transition is triggered by the working agent");
 
-        if (worker.Task != task.Id || worker.Team != task.Team)
+        if (worker.Session != task.Id || worker.Team != task.Team)
             return TransitionResult.Reject(Rule.ActorLacksAuthority,
                 "worker token is scoped to a different task");
 
@@ -644,14 +644,14 @@ public static class TaskStateMachine
         return null;
     }
 
-    private static bool IsLeadOrHuman(TaskRecord task, Actor actor) => actor switch
+    private static bool IsLeadOrHuman(SessionRecord task, Actor actor) => actor switch
     {
         HumanSession => true,
         LeadClaim lead => lead.Team == task.Team,
         _ => false,
     };
 
-    private static TransitionResult WrongState(TaskRecord task, TaskState expected) =>
+    private static TransitionResult WrongState(SessionRecord task, SessionState expected) =>
         TransitionResult.Reject(Rule.InvalidSourceState,
             $"transition applies to {expected}, not {task.State}");
 }

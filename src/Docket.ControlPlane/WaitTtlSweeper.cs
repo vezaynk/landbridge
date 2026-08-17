@@ -7,7 +7,7 @@ namespace Docket.ControlPlane;
 
 /// <summary>
 /// The §11 wait-TTL sweeper. Auto-park is off by default: a live ACP session is
-/// held until a Lead answers or calls <c>park_task</c>. When a TTL is configured,
+/// held until a Lead answers or calls <c>park_session</c>. When a TTL is configured,
 /// this still closes the two §6 rows the plane owns for a waiting task:
 ///
 ///   blocked_on_input → parked    (<see cref="WaitTtlExpired"/>): the wait TTL
@@ -18,7 +18,7 @@ namespace Docket.ControlPlane;
 ///     machine went silent while waiting; the task requeues against the
 ///     infrastructure counter (§6), exactly as the reboot/disconnect path does.
 ///
-/// Both outcomes are expressed as commands through <see cref="TaskStore"/> — the
+/// Both outcomes are expressed as commands through <see cref="SessionStore"/> — the
 /// engine owns every transition (§15), never raw SQL. Machine death is checked
 /// first: a task on a dead machine requeues rather than parking onto a machine
 /// that could never resume it. The sweep is a periodic <see cref="TimeProvider"/>
@@ -28,7 +28,7 @@ namespace Docket.ControlPlane;
 /// Race safety: a Lead answering (<see cref="AnswerInput"/>) at the same instant
 /// must win cleanly. Because both outcomes go through the store's optimistic
 /// concurrency (xmin) and the engine's source-state check, a sweep that loses the
-/// race sees the task already <see cref="TaskState.Submitted"/> — the answer
+/// race sees the task already <see cref="SessionState.Submitted"/> — the answer
 /// requeued it for redispatch — (or a concurrency conflict) and no-ops; the answer
 /// stands and the task is redispatched with its transcript resumed.
 /// </summary>
@@ -45,7 +45,7 @@ public sealed class WaitTtlSweeper : IHostedService
     /// <summary>
     /// How long a task may sit in blocked_on_input before it parks. Off by default
     /// (<see cref="Timeout.InfiniteTimeSpan"/>): a live ACP session is held until a
-    /// Lead answers or calls <c>park_task</c>. Override with <c>Docket:WaitTtl</c>
+    /// Lead answers or calls <c>park_session</c>. Override with <c>Docket:WaitTtl</c>
     /// to restore a timer. Zero and infinite both mean "do not auto-park".
     /// </summary>
     public static readonly TimeSpan DefaultWaitTtl = Timeout.InfiniteTimeSpan;
@@ -126,16 +126,16 @@ public sealed class WaitTtlSweeper : IHostedService
         // Read the blocked backlog once. The view rows are detached (AsNoTracking),
         // so they outlive this scope; each transition below gets its own scoped
         // DbContext, mirroring DispatchService.CheckLivenessAsync.
-        IReadOnlyList<BlockedTaskView> blocked;
+        IReadOnlyList<BlockedSessionView> blocked;
         using (var readScope = _scopes.CreateScope())
-            blocked = await readScope.ServiceProvider.GetRequiredService<TaskStore>().ListBlockedAsync(ct);
+            blocked = await readScope.ServiceProvider.GetRequiredService<SessionStore>().ListBlockedAsync(ct);
 
         foreach (var b in blocked)
         {
             if (ct.IsCancellationRequested)
                 return;
 
-            var task = new TaskId(b.TaskId);
+            var task = new SessionId(b.SessionId);
             var machine = _registry.MachineFor(task);
             if (machine is null)
                 // Untracked: the plane does not currently hold this task's machine
@@ -150,7 +150,7 @@ public sealed class WaitTtlSweeper : IHostedService
             var machineLive = lastHeartbeat is { } beat && now - beat <= _machineLivenessWindow;
 
             using var scope = _scopes.CreateScope();
-            var store = scope.ServiceProvider.GetRequiredService<TaskStore>();
+            var store = scope.ServiceProvider.GetRequiredService<SessionStore>();
 
             if (!machineLive)
             {
@@ -190,7 +190,7 @@ public sealed class WaitTtlSweeper : IHostedService
     /// sweep no-ops for that task and its command was rejected without any write.
     /// </summary>
     private async Task<bool> TryApplyAsync(
-        TaskStore store, TaskId task, TaskCommand command, CancellationToken ct)
+        SessionStore store, SessionId task, SessionCommand command, CancellationToken ct)
     {
         var result = await store.ApplyAsync(task, command, ct);
         if (result is StoreResult.Applied)

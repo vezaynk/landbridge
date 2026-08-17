@@ -11,7 +11,7 @@ public abstract record CommandOutcome
     private CommandOutcome() { }
 
     /// <summary>A dispatch was accepted and the harness spawned.</summary>
-    public sealed record Accepted(TaskId Task) : CommandOutcome;
+    public sealed record Accepted(SessionId Session) : CommandOutcome;
 
     /// <summary>A dispatch was refused; the task stays undispatched and requeues elsewhere.</summary>
     public sealed record Refused(RefuseReason Reason, string Detail) : CommandOutcome;
@@ -181,13 +181,13 @@ public sealed class RunnerDaemon
                 return HandleDispatch(dispatch);
 
             case StopCommand stop:
-                var ack = await _supervisor.StopAsync(stop.Task, stop.Ttl, stop.Disposition, stop.Reason, ct);
+                var ack = await _supervisor.StopAsync(stop.Session, stop.Ttl, stop.Disposition, stop.Reason, ct);
                 var stopDetail = DescribeStop(stop, ack);
-                _log?.Invoke($"stop {stop.Task}: {stopDetail}");
+                _log?.Invoke($"stop {stop.Session}: {stopDetail}");
                 return new CommandOutcome.Acknowledged(stopDetail);
 
             case KillCommand kill:
-                var killed = _supervisor.Kill(kill.Task);
+                var killed = _supervisor.Kill(kill.Session);
                 return new CommandOutcome.Acknowledged(killed ? "killed" : "not running");
 
             case PromptCommand prompt:
@@ -197,12 +197,12 @@ public sealed class RunnerDaemon
                 // nowhere must not read as delivered — and the two reasons it can go nowhere
                 // (the session ended; this is a stream profile with no channel that accepts
                 // a turn) have completely different fixes.
-                var queued = _supervisor.TryPrompt(prompt.Task);
+                var queued = _supervisor.TryPrompt(prompt.Session);
                 var promptDetail = queued
                     ? "queued for the live session"
                     : "not delivered: no live ACP session for this task — it has ended, or this is a " +
                       "stream profile, whose worker has no channel that accepts a turn (§10)";
-                _log?.Invoke($"prompt {prompt.Task}: {promptDetail}");
+                _log?.Invoke($"prompt {prompt.Session}: {promptDetail}");
                 return new CommandOutcome.Acknowledged(promptDetail);
 
             case OpenForwardCommand forward:
@@ -293,14 +293,14 @@ public sealed class RunnerDaemon
     /// </summary>
     private async Task<CommandOutcome> HandleStartProcessAsync(StartProcessCommand start, CancellationToken ct)
     {
-        var profile = _supervisor.ProfileFor(start.Task) is { } declared ? _config.Resolve(declared) : null;
+        var profile = _supervisor.ProfileFor(start.Session) is { } declared ? _config.Resolve(declared) : null;
 
         // No supervised task means no profile to consult, so no policy can be applied. Refuse
         // rather than guess.
         if (_services is null || profile is null)
         {
             _ring.Enqueue(new ProcessStartedEvent(
-                start.Task, start.RequestId, start.Name, Started: false,
+                start.Session, start.RequestId, start.Name, Started: false,
                 Refusal: ProcessRefusals.ProfileNotPermitted));
             return new CommandOutcome.Acknowledged(
                 $"start-process {start.Name} refused (no supervised task on this machine)");
@@ -310,9 +310,9 @@ public sealed class RunnerDaemon
         _ring.Enqueue(outcome switch
         {
             ProcessOutcome.StartedOk ok => new ProcessStartedEvent(
-                start.Task, start.RequestId, start.Name, true, null, ok.LogPath),
+                start.Session, start.RequestId, start.Name, true, null, ok.LogPath),
             ProcessOutcome.RefusedOutcome no => new ProcessStartedEvent(
-                start.Task, start.RequestId, start.Name, false, no.Refusal),
+                start.Session, start.RequestId, start.Name, false, no.Refusal),
             _ => throw new ArgumentOutOfRangeException(nameof(outcome)),
         });
         return new CommandOutcome.Acknowledged($"start-process {start.Name}");
@@ -331,9 +331,9 @@ public sealed class RunnerDaemon
         _ring.Enqueue(outcome switch
         {
             ProcessOutcome.StoppedOk ok => new ProcessStoppedEvent(
-                stop.Task, stop.RequestId, stop.Name, true, ok.ExitCode),
+                stop.Session, stop.RequestId, stop.Name, true, ok.ExitCode),
             ProcessOutcome.RefusedOutcome no => new ProcessStoppedEvent(
-                stop.Task, stop.RequestId, stop.Name, false, null, no.Refusal),
+                stop.Session, stop.RequestId, stop.Name, false, null, no.Refusal),
             _ => throw new ArgumentOutOfRangeException(nameof(outcome)),
         });
         return new CommandOutcome.Acknowledged($"stop-process {stop.Name}");
@@ -349,9 +349,9 @@ public sealed class RunnerDaemon
         _ring.Enqueue(outcome switch
         {
             ProcessOutcome.WrittenOk ok => new ProcessWrittenEvent(
-                write.Task, write.RequestId, write.Name, true, ok.Bytes),
+                write.Session, write.RequestId, write.Name, true, ok.Bytes),
             ProcessOutcome.RefusedOutcome no => new ProcessWrittenEvent(
-                write.Task, write.RequestId, write.Name, false, 0, no.Refusal),
+                write.Session, write.RequestId, write.Name, false, 0, no.Refusal),
             _ => throw new ArgumentOutOfRangeException(nameof(outcome)),
         });
         return new CommandOutcome.Acknowledged($"write-process {write.Name}");
@@ -472,7 +472,7 @@ public sealed class RunnerDaemon
     private void EmitAliveEvents()
     {
         var now = _clock.GetUtcNow();
-        foreach (var task in _supervisor.LiveTasks)
+        foreach (var task in _supervisor.LiveSessions)
             _ring.Enqueue(new AliveEvent(task, now));
     }
 

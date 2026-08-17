@@ -52,7 +52,7 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
 
         // ── Enroll a machine and seed one submitted task ────────────────────
         string machineToken;
-        TaskId taskId;
+        SessionId sessionId;
         await using (var db = pg.NewContext())
         {
             var tokens = new TokenService(db, TimeProvider.System);
@@ -61,10 +61,10 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
                 enrollment.Token, new MachineDeclaration("box-1", "test", "macos", "standard"), ct);
             machineToken = creds!.Access.Token;
 
-            var store = new TaskStore(db, TimeProvider.System);
+            var store = new SessionStore(db, TimeProvider.System);
             var created = (StoreResult.Applied)await store.CreateAsync(
-                new CreateTask(new LeadClaim(team), team, "the suite is green", CompletionMode.Lead, null), ct);
-            taskId = created.Task.Id;
+                new CreateSession(new LeadClaim(team), team, "the suite is green", CompletionMode.Lead, null), ct);
+            sessionId = created.Session.Id;
         }
 
         // ── docketd dials in with the real channel ──────────────────────────
@@ -82,19 +82,19 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
         // The machine announces readiness + its profiles; the endpoint nudges dispatch.
         Assert.True(await channel.HeartbeatAsync(
             new MachineHeartbeat("box-1", Ready: true, UnderBackPressure: false,
-                new SystemLoad(0, 0, 0), RunningTasks: 0, ["default"], DateTimeOffset.UtcNow), ct));
+                new SystemLoad(0, 0, 0), RunningSessions: 0, ["default"], DateTimeOffset.UtcNow), ct));
 
         // ── A DispatchCommand for the task arrives down the dialed socket ───
         var command = await dispatched.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
-        Assert.Equal(taskId, command.Task);
+        Assert.Equal(sessionId, command.Session);
         Assert.Equal("default", command.Profile);
         Assert.NotEqual("", command.WorkerToken);
 
         // The control plane committed submitted → working before sending (§10).
         await using (var db = pg.NewContext())
         {
-            var state = await new TaskStore(db, TimeProvider.System).GetStateAsync(taskId, ct);
-            Assert.Equal(TaskState.Working, state);
+            var state = await new SessionStore(db, TimeProvider.System).GetStateAsync(sessionId, ct);
+            Assert.Equal(SessionState.Working, state);
         }
 
         // The worker token minted for this dispatch validates as this task's worker.
@@ -102,14 +102,14 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
         {
             var principal = await new TokenService(db, TimeProvider.System).ValidateAsync(command.WorkerToken, ct);
             var worker = Assert.IsType<Principal.Worker>(principal);
-            Assert.Equal(taskId, worker.Caller.Task);
+            Assert.Equal(sessionId, worker.Caller.Session);
         }
 
         // ── started flows back up the same socket and is accepted ───────────
-        Assert.True(await channel.PublishAsync(new StartedEvent(taskId, DateTimeOffset.UtcNow), gapBefore: 0, ct));
+        Assert.True(await channel.PublishAsync(new StartedEvent(sessionId, DateTimeOffset.UtcNow), gapBefore: 0, ct));
         // It does not move the task off working — started confirms the harness is up.
         await using (var db = pg.NewContext())
-            Assert.Equal(TaskState.Working, await new TaskStore(db, TimeProvider.System).GetStateAsync(taskId, ct));
+            Assert.Equal(SessionState.Working, await new SessionStore(db, TimeProvider.System).GetStateAsync(sessionId, ct));
 
         await app.StopAsync(ct);
     }
@@ -175,7 +175,7 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
         Assert.True(await WaitUntilAsync(() => stale.IsConnected, TimeSpan.FromSeconds(15)),
             "the first connection never dialed in");
         Assert.True(await stale.HeartbeatAsync(Ready("box-1"), ct));
-        Assert.Equal(held, (await staleDispatches.Task.WaitAsync(TimeSpan.FromSeconds(30), ct)).Task);
+        Assert.Equal(held, (await staleDispatches.Task.WaitAsync(TimeSpan.FromSeconds(30), ct)).Session);
 
         // ── The reattach: a second connection for the same machine supersedes it ─────
         await using var live = new WebSocketControlPlaneChannel(wsUrl, machineToken, TimeProvider.System);
@@ -204,18 +204,18 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
         // The machine is still there: a task submitted now reaches the surviving channel.
         var next = await SeedSubmittedAsync(team, "the task that proves the machine is still there", ct);
         var arrived = await liveDispatches.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
-        Assert.Equal(next, arrived.Task);
+        Assert.Equal(next, arrived.Session);
 
         // And the work already in flight never noticed — same attempt, no requeue. It is also
         // still TRACKED, which takes both halves of the fix: the replacing connection re-derived
         // it from committed state, and the superseded teardown then left it alone.
         await using (var db = pg.NewContext())
         {
-            var row = await db.Tasks.AsNoTracking().SingleAsync(t => t.Id == held.Value, ct);
-            Assert.Equal(TaskState.Working, row.State);
+            var row = await db.Sessions.AsNoTracking().SingleAsync(t => t.Id == held.Value, ct);
+            Assert.Equal(SessionState.Working, row.State);
             Assert.Equal(0, row.InfrastructureRequeues);
         }
-        Assert.Contains(held, registry.TasksOn(machineId));
+        Assert.Contains(held, registry.SessionsOn(machineId));
         Assert.NotNull(registry.SnapshotFor(machineId));
 
         await app.StopAsync(ct);
@@ -278,7 +278,7 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
         Assert.True(await channel.HeartbeatAsync(Ready("box-1"), ct));
 
         var command = await dispatched.Task.WaitAsync(TimeSpan.FromSeconds(30), ct);
-        Assert.Equal(task, command.Task);
+        Assert.Equal(task, command.Session);
         // The worker token is live right now — this is what the harness on that box
         // authenticates its MCP calls with, so the assertion after the revoke means something.
         Assert.NotEqual(HttpStatusCode.Unauthorized, await McpProbeAsync(baseUrl, command.WorkerToken, ct));
@@ -302,8 +302,8 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
         // And the work it held failed rather than being abandoned on a box nobody
         // trusts. Failed is a park the Lead did not ask for; the only machine just left.
         await using (var db = pg.NewContext())
-            Assert.Equal(TaskState.Failed,
-                (await db.Tasks.AsNoTracking().SingleAsync(t => t.Id == task.Value, ct)).State);
+            Assert.Equal(SessionState.Failed,
+                (await db.Sessions.AsNoTracking().SingleAsync(t => t.Id == task.Value, ct)).State);
 
         await app.StopAsync(ct);
     }
@@ -331,14 +331,14 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
 
     private static MachineHeartbeat Ready(string machineId) =>
         new(machineId, Ready: true, UnderBackPressure: false,
-            new SystemLoad(0, 0, 0), RunningTasks: 0, ["default"], DateTimeOffset.UtcNow);
+            new SystemLoad(0, 0, 0), RunningSessions: 0, ["default"], DateTimeOffset.UtcNow);
 
-    private async Task<TaskId> SeedSubmittedAsync(TeamId team, string criteria, CancellationToken ct)
+    private async Task<SessionId> SeedSubmittedAsync(TeamId team, string criteria, CancellationToken ct)
     {
         await using var db = pg.NewContext();
-        var created = (StoreResult.Applied)await new TaskStore(db, TimeProvider.System).CreateAsync(
-            new CreateTask(new LeadClaim(team), team, criteria, CompletionMode.Lead, null), ct);
-        return created.Task.Id;
+        var created = (StoreResult.Applied)await new SessionStore(db, TimeProvider.System).CreateAsync(
+            new CreateSession(new LeadClaim(team), team, criteria, CompletionMode.Lead, null), ct);
+        return created.Session.Id;
     }
 
     private WebApplication BuildServer()
@@ -371,7 +371,7 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
 
         builder.Services.AddDocketForwarding(); // §8.3: WorkerTools needs the forward orchestrator
         builder.Services.AddSingleton<RunnerEventSink>();
-        builder.Services.AddSingleton(new TaskEventListener(pg.ConnectionString));
+        builder.Services.AddSingleton(new SessionEventListener(pg.ConnectionString));
         builder.Services.AddSingleton<DispatchService>();
         builder.Services.AddHostedService(sp => sp.GetRequiredService<DispatchService>());
 

@@ -90,7 +90,7 @@ public sealed class AcpClient
     private static readonly string ClientVersion =
         typeof(AcpClient).Assembly.GetName().Version?.ToString() ?? "0.0";
 
-    private readonly TaskId _task;
+    private readonly SessionId _task;
     private readonly OutboundEventRing _ring;
     private readonly TimeProvider _clock;
     private readonly AcpSessionRequest _request;
@@ -130,7 +130,7 @@ public sealed class AcpClient
 
     /// <summary>
     /// Running totals for the whole session, in the four disjoint buckets §12 measures.
-    /// Cumulative rather than per-turn on purpose: <c>TaskStore.RecordUsageAsync</c> keeps a
+    /// Cumulative rather than per-turn on purpose: <c>SessionStore.RecordUsageAsync</c> keeps a
     /// high-water mark per bucket, so a client that reported each turn separately would
     /// leave the row holding the <em>largest</em> turn instead of the session's spend.
     /// Feeding it a monotonically rising total makes the max a no-op and the last report the
@@ -157,7 +157,7 @@ public sealed class AcpClient
     private int _messages;
 
     public AcpClient(
-        TaskId task,
+        SessionId task,
         OutboundEventRing ring,
         TimeProvider clock,
         AcpSessionRequest request,
@@ -756,7 +756,7 @@ public sealed class AcpClient
                 $"docketd: task {_task.Value}: this agent does not declare the ACP 'mcpCapabilities.http' " +
                 "capability, so the plane's MCP server cannot be handed to it over the wire. The worker will " +
                 "start with NO docket tools unless the machine wires them in out of band — it cannot call " +
-                "get_task or report_result, so it will do nothing useful (§10).");
+                "get_session or report_result, so it will do nothing useful (§10).");
     }
 
     /// <summary>
@@ -1022,13 +1022,13 @@ public sealed class AcpClient
         // dispatches ended that way, ~400-800 output tokens each, no tool calls, and nothing
         // anywhere said "denied". A session runs in the agent's DEFAULT permission mode
         // unless a profile says otherwise, and for claude-agent-acp that mode prompts before
-        // every MCP tool call — so on a fleet with no Lead watching, the first `get_task` is
+        // every MCP tool call — so on a fleet with no Lead watching, the first `get_session` is
         // the call that gets refused and the worker never starts.
         if (_declined.Add("session/request_permission"))
             _warn(
                 $"docketd: task {_task.Value}: the plane DENIED this worker's permission request for " +
                 $"'{ask.Tool}'{(decision.Message is { Length: > 0 } why ? $" ({why})" : "")}. A worker whose " +
-                "docket tools are denied cannot call get_task or report_result, so it will end its turn " +
+                "docket tools are denied cannot call get_session or report_result, so it will end its turn " +
                 "having done nothing — check that a Lead is answering permission requests, or set this " +
                 "profile to a permission mode that does not prompt (§10, §11).");
 
@@ -1338,7 +1338,7 @@ public sealed class AcpClient
 /// </summary>
 /// <param name="WorkDir">
 /// The session <c>cwd</c>, which ACP requires to be absolute. The same
-/// <c>{work_root}/{task_id}</c> the process is spawned in — a session is directory-scoped
+/// <c>{work_root}/{session_id}</c> the process is spawned in — a session is directory-scoped
 /// in ACP exactly as a harness transcript is in §11, so the two agree.
 /// </param>
 /// <param name="Prompt">

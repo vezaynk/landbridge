@@ -13,7 +13,7 @@ namespace Docket.MultiMachine.Tests;
 /// <c>default</c> profile spawns <c>claude-agent-acp</c> instead of the no-LLM
 /// <c>Docket.CollabHarness</c>. Nothing below the spawn seam changes — this is the §10
 /// config-only harness promise exercised for real: the worker learns its assignment
-/// from <c>session/new</c> MCP + <c>get_task</c>, does the work, and reports back.
+/// from <c>session/new</c> MCP + <c>get_session</c>, does the work, and reports back.
 ///
 /// <para><b>Opt-in, token-spending, and deliberately kept out of the default suite.</b>
 /// The real-worker facts SKIP cleanly unless the run opted in — an Anthropic key in the
@@ -52,8 +52,8 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
 
     /// <summary>
     /// The standing rule every prompt here carries, and it is a fix for a real failure rather
-    /// than boilerplate. These prompts used to say "call the docket get_task tool"; a real
-    /// claude 2.1.231 worker read that as a shell command and ran <c>docket get_task</c> through
+    /// than boilerplate. These prompts used to say "call the docket get_session tool"; a real
+    /// claude 2.1.231 worker read that as a shell command and ran <c>docket get_session</c> through
     /// <c>Bash</c> — a program that does not exist anywhere in this repo, which builds
     /// <c>docketd</c> and nothing else — rather than calling the MCP tool it was already
     /// allow-listed for. Two facts died that way, and one of them looked like a permission-bridge
@@ -68,7 +68,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// would abandon the Bash call it is supposed to wait out and then complete.</para>
     /// </summary>
     private const string McpToolsRule =
-        " Docket's tools are MCP tools, named exactly mcp__docket__get_task, " +
+        " Docket's tools are MCP tools, named exactly mcp__docket__get_session, " +
         "mcp__docket__report_result and so on — call them as tools, under those names. There is " +
         "no `docket` program: no such command exists on this machine, so never run `docket` in a " +
         "shell, and never try to reach the docket MCP server yourself over HTTP or with curl. (A " +
@@ -77,26 +77,26 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         "instead of working around it.";
 
     /// <summary>Generic worker prompt (§7): the specifics live in each task's opaque
-    /// <b>description</b>, read via <c>get_task</c>, so one profile drives every role.</summary>
+    /// <b>description</b>, read via <c>get_session</c>, so one profile drives every role.</summary>
     private const string WorkerPrompt =
         "You are a Docket worker agent. Your FIRST action must be to call the " +
-        "mcp__docket__get_task tool to read your assignment. The assignment's description tells " +
+        "mcp__docket__get_session tool to read your assignment. The assignment's description tells " +
         "you the exact string to report. Your ONLY other action is to call the " +
         "mcp__docket__report_result tool once, with that exact string as resultReference. Do not " +
         "write files, do not explain, do not ask questions. Two tool calls total: " +
-        "mcp__docket__get_task, then mcp__docket__report_result." + McpToolsRule;
+        "mcp__docket__get_session, then mcp__docket__report_result." + McpToolsRule;
 
     /// <summary>
     /// The prompt for scenarios whose description asks for more than an echo (§7: the
     /// specifics belong in the description, and the profile prompt must not contradict them).
     /// <see cref="WorkerPrompt"/> cannot be reused there — it pins the worker to
-    /// "two tool calls total: get_task, then report_result", and a worker that obeys the prompt
+    /// "two tool calls total: get_session, then report_result", and a worker that obeys the prompt
     /// over its assignment skips the very tool the scenario is about, then cheerfully reports
     /// success. That is not a hypothetical: it is what a real haiku worker did.
     /// </summary>
     private const string StepwiseWorkerPrompt =
         "You are a Docket worker agent. Your FIRST action must be to call the " +
-        "mcp__docket__get_task tool to read your assignment. Its description lists numbered " +
+        "mcp__docket__get_session tool to read your assignment. Its description lists numbered " +
         "steps: carry them out in order, exactly as written, using the tools it names. Do not add " +
         "steps, do not skip steps, and do not substitute one tool for another. Do not write or " +
         "edit files unless a step tells you to. Do not explain and do not ask questions." +
@@ -145,7 +145,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
 
         // Step A on machine A: mint + report an unforgeable token.
         var token = NewToken();
-        var stepA = await rig.CreateTaskAsync(EchoDescription("A", token), ct);
+        var stepA = await rig.CreateSessionAsync(EchoDescription("A", token), ct);
         Assert.True(
             await rig.DispatchUntilVerifyingAsync(stepA, "A", MaxAttempts, PerLegBudget, ct),
             "machine A's real claude worker never drove step A to verifying.\n" + await rig.RealWorkerDiagnosticsAsync(stepA, ct));
@@ -155,7 +155,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         Assert.Contains(token, referenceA);
 
         // Step B on machine B: report the token A produced.
-        var stepB = await rig.CreateTaskAsync(EchoDescription("B", token), ct);
+        var stepB = await rig.CreateSessionAsync(EchoDescription("B", token), ct);
         Assert.True(
             await rig.DispatchUntilVerifyingAsync(stepB, "B", MaxAttempts, PerLegBudget, ct),
             "machine B's real claude worker never confirmed the handoff to verifying.\n" + await rig.RealWorkerDiagnosticsAsync(stepB, ct));
@@ -190,7 +190,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
 
         // A serve role registers its service then stays working — a task that, like a
         // failed real worker, never reaches verifying.
-        var task = await rig.CreateTaskAsync("compute-serve", ct);
+        var task = await rig.CreateSessionAsync("compute-serve", ct);
         await rig.DispatchToAsync("A", ct);
         Assert.True(
             await FleetRig.WaitUntilAsync(() => rig.ServiceExistsAsync("compute", ct), TimeSpan.FromSeconds(60)),
@@ -211,7 +211,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     ///
     /// <para>This is the second half of what #102 blocked, and it needed one thing park-resume
     /// did not: the harness has to run in the continued task's directory
-    /// (<c>DispatchCommand.WorkDirTask</c>, seeded from the row and resolved transitively so
+    /// (<c>DispatchCommand.WorkDirSession</c>, seeded from the row and resolved transitively so
     /// chains land on the root). A continuation runs there whether or not it resumes — the
     /// workspace is the work (§7) — and resuming additionally <em>requires</em> it, which is
     /// what this fact turns on: a harness session is <b>directory</b>-local as well as
@@ -222,7 +222,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     ///
     /// <para>The nonce is the proof, and it is airtight for the same reason as above: it appears
     /// only in the FIRST task's spawn prompt. The continuation's row is new — its description
-    /// never carries it, so <c>get_task</c> cannot supply it — and the resume argv is static
+    /// never carries it, so <c>get_session</c> cannot supply it — and the resume argv is static
     /// profile config. A cold-started continuation reaches verifying too; only a resumed one
     /// reaches it with this value.</para>
     /// </summary>
@@ -257,7 +257,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         await rig.AddMachineAsync("A");
 
         // Task one: an ordinary task that finishes. Its worker holds the nonce in conversation.
-        var first = await rig.CreateTaskAsync(EchoDescription("A", "first-done"), ct);
+        var first = await rig.CreateSessionAsync(EchoDescription("A", "first-done"), ct);
         Assert.True(
             await rig.DispatchUntilVerifyingAsync(first, "A", MaxAttempts, PerLegBudget, ct),
             "the first real claude worker never drove its task to verifying.\n"
@@ -272,11 +272,11 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         // "talk to the agent that has the context", and the one where the predecessor's process
         // is long gone rather than merely superseded.
         await rig.AcceptAsync(first, ct);
-        Assert.Equal(TaskState.Completed, await rig.StateAsync(first, ct));
+        Assert.Equal(SessionState.Completed, await rig.StateAsync(first, ct));
 
         // Task two continues it: a new task id, seeded with the inherited session ref and the
         // machine that ran it, and asking for the remembered value.
-        var second = await rig.CreateTaskAsync(ContinuationDescription, ct, continues: first);
+        var second = await rig.CreateSessionAsync(ContinuationDescription, ct, continues: first);
         Assert.Equal(firstSession, await rig.HarnessSessionRefAsync(second, ct));
 
         Assert.True(
@@ -343,7 +343,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
             spawnArgv: ["claude-agent-acp"],
             agentProcesses: true,
             prompt: StepwiseWorkerPrompt,
-            followUp: "There is new input on your assignment. Call mcp__docket__get_task to read it, then continue.");
+            followUp: "There is new input on your assignment. Call mcp__docket__get_session to read it, then continue.");
         await rig.StartAsync(ct);
         await rig.AddMachineAsync("A");
 
@@ -352,7 +352,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         var body = "body-" + NewToken();
 
         // Step 1: a real worker starts the process and completes its own task.
-        var starter = await rig.CreateTaskAsync(StartProcessDescription(processName, port, body), ct);
+        var starter = await rig.CreateSessionAsync(StartProcessDescription(processName, port, body), ct);
         Assert.True(
             await rig.DispatchUntilVerifyingAsync(starter, "A", MaxAttempts, PerLegBudget, ct),
             "the real claude worker never started its process and reported.\n"
@@ -370,13 +370,13 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         // The declaring task is now terminal — accepted and completed — and the process is
         // untouched by that. This is the feature, stated as an assertion.
         await rig.AcceptAsync(starter, ct);
-        Assert.Equal(TaskState.Completed, await rig.StateAsync(starter, ct));
+        Assert.Equal(SessionState.Completed, await rig.StateAsync(starter, ct));
         Assert.Contains(
             rig.ProcessesOn("A"),
             p => p.Name == processName && p.State == ServiceState.Running);
 
         // Step 2: the cleanup worker — a different task, told no names — finds it and stops it.
-        var cleaner = await rig.CreateTaskAsync(CleanupDescription, ct);
+        var cleaner = await rig.CreateSessionAsync(CleanupDescription, ct);
         Assert.True(
             await rig.DispatchUntilVerifyingAsync(cleaner, "A", MaxAttempts, PerLegBudget, ct),
             "the real claude cleanup worker never reported.\n"
@@ -421,7 +421,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
             spawnArgv: ["claude-agent-acp"],
             agentProcesses: true,
             prompt: StepwiseWorkerPrompt,
-            followUp: "There is new input on your assignment. Call mcp__docket__get_task to read it, then continue.");
+            followUp: "There is new input on your assignment. Call mcp__docket__get_session to read it, then continue.");
         await rig.StartAsync(ct);
         await rig.AddMachineAsync("A");
         await rig.AddMachineAsync("B");
@@ -432,7 +432,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         var body = "relayed-" + NewToken();
 
         // Producer on A: start the listener, advertise it, then hold the turn open.
-        var producer = await rig.CreateTaskAsync(
+        var producer = await rig.CreateSessionAsync(
             ServeDescription(processName, serviceName, port, body), ct);
         Assert.True(
             await rig.DispatchUntilAsync(
@@ -446,10 +446,10 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         // land it anywhere — so a late check can read "B" for a service that really was served
         // from A, or worse pass while both ends quietly collapsed onto one machine.
         Assert.Equal("A", rig.MachineRanOn(producer));
-        Assert.Equal(TaskState.Working, await rig.StateAsync(producer, ct));
+        Assert.Equal(SessionState.Working, await rig.StateAsync(producer, ct));
 
         // Consumer on B: a different machine, a different agent, told only the service name.
-        var consumer = await rig.CreateTaskAsync(FetchDescription(serviceName), ct);
+        var consumer = await rig.CreateSessionAsync(FetchDescription(serviceName), ct);
         Assert.True(
             await rig.DispatchUntilVerifyingAsync(consumer, "B", MaxAttempts, PerLegBudget, ct),
             "the real claude consumer never fetched through the forward and reported.\n"
@@ -489,7 +489,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         "You are a Docket worker agent. Remember this test nonce for the rest of this conversation: " +
         $"{nonce}. Do not write it to any file, and do not put it in any tool call yet — a later " +
         "task in this same conversation will ask you to report it. Now call the " +
-        "mcp__docket__get_task tool and do exactly what its description tells you." + McpToolsRule;
+        "mcp__docket__get_session tool and do exactly what its description tells you." + McpToolsRule;
 
     /// <summary>
     /// The follow-up turn for the continuation leg (§11) — generic config carrying no
@@ -497,7 +497,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// is new but whose conversation is not.
     /// </summary>
     private const string ContinuationReportPrompt =
-        "This conversation continues under a new task. FIRST call the mcp__docket__get_task tool " +
+        "This conversation continues under a new task. FIRST call the mcp__docket__get_session tool " +
         "to read that new assignment, then do exactly what its description says. The value it asks " +
         "for is one you were told earlier in this conversation." + McpToolsRule;
 
@@ -515,7 +515,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     // ── §10 process scenario prompts and descriptions ──────────────────────────
 
     private const string ProcessTools =
-        "mcp__docket__get_task,mcp__docket__report_result,mcp__docket__start_process," +
+        "mcp__docket__get_session,mcp__docket__report_result,mcp__docket__start_process," +
         "mcp__docket__list_processes,mcp__docket__stop_process";
 
     /// <summary>Start a long-lived listener as an agent process and finish the task, leaving it
@@ -562,7 +562,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// scenario cannot avoid: the producer has to hold its turn open while its registration is
     /// forwardable, and the consumer has to actually speak to the forwarded port.</summary>
     private const string ServiceTools =
-        "mcp__docket__get_task,mcp__docket__report_result,mcp__docket__start_process," +
+        "mcp__docket__get_session,mcp__docket__report_result,mcp__docket__start_process," +
         "mcp__docket__register_service,mcp__docket__open_forward,Bash";
 
     /// <summary>Producer: bind (via the process), advertise, then stay working. The register

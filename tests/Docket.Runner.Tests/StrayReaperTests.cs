@@ -12,13 +12,13 @@ public class StrayReaperTests : IDisposable
 {
     private readonly List<Process> _spawned = [];
 
-    private Process SpawnStray(string machineId, string? taskId = null)
+    private Process SpawnStray(string machineId, string? sessionId = null)
     {
         var psi = new ProcessStartInfo(TestKit.HarnessPath()) { UseShellExecute = false };
         psi.ArgumentList.Add("child");
         psi.Environment["DOCKET_MACHINE_ID"] = machineId;
-        if (taskId is not null)
-            psi.Environment["DOCKET_TASK_ID"] = taskId;
+        if (sessionId is not null)
+            psi.Environment["DOCKET_SESSION_ID"] = sessionId;
         var process = Process.Start(psi)!;
         _spawned.Add(process);
         return process;

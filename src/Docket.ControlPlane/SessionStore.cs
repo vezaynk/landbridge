@@ -8,7 +8,7 @@ namespace Docket.ControlPlane;
 /// <summary>
 /// The only write path to task state (spec §15: the control plane is the only
 /// path to the state machine). Every mutation runs a transition through
-/// <see cref="TaskStateMachine"/>, then persists the resulting record, its
+/// <see cref="SessionStateMachine"/>, then persists the resulting record, its
 /// effects, and an event row in one transaction — so a transition and its
 /// consequences (token mint/revoke, service clearing, park record) are
 /// atomic, and a NOTIFY fires only if the write commits.
@@ -25,17 +25,17 @@ namespace Docket.ControlPlane;
 /// <see cref="ForwardingServiceCollectionExtensions.AddDocketForwarding"/> and in the pure
 /// store tests, where the rows are the subject and there are no machines to tell.</para>
 /// </summary>
-public sealed class TaskStore(
+public sealed class SessionStore(
     DocketDbContext db,
     TimeProvider clock,
-    TaskStorePolicy? policy = null,
+    SessionStorePolicy? policy = null,
     ForwardTeardownService? forwards = null)
 {
-    public async Task<StoreResult> CreateAsync(CreateTask command, CancellationToken ct = default)
+    public async Task<StoreResult> CreateAsync(CreateSession command, CancellationToken ct = default)
     {
-        var id = TaskId.New();
-        var ns = $"team-{command.Team}/task-{id}";
-        var result = TaskStateMachine.Create(command, id, ns);
+        var id = SessionId.New();
+        var ns = $"team-{command.Team}/session-{id}";
+        var result = SessionStateMachine.Create(command, id, ns);
         if (result is TransitionResult.Rejected r)
             return new StoreResult.Rejected(r.Rule, r.Reason);
 
@@ -44,10 +44,10 @@ public sealed class TaskStore(
         // default — a task carries its own terms, so changing the configured cap never
         // moves the goalposts under work already in flight. Applied to the record too, so
         // what the caller gets back and what the row holds cannot disagree.
-        var task = ((TransitionResult.Transitioned)result).Task with
+        var task = ((TransitionResult.Transitioned)result).Session with
         {
             InfrastructureRequeueLimit =
-                policy?.InfrastructureRequeueLimit ?? TaskRecord.DefaultInfrastructureRequeueLimit,
+                policy?.InfrastructureRequeueLimit ?? SessionRecord.DefaultInfrastructureRequeueLimit,
         };
         // §11 continuation, directory half: resolve which task's work dir holds the session
         // this one will resume, transitively — the source's own answer if it had one (a
@@ -59,14 +59,14 @@ public sealed class TaskStore(
         Guid? workDirTask = null;
         if (command.Continues is { } continues)
         {
-            var source = continues.ContinuedTask.Value;
-            workDirTask = await db.Tasks.AsNoTracking()
+            var source = continues.ContinuedSession.Value;
+            workDirTask = await db.Sessions.AsNoTracking()
                 .Where(t => t.Id == source)
-                .Select(t => t.WorkDirTaskId)
+                .Select(t => t.WorkDirSessionId)
                 .FirstOrDefaultAsync(ct) ?? source;
         }
 
-        db.Tasks.Add(new TaskRow
+        db.Sessions.Add(new SessionRow
         {
             Id = id.Value,
             TeamId = task.Team.Value,
@@ -94,8 +94,8 @@ public sealed class TaskStore(
             // preferred machine hands the runner --resume with no new machinery. Null
             // Continues leaves every field default, i.e. an ordinary profile-targeted
             // task.
-            ContinuesTaskId = command.Continues?.ContinuedTask.Value,
-            WorkDirTaskId = workDirTask,
+            ContinuesSessionId = command.Continues?.ContinuedSession.Value,
+            WorkDirSessionId = workDirTask,
             PreferredMachine = command.Continues?.PreferredMachine,
             OnMachineGone = command.Continues?.OnMachineGone,
             HarnessSessionRef = command.Continues?.InheritedSessionRef,
@@ -106,9 +106,9 @@ public sealed class TaskStore(
     }
 
     /// <summary>Apply a command to an existing task, addressed by id.</summary>
-    public async Task<StoreResult> ApplyAsync(TaskId id, TaskCommand command, CancellationToken ct = default)
+    public async Task<StoreResult> ApplyAsync(SessionId id, SessionCommand command, CancellationToken ct = default)
     {
-        var row = await db.Tasks.FirstOrDefaultAsync(t => t.Id == id.Value, ct);
+        var row = await db.Sessions.FirstOrDefaultAsync(t => t.Id == id.Value, ct);
         if (row is null)
             return new StoreResult.NotFound($"no task {id}");
 
@@ -154,7 +154,7 @@ public sealed class TaskStore(
     /// <para><paramref name="answer"/> is the answer's <em>content</em> (§10/§11), and it
     /// rides every branch for the same reason the routing exists: the caller does not
     /// know which one it is taking, so the text must land either way. All commands cap
-    /// it at the engine, and the row keeps it for the worker's next <c>get_task</c>.
+    /// it at the engine, and the row keeps it for the worker's next <c>get_session</c>.
     /// Null answers nothing in words — the transition still unblocks the task, which is
     /// what an <c>endpoint_wait</c> wake or a bare unblock wants.</para>
     ///
@@ -165,15 +165,15 @@ public sealed class TaskStore(
     /// regardless — the session was already released.</para>
     /// </summary>
     public async Task<StoreResult> AnswerOrWakeAsync(
-        LeadClaim lead, TaskId id, string? leaseMachine, string? answer = null,
+        LeadClaim lead, SessionId id, string? leaseMachine, string? answer = null,
         bool sessionLive = false,
         CancellationToken ct = default)
     {
-        var row = await db.Tasks.FirstOrDefaultAsync(t => t.Id == id.Value, ct);
+        var row = await db.Sessions.FirstOrDefaultAsync(t => t.Id == id.Value, ct);
         if (row is null)
             return new StoreResult.NotFound($"no task {id}");
 
-        if (row.State is TaskState.Parked or TaskState.Failed)
+        if (row.State is SessionState.Parked or SessionState.Failed)
         {
             if (row.TeamId != lead.Team.Value)
                 return new StoreResult.Rejected(Rule.ActorLacksAuthority,
@@ -190,8 +190,8 @@ public sealed class TaskStore(
             // reply to a report still sitting in verifying — is a follow-up on
             // the same session, not a continue-from-blocked. Permission is
             // never this path — ContinueSession / LeadMessage both refuse it.
-            if (row.State == TaskState.Verifying
-                || (row.State == TaskState.Working && row.InputKind is null))
+            if (row.State == SessionState.Verifying
+                || (row.State == SessionState.Working && row.InputKind is null))
                 return await RunTransition(row, new LeadMessage(lead, answer, row.InputKind), ct);
             return await RunTransition(row, new ContinueSession(lead, answer, row.InputKind), ct);
         }
@@ -227,10 +227,10 @@ public sealed class TaskStore(
     /// unscoped, exactly as on every other §12 write.</para>
     /// </summary>
     public async Task<StoreResult> AnswerPermissionAsync(
-        Actor actor, TaskId id, PermissionVerdict verdict, string? message = null,
+        Actor actor, SessionId id, PermissionVerdict verdict, string? message = null,
         CancellationToken ct = default)
     {
-        var row = await db.Tasks.FirstOrDefaultAsync(t => t.Id == id.Value, ct);
+        var row = await db.Sessions.FirstOrDefaultAsync(t => t.Id == id.Value, ct);
         if (row is null)
             return new StoreResult.NotFound($"no task {id}");
 
@@ -247,13 +247,13 @@ public sealed class TaskStore(
     /// refused and the request waits for a person, with <paramref name="reason"/> rendered
     /// beside it on the §12 inbox so the human inherits the concern along with the
     /// decision. The wait deadline is deliberately not reset (see
-    /// <see cref="TaskRow.PermissionEscalatedAt"/>): an escalation nobody picks up parks on
+    /// <see cref="SessionRow.PermissionEscalatedAt"/>): an escalation nobody picks up parks on
     /// the same schedule the Lead's own wait would have.
     /// </summary>
     public async Task<StoreResult> EscalatePermissionAsync(
-        Actor actor, TaskId id, string reason, CancellationToken ct = default)
+        Actor actor, SessionId id, string reason, CancellationToken ct = default)
     {
-        var row = await db.Tasks.FirstOrDefaultAsync(t => t.Id == id.Value, ct);
+        var row = await db.Sessions.FirstOrDefaultAsync(t => t.Id == id.Value, ct);
         if (row is null)
             return new StoreResult.NotFound($"no task {id}");
 
@@ -284,8 +284,8 @@ public sealed class TaskStore(
     {
         while (true)
         {
-            var seen = await db.Tasks.AsNoTracking()
-                .Where(t => t.Id == caller.Task.Value)
+            var seen = await db.Sessions.AsNoTracking()
+                .Where(t => t.Id == caller.Session.Value)
                 .Select(t => new
                 {
                     t.State,
@@ -303,9 +303,9 @@ public sealed class TaskStore(
             if (seen.PermissionVerdict is { } verdict && seen.InputKind == InputRequestKind.Permission)
             {
                 // The note lives on the event, not InputAnswer (that is the Lead's
-                // get_task prose). Same transaction as the verdict, so it is here.
-                var message = await db.TaskEvents.AsNoTracking()
-                    .Where(e => e.TaskId == caller.Task.Value && e.Kind == nameof(AnswerPermission))
+                // get_session prose). Same transaction as the verdict, so it is here.
+                var message = await db.SessionEvents.AsNoTracking()
+                    .Where(e => e.SessionId == caller.Session.Value && e.Kind == nameof(AnswerPermission))
                     .OrderByDescending(e => e.Seq)
                     .Select(e => e.Detail)
                     .FirstOrDefaultAsync(ct);
@@ -313,7 +313,7 @@ public sealed class TaskStore(
             }
 
             // Parked by the sweeper, or moved on for any other reason, with no verdict.
-            if (seen.State != TaskState.BlockedOnInput)
+            if (seen.State != SessionState.BlockedOnInput)
                 return null;
 
             await Task.Delay(pollInterval, clock, ct);
@@ -325,8 +325,8 @@ public sealed class TaskStore(
     /// its per-task fetch, a human through the inbox. Team-scoped for a Lead by the caller.
     /// </summary>
     public async Task<PermissionRequestView?> GetPermissionRequestAsync(
-        TaskId task, CancellationToken ct = default) =>
-        await db.Tasks.AsNoTracking()
+        SessionId task, CancellationToken ct = default) =>
+        await db.Sessions.AsNoTracking()
             .Where(t => t.Id == task.Value)
             .Select(t => new PermissionRequestView(
                 t.Id, t.Namespace, t.TeamId, t.State, t.BlockedAt, t.PermissionTool,
@@ -381,7 +381,7 @@ public sealed class TaskStore(
         // the row lock is held to end of transaction, so concurrent dispatchers
         // skip it. Profile match is the SQL half of check 5, and it resolves a null
         // profile to `default` exactly as the engine's half does (§9 check 5,
-        // TaskStateMachine.ApplyDispatch): "absent a request, default" (§15), so a
+        // SessionStateMachine.ApplyDispatch): "absent a request, default" (§15), so a
         // profile-less task runs where `default` is declared rather than anywhere at all.
         // The two halves have to agree — this clause used to pass a profile-less row to
         // ANY machine, which the engine then refused, so on a fleet where nothing declares
@@ -396,7 +396,7 @@ public sealed class TaskStore(
         var claimedId = await db.Database
             .SqlQuery<Guid>(
                 $"""
-                 SELECT id AS "Value" FROM tasks
+                 SELECT id AS "Value" FROM sessions
                  WHERE state = 'Submitted'
                    AND COALESCE(profile, {MachineSnapshot.DefaultProfile}) = ANY({profiles})
                    AND (
@@ -413,7 +413,7 @@ public sealed class TaskStore(
         if (claimedId == Guid.Empty)
             return new StoreResult.NotFound("no eligible submitted task");
 
-        var claimed = await db.Tasks.FirstAsync(t => t.Id == claimedId, ct);
+        var claimed = await db.Sessions.FirstAsync(t => t.Id == claimedId, ct);
 
         // §6/§11 degrade cold-start: the SQL invariant means a claimed continuation
         // row whose preferred machine is not the asking machine can only be a Degrade
@@ -439,18 +439,18 @@ public sealed class TaskStore(
                 claimed.HarnessSessionRef = null;
                 claimed.PreferredMachine = null;
                 claimed.OnMachineGone = null;
-                // WorkDirTaskId is deliberately NOT cleared. Directory inheritance is a
+                // WorkDirSessionId is deliberately NOT cleared. Directory inheritance is a
                 // property of continuation, not of resume (§7, §11): this task still works
                 // where its predecessor worked, and keeping it means the task's directory is
                 // the same on every attempt instead of moving when a session is abandoned.
                 // On this machine that directory starts empty — the predecessor's artifacts
                 // went with the machine that vanished — which is what the memory-lost event
                 // below is telling the Lead.
-                db.TaskEvents.Add(new TaskEventRow
+                db.SessionEvents.Add(new SessionEventRow
                 {
-                    TaskId = claimed.Id,
+                    SessionId = claimed.Id,
                     TeamId = claimed.TeamId,
-                    Kind = TaskEventRow.ContinuationMemoryLostKind,
+                    Kind = SessionEventRow.ContinuationMemoryLostKind,
                     Detail = $"preferred machine '{gonePreferred}' gone; cold-started on " +
                              $"'{machine.MachineId}' — conversational memory lost",
                     OccurredAt = clock.GetUtcNow(),
@@ -461,7 +461,7 @@ public sealed class TaskStore(
             await tx.CommitAsync(ct);
             // Surface the row's opaque transport metadata so DispatchService can act
             // on it (neither reaches the engine): the trace context parents the
-            // dispatch span on the Lead's create_task trace, and the harness session
+            // dispatch span on the Lead's create_session trace, and the harness session
             // ref — present when the task was worked before and parked/requeued, or
             // seeded from a continuation's inherited session — rides the
             // DispatchCommand back so the runner can resume the transcript (§11). Null
@@ -476,14 +476,14 @@ public sealed class TaskStore(
                 // suppressed with the session ref — a continuation works where its
                 // predecessor worked whether or not it resumes the transcript, so this rides
                 // every dispatch of a continuation, cold starts included.
-                WorkDirTask = claimed.WorkDirTaskId is { } dir ? new TaskId(dir) : null,
+                WorkDirSession = claimed.WorkDirSessionId is { } dir ? new SessionId(dir) : null,
             };
         }
         return result;
     }
 
     /// <summary>
-    /// The seed facts a <c>create_task(continues:)</c> reads off the continued task's
+    /// The seed facts a <c>create_session(continues:)</c> reads off the continued task's
     /// row (§6/§11): its owning Team (the same-Team gate), its profile (the default
     /// when the caller omits one), the opaque harness session ref to resume, the
     /// park machine (a fallback preferred machine when the task is parked and no
@@ -503,13 +503,13 @@ public sealed class TaskStore(
     /// <c>!Revoked</c>: a task that reached a terminal state has had its last instance
     /// revoked, and where it ran is still where it ran.</para>
     /// </summary>
-    public async Task<ContinuationSource?> ReadContinuationSourceAsync(TaskId continued, CancellationToken ct = default) =>
-        await db.Tasks.AsNoTracking()
+    public async Task<ContinuationSource?> ReadContinuationSourceAsync(SessionId continued, CancellationToken ct = default) =>
+        await db.Sessions.AsNoTracking()
             .Where(t => t.Id == continued.Value)
             .Select(t => new ContinuationSource(
                 new TeamId(t.TeamId), t.Profile, t.HarnessSessionRef, t.ParkMachine,
                 db.WorkerInstances
-                    .Where(w => w.TaskId == t.Id && w.MachineId != null)
+                    .Where(w => w.SessionId == t.Id && w.MachineId != null)
                     .OrderByDescending(w => w.CreatedAt)
                     .ThenByDescending(w => w.Id)
                     .Select(w => w.MachineId)
@@ -549,10 +549,10 @@ public sealed class TaskStore(
     public async Task<StoreResult> RegisterServiceAsync(
         WorkerCaller caller, string name, int port, CancellationToken ct = default)
     {
-        var row = await db.Tasks.AsNoTracking().FirstOrDefaultAsync(t => t.Id == caller.Task.Value, ct);
+        var row = await db.Sessions.AsNoTracking().FirstOrDefaultAsync(t => t.Id == caller.Session.Value, ct);
         if (row is null)
-            return new StoreResult.NotFound($"no task {caller.Task}");
-        if (row.State != TaskState.Working)
+            return new StoreResult.NotFound($"no task {caller.Session}");
+        if (row.State != SessionState.Working)
             return new StoreResult.Rejected(Rule.InvalidSourceState,
                 $"services register only while working, not {row.State}");
         if (row.TeamId != caller.Team.Value || row.CurrentInstanceId != caller.Instance.Value)
@@ -562,7 +562,7 @@ public sealed class TaskStore(
         // Tracked, not AsNoTracking: the same-task arm below updates this row.
         var existing = await db.RegisteredServices
             .FirstOrDefaultAsync(s => s.TeamId == caller.Team.Value && s.Name == name, ct);
-        if (existing is not null && existing.TaskId != caller.Task.Value)
+        if (existing is not null && existing.SessionId != caller.Session.Value)
             return new StoreResult.Rejected(Rule.ServiceNameUniqueInTeam,
                 $"service '{name}' is already registered in your Team by another task; " +
                 "pick a name nothing else holds");
@@ -576,7 +576,7 @@ public sealed class TaskStore(
         {
             db.RegisteredServices.Add(new RegisteredServiceRow
             {
-                TaskId = caller.Task.Value,
+                SessionId = caller.Session.Value,
                 TeamId = caller.Team.Value,
                 Name = name,
                 Port = port,
@@ -613,7 +613,7 @@ public sealed class TaskStore(
     /// </summary>
     public async Task<WorkerAssignment?> GetAssignmentAsync(WorkerCaller caller, CancellationToken ct = default)
     {
-        var row = await db.Tasks.AsNoTracking().FirstOrDefaultAsync(t => t.Id == caller.Task.Value, ct);
+        var row = await db.Sessions.AsNoTracking().FirstOrDefaultAsync(t => t.Id == caller.Session.Value, ct);
         if (row is null)
             return null;
         if (row.TeamId != caller.Team.Value || row.CurrentInstanceId != caller.Instance.Value)
@@ -632,7 +632,7 @@ public sealed class TaskStore(
     /// </summary>
     public async Task<TeamStateView> GetTeamStateAsync(TeamId team, CancellationToken ct = default)
     {
-        var rows = await db.Tasks.AsNoTracking()
+        var rows = await db.Sessions.AsNoTracking()
             .Where(t => t.TeamId == team.Value)
             .Select(t => new
             {
@@ -642,7 +642,7 @@ public sealed class TaskStore(
                 t.CompletionMode,
                 t.Attempt,
                 Parked = t.ParkMachine != null,
-                t.ContinuesTaskId,
+                t.ContinuesSessionId,
                 t.CompletionProvenance,
                 // §6/§9 check 7: the infrastructure story is structure, so it rides the
                 // bulk read — the count and why the last requeue happened. On a canceled
@@ -650,11 +650,11 @@ public sealed class TaskStore(
                 t.InfrastructureRequeues,
                 t.LastRequeueReason,
                 // §10: the bulk read carries only a flag that a report exists, never
-                // the prose — the Lead fetches the text per task via get_task_report.
+                // the prose — the Lead fetches the text per task via get_session_report.
                 HasReport = t.WorkerReport != null,
                 // §10/§11 the same way for the worker's question: the KIND is typed
                 // structure and rides along (it tells a Lead who can answer, which is
-                // triage), but the question text does not — get_task_question pulls it.
+                // triage), but the question text does not — get_session_question pulls it.
                 t.InputKind,
                 HasQuestion = t.BlockedAt != null
                     && t.InputKind != null
@@ -667,9 +667,9 @@ public sealed class TaskStore(
             .ToDictionary(g => g.Key, g => g.Count());
 
         var summaries = rows
-            .Select(t => new TeamTaskSummary(
+            .Select(t => new TeamSessionSummary(
                 t.Id, t.Namespace, t.State, t.CompletionMode, t.Attempt, t.Parked,
-                t.ContinuesTaskId, t.CompletionProvenance, t.HasReport,
+                t.ContinuesSessionId, t.CompletionProvenance, t.HasReport,
                 t.InputKind, t.HasQuestion,
                 t.InfrastructureRequeues, t.LastRequeueReason))
             .ToList();
@@ -683,11 +683,11 @@ public sealed class TaskStore(
     /// bulk <see cref="GetTeamStateAsync"/> read (which carries only a flag). Scoped
     /// to the caller's own Team in the query, so a task in another Team — or no task
     /// at all — returns null, indistinguishable and leaking nothing (§13). A non-null
-    /// view with a null <see cref="TaskReportView.Report"/> means the task is the
+    /// view with a null <see cref="SessionReportView.Report"/> means the task is the
     /// Lead's but the worker left no report. A pure read; no transition.
     /// </summary>
-    public async Task<TaskReportView?> GetTaskReportAsync(TeamId team, TaskId task, CancellationToken ct = default) =>
-        await db.Tasks.AsNoTracking()
+    public async Task<SessionReportView?> GetSessionReportAsync(TeamId team, SessionId task, CancellationToken ct = default) =>
+        await db.Sessions.AsNoTracking()
             .Where(t => t.Id == task.Value && t.TeamId == team.Value)
             // §8.1: the artifact pointer rides along with the prose because this is the
             // adjudication read (§7) and the two are asymmetric — §6 REQUIRES the
@@ -698,7 +698,7 @@ public sealed class TaskStore(
             // count, cap, and the last reason — because this is where a Lead asks "what
             // happened to this task", and for a task the cap abandoned it is the ONLY
             // answer: there is no worker report to read when nothing ever finished.
-            .Select(t => new TaskReportView(
+            .Select(t => new SessionReportView(
                 t.Id, t.Namespace, t.WorkerReport, t.ResultReference,
                 t.InfrastructureRequeues, t.InfrastructureRequeueLimit, t.LastRequeueReason))
             .FirstOrDefaultAsync(ct);
@@ -706,7 +706,7 @@ public sealed class TaskStore(
     /// <summary>
     /// The Lead's deliberate per-task question fetch (§10/§11, §13) — the read half of
     /// the human-in-the-loop channel, shaped exactly like
-    /// <see cref="GetTaskReportAsync"/>: the worker's opaque question for one task,
+    /// <see cref="GetSessionReportAsync"/>: the worker's opaque question for one task,
     /// pulled one item at a time rather than riding the bulk
     /// <see cref="GetTeamStateAsync"/> read (which carries the typed kind and a flag,
     /// never the prose). It returns the answer already given alongside, so a Lead — or
@@ -716,32 +716,32 @@ public sealed class TaskStore(
     /// non-null view with a null question means the task is the Lead's but nothing was
     /// asked. A pure read; no transition.
     /// </summary>
-    public async Task<TaskQuestionView?> GetTaskQuestionAsync(TeamId team, TaskId task, CancellationToken ct = default) =>
-        await db.Tasks.AsNoTracking()
+    public async Task<SessionQuestionView?> GetSessionQuestionAsync(TeamId team, SessionId task, CancellationToken ct = default) =>
+        await db.Sessions.AsNoTracking()
             .Where(t => t.Id == task.Value && t.TeamId == team.Value)
-            .Select(t => new TaskQuestionView(
+            .Select(t => new SessionQuestionView(
                 t.Id, t.Namespace, t.State, t.InputKind, t.InputQuestion, t.InputAnswer,
                 t.PermissionTool, t.PermissionVerdict, t.PermissionEscalationReason))
             .FirstOrDefaultAsync(ct);
 
     /// <summary>
     /// The wait-TTL sweeper's poll (§11): every task in
-    /// <see cref="TaskState.BlockedOnInput"/> with the timestamp it entered that
-    /// state (<see cref="TaskRow.BlockedAt"/>) and its current attempt. A pure
+    /// <see cref="SessionState.BlockedOnInput"/> with the timestamp it entered that
+    /// state (<see cref="SessionRow.BlockedAt"/>) and its current attempt. A pure
     /// read — no transition, no prose. The sweeper ages <c>BlockedAt</c> against
     /// the configured wait TTL and cross-references the connection registry for
     /// the dispatched machine's liveness, then expresses the outcome as a
     /// <see cref="WaitTtlExpired"/> or <see cref="LivenessLost"/> command through
     /// the store — the engine, never raw SQL, owns every transition (§15).
     /// </summary>
-    public async Task<IReadOnlyList<BlockedTaskView>> ListBlockedAsync(CancellationToken ct = default) =>
-        await db.Tasks.AsNoTracking()
+    public async Task<IReadOnlyList<BlockedSessionView>> ListBlockedAsync(CancellationToken ct = default) =>
+        await db.Sessions.AsNoTracking()
             .Where(t => t.BlockedAt != null
-                && (t.State == TaskState.BlockedOnInput
-                    || (t.State == TaskState.Working && t.InputKind != null
+                && (t.State == SessionState.BlockedOnInput
+                    || (t.State == SessionState.Working && t.InputKind != null
                         && t.InputKind != InputRequestKind.Permission)))
             .OrderBy(t => t.BlockedAt)
-            .Select(t => new BlockedTaskView(t.Id, t.BlockedAt, t.Attempt, t.HarnessSessionRef))
+            .Select(t => new BlockedSessionView(t.Id, t.BlockedAt, t.Attempt, t.HarnessSessionRef))
             .ToListAsync(ct);
 
     /// <summary>
@@ -749,8 +749,8 @@ public sealed class TaskStore(
     /// what <see cref="DispatchService.RehydrateMachineAsync"/> re-adopts when that
     /// machine reconnects, so a plane restart no longer strands in-flight work.
     ///
-    /// <para>Both live states are included: <see cref="TaskState.Working"/>, and
-    /// <see cref="TaskState.BlockedOnInput"/> — a blocked task's harness process is
+    /// <para>Both live states are included: <see cref="SessionState.Working"/>, and
+    /// <see cref="SessionState.BlockedOnInput"/> — a blocked task's harness process is
     /// expected to be gone but the machine still holds its lease until the wait-TTL
     /// sweeper parks it or the machine dies (§11), and the sweeper resolves that machine
     /// through the registry, so it has to be re-adopted too or a blocked task outlives a
@@ -758,7 +758,7 @@ public sealed class TaskStore(
     ///
     /// <para><b>Fenced on the current worker instance</b> (§9.14), which is what keeps
     /// re-adoption from resurrecting the wrong dispatch. The row's
-    /// <see cref="TaskRow.CurrentInstanceId"/> names the one incumbent attempt, and the
+    /// <see cref="SessionRow.CurrentInstanceId"/> names the one incumbent attempt, and the
     /// instance row carries the machine it was minted for — so a task is re-adopted only
     /// by the machine its live incumbent instance actually runs on. The two exclusions
     /// that matters for: a requeue nulls <c>CurrentInstanceId</c> and revokes the
@@ -768,17 +768,17 @@ public sealed class TaskStore(
     /// so a stale instance's events keep landing on an untracked task and are still
     /// refused rather than reviving a dispatch that has moved on.</para>
     /// </summary>
-    public async Task<IReadOnlyList<TaskId>> HeldDispatchesOnAsync(
+    public async Task<IReadOnlyList<SessionId>> HeldDispatchesOnAsync(
         string machineId, CancellationToken ct = default)
     {
-        var ids = await db.Tasks.AsNoTracking()
-            .Where(t => (t.State == TaskState.Working || t.State == TaskState.BlockedOnInput)
+        var ids = await db.Sessions.AsNoTracking()
+            .Where(t => (t.State == SessionState.Working || t.State == SessionState.BlockedOnInput)
                 && db.WorkerInstances.Any(w =>
                     w.Id == t.CurrentInstanceId && !w.Revoked && w.MachineId == machineId))
             .OrderBy(t => t.Id)
             .Select(t => t.Id)
             .ToListAsync(ct);
-        return ids.Select(id => new TaskId(id)).ToArray();
+        return ids.Select(id => new SessionId(id)).ToArray();
     }
 
     /// <summary>
@@ -787,20 +787,20 @@ public sealed class TaskStore(
     /// inbound runner event still bears on a working task — e.g. an
     /// <c>exited</c> after the worker already reported result is moot (§10).
     /// </summary>
-    public async Task<TaskState?> GetStateAsync(TaskId id, CancellationToken ct = default) =>
-        await db.Tasks.AsNoTracking()
+    public async Task<SessionState?> GetStateAsync(SessionId id, CancellationToken ct = default) =>
+        await db.Sessions.AsNoTracking()
             .Where(t => t.Id == id.Value)
-            .Select(t => (TaskState?)t.State)
+            .Select(t => (SessionState?)t.State)
             .FirstOrDefaultAsync(ct);
 
     /// <summary>
     /// True when a <c>working</c> task has a pending question (not a permission
     /// wait). A turn ending then is idle-correct, not a silent death.
     /// </summary>
-    public async Task<bool> IsAwaitingLeadAsync(TaskId id, CancellationToken ct = default) =>
-        await db.Tasks.AsNoTracking()
+    public async Task<bool> IsAwaitingLeadAsync(SessionId id, CancellationToken ct = default) =>
+        await db.Sessions.AsNoTracking()
             .AnyAsync(t => t.Id == id.Value
-                && t.State == TaskState.Working
+                && t.State == SessionState.Working
                 && t.BlockedAt != null
                 && t.InputKind != null
                 && t.InputKind != InputRequestKind.Permission, ct);
@@ -817,8 +817,8 @@ public sealed class TaskStore(
     /// engine's.</para>
     /// </summary>
     public async Task<IncumbentDispatchView?> GetIncumbentDispatchAsync(
-        TaskId id, CancellationToken ct = default) =>
-        await db.Tasks.AsNoTracking()
+        SessionId id, CancellationToken ct = default) =>
+        await db.Sessions.AsNoTracking()
             .Where(t => t.Id == id.Value)
             .Select(t => new IncumbentDispatchView(
                 t.State,
@@ -830,27 +830,27 @@ public sealed class TaskStore(
     /// something it started is meant to stay reachable. Read by the §10 per-task
     /// liveness scan: a service-bearing task is exempt from the no-progress ceiling,
     /// because sitting idle while others use its service is the job, not a hang. It
-    /// is deliberately this fact and not a flag on <c>create_task</c>: the worker
+    /// is deliberately this fact and not a flag on <c>create_session</c>: the worker
     /// earns the exemption by a deliberate, observable protocol act at the moment it
     /// becomes true, rather than the Lead predicting it before any work has happened
     /// (§2 principle 2 — derive, do not ask).
     /// </summary>
-    public Task<bool> HasRegisteredServiceAsync(TaskId id, CancellationToken ct = default) =>
-        db.RegisteredServices.AsNoTracking().AnyAsync(s => s.TaskId == id.Value, ct);
+    public Task<bool> HasRegisteredServiceAsync(SessionId id, CancellationToken ct = default) =>
+        db.RegisteredServices.AsNoTracking().AnyAsync(s => s.SessionId == id.Value, ct);
 
     /// <summary>
     /// Stamps the opaque harness session ref onto a task row (§11 resume), from a
     /// <see cref="Docket.Contracts.SessionStartedEvent"/> the runner event sink
     /// received. Not a state transition — this is transport metadata the plane
-    /// never interprets (like <see cref="TaskRow.ResultReference"/>/<c>TraceContext</c>),
+    /// never interprets (like <see cref="SessionRow.ResultReference"/>/<c>TraceContext</c>),
     /// so it is a targeted set-based write that runs no engine transition, takes no
     /// xmin token, and fires no NOTIFY — exactly the shape of the token-revoke
     /// effect. Latest write wins: a resumed or restarted session overwrites the ref
     /// so a subsequent park carries the current session. A no-op row count when the
     /// task no longer exists, which is fine — the ref is only ever read on dispatch.
     /// </summary>
-    public async Task StampHarnessSessionRefAsync(TaskId id, string sessionRef, CancellationToken ct = default) =>
-        await db.Tasks
+    public async Task StampHarnessSessionRefAsync(SessionId id, string sessionRef, CancellationToken ct = default) =>
+        await db.Sessions
             .Where(t => t.Id == id.Value)
             .ExecuteUpdateAsync(s => s.SetProperty(t => t.HarnessSessionRef, sessionRef), ct);
 
@@ -858,15 +858,15 @@ public sealed class TaskStore(
     /// The machine of this task's most recent dispatch — durable on the instance
     /// row, so a fail that never wrote a park record can still pin session/load.
     /// </summary>
-    private string? LastMachineOf(Guid taskId) =>
+    private string? LastMachineOf(Guid sessionId) =>
         db.WorkerInstances.Local
-            .Where(w => w.TaskId == taskId && w.MachineId != null)
+            .Where(w => w.SessionId == sessionId && w.MachineId != null)
             .OrderByDescending(w => w.CreatedAt)
             .ThenByDescending(w => w.Id)
             .Select(w => w.MachineId)
             .FirstOrDefault()
         ?? db.WorkerInstances
-            .Where(w => w.TaskId == taskId && w.MachineId != null)
+            .Where(w => w.SessionId == sessionId && w.MachineId != null)
             .OrderByDescending(w => w.CreatedAt)
             .ThenByDescending(w => w.Id)
             .Select(w => w.MachineId)
@@ -885,21 +885,21 @@ public sealed class TaskStore(
     /// longer exists, which is fine — the row is only ever read by the dashboard.
     /// </summary>
     public async Task RecordAuthFailureAsync(
-        TaskId task, string operation, string target, string errorCode, string? missingScope,
+        SessionId task, string operation, string target, string errorCode, string? missingScope,
         CancellationToken ct = default)
     {
-        var teamId = await db.Tasks.AsNoTracking()
+        var teamId = await db.Sessions.AsNoTracking()
             .Where(t => t.Id == task.Value)
             .Select(t => (Guid?)t.TeamId)
             .FirstOrDefaultAsync(ct);
         if (teamId is null)
             return;
 
-        db.TaskEvents.Add(new TaskEventRow
+        db.SessionEvents.Add(new SessionEventRow
         {
-            TaskId = task.Value,
+            SessionId = task.Value,
             TeamId = teamId.Value,
-            Kind = TaskEventRow.AuthFailedKind,
+            Kind = SessionEventRow.AuthFailedKind,
             AuthOperation = operation,
             AuthTarget = target,
             AuthErrorCode = errorCode,
@@ -918,20 +918,20 @@ public sealed class TaskStore(
     /// are stored verbatim, nulls and all. A no-op when the task is gone.
     /// </summary>
     public async Task RecordSubagentSpawnAsync(
-        TaskId task, string? agentId, string? parentAgentId, CancellationToken ct = default)
+        SessionId task, string? agentId, string? parentAgentId, CancellationToken ct = default)
     {
-        var teamId = await db.Tasks.AsNoTracking()
+        var teamId = await db.Sessions.AsNoTracking()
             .Where(t => t.Id == task.Value)
             .Select(t => (Guid?)t.TeamId)
             .FirstOrDefaultAsync(ct);
         if (teamId is null)
             return;
 
-        db.TaskEvents.Add(new TaskEventRow
+        db.SessionEvents.Add(new SessionEventRow
         {
-            TaskId = task.Value,
+            SessionId = task.Value,
             TeamId = teamId.Value,
-            Kind = TaskEventRow.SubagentSpawnedKind,
+            Kind = SessionEventRow.SubagentSpawnedKind,
             SubagentId = agentId,
             SubagentParentId = parentAgentId,
             OccurredAt = clock.GetUtcNow(),
@@ -962,8 +962,8 @@ public sealed class TaskStore(
     /// </summary>
     public async Task RecordUsageAsync(UsageReportedEvent report, CancellationToken ct = default)
     {
-        var teamId = await db.Tasks.AsNoTracking()
-            .Where(t => t.Id == report.Task.Value)
+        var teamId = await db.Sessions.AsNoTracking()
+            .Where(t => t.Id == report.Session.Value)
             .Select(t => (Guid?)t.TeamId)
             .FirstOrDefaultAsync(ct);
         if (teamId is null)
@@ -972,17 +972,17 @@ public sealed class TaskStore(
         // The empty string IS the unnamed model in storage: a composite primary key cannot
         // contain a NULL (DocketDbContext explains the trade), and the view maps it back.
         var model = report.Model ?? "";
-        var row = await db.TaskUsage
-            .FirstOrDefaultAsync(u => u.TaskId == report.Task.Value && u.Model == model, ct);
+        var row = await db.SessionUsage
+            .FirstOrDefaultAsync(u => u.SessionId == report.Session.Value && u.Model == model, ct);
         if (row is null)
         {
-            row = new TaskUsageRow
+            row = new SessionUsageRow
             {
-                TaskId = report.Task.Value,
+                SessionId = report.Session.Value,
                 Model = model,
                 TeamId = teamId.Value,
             };
-            db.TaskUsage.Add(row);
+            db.SessionUsage.Add(row);
         }
 
         row.InputTokens = Math.Max(row.InputTokens, report.InputTokens);
@@ -995,26 +995,26 @@ public sealed class TaskStore(
             row.CostUsd = cost;
         row.ReportedAt = clock.GetUtcNow();
 
-        await CommitAsync(report.Task.Value, ct);
+        await CommitAsync(report.Session.Value, ct);
     }
 
     private async Task<StoreResult> RunTransition(
-        TaskRow row, TaskCommand command, CancellationToken ct,
+        SessionRow row, SessionCommand command, CancellationToken ct,
         Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction? outerTx = null)
     {
         var before = row.State;
-        var result = TaskStateMachine.Apply(row.ToDomain(), command);
+        var result = SessionStateMachine.Apply(row.ToDomain(), command);
         if (result is TransitionResult.Rejected r)
             return new StoreResult.Rejected(r.Rule, r.Reason);
 
         var ok = (TransitionResult.Transitioned)result;
-        row.CopyFrom(ok.Task);
+        row.CopyFrom(ok.Session);
         // #23, §7: the reported result reference is opaque content the store
         // captures on the working → verifying transition. The engine and
-        // TaskRecord stay content-free (the reference never lands on the pure
+        // SessionRecord stay content-free (the reference never lands on the pure
         // state), and CopyFrom deliberately does not carry it — so a succeeding
         // ReportResult is the one place the row's ResultReference is written. It is
-        // read back by the Lead's per-task get_task_report fetch and the §12
+        // read back by the Lead's per-task get_session_report fetch and the §12
         // dashboard (#81) — the §7 adjudication read — alongside the worker's
         // optional in-band report below.
         if (command is ReportResult reported)
@@ -1047,7 +1047,7 @@ public sealed class TaskStore(
             row.InputQuestion = ri.Question;
             // A permission ask is not a new prose question. Clearing InputAnswer
             // here used to wipe a WakeParked Lead note the moment Goose (in
-            // approve mode) asked allow-once for get_task; the worker then
+            // approve mode) asked allow-once for get_session; the worker then
             // resumed seeing "e2e auto-allow" as its assignment answer.
             if (ri.Kind != InputRequestKind.Permission)
                 row.InputAnswer = null;
@@ -1078,7 +1078,7 @@ public sealed class TaskStore(
         {
             row.PermissionVerdict = decided.Verdict;
             // The permission note is on the event row (Detail), not InputAnswer.
-            // InputAnswer is the Lead's prose to the worker (get_task). Mixing
+            // InputAnswer is the Lead's prose to the worker (get_session). Mixing
             // them made approve-mode MCP tools overwrite a WakeParked answer.
         }
         else if (command is EscalatePermission escalated)
@@ -1091,7 +1091,7 @@ public sealed class TaskStore(
         // AnswerInput for a still-blocked task, WakeParked for one the sweeper parked
         // first. Captured here beside BlockedAt for the same reason ResultReference is:
         // opaque content the engine validated (length only) but never landed on the
-        // pure record. The redispatched worker reads it back on get_task. Only a
+        // pure record. The redispatched worker reads it back on get_session. Only a
         // command that actually carries words writes: clearing is the asking side's
         // job, so a wordless wake (an endpoint_wait's service appearing, a Lead
         // resuming a task it parked itself) never erases a live exchange.
@@ -1111,7 +1111,7 @@ public sealed class TaskStore(
         // claimed by any profile-matching box, and load then runs in the wrong
         // cwd. Continuations already carry their own preferred machine — leave
         // those alone. Pin, not Degrade: gone means wait, not a cold start.
-        if (ok.Task.State is TaskState.Parked or TaskState.Failed
+        if (ok.Session.State is SessionState.Parked or SessionState.Failed
             && row.PreferredMachine is null)
         {
             var lastMachine = row.ParkMachine ?? LastMachineOf(row.Id);
@@ -1188,7 +1188,7 @@ public sealed class TaskStore(
         if (teardown.Count > 0 && forwards is not null)
             await forwards.CloseAsync(teardown, ct);
 
-        return new StoreResult.Applied(ok.Task, ok.Effects);
+        return new StoreResult.Applied(ok.Session, ok.Effects);
     }
 
     /// <summary>
@@ -1198,7 +1198,7 @@ public sealed class TaskStore(
     /// close once the transition has actually committed (§8.3). Empty for every other
     /// effect and for a task holding no forwards, which is the overwhelming majority.
     /// </summary>
-    private IReadOnlyList<ForwardTeardown> ApplyEffects(TaskRow row, IReadOnlyList<Effect> effects)
+    private IReadOnlyList<ForwardTeardown> ApplyEffects(SessionRow row, IReadOnlyList<Effect> effects)
     {
         IReadOnlyList<ForwardTeardown> teardown = [];
         foreach (var effect in effects)
@@ -1209,7 +1209,7 @@ public sealed class TaskStore(
                     db.WorkerInstances.Add(new WorkerInstanceRow
                     {
                         Id = mint.Instance.Value,
-                        TaskId = row.Id,
+                        SessionId = row.Id,
                         Revoked = false,
                         CreatedAt = clock.GetUtcNow(),
                         // §12: the durable record of where this dispatch ran, so a terminal
@@ -1228,7 +1228,7 @@ public sealed class TaskStore(
                     break;
 
                 case ClearServicesAndForwards:
-                    db.RegisteredServices.Where(s => s.TaskId == row.Id).ExecuteDelete();
+                    db.RegisteredServices.Where(s => s.SessionId == row.Id).ExecuteDelete();
                     // §8.3: leaving working also releases the task's relay forwards, and
                     // that takes both halves. Read the live ones FIRST — the revoke below
                     // is what makes them stop being live — so the post-commit close knows
@@ -1240,12 +1240,12 @@ public sealed class TaskStore(
                     // rolls this back with everything else, so nothing is closed for a
                     // transition that never happened.
                     teardown = db.RelayGrants
-                        .Where(g => g.ProducerTaskId == row.Id && !g.Revoked)
-                        .Select(g => new { g.ForwardId, g.ConsumerTaskId })
+                        .Where(g => g.ProducerSessionId == row.Id && !g.Revoked)
+                        .Select(g => new { g.ForwardId, g.ConsumerSessionId })
                         .ToList()
                         .Select(g => new ForwardTeardown(
-                            new TaskId(row.Id), g.ForwardId.ToString(),
-                            g.ConsumerTaskId is { } consumer ? new TaskId(consumer) : null))
+                            new SessionId(row.Id), g.ForwardId.ToString(),
+                            g.ConsumerSessionId is { } consumer ? new SessionId(consumer) : null))
                         .ToList();
                     // Revoke every live grant this task produced, so a grant issued
                     // against a now-gone service can never open a tunnel — the same
@@ -1253,7 +1253,7 @@ public sealed class TaskStore(
                     // revoke closes the door; close-forward ends what is already through
                     // it, since a grant only ever gated open.
                     db.RelayGrants
-                        .Where(g => g.ProducerTaskId == row.Id && !g.Revoked)
+                        .Where(g => g.ProducerSessionId == row.Id && !g.Revoked)
                         .ExecuteUpdate(s => s.SetProperty(g => g.Revoked, true));
                     break;
 
@@ -1274,12 +1274,12 @@ public sealed class TaskStore(
     }
 
     private void AppendEvent(
-        Guid taskId, Guid teamId, string kind, TaskState? from, TaskState to, string? detail,
+        Guid sessionId, Guid teamId, string kind, SessionState? from, SessionState to, string? detail,
         InputRequestKind? inputKind = null, LivenessLossReason? livenessReason = null,
         PermissionVerdict? permissionVerdict = null, PermissionAnswerer? permissionAnswerer = null)
-        => db.TaskEvents.Add(new TaskEventRow
+        => db.SessionEvents.Add(new SessionEventRow
         {
-            TaskId = taskId,
+            SessionId = sessionId,
             TeamId = teamId,
             Kind = kind,
             FromState = from,
@@ -1315,7 +1315,7 @@ public sealed class TaskStore(
     /// are two statements and a NOTIFY must not outlive a rolled-back insert.</para>
     /// </summary>
     private async Task CommitAsync(
-        Guid taskId, CancellationToken ct,
+        Guid sessionId, CancellationToken ct,
         Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction? outerTx = null)
     {
         var ownTx = outerTx is null
@@ -1327,7 +1327,7 @@ public sealed class TaskStore(
             // NOTIFY in the same transaction: subscribers wake only on committed
             // writes, and never on a rolled-back one.
             await db.Database.ExecuteSqlAsync(
-                $"SELECT pg_notify({DocketDbContext.EventChannel}, {taskId.ToString()})", ct);
+                $"SELECT pg_notify({DocketDbContext.EventChannel}, {sessionId.ToString()})", ct);
             if (ownTx is not null)
                 await ownTx.CommitAsync(ct);
         }

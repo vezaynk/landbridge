@@ -25,8 +25,8 @@ public class WebSocketControlPlaneChannelTests
         using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
         var ct = cts.Token;
 
-        var commandTask = TaskId.New(); // the command the server pushes down
-        var eventTask = TaskId.New();   // the event the channel publishes up
+        var commandTask = SessionId.New(); // the command the server pushes down
+        var eventTask = SessionId.New();   // the event the channel publishes up
 
         var gate = new object();
         var receivedEvents = new List<RunnerEvent>();
@@ -93,11 +93,11 @@ public class WebSocketControlPlaneChannelTests
         Assert.True(await channel.PublishAsync(new StartedEvent(eventTask, clock.GetUtcNow()), gapBefore: 0, ct));
         Assert.True(await channel.HeartbeatAsync(
             new MachineHeartbeat("machine-ws", Ready: true, UnderBackPressure: false,
-                new SystemLoad(0, 0, 0), RunningTasks: 0, ["default"], clock.GetUtcNow()), ct));
+                new SystemLoad(0, 0, 0), RunningSessions: 0, ["default"], clock.GetUtcNow()), ct));
 
         // The server decoded both frames.
         Assert.True(await TestKit.WaitUntilAsync(
-            () => { lock (gate) return receivedEvents.OfType<StartedEvent>().Any(e => e.Task == eventTask); },
+            () => { lock (gate) return receivedEvents.OfType<StartedEvent>().Any(e => e.Session == eventTask); },
             TimeSpan.FromSeconds(10)), "server never received the published event");
         Assert.True(await TestKit.WaitUntilAsync(
             () => { lock (gate) return receivedHeartbeats.Count > 0; },

@@ -30,7 +30,7 @@ public sealed partial class MacOsProcessInventory : IProcessInventory
     // child's environment, never argv), so scanning the whole KERN_PROCARGS2
     // string region past the argc header for these prefixes is unambiguous.
     private static ReadOnlySpan<byte> MachineIdPrefix => "DOCKET_MACHINE_ID="u8;
-    private static ReadOnlySpan<byte> TaskIdPrefix => "DOCKET_TASK_ID="u8;
+    private static ReadOnlySpan<byte> SessionIdPrefix => "DOCKET_SESSION_ID="u8;
 
     public IReadOnlyList<TaggedProcess> ListDocketProcesses()
     {
@@ -59,8 +59,8 @@ public sealed partial class MacOsProcessInventory : IProcessInventory
                 if (pid <= 0 || pid == selfPid)
                     continue;
 
-                if (TryReadTags(pid, buffer, out var machineId, out var taskId) && machineId is not null)
-                    found.Add(new TaggedProcess(pid, machineId, taskId));
+                if (TryReadTags(pid, buffer, out var machineId, out var sessionId) && machineId is not null)
+                    found.Add(new TaggedProcess(pid, machineId, sessionId));
             }
         }
         finally
@@ -125,10 +125,10 @@ public sealed partial class MacOsProcessInventory : IProcessInventory
     /// natural, uid-free filter to same-user processes.
     /// </summary>
     [SupportedOSPlatform("macos")]
-    private static bool TryReadTags(int pid, byte[] buffer, out string? machineId, out string? taskId)
+    private static bool TryReadTags(int pid, byte[] buffer, out string? machineId, out string? sessionId)
     {
         machineId = null;
-        taskId = null;
+        sessionId = null;
 
         nuint size = (nuint)buffer.Length;
         int rc;
@@ -146,11 +146,11 @@ public sealed partial class MacOsProcessInventory : IProcessInventory
         // KEY=VALUE\0 strings]. Skip the argc header and scan the NUL-delimited
         // strings for our env-only prefixes; argv can't collide with them.
         var region = buffer.AsSpan(sizeof(int), (int)size - sizeof(int));
-        ScanForTags(region, ref machineId, ref taskId);
+        ScanForTags(region, ref machineId, ref sessionId);
         return true;
     }
 
-    private static void ScanForTags(ReadOnlySpan<byte> region, ref string? machineId, ref string? taskId)
+    private static void ScanForTags(ReadOnlySpan<byte> region, ref string? machineId, ref string? sessionId)
     {
         var start = 0;
         for (var i = 0; i <= region.Length; i++)
@@ -163,11 +163,11 @@ public sealed partial class MacOsProcessInventory : IProcessInventory
                 var segment = region[start..i];
                 if (machineId is null && segment.StartsWith(MachineIdPrefix))
                     machineId = Encoding.UTF8.GetString(segment[MachineIdPrefix.Length..]);
-                else if (taskId is null && segment.StartsWith(TaskIdPrefix))
-                    taskId = Encoding.UTF8.GetString(segment[TaskIdPrefix.Length..]);
+                else if (sessionId is null && segment.StartsWith(SessionIdPrefix))
+                    sessionId = Encoding.UTF8.GetString(segment[SessionIdPrefix.Length..]);
             }
 
-            if (machineId is not null && taskId is not null)
+            if (machineId is not null && sessionId is not null)
                 return; // both found; the rest of the block can't tell us more
 
             start = i + 1;

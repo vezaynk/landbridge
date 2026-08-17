@@ -16,7 +16,7 @@ public class DocketClaimsTests
     [Fact]
     public void Worker_principal_round_trips_with_all_claims()
     {
-        var caller = new WorkerCaller(TeamId.New(), TaskId.New(), WorkerInstanceId.New());
+        var caller = new WorkerCaller(TeamId.New(), SessionId.New(), WorkerInstanceId.New());
 
         var restored = DocketClaims.ToPrincipal(
             DocketClaims.ToClaimsPrincipal(new Principal.Worker(caller)));
@@ -28,7 +28,7 @@ public class DocketClaimsTests
     [Fact]
     public void Worker_principal_is_reachable_as_a_worker_caller()
     {
-        var caller = new WorkerCaller(TeamId.New(), TaskId.New(), WorkerInstanceId.New());
+        var caller = new WorkerCaller(TeamId.New(), SessionId.New(), WorkerInstanceId.New());
         var user = DocketClaims.ToClaimsPrincipal(new Principal.Worker(caller));
 
         Assert.Equal(caller, DocketClaims.AsWorker(user));

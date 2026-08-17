@@ -55,10 +55,10 @@ public sealed class OpenForwardEndToEndTests(PostgresFixture pg) : IAsyncLifetim
         registry.Register("mc", new HashSet<string> { "default" }, async (command, token) =>
         {
             if (command is OpenForwardCommand { Role: RelayTunnel.ConsumerRole } c)
-                await sink.HandleAsync(new ForwardOpenedEvent(c.Task, c.ForwardId, boundPort), token);
+                await sink.HandleAsync(new ForwardOpenedEvent(c.Session, c.ForwardId, boundPort), token);
         });
         registry.Register("mp", new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
-        registry.TrackDispatch("mc", consumer.Task);
+        registry.TrackDispatch("mc", consumer.Session);
         registry.TrackDispatch("mp", producerTask);
 
         await using (var worker = await RelayGrantTestKit.ConnectMcpAsync(baseUri, consumer.Token, ct))

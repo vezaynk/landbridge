@@ -9,7 +9,7 @@ namespace Docket.MultiMachine.Tests;
 /// </summary>
 internal static class RealHarnessProfiles
 {
-    public static readonly string[] CodexBareTools = ["get_task", "report_result", "request_input"];
+    public static readonly string[] CodexBareTools = ["get_session", "report_result", "request_input"];
 
     public static RealHarnessProfile Claude(string bin) => new()
     {
@@ -19,7 +19,7 @@ internal static class RealHarnessProfiles
         // protocol 1, loadSession true, mcpCapabilities.http true, ambient auth.
         AcpSpawn = ["claude-agent-acp"],
         Bin = bin,
-        GetTask = "mcp__docket__get_task",
+        GetTask = "mcp__docket__get_session",
         ReportResult = "mcp__docket__report_result",
         RequestInput = "mcp__docket__request_input",
         Usage = UsageExpectation.Cost,
@@ -40,7 +40,7 @@ internal static class RealHarnessProfiles
         AcpSpawn = ["codex-acp"],
         AuthMethod = "api-key",
         Bin = bin,
-        GetTask = "mcp__docket__get_task",
+        GetTask = "mcp__docket__get_session",
         ReportResult = "mcp__docket__report_result",
         RequestInput = "mcp__docket__request_input",
         Usage = UsageExpectation.Tokens,
@@ -59,7 +59,7 @@ internal static class RealHarnessProfiles
             ["model"] = OpenCodeModel,
         },
         Bin = bin,
-        GetTask = "docket_get_task",
+        GetTask = "docket_get_session",
         ReportResult = "docket_report_result",
         RequestInput = "docket_request_input",
         // Tokens required. Cost is optional: Anthropic-pinned ACP reports one,
@@ -85,7 +85,7 @@ internal static class RealHarnessProfiles
         {
             ["GROK_FOLDER_TRUST"] = "0",
         },
-        GetTask = "docket__get_task",
+        GetTask = "docket__get_session",
         ReportResult = "docket__report_result",
         RequestInput = "docket__request_input",
         // Tokens, not Cost. Measured 2026-08-16: grok agent stdio reports spend on
@@ -104,7 +104,7 @@ internal static class RealHarnessProfiles
         // session/new succeeded without authenticate. Do not set AuthMethod.
         AcpSpawn = [bin, "acp"],
         Bin = bin,
-        GetTask = "docket__get_task",
+        GetTask = "docket__get_session",
         ReportResult = "docket__report_result",
         RequestInput = "docket__request_input",
         SessionMode = "approve",
@@ -120,7 +120,7 @@ internal static class RealHarnessProfiles
         Name = "goose-acp-bridge",
         AcpSpawn = [bridgeBin, "connect", url],
         Bin = gooseBin,
-        GetTask = "docket__get_task",
+        GetTask = "docket__get_session",
         ReportResult = "docket__report_result",
         RequestInput = "docket__request_input",
         SessionMode = "approve",
@@ -337,7 +337,7 @@ internal static class RealHarnessProfiles
            1. MODEL SLUG. This tier pins '{{OpenCodeModel}}'. Override with DOCKET_OPENCODE_MODEL.
            2. MCP WIRING. The bearer arrives via {env:DOCKET_WORKER_TOKEN}. An unset variable
               substitutes to the empty string, so the plane 401s and the agent has no tools.
-           3. TOOL NAMES. OpenCode spells MCP tools docket_get_task, not mcp__docket__get_task.
+           3. TOOL NAMES. OpenCode spells MCP tools docket_get_session, not mcp__docket__get_session.
            4. STDIN. A deadman profile hangs silently before the first turn.
            5. AUTH. ANTHROPIC_API_KEY must be in the environment.
 
@@ -351,7 +351,7 @@ internal static class RealHarnessProfiles
            2. MCP WIRING. The plane is handed over on session/new. A 401 means the
               minted token or url is wrong. GROK_FOLDER_TRUST=0 is set so a throwaway
               work dir is not blocked by folder trust.
-           3. TOOL NAMES. Grok spells MCP tools docket__get_task, not mcp__docket__get_task.
+           3. TOOL NAMES. Grok spells MCP tools docket__get_session, not mcp__docket__get_session.
            4. STDIN. A deadman profile starts then never exits. Bar facts declare closed.
            5. AUTH. XAI_API_KEY (not XAI_KEY) must be in the environment.
 
@@ -365,7 +365,7 @@ internal static class RealHarnessProfiles
           2. AUTH. goose-provider is interactive `goose configure`. The process needs
              a provider already configured, or GOOSE_PROVIDER / GOOSE_MODEL plus that
              provider's key. Do not set auth_method to goose-provider.
-          3. TOOL NAMES. Expected spelling is docket__get_task (goose namespaces the
+          3. TOOL NAMES. Expected spelling is docket__get_session (goose namespaces the
              `docket` MCP server as `{name}__{tool}`). Confirm on the first turn.
           4. MODE. session/new defaults to `auto`. This profile pins `approve`
              via session/set_mode when the session advertised it.

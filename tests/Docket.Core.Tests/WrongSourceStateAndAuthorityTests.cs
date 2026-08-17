@@ -12,35 +12,35 @@ namespace Docket.Core.Tests;
 public class WrongSourceStateAndAuthorityTests
 {
     /// <summary>
-    /// A command outside the dispatch table. <see cref="TaskCommand"/> is an open
+    /// A command outside the dispatch table. <see cref="SessionCommand"/> is an open
     /// hierarchy, so a caller in another assembly really can hand
-    /// <see cref="TaskStateMachine.Apply"/> something it has never heard of; the
+    /// <see cref="SessionStateMachine.Apply"/> something it has never heard of; the
     /// engine names it and refuses rather than falling through to a default.
     /// </summary>
-    private sealed record UnrecognizedCommand(Actor Actor) : TaskCommand(Actor);
+    private sealed record UnrecognizedCommand(Actor Actor) : SessionCommand(Actor);
 
     /// <summary>Every state a task can be in and still be moved at all (§6: terminals are final).</summary>
-    public static TheoryData<TaskState> NonTerminalStates() =>
-        new(TaskState.Submitted, TaskState.Working, TaskState.Verifying, TaskState.BlockedOnInput, TaskState.Parked, TaskState.Failed);
+    public static TheoryData<SessionState> NonTerminalStates() =>
+        new(SessionState.Submitted, SessionState.Working, SessionState.Verifying, SessionState.BlockedOnInput, SessionState.Parked, SessionState.Failed);
 
     // ── Commands the dispatch table does not recognize ────────────────────────
 
     [Fact]
     public void Create_task_is_refused_against_an_existing_record()
     {
-        // CreateTask belongs to TaskStateMachine.Create, which builds a record; there
+        // CreateSession belongs to SessionStateMachine.Create, which builds a record; there
         // is no meaning to replaying it over a task that already exists, and treating
         // it as a no-op Ok would report success for a command that did nothing.
-        var create = new CreateTask(
+        var create = new CreateSession(
             Given.Lead, Given.Team, "ship it", CompletionMode.Lead, Profile: null);
 
-        Expect.Rejected(TaskStateMachine.Apply(Given.Task(), create), Rule.InvalidSourceState);
+        Expect.Rejected(SessionStateMachine.Apply(Given.Session(), create), Rule.InvalidSourceState);
     }
 
     [Fact]
     public void An_unrecognized_command_is_refused_rather_than_ignored()
     {
-        var result = TaskStateMachine.Apply(Given.Task(TaskState.Working), new UnrecognizedCommand(Given.Lead));
+        var result = SessionStateMachine.Apply(Given.Session(SessionState.Working), new UnrecognizedCommand(Given.Lead));
 
         Expect.Rejected(result, Rule.InvalidSourceState);
         // The rejection names the offending type, so an operator reading the trail
@@ -52,31 +52,31 @@ public class WrongSourceStateAndAuthorityTests
     // ── Wrong source state, per transition ────────────────────────────────────
 
     [Theory]
-    [InlineData(TaskState.Working)]
-    [InlineData(TaskState.Verifying)]
-    [InlineData(TaskState.BlockedOnInput)]
-    [InlineData(TaskState.Parked)]
-    [InlineData(TaskState.Failed)]
-    public void Dispatch_applies_only_from_submitted(TaskState state)
+    [InlineData(SessionState.Working)]
+    [InlineData(SessionState.Verifying)]
+    [InlineData(SessionState.BlockedOnInput)]
+    [InlineData(SessionState.Parked)]
+    [InlineData(SessionState.Failed)]
+    public void Dispatch_applies_only_from_submitted(SessionState state)
     {
         // §9 check 5's other half: a task already claimed is not re-claimable. The
         // store's SKIP LOCKED transaction is what makes the claim single, but the
         // engine must refuse a second dispatch even if one reaches it.
         var dispatch = new Dispatch(Given.Machine(), WorkerInstanceId.New());
 
-        Expect.Rejected(TaskStateMachine.Apply(Given.Task(state), dispatch), Rule.InvalidSourceState);
+        Expect.Rejected(SessionStateMachine.Apply(Given.Session(state), dispatch), Rule.InvalidSourceState);
     }
 
     [Theory]
-    [InlineData(TaskState.Submitted)]
-    [InlineData(TaskState.Parked)]
-    [InlineData(TaskState.Failed)]
-    public void Liveness_loss_applies_only_to_a_live_attempt(TaskState state)
+    [InlineData(SessionState.Submitted)]
+    [InlineData(SessionState.Parked)]
+    [InlineData(SessionState.Failed)]
+    public void Liveness_loss_applies_only_to_a_live_attempt(SessionState state)
     {
         // Submitted has no worker. Parked and Failed already released the lease.
         var lost = new LivenessLost(LivenessLossReason.LivenessTimeout);
 
-        var result = TaskStateMachine.Apply(Given.Task(state), lost);
+        var result = SessionStateMachine.Apply(Given.Session(state), lost);
 
         Expect.Rejected(result, Rule.InvalidSourceState);
         var rejected = Assert.IsType<TransitionResult.Rejected>(result);
@@ -84,61 +84,61 @@ public class WrongSourceStateAndAuthorityTests
     }
 
     [Theory]
-    [InlineData(TaskState.Submitted)]
-    [InlineData(TaskState.Verifying)]
-    [InlineData(TaskState.BlockedOnInput)]
-    [InlineData(TaskState.Parked)]
-    public void Report_result_applies_only_from_working(TaskState state)
+    [InlineData(SessionState.Submitted)]
+    [InlineData(SessionState.Verifying)]
+    [InlineData(SessionState.BlockedOnInput)]
+    [InlineData(SessionState.Parked)]
+    public void Report_result_applies_only_from_working(SessionState state)
     {
-        var task = Given.Task(state);
+        var task = Given.Session(state);
         var report = new ReportResult(Given.Lead, "artifact://build/42");
 
-        Expect.Rejected(TaskStateMachine.Apply(task, report), Rule.InvalidSourceState);
+        Expect.Rejected(SessionStateMachine.Apply(task, report), Rule.InvalidSourceState);
     }
 
     [Theory]
-    [InlineData(TaskState.Submitted)]
-    [InlineData(TaskState.Working)]
-    [InlineData(TaskState.BlockedOnInput)]
-    [InlineData(TaskState.Parked)]
-    public void Both_verdicts_apply_only_from_verifying(TaskState state)
+    [InlineData(SessionState.Submitted)]
+    [InlineData(SessionState.Working)]
+    [InlineData(SessionState.BlockedOnInput)]
+    [InlineData(SessionState.Parked)]
+    public void Both_verdicts_apply_only_from_verifying(SessionState state)
     {
         // A verdict is a judgement on a submitted result. Accepting a task that has
         // not reported would complete work nobody looked at, so the state gate comes
         // before the §9 check 4 identity gate.
-        var task = Given.Task(state);
+        var task = Given.Session(state);
 
-        Expect.Rejected(TaskStateMachine.Apply(task, new VerdictAccept(Given.Lead)), Rule.InvalidSourceState);
-        Expect.Rejected(TaskStateMachine.Apply(task, new VerdictFail(Given.Lead)), Rule.InvalidSourceState);
+        Expect.Rejected(SessionStateMachine.Apply(task, new VerdictAccept(Given.Lead)), Rule.InvalidSourceState);
+        Expect.Rejected(SessionStateMachine.Apply(task, new VerdictFail(Given.Lead)), Rule.InvalidSourceState);
     }
 
     [Theory]
-    [InlineData(TaskState.Submitted)]
-    [InlineData(TaskState.Verifying)]
-    [InlineData(TaskState.Parked)]
-    [InlineData(TaskState.Failed)]
-    public void Answer_input_applies_only_from_blocked_on_input_or_working(TaskState state)
+    [InlineData(SessionState.Submitted)]
+    [InlineData(SessionState.Verifying)]
+    [InlineData(SessionState.Parked)]
+    [InlineData(SessionState.Failed)]
+    public void Answer_input_applies_only_from_blocked_on_input_or_working(SessionState state)
     {
         // A parked task is woken by WakeParked, not answered here.
         // Working is legal: a live session that asked a question stays working.
         var answer = new AnswerInput(Given.Lead, Given.Park, Answer: "use the second option");
 
-        Expect.Rejected(TaskStateMachine.Apply(Given.Task(state), answer), Rule.InvalidSourceState);
+        Expect.Rejected(SessionStateMachine.Apply(Given.Session(state), answer), Rule.InvalidSourceState);
     }
 
     [Theory]
-    [InlineData(TaskState.Submitted)]
-    [InlineData(TaskState.Verifying)]
-    [InlineData(TaskState.BlockedOnInput)]
-    [InlineData(TaskState.Parked)]
-    public void Preserve_and_park_applies_only_from_working(TaskState state)
+    [InlineData(SessionState.Submitted)]
+    [InlineData(SessionState.Verifying)]
+    [InlineData(SessionState.BlockedOnInput)]
+    [InlineData(SessionState.Parked)]
+    public void Preserve_and_park_applies_only_from_working(SessionState state)
     {
         // preserve_and_park is a stop disposition for a running worker; a task that
         // is not working has nothing to preserve, and parking a blocked one would
         // bypass the wait-TTL sweeper that owns that transition (§11).
         var park = new StopPreserveAndPark(Given.Lead, Given.Park);
 
-        Expect.Rejected(TaskStateMachine.Apply(Given.Task(state), park), Rule.InvalidSourceState);
+        Expect.Rejected(SessionStateMachine.Apply(Given.Session(state), park), Rule.InvalidSourceState);
     }
 
     /// <summary>
@@ -146,14 +146,14 @@ public class WrongSourceStateAndAuthorityTests
     /// so the rule holds for the whole vocabulary rather than per handler.
     /// </summary>
     [Theory]
-    [InlineData(TaskState.Completed)]
-    [InlineData(TaskState.Rejected)]
-    [InlineData(TaskState.Canceled)]
-    public void No_transition_moves_a_terminal_task(TaskState terminal)
+    [InlineData(SessionState.Completed)]
+    [InlineData(SessionState.Rejected)]
+    [InlineData(SessionState.Canceled)]
+    public void No_transition_moves_a_terminal_task(SessionState terminal)
     {
-        var task = Given.Task(terminal);
+        var task = Given.Session(terminal);
 
-        foreach (var command in new TaskCommand[]
+        foreach (var command in new SessionCommand[]
                  {
                      new Dispatch(Given.Machine(), WorkerInstanceId.New()),
                      new LivenessLost(LivenessLossReason.LivenessTimeout),
@@ -168,7 +168,7 @@ public class WrongSourceStateAndAuthorityTests
                      new WakeParked(),
                  })
         {
-            Expect.Rejected(TaskStateMachine.Apply(task, command), Rule.TerminalStatesAreFinal);
+            Expect.Rejected(SessionStateMachine.Apply(task, command), Rule.TerminalStatesAreFinal);
         }
     }
 
@@ -184,15 +184,15 @@ public class WrongSourceStateAndAuthorityTests
     [Fact]
     public void Worker_driven_transitions_refuse_a_caller_that_is_not_a_worker()
     {
-        var task = Given.Task(TaskState.Working);
+        var task = Given.Session(SessionState.Working);
 
         foreach (var actor in new Actor[] { Given.Lead, Given.Human, ControlPlaneActor.Instance })
         {
             Expect.Rejected(
-                TaskStateMachine.Apply(task, new ReportResult(actor, "artifact://build/42")),
+                SessionStateMachine.Apply(task, new ReportResult(actor, "artifact://build/42")),
                 Rule.ActorLacksAuthority);
             Expect.Rejected(
-                TaskStateMachine.Apply(task, new RequestInput(actor, InputRequestKind.Question, "which option?")),
+                SessionStateMachine.Apply(task, new RequestInput(actor, InputRequestKind.Question, "which option?")),
                 Rule.ActorLacksAuthority);
         }
     }
@@ -203,13 +203,13 @@ public class WrongSourceStateAndAuthorityTests
         // The authority table names a human and the Team's Lead. A worker is neither:
         // a task that could cancel itself would let an agent retire work it was told
         // to do, and the incumbent is exactly the caller most likely to try.
-        var task = Given.Task(TaskState.Working);
+        var task = Given.Session(SessionState.Working);
         var incumbent = Given.IncumbentOf(task);
 
         foreach (var disposition in new[] { CancelDisposition.Preserve, CancelDisposition.Discard })
         {
             Expect.Rejected(
-                TaskStateMachine.Apply(task, new Cancel(incumbent, disposition)),
+                SessionStateMachine.Apply(task, new Cancel(incumbent, disposition)),
                 Rule.ActorLacksAuthority);
         }
     }
@@ -217,9 +217,9 @@ public class WrongSourceStateAndAuthorityTests
     [Fact]
     public void Park_refuses_a_worker_parking_its_own_task()
     {
-        var task = Given.Task(TaskState.Working);
+        var task = Given.Session(SessionState.Working);
         Expect.Rejected(
-            TaskStateMachine.Apply(task, new Park(Given.IncumbentOf(task), Given.Park)),
+            SessionStateMachine.Apply(task, new Park(Given.IncumbentOf(task), Given.Park)),
             Rule.ActorLacksAuthority);
     }
 
@@ -227,7 +227,7 @@ public class WrongSourceStateAndAuthorityTests
     public void Park_refuses_a_foreign_lead()
     {
         Expect.Rejected(
-            TaskStateMachine.Apply(Given.Task(TaskState.Working), new Park(Given.ForeignLead, Given.Park)),
+            SessionStateMachine.Apply(Given.Session(SessionState.Working), new Park(Given.ForeignLead, Given.Park)),
             Rule.ActorLacksAuthority);
     }
 
@@ -237,12 +237,12 @@ public class WrongSourceStateAndAuthorityTests
         // The negative cases above are only meaningful next to the positives: the
         // gate is narrow, not shut. Two callers, not three — the control plane's arm
         // existed for budget exhaustion alone and went with it (§6).
-        var task = Given.Task(TaskState.Working);
+        var task = Given.Session(SessionState.Working);
 
         Expect.Transitioned(
-            TaskStateMachine.Apply(task, new Cancel(Given.Lead, CancelDisposition.Preserve)), TaskState.Canceled);
+            SessionStateMachine.Apply(task, new Cancel(Given.Lead, CancelDisposition.Preserve)), SessionState.Canceled);
         Expect.Transitioned(
-            TaskStateMachine.Apply(task, new Cancel(Given.Human, CancelDisposition.Discard)), TaskState.Canceled);
+            SessionStateMachine.Apply(task, new Cancel(Given.Human, CancelDisposition.Discard)), SessionState.Canceled);
     }
 
     [Fact]
@@ -250,10 +250,10 @@ public class WrongSourceStateAndAuthorityTests
     {
         // Team scoping on the authority check, not just on the record: holding a
         // lead claim is not enough, it has to be a claim for this task's Team.
-        var task = Given.Task(TaskState.Working);
+        var task = Given.Session(SessionState.Working);
 
         Expect.Rejected(
-            TaskStateMachine.Apply(task, new Cancel(Given.ForeignLead, CancelDisposition.Preserve)),
+            SessionStateMachine.Apply(task, new Cancel(Given.ForeignLead, CancelDisposition.Preserve)),
             Rule.ActorLacksAuthority);
     }
 }

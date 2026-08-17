@@ -54,12 +54,12 @@ internal static class DashboardRenderer
                 sb.Append(Badge(p, "state-submitted"));
             sb.Append("</div>");
 
-            if (m.RunningTasks.Count == 0)
-                sb.Append(Empty("No tasks running on this machine."));
+            if (m.RunningSessions.Count == 0)
+                sb.Append(Empty("No sessions running on this machine."));
             else
             {
                 sb.Append("<ul class=\"machine-tasks\">");
-                foreach (var t in m.RunningTasks)
+                foreach (var t in m.RunningSessions)
                 {
                     sb.Append("<li>");
                     sb.Append($"<code>{E(t.Namespace)}</code> {StateBadge(t.State)} ");
@@ -93,7 +93,7 @@ internal static class DashboardRenderer
             // No port column: Docket tracks no port for a process (§10). Stdin is here because a
             // cleanup agent needs to know whether a graceful stop exists.
             sb.Append("<th>Process</th><th>State</th><th>Stdin</th><th>Up for</th>" +
-                      "<th>Exit</th><th>Ended</th><th>Started by task</th>");
+                      "<th>Exit</th><th>Ended</th><th>Started by session</th>");
             sb.Append("</tr></thead><tbody>");
 
             foreach (var p in m.Processes)
@@ -113,7 +113,7 @@ internal static class DashboardRenderer
                 sb.Append($"<td>{(p.StartedAt is null ? "<span class=\"nt\">—</span>" : E(Age(p.StartedAt, now)))}</td>");
                 sb.Append($"<td>{(p.ExitCode is { } c ? c.ToString() : "<span class=\"nt\">—</span>")}</td>");
                 sb.Append($"<td>{(p.ExitedAt is null ? "<span class=\"nt\">—</span>" : E(Age(p.ExitedAt, now)))}</td>");
-                sb.Append($"<td><span class=\"mono nt\">{E(ShortId(p.DeclaredByTask))}</span></td>");
+                sb.Append($"<td><span class=\"mono nt\">{E(ShortId(p.DeclaredBySession))}</span></td>");
                 sb.Append("</tr>");
             }
 
@@ -199,7 +199,7 @@ internal static class DashboardRenderer
         foreach (var t in teams)
         {
             sb.Append($"<tr class=\"{(t.IsIdle ? "idle-row" : "")}\">");
-            sb.Append($"<td>{TeamLink(t.TeamId)}<div class=\"nt\">{t.TotalTasks} tasks</div></td>");
+            sb.Append($"<td>{TeamLink(t.TeamId)}<div class=\"nt\">{t.TotalSessions} tasks</div></td>");
             sb.Append($"<td>{StateCounts(t.CountsByState)}</td>");
             sb.Append($"<td>{LeadCell(t.LeadHumanId, t.LeadSince, now)}</td>");
             sb.Append($"<td class=\"num\">{t.TotalParks}</td>");
@@ -225,8 +225,8 @@ internal static class DashboardRenderer
 
         // Metrics strip — the numbers a reattaching Lead scans first (§4).
         sb.Append("<section class=\"metrics\">");
-        sb.Append(Metric(team.TotalTasks.ToString(), "tasks"));
-        sb.Append(Metric(team.Tasks.Sum(t => t.Parks).ToString(), "parks total"));
+        sb.Append(Metric(team.TotalSessions.ToString(), "sessions"));
+        sb.Append(Metric(team.Sessions.Sum(t => t.Parks).ToString(), "parks total"));
         sb.Append(Metric(team.Services.Count.ToString(), "services"));
         sb.Append(Metric(team.OpenInputRequests.Count.ToString(), "open requests"));
         sb.Append(ByteBurnMetric(team.ForwardUsage));
@@ -241,10 +241,10 @@ internal static class DashboardRenderer
         sb.Append($"<div class=\"nt\">last activity {E(Age(team.LastActivity, now))}</div>");
         sb.Append("</section>");
 
-        // Tasks by state, with parks per task.
-        sb.Append("<section><h2>Tasks</h2>");
-        if (team.Tasks.Count == 0)
-            sb.Append(Empty("No tasks."));
+        // Sessions by state, with parks per session.
+        sb.Append("<section><h2>Sessions</h2>");
+        if (team.Sessions.Count == 0)
+            sb.Append(Empty("No sessions."));
         else
         {
             sb.Append("<table><thead><tr>");
@@ -252,7 +252,7 @@ internal static class DashboardRenderer
             sb.Append("<th class=\"num\">Attempt</th><th class=\"num\">Parks</th><th>Detail</th>");
             sb.Append("<th>Result</th><th>Report</th><th>Q&amp;A</th><th>Transcript</th>");
             sb.Append("</tr></thead><tbody>");
-            foreach (var t in team.Tasks)
+            foreach (var t in team.Sessions)
             {
                 sb.Append("<tr>");
                 sb.Append($"<td><code>{E(t.Namespace)}</code></td>");
@@ -281,7 +281,7 @@ internal static class DashboardRenderer
             sb.Append("<table><thead><tr><th>Name</th><th class=\"num\">Port</th><th>Task</th><th>Since</th></tr></thead><tbody>");
             foreach (var s in team.Services)
                 sb.Append($"<tr><td>{E(s.Name)}</td><td class=\"num\">{s.Port}</td>" +
-                          $"<td class=\"mono\">{E(ShortId(s.TaskId))}</td><td>{E(Age(s.CreatedAt, now))}</td></tr>");
+                          $"<td class=\"mono\">{E(ShortId(s.SessionId))}</td><td>{E(Age(s.CreatedAt, now))}</td></tr>");
             sb.Append("</tbody></table>");
             sb.Append(PreviewMintForm(team));
         }
@@ -447,7 +447,7 @@ internal static class DashboardRenderer
         }
 
         sb.Append("<section><table><thead><tr>");
-        sb.Append("<th>When</th><th>Source</th><th>Kind</th><th>Transition</th><th>Team</th><th>Task / who</th><th>Detail</th>");
+        sb.Append("<th>When</th><th>Source</th><th>Kind</th><th>Transition</th><th>Team</th><th>Session / who</th><th>Detail</th>");
         sb.Append("</tr></thead><tbody>");
         foreach (var e in events)
         {
@@ -707,7 +707,7 @@ internal static class DashboardRenderer
     {
         var sb = new StringBuilder();
         sb.Append("<form class=\"permission-decide\" method=\"post\" action=\"/dashboard/permission\">");
-        sb.Append($"<input type=\"hidden\" name=\"taskId\" value=\"{E(p.TaskId.ToString())}\">");
+        sb.Append($"<input type=\"hidden\" name=\"sessionId\" value=\"{E(p.SessionId.ToString())}\">");
         sb.Append("<input type=\"text\" name=\"message\" placeholder=\"message to the worker\" " +
                   "aria-label=\"message to the worker\">");
         sb.Append("<button type=\"submit\" name=\"verdict\" value=\"allow\">Allow</button>");
@@ -804,7 +804,7 @@ internal static class DashboardRenderer
             ? "<li>Its command channel was closed.</li>"
             : "<li>It held no live command channel.</li>");
         sb.Append($"<li>{revoked.WorkersRevoked} worker token(s) on the box were revoked.</li>");
-        sb.Append($"<li>{revoked.TasksRequeued} task(s) it held were requeued for another machine.</li>");
+        sb.Append($"<li>{revoked.SessionsRequeued} task(s) it held were requeued for another machine.</li>");
         sb.Append("<li>Its access and refresh tokens no longer authenticate.</li>");
         sb.Append("</ul>");
         sb.Append("<p class=\"nt\">The machine must enroll again to return. If it is still running, " +
@@ -817,7 +817,7 @@ internal static class DashboardRenderer
     /// <summary>
     /// The 'Create preview' control on the Team view's registered-services section
     /// (§12 mint, §8.4). Posts to <c>/dashboard/preview</c>; the service option value
-    /// is <c>{taskId}:{name}</c> so the mapping binds the exact owning task.
+    /// is <c>{sessionId}:{name}</c> so the mapping binds the exact owning task.
     /// </summary>
     private static string PreviewMintForm(TeamDetail team)
     {
@@ -827,7 +827,7 @@ internal static class DashboardRenderer
         sb.Append("<strong>Create preview</strong> ");
         sb.Append("<select name=\"service\" aria-label=\"service\">");
         foreach (var s in team.Services)
-            sb.Append($"<option value=\"{E(s.TaskId + ":" + s.Name)}\">{E(s.Name)}</option>");
+            sb.Append($"<option value=\"{E(s.SessionId + ":" + s.Name)}\">{E(s.Name)}</option>");
         sb.Append("</select> ");
         sb.Append("<select name=\"auth\" aria-label=\"visibility\">");
         sb.Append("<option value=\"gated\">gated (operator only)</option>");
@@ -845,9 +845,9 @@ internal static class DashboardRenderer
     /// security one (a live worker credential may sit in an in-flight transcript, §13), so
     /// saying so up front beats a 409 the operator has to interpret.
     /// </summary>
-    private static string TranscriptCell(TeamTaskView t) =>
+    private static string TranscriptCell(TeamSessionView t) =>
         t.State.IsTerminal()
-            ? $"<a href=\"/dashboard/tasks/{t.TaskId}/transcripts\">transcript</a>"
+            ? $"<a href=\"/dashboard/sessions/{t.SessionId}/transcripts\">transcript</a>"
             : "<span class=\"nt\" title=\"readable once the task reaches a terminal state (§12)\">not yet</span>";
 
     /// <summary>
@@ -855,7 +855,7 @@ internal static class DashboardRenderer
     /// disclosure so the task table stays compact. It is agent-authored text (§13):
     /// escaped through <see cref="E(string)"/> and never interpreted, only shown.
     /// </summary>
-    private static string ReportCell(TeamTaskView t) =>
+    private static string ReportCell(TeamSessionView t) =>
         t.Report is { Length: > 0 } r
             ? $"<details><summary>report</summary><pre class=\"report\">{E(r)}</pre></details>"
             : "<span class=\"nt\">—</span>";
@@ -868,7 +868,7 @@ internal static class DashboardRenderer
     /// never dereferenced it (§8.1) and a clickable agent-controlled URL on an operator's
     /// page is a §13 hazard, not a convenience. An em dash means nothing reported yet.
     /// </summary>
-    private static string ResultCell(TeamTaskView t) =>
+    private static string ResultCell(TeamSessionView t) =>
         t.ResultReference is { Length: > 0 } r
             ? $"<code>{E(r)}</code>"
             : "<span class=\"nt\">—</span>";
@@ -879,7 +879,7 @@ internal static class DashboardRenderer
     /// both go through <see cref="E(string)"/> verbatim — never rendered as markup (§12/§13).
     /// An open question shows as unanswered, which is the actionable state.
     /// </summary>
-    private static string ExchangeCell(TeamTaskView t)
+    private static string ExchangeCell(TeamSessionView t)
     {
         if (t.Question is not { Length: > 0 } question)
             return "<span class=\"nt\">—</span>";
@@ -950,11 +950,15 @@ internal static class DashboardRenderer
     {
         var sb = new StringBuilder();
         sb.Append("<h1>Profile check</h1>");
-        sb.Append("<p class=\"sub\">Mint dummy tasks aimed at <span class=\"mono\">default</span>. " +
+        sb.Append("<p class=\"sub\">Mint dummy sessions aimed at one profile. " +
                   "A worker that reaches <span class=\"mono\">verifying</span> called " +
                   "<span class=\"mono\">report_result</span> — the plane does not judge the answers. " +
-                  "Any ready machine that declares <span class=\"mono\">default</span> may claim them.</p>");
-        sb.Append("<form class=\"card\" method=\"post\" action=\"/dashboard/conformance\">");
+                  "Any ready machine that declares that name may claim them.</p>");
+        sb.Append("<form class=\"card conformance-start\" method=\"post\" action=\"/dashboard/conformance\">");
+        sb.Append("<label for=\"profile\">Profile</label>");
+        sb.Append($"<input id=\"profile\" type=\"text\" name=\"profile\" value=\"{E(MachineSnapshot.DefaultProfile)}\" " +
+                  "class=\"mono\" spellcheck=\"false\" autocomplete=\"off\">");
+        sb.Append("<p class=\"nt\">Exact name from the runner config. Empty is <span class=\"mono\">default</span>.</p>");
         sb.Append("<button type=\"submit\">Start check</button>");
         sb.Append("</form>");
         return Page("Profile check", "conformance", sb.ToString(), autoRefresh: false);
@@ -981,7 +985,7 @@ internal static class DashboardRenderer
         sb.Append(Metric(run.Failed.ToString(), "failed"));
         sb.Append("</div>");
         sb.Append("<table><thead><tr><th>Kind</th><th>State</th><th>Attempt</th><th>Result</th></tr></thead><tbody>");
-        foreach (var t in run.Tasks)
+        foreach (var t in run.Sessions)
         {
             sb.Append("<tr>");
             sb.Append($"<td class=\"mono\">{E(t.Kind)}</td>");
@@ -1027,12 +1031,12 @@ internal static class DashboardRenderer
     private static string Metric(string n, string label) =>
         $"<div class=\"metric\"><div class=\"n\">{E(n)}</div><div class=\"l\">{E(label)}</div></div>";
 
-    private static string StateCounts(IReadOnlyDictionary<TaskState, int> counts)
+    private static string StateCounts(IReadOnlyDictionary<SessionState, int> counts)
     {
         if (counts.Count == 0)
             return "<span class=\"nt\">—</span>";
         var sb = new StringBuilder("<div class=\"pill-row\">");
-        foreach (var state in Enum.GetValues<TaskState>())
+        foreach (var state in Enum.GetValues<SessionState>())
             if (counts.TryGetValue(state, out var n) && n > 0)
                 sb.Append($"<span class=\"badge state-{state.ToString().ToLowerInvariant()}\">{E(state.ToString())} {n}</span>");
         sb.Append("</div>");
@@ -1045,31 +1049,31 @@ internal static class DashboardRenderer
               $"<span class=\"nt\">since {E(Age(since, now))}</span>"
             : "<span class=\"nt\">leadless</span>";
 
-    private static string TaskDetailCell(TeamTaskView t, DateTimeOffset now)
+    private static string TaskDetailCell(TeamSessionView t, DateTimeOffset now)
     {
         var parts = new List<string>();
         // §6/§11 Y-continues-X lineage: a continuation task resumed a prior task's
         // session. Shown for any state (a continuation may be submitted/working, not
         // just blocked/parked), alongside the state-specific detail below.
-        if (t.ContinuesTaskId is { } prior)
+        if (t.ContinuesSessionId is { } prior)
             parts.Add($"<span class=\"nt\">continues <span class=\"mono\">{E(ShortId(prior))}</span></span>");
-        if (t.State == TaskState.BlockedOnInput
-            || (t.State == TaskState.Working && t.BlockedAt is not null && t.InputKind is not InputRequestKind.Permission))
+        if (t.State == SessionState.BlockedOnInput
+            || (t.State == SessionState.Working && t.BlockedAt is not null && t.InputKind is not InputRequestKind.Permission))
             parts.Add($"<span class=\"nt\">blocked {E(Age(t.BlockedAt, now))}</span>");
-        else if (t.State == TaskState.Parked && t.ParkMachine is not null)
+        else if (t.State == SessionState.Parked && t.ParkMachine is not null)
             parts.Add($"<span class=\"nt\">parked on <span class=\"mono\">{E(t.ParkMachine)}</span></span>");
-        else if (t.State == TaskState.Failed)
+        else if (t.State == SessionState.Failed)
             parts.Add($"<span class=\"nt\">failed" +
                       (t.LastRequeueReason is { } why ? $", {E(why.ToString())}" : "") +
                       (t.InfrastructureRequeues > 0 ? $" ({t.InfrastructureRequeues})" : "") +
                       "</span>");
         // §9 check 4: who adjudicated a completed task — lead-session or human.
-        else if (t.State == TaskState.Completed && t.CompletionProvenance is { } who)
+        else if (t.State == SessionState.Completed && t.CompletionProvenance is { } who)
             parts.Add($"<span class=\"nt\">accepted by {E(ProvenanceLabel(who))}</span>");
         // §9 check 7: a canceled task whose infrastructure requeues reached its cap was
         // abandoned by the plane, not called off by a person — say so, and say what kept
         // failing, since that is the whole operator signal issue #73 asked for.
-        else if (t.State == TaskState.Canceled
+        else if (t.State == SessionState.Canceled
                  && t.InfrastructureRequeueLimit > 0
                  && t.InfrastructureRequeues >= t.InfrastructureRequeueLimit)
             parts.Add($"<span class=\"nt\">abandoned after {t.InfrastructureRequeues} requeues, " +
@@ -1129,18 +1133,18 @@ internal static class DashboardRenderer
         // redispatched. Before this the log showed a column of identical rows.
         if (e.LivenessReason is { } reason)
             return Badge(reason.ToString(), "state-submitted") +
-                   (e.ToState == TaskState.Canceled
+                   (e.ToState == SessionState.Canceled
                        ? " <span class=\"nt\">requeue cap reached — abandoned</span>"
                        : "");
 
-        if (e.Kind == TaskEventRow.AuthFailedKind)
+        if (e.Kind == SessionEventRow.AuthFailedKind)
         {
             var scope = e.AuthMissingScope is { } s ? $", missing scope <code>{E(s)}</code>" : "";
             return $"<span class=\"nt\">{E(e.AuthOperation ?? "—")} on <code>{E(e.AuthTarget ?? "—")}</code> " +
                    $"failed <code>{E(e.AuthErrorCode ?? "—")}</code>{scope}</span>";
         }
 
-        if (e.Kind == TaskEventRow.SubagentSpawnedKind)
+        if (e.Kind == SessionEventRow.SubagentSpawnedKind)
         {
             // Lineage is progressive enhancement (§10): a harness may report neither id.
             var agent = e.SubagentId is { } a ? $"<code>{E(a)}</code>" : "<span class=\"nt\">unnamed</span>";

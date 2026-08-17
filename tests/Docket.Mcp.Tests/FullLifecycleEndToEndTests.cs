@@ -33,7 +33,7 @@ namespace Docket.Mcp.Tests;
 /// <item>The real <see cref="DispatchService"/> claims it, mints the worker token,
 ///   and the real <see cref="ProcessSupervisor"/> spawns the fake
 ///   <see cref="Docket.WorkerHarness"/>, which authenticates back to <c>/mcp</c>,
-///   calls <c>get_task</c>, then <c>report_result(ref)</c> — working → verifying.</item>
+///   calls <c>get_session</c>, then <c>report_result(ref)</c> — working → verifying.</item>
 /// <item>The Lead reads the reported reference (proving #23 persistence end to end),
 ///   then calls <c>submit_review accept</c> over MCP — verifying → completed with
 ///   lead-session provenance, no human confirmation (the doer/judge split: the
@@ -80,10 +80,10 @@ public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifet
         const string description = "make the suite pass";
         const string criteria = "the suite is green";
         const string workspace = "git:repo@main#task-branch";
-        TaskId taskId;
+        SessionId sessionId;
         await using (var lead = await ConnectAsync(new Uri(baseUrl + "/"), leadToken, ct))
         {
-            var created = await lead.CallToolAsync("create_task", new Dictionary<string, object?>
+            var created = await lead.CallToolAsync("create_session", new Dictionary<string, object?>
             {
                 ["description"] = description,
                 ["completionCriteria"] = criteria,
@@ -92,7 +92,7 @@ public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifet
                 ["workspace"] = workspace,
             }, cancellationToken: ct);
             Assert.NotEqual(true, created.IsError);
-            taskId = new TaskId(Guid.Parse(Assert.Single(created.Content.OfType<TextContentBlock>()).Text));
+            sessionId = new SessionId(Guid.Parse(Assert.Single(created.Content.OfType<TextContentBlock>()).Text));
         }
 
         // ── The runner side: the real supervisor spawns the fake worker harness ──
@@ -123,7 +123,7 @@ public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifet
             });
             registry.ApplyHeartbeat("m1", new MachineHeartbeat(
                 "m1", Ready: true, UnderBackPressure: false,
-                new SystemLoad(0, 0, 0), RunningTasks: 0, ["default"], DateTimeOffset.UtcNow));
+                new SystemLoad(0, 0, 0), RunningSessions: 0, ["default"], DateTimeOffset.UtcNow));
 
             var dispatch = new DispatchService(
                 app.Services.GetRequiredService<IServiceScopeFactory>(),
@@ -132,9 +132,9 @@ public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifet
             await dispatch.RunDispatchPassAsync(ct);
 
             // ── The harness authenticated and reported: working → verifying ──
-            var workDir = Path.Combine(workRoot, taskId.ToString());
+            var workDir = Path.Combine(workRoot, sessionId.ToString());
             var reached = await WaitUntilAsync(
-                async () => await StateAsync(taskId, ct) == TaskState.Verifying,
+                async () => await StateAsync(sessionId, ct) == SessionState.Verifying,
                 TimeSpan.FromSeconds(60));
             if (!reached)
             {
@@ -148,7 +148,7 @@ public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifet
             const string reportedRef = "docket-worker-harness:done";
             await using (var v = pg.NewContext())
                 Assert.Equal(reportedRef,
-                    (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == taskId.Value, ct)).ResultReference);
+                    (await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == sessionId.Value, ct)).ResultReference);
 
             // ── Lead adjudicates over real MCP: submit_review accept → completed ──
             // Lead mode (§7, §9 check 4): the Lead session's verdict completes the
@@ -159,9 +159,9 @@ public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifet
                 // #81: and it landed where the Lead actually reads it. The row assertion
                 // above only proves persistence; this is the §7 adjudication read over real
                 // MCP, and until now no tool returned this column at all.
-                var reportRead = await lead.CallToolAsync("get_task_report", new Dictionary<string, object?>
+                var reportRead = await lead.CallToolAsync("get_session_report", new Dictionary<string, object?>
                 {
-                    ["taskId"] = taskId.ToString(),
+                    ["sessionId"] = sessionId.ToString(),
                 }, cancellationToken: ct);
                 Assert.NotEqual(true, reportRead.IsError);
                 Assert.Contains(reportedRef,
@@ -169,7 +169,7 @@ public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifet
 
                 var verdict = await lead.CallToolAsync("submit_review", new Dictionary<string, object?>
                 {
-                    ["taskId"] = taskId.ToString(),
+                    ["sessionId"] = sessionId.ToString(),
                     ["verdict"] = "accept",
                 }, cancellationToken: ct);
                 Assert.NotEqual(true, verdict.IsError);
@@ -179,8 +179,8 @@ public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifet
             // ── The record reached completed, with lead-session provenance (§9.4) ──
             await using (var v = pg.NewContext())
             {
-                var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == taskId.Value, ct);
-                Assert.Equal(TaskState.Completed, row.State);
+                var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == sessionId.Value, ct);
+                Assert.Equal(SessionState.Completed, row.State);
                 Assert.Equal(VerdictProvenance.LeadSession, row.CompletionProvenance);
             }
         }
@@ -192,10 +192,10 @@ public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifet
         }
     }
 
-    private async Task<TaskState?> StateAsync(TaskId id, CancellationToken ct)
+    private async Task<SessionState?> StateAsync(SessionId id, CancellationToken ct)
     {
         await using var db = pg.NewContext();
-        return await new TaskStore(db, TimeProvider.System).GetStateAsync(id, ct);
+        return await new SessionStore(db, TimeProvider.System).GetStateAsync(id, ct);
     }
 
     private WebApplication BuildServer()

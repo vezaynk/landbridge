@@ -114,10 +114,10 @@ public sealed class MachineRevocationService(
 /// </summary>
 /// <param name="ChannelClosed">Whether the machine held a live command channel that this
 /// revoke closed. False for an enrolled-but-offline machine, which is the ordinary case.</param>
-/// <param name="TasksRequeued">Tasks the channel held, now back in the queue for another
+/// <param name="SessionsRequeued">Tasks the channel held, now back in the queue for another
 /// machine to pick up.</param>
 /// <param name="WorkersRevoked">Every worker instance that was still live on the machine —
 /// the requeued tasks' incumbents included, since the sweep runs before the requeue. So
 /// this is the count of harnesses on that box whose token just died, which is the number
 /// an operator is actually asking about.</param>
-public sealed record MachineRevocation(bool ChannelClosed, int TasksRequeued, int WorkersRevoked);
+public sealed record MachineRevocation(bool ChannelClosed, int SessionsRequeued, int WorkersRevoked);

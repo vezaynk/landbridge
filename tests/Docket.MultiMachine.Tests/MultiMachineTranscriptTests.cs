@@ -46,10 +46,10 @@ public sealed class MultiMachineTranscriptTests(PostgresFixture pg) : IAsyncLife
 
         // A real worker on machine A prints the planted secret to stdout, which docketd's
         // capture tees to <state>/transcripts/<task>/0001.ndjson, then reports.
-        var task = await rig.CreateTaskAsync($"echo:{PlantedSecret}", ct);
+        var task = await rig.CreateSessionAsync($"echo:{PlantedSecret}", ct);
         await rig.DispatchToAsync("A", ct);
         Assert.True(
-            await FleetRig.WaitUntilAsync(async () => await rig.StateAsync(task, ct) == TaskState.Verifying, Bound),
+            await FleetRig.WaitUntilAsync(async () => await rig.StateAsync(task, ct) == SessionState.Verifying, Bound),
             "the echo worker never reached verifying. " + await rig.DiagnoseAsync(task, ct));
         Assert.Equal("A", rig.MachineRanOn(task));
 
@@ -66,7 +66,7 @@ public sealed class MultiMachineTranscriptTests(PostgresFixture pg) : IAsyncLife
         // The Lead accepts → completed → readable.
         await rig.AcceptAsync(task, ct);
         Assert.True(
-            await FleetRig.WaitUntilAsync(async () => await rig.StateAsync(task, ct) == TaskState.Completed, Bound),
+            await FleetRig.WaitUntilAsync(async () => await rig.StateAsync(task, ct) == SessionState.Completed, Bound),
             "the task never reached completed. " + await rig.DiagnoseAsync(task, ct));
 
         // The plane finds the machine from the dispatch record, not from live tracking — the
@@ -99,7 +99,7 @@ public sealed class MultiMachineTranscriptTests(PostgresFixture pg) : IAsyncLife
     }
 
     private static async Task<string> DrainAsync(
-        TranscriptRelayService relay, TaskId task, string machine, int ordinal, int maxBytes,
+        TranscriptRelayService relay, SessionId task, string machine, int ordinal, int maxBytes,
         CancellationToken ct)
     {
         var text = new System.Text.StringBuilder();

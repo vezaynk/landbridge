@@ -39,7 +39,7 @@ namespace Docket.RigSupport;
 /// <para><b>Failures throw with the reason.</b> Where a rig previously asserted
 /// <c>Assert.NotEqual(true, result.IsError)</c> — which reports "values are equal" and none of
 /// the tool's own complaint — these helpers throw carrying the error content, so a refused
-/// <c>create_task</c> says why in the first line of the failure.</para>
+/// <c>create_session</c> says why in the first line of the failure.</para>
 /// </summary>
 internal static class PlaneProbe
 {
@@ -134,16 +134,16 @@ internal static class PlaneProbe
     /// row's session ref and preferred machine, so its first dispatch prefers the machine
     /// holding the transcript.
     /// </param>
-    public static async Task<TaskId> CreateTaskAsync(
+    public static async Task<SessionId> CreateSessionAsync(
         McpClient lead,
         string description,
         string completionCriteria,
         string workspace,
         CancellationToken ct,
         string? profile = null,
-        TaskId? continues = null)
+        SessionId? continues = null)
     {
-        var created = await lead.CallToolAsync("create_task", new Dictionary<string, object?>
+        var created = await lead.CallToolAsync("create_session", new Dictionary<string, object?>
         {
             ["description"] = description,
             ["completionCriteria"] = completionCriteria,
@@ -155,19 +155,19 @@ internal static class PlaneProbe
 
         var text = TextOf(created);
         if (created.IsError == true)
-            throw new InvalidOperationException($"create_task was refused: {text}");
-        return new TaskId(Guid.Parse(text));
+            throw new InvalidOperationException($"create_session was refused: {text}");
+        return new SessionId(Guid.Parse(text));
     }
 
     /// <summary>
     /// Accept a <c>verifying</c> task as the Lead, driving it to <c>completed</c> (§7) — the
     /// terminal state a transcript becomes readable in (§12).
     /// </summary>
-    public static async Task AcceptAsync(McpClient lead, TaskId task, CancellationToken ct)
+    public static async Task AcceptAsync(McpClient lead, SessionId task, CancellationToken ct)
     {
         var verdict = await lead.CallToolAsync("submit_review", new Dictionary<string, object?>
         {
-            ["taskId"] = task.Value.ToString(),
+            ["sessionId"] = task.Value.ToString(),
             ["verdict"] = "accept",
         }, cancellationToken: ct);
 
@@ -183,8 +183,8 @@ internal static class PlaneProbe
     // ── Committed control-plane state ──────────────────────────────────────────
 
     /// <summary>The task's committed state, or null when there is no such row.</summary>
-    public static Task<TaskState?> StateAsync(DocketDbContext db, TaskId task, CancellationToken ct) =>
-        new TaskStore(db, TimeProvider.System).GetStateAsync(task, ct);
+    public static Task<SessionState?> StateAsync(DocketDbContext db, SessionId task, CancellationToken ct) =>
+        new SessionStore(db, TimeProvider.System).GetStateAsync(task, ct);
 
     /// <summary>
     /// Append one task's committed facts to <paramref name="sb"/>: the row, its worker
@@ -202,9 +202,9 @@ internal static class PlaneProbe
     /// nothing at the moment it is needed.</para>
     /// </summary>
     public static async Task AppendTaskFactsAsync(
-        StringBuilder sb, DocketDbContext db, TaskId task, string prefix, CancellationToken ct)
+        StringBuilder sb, DocketDbContext db, SessionId task, string prefix, CancellationToken ct)
     {
-        var row = await db.Tasks.AsNoTracking().SingleOrDefaultAsync(t => t.Id == task.Value, ct);
+        var row = await db.Sessions.AsNoTracking().SingleOrDefaultAsync(t => t.Id == task.Value, ct);
         if (row is null)
         {
             sb.AppendLine($"{prefix}{task}: (no row)");
@@ -221,15 +221,15 @@ internal static class PlaneProbe
             $"inputKind={row.InputKind?.ToString() ?? "(none)"}");
 
         var instances = await db.WorkerInstances.AsNoTracking()
-            .Where(w => w.TaskId == task.Value)
+            .Where(w => w.SessionId == task.Value)
             .OrderBy(w => w.CreatedAt)
             .ToListAsync(ct);
         sb.AppendLine($"{prefix}  instances: " + (instances.Count == 0
             ? "(none)"
             : string.Join(", ", instances.Select(i => $"{i.Id.ToString()[..8]}{(i.Revoked ? " revoked" : " LIVE")}"))));
 
-        var events = await db.TaskEvents.AsNoTracking()
-            .Where(e => e.TaskId == task.Value)
+        var events = await db.SessionEvents.AsNoTracking()
+            .Where(e => e.SessionId == task.Value)
             .OrderBy(e => e.OccurredAt)
             .ToListAsync(ct);
         sb.AppendLine($"{prefix}  events ({events.Count}):");
