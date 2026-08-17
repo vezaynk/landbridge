@@ -621,25 +621,24 @@ public sealed class AcpClient
     /// That is the same split §13 already keeps for MCP, and it is why the fix here is a
     /// handshake step rather than anything that handles a secret.</para>
     ///
-    /// <para>Which method: the profile's <c>auth_method</c> when it names one, otherwise the
-    /// first the agent declared. Ordering as preference is the only signal ACP gives —
-    /// nothing marks a method as non-interactive — so an agent whose first choice needs a
-    /// browser has to be told, and the failure below says so by name.</para>
+    /// <para>Which method is the profile's <c>auth_method</c>, required. An agent that
+    /// demands authentication and a profile that did not name a method is a
+    /// configuration miss, not a guess: the first declared method is often a
+    /// browser login, and picking it unattended is how a headless worker hangs.
+    /// The credential itself stays the agent's — this request carries only the
+    /// id.</para>
     /// </summary>
     private async Task AuthenticateAsync(AcpProtocolException refusal, CancellationToken ct)
     {
-        var method = _request.AuthMethod is { Length: > 0 } configured
-            ? configured
-            : _authMethods.FirstOrDefault();
-
-        if (method is not { Length: > 0 })
+        if (_request.AuthMethod is not { Length: > 0 } method)
         {
+            var offered = _authMethods.Count == 0 ? "(none)" : string.Join(", ", _authMethods);
             _ring.Enqueue(new AuthFailedEvent(
-                _task, "authenticate", "acp", refusal.Message, null));
+                _task, "authenticate", "acp", "profile has no auth_method", null));
             throw new AcpProtocolException(
-                "the agent requires authentication but declared no authMethods at initialize, so "
-                + "there is nothing to authenticate with — this harness expects to be logged in "
-                + "out of band (§10)",
+                "the agent requires authentication but this profile has no `auth_method`. "
+                + $"Set it to one of the methods the agent declared: {offered}. "
+                + "The credential stays in the profile's `env`; this key is only the method id (§10).",
                 AuthRequiredCode);
         }
 
@@ -924,10 +923,11 @@ public sealed class AcpClient
     /// old harness prompt-tool did, waits for a Lead or human verdict, and maps
     /// it onto the agent's own options.
     ///
-    /// <para>Allow picks <c>allow_once</c>, never <c>allow_always</c> — a standing
-    /// bypass is not a plane decision. Deny picks a reject option when the agent
-    /// offered one, otherwise <c>cancelled</c>. A missing plane callback (tests
-    /// that did not wire one) is also cancelled rather than auto-allowed.</para>
+    /// <para>Allow picks <c>allow_once</c> only — never <c>allow_always</c>, even
+    /// as a fallback. A standing bypass is not a plane decision. Deny picks a
+    /// reject option when the agent offered one, otherwise <c>cancelled</c>. A
+    /// missing plane callback (tests that did not wire one) is also cancelled
+    /// rather than auto-allowed.</para>
     /// </summary>
     private async Task<string?> ResolvePermissionOptionAsync(JsonElement root, CancellationToken ct)
     {
@@ -960,7 +960,12 @@ public sealed class AcpClient
         }
 
         if (decision.Allow)
-            return FirstOfKind(options, "allow_once") ?? FirstOfKind(options, "allow_always");
+        {
+            // Never allow_always: that is a standing bypass in the agent, not a
+            // one-shot plane decision. If the agent offered no allow_once, cancel
+            // rather than promote the allow into a lasting grant.
+            return FirstOfKind(options, "allow_once");
+        }
 
         // Once per task, and it earns its place. A refused tool call is invisible from
         // everywhere else: the agent absorbs the refusal, writes a paragraph about why it

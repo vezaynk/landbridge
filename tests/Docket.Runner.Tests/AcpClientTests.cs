@@ -281,6 +281,21 @@ public sealed class AcpClientTests
     }
 
     [Fact]
+    public async Task Cancels_an_allow_when_the_agent_offered_only_allow_always()
+    {
+        var agent = new FakeAgent
+        {
+            AskPermissionDuringPrompt = true,
+            PermissionOptions =
+                """[{"optionId":"allow-always","name":"Always allow","kind":"allow_always"}]""",
+        };
+        await RunAsync(agent, Request("go"), (_, _) => Task.FromResult(new AcpPermissionDecision(true, null)));
+
+        var outcome = agent.PermissionResponse!.Value.GetProperty("result").GetProperty("outcome");
+        Assert.Equal("cancelled", outcome.GetProperty("outcome").GetString());
+    }
+
+    [Fact]
     public async Task Cancels_a_permission_request_when_the_plane_is_not_wired()
     {
         var agent = new FakeAgent { AskPermissionDuringPrompt = true };
@@ -431,15 +446,38 @@ public sealed class AcpClientTests
     public async Task An_agent_that_demands_authentication_gets_it_and_the_session_opens()
     {
         var agent = new FakeAgent { AuthMethods = ["api-key", "chat-gpt"], RequireAuthentication = true };
-        var run = await RunAsync(agent, Request("go"));
+        var run = await RunAsync(agent, Request("go") with { AuthMethod = "api-key" });
 
         Assert.Equal(
             ["initialize", "session/new", "authenticate", "session/new", "session/prompt"],
             agent.MethodsReceived);
-        // First declared wins by default: ordering is the only preference signal ACP gives,
-        // and codex-acp puts the unattended method first.
         Assert.Equal("api-key", agent.AuthenticatedWith);
         Assert.Equal("sess_1", run.SessionId);
+    }
+
+    /// <summary>
+    /// The method is the profile's to name. Guessing the first declared one is how a
+    /// headless worker ends up in a browser login.
+    /// </summary>
+    [Fact]
+    public async Task Auth_required_without_a_profile_auth_method_fails()
+    {
+        var agent = new FakeAgent { AuthMethods = ["api-key", "chat-gpt"], RequireAuthentication = true };
+        var (_, drain) = Start(agent, Request("go"));
+        await agent.WaitForAsync("session/new");
+        // The -32000 is queued in the same write that unblocked WaitForAsync; give
+        // the client a turn to refuse the missing auth_method before we EOF.
+        await Task.Delay(50);
+        agent.EndSession();
+        var run = await drain.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.DoesNotContain("authenticate", agent.MethodsReceived);
+        Assert.DoesNotContain("session/prompt", agent.MethodsReceived);
+
+        var failure = Assert.Single(run.Events.OfType<AuthFailedEvent>());
+        Assert.Equal("authenticate", failure.Operation);
+        Assert.Equal("acp", failure.Target);
+        Assert.Contains("auth_method", Assert.Single(run.Warnings, w => w.Contains("auth_method")));
     }
 
     /// <summary>
@@ -485,7 +523,7 @@ public sealed class AcpClientTests
             RequireAuthentication = true,
             AuthenticateFails = true,
         };
-        var run = await RunAsync(agent, Request("go"));
+        var run = await RunAsync(agent, Request("go") with { AuthMethod = "api-key" });
 
         Assert.Single(agent.MethodsReceived, m => m == "authenticate");
         Assert.DoesNotContain("session/prompt", agent.MethodsReceived);

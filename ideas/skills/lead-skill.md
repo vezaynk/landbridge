@@ -128,9 +128,9 @@ A request with no question is a worker that told you nothing. You can't answer i
 
 ### Permission requests
 
-Permissions arrive as ACP `session/request_permission`. There is no bypass / always-approve flag on a Docket worker spawn. Today the runner auto-selects the agent's allow option so a headless worker can finish; routing those requests to you (the existing permission-bridge tools) is the next increment. Two things already make a live wait unlike every other blocked task:
+Permissions arrive as ACP `session/request_permission`. There is no bypass / always-approve flag on a Docket worker spawn. docketd posts the request to the plane; **you decide**. Auto-allow is gone. A plane allow maps to the agent's `allow_once` — never `allow_always`. Two things make a live wait unlike every other blocked task:
 
-**The worker is still running, blocked inside that tool call.** It hasn't parked and won't be redispatched — a verdict (once the bridge is wired) resumes it where it stands. Wait TTL is off by default; use `park_task` if you mean to release the machine.
+**The worker is still running, blocked inside that tool call.** It hasn't parked and won't be redispatched — your verdict resumes it where it stands. Wait TTL is off by default; use `park_task` if you mean to release the machine.
 
 **You answer with a verdict, not prose.** `get_task_question` shows the tool name and the arguments the harness proposed; then `answer_permission_request(task, 'allow'|'deny', message)`. `answer_input_request` is refused on these — it would requeue a worker that is still alive.
 

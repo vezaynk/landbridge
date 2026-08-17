@@ -255,7 +255,8 @@ public sealed class TaskRow
     /// What to do when <see cref="PreferredMachine"/> is gone at dispatch (§6/§11):
     /// <see cref="MachineGonePolicy.Degrade"/> cold-starts elsewhere (memory lost,
     /// logged), <see cref="MachineGonePolicy.Pin"/> waits in submitted. Null (and
-    /// unused) for a non-continuation task; stored as its enum name like the other
+    /// unused) until a park or fail pins the same-task <c>session/load</c> to the
+    /// box that holds the transcript. Stored as its enum name like the other
     /// enum columns.
     /// </summary>
     public MachineGonePolicy? OnMachineGone { get; set; }
@@ -329,7 +330,8 @@ public sealed class WorkerInstanceRow
     /// are per-machine, so the pair (machine, ordinal) is what identifies a captured
     /// instance. Nothing else remembers this once the task is terminal: the in-memory
     /// registry untracks a task when it exits, <see cref="TaskRow.ParkMachine"/> only
-    /// covers parked tasks, and <see cref="TaskRow.PreferredMachine"/> only continuations.
+    /// covers parked tasks, and <see cref="TaskRow.PreferredMachine"/> is the
+    /// continuation pin plus the same-task session/load pin after park or fail.
     ///
     /// <para>Nullable for rows written before this column existed; a null simply means the
     /// plane cannot say where that attempt ran, and the dashboard says so rather than

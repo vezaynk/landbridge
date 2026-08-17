@@ -664,6 +664,33 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(1, row.InfrastructureRequeues);
         Assert.Null(row.CurrentInstanceId);
         Assert.True((await verify.WorkerInstances.AsNoTracking().SingleAsync(w => w.Id == instance.Value)).Revoked);
+        Assert.Equal("m1", row.PreferredMachine);
+        Assert.Equal("m1", row.ParkMachine);
+        Assert.Equal(MachineGonePolicy.Pin, row.OnMachineGone);
+    }
+
+    [SkippableFact]
+    public async Task A_failed_attempt_resumes_only_on_the_machine_that_holds_the_session()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await CreateSubmitted(db);
+        await store.DispatchNextAsync(Machine(), WorkerInstanceId.New());
+        await store.StampHarnessSessionRefAsync(id, "sess-keep");
+        db.ChangeTracker.Clear();
+        Assert.IsType<StoreResult.Applied>(
+            await store.ApplyAsync(id, new LivenessLost(LivenessLossReason.ProcessExited)));
+        Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(id, new WakeParked("try again")));
+
+        var elsewhere = new MachineSnapshot("m2", Ready: true, UnderBackPressure: false,
+            new HashSet<string> { "default" });
+        Assert.IsType<StoreResult.NotFound>(
+            await NewStore(db).DispatchNextAsync(elsewhere, WorkerInstanceId.New(), default, ["m2"]));
+
+        var resumed = Assert.IsType<StoreResult.Applied>(
+            await NewStore(db).DispatchNextAsync(Machine(), WorkerInstanceId.New(), default, ["m1", "m2"]));
+        Assert.Equal("sess-keep", resumed.HarnessSessionRef);
     }
 
     [SkippableFact]
@@ -711,6 +738,8 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
             var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
             Assert.Equal(TaskState.Parked, row.State);
             Assert.Equal("m1", row.ParkMachine);
+            Assert.Equal("m1", row.PreferredMachine);
+            Assert.Equal(MachineGonePolicy.Pin, row.OnMachineGone);
         }
 
         await store.ApplyAsync(id, new WakeParked());
