@@ -235,7 +235,7 @@ runner-config reference):
 
 ```json
 "spawn": ["claude-agent-acp"],
-"prompt": "You are a Docket worker. First call mcp__docket__get_session. When done, call mcp__docket__report_result. If blocked, call mcp__docket__request_input.",
+"prompt": "You are a Docket worker on a live session. First call mcp__docket__get_session. When you think you are done, call mcp__docket__report_result and stay up; the Lead may reply. If blocked, call mcp__docket__request_input. You do not complete the session yourself.",
 "follow_up": "There is new input on your assignment. Call mcp__docket__get_session to read it, then continue."
 ```
 

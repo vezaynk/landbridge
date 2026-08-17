@@ -15,7 +15,7 @@ internal static class ToolResults
 {
     public static string Describe(StoreResult result) => result switch
     {
-        StoreResult.Applied a => $"ok: task is now {a.Session.State}",
+        StoreResult.Applied a => $"ok: session is now {a.Session.State}",
         _ => throw Rejection(result),
     };
 

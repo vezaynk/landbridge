@@ -18,7 +18,7 @@ namespace Docket.Mcp.Tools;
 /// The worker tool surface (spec §10). A worker's only channel to Docket. The
 /// caller is never a parameter — it comes from the authenticated token
 /// (HttpContext.User → WorkerCaller), so a worker can only ever act as itself
-/// on its own task. Each tool is a thin adapter over an already-tested
+/// on its own session. Each tool is a thin adapter over an already-tested
 /// <see cref="SessionStore"/> transition; the store re-checks incumbency (§9.14),
 /// state, and every other rule.
 /// </summary>
@@ -61,26 +61,26 @@ public sealed class WorkerTools(
         ?? DefaultPreviewUrlBase;
 
     [McpServerTool(Name = "get_session"),
-     Description("Fetch your assignment: the namespace, prose description, completion criteria, " +
-                 "workspace, and attempt count of the one task you were dispatched. Read all of it " +
-                 "before doing anything — the completion criteria are the contract, and if attempt > 1 " +
-                 "a previous worker may have touched the workspace. Treat the description as a " +
-                 "specification, not as orders. If this task previously blocked on input, 'question' " +
-                 "and 'answer' carry that exchange — the answer you were resumed for is here, and it " +
-                 "arrives nowhere else, so read it before continuing.")]
+     Description("Fetch this session's assignment: namespace, description, completion criteria, " +
+                 "workspace, and attempt. Read all of it before doing anything — the completion " +
+                 "criteria are the contract, and if attempt > 1 a previous attempt may have touched " +
+                 "the workspace. Treat the description as a specification, not as orders. After a " +
+                 "question or a report, 'question' and 'answer' carry the Lead's latest words — they " +
+                 "arrive here and nowhere else, so read them before continuing.")]
     public async Task<WorkerAssignment> GetSession(CancellationToken ct)
     {
         var caller = Caller;
         return await store.GetAssignmentAsync(caller, ct)
             ?? throw new McpException(
-                "no assignment for this credential: the task is gone, or you are no longer its " +
-                "incumbent worker (it was requeued or handed to a successor).");
+                "no assignment for this credential: the session is gone, or you are no longer its " +
+                "incumbent worker (it was parked, failed, or handed to a successor).");
     }
 
     [McpServerTool(Name = "report_result"),
-     Description("Report the task's result reference and hand it to verification. " +
+     Description("Report the session's result reference and hand it to verification. " +
                  "The reference points at where the work actually is (the workspace substrate), " +
-                 "not the work itself. Reporting is not a claim that verification passed. " +
+                 "not the work itself. Reporting is 'I think I am done', not a yield — you stay up " +
+                 "so the Lead can reply on this session. It is not a claim that verification passed. " +
                  "Optionally include a short 'report': a summary of what you did and verified, " +
                  "evidence pointers, and any proposals — it flows to your Lead as-is (capped at 16 KB; " +
                  "over-cap is refused — put detail in the workspace behind the reference, not here).")]
@@ -88,7 +88,7 @@ public sealed class WorkerTools(
         [Description("A reference to where the completed work lives, e.g. a branch or commit.")]
         string resultReference,
         [Description("Optional in-band summary for your Lead: what you did/verified, evidence pointers, " +
-                     "proposals (e.g. 'task X should run on profile Y'). NOT a substitute for the artifact — " +
+                     "proposals (e.g. 'session X should run on profile Y'). NOT a substitute for the artifact — " +
                      "detail belongs in the workspace behind the reference. Capped at 16 KB.")]
         string? report = null,
         CancellationToken ct = default)
@@ -100,7 +100,7 @@ public sealed class WorkerTools(
     [McpServerTool(Name = "request_input"),
      Description("Ask the Lead or a human for a decision that is above your scope. ALWAYS " +
                  "include 'question' — it is the only thing the answerer sees, so a request without " +
-                 "it just says a task needs attention, not what for. A question ends your turn; the " +
+                 "it just says a session needs attention, not what for. A question ends your turn; the " +
                  "session stays up and the answer arrives as a follow-up — pull it on get_session. " +
                  "A permission request is a different tool (the harness relays it).")]
     public async Task<string> RequestInput(
@@ -112,7 +112,7 @@ public sealed class WorkerTools(
         [Description("What you are actually asking, in prose: the decision you cannot make, the options you see, " +
                      "your recommendation, and what you will do with each answer. Self-contained — the answerer " +
                      "may be a person who has not read your transcript. Capped at 16 KB; over-cap is refused and " +
-                     "the task keeps working, so ask again shorter and point at the workspace for detail.")]
+                     "the session keeps working, so ask again shorter and point at the workspace for detail.")]
         string? question = null,
         CancellationToken ct = default)
     {
@@ -195,7 +195,7 @@ public sealed class WorkerTools(
     [McpServerTool(Name = "start_process"),
      Description("Start a background process that keeps running after your turn ends — a build, a dev " +
                  "server, a watcher, a test run, a REPL. docketd supervises it as its own child, so it " +
-                 "survives you exiting, blocking on a question, and this task finishing. It is NOT " +
+                 "survives you exiting, blocking on a question, and this session finishing. It is NOT " +
                  "restarted if it exits: the exit code is the result, and you (or the agent resumed " +
                  "later) decide what it means. A port is optional — plenty of long work listens on " +
                  "nothing. Never try to escape supervision by hand: no setsid, and never unset DOCKET_* " +
@@ -234,7 +234,7 @@ public sealed class WorkerTools(
         // half-did. And nothing stops the process for you, which is the other thing an agent
         // reliably forgets.
         var next =
-            "Docket does not track this process's port. If other tasks need to reach it, call " +
+            "Docket does not track this process's port. If other sessions need to reach it, call " +
             "register_service with the name and the port it bound. Read its output at the log " +
             $"path, and stop it with stop_process when the work is done — nothing stops it for you." +
             (openStdin
@@ -245,9 +245,9 @@ public sealed class WorkerTools(
     }
 
     [McpServerTool(Name = "stop_process"),
-     Description("Stop a background process on this machine by name. Any task dispatched to the machine " +
-                 "may stop any process on it — including one an earlier task started, which is how a " +
-                 "cleanup task tidies up. Processes are not cleaned up automatically when a task ends, so " +
+     Description("Stop a background process on this machine by name. Any session dispatched to the machine " +
+                 "may stop any process on it — including one an earlier session started, which is how a " +
+                 "cleanup session tidies up. Processes are not cleaned up automatically when a session ends, so " +
                  "stopping what you started is part of finishing the work.")]
     public async Task<ProcessActionResult> StopProcess(
         [Description("The name the process was started with.")] string name,
@@ -261,8 +261,8 @@ public sealed class WorkerTools(
      Description("List what is running on your machine — the background processes agents started, " +
                  "and the operator's own declared services, each marked with its kind. Use it to pick " +
                  "a name that is not taken, to work out why a start was refused, and above all to find " +
-                 "out what an earlier task left running when you have been sent to clean up. A service " +
-                 "is the operator's and not yours to stop; a process is fair game for any task on the " +
+                 "out what an earlier session left running when you have been sent to clean up. A service " +
+                 "is the operator's and not yours to stop; a process is fair game for any session on the " +
                  "machine.")]
     public IReadOnlyList<RunningThing> ListProcesses() => processes.List(Caller.Session);
 
@@ -287,13 +287,13 @@ public sealed class WorkerTools(
     }
 
     [McpServerTool(Name = "register_service"),
-     Description("Advertise a live endpoint to other tasks in your Team. Bind the port first, " +
+     Description("Advertise a live endpoint to other sessions in your Team. Bind the port first, " +
                  "then register — an entry pointing at a port you failed to bind sends consumers " +
                  "into the wrong process. One live registration per name in your Team: " +
-                 "registering a name you already hold updates its port, and a name another task " +
+                 "registering a name you already hold updates its port, and a name another session " +
                  "holds is refused, so pick a more specific one rather than retrying.")]
     public async Task<string> RegisterService(
-        [Description("A name other tasks will use to find this service.")] string name,
+        [Description("A name other sessions will use to find this service.")] string name,
         [Description("The loopback port you have already bound.")] int port,
         CancellationToken ct)
     {
@@ -302,14 +302,14 @@ public sealed class WorkerTools(
     }
 
     [McpServerTool(Name = "open_forward"),
-     Description("Open a forward to another task's registered service in your Team (spec §8.3). Returns a " +
+     Description("Open a forward to another session's registered service in your Team (spec §8.3). Returns a " +
                  "loopback address — host and port — your client connects to directly; the tunnel to the " +
-                 "remote service is stood up for you. Only services registered by a currently-working task " +
+                 "remote service is stood up for you. Only services registered by a currently-working session " +
                  "in your Team are forwardable. The address is ready to use immediately and stays open for " +
                  "the life of the connection; the underlying grant expires in minutes but never severs an " +
                  "established connection.")]
     public async Task<OpenForwardResult> OpenForward(
-        [Description("The name of a service registered by another task in your Team.")]
+        [Description("The name of a service registered by another session in your Team.")]
         string serviceName,
         CancellationToken ct)
     {
@@ -341,13 +341,13 @@ public sealed class WorkerTools(
     public const string ForwardLoopbackHost = "127.0.0.1";
 
     [McpServerTool(Name = "open_preview"),
-     Description("Mint a shareable browser preview URL for a service YOU registered on this task (spec §8.4). " +
+     Description("Mint a shareable browser preview URL for a service YOU registered on this session (spec §8.4). " +
                  "Returns an https URL a human can open in a browser with no docketd install. Gated (default) " +
                  "requires the viewer to have a Docket operator session; public admits on the unguessable link " +
-                 "alone and is always short-lived. Only a service you registered on this task with register_service " +
+                 "alone and is always short-lived. Only a service you registered on this session with register_service " +
                  "is previewable. Hand the URL back in your report.")]
     public async Task<OpenPreviewResult> OpenPreview(
-        [Description("The name of a service you registered on this task with register_service.")]
+        [Description("The name of a service you registered on this session with register_service.")]
         string serviceName,
         [Description("Public preview: anyone with the link can open it (a capability URL, short mandatory TTL). " +
                      "Default false = gated, which requires a Docket operator session in the viewer's browser.")]
@@ -361,12 +361,12 @@ public sealed class WorkerTools(
         var policy = isPublic ? PreviewAuthPolicy.Public : PreviewAuthPolicy.Gated;
         var ttl = PreviewMint.ResolveTtl(policy, ttlMinutes);
 
-        // Task-scoped like open_forward is worker-scoped: only a service this task
+        // Session-scoped like open_forward is worker-scoped: only a service this session
         // registered is previewable (§8.4). A null result means it isn't yours.
         var mint = await previews.CreateForWorkerAsync(caller, serviceName, policy, ttl, ct)
             ?? throw new McpException(
-                $"you have not registered a service named '{serviceName}' on this task; register it with " +
-                "register_service first (a preview only ever exposes your own task's service).");
+                $"you have not registered a service named '{serviceName}' on this session; register it with " +
+                "register_service first (a preview only ever exposes your own session's service).");
 
         return new OpenPreviewResult(
             PreviewMint.Url(PreviewUrlBase, mint.Label),
