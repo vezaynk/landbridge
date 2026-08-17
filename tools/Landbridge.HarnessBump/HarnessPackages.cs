@@ -1,4 +1,4 @@
-namespace Docket.HarnessBump;
+namespace Landbridge.HarnessBump;
 
 /// <summary>
 /// One BYO-harness CLI: the npm package ci.yml installs, and the short name used

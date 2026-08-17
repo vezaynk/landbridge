@@ -1,7 +1,7 @@
-using Docket.ControlPlane.Tests;
-using Docket.Core;
+using Landbridge.ControlPlane.Tests;
+using Landbridge.Core;
 
-namespace Docket.Chaos.Tests;
+namespace Landbridge.Chaos.Tests;
 
 /// <summary>
 /// Spec §17.8 — the chaos test. §17 is the build order, and its step 8 names ten
@@ -10,9 +10,9 @@ namespace Docket.Chaos.Tests;
 ///
 /// <list type="table">
 /// <item><term>Kill a runner mid-task with siblings running</term><description>
-///   <see cref="Sigkilled_docketd_requeues_every_task_it_held_and_the_restart_reaps_strays"/> —
+///   <see cref="Sigkilled_landbridged_requeues_every_task_it_held_and_the_restart_reaps_strays"/> —
 ///   two tasks in flight on one machine, both requeued by the one death.</description></item>
-/// <item><term>SIGKILL docketd and restart it</term><description>same test: the restarted
+/// <item><term>SIGKILL landbridged and restart it</term><description>same test: the restarted
 ///   daemon sweeps the previous generation's strays before accepting dispatch, then the
 ///   requeued work is redispatched and a fresh task completes end to end.</description></item>
 /// <item><term>Replay a stale worker-instance token</term><description>
@@ -48,7 +48,7 @@ namespace Docket.Chaos.Tests;
 /// least one requeue" and "eventually leaves the state it was stuck in" rather than an exact
 /// count, and never asserts retry-forever behaviour. Where a scenario could drift into the
 /// cap it says so and asserts it has not; the cap itself is covered by
-/// <c>Docket.Core.Tests.RequeueCapTests</c>. The two disconnect/restart scenarios are the
+/// <c>Landbridge.Core.Tests.RequeueCapTests</c>. The two disconnect/restart scenarios are the
 /// exception and assert the trail exactly, because "one requeue per disconnect" is the
 /// property under test (#87) — a doubled requeue is invisible to a tolerant assertion and
 /// costs a flapping machine its cap in three disconnects instead of five.</para>
@@ -81,7 +81,7 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
 
     /// <summary>
     /// The rig itself, proven before any chaos is applied: a task created over real MCP
-    /// is dispatched by the real plane to the real docketd, worked by the real scripted
+    /// is dispatched by the real plane to the real landbridged, worked by the real scripted
     /// worker, and accepted by the Lead. If this fails, the chaos scenarios below are
     /// failing for a reason that has nothing to do with chaos — which is exactly what a
     /// baseline is for.
@@ -104,17 +104,17 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     /// <summary>
-    /// §17.8: "Kill a runner mid-task with siblings running" and "SIGKILL docketd and
+    /// §17.8: "Kill a runner mid-task with siblings running" and "SIGKILL landbridged and
     /// restart it".
     ///
     /// <para>Two tasks are working on the one machine and a tagged stray tree is planted
-    /// beside them. docketd is then SIGKILLed — no handler, no flush, no child cleanup.
+    /// beside them. landbridged is then SIGKILLed — no handler, no flush, no child cleanup.
     /// What must hold:</para>
     /// <list type="number">
     /// <item>The plane notices the dropped socket and requeues BOTH tasks — the sibling
     /// blast radius is the whole machine, not just one task — each against the
     /// infrastructure counter, each with its worker instance revoked.</item>
-    /// <item>A restarted docketd reaps the previous generation's strays BEFORE announcing
+    /// <item>A restarted landbridged reaps the previous generation's strays BEFORE announcing
     /// itself, so it cannot inherit a port-holding orphan (§10 restart-equals-reboot,
     /// the guarantee that has to survive a hard crash precisely because a SIGKILLed
     /// daemon cleans up nothing).</item>
@@ -130,7 +130,7 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
     /// blast radius is the assertion; what the workers were doing is not.</para>
     /// </summary>
     [SkippableFact]
-    public async Task Sigkilled_docketd_requeues_every_task_it_held_and_the_restart_reaps_strays()
+    public async Task Sigkilled_landbridged_requeues_every_task_it_held_and_the_restart_reaps_strays()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         Skip.If(OperatingSystem.IsWindows(), WindowsSkip);
@@ -162,23 +162,23 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
                 await ChaosFleet.WaitUntilAsync(
                     () => Task.FromResult(fleet.WorkerStarted(task)), TransitionBudget, ct),
                 $"sibling {task} never wrote its start marker, so it was not actually in " +
-                $"flight when docketd was killed\n" + await fleet.DiagnoseAsync(siblings, ct));
+                $"flight when landbridged was killed\n" + await fleet.DiagnoseAsync(siblings, ct));
 
         var beforeKill = new Dictionary<SessionId, TaskFacts>();
         foreach (var task in siblings)
             beforeKill[task] = (await fleet.FactsAsync(task, ct))!.Value;
 
-        // Planted only now: had it existed before the FIRST docketd start, that start's
+        // Planted only now: had it existed before the FIRST landbridged start, that start's
         // own sweep would have reaped it and there would be nothing left to prove.
         var stray = await fleet.PlantStrayAsync(ct);
 
-        await fleet.SigkillDocketdAsync();
+        await fleet.SigkillLandbridgedAsync();
 
         // ── 1. Both siblings failed by the one death. The plane does not requeue.
         foreach (var task in siblings)
         {
             await AssertReachesAsync(fleet, task, SessionState.Failed,
-                "a sibling was not failed after docketd was SIGKILLed", ct, siblings);
+                "a sibling was not failed after landbridged was SIGKILLed", ct, siblings);
             var facts = (await fleet.FactsAsync(task, ct))!.Value;
             Assert.True(facts.InfrastructureRequeues == beforeKill[task].InfrastructureRequeues + 1,
                 $"task {task} counted {facts.InfrastructureRequeues - beforeKill[task].InfrastructureRequeues} " +
@@ -193,7 +193,7 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
             // guid. Unregistering first removes the mechanism rather than the symptom — the
             // SIGKILL leaves this single-machine fleet with nothing registered, so
             // ReadyMachines is empty and no pass can claim the task until step 2 restarts
-            // docketd. There is no longer a window to sample, which is why this is now stable.
+            // landbridged. There is no longer a window to sample, which is why this is now stable.
             //
             // Adding a settle-wait here would make the assertion vacuous: it would let a
             // returning race finish its second requeue and then observe a null instance
@@ -224,9 +224,9 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
         }
 
         // ── 2. The restart sweep runs before the daemon accepts anything.
-        var up = await fleet.StartDocketdAsync(ct);
+        var up = await fleet.StartLandbridgedAsync(ct);
         Assert.True(ParseStraysReaped(up) >= 1,
-            $"the restarted docketd reaped nothing; the planted stray tree was still tagged " +
+            $"the restarted landbridged reaped nothing; the planted stray tree was still tagged " +
             $"with machine {fleet.MachineId}\n{up}\n" + await fleet.DiagnoseAsync(siblings, ct));
         Assert.True(
             await ChaosFleet.WaitUntilAsync(() => Task.FromResult(!stray.AnyAlive), TransitionBudget, ct),
@@ -237,7 +237,7 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
         {
             await fleet.ResumeFailedAsync(task, ct);
             await AssertReachesAsync(fleet, task, SessionState.Working,
-                "a failed sibling was never redispatched after docketd came back", ct, siblings);
+                "a failed sibling was never redispatched after landbridged came back", ct, siblings);
             var facts = (await fleet.FactsAsync(task, ct))!.Value;
             Assert.NotEqual(beforeKill[task].CurrentInstanceId, facts.CurrentInstanceId);
             Assert.Equal(1, facts.LiveInstanceCount);
@@ -256,9 +256,9 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
     /// §17.8: "Replay a stale worker-instance token."
     ///
     /// <para>The token replayed here is the real thing: read out of the <c>mcp.json</c>
-    /// docketd generated for the live dispatch (§13), which is the very credential the
+    /// landbridged generated for the live dispatch (§13), which is the very credential the
     /// running worker is authenticating with. The task is then requeued out from under
-    /// it by killing docketd, and the token is presented again over the real MCP
+    /// it by killing landbridged, and the token is presented again over the real MCP
     /// surface.</para>
     ///
     /// <para>What §9.14 promises is that an orphaned harness "holds a token that is
@@ -293,7 +293,7 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
             await ChaosFleet.WaitUntilAsync(
                 async () => (stale = await fleet.InjectedWorkerTokenAsync(task, ct)) is not null,
                 TransitionBudget, ct),
-            "docketd never wrote the worker's mcp.json\n" + await fleet.DiagnoseAsync([task], ct));
+            "landbridged never wrote the worker's mcp.json\n" + await fleet.DiagnoseAsync([task], ct));
 
         // Sanity: this credential is live right now. Without this the test could pass
         // against a token that was never valid in the first place.
@@ -304,7 +304,7 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
             Assert.NotEqual(true, assignment.IsError);
         }
 
-        await fleet.SigkillDocketdAsync();
+        await fleet.SigkillLandbridgedAsync();
         await AssertReachesAsync(fleet, task, SessionState.Failed,
             "the task was not failed, so its instance was never revoked", ct);
 
@@ -318,7 +318,7 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
     /// §17.8: "Partition a machine" — the liveness half.
     ///
     /// <para>A worker that is running but getting nowhere is the case the §10 two clocks
-    /// exist to separate, and it is the one a single number cannot express: docketd keeps
+    /// exist to separate, and it is the one a single number cannot express: landbridged keeps
     /// reporting <c>alive</c> for the process every heartbeat, so the aliveness clock
     /// stays fresh forever and only the no-progress ceiling can reclaim the task. This
     /// wedges a real worker (a process that emits nothing and registers no service —
@@ -346,7 +346,7 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
             // Heartbeat ≪ aliveness window, so the wedged worker keeps looking alive and
             // the ONLY clock that can fire is the no-progress ceiling. The window is
             // deliberately WIDE (15 heartbeats), not merely wider than the ceiling: a loaded
-            // CI runner can stall docketd's heartbeat pump for several seconds, and a 5s
+            // CI runner can stall landbridged's heartbeat pump for several seconds, and a 5s
             // window let the aliveness clock win that race once (reason LivenessTimeout
             // instead of NoProgress, dispatch run 31240309899). The ceiling still fires
             // first by construction; detection just waits for the next sweep.
@@ -374,7 +374,7 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
             await fleet.DiagnoseAsync([task], ct));
 
         // Which clock fired is the whole point, and both clocks bump the same counter —
-        // so without this the test would equally pass if docketd had simply stopped
+        // so without this the test would equally pass if landbridged had simply stopped
         // reporting the worker alive, which is a different scenario with a different
         // detection time and a different remedy (a machine problem, not a wedged agent).
         // Since #73 the reason is committed on both surfaces, so this reads durable state
@@ -389,7 +389,7 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
         // the task to its requeue cap and abandon it (§9 check 7) if this ran long
         // enough. Asserting we are still short of the cap is what keeps this a test about
         // the no-progress clock rather than an accidental test of the cap — which has its
-        // own coverage in Docket.Core.Tests.RequeueCapTests.
+        // own coverage in Landbridge.Core.Tests.RequeueCapTests.
         Assert.True(reclaimed.InfrastructureRequeues < reclaimed.InfrastructureRequeueLimit,
             $"the wedge reached its requeue cap ({reclaimed.InfrastructureRequeues}/" +
             $"{reclaimed.InfrastructureRequeueLimit}) before this scenario could assert on it\n" +
@@ -403,7 +403,7 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
     /// <para>A task is left <c>working</c> and the PLANE is SIGKILLed. Nothing plane-side
     /// runs on the way out — no requeue, no unregister — so the replacement process comes
     /// up with an empty <c>RunnerConnectionRegistry</c> over a database that still says the
-    /// task is working on this machine. docketd survives (it holds each worker's stdin, so
+    /// task is working on this machine. landbridged survives (it holds each worker's stdin, so
     /// the dead-man's switch does not trip and the worker keeps running) and reconnects on
     /// its own backoff, re-announcing nothing: <c>rebooted</c> is emitted once per daemon
     /// PROCESS start, not per socket.</para>
@@ -418,7 +418,7 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
     /// <para>What is asserted, in the order the fix produces it:</para>
     /// <list type="number">
     /// <item>The restarted plane re-adopts the in-flight task from committed state, which
-    /// its own log states — the direct observation, and what bounds docketd's reconnect.</item>
+    /// its own log states — the direct observation, and what bounds landbridged's reconnect.</item>
     /// <item>The task is genuinely back under both clocks: it is reclaimed, and the reason
     /// is <c>NoProgress</c>. That single reason carries three facts at once. It fires at
     /// all, so tracking resumed. It is not <c>LivenessTimeout</c>, so the re-adopted clocks
@@ -478,13 +478,13 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
         await fleet.RestartPlaneAsync(ct);
 
         // ── 1. The new plane re-adopts what the machine still holds. This is also the
-        // bound on docketd's reconnect: its backoff starts at 200ms and doubles to a 10s
+        // bound on landbridged's reconnect: its backoff starts at 200ms and doubles to a 10s
         // ceiling, so a reconnect plus re-adoption well inside the transition budget is the
         // observable fact, not an assumed one.
         var readopted = await fleet.WaitForPlaneLineAsync(
             l => l.Contains("re-adopted", StringComparison.Ordinal), TransitionBudget);
         Assert.True(readopted is not null,
-            "the restarted plane never re-adopted the in-flight task, so docketd either did " +
+            "the restarted plane never re-adopted the in-flight task, so landbridged either did " +
             "not reconnect within the budget or reconnected to a plane that scanned nothing\n" +
             await fleet.DiagnoseAsync([task], ct));
         Assert.Contains(task.ToString(), readopted!);
@@ -526,7 +526,7 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
     ///
     /// <para>A requeue used to abandon the task without saying anything to the machine, so the
     /// wedged harness the no-progress ceiling had just given up on kept running — and, for a
-    /// real agent, kept spending model tokens — until its <c>docketd</c> restarted and the §10
+    /// real agent, kept spending model tokens — until its <c>landbridged</c> restarted and the §10
     /// stray sweep reaped it. Nothing in committed state can show that: the row records the
     /// plane's decision, not whether anything acted on it. So this scenario reads the worker's
     /// own OS pid off the marker it writes at startup and asserts the process is gone.</para>
@@ -658,7 +658,7 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
     /// of which is silent. Sending nothing is faithful rather than merely convenient — a stale
     /// connection reports no heartbeat, so it never becomes ready and dispatch never considers
     /// it. The roles are the same shape as production with the parts swapped: here the
-    /// test holds the socket that will be superseded and the real <c>docketd</c> holds the one
+    /// test holds the socket that will be superseded and the real <c>landbridged</c> holds the one
     /// that supersedes, which is what lets the assertions be about real running work.</para>
     ///
     /// <para>What must hold when the stale socket finally dies: <b>one requeue at most</b> —
@@ -683,7 +683,7 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
         });
         await fleet.StartPlaneOnlyAsync(ct);
 
-        // The socket the closed laptop left behind, registered before docketd exists so that
+        // The socket the closed laptop left behind, registered before landbridged exists so that
         // the daemon's connection is the one that supersedes.
         using var stale = await fleet.DialRunnerAsync(ct);
         Assert.True(
@@ -693,7 +693,7 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
             await fleet.DiagnoseAsync([], ct));
 
         // The reattach.
-        await fleet.StartDocketdAsync(ct);
+        await fleet.StartLandbridgedAsync(ct);
         Assert.True(
             await fleet.WaitForPlaneLineAsync(
                 l => l.Contains("while an earlier connection was still registered", StringComparison.Ordinal),
@@ -722,7 +722,7 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
             "either way this scenario asserted nothing\n" + await fleet.DiagnoseAsync([held], ct));
 
         // ── The machine is still there: a fresh task runs the whole loop. Pre-fix the
-        // teardown left docketd registered nowhere, so nothing could be dispatched at all.
+        // teardown left landbridged registered nowhere, so nothing could be dispatched at all.
         var after = await fleet.CreateSessionAsync("chaos post-reattach", profile: null, ct);
         await AssertReachesAsync(fleet, after, SessionState.Verifying,
             "a task created after the superseded teardown never reached verifying, so the live " +
@@ -792,8 +792,8 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     /// <summary>
-    /// The count out of docketd's announcement line, which §10 prints only after the
-    /// restart sweep: <c>docketd up: machine=… profiles=[…] strays_reaped=N control=…</c>.
+    /// The count out of landbridged's announcement line, which §10 prints only after the
+    /// restart sweep: <c>landbridged up: machine=… profiles=[…] strays_reaped=N control=…</c>.
     /// Asserted as a lower bound, never an equality — the reaper counts pids it resolved,
     /// so a stray that dies on its own between the scan and the kill still counts, and a
     /// tree kill can take the grandchild before the loop reaches it.
@@ -802,7 +802,7 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
     {
         const string key = "strays_reaped=";
         var at = upLine.IndexOf(key, StringComparison.Ordinal);
-        Assert.True(at >= 0, $"no strays_reaped in docketd's announcement: {upLine}");
+        Assert.True(at >= 0, $"no strays_reaped in landbridged's announcement: {upLine}");
         var rest = upLine[(at + key.Length)..];
         var end = rest.IndexOf(' ');
         return int.Parse(end >= 0 ? rest[..end] : rest);

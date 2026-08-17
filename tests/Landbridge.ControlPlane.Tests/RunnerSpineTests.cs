@@ -1,12 +1,12 @@
-using Docket.Contracts;
-using Docket.ControlPlane.Auth;
-using Docket.Core;
+using Landbridge.Contracts;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.Core;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.ControlPlane.Tests;
+namespace Landbridge.ControlPlane.Tests;
 
 /// <summary>
 /// The control-plane half of the integration spine (spec §6/§10): the dispatch
@@ -90,7 +90,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
     {
         // §11 resume: a task worked before and requeued/parked carries a harness
         // session ref on its row; (re)dispatch surfaces it (opaque, via the store)
-        // and DispatchService rides it back on the DispatchCommand so docketd can
+        // and DispatchService rides it back on the DispatchCommand so landbridged can
         // continue the transcript.
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = TimeProvider.System;
@@ -606,9 +606,9 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
     private IServiceScopeFactory ScopeFactory(TimeProvider clock)
     {
         var services = new ServiceCollection();
-        services.AddDbContext<DocketDbContext>(o =>
+        services.AddDbContext<LandbridgeDbContext>(o =>
             o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
-        services.AddDocketStore();
+        services.AddLandbridgeStore();
         services.AddScoped<TokenService>();
         services.AddSingleton(clock);
         return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();

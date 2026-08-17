@@ -3,7 +3,7 @@ using System.Text.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
-namespace Docket.Relay.Tests;
+namespace Landbridge.Relay.Tests;
 
 /// <summary>
 /// Both <see cref="IGrantValidator"/> implementations, on the axis that matters:
@@ -201,7 +201,7 @@ public class GrantValidatorTests
         var validator = Plane(
             Json(HttpStatusCode.OK, """{"valid":true}"""), out var log, out var sent, bearer: "plane-bearer");
 
-        Assert.True(await validator.ValidateAsync("dkt_g_abc", "fwd-77", RelayRole.Consumer, default));
+        Assert.True(await validator.ValidateAsync("lbr_g_abc", "fwd-77", RelayRole.Consumer, default));
 
         var request = Assert.Single(sent);
         Assert.Equal(HttpMethod.Post, request.Method);
@@ -209,7 +209,7 @@ public class GrantValidatorTests
         Assert.Equal("Bearer plane-bearer", request.Authorization);
         // The plane decides per {grant, forwardId, role}, so all three have to reach it.
         using var body = JsonDocument.Parse(request.Body);
-        Assert.Equal("dkt_g_abc", body.RootElement.GetProperty("grant").GetString());
+        Assert.Equal("lbr_g_abc", body.RootElement.GetProperty("grant").GetString());
         Assert.Equal("fwd-77", body.RootElement.GetProperty("forwardId").GetString());
         Assert.Equal("consumer", body.RootElement.GetProperty("role").GetString());
 

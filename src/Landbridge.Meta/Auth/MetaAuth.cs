@@ -1,7 +1,7 @@
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
 
-namespace Docket.Meta.Auth;
+namespace Landbridge.Meta.Auth;
 
 /// <summary>
 /// Meta's operator session store + cookie plumbing. Unlike the plane's dashboard —

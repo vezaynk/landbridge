@@ -1,12 +1,12 @@
 using System.Diagnostics;
 
-namespace Docket.Runner;
+namespace Landbridge.Runner;
 
-/// <summary>A running process carrying docket tags, as discovered by an inventory.</summary>
+/// <summary>A running process carrying landbridge tags, as discovered by an inventory.</summary>
 public readonly record struct TaggedProcess(int Pid, string MachineId, string? SessionId);
 
 /// <summary>
-/// Enumerates processes that carry a <c>DOCKET_MACHINE_ID</c> env var. This is
+/// Enumerates processes that carry a <c>LANDBRIDGE_MACHINE_ID</c> env var. This is
 /// the discovery half of stray cleanup (§10 runner restart) and is inherently
 /// platform-specific: reading another process's environment is
 /// <c>/proc/&lt;pid&gt;/environ</c> on Linux, and needs privileged syscalls on
@@ -14,7 +14,7 @@ public readonly record struct TaggedProcess(int Pid, string MachineId, string? S
 /// </summary>
 public interface IProcessInventory
 {
-    IReadOnlyList<TaggedProcess> ListDocketProcesses();
+    IReadOnlyList<TaggedProcess> ListLandbridgeProcesses();
 }
 
 /// <summary>Factory + a no-op inventory for platforms without a discovery path yet.</summary>
@@ -27,7 +27,7 @@ public static class ProcessInventory
     /// <see cref="MacOsProcessInventory"/>). On <b>Windows</b> this is the empty
     /// <see cref="NullProcessInventory"/> <em>by design</em>, not a deferral: each
     /// worker is sealed at spawn into a kill-on-close Job Object
-    /// (<see cref="WindowsJobObject"/>, §10 Windows containment), so docketd's death — by any cause —
+    /// (<see cref="WindowsJobObject"/>, §10 Windows containment), so landbridged's death — by any cause —
     /// makes the OS terminate the whole worker tree with no discovery to run. Any
     /// other platform also returns <see cref="NullProcessInventory"/>, there as a
     /// documented deferral. The <b>kill</b> half of stray cleanup is portable
@@ -48,17 +48,17 @@ public static class ProcessInventory
 /// </summary>
 public sealed class NullProcessInventory : IProcessInventory
 {
-    public IReadOnlyList<TaggedProcess> ListDocketProcesses() => [];
+    public IReadOnlyList<TaggedProcess> ListLandbridgeProcesses() => [];
 }
 
 /// <summary>
-/// Linux inventory: scans <c>/proc/&lt;pid&gt;/environ</c> for the docket tags.
+/// Linux inventory: scans <c>/proc/&lt;pid&gt;/environ</c> for the landbridge tags.
 /// Guarded to Linux; on other platforms the factory hands back
 /// <see cref="NullProcessInventory"/> instead.
 /// </summary>
 public sealed class ProcFsProcessInventory : IProcessInventory
 {
-    public IReadOnlyList<TaggedProcess> ListDocketProcesses()
+    public IReadOnlyList<TaggedProcess> ListLandbridgeProcesses()
     {
         if (!OperatingSystem.IsLinux())
             return [];
@@ -76,9 +76,9 @@ public sealed class ProcFsProcessInventory : IProcessInventory
             {
                 var raw = File.ReadAllText(Path.Combine(dir, "environ"));
                 var env = ParseEnviron(raw);
-                if (!env.TryGetValue("DOCKET_MACHINE_ID", out machineId!))
+                if (!env.TryGetValue("LANDBRIDGE_MACHINE_ID", out machineId!))
                     continue;
-                env.TryGetValue("DOCKET_SESSION_ID", out sessionId);
+                env.TryGetValue("LANDBRIDGE_SESSION_ID", out sessionId);
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException)
             {
@@ -112,7 +112,7 @@ public interface IStrayReaper
 }
 
 /// <summary>
-/// Spec §10: <b>on start, docketd kills any stray harness processes before
+/// Spec §10: <b>on start, landbridged kills any stray harness processes before
 /// accepting dispatch</b> — the guarantee that survives a SIGKILLed daemon,
 /// since clean shutdown cannot be relied on. Discovery is delegated to an
 /// <see cref="IProcessInventory"/> (platform-specific); the kill itself is
@@ -121,7 +121,7 @@ public interface IStrayReaper
 ///
 /// <para>On Windows there are no strays to reap: each worker lives in a
 /// kill-on-close Job Object (<see cref="WindowsJobObject"/>, §10 Windows containment) that the OS tears
-/// down the instant docketd dies, so the inventory there is
+/// down the instant landbridged dies, so the inventory there is
 /// <see cref="NullProcessInventory"/> by design and this restart sweep simply finds
 /// nothing.</para>
 /// </summary>
@@ -130,7 +130,7 @@ public sealed class StrayReaper(IProcessInventory inventory, int selfPid) : IStr
     public int Reap(string machineId)
     {
         var reaped = 0;
-        foreach (var proc in inventory.ListDocketProcesses())
+        foreach (var proc in inventory.ListLandbridgeProcesses())
         {
             if (proc.Pid == selfPid || !string.Equals(proc.MachineId, machineId, StringComparison.Ordinal))
                 continue;
@@ -148,7 +148,7 @@ public sealed class StrayReaper(IProcessInventory inventory, int selfPid) : IStr
     public int ReapSession(string machineId, string sessionId)
     {
         var reaped = 0;
-        foreach (var proc in inventory.ListDocketProcesses())
+        foreach (var proc in inventory.ListLandbridgeProcesses())
         {
             if (proc.Pid == selfPid
                 || !string.Equals(proc.MachineId, machineId, StringComparison.Ordinal)

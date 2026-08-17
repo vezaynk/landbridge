@@ -1,9 +1,9 @@
 using System.Text;
-using Docket.ControlPlane;
-using Docket.Core;
-using static Docket.Mcp.Dashboard.DashboardHtml;
+using Landbridge.ControlPlane;
+using Landbridge.Core;
+using static Landbridge.Mcp.Dashboard.DashboardHtml;
 
-namespace Docket.Mcp.Dashboard;
+namespace Landbridge.Mcp.Dashboard;
 
 /// <summary>
 /// The §12 transcript pages, in the same server-rendered style as
@@ -115,7 +115,7 @@ internal static class DashboardTranscriptRenderer
         {
             // Say why the rule exists, not just that it exists: an operator who understands
             // it will not file a bug, and the honest reason is a security one (§13).
-            sb.Append("<p class=\"sub\">Transcripts are served verbatim and are not redacted, so Docket " +
+            sb.Append("<p class=\"sub\">Transcripts are served verbatim and are not redacted, so Landbridge " +
                       "serves them only for tasks that can never run again — a task still in flight may " +
                       "have a live worker credential in its transcript.</p>");
         }
@@ -139,7 +139,7 @@ internal static class DashboardTranscriptRenderer
     private static string WarningBanner() =>
         "<section class=\"metrics\"><div class=\"metric\"><div class=\"l\">" +
         E("Raw harness output, served verbatim. It may contain credentials, customer data, or anything " +
-          "else the agent read or printed. Docket does not redact transcripts (§13). Do not paste it " +
+          "else the agent read or printed. Landbridge does not redact transcripts (§13). Do not paste it " +
           "into a ticket, a chat, or another agent.") +
         "</div></div></section>";
 

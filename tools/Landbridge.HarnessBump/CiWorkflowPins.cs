@@ -1,4 +1,4 @@
-namespace Docket.HarnessBump;
+namespace Landbridge.HarnessBump;
 
 /// <summary>One <c>run: npm install -g &lt;pkg&gt;[@&lt;ver&gt;]</c> line found in a workflow file.</summary>
 /// <param name="Version">Null when the line installs the package unpinned.</param>

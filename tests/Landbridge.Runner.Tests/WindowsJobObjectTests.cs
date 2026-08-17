@@ -1,9 +1,9 @@
 using System.Diagnostics;
 using System.Runtime.Versioning;
-using Docket.Core;
+using Landbridge.Core;
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.Runner.Tests;
+namespace Landbridge.Runner.Tests;
 
 /// <summary>
 /// The Windows half of stray cleanup (§10): a per-worker kill-on-close Job
@@ -15,8 +15,8 @@ namespace Docket.Runner.Tests;
 ///
 /// <para>The core guarantee they prove: assigning a worker to a kill-on-close job and
 /// then closing the sole job handle terminates the worker AND its grandchild —
-/// which is precisely what the OS does to docketd's handle when docketd dies, so it
-/// simulates docketd death without killing the test host (the same trick
+/// which is precisely what the OS does to landbridged's handle when landbridged dies, so it
+/// simulates landbridged death without killing the test host (the same trick
 /// <see cref="DeadMansSwitchTests"/> uses by closing a stdin pipe).</para>
 /// </summary>
 public sealed class WindowsJobObjectTests : IDisposable
@@ -78,8 +78,8 @@ public sealed class WindowsJobObjectTests : IDisposable
     /// <summary>
     /// (2) Containment proof: create a kill-on-close job, start a spawn-child tree,
     /// assign it, then CLOSE the sole handle — the parent and the grandchild must die
-    /// promptly. Closing the handle is byte-for-byte what the OS does to docketd's
-    /// handle on death, so this proves the primitive without killing docketd itself.
+    /// promptly. Closing the handle is byte-for-byte what the OS does to landbridged's
+    /// handle on death, so this proves the primitive without killing landbridged itself.
     /// </summary>
     [SkippableFact]
     [SupportedOSPlatform("windows")]

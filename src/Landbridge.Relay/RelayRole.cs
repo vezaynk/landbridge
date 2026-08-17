@@ -1,4 +1,4 @@
-namespace Docket.Relay;
+namespace Landbridge.Relay;
 
 /// <summary>
 /// Which end of a forward a tunnel represents (spec §8.3). The relay pairs

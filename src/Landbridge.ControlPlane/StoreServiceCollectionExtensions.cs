@@ -1,8 +1,8 @@
-using Docket.Core;
+using Landbridge.Core;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
-namespace Docket.ControlPlane;
+namespace Landbridge.ControlPlane;
 
 /// <summary>
 /// The control-plane policy the write path stamps onto new tasks (§9 check 7). One knob
@@ -24,7 +24,7 @@ public sealed record SessionStorePolicy(
 
 /// <summary>
 /// DI wiring for the task store and the accounting that is part of it, in the style of
-/// <see cref="ForwardingServiceCollectionExtensions.AddDocketForwarding"/>.
+/// <see cref="ForwardingServiceCollectionExtensions.AddLandbridgeForwarding"/>.
 ///
 /// <para>One registration rather than two lines a host could get half-right: the write path
 /// and the per-Team accounting §9.10 attributes through it belong to the same feature, and a
@@ -45,10 +45,10 @@ public static class StoreServiceCollectionExtensions
     /// <param name="infrastructureRequeueLimit">
     /// §9 check 7: the infrastructure requeue cap stamped onto new tasks, or null for
     /// <see cref="SessionRecord.DefaultInfrastructureRequeueLimit"/>. A host reads it from
-    /// configuration (<c>Docket:InfrastructureRequeueLimit</c>); tests and fixtures leave
+    /// configuration (<c>Landbridge:InfrastructureRequeueLimit</c>); tests and fixtures leave
     /// it alone unless the cap is what they are exercising.
     /// </param>
-    public static IServiceCollection AddDocketStore(
+    public static IServiceCollection AddLandbridgeStore(
         this IServiceCollection services, int? infrastructureRequeueLimit = null)
     {
         services.TryAddSingleton(new SessionStorePolicy(

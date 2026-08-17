@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace Docket.Spikes;
+namespace Landbridge.Spikes;
 
 /// <summary>
 /// S1 — resume-after-park (spec §11, §17.0a). Proves headless resume works

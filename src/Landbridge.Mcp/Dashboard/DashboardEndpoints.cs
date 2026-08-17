@@ -1,11 +1,11 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
-using Docket.ControlPlane;
-using Docket.ControlPlane.Auth;
-using Docket.Web;
+using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.Web;
 using Microsoft.Extensions.Configuration;
 
-namespace Docket.Mcp.Dashboard;
+namespace Landbridge.Mcp.Dashboard;
 
 /// <summary>
 /// The §12 dashboard's HTTP surface: the three views plus the event log, each
@@ -51,7 +51,7 @@ public static class DashboardEndpoints
 
         app.MapPost("/dashboard/login", HandleLoginAsync);
 
-        // §8.4 gated-browser-flow confirm: an operator with a docket_session confirms
+        // §8.4 gated-browser-flow confirm: an operator with a landbridge_session confirms
         // access to a preview's Team and the plane mints a one-time code, sent back
         // to the preview origin. Open like login (it establishes, not consumes, auth).
         app.MapGet("/dashboard/preview-auth", HandlePreviewAuthAsync);
@@ -97,7 +97,7 @@ public static class DashboardEndpoints
                 // The route takes an arbitrary id, so membership is checked here or nowhere:
                 // this page carries the Team's prose — worker reports, questions, answers,
                 // result references — which is exactly what must not cross a Team boundary.
-                if (!OperatorMayAccess(principal, new Docket.Core.TeamId(id)))
+                if (!OperatorMayAccess(principal, new Landbridge.Core.TeamId(id)))
                     return Refused(http, NotYourTeam);
                 var team = await queries.GetTeamAsync(id, ct);
                 if (team is null)
@@ -154,7 +154,7 @@ public static class DashboardEndpoints
     /// <item>the operator passphrase (the primary door) — fail-closed 503 when no
     /// operator credential is configured, a fixed <see cref="WrongPassphraseDelay"/>
     /// on a wrong guess (both mirroring <c>/oauth/authorize</c>), and on success a
-    /// freshly-minted human session (§5) dropped as the <c>docket_session</c>
+    /// freshly-minted human session (§5) dropped as the <c>landbridge_session</c>
     /// cookie;</item>
     /// <item>a pasted token (the secondary door) — for a Lead token or a
     /// headless-minted human session; validated through the same
@@ -234,10 +234,10 @@ public static class DashboardEndpoints
     /// <summary>The wildcard preview base URL both mint surfaces build labels onto (§8.4).</summary>
     private static string PreviewUrlBase(IConfiguration config) =>
         config[PreviewMint.UrlBaseConfigKey]
-        ?? Environment.GetEnvironmentVariable("DOCKET_PREVIEW_URL_BASE")
+        ?? Environment.GetEnvironmentVariable("LANDBRIDGE_PREVIEW_URL_BASE")
         ?? "http://preview.localhost";
 
-    private static bool OperatorMayAccess(Principal principal, Docket.Core.TeamId team) => principal switch
+    private static bool OperatorMayAccess(Principal principal, Landbridge.Core.TeamId team) => principal switch
     {
         Principal.Human => true,
         Principal.Lead l => l.Team == team,
@@ -264,7 +264,7 @@ public static class DashboardEndpoints
         var form = await http.Request.ReadFormAsync(ct);
         if (!Guid.TryParse(form["teamId"].ToString(), out var teamId))
             return Results.BadRequest(new { error = "invalid team id" });
-        if (!OperatorMayAccess(principal, new Docket.Core.TeamId(teamId)))
+        if (!OperatorMayAccess(principal, new Landbridge.Core.TeamId(teamId)))
             return Results.StatusCode(StatusCodes.Status403Forbidden);
 
         // "{sessionId}:{name}" — the option value the Team view emits per service.
@@ -275,11 +275,11 @@ public static class DashboardEndpoints
         var serviceName = service[(sep + 1)..];
 
         var isPublic = string.Equals(form["auth"].ToString(), "public", StringComparison.OrdinalIgnoreCase);
-        var policy = isPublic ? Docket.Core.PreviewAuthPolicy.Public : Docket.Core.PreviewAuthPolicy.Gated;
+        var policy = isPublic ? Landbridge.Core.PreviewAuthPolicy.Public : Landbridge.Core.PreviewAuthPolicy.Gated;
         var ttl = PreviewMint.ResolveTtl(policy, int.TryParse(form["ttl"].ToString(), out var m) ? m : null);
 
         var mint = await previews.CreateAsync(
-            new Docket.Core.TeamId(teamId), new Docket.Core.SessionId(sessionId), serviceName, policy, ttl, ct);
+            new Landbridge.Core.TeamId(teamId), new Landbridge.Core.SessionId(sessionId), serviceName, policy, ttl, ct);
         var url = PreviewMint.Url(PreviewUrlBase(config), mint.Label);
 
         return WantsJson(http)
@@ -340,14 +340,14 @@ public static class DashboardEndpoints
         var form = await http.Request.ReadFormAsync(ct);
         if (!Guid.TryParse(form["sessionId"].ToString(), out var sessionId))
             return Results.BadRequest(new { error = "invalid task id" });
-        if (!Enum.TryParse<Docket.Core.PermissionVerdict>(
+        if (!Enum.TryParse<Landbridge.Core.PermissionVerdict>(
                 form["verdict"].ToString(), ignoreCase: true, out var verdict))
             return Results.BadRequest(new { error = "verdict must be 'allow' or 'deny'" });
 
         var message = form["message"].ToString();
-        var id = new Docket.Core.SessionId(sessionId);
+        var id = new Landbridge.Core.SessionId(sessionId);
         var result = await store.AnswerPermissionAsync(
-            new Docket.Core.HumanSession(), id, verdict,
+            new Landbridge.Core.HumanSession(), id, verdict,
             string.IsNullOrWhiteSpace(message) ? null : message, ct);
 
         if (result is not StoreResult.Applied)
@@ -437,7 +437,7 @@ public static class DashboardEndpoints
 
     /// <summary>
     /// GET /dashboard/preview-auth?label=&amp;return= — the gated-browser-flow confirm
-    /// (§8.4). An operator with a live <c>docket_session</c> (host-scoped to the
+    /// (§8.4). An operator with a live <c>landbridge_session</c> (host-scoped to the
     /// dashboard origin) confirms access to the preview's Team; the plane mints a
     /// one-time code and 302s it back to the preview origin. No session → bounce
     /// through login and back (<c>?next=</c>). The <c>return</c> is validated to be
@@ -463,7 +463,7 @@ public static class DashboardEndpoints
 
         if (await previews.ResolveAsync(label, ct) is not PreviewResolveResult.Found found)
             return Html(DashboardRenderer.PreviewAuthError("This preview no longer exists."), 404);
-        if (!OperatorMayAccess(principal, new Docket.Core.TeamId(found.Mapping.TeamId)))
+        if (!OperatorMayAccess(principal, new Landbridge.Core.TeamId(found.Mapping.TeamId)))
             return Html(DashboardRenderer.PreviewAuthError("Your session cannot access this preview's Team."), 403);
 
         // Open-redirect guard: the return must be exactly the label's preview origin.
@@ -472,7 +472,7 @@ public static class DashboardEndpoints
 
         var code = previewAuth.MintCode(label);
         var joiner = ret.Contains('?') ? '&' : '?';
-        return Results.Redirect($"{ret}{joiner}docket_preview_code={Uri.EscapeDataString(code)}");
+        return Results.Redirect($"{ret}{joiner}landbridge_preview_code={Uri.EscapeDataString(code)}");
     }
 
     /// <summary>True iff <paramref name="ret"/> is an absolute URL whose origin is exactly the label's preview origin.</summary>
@@ -555,7 +555,7 @@ public static class DashboardEndpoints
     /// the origin the request was addressed to (see <see cref="OriginGuard.IsSameOrigin"/>).
     /// </summary>
     private static string? DashboardOrigin(IConfiguration config) =>
-        config["Docket:PublicMcpUrl"] ?? Environment.GetEnvironmentVariable("DOCKET_PUBLIC_MCP_URL");
+        config["Landbridge:PublicMcpUrl"] ?? Environment.GetEnvironmentVariable("LANDBRIDGE_PUBLIC_MCP_URL");
 
     /// <summary>
     /// The refusal for a mutating POST that did not come from the dashboard's own origin, or

@@ -1,11 +1,11 @@
-namespace Docket.HarnessBump;
+namespace Landbridge.HarnessBump;
 
 /// <summary>Everything the run can be pointed at, so the tool is testable and dry-runnable.</summary>
 public sealed record Options
 {
     public string RepoRoot { get; init; } = Directory.GetCurrentDirectory();
     public string Repository { get; init; } =
-        Environment.GetEnvironmentVariable("GITHUB_REPOSITORY") is { Length: > 0 } r ? r : "vezaynk/docket-mcp";
+        Environment.GetEnvironmentVariable("GITHUB_REPOSITORY") is { Length: > 0 } r ? r : "vezaynk/landbridge-mcp";
     public string Workflow { get; init; } = "ci.yml";
     public string CiPath { get; init; } = ".github/workflows/ci.yml";
     public string BaseBranch { get; init; } = "master";
@@ -44,9 +44,9 @@ public sealed record Options
     public TimeSpan PollInterval { get; init; } = TimeSpan.FromSeconds(30);
 
     public string CommitterName { get; init; } =
-        Environment.GetEnvironmentVariable("DOCKET_BUMP_COMMITTER_NAME") ?? "docket harness-bump bot";
+        Environment.GetEnvironmentVariable("LANDBRIDGE_BUMP_COMMITTER_NAME") ?? "landbridge harness-bump bot";
     public string CommitterEmail { get; init; } =
-        Environment.GetEnvironmentVariable("DOCKET_BUMP_COMMITTER_EMAIL") ?? "noreply@github.com";
+        Environment.GetEnvironmentVariable("LANDBRIDGE_BUMP_COMMITTER_EMAIL") ?? "noreply@github.com";
 
     public string CiFullPath => Path.Combine(RepoRoot, CiPath);
 
@@ -57,7 +57,7 @@ public sealed record Options
         {
             // The workflow passes this rather than a flag, so the YAML step stays a bare
             // `dotnet run` with no expression logic in it.
-            DryRun = Environment.GetEnvironmentVariable("DOCKET_BUMP_DRY_RUN") is "1" or "true" or "TRUE",
+            DryRun = Environment.GetEnvironmentVariable("LANDBRIDGE_BUMP_DRY_RUN") is "1" or "true" or "TRUE",
         };
 
         for (var i = 0; i < args.Length; i++)

@@ -1,11 +1,11 @@
-using Docket.Meta.Secrets;
+using Landbridge.Meta.Secrets;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 
-namespace Docket.Meta.Data;
+namespace Landbridge.Meta.Data;
 
 /// <summary>
-/// docket-meta's own store (spec §3: "Meta keeps its own Postgres"). Entirely
+/// landbridge-meta's own store (spec §3: "Meta keeps its own Postgres"). Entirely
 /// separate from the plane's database — different credential class, different
 /// network. Snake-case naming + Npgsql, mirroring the plane's conventions so the
 /// hand-authored migration reads the same way, but sharing no schema.

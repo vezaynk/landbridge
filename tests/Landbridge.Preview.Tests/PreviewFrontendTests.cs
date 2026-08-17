@@ -4,10 +4,10 @@ using System.Net.WebSockets;
 using System.Text;
 using Microsoft.AspNetCore.Http;
 
-namespace Docket.Preview.Tests;
+namespace Landbridge.Preview.Tests;
 
 /// <summary>
-/// L2 for the HTTP preview frontend (spec §8.4): the real <see cref="Docket.Preview.PreviewServer"/>
+/// L2 for the HTTP preview frontend (spec §8.4): the real <see cref="Landbridge.Preview.PreviewServer"/>
 /// against a fake control plane + fake tunnel bridge + a real upstream. Covers Host
 /// routing, auth-policy delegation, the byte-faithful HTTP proxy (no rewrite),
 /// bidirectional WebSocket, N concurrent connections, and the failure modes that
@@ -187,7 +187,7 @@ public sealed class PreviewFrontendTests
         await using var harness = PreviewHarness.Start(cp.Url);
 
         using var browser = PreviewTestKit.Browser(harness.Port);
-        browser.DefaultRequestHeaders.Add("Cookie", "docket_session=cookie-token");
+        browser.DefaultRequestHeaders.Add("Cookie", "landbridge_session=cookie-token");
         using var response = await browser.GetAsync("http://label1.preview.localhost/", Ct);
         Assert.Equal(HttpStatusCode.OK, response.StatusCode);
 

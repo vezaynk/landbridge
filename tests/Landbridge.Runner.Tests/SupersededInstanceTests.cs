@@ -1,7 +1,7 @@
-using Docket.Core;
+using Landbridge.Core;
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.Runner.Tests;
+namespace Landbridge.Runner.Tests;
 
 /// <summary>
 /// §11 park-resume overlap (#102): a task can be dispatched to this machine while the
@@ -115,10 +115,10 @@ public sealed class SupersededInstanceTests : IDisposable
 
     /// <summary>
     /// The predecessor's exit does not reap its successor. Task-exit stray cleanup matches
-    /// on <c>DOCKET_SESSION_ID</c>, which every instance of a task carries — so run for a
+    /// on <c>LANDBRIDGE_SESSION_ID</c>, which every instance of a task carries — so run for a
     /// superseded instance it kills the process tree of the very worker that replaced it.
     /// This is the half that killed the resumed claude outright in #102, before it could
-    /// call a single docket tool.
+    /// call a single landbridge tool.
     /// </summary>
     [Fact]
     public async Task A_superseded_predecessors_exit_does_not_reap_its_successor_by_task_id()
@@ -180,6 +180,6 @@ public sealed class SupersededInstanceTests : IDisposable
     {
         public IReadOnlyList<TaggedProcess> Processes { get; set; } = [];
 
-        public IReadOnlyList<TaggedProcess> ListDocketProcesses() => Processes;
+        public IReadOnlyList<TaggedProcess> ListLandbridgeProcesses() => Processes;
     }
 }

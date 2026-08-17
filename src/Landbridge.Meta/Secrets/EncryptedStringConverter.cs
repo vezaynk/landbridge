@@ -2,7 +2,7 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 
-namespace Docket.Meta.Secrets;
+namespace Landbridge.Meta.Secrets;
 
 /// <summary>
 /// Applies <see cref="MetaSecretProtector"/> to one column, so the ciphertext is the

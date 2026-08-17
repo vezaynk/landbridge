@@ -1,6 +1,6 @@
-using Docket.ControlPlane.Tests;
+using Landbridge.ControlPlane.Tests;
 
-namespace Docket.MultiMachine.Tests;
+namespace Landbridge.MultiMachine.Tests;
 
 /// <summary>
 /// §10 BYO-harness: Goose (<c>goose acp</c>). Opt-in and token-spending, gated like
@@ -36,15 +36,15 @@ public sealed class RealGooseCollaborationTests(PostgresFixture pg) : IAsyncLife
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
 
-        var optedIn = Environment.GetEnvironmentVariable("DOCKET_REAL_GOOSE") is { Length: > 0 } o
+        var optedIn = Environment.GetEnvironmentVariable("LANDBRIDGE_REAL_GOOSE") is { Length: > 0 } o
                       && !o.Equals("0", StringComparison.Ordinal)
                       && !o.Equals("false", StringComparison.OrdinalIgnoreCase);
 
         Skip.If(!optedIn,
-            "no DOCKET_REAL_GOOSE — the real goose E2E is opt-in");
+            "no LANDBRIDGE_REAL_GOOSE — the real goose E2E is opt-in");
 
-        var bin = RealHarnessProfiles.ResolveBin("goose", "DOCKET_GOOSE_BIN");
-        Skip.If(bin is null, "goose CLI not found (set DOCKET_GOOSE_BIN or put goose on PATH)");
+        var bin = RealHarnessProfiles.ResolveBin("goose", "LANDBRIDGE_GOOSE_BIN");
+        Skip.If(bin is null, "goose CLI not found (set LANDBRIDGE_GOOSE_BIN or put goose on PATH)");
 
         if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("GOOSE_PROVIDER")))
             Environment.SetEnvironmentVariable("GOOSE_PROVIDER", "anthropic");

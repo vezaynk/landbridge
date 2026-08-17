@@ -2,15 +2,15 @@ using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text.Json;
-using Docket.Contracts;
-using Docket.ControlPlane;
-using Docket.ControlPlane.Auth;
-using Docket.ControlPlane.Tests;
-using Docket.Core;
-using Docket.Mcp;
-using Docket.Mcp.Auth;
-using Docket.Mcp.Tools;
-using Docket.Runner;
+using Landbridge.Contracts;
+using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.ControlPlane.Tests;
+using Landbridge.Core;
+using Landbridge.Mcp;
+using Landbridge.Mcp.Auth;
+using Landbridge.Mcp.Tools;
+using Landbridge.Runner;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -21,7 +21,7 @@ using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 
-namespace Docket.Mcp.Tests;
+namespace Landbridge.Mcp.Tests;
 
 /// <summary>
 /// The whole task lifecycle end to end (spec §5, §6, §9 check 4), created → … →
@@ -32,7 +32,7 @@ namespace Docket.Mcp.Tests;
 /// <item>A Lead creates a <c>lead</c>-mode task over real MCP.</item>
 /// <item>The real <see cref="DispatchService"/> claims it, mints the worker token,
 ///   and the real <see cref="ProcessSupervisor"/> spawns the fake
-///   <see cref="Docket.WorkerHarness"/>, which authenticates back to <c>/mcp</c>,
+///   <see cref="Landbridge.WorkerHarness"/>, which authenticates back to <c>/mcp</c>,
 ///   calls <c>get_session</c>, then <c>report_result(ref)</c> — working → verifying.</item>
 /// <item>The Lead reads the reported reference (proving #23 persistence end to end),
 ///   then calls <c>submit_review accept</c> over MCP — verifying → completed with
@@ -145,7 +145,7 @@ public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifet
 
             // The reference the harness reported (§10) — persisted by #23; a plain
             // row read proves report_result's reference crossed real HTTP + MCP.
-            const string reportedRef = "docket-worker-harness:done";
+            const string reportedRef = "landbridge-worker-harness:done";
             await using (var v = pg.NewContext())
                 Assert.Equal(reportedRef,
                     (await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == sessionId.Value, ct)).ResultReference);
@@ -204,20 +204,20 @@ public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifet
         builder.Logging.ClearProviders();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
 
-        builder.Services.AddDbContext<DocketDbContext>(o =>
+        builder.Services.AddDbContext<LandbridgeDbContext>(o =>
             o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
-        builder.Services.AddDocketStore();
+        builder.Services.AddLandbridgeStore();
         builder.Services.AddScoped<RelayGrantService>();
         builder.Services.AddScoped<PreviewMappingService>(); // §8.4: WorkerTools.open_preview
         builder.Services.AddScoped<TokenService>();
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<RunnerConnectionRegistry>();
-        builder.Services.AddDocketForwarding(); // §8.3: WorkerTools needs the forward orchestrator
+        builder.Services.AddLandbridgeForwarding(); // §8.3: WorkerTools needs the forward orchestrator
         builder.Services.AddHttpContextAccessor();
 
-        builder.Services.AddAuthentication(DocketAuthenticationHandler.SchemeName)
-            .AddScheme<AuthenticationSchemeOptions, DocketAuthenticationHandler>(
-                DocketAuthenticationHandler.SchemeName, configureOptions: null);
+        builder.Services.AddAuthentication(LandbridgeAuthenticationHandler.SchemeName)
+            .AddScheme<AuthenticationSchemeOptions, LandbridgeAuthenticationHandler>(
+                LandbridgeAuthenticationHandler.SchemeName, configureOptions: null);
         builder.Services.AddAuthorization();
 
         builder.Services.AddMcpServer()
@@ -245,22 +245,22 @@ public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifet
 
     private static string WorkerHarnessPath()
     {
-        const string stem = "Docket.WorkerHarness";
+        const string stem = "Landbridge.WorkerHarness";
         var testDir = Path.GetDirectoryName(typeof(FullLifecycleEndToEndTests).Assembly.Location)!;
         var harnessDir = testDir.Replace(
-            Path.Combine("Docket.Mcp.Tests", "bin"),
+            Path.Combine("Landbridge.Mcp.Tests", "bin"),
             Path.Combine(stem, "bin"),
             StringComparison.Ordinal);
         var apphost = Path.Combine(harnessDir, OperatingSystem.IsWindows() ? stem + ".exe" : stem);
         return File.Exists(apphost)
             ? apphost
             : throw new FileNotFoundException(
-                $"worker harness apphost not found at {apphost}; is Docket.WorkerHarness built?");
+                $"worker harness apphost not found at {apphost}; is Landbridge.WorkerHarness built?");
     }
 
     private static string NewWorkRoot()
     {
-        var dir = Path.Combine(Path.GetTempPath(), "docket-lifecycle-tests", Guid.NewGuid().ToString("N"));
+        var dir = Path.Combine(Path.GetTempPath(), "landbridge-lifecycle-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
         return dir;
     }

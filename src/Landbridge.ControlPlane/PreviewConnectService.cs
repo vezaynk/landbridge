@@ -1,15 +1,15 @@
-using Docket.ControlPlane.Auth;
-using Docket.Core;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.Core;
 using Microsoft.Extensions.Logging;
 
-namespace Docket.ControlPlane;
+namespace Landbridge.ControlPlane;
 
 /// <summary>
 /// The control-plane half of one HTTP-preview browser connection (spec §8.4).
 /// The preview frontend calls this once per browser connection (via the
 /// <c>/preview/connect</c> endpoint); it resolves the subdomain label, enforces
 /// the mapping's auth-policy and check 11, mints a fresh consumer grant + forward
-/// id, and relays the producer <c>docketd</c> its dial target so it dials on
+/// id, and relays the producer <c>landbridged</c> its dial target so it dials on
 /// demand. On success the frontend receives <c>{grant, forwardId, relayUrl}</c>
 /// and dials the relay's unchanged <c>/tunnel</c> as the consumer itself.
 ///
@@ -31,7 +31,7 @@ public sealed class PreviewConnectService(
     /// <summary>
     /// Authorize and orchestrate one browser connection for <paramref name="label"/>.
     /// For a gated mapping, admission comes from EITHER a per-label preview session
-    /// (<paramref name="previewSession"/> — the browser's <c>docket_preview</c>
+    /// (<paramref name="previewSession"/> — the browser's <c>landbridge_preview</c>
     /// cookie, minted through the §8.4 redirect flow) OR a §12 operator session
     /// (<paramref name="operatorSession"/> — a bearer, the tooling path). Public
     /// admits on the label alone. <paramref name="relayUrl"/> is the relay base URL
@@ -57,7 +57,7 @@ public sealed class PreviewConnectService(
         }
 
         // 2. Enforce the mapping's auth-policy (§8.4). Gated (default) requires
-        // either a per-label preview session (the browser's docket_preview cookie
+        // either a per-label preview session (the browser's landbridge_preview cookie
         // from the redirect flow) or a §12 operator session (a Human, or a Lead on
         // this mapping's Team — the bearer/tooling path). Public admits on the
         // unguessable label alone (already time-boxed by the mapping TTL at resolve).
@@ -89,7 +89,7 @@ public sealed class PreviewConnectService(
                 $"service '{mapping.ServiceName}' is not currently reachable");
         }
 
-        // 4. Relay the producer docketd its dial target so it dials on demand
+        // 4. Relay the producer landbridged its dial target so it dials on demand
         // (§8.4). No consumer command and no forward-opened wait — the frontend is
         // the consumer. A gone/unreachable producer machine is a clean refusal.
         var forwardId = issued.ForwardId.ToString();

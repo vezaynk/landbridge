@@ -2,7 +2,7 @@ using System.Net;
 using Docker.DotNet;
 using Docker.DotNet.Models;
 
-namespace Docket.Meta.Substrate;
+namespace Landbridge.Meta.Substrate;
 
 /// <summary>
 /// The real <see cref="ISubstrate"/> over Docker.DotNet against one host's Engine API

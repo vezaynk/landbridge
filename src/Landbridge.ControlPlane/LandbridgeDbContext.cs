@@ -1,10 +1,10 @@
-using Docket.ControlPlane.Auth;
-using Docket.Core;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.Core;
 using Microsoft.EntityFrameworkCore;
 
-namespace Docket.ControlPlane;
+namespace Landbridge.ControlPlane;
 
-public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) : DbContext(options)
+public sealed class LandbridgeDbContext(DbContextOptions<LandbridgeDbContext> options) : DbContext(options)
 {
     public DbSet<SessionRow> Sessions => Set<SessionRow>();
     public DbSet<WorkerInstanceRow> WorkerInstances => Set<WorkerInstanceRow>();
@@ -21,7 +21,7 @@ public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) :
     public DbSet<SessionUsageRow> SessionUsage => Set<SessionUsageRow>();
 
     /// <summary>The channel dispatch/transition NOTIFYs land on (§3.1 LISTEN/NOTIFY).</summary>
-    public const string EventChannel = "docket_session_events";
+    public const string EventChannel = "landbridge_session_events";
 
     /// <summary>One live lead↔machine binding per human (§8.3 human path) — named so
     /// <see cref="LeadMachineBindingService"/> can tell the two races apart from the
@@ -37,8 +37,8 @@ public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) :
     /// partial index filter) reads unquoted lowercase identifiers. Every caller
     /// (host, tests, design-time factory) goes through here.
     /// </summary>
-    public static DbContextOptions<DocketDbContext> BuildOptions(string connectionString) =>
-        new DbContextOptionsBuilder<DocketDbContext>()
+    public static DbContextOptions<LandbridgeDbContext> BuildOptions(string connectionString) =>
+        new DbContextOptionsBuilder<LandbridgeDbContext>()
             .UseNpgsql(connectionString)
             .UseSnakeCaseNamingConvention()
             .Options;

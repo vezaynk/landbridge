@@ -13,7 +13,7 @@
 
   <!-- Each scenario hosts a real MCP plane + a real relay on loopback Kestrel ports
        and drives them with the MCP C# SDK client, so it needs the ASP.NET Core shared
-       framework plus a Postgres-backed store. Mirrors Docket.Mcp.Tests. -->
+       framework plus a Postgres-backed store. Mirrors Landbridge.Mcp.Tests. -->
   <ItemGroup>
     <FrameworkReference Include="Microsoft.AspNetCore.App" />
   </ItemGroup>
@@ -34,18 +34,18 @@
     <Using Include="Xunit" />
     <!-- The shared rig kit is source-linked below; a global using keeps every scenario
          file from repeating the import for a type that is effectively part of this suite. -->
-    <Using Include="Docket.RigSupport" />
+    <Using Include="Landbridge.RigSupport" />
   </ItemGroup>
 
   <!-- Reuse the ControlPlane suite's ephemeral-Postgres fixture verbatim (single
-       source of truth) rather than duplicating it, exactly like Docket.Mcp.Tests. -->
+       source of truth) rather than duplicating it, exactly like Landbridge.Mcp.Tests. -->
   <ItemGroup>
-    <Compile Include="..\Docket.ControlPlane.Tests\PostgresFixture.cs" Link="PostgresFixture.cs" />
+    <Compile Include="..\Landbridge.ControlPlane.Tests\PostgresFixture.cs" Link="PostgresFixture.cs" />
     <!-- The plane-facing half a fleet rig needs regardless of how it stands its machines
          up: loopback reservation, the bounded poll, the Lead MCP surface, and the
-         committed-facts dump. Shared with Docket.Chaos.Tests as source (the
+         committed-facts dump. Shared with Landbridge.Chaos.Tests as source (the
          HarnessSupport idiom) because the two rigs cannot share an assembly — Chaos
-         deliberately keeps Docket.Runner off its compile closure. -->
+         deliberately keeps Landbridge.Runner off its compile closure. -->
     <Compile Include="..\RigSupport\PlaneProbe.cs" Link="PlaneProbe.cs" />
   </ItemGroup>
 
@@ -53,20 +53,20 @@
     <!-- The plane (MCP tools + relay-validation endpoint), the relay host, and the
          runner data planes are all stood up for real; no fakes on any surface that
          matters (§8.3). -->
-    <ProjectReference Include="..\..\src\Docket.Mcp\Docket.Mcp.csproj" />
-    <ProjectReference Include="..\..\src\Docket.Runner\Docket.Runner.csproj" />
-    <ProjectReference Include="..\..\src\Docket.Relay\Docket.Relay.csproj" />
+    <ProjectReference Include="..\..\src\Landbridge.Mcp\Landbridge.Mcp.csproj" />
+    <ProjectReference Include="..\..\src\Landbridge.Runner\Landbridge.Runner.csproj" />
+    <ProjectReference Include="..\..\src\Landbridge.Relay\Landbridge.Relay.csproj" />
     <!-- Referenced so the scripted collaborator binary is built and locatable; each
          scenario spawns it as a real MCP-speaking child process (§10 conventions —
          a real spawnable child, no shell), one instance per enrolled machine. -->
-    <ProjectReference Include="..\Docket.CollabHarness\Docket.CollabHarness.csproj" />
+    <ProjectReference Include="..\Landbridge.CollabHarness\Landbridge.CollabHarness.csproj" />
     <!-- Referenced for its `http-serve` mode: the §8.2/§8.3 real-claude scenario needs a
          long-lived listener a worker can start through `start_process` and a consumer on
          another machine can fetch through the relay. It must be a real binary at a real
          absolute path on every platform CI runs, which is exactly this harness's job — an
          interpreter that happens to be installed is not a guarantee. -->
-    <ProjectReference Include="..\Docket.Runner.TestHarness\Docket.Runner.TestHarness.csproj" />
-    <ProjectReference Include="..\..\tools\Docket.AcpBridge\Docket.AcpBridge.csproj" />
+    <ProjectReference Include="..\Landbridge.Runner.TestHarness\Landbridge.Runner.TestHarness.csproj" />
+    <ProjectReference Include="..\..\tools\Landbridge.AcpBridge\Landbridge.AcpBridge.csproj" />
   </ItemGroup>
 
 </Project>

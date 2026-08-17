@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
 
-namespace Docket.Relay;
+namespace Landbridge.Relay;
 
 /// <summary>
 /// The relay's in-memory pairing table (spec §8.3, "Relay splices by forward

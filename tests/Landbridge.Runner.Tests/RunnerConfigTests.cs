@@ -1,4 +1,4 @@
-namespace Docket.Runner.Tests;
+namespace Landbridge.Runner.Tests;
 
 /// <summary>Runner config parsing and validation, spec §10 runner config.</summary>
 public class RunnerConfigTests
@@ -6,7 +6,7 @@ public class RunnerConfigTests
     private const string ValidJson = """
     {
       "machine": {
-        "work_root": "/var/lib/docket/work",
+        "work_root": "/var/lib/landbridge/work",
         "heartbeat_seconds": 5,
         "back_pressure": { "max_cpu_load": 0.8, "max_memory_load": 0.85, "max_disk_usage": 0.9 }
       },
@@ -38,7 +38,7 @@ public class RunnerConfigTests
     {
         var config = RunnerConfig.Load(ValidJson);
 
-        Assert.Equal("/var/lib/docket/work", config.Machine.WorkRoot);
+        Assert.Equal("/var/lib/landbridge/work", config.Machine.WorkRoot);
         Assert.Equal(TimeSpan.FromSeconds(5), config.Machine.HeartbeatInterval);
         Assert.Equal(0.85, config.Machine.BackPressure.MaxMemoryLoad);
 
@@ -53,7 +53,7 @@ public class RunnerConfigTests
         Assert.Equal(new HashSet<string> { "default", "restricted" }, config.DeclaredProfiles);
 
         // §10 telemetry: the opt-in, the destination, and the harness's own enable flag
-        // (data, not docketd knowledge). A profile with no telemetry section is off with
+        // (data, not landbridged knowledge). A profile with no telemetry section is off with
         // an empty env — never null, so the spawn path needs no guard.
         Assert.True(config.Default.Telemetry.Otel);
         Assert.Equal("http://127.0.0.1:4318", config.Default.Telemetry.Endpoint);
@@ -101,7 +101,7 @@ public class RunnerConfigTests
                       "wind_down_seconds": 12 },
             "resume": { "args": ["opencode", "run", "--session", "{session_id}"] },
             "events": { "source": "terminal", "mapping": { "tool_event_type": "tool_use" } },
-            "logs": { "path": "/var/log/docket/worker.ndjson", "format": "stream-json",
+            "logs": { "path": "/var/log/landbridge/worker.ndjson", "format": "stream-json",
                       "capture": true, "max_bytes": 4096 } } ] }
         """;
 
@@ -327,7 +327,7 @@ public class RunnerConfigTests
     private static string AcpProfile(string? prompt = "Do the task.", string extra = "") =>
         $$"""
         {
-          "machine": { "work_root": "/var/lib/docketd/work" },
+          "machine": { "work_root": "/var/lib/landbridged/work" },
           "profiles": [
             {
               "name": "default",

@@ -1,17 +1,17 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Text.Json;
-using Docket.Contracts;
-using Docket.ControlPlane;
-using Docket.ControlPlane.Tests;
-using Docket.Core;
-using Docket.Mcp.Dashboard;
+using Landbridge.Contracts;
+using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Tests;
+using Landbridge.Core;
+using Landbridge.Mcp.Dashboard;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 
-namespace Docket.Mcp.Tests;
+namespace Landbridge.Mcp.Tests;
 
 /// <summary>
 /// The §8.3 <b>human path</b> over real MCP: a Lead binds its human's enrolled
@@ -19,7 +19,7 @@ namespace Docket.Mcp.Tests;
 /// machine — how a person reaches a raw-TCP service they could not otherwise touch.
 ///
 /// <para>The first test is the crown, with <b>no fakes</b>: a real relay, a real TCP
-/// echo service registered by a working producer task, and two real docketd data
+/// echo service registered by a working producer task, and two real landbridged data
 /// planes (the same <see cref="DaemonHarness"/>/<see cref="EchoService"/> rig as
 /// <see cref="ForwardDataPlaneEndToEndTests"/>), where the consumer end is the
 /// machine the Lead bound rather than a machine a task was dispatched to. Bytes
@@ -66,7 +66,7 @@ public sealed class LeadForwardEndToEndTests(PostgresFixture pg) : IAsyncLifetim
         var registry = plane.Services.GetRequiredService<RunnerConnectionRegistry>();
         var sink = plane.Services.GetRequiredService<RunnerEventSink>();
 
-        // ── Two real docketd data planes: the human's machine and the producer's ─
+        // ── Two real landbridged data planes: the human's machine and the producer's ─
         var consumerChannel = new SinkForwardingChannel(sink);
         var producerChannel = new SinkForwardingChannel(sink);
         await using var consumerDaemon = new DaemonHarness(leadMachine.ToString(), consumerChannel);
@@ -94,7 +94,7 @@ public sealed class LeadForwardEndToEndTests(PostgresFixture pg) : IAsyncLifetim
             Assert.Equal(true, unbound.IsError);
             var unboundText = ErrorText(unbound);
             Assert.Contains("no machine bound", unboundText, StringComparison.Ordinal);
-            Assert.Contains("/docket-enroll", unboundText, StringComparison.Ordinal);
+            Assert.Contains("/landbridge-enroll", unboundText, StringComparison.Ordinal);
             Assert.Contains("bind_machine", unboundText, StringComparison.Ordinal);
 
             var bind = await leadClient.CallToolAsync("bind_machine", new Dictionary<string, object?>
@@ -126,7 +126,7 @@ public sealed class LeadForwardEndToEndTests(PostgresFixture pg) : IAsyncLifetim
             port = payload.GetProperty("port").GetInt32();
             forwardId = payload.GetProperty("forward_id").GetString()!;
             Assert.True(port > 0);
-            // The grant and relay URL are docketd's business — never handed to the agent.
+            // The grant and relay URL are landbridged's business — never handed to the agent.
             Assert.False(payload.TryGetProperty("grant", out _));
             Assert.False(payload.TryGetProperty("relay_url", out _));
         }
@@ -142,17 +142,17 @@ public sealed class LeadForwardEndToEndTests(PostgresFixture pg) : IAsyncLifetim
             await stream.WriteAsync(payload, ct);
             var echoed = await ReadExactlyAsync(stream, payload.Length, ct);
             Assert.True(payload.AsSpan().SequenceEqual(echoed),
-                "bytes did not round-trip lead's docketd → relay → producer-docketd → echo");
+                "bytes did not round-trip lead's landbridged → relay → producer-landbridged → echo");
 
             client.Client.Shutdown(SocketShutdown.Both);
         }
 
         Assert.True(
             await WaitForAsync(() => consumerChannel.HasForwardClosed(forwardId), TimeSpan.FromSeconds(20)),
-            "the lead machine's docketd never reported forward-closed");
+            "the lead machine's landbridged never reported forward-closed");
         Assert.True(
             await WaitForAsync(() => producerChannel.HasForwardClosed(forwardId), TimeSpan.FromSeconds(20)),
-            "producer docketd never reported forward-closed");
+            "producer landbridged never reported forward-closed");
 
         // ── The binding is visible to an operator too (§12 JSON twin) ───────────
         var machinesJson = await GetDashboardJsonAsync(plane, "/dashboard/machines?format=json", lead.HumanToken, ct);

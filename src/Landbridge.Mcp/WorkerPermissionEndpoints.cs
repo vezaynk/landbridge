@@ -1,12 +1,12 @@
-using Docket.ControlPlane;
-using Docket.Mcp.Auth;
-using Docket.Mcp.Tools;
+using Landbridge.ControlPlane;
+using Landbridge.Mcp.Auth;
+using Landbridge.Mcp.Tools;
 
-namespace Docket.Mcp;
+namespace Landbridge.Mcp;
 
 /// <summary>
 /// The runner-facing half of the §11 permission bridge. ACP
-/// <c>session/request_permission</c> lands in docketd, which has the worker
+/// <c>session/request_permission</c> lands in landbridged, which has the worker
 /// bearer but is not an MCP client; this endpoint is the same
 /// <see cref="PermissionRelay"/> the MCP <c>request_permission</c> tool runs,
 /// reachable over plain HTTP with that bearer.
@@ -29,7 +29,7 @@ public static class WorkerPermissionEndpoints
         TimeProvider clock,
         CancellationToken ct)
     {
-        var caller = DocketClaims.AsWorker(http.User);
+        var caller = LandbridgeClaims.AsWorker(http.User);
         if (caller is null)
             return Results.Json(new { error = "worker credential required" }, statusCode: StatusCodes.Status403Forbidden);
 
@@ -38,7 +38,7 @@ public static class WorkerPermissionEndpoints
 
         var proposed = string.IsNullOrWhiteSpace(body.Input) ? "{}" : body.Input;
         var poll = WorkerTools.DefaultPermissionPollInterval;
-        if (int.TryParse(config["Docket:PermissionPollIntervalMs"], out var ms) && ms > 0)
+        if (int.TryParse(config["Landbridge:PermissionPollIntervalMs"], out var ms) && ms > 0)
             poll = TimeSpan.FromMilliseconds(ms);
 
         var result = await PermissionRelay.OpenAndAwaitAsync(

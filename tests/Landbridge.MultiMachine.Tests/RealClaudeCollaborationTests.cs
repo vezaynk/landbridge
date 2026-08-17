@@ -1,24 +1,24 @@
-using Docket.Contracts;
-using Docket.ControlPlane.Tests;
-using Docket.Core;
-using Docket.Runner;
+using Landbridge.Contracts;
+using Landbridge.ControlPlane.Tests;
+using Landbridge.Core;
+using Landbridge.Runner;
 using Microsoft.EntityFrameworkCore;
 
-namespace Docket.MultiMachine.Tests;
+namespace Landbridge.MultiMachine.Tests;
 
 /// <summary>
 /// The multi-machine collaboration crown (spec §8.3), <b>real Claude ACP tier</b>:
-/// the same real plane + real relay + N real <c>docketd</c> rigs the scripted
+/// the same real plane + real relay + N real <c>landbridged</c> rigs the scripted
 /// <see cref="MultiMachineCollaborationTests"/> stand up, but each machine's
 /// <c>default</c> profile spawns <c>claude-agent-acp</c> instead of the no-LLM
-/// <c>Docket.CollabHarness</c>. Nothing below the spawn seam changes — this is the §10
+/// <c>Landbridge.CollabHarness</c>. Nothing below the spawn seam changes — this is the §10
 /// config-only harness promise exercised for real: the worker learns its assignment
 /// from <c>session/new</c> MCP + <c>get_session</c>, does the work, and reports back.
 ///
 /// <para><b>Opt-in, token-spending, and deliberately kept out of the default suite.</b>
 /// The real-worker facts SKIP cleanly unless the run opted in — an Anthropic key in the
 /// environment (<c>ANTHROPIC_API_KEY</c>, or <c>ANTHROPIC_KEY</c> which the opt-in CI job
-/// maps to it), or <c>DOCKET_REAL_CLAUDE=1</c> on a machine whose CLI is already logged in
+/// maps to it), or <c>LANDBRIDGE_REAL_CLAUDE=1</c> on a machine whose CLI is already logged in
 /// — AND the <c>claude</c> CLI resolves; so a normal push/PR run, which does neither,
 /// spends zero tokens. See <see cref="RequireRealClaude"/> for why the two paths are not
 /// interchangeable. The dedicated CI job (see
@@ -52,10 +52,10 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
 
     /// <summary>
     /// The standing rule every prompt here carries, and it is a fix for a real failure rather
-    /// than boilerplate. These prompts used to say "call the docket get_session tool"; a real
-    /// claude 2.1.231 worker read that as a shell command and ran <c>docket get_session</c> through
+    /// than boilerplate. These prompts used to say "call the landbridge get_session tool"; a real
+    /// claude 2.1.231 worker read that as a shell command and ran <c>landbridge get_session</c> through
     /// <c>Bash</c> — a program that does not exist anywhere in this repo, which builds
-    /// <c>docketd</c> and nothing else — rather than calling the MCP tool it was already
+    /// <c>landbridged</c> and nothing else — rather than calling the MCP tool it was already
     /// allow-listed for. Two facts died that way, and one of them looked like a permission-bridge
     /// regression because the phantom shell command is what the bridge dutifully recorded.
     ///
@@ -68,23 +68,23 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// would abandon the Bash call it is supposed to wait out and then complete.</para>
     /// </summary>
     private const string McpToolsRule =
-        " Docket's tools are MCP tools, named exactly mcp__docket__get_session, " +
-        "mcp__docket__report_result and so on — call them as tools, under those names. There is " +
-        "no `docket` program: no such command exists on this machine, so never run `docket` in a " +
-        "shell, and never try to reach the docket MCP server yourself over HTTP or with curl. (A " +
+        " Landbridge's tools are MCP tools, named exactly mcp__landbridge__get_session, " +
+        "mcp__landbridge__report_result and so on — call them as tools, under those names. There is " +
+        "no `landbridge` program: no such command exists on this machine, so never run `landbridge` in a " +
+        "shell, and never try to reach the landbridge MCP server yourself over HTTP or with curl. (A " +
         "shell command your assignment explicitly asks for is a different thing, and is fine.) If " +
-        "a docket MCP tool is missing or errors, report that with mcp__docket__report_result " +
+        "a landbridge MCP tool is missing or errors, report that with mcp__landbridge__report_result " +
         "instead of working around it.";
 
     /// <summary>Generic worker prompt (§7): the specifics live in each task's opaque
     /// <b>description</b>, read via <c>get_session</c>, so one profile drives every role.</summary>
     private const string WorkerPrompt =
-        "You are a Docket worker agent. Your FIRST action must be to call the " +
-        "mcp__docket__get_session tool to read your assignment. The assignment's description tells " +
+        "You are a Landbridge worker agent. Your FIRST action must be to call the " +
+        "mcp__landbridge__get_session tool to read your assignment. The assignment's description tells " +
         "you the exact string to report. Your ONLY other action is to call the " +
-        "mcp__docket__report_result tool once, with that exact string as resultReference. Do not " +
+        "mcp__landbridge__report_result tool once, with that exact string as resultReference. Do not " +
         "write files, do not explain, do not ask questions. Two tool calls total: " +
-        "mcp__docket__get_session, then mcp__docket__report_result." + McpToolsRule;
+        "mcp__landbridge__get_session, then mcp__landbridge__report_result." + McpToolsRule;
 
     /// <summary>
     /// The prompt for scenarios whose description asks for more than an echo (§7: the
@@ -95,8 +95,8 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// success. That is not a hypothetical: it is what a real haiku worker did.
     /// </summary>
     private const string StepwiseWorkerPrompt =
-        "You are a Docket worker agent. Your FIRST action must be to call the " +
-        "mcp__docket__get_session tool to read your assignment. Its description lists numbered " +
+        "You are a Landbridge worker agent. Your FIRST action must be to call the " +
+        "mcp__landbridge__get_session tool to read your assignment. Its description lists numbered " +
         "steps: carry them out in order, exactly as written, using the tools it names. Do not add " +
         "steps, do not skip steps, and do not substitute one tool for another. Do not write or " +
         "edit files unless a step tells you to. Do not explain and do not ask questions." +
@@ -319,7 +319,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// knowing nothing about it — discovers it with <c>list_processes</c> and stops it.
     ///
     /// <para>Everything here is real: the profile gate (<c>processes.agent_initiated</c>) is
-    /// applied on the machine by the real <see cref="Docket.Runner.RunnerDaemon"/>, the process
+    /// applied on the machine by the real <see cref="Landbridge.Runner.RunnerDaemon"/>, the process
     /// is a real supervised child of that machine's <c>ServiceSupervisor</c>, and the discovery
     /// read answers off the machine's own heartbeat — the plane holds no process state of its
     /// own. The cleanup worker is handed no name: it must find the survivor, which is the half
@@ -343,7 +343,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
             spawnArgv: ["claude-agent-acp"],
             agentProcesses: true,
             prompt: StepwiseWorkerPrompt,
-            followUp: "There is new input on your assignment. Call mcp__docket__get_session to read it, then continue.");
+            followUp: "There is new input on your assignment. Call mcp__landbridge__get_session to read it, then continue.");
         await rig.StartAsync(ct);
         await rig.AddMachineAsync("A");
 
@@ -421,7 +421,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
             spawnArgv: ["claude-agent-acp"],
             agentProcesses: true,
             prompt: StepwiseWorkerPrompt,
-            followUp: "There is new input on your assignment. Call mcp__docket__get_session to read it, then continue.");
+            followUp: "There is new input on your assignment. Call mcp__landbridge__get_session to read it, then continue.");
         await rig.StartAsync(ct);
         await rig.AddMachineAsync("A");
         await rig.AddMachineAsync("B");
@@ -486,10 +486,10 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// any file — only the conversation a later continuation inherits.
     /// </summary>
     private static string RememberThenWorkPrompt(string nonce) =>
-        "You are a Docket worker agent. Remember this test nonce for the rest of this conversation: " +
+        "You are a Landbridge worker agent. Remember this test nonce for the rest of this conversation: " +
         $"{nonce}. Do not write it to any file, and do not put it in any tool call yet — a later " +
         "task in this same conversation will ask you to report it. Now call the " +
-        "mcp__docket__get_session tool and do exactly what its description tells you." + McpToolsRule;
+        "mcp__landbridge__get_session tool and do exactly what its description tells you." + McpToolsRule;
 
     /// <summary>
     /// The follow-up turn for the continuation leg (§11) — generic config carrying no
@@ -497,7 +497,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// is new but whose conversation is not.
     /// </summary>
     private const string ContinuationReportPrompt =
-        "This conversation continues under a new task. FIRST call the mcp__docket__get_session tool " +
+        "This conversation continues under a new task. FIRST call the mcp__landbridge__get_session tool " +
         "to read that new assignment, then do exactly what its description says. The value it asks " +
         "for is one you were told earlier in this conversation." + McpToolsRule;
 
@@ -515,8 +515,8 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     // ── §10 process scenario prompts and descriptions ──────────────────────────
 
     private const string ProcessTools =
-        "mcp__docket__get_session,mcp__docket__report_result,mcp__docket__start_process," +
-        "mcp__docket__list_processes,mcp__docket__stop_process";
+        "mcp__landbridge__get_session,mcp__landbridge__report_result,mcp__landbridge__start_process," +
+        "mcp__landbridge__list_processes,mcp__landbridge__stop_process";
 
     /// <summary>Start a long-lived listener as an agent process and finish the task, leaving it
     /// running — the shape §10 exists for. Absolute argv, no shell, stdin left closed (the
@@ -562,8 +562,8 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// scenario cannot avoid: the producer has to hold its turn open while its registration is
     /// forwardable, and the consumer has to actually speak to the forwarded port.</summary>
     private const string ServiceTools =
-        "mcp__docket__get_session,mcp__docket__report_result,mcp__docket__start_process," +
-        "mcp__docket__register_service,mcp__docket__open_forward,Bash";
+        "mcp__landbridge__get_session,mcp__landbridge__report_result,mcp__landbridge__start_process," +
+        "mcp__landbridge__register_service,mcp__landbridge__open_forward,Bash";
 
     /// <summary>Producer: bind (via the process), advertise, then stay working. The register
     /// step comes after the start so the port is answering before consumers are told about it —
@@ -613,8 +613,8 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// <para>There are <b>two</b> ways to opt in, because there are two ways a machine
     /// authenticates the CLI. An Anthropic key (<c>ANTHROPIC_API_KEY</c>, or
     /// <c>ANTHROPIC_KEY</c> which the CI job maps to it) is the CI path, and it is published
-    /// into this process's environment so the spawned claude — which inherits docketd's
-    /// environment — can use it. <c>DOCKET_REAL_CLAUDE=1</c> is the path for a machine whose CLI
+    /// into this process's environment so the spawned claude — which inherits landbridged's
+    /// environment — can use it. <c>LANDBRIDGE_REAL_CLAUDE=1</c> is the path for a machine whose CLI
     /// is already logged in: the worker then inherits that ambient login as a same-user child
     /// and <b>no key is set</b>, which is required rather than merely tidy — a managed install
     /// pinned to first-party login refuses to start at all when an Anthropic-issued credential
@@ -627,12 +627,12 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         var key = Environment.GetEnvironmentVariable("ANTHROPIC_API_KEY");
         if (string.IsNullOrWhiteSpace(key))
             key = Environment.GetEnvironmentVariable("ANTHROPIC_KEY");
-        var optedIn = Environment.GetEnvironmentVariable("DOCKET_REAL_CLAUDE") is { Length: > 0 } o
+        var optedIn = Environment.GetEnvironmentVariable("LANDBRIDGE_REAL_CLAUDE") is { Length: > 0 } o
                       && !o.Equals("0", StringComparison.Ordinal)
                       && !o.Equals("false", StringComparison.OrdinalIgnoreCase);
 
         Skip.If(string.IsNullOrWhiteSpace(key) && !optedIn,
-            "no ANTHROPIC_API_KEY/ANTHROPIC_KEY and no DOCKET_REAL_CLAUDE — the real claude -p " +
+            "no ANTHROPIC_API_KEY/ANTHROPIC_KEY and no LANDBRIDGE_REAL_CLAUDE — the real claude -p " +
             "E2E is opt-in (see the gated CI job)");
         // Only publish a key when one was supplied. On an already-logged-in machine the child
         // must NOT see one (see the remarks above).
@@ -641,15 +641,15 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
 
         var claudeBin = ResolveClaudeBin();
         Skip.If(claudeBin is null,
-            "claude CLI not found (set DOCKET_CLAUDE_BIN or put claude on PATH)");
+            "claude CLI not found (set LANDBRIDGE_CLAUDE_BIN or put claude on PATH)");
         ScrubInheritedSessionMarkers();
         return claudeBin!;
     }
 
     /// <summary>
     /// Remove the "you are running inside a Claude Code session" markers from this process's
-    /// environment, because the worker inherits it (docketd's environment is the child's base,
-    /// §10) and in production docketd is a daemon rather than a child of somebody's editor.
+    /// environment, because the worker inherits it (landbridged's environment is the child's base,
+    /// §10) and in production landbridged is a daemon rather than a child of somebody's editor.
     ///
     /// <para>This is test hygiene with teeth, not tidying. Run from inside a Claude Code
     /// session — which is how anyone iterating on these scenarios runs them — the spawned worker
@@ -677,11 +677,11 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         "AI_AGENT",
     ];
 
-    /// <summary>Resolve the claude executable: an explicit <c>DOCKET_CLAUDE_BIN</c>, then
+    /// <summary>Resolve the claude executable: an explicit <c>LANDBRIDGE_CLAUDE_BIN</c>, then
     /// PATH, then the common install location — or null when none exists.</summary>
     private static string? ResolveClaudeBin()
     {
-        var explicitBin = Environment.GetEnvironmentVariable("DOCKET_CLAUDE_BIN");
+        var explicitBin = Environment.GetEnvironmentVariable("LANDBRIDGE_CLAUDE_BIN");
         if (!string.IsNullOrWhiteSpace(explicitBin) && File.Exists(explicitBin))
             return explicitBin;
 

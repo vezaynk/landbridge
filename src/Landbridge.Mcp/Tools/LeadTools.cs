@@ -1,16 +1,16 @@
 using System.ComponentModel;
-using Docket.Contracts;
-using Docket.ControlPlane;
-using Docket.ControlPlane.Auth;
-using Docket.Core;
-using Docket.Mcp.Auth;
+using Landbridge.Contracts;
+using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.Core;
+using Landbridge.Mcp.Auth;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
 using ModelContextProtocol;
 using ModelContextProtocol.Server;
-using static Docket.Mcp.Tools.ToolResults;
+using static Landbridge.Mcp.Tools.ToolResults;
 
-namespace Docket.Mcp.Tools;
+namespace Landbridge.Mcp.Tools;
 
 /// <summary>
 /// The Lead tool surface (spec §10). A Lead is a harness client a human drives
@@ -58,11 +58,11 @@ public sealed class LeadTools(
         get
         {
             var user = http.HttpContext?.User ?? throw Unauthorized();
-            if (DocketClaims.AsEvictedLead(user) is { } evicted)
+            if (LandbridgeClaims.AsEvictedLead(user) is { } evicted)
                 throw new McpException(
                     $"your lead claim on team {evicted.Team.Value:N} was taken over by human " +
                     $"{evicted.EvictedByHuman:N} at {evicted.EvictedAt:O}; reattach to the Team to continue.");
-            return DocketClaims.AsLeadPrincipal(user) ?? throw Unauthorized();
+            return LandbridgeClaims.AsLeadPrincipal(user) ?? throw Unauthorized();
         }
     }
 
@@ -77,7 +77,7 @@ public sealed class LeadTools(
     private static Guid HumanOf(Principal.Lead lead) =>
         lead.HumanId ?? throw new McpException(
             "this lead credential carries no human identity, so it cannot own a machine binding; " +
-            "re-claim the Team from your human session (/docket-lead) and try again.");
+            "re-claim the Team from your human session (/landbridge-lead) and try again.");
 
     [McpServerTool(Name = "create_session"),
      Description("Create a session for this Team. Only a Lead may create sessions. The description (prose " +
@@ -560,7 +560,7 @@ public sealed class LeadTools(
             return $"Session {view.Namespace} is not waiting on a permission request (state {view.State}).";
 
         sb.Append($"⚠ Untrusted permission request from {view.Namespace}: its harness wants to use ")
-          .Append($"'{view.PermissionTool ?? "an unnamed tool"}' and Docket is standing in for the person ")
+          .Append($"'{view.PermissionTool ?? "an unnamed tool"}' and Landbridge is standing in for the person ")
           .Append("who would have approved it. A WORKER IS BLOCKED WAITING ON THIS RIGHT NOW.\n")
           .Append($"<<<TOOL\n{view.PermissionTool}\nTOOL>>>\n")
           .Append($"<<<PROPOSED_INPUT\n{view.Question}\nPROPOSED_INPUT>>>");
@@ -582,12 +582,12 @@ public sealed class LeadTools(
      Description("Claim an enrolled machine as your human's OWN machine — the box they are sitting at " +
                  "(spec §8.3). This is what makes open_lead_forward possible: it needs somewhere to bind " +
                  "a local port, and a Lead has no machine of its own. The machine must already be enrolled " +
-                 "with docketd installed (/docket-enroll); pass the machine id from the enrollment result " +
+                 "with landbridged installed (/landbridge-enroll); pass the machine id from the enrollment result " +
                  "or the dashboard Machine Group view. One machine per person, and one person per machine: " +
                  "if you have moved, unbind_machine first. Only bind a machine your human actually controls " +
                  "— a forward will open a listening port on it.")]
     public async Task<string> BindMachine(
-        [Description("The enrolled machine's id (a uuid), from /docket-enroll or the dashboard Machine Group view.")]
+        [Description("The enrolled machine's id (a uuid), from /landbridge-enroll or the dashboard Machine Group view.")]
         string machineId,
         CancellationToken ct)
     {
@@ -642,10 +642,10 @@ public sealed class LeadTools(
         var bound = await bindings.GetAsync(human, ct)
             ?? throw new McpException(
                 "you have no machine bound, so there is nowhere to open a local port. Three steps: " +
-                "install and enroll docketd on the machine your human is sitting at (/docket-enroll), " +
+                "install and enroll landbridged on the machine your human is sitting at (/landbridge-enroll), " +
                 "then bind_machine with the machine id it reports, then call open_lead_forward again. " +
                 "If the service speaks HTTP, its worker can mint a browser preview URL with open_preview " +
-                "instead — that needs no docketd on your human's side.");
+                "instead — that needs no landbridged on your human's side.");
 
         // 2. Issue the grant. Same check-11 gate as a worker's open_forward, scoped
         // to this Lead's own Team (§9 check 11, §8.2).
@@ -656,9 +656,9 @@ public sealed class LeadTools(
             _ => throw new McpException("unknown grant result"),
         };
 
-        // 3. Same orchestration as the worker path: the bound machine's docketd is
+        // 3. Same orchestration as the worker path: the bound machine's landbridged is
         // the consumer end and reports the loopback port it bound; the grant and
-        // relay URL stay inside docketd and never reach this agent (§8.3).
+        // relay URL stay inside landbridged and never reach this agent (§8.3).
         return await forwards.EstablishForLeadAsync(
                 bound.MachineId.ToString(), issued, serviceName, WorkerTools.RelayUrlFrom(config), ct) switch
         {

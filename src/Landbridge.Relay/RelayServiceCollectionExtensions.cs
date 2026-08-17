@@ -2,7 +2,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 
-namespace Docket.Relay;
+namespace Landbridge.Relay;
 
 /// <summary>DI wiring for the relay splice core.</summary>
 public static class RelayServiceCollectionExtensions

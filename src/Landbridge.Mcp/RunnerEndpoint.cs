@@ -1,15 +1,15 @@
 using System.Diagnostics;
 using System.Net.WebSockets;
 using System.Text;
-using Docket.Contracts;
-using Docket.ControlPlane;
-using Docket.ControlPlane.Auth;
-using Docket.Mcp.Auth;
+using Landbridge.Contracts;
+using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.Mcp.Auth;
 
-namespace Docket.Mcp;
+namespace Landbridge.Mcp;
 
 /// <summary>
-/// The control plane's runner endpoint (spec §10). <c>docketd</c> dials this
+/// The control plane's runner endpoint (spec §10). <c>landbridged</c> dials this
 /// outbound with its machine token — the control plane never dials the runner
 /// and never listens for anything but this accepted upgrade. On upgrade the
 /// connection registers a send delegate that writes command frames down the
@@ -30,7 +30,7 @@ public static class RunnerEndpoint
         DispatchService dispatch,
         ILoggerFactory loggerFactory)
     {
-        var logger = loggerFactory.CreateLogger("Docket.Mcp.RunnerEndpoint");
+        var logger = loggerFactory.CreateLogger("Landbridge.Mcp.RunnerEndpoint");
 
         if (!context.WebSockets.IsWebSocketRequest)
         {
@@ -38,9 +38,9 @@ public static class RunnerEndpoint
             return;
         }
 
-        // §10: the runner endpoint is machine-only — reuse the DocketToken scheme.
+        // §10: the runner endpoint is machine-only — reuse the LandbridgeToken scheme.
         // A valid non-machine principal authenticates but is refused here.
-        if (DocketClaims.ToPrincipal(context.User) is not Principal.Machine machine)
+        if (LandbridgeClaims.ToPrincipal(context.User) is not Principal.Machine machine)
         {
             context.Response.StatusCode = StatusCodes.Status403Forbidden;
             return;
@@ -55,7 +55,7 @@ public static class RunnerEndpoint
         // closes the socket. Deliberately NOT a close handshake — the caller is
         // un-trusting this machine, and a courtesy close frame would have to be
         // written to a peer that may be wedged, making revocation wait on the box it
-        // is revoking. docketd reads the drop as any other disconnect and reconnects;
+        // is revoking. landbridged reads the drop as any other disconnect and reconnects;
         // its credentials are already dead by then, so it gets a 401 instead of a
         // channel. Linked to RequestAborted so a shutdown still tears this down.
         using var hangUp = CancellationTokenSource.CreateLinkedTokenSource(context.RequestAborted);
@@ -117,7 +117,7 @@ public static class RunnerEndpoint
             // restart, always. Re-adopt what it holds from committed state BEFORE the
             // receive loop runs, so its very first `alive` lands on a tracked task
             // instead of being dropped, and both liveness clocks resume from now.
-            // Inside the try: a failure here still unregisters below, and docketd's
+            // Inside the try: a failure here still unregisters below, and landbridged's
             // reconnect backoff retries the whole handshake.
             await dispatch.RehydrateMachineAsync(machineId, hangUp.Token);
 

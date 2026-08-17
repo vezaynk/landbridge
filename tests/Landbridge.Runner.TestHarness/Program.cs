@@ -1,22 +1,22 @@
 using System.Diagnostics;
-using Docket.HarnessSupport;
+using Landbridge.HarnessSupport;
 
-namespace Docket.Runner.TestHarness;
+namespace Landbridge.Runner.TestHarness;
 
 /// <summary>
 /// A minimal, cross-platform stand-in for a real harness that the runner tests
-/// spawn as a real process — no shell, argv only, matching docketd's own
+/// spawn as a real process — no shell, argv only, matching landbridged's own
 /// constraint (§10). It writes markers into its working directory (which the
 /// supervisor sets to <c>{work_root}/{session_id}</c>), so a test can observe env
 /// injection, working directory, stop delivery, process-tree membership, its own OS
 /// pid, and the dead-man's switch without depending on any installed harness.
 ///
 /// <para><b>Dead-man's switch (§10).</b> Every long-running mode watches stdin.
-/// docketd holds the write end of that pipe for the worker's lifetime, so EOF
-/// means docketd is gone: on EOF the harness kills any grandchild it spawned,
+/// landbridged holds the write end of that pipe for the worker's lifetime, so EOF
+/// means landbridged is gone: on EOF the harness kills any grandchild it spawned,
 /// writes the atomic <c>deadman</c> marker, and exits with
 /// <see cref="DeadManExitCode"/>. On Linux it additionally arms PDEATHSIG so a
-/// hard docketd death is instantaneous (see <see cref="ParentDeathSignal"/>).</para>
+/// hard landbridged death is instantaneous (see <see cref="ParentDeathSignal"/>).</para>
 ///
 /// Modes (argv[0]):
 ///   run             — write the started marker, then watch stdin until EOF/kill.
@@ -26,7 +26,7 @@ namespace Docket.Runner.TestHarness;
 ///                     EOF still takes the dead-man path (§10/§11 wind-down).
 ///   child           — a bare sleeper (the grandchild); does not watch stdin.
 ///   middleman       — spawn an inner spawn-child harness holding its stdin, record
-///                     the inner pid, then sleep. A stand-in for docketd for the
+///                     the inner pid, then sleep. A stand-in for landbridged for the
 ///                     true-parent-death test: SIGKILL the middleman and the inner
 ///                     sees EOF and fires its own switch.
 ///   middleman-nopipe— spawn a `sleeper` inner WITHOUT redirecting its stdin, so on
@@ -81,8 +81,8 @@ public static class Program
     /// transcript exactly, while the stdout stream-json still tees and maps to events.</summary>
     public static readonly string[] EmitBothStderrLines =
     [
-        "docket-harness: warming up (stderr)",
-        "docket-harness: a noisy diagnostic line",
+        "landbridge-harness: warming up (stderr)",
+        "landbridge-harness: a noisy diagnostic line",
     ];
 
     /// <summary>
@@ -104,7 +104,7 @@ public static class Program
 
     public static async Task<int> Main(string[] args)
     {
-        // Dead-man's switch, Linux half (§10): SIGKILL us the moment docketd (our
+        // Dead-man's switch, Linux half (§10): SIGKILL us the moment landbridged (our
         // direct parent) dies. Armed by every mode — including `child`, so the whole
         // test chain collapses promptly on Linux. If the parent already died, honour
         // the switch at once. A no-op off Linux; the stdin-EOF watch is the portable
@@ -190,8 +190,8 @@ public static class Program
                 });
 
             case "middleman":
-                // Stand-in for docketd (true-parent-death rig): spawn an inner
-                // spawn-child harness holding ITS stdin exactly as docketd would,
+                // Stand-in for landbridged (true-parent-death rig): spawn an inner
+                // spawn-child harness holding ITS stdin exactly as landbridged would,
                 // record the inner pid, then sleep. When the test SIGKILLs us the OS
                 // closes that pipe → the inner sees EOF and fires its dead-man switch.
                 using (var inner = SpawnSelf("spawn-child", cwd, holdStdin: true))
@@ -235,7 +235,7 @@ public static class Program
             case "echo-env":
                 // §10 telemetry ingest: record the environment we were actually spawned
                 // with, one KEY=value per line, so a test can prove exactly which
-                // variables docketd set (and, just as load-bearing, which it did not).
+                // variables landbridged set (and, just as load-bearing, which it did not).
                 // Then watch stdin like `run` so the dead-man pipe governs lifetime.
                 await WriteMarkerAtomicAsync(Path.Combine(cwd, "env"), EnvironmentLines());
                 return await WatchStdinAsync(cwd, grandchildren: [], onLine: null);
@@ -249,8 +249,8 @@ public static class Program
                 return 1;
 
             case "hook-env":
-                // Profile hook: record the environment docketd actually handed us, then
-                // exit. Proves DOCKET_SESSION_ID / DOCKET_WORKER_TOKEN were stripped.
+                // Profile hook: record the environment landbridged actually handed us, then
+                // exit. Proves LANDBRIDGE_SESSION_ID / LANDBRIDGE_WORKER_TOKEN were stripped.
                 await WriteMarkerAtomicAsync(Path.Combine(cwd, "hook-env"), EnvironmentLines());
                 return 0;
 
@@ -265,7 +265,7 @@ public static class Program
             case "http-serve":
                 // A long-lived listener an agent starts through §10 `start_process`. Stdin is
                 // closed for such a process by default, so this mode deliberately does not
-                // watch it — PDEATHSIG (armed above) plus docketd's stop/stray paths are what
+                // watch it — PDEATHSIG (armed above) plus landbridged's stop/stray paths are what
                 // end it. Serves until killed; a dead port would make the consumer's forward
                 // indistinguishable from a crashed service, so it never exits on its own.
                 return await ServeHttpAsync(
@@ -350,7 +350,7 @@ public static class Program
 
     /// <summary>
     /// The whole spawn environment as <c>KEY=value</c> lines, sorted so a failure
-    /// diff is readable. A value containing a newline (nothing docketd sets does,
+    /// diff is readable. A value containing a newline (nothing landbridged sets does,
     /// but the inherited environment is the operator's) would break the one-per-line
     /// shape, so those collapse to spaces.
     /// </summary>
@@ -405,8 +405,8 @@ public static class Program
     private enum StdinAction { Continue, GracefulStop }
 
     /// <summary>
-    /// The portable half of the dead-man's switch. Reads stdin to end: docketd
-    /// holds the write end for our lifetime, so EOF means docketd is gone. On EOF we
+    /// The portable half of the dead-man's switch. Reads stdin to end: landbridged
+    /// holds the write end for our lifetime, so EOF means landbridged is gone. On EOF we
     /// kill every grandchild we spawned, write the atomic <c>deadman</c> marker, and
     /// exit with <see cref="DeadManExitCode"/>. <paramref name="onLine"/> lets a mode
     /// also honour injected lines (message-mode stop); returning
@@ -455,8 +455,8 @@ public static class Program
 
     private static async Task WriteStartedAsync(string cwd)
     {
-        var sessionId = Environment.GetEnvironmentVariable("DOCKET_SESSION_ID") ?? "none";
-        var machineId = Environment.GetEnvironmentVariable("DOCKET_MACHINE_ID") ?? "none";
+        var sessionId = Environment.GetEnvironmentVariable("LANDBRIDGE_SESSION_ID") ?? "none";
+        var machineId = Environment.GetEnvironmentVariable("LANDBRIDGE_MACHINE_ID") ?? "none";
         // Our own OS pid, written BEFORE the `started` marker so a test that polls for
         // `started` and then reads this can never miss it. The §17.8 chaos suite needs it to
         // assert that a kill the plane ordered actually took this process down: every other
@@ -490,7 +490,7 @@ public static class Program
     /// <summary>
     /// Re-executes this harness binary in another mode. When
     /// <paramref name="holdStdin"/> is set the child's stdin is a pipe whose write
-    /// end THIS process holds and never closes — the docketd convention — so our
+    /// end THIS process holds and never closes — the landbridged convention — so our
     /// death closes it and trips the child's dead-man switch. Left at its default
     /// working directory unless <paramref name="cwd"/> is given, so an inner harness
     /// writes its markers where the test is watching.

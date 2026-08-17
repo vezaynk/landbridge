@@ -4,5 +4,5 @@ using System.Runtime.CompilerServices;
 // synchronous reload seam are internal. The Preview test assembly reads the current
 // cert and forces a deterministic reload (bypassing the file watcher + debounce) so
 // the swap / fail-safe / two-file-ordering cases can be asserted without racing the
-// file system. No InternalsVisibleTo existed for Docket.Preview before this change.
-[assembly: InternalsVisibleTo("Docket.Preview.Tests")]
+// file system. No InternalsVisibleTo existed for Landbridge.Preview before this change.
+[assembly: InternalsVisibleTo("Landbridge.Preview.Tests")]

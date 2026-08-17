@@ -1,7 +1,7 @@
-using Docket.ControlPlane;
+using Landbridge.ControlPlane;
 using ModelContextProtocol;
 
-namespace Docket.Mcp.Tools;
+namespace Landbridge.Mcp.Tools;
 
 /// <summary>
 /// The one place a <see cref="StoreResult"/> becomes a tool response (spec §10:

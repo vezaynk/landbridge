@@ -1,4 +1,4 @@
-namespace Docket.Meta.Substrate;
+namespace Landbridge.Meta.Substrate;
 
 /// <summary>
 /// The seam between the provisioning saga and a single Docker host (design note §3).

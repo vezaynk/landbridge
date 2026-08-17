@@ -1,7 +1,7 @@
-using Docket.Meta.Data;
+using Landbridge.Meta.Data;
 using Microsoft.EntityFrameworkCore;
 
-namespace Docket.Meta.Provisioning;
+namespace Landbridge.Meta.Provisioning;
 
 /// <summary>
 /// Placement decisions at create time (design note §1/§3): which host a new instance

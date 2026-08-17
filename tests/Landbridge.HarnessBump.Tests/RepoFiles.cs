@@ -1,4 +1,4 @@
-namespace Docket.HarnessBump.Tests;
+namespace Landbridge.HarnessBump.Tests;
 
 /// <summary>
 /// Locates the repository's own files so a few tests can assert against the REAL workflows rather
@@ -20,11 +20,11 @@ internal static class RepoFiles
         var directory = new DirectoryInfo(AppContext.BaseDirectory);
         while (directory is not null)
         {
-            if (File.Exists(Path.Combine(directory.FullName, "docket.slnx")))
+            if (File.Exists(Path.Combine(directory.FullName, "landbridge.slnx")))
                 return directory.FullName;
             directory = directory.Parent;
         }
         throw new InvalidOperationException(
-            $"no docket.slnx above {AppContext.BaseDirectory} — cannot locate the repository root.");
+            $"no landbridge.slnx above {AppContext.BaseDirectory} — cannot locate the repository root.");
     }
 }

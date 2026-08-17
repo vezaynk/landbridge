@@ -1,8 +1,8 @@
 using System.Collections.Concurrent;
-using Docket.Contracts;
-using Docket.Core;
+using Landbridge.Contracts;
+using Landbridge.Core;
 
-namespace Docket.ControlPlane;
+namespace Landbridge.ControlPlane;
 
 /// <summary>
 /// Relays a worker's §10 process commands — start, stop, write — to the machine holding its
@@ -134,7 +134,7 @@ public sealed class ProcessControlRelay(RunnerConnectionRegistry registry)
         }
         foreach (var p in registry.ProcessesOn(machine))
         {
-            // Port is null for a process by construction — Docket tracks no port for one. The
+            // Port is null for a process by construction — Landbridge tracks no port for one. The
             // stdin mode is here because a cleanup agent must know whether a graceful stop even
             // exists before it calls stop_process.
             all.Add(new RunningThing(

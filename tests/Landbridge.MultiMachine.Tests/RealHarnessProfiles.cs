@@ -1,10 +1,10 @@
-using Docket.Runner;
+using Landbridge.Runner;
 
-namespace Docket.MultiMachine.Tests;
+namespace Landbridge.MultiMachine.Tests;
 
 /// <summary>
 /// The real-CLI fixtures. What differs per harness is the ACP entry point
-/// and how that vendor spells docket's MCP tools. MCP itself rides
+/// and how that vendor spells landbridge's MCP tools. MCP itself rides
 /// <c>session/new</c>; these fixtures do not write a bearer file.
 /// </summary>
 internal static class RealHarnessProfiles
@@ -19,9 +19,9 @@ internal static class RealHarnessProfiles
         // protocol 1, loadSession true, mcpCapabilities.http true, ambient auth.
         AcpSpawn = ["claude-agent-acp"],
         Bin = bin,
-        GetTask = "mcp__docket__get_session",
-        ReportResult = "mcp__docket__report_result",
-        RequestInput = "mcp__docket__request_input",
+        GetTask = "mcp__landbridge__get_session",
+        ReportResult = "mcp__landbridge__report_result",
+        RequestInput = "mcp__landbridge__request_input",
         Usage = UsageExpectation.Cost,
         // NamesModel deliberately off under ACP, unlike the stream profile. Nothing in the
         // protocol attributes usage to a model — not PromptResponse.usage, not usage_update
@@ -40,9 +40,9 @@ internal static class RealHarnessProfiles
         AcpSpawn = ["codex-acp"],
         AuthMethod = "api-key",
         Bin = bin,
-        GetTask = "mcp__docket__get_session",
-        ReportResult = "mcp__docket__report_result",
-        RequestInput = "mcp__docket__request_input",
+        GetTask = "mcp__landbridge__get_session",
+        ReportResult = "mcp__landbridge__report_result",
+        RequestInput = "mcp__landbridge__request_input",
         Usage = UsageExpectation.Tokens,
         SupportsResume = true,
         FailureHypotheses = CodexHypotheses(),
@@ -59,9 +59,9 @@ internal static class RealHarnessProfiles
             ["model"] = OpenCodeModel,
         },
         Bin = bin,
-        GetTask = "docket_get_session",
-        ReportResult = "docket_report_result",
-        RequestInput = "docket_request_input",
+        GetTask = "landbridge_get_session",
+        ReportResult = "landbridge_report_result",
+        RequestInput = "landbridge_request_input",
         // Tokens required. Cost is optional: Anthropic-pinned ACP reports one,
         // the previous big-pickle default reported none. A stored $0.00 is still
         // forbidden — that would claim the dispatch was free.
@@ -79,15 +79,15 @@ internal static class RealHarnessProfiles
         // `-p --output-format streaming-json`, which is an output shape not the protocol.
         AcpSpawn = [bin, "agent", "stdio"],
         Bin = bin,
-        // 1.0.4 gates project-local config behind folder trust. A docketd work
+        // 1.0.4 gates project-local config behind folder trust. A landbridged work
         // dir is a throwaway temp folder, so disable the gate.
         Env = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["GROK_FOLDER_TRUST"] = "0",
         },
-        GetTask = "docket__get_session",
-        ReportResult = "docket__report_result",
-        RequestInput = "docket__request_input",
+        GetTask = "landbridge__get_session",
+        ReportResult = "landbridge__report_result",
+        RequestInput = "landbridge__request_input",
         // Tokens, not Cost. Measured 2026-08-16: grok agent stdio reports spend on
         // `_x.ai/session_notification` / `response_completed` as snake_case buckets
         // and no dollar figure. Recording $0.00 would claim the dispatch was free.
@@ -104,9 +104,9 @@ internal static class RealHarnessProfiles
         // session/new succeeded without authenticate. Do not set AuthMethod.
         AcpSpawn = [bin, "acp"],
         Bin = bin,
-        GetTask = "docket__get_session",
-        ReportResult = "docket__report_result",
-        RequestInput = "docket__request_input",
+        GetTask = "landbridge__get_session",
+        ReportResult = "landbridge__report_result",
+        RequestInput = "landbridge__request_input",
         SessionMode = "approve",
         // Tokens, not Cost. Measured 2026-08-17 through the ACP-bridge turn:
         // PromptResponse carried buckets. A stored $0.00 is still forbidden.
@@ -120,29 +120,29 @@ internal static class RealHarnessProfiles
         Name = "goose-acp-bridge",
         AcpSpawn = [bridgeBin, "connect", url],
         Bin = gooseBin,
-        GetTask = "docket__get_session",
-        ReportResult = "docket__report_result",
-        RequestInput = "docket__request_input",
+        GetTask = "landbridge__get_session",
+        ReportResult = "landbridge__report_result",
+        RequestInput = "landbridge__request_input",
         SessionMode = "approve",
         // Tokens, not Cost: first live turn will say whether PromptResponse
         // carries buckets. A stored $0.00 is still forbidden.
         Usage = UsageExpectation.Tokens,
         SupportsResume = true,
         FailureHypotheses = GooseHypotheses()
-            + "  6. BRIDGE. Far side is `docket-acp-bridge listen -- goose acp`. "
+            + "  6. BRIDGE. Far side is `landbridge-acp-bridge listen -- goose acp`. "
             + "Connect spawn is the profile. A 409 means two dispatches shared one listen.",
     };
 
     public static string CodexModel =>
-        Environment.GetEnvironmentVariable("DOCKET_CODEX_MODEL") is { Length: > 0 } m ? m : "gpt-5.3-codex";
+        Environment.GetEnvironmentVariable("LANDBRIDGE_CODEX_MODEL") is { Length: > 0 } m ? m : "gpt-5.3-codex";
 
     public static string OpenCodeModel =>
-        Environment.GetEnvironmentVariable("DOCKET_OPENCODE_MODEL") is { Length: > 0 } m
+        Environment.GetEnvironmentVariable("LANDBRIDGE_OPENCODE_MODEL") is { Length: > 0 } m
             ? m
             : "anthropic/claude-haiku-4-5-20251001";
 
     public static string GrokModel =>
-        Environment.GetEnvironmentVariable("DOCKET_GROK_MODEL") is { Length: > 0 } m ? m : "grok-4.6";
+        Environment.GetEnvironmentVariable("LANDBRIDGE_GROK_MODEL") is { Length: > 0 } m ? m : "grok-4.6";
 
     public static string EchoDescription(string label, string token) =>
         $"""
@@ -209,8 +209,8 @@ internal static class RealHarnessProfiles
     ];
 
     /// <summary>
-    /// A throwaway <c>CODEX_HOME</c> holding the static docket MCP table. One file
-    /// is enough: the bearer rides <c>DOCKET_WORKER_TOKEN</c> at connect time.
+    /// A throwaway <c>CODEX_HOME</c> holding the static landbridge MCP table. One file
+    /// is enough: the bearer rides <c>LANDBRIDGE_WORKER_TOKEN</c> at connect time.
     /// </summary>
     internal sealed class CodexHome : IDisposable
     {
@@ -226,7 +226,7 @@ internal static class RealHarnessProfiles
         public static CodexHome Create(string mcpUrl, IReadOnlyList<string> allowedTools)
         {
             var previous = Environment.GetEnvironmentVariable("CODEX_HOME");
-            var dir = Path.Combine(Path.GetTempPath(), "docket-codex-home-" + Guid.NewGuid().ToString("N")[..8]);
+            var dir = Path.Combine(Path.GetTempPath(), "landbridge-codex-home-" + Guid.NewGuid().ToString("N")[..8]);
             Directory.CreateDirectory(dir);
 
             var tools = string.Join(", ", allowedTools.Select(t => $"\"{t}\""));
@@ -235,9 +235,9 @@ internal static class RealHarnessProfiles
                 $"""
                  model = "{CodexModel}"
 
-                 [mcp_servers.docket]
+                 [mcp_servers.landbridge]
                  url = "{mcpUrl}"
-                 bearer_token_env_var = "DOCKET_WORKER_TOKEN"
+                 bearer_token_env_var = "LANDBRIDGE_WORKER_TOKEN"
                  enabled_tools = [{tools}]
                  required = true
                  startup_timeout_sec = 30.0
@@ -267,7 +267,7 @@ internal static class RealHarnessProfiles
 
     /// <summary>
     /// A throwaway OpenCode config published through <c>OPENCODE_CONFIG</c>. The
-    /// bearer is <c>{env:DOCKET_WORKER_TOKEN}</c>; <c>"oauth": false</c> is required.
+    /// bearer is <c>{env:LANDBRIDGE_WORKER_TOKEN}</c>; <c>"oauth": false</c> is required.
     /// </summary>
     internal sealed class OpenCodeConfig : IDisposable
     {
@@ -283,7 +283,7 @@ internal static class RealHarnessProfiles
         public static OpenCodeConfig Create(string mcpUrl)
         {
             var previous = Environment.GetEnvironmentVariable("OPENCODE_CONFIG");
-            var dir = Path.Combine(Path.GetTempPath(), "docket-opencode-" + Guid.NewGuid().ToString("N")[..8]);
+            var dir = Path.Combine(Path.GetTempPath(), "landbridge-opencode-" + Guid.NewGuid().ToString("N")[..8]);
             Directory.CreateDirectory(dir);
             var file = Path.Combine(dir, "opencode.json");
 
@@ -294,11 +294,11 @@ internal static class RealHarnessProfiles
                     "$schema": "https://opencode.ai/config.json",
                     "model": "{{OpenCodeModel}}",
                     "mcp": {
-                      "docket": {
+                      "landbridge": {
                         "type": "remote",
                         "url": "{{mcpUrl}}",
                         "enabled": true,
-                        "headers": { "Authorization": "Bearer {env:DOCKET_WORKER_TOKEN}" },
+                        "headers": { "Authorization": "Bearer {env:LANDBRIDGE_WORKER_TOKEN}" },
                         "oauth": false,
                         "timeout": 120000
                       }
@@ -322,8 +322,8 @@ internal static class RealHarnessProfiles
 
         Suspect, in order:
           1. MODEL SLUG. This tier pins '{CodexModel}'. gpt-5.1-codex-mini 404s on
-             the API-key catalog; override with DOCKET_CODEX_MODEL.
-          2. MCP WIRING. CODEX_HOME/config.toml uses bearer_token_env_var = DOCKET_WORKER_TOKEN
+             the API-key catalog; override with LANDBRIDGE_CODEX_MODEL.
+          2. MCP WIRING. CODEX_HOME/config.toml uses bearer_token_env_var = LANDBRIDGE_WORKER_TOKEN
              and required = true. A plane 401 or a missing table fails the run.
           3. STDIN. A deadman profile hangs before the first turn. Bar facts declare closed.
           4. AUTH. CODEX_API_KEY (not OPENAI_API_KEY) must be in the environment.
@@ -334,10 +334,10 @@ internal static class RealHarnessProfiles
         $$"""
 
          Suspect, in order:
-           1. MODEL SLUG. This tier pins '{{OpenCodeModel}}'. Override with DOCKET_OPENCODE_MODEL.
-           2. MCP WIRING. The bearer arrives via {env:DOCKET_WORKER_TOKEN}. An unset variable
+           1. MODEL SLUG. This tier pins '{{OpenCodeModel}}'. Override with LANDBRIDGE_OPENCODE_MODEL.
+           2. MCP WIRING. The bearer arrives via {env:LANDBRIDGE_WORKER_TOKEN}. An unset variable
               substitutes to the empty string, so the plane 401s and the agent has no tools.
-           3. TOOL NAMES. OpenCode spells MCP tools docket_get_session, not mcp__docket__get_session.
+           3. TOOL NAMES. OpenCode spells MCP tools landbridge_get_session, not mcp__landbridge__get_session.
            4. STDIN. A deadman profile hangs silently before the first turn.
            5. AUTH. ANTHROPIC_API_KEY must be in the environment.
 
@@ -347,11 +347,11 @@ internal static class RealHarnessProfiles
         $$"""
 
          Suspect, in order:
-           1. MODEL SLUG. This tier pins '{{GrokModel}}'. Override with DOCKET_GROK_MODEL.
+           1. MODEL SLUG. This tier pins '{{GrokModel}}'. Override with LANDBRIDGE_GROK_MODEL.
            2. MCP WIRING. The plane is handed over on session/new. A 401 means the
               minted token or url is wrong. GROK_FOLDER_TRUST=0 is set so a throwaway
               work dir is not blocked by folder trust.
-           3. TOOL NAMES. Grok spells MCP tools docket__get_session, not mcp__docket__get_session.
+           3. TOOL NAMES. Grok spells MCP tools landbridge__get_session, not mcp__landbridge__get_session.
            4. STDIN. A deadman profile starts then never exits. Bar facts declare closed.
            5. AUTH. XAI_API_KEY (not XAI_KEY) must be in the environment.
 
@@ -365,8 +365,8 @@ internal static class RealHarnessProfiles
           2. AUTH. goose-provider is interactive `goose configure`. The process needs
              a provider already configured, or GOOSE_PROVIDER / GOOSE_MODEL plus that
              provider's key. Do not set auth_method to goose-provider.
-          3. TOOL NAMES. Expected spelling is docket__get_session (goose namespaces the
-             `docket` MCP server as `{name}__{tool}`). Confirm on the first turn.
+          3. TOOL NAMES. Expected spelling is landbridge__get_session (goose namespaces the
+             `landbridge` MCP server as `{name}__{tool}`). Confirm on the first turn.
           4. MODE. session/new defaults to `auto`. This profile pins `approve`
              via session/set_mode when the session advertised it.
           5. FS/TERMINAL. This client declares both UNSUPPORTED. A Goose that asks

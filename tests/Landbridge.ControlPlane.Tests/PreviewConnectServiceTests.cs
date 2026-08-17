@@ -1,10 +1,10 @@
-using Docket.Contracts;
-using Docket.ControlPlane.Auth;
-using Docket.Core;
+using Landbridge.Contracts;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.Core;
 using Microsoft.Extensions.Logging.Abstractions;
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.ControlPlane.Tests;
+namespace Landbridge.ControlPlane.Tests;
 
 /// <summary>
 /// The control-plane half of one HTTP-preview browser connection (spec §8.4):
@@ -12,7 +12,7 @@ namespace Docket.ControlPlane.Tests;
 /// session) + check 11, mint a fresh consumer grant + forward id, and relay the
 /// producer its dial target. Exercises the real store, grant service, token
 /// service, preview-auth store, and forward orchestrator against Postgres — every
-/// piece except the relay/producer sockets, which L3 (Docket.Mcp.Tests) covers.
+/// piece except the relay/producer sockets, which L3 (Landbridge.Mcp.Tests) covers.
 /// </summary>
 [Collection(PostgresCollection.Name)]
 public sealed class PreviewConnectServiceTests(PostgresFixture pg) : IAsyncLifetime
@@ -140,7 +140,7 @@ public sealed class PreviewConnectServiceTests(PostgresFixture pg) : IAsyncLifet
         Assert.IsType<PreviewConnectResult.Unauthorized>(
             await connect.ConnectAsync(mint.Label, null, null, RelayUrl));
         Assert.IsType<PreviewConnectResult.Unauthorized>(
-            await connect.ConnectAsync(mint.Label, "dkt_not_a_real_token", null, RelayUrl));
+            await connect.ConnectAsync(mint.Label, "lbr_not_a_real_token", null, RelayUrl));
 
         // A Lead scoped to a different Team is not an operator for THIS preview.
         var human = await tokens.IssueHumanSessionAsync();
@@ -260,7 +260,7 @@ public sealed class PreviewConnectServiceTests(PostgresFixture pg) : IAsyncLifet
     /// wherever a test drives the producer task's own transition afterwards.
     /// </summary>
     private static async Task<(SessionId Session, WorkerInstanceId Instance)> WorkingServiceWithInstanceAsync(
-        DocketDbContext db, TimeProvider clock, TeamId team, string name, int port)
+        LandbridgeDbContext db, TimeProvider clock, TeamId team, string name, int port)
     {
         var store = new SessionStore(db, clock);
         var created = (StoreResult.Applied)await store.CreateAsync(
@@ -275,7 +275,7 @@ public sealed class PreviewConnectServiceTests(PostgresFixture pg) : IAsyncLifet
 
     /// <summary>A working producer task in <paramref name="team"/> with <paramref name="name"/> registered.</summary>
     private static async Task<(SessionId Session, int Port)> WorkingServiceAsync(
-        DocketDbContext db, TimeProvider clock, TeamId team, string name, int port)
+        LandbridgeDbContext db, TimeProvider clock, TeamId team, string name, int port)
     {
         var store = new SessionStore(db, clock);
         var created = (StoreResult.Applied)await store.CreateAsync(
@@ -293,7 +293,7 @@ public sealed class PreviewConnectServiceTests(PostgresFixture pg) : IAsyncLifet
     /// store (so tests can mint a per-label session).
     /// </summary>
     private static (PreviewConnectService Connect, List<OpenForwardCommand> Sent, PreviewAuthStore PreviewAuth) BuildConnect(
-        DocketDbContext db, TimeProvider clock, params SessionId[] trackedTasks)
+        LandbridgeDbContext db, TimeProvider clock, params SessionId[] trackedTasks)
     {
         var sent = new List<OpenForwardCommand>();
         var registry = new RunnerConnectionRegistry(clock);

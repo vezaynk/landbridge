@@ -1,14 +1,14 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Text.Json.Nodes;
-using Docket.Contracts;
-using Docket.ControlPlane;
-using Docket.ControlPlane.Auth;
-using Docket.ControlPlane.Tests;
-using Docket.Core;
-using Docket.Mcp.Auth;
-using Docket.Mcp.Tools;
-using Docket.Runner;
+using Landbridge.Contracts;
+using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.ControlPlane.Tests;
+using Landbridge.Core;
+using Landbridge.Mcp.Auth;
+using Landbridge.Mcp.Tools;
+using Landbridge.Runner;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -20,22 +20,22 @@ using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 using Xunit.Abstractions;
 
-namespace Docket.Mcp.Tests;
+namespace Landbridge.Mcp.Tests;
 
 /// <summary>
 /// The §1 proof, deterministic and collector-free: ONE trace spans the whole loop.
 /// A Lead creates a task over real MCP; the real <see cref="DispatchService"/>
 /// opens its dispatch span parented on the create_session trace context the store
 /// captured; the real <see cref="ProcessSupervisor"/> spawns the real
-/// <c>Docket.WorkerHarness</c>, which roots its own span on the
-/// <c>DOCKET_TRACEPARENT</c> docketd injected and records it to <c>trace.json</c>.
+/// <c>Landbridge.WorkerHarness</c>, which roots its own span on the
+/// <c>LANDBRIDGE_TRACEPARENT</c> landbridged injected and records it to <c>trace.json</c>.
 ///
 /// The chain is asserted end to end without a dashboard: the stored
 /// <c>SessionRow.TraceContext</c>, the dispatch span (captured through an
 /// <see cref="ActivityListener"/>), and the worker's <c>trace.json</c> all carry
 /// the <b>same trace id</b>, with the parent/child span links matching at each hop
 /// — so the context provably survived create_session → row → dispatch span → worker
-/// env → worker span. (The wire → docketd hop is unit-tested by the RunnerWire
+/// env → worker span. (The wire → landbridged hop is unit-tested by the RunnerWire
 /// traceparent round-trip and validated live against the Aspire dashboard; here,
 /// as in the walking skeleton, the supervisor stands in for the socket.)
 /// </summary>
@@ -121,7 +121,7 @@ public sealed class TraceContinuityEndToEndTests(PostgresFixture pg, ITestOutput
         {
             // The registry's send delegate hands the real DispatchCommand straight
             // to the real supervisor — the seam a socket would occupy. The dispatch
-            // span is current when Spawn runs, so DOCKET_TRACEPARENT carries it.
+            // span is current when Spawn runs, so LANDBRIDGE_TRACEPARENT carries it.
             var registry = new RunnerConnectionRegistry(TimeProvider.System);
             registry.Register("m1", new HashSet<string> { "default" }, (command, _) =>
             {
@@ -205,20 +205,20 @@ public sealed class TraceContinuityEndToEndTests(PostgresFixture pg, ITestOutput
         builder.Logging.ClearProviders();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
 
-        builder.Services.AddDbContext<DocketDbContext>(o =>
+        builder.Services.AddDbContext<LandbridgeDbContext>(o =>
             o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
-        builder.Services.AddDocketStore();
+        builder.Services.AddLandbridgeStore();
         builder.Services.AddScoped<RelayGrantService>();
         builder.Services.AddScoped<PreviewMappingService>(); // §8.4: WorkerTools.open_preview
         builder.Services.AddScoped<TokenService>();
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<RunnerConnectionRegistry>();
-        builder.Services.AddDocketForwarding(); // §8.3: WorkerTools needs the forward orchestrator
+        builder.Services.AddLandbridgeForwarding(); // §8.3: WorkerTools needs the forward orchestrator
         builder.Services.AddHttpContextAccessor();
 
-        builder.Services.AddAuthentication(DocketAuthenticationHandler.SchemeName)
-            .AddScheme<AuthenticationSchemeOptions, DocketAuthenticationHandler>(
-                DocketAuthenticationHandler.SchemeName, configureOptions: null);
+        builder.Services.AddAuthentication(LandbridgeAuthenticationHandler.SchemeName)
+            .AddScheme<AuthenticationSchemeOptions, LandbridgeAuthenticationHandler>(
+                LandbridgeAuthenticationHandler.SchemeName, configureOptions: null);
         builder.Services.AddAuthorization();
 
         builder.Services.AddMcpServer()
@@ -246,22 +246,22 @@ public sealed class TraceContinuityEndToEndTests(PostgresFixture pg, ITestOutput
 
     private static string WorkerHarnessPath()
     {
-        const string stem = "Docket.WorkerHarness";
+        const string stem = "Landbridge.WorkerHarness";
         var testDir = Path.GetDirectoryName(typeof(TraceContinuityEndToEndTests).Assembly.Location)!;
         var harnessDir = testDir.Replace(
-            Path.Combine("Docket.Mcp.Tests", "bin"),
+            Path.Combine("Landbridge.Mcp.Tests", "bin"),
             Path.Combine(stem, "bin"),
             StringComparison.Ordinal);
         var apphost = Path.Combine(harnessDir, OperatingSystem.IsWindows() ? stem + ".exe" : stem);
         return File.Exists(apphost)
             ? apphost
             : throw new FileNotFoundException(
-                $"worker harness apphost not found at {apphost}; is Docket.WorkerHarness built?");
+                $"worker harness apphost not found at {apphost}; is Landbridge.WorkerHarness built?");
     }
 
     private static string NewWorkRoot()
     {
-        var dir = Path.Combine(Path.GetTempPath(), "docket-trace-tests", Guid.NewGuid().ToString("N"));
+        var dir = Path.Combine(Path.GetTempPath(), "landbridge-trace-tests", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
         return dir;
     }

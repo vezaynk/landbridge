@@ -3,14 +3,14 @@ using System.Net;
 using System.Net.Sockets;
 using System.Text.Json;
 using System.Text.Json.Nodes;
-using Docket.HarnessSupport;
+using Landbridge.HarnessSupport;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 using OpenTelemetry;
 using OpenTelemetry.Resources;
 using OpenTelemetry.Trace;
 
-namespace Docket.WorkerHarness;
+namespace Landbridge.WorkerHarness;
 
 /// <summary>
 /// The walking skeleton's scripted worker (spec §10, worker-skill.md) — a REAL
@@ -18,7 +18,7 @@ namespace Docket.WorkerHarness;
 /// for <c>claude -p</c> in the automated proof: it does exactly what a dispatched
 /// worker's opening moves are and nothing else.
 ///
-/// It reads the MCP client config <c>docketd</c> injected (§13) — the
+/// It reads the MCP client config <c>landbridged</c> injected (§13) — the
 /// <c>--mcp-config</c> path <c>ProcessSupervisor</c> substituted into its
 /// argv, pointing at <c>{work_dir}/mcp.json</c> — connects to the plane with the
 /// dispatched worker token as a bearer credential, and calls <c>get_session</c> to
@@ -62,12 +62,12 @@ public static class Program
         using var cts = new CancellationTokenSource();
         var ct = cts.Token;
 
-        // Dead-man's switch (§10). Linux: SIGKILL us if docketd (our parent) dies.
+        // Dead-man's switch (§10). Linux: SIGKILL us if landbridged (our parent) dies.
         if (ParentDeathSignal.ArmAndParentAlreadyDead())
             return 1;
 
         // ACP mode: stdin is the JSON-RPC request channel, not a liveness pipe, so the
-        // EOF watch below must not run — it would eat docketd's requests. The read loop's
+        // EOF watch below must not run — it would eat landbridged's requests. The read loop's
         // own EOF is the dead-man's switch instead, which is also what ACP's shutdown rule
         // prescribes. Everything after the handshake is the same scripted work.
         if (args.Contains("--acp", StringComparer.Ordinal))
@@ -82,15 +82,15 @@ public static class Program
                 },
                 ct);
         }
-        // Portable: docketd holds the write end of our stdin for our lifetime, so
-        // EOF means docketd is gone. Watch it in the background and cancel the run —
+        // Portable: landbridged holds the write end of our stdin for our lifetime, so
+        // EOF means landbridged is gone. Watch it in the background and cancel the run —
         // the worker's only channel to the plane is MCP, so stdin carries no data,
         // just liveness. Cancellation unwinds the work below into a non-zero exit.
         // This is what bounds relay-serve mode's otherwise-open lifetime.
         _ = WatchStdinForEofAsync(cts);
 
-        // §1 tracing: root the worker's span on the traceparent docketd injected
-        // (DOCKET_TRACEPARENT), so this process — and its MCP calls back to the
+        // §1 tracing: root the worker's span on the traceparent landbridged injected
+        // (LANDBRIDGE_TRACEPARENT), so this process — and its MCP calls back to the
         // plane — continue the one trace that began at the Lead's create_session. The
         // root span stays current for the whole run; disposed last so it (and, when
         // a collector is configured, the export) flushes before the process exits.
@@ -164,7 +164,7 @@ public static class Program
         //    work; a reference is all the state machine requires (verification is separate).
         var reported = await client.CallToolAsync(
             "report_result",
-            new Dictionary<string, object?> { ["resultReference"] = "docket-worker-harness:done" },
+            new Dictionary<string, object?> { ["resultReference"] = "landbridge-worker-harness:done" },
             cancellationToken: setupCts.Token);
         if (reported.IsError == true)
             throw new InvalidOperationException("report_result returned an error: " + TextOf(reported));
@@ -241,7 +241,7 @@ public static class Program
 
         var (host, port) = ForwardAddressOf(TextOf(opened));
 
-        // Prove the byte path: consumer docketd → relay → producer docketd → echo.
+        // Prove the byte path: consumer landbridged → relay → producer landbridged → echo.
         var payload = new byte[64 * 1024];
         Random.Shared.NextBytes(payload);
         using (var tcp = new TcpClient())
@@ -359,7 +359,7 @@ public static class Program
 
     /// <summary>
     /// Portable dead-man watch: reads stdin to EOF and cancels <paramref name="cts"/>
-    /// when it arrives. docketd holds the write end for our lifetime, so EOF is its
+    /// when it arrives. landbridged holds the write end for our lifetime, so EOF is its
     /// death; any bytes are ignored (MCP, not stdin, is the worker's channel). On a
     /// normal run the process exits before this ever completes.
     /// </summary>
@@ -387,7 +387,7 @@ public static class Program
     /// <summary>
     /// Resolves the plane URL and Authorization header. Primary source is the
     /// injected <c>--mcp-config</c> file (proves the §13 injection path); falls
-    /// back to <c>DOCKET_WORKER_TOKEN</c> + <c>DOCKET_MCP_URL</c> if no config
+    /// back to <c>LANDBRIDGE_WORKER_TOKEN</c> + <c>LANDBRIDGE_MCP_URL</c> if no config
     /// path was passed.
     /// </summary>
     private static (string Url, string Authorization) ResolveConnection(string[] args)
@@ -397,7 +397,7 @@ public static class Program
         {
             var root = JsonNode.Parse(File.ReadAllText(configPath))
                 ?? throw new InvalidOperationException($"empty mcp config at {configPath}");
-            // The first server under mcpServers — the plane, named "docket" by docketd.
+            // The first server under mcpServers — the plane, named "landbridge" by landbridged.
             var servers = root["mcpServers"]?.AsObject()
                 ?? throw new InvalidOperationException("mcp config has no mcpServers");
             var server = servers.First().Value
@@ -409,10 +409,10 @@ public static class Program
             return (url, authorization);
         }
 
-        var token = Environment.GetEnvironmentVariable("DOCKET_WORKER_TOKEN")
-            ?? throw new InvalidOperationException("no --mcp-config and no DOCKET_WORKER_TOKEN");
-        var mcpUrl = Environment.GetEnvironmentVariable("DOCKET_MCP_URL")
-            ?? throw new InvalidOperationException("no --mcp-config and no DOCKET_MCP_URL");
+        var token = Environment.GetEnvironmentVariable("LANDBRIDGE_WORKER_TOKEN")
+            ?? throw new InvalidOperationException("no --mcp-config and no LANDBRIDGE_WORKER_TOKEN");
+        var mcpUrl = Environment.GetEnvironmentVariable("LANDBRIDGE_MCP_URL")
+            ?? throw new InvalidOperationException("no --mcp-config and no LANDBRIDGE_MCP_URL");
         return (mcpUrl, $"Bearer {token}");
     }
 
@@ -437,7 +437,7 @@ public static class Program
 }
 
 /// <summary>
-/// The worker's OpenTelemetry setup (§1). Roots a span on <c>DOCKET_TRACEPARENT</c>
+/// The worker's OpenTelemetry setup (§1). Roots a span on <c>LANDBRIDGE_TRACEPARENT</c>
 /// so the worker sits inside the trace that began at the Lead's <c>create_session</c>,
 /// and — when <c>OTEL_EXPORTER_OTLP_ENDPOINT</c> is set — exports it plus the MCP
 /// calls it makes (HttpClient instrumentation nests them and injects the
@@ -449,7 +449,7 @@ public static class Program
 /// </summary>
 internal sealed class WorkerTelemetry : IDisposable
 {
-    private const string SourceName = "Docket.WorkerHarness";
+    private const string SourceName = "Landbridge.WorkerHarness";
 
     private readonly Activity? _rootActivity;
     private readonly TracerProvider? _tracerProvider;
@@ -470,7 +470,7 @@ internal sealed class WorkerTelemetry : IDisposable
         var source = new ActivitySource(SourceName);
 
         ActivityContext parentContext = default;
-        var traceparent = Environment.GetEnvironmentVariable("DOCKET_TRACEPARENT");
+        var traceparent = Environment.GetEnvironmentVariable("LANDBRIDGE_TRACEPARENT");
         if (!string.IsNullOrWhiteSpace(traceparent))
             ActivityContext.TryParse(traceparent, null, out parentContext);
 
@@ -480,7 +480,7 @@ internal sealed class WorkerTelemetry : IDisposable
         {
             tracer = Sdk.CreateTracerProviderBuilder()
                 .AddSource(SourceName)
-                .ConfigureResource(r => r.AddService("docket-worker"))
+                .ConfigureResource(r => r.AddService("landbridge-worker"))
                 .AddHttpClientInstrumentation()
                 .AddOtlpExporter()
                 .Build();

@@ -1,9 +1,9 @@
 using System.Text;
-using Docket.Meta.Data;
-using Docket.Meta.Provisioning;
-using static Docket.Meta.Web.MetaHtml;
+using Landbridge.Meta.Data;
+using Landbridge.Meta.Provisioning;
+using static Landbridge.Meta.Web.MetaHtml;
 
-namespace Docket.Meta.Web;
+namespace Landbridge.Meta.Web;
 
 /// <summary>Server-rendered page bodies for the meta panel (design note §1). Pure functions of their inputs.</summary>
 internal static class MetaRenderer
@@ -14,7 +14,7 @@ internal static class MetaRenderer
         var err = error is null ? "" : $"<p class=\"err\">{E(error)}</p>";
         return Page("Sign in", "", $"""
             <div class="login-wrap">
-              <h1>Docket Meta</h1>
+              <h1>Landbridge Meta</h1>
               <p class="sub">Operator control panel</p>
               {err}
               <form method="post" action="/login">
@@ -84,13 +84,13 @@ internal static class MetaRenderer
 
         return Page("Create instance", "instances", $"""
             <h1>Create instance</h1>
-            <p class="sub">Provisions a network, Postgres, docket-mcp, and docket-relay on the chosen host.</p>
+            <p class="sub">Provisions a network, Postgres, landbridge-mcp, and landbridge-relay on the chosen host.</p>
             {err}
             <section>
               <form method="post" action="/instances">
                 <label for="name">Name</label>
                 <input id="name" name="name" type="text" value="{E(nameValue)}" autofocus placeholder="acme">
-                <p class="hint">A DNS label — becomes <code>&lt;name&gt;.docket.&lt;domain&gt;</code>.</p>
+                <p class="hint">A DNS label — becomes <code>&lt;name&gt;.landbridge.&lt;domain&gt;</code>.</p>
                 <label for="account">Account label (optional)</label>
                 <input id="account" name="account" type="text" placeholder="Acme Corp">
                 <label for="tag">Image tag</label>

@@ -1,7 +1,7 @@
 using System.Security.Cryptography;
 using Microsoft.EntityFrameworkCore;
 
-namespace Docket.ControlPlane.Auth;
+namespace Landbridge.ControlPlane.Auth;
 
 /// <summary>
 /// Mints and single-use-consumes OAuth 2.1 authorization codes (spec §5),
@@ -9,7 +9,7 @@ namespace Docket.ControlPlane.Auth;
 /// A code is the short-lived bearer that the authorize step hands the client and
 /// the token step redeems for a human session — it authenticates nothing on its
 /// own, so it lives in its own table (<see cref="OAuthAuthorizationCodeRow"/>)
-/// with its own <c>dkt_c_</c> prefix, hashed at rest exactly like every §5
+/// with its own <c>lbr_c_</c> prefix, hashed at rest exactly like every §5
 /// credential.
 ///
 /// <para><b>Single-use is enforced atomically.</b> Consumption is one conditional
@@ -19,7 +19,7 @@ namespace Docket.ControlPlane.Auth;
 /// exchanges of the same code can never both succeed (RFC 6749 §4.1.2: a code
 /// MUST be single-use).</para>
 /// </summary>
-public sealed class OAuthAuthorizationCodeService(DocketDbContext db, TimeProvider clock)
+public sealed class OAuthAuthorizationCodeService(LandbridgeDbContext db, TimeProvider clock)
 {
     /// <summary>
     /// Authorization codes are short-lived (RFC 6749 §4.1.2 recommends ≤10
@@ -135,7 +135,7 @@ public sealed class OAuthAuthorizationCodeService(DocketDbContext db, TimeProvid
     {
         // Same shape as TokenService's opaque credentials — 256 bits, URL-safe —
         // but its own class prefix so a code is never mistaken for a bearer token.
-        var code = $"dkt_c_{RandomNumberGenerator.GetHexString(64)}";
+        var code = $"lbr_c_{RandomNumberGenerator.GetHexString(64)}";
         return (code, Hash(code));
     }
 

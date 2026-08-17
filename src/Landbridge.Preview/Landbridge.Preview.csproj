@@ -2,18 +2,18 @@
 
   <!-- The HTTP preview frontend (spec §8.4) is a standalone, separately-deployable
        module ON TOP of the pure TCP tunnel (§3) — its own ASP.NET host, NOT part
-       of Docket.Mcp and NOT a change to the pure byte-splicer Docket.Relay. It
+       of Landbridge.Mcp and NOT a change to the pure byte-splicer Landbridge.Relay. It
        reuses the shared Aspire service defaults (health, OTel) like the other
        hosts do. -->
   <ItemGroup>
-    <ProjectReference Include="..\Docket.ServiceDefaults\Docket.ServiceDefaults.csproj" />
+    <ProjectReference Include="..\Landbridge.ServiceDefaults\Landbridge.ServiceDefaults.csproj" />
     <!-- §8.4: the frontend IS the consumer end. It dials the relay's existing
          /tunnel presenting the same RelayTunnel header names + consumer role
-         string, so it shares that vocabulary via Docket.Contracts — the same way
-         the runner's tunnel client does. It does NOT reference Docket.Relay (the
-         splicer is untouched) or Docket.ControlPlane (it talks to the plane over
+         string, so it shares that vocabulary via Landbridge.Contracts — the same way
+         the runner's tunnel client does. It does NOT reference Landbridge.Relay (the
+         splicer is untouched) or Landbridge.ControlPlane (it talks to the plane over
          the /preview/connect HTTP contract, like the relay talks to /relay/validate). -->
-    <ProjectReference Include="..\Docket.Contracts\Docket.Contracts.csproj" />
+    <ProjectReference Include="..\Landbridge.Contracts\Landbridge.Contracts.csproj" />
   </ItemGroup>
 
   <PropertyGroup>

@@ -1,4 +1,4 @@
-namespace Docket.HarnessBump;
+namespace Landbridge.HarnessBump;
 
 /// <summary>What this run should do.</summary>
 public enum BumpAction

@@ -1,8 +1,8 @@
 using System.Net;
 using System.Text;
-using Docket.ControlPlane.Auth;
+using Landbridge.ControlPlane.Auth;
 
-namespace Docket.ControlPlane.Tests;
+namespace Landbridge.ControlPlane.Tests;
 
 /// <summary>
 /// The CIMD fetcher's refusal surface (<c>draft-ietf-oauth-client-id-metadata-document-00</c>
@@ -155,7 +155,7 @@ public class CimdClientTests
     // ── The document itself (draft §4.1) ──────────────────────────────────────
 
     [Fact]
-    public async Task A_valid_document_is_accepted_with_the_fields_docket_reads()
+    public async Task A_valid_document_is_accepted_with_the_fields_landbridge_reads()
     {
         using var server = CimdServer.Serving();
 
@@ -170,7 +170,7 @@ public class CimdClientTests
     [Fact]
     public async Task Unknown_members_are_ignored_rather_than_refused()
     {
-        // §4: only the fields Docket uses are modelled, and a document carrying more
+        // §4: only the fields Landbridge uses are modelled, and a document carrying more
         // is still a valid document — the registry is not ours to police.
         using var server = CimdServer.Raw(clientId => $$"""
             { "client_id": "{{clientId}}", "client_name": "Test Client",

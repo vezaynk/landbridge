@@ -3,7 +3,7 @@ using System.Net.Http.Json;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
-namespace Docket.Relay;
+namespace Landbridge.Relay;
 
 /// <summary>Options for <see cref="ControlPlaneGrantValidator"/> (config section <c>Relay:ControlPlane</c>).</summary>
 public sealed class ControlPlaneGrantValidatorOptions
@@ -41,7 +41,7 @@ public sealed class ControlPlaneGrantValidatorOptions
 public sealed class ControlPlaneGrantValidator : IGrantValidator
 {
     /// <summary>Named client so a host can attach its own resilience/handlers to just this traffic.</summary>
-    public const string HttpClientName = "docket-relay-controlplane";
+    public const string HttpClientName = "landbridge-relay-controlplane";
 
     private readonly IHttpClientFactory _httpFactory;
     private readonly ControlPlaneGrantValidatorOptions _options;

@@ -1,12 +1,12 @@
 using System.Text.Json;
-using Docket.Contracts;
-using Docket.ControlPlane;
-using Docket.ControlPlane.Auth;
-using Docket.Mcp;
-using Docket.Mcp.Auth;
-using Docket.Mcp.Tools;
-using Docket.Relay;
-using Docket.Runner;
+using Landbridge.Contracts;
+using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.Mcp;
+using Landbridge.Mcp.Auth;
+using Landbridge.Mcp.Tools;
+using Landbridge.Relay;
+using Landbridge.Runner;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -15,7 +15,7 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
-namespace Docket.MultiMachine.Tests;
+namespace Landbridge.MultiMachine.Tests;
 
 /// <summary>
 /// Hosts and seeding for the multi-machine collaboration suite (spec §8.3). A real
@@ -23,13 +23,13 @@ namespace Docket.MultiMachine.Tests;
 /// <see cref="ControlPlaneGrantValidator"/> pointed at that plane), and helpers to
 /// issue a real lead token and connect the MCP client. It mirrors the wiring in the
 /// production <c>Program.cs</c> and the increment-3/4 crown suites, pointed at the
-/// ephemeral Postgres — additive, so it never touches the fenced Docket.Mcp.Tests kit.
+/// ephemeral Postgres — additive, so it never touches the fenced Landbridge.Mcp.Tests kit.
 /// </summary>
 internal static class MultiMachineKit
 {
     /// <summary>The plane, with the relay-validation endpoint and its shared bearer configured.</summary>
     /// <param name="relayUrl">
-    /// The relay base URL <c>open_forward</c> hands docketd (§8.3). Configured up front
+    /// The relay base URL <c>open_forward</c> hands landbridged (§8.3). Configured up front
     /// (the relay's port is reserved before anything starts) so the plane and relay
     /// can be brought up in either order without a config race.
     /// </param>
@@ -42,15 +42,15 @@ internal static class MultiMachineKit
         builder.Configuration.AddInMemoryCollection(new Dictionary<string, string?>
         {
             [RelayValidationEndpoints.BearerConfigKey] = relayValidationBearer,
-            ["Docket:RelayUrl"] = relayUrl,
+            ["Landbridge:RelayUrl"] = relayUrl,
             // Real ACP workers block inside session/request_permission; keep the
             // plane-side poll tight so a Lead verdict is noticed immediately.
-            ["Docket:PermissionPollIntervalMs"] = "50",
+            ["Landbridge:PermissionPollIntervalMs"] = "50",
         });
 
-        builder.Services.AddDbContext<DocketDbContext>(o =>
+        builder.Services.AddDbContext<LandbridgeDbContext>(o =>
             o.UseNpgsql(connectionString).UseSnakeCaseNamingConvention());
-        builder.Services.AddDocketStore();
+        builder.Services.AddLandbridgeStore();
         builder.Services.AddScoped<TokenService>();
         builder.Services.AddScoped<RelayGrantService>();
         builder.Services.AddScoped<PreviewMappingService>(); // §8.4: WorkerTools.open_preview
@@ -59,12 +59,12 @@ internal static class MultiMachineKit
         // §8.3: the forward orchestrator + waiter, and the event sink that completes
         // the waiter when the consumer end reports its bound port.
         builder.Services.AddSingleton<RunnerEventSink>();
-        builder.Services.AddDocketForwarding();
+        builder.Services.AddLandbridgeForwarding();
         builder.Services.AddHttpContextAccessor();
 
-        builder.Services.AddAuthentication(DocketAuthenticationHandler.SchemeName)
-            .AddScheme<AuthenticationSchemeOptions, DocketAuthenticationHandler>(
-                DocketAuthenticationHandler.SchemeName, configureOptions: null);
+        builder.Services.AddAuthentication(LandbridgeAuthenticationHandler.SchemeName)
+            .AddScheme<AuthenticationSchemeOptions, LandbridgeAuthenticationHandler>(
+                LandbridgeAuthenticationHandler.SchemeName, configureOptions: null);
         builder.Services.AddAuthorization();
 
         builder.Services.AddMcpServer()
@@ -169,7 +169,7 @@ internal sealed class DaemonHarness : IAsyncDisposable
         RunnerConfig? workerConfig = null,
         Action<string>? log = null)
     {
-        _workRoot = Path.Combine(Path.GetTempPath(), "docket-multimachine-daemon", Guid.NewGuid().ToString("N"));
+        _workRoot = Path.Combine(Path.GetTempPath(), "landbridge-multimachine-daemon", Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(_workRoot);
         var config = workerConfig ?? RunnerConfig.Load($$"""
             { "machine": { "work_root": {{JsonSerializer.Serialize(_workRoot)}} },

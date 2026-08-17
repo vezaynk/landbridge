@@ -1,6 +1,6 @@
 using System.Collections.Concurrent;
 
-namespace Docket.Meta.Provisioning;
+namespace Landbridge.Meta.Provisioning;
 
 /// <summary>
 /// Which instances have a lifecycle operation running <b>in this process</b>, and under

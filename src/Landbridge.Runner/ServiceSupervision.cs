@@ -1,10 +1,10 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net.Sockets;
-using Docket.Contracts;
-using Docket.Core;
+using Landbridge.Contracts;
+using Landbridge.Core;
 
-namespace Docket.Runner;
+namespace Landbridge.Runner;
 
 /// <summary>
 /// The outcome of a §10 process command. One type for start/stop/write because the callers
@@ -36,19 +36,19 @@ public abstract record ProcessOutcome
 /// Supervises the operator's declared long-lived services (§10), as a deliberate
 /// <b>sibling</b> of <see cref="ProcessSupervisor"/> rather than a mode of it.
 ///
-/// <para><b>Why a service is docketd's own child.</b> A service a worker starts is a
+/// <para><b>Why a service is landbridged's own child.</b> A service a worker starts is a
 /// descendant of the harness, so the task tree-kill takes it down when the task ends,
-/// and it carries <c>DOCKET_*</c>, so the stray reaper takes it down later if it
+/// and it carries <c>LANDBRIDGE_*</c>, so the stray reaper takes it down later if it
 /// escaped the group. Both are correct for a build step and wrong for "keep the dev
 /// server up". Handing the process to the machine's service manager solves it on
 /// Linux, but macOS has no clean transient equivalent, a container has no init, and
 /// Windows has nothing user-level — so the only answer that is the same everywhere is
-/// for docketd to own the process itself. That places it outside every task's tree by
+/// for landbridged to own the process itself. That places it outside every task's tree by
 /// construction, with no <c>setsid</c> and no environment scrubbing, and keeps the
-/// kill guarantee inside Docket.</para>
+/// kill guarantee inside Landbridge.</para>
 ///
 /// <para><b>Restart equals reboot, here too.</b> Every service is tagged with
-/// <c>DOCKET_MACHINE_ID</c> and <em>not</em> <c>DOCKET_SESSION_ID</c>. That combination is
+/// <c>LANDBRIDGE_MACHINE_ID</c> and <em>not</em> <c>LANDBRIDGE_SESSION_ID</c>. That combination is
 /// load-bearing in both directions: the restart sweep
 /// (<see cref="StrayReaper.Reap"/>, keyed on machine id) kills the previous
 /// generation's services before this one starts them, so a SIGKILLed daemon cannot
@@ -179,7 +179,7 @@ public sealed class ServiceSupervisor : IAsyncDisposable
     /// Whether a declared service is currently up — the fact behind refuse-at-dial
     /// (§8.2/§8.3). Returns null when this machine declares no such service, which is
     /// a different answer from "declared but down": the caller must not refuse a dial
-    /// for a port docketd knows nothing about, because that port may legitimately
+    /// for a port landbridged knows nothing about, because that port may legitimately
     /// belong to a worker-started listener.
     /// </summary>
     public bool? IsServiceOnPort(int port)
@@ -188,7 +188,7 @@ public sealed class ServiceSupervisor : IAsyncDisposable
         {
             // Only config-declared services ever have a port. A §10 process declares none, so it
             // is invisible to refuse-at-dial by construction — and must stay so, or stopping a
-            // process could start refusing dials for a listener Docket never tracked.
+            // process could start refusing dials for a listener Landbridge never tracked.
             if (s.Owner is not null)
                 continue;
             var declared = s.Config.Port ?? s.Config.Readiness?.TcpPort;
@@ -366,7 +366,7 @@ public sealed class ServiceSupervisor : IAsyncDisposable
         lock (s.Gate)
             exitCode = s.LastExitCode ?? (process is not null ? SafeExitCode(process) : null);
 
-        _log?.Invoke($"docketd: process '{name}' stopped on request (exit {exitCode?.ToString() ?? "n/a"})");
+        _log?.Invoke($"landbridged: process '{name}' stopped on request (exit {exitCode?.ToString() ?? "n/a"})");
         return ProcessOutcome.Stopped(exitCode);
     }
 
@@ -449,7 +449,7 @@ public sealed class ServiceSupervisor : IAsyncDisposable
             s.LastFailureAt = _clock.GetUtcNow();
             s.StartedAt = null;
         }
-        _log?.Invoke($"docketd: process '{name}' exited (code {s.LastExitCode?.ToString() ?? "n/a"}); not restarted");
+        _log?.Invoke($"landbridged: process '{name}' exited (code {s.LastExitCode?.ToString() ?? "n/a"}); not restarted");
     }
 
     /// <summary>Kills every supervised service (§10 clean shutdown).</summary>
@@ -515,7 +515,7 @@ public sealed class ServiceSupervisor : IAsyncDisposable
             }
 
             _log?.Invoke(
-                $"docketd: service '{service.Name}' is down (exit {s.LastExitCode?.ToString() ?? "n/a"}); " +
+                $"landbridged: service '{service.Name}' is down (exit {s.LastExitCode?.ToString() ?? "n/a"}); " +
                 $"restarting in {backoff.TotalSeconds:0.#}s");
 
             try { await Task.Delay(backoff, _clock, ct); }
@@ -541,7 +541,7 @@ public sealed class ServiceSupervisor : IAsyncDisposable
             // Always redirected: held open it is the dead-man's switch a task spawn relies on,
             // and closed immediately (below) it is the portable way to give a child a stdin that
             // returns EOF instead of blocking. Leaving it un-redirected would hand the child
-            // whatever docketd inherited, which is not a defined thing to give it.
+            // whatever landbridged inherited, which is not a defined thing to give it.
             RedirectStandardInput = true,
             UseShellExecute = false,
         };
@@ -557,14 +557,14 @@ public sealed class ServiceSupervisor : IAsyncDisposable
         // The tagging that makes restart-equals-reboot cover services: machine id so
         // the restart sweep reaps the previous generation, and deliberately NO task id
         // so per-task exit cleanup steps over them.
-        psi.Environment["DOCKET_MACHINE_ID"] = _machineId;
-        // §10: machine id only, and DELIBERATELY no DOCKET_SESSION_ID — for services and
+        psi.Environment["LANDBRIDGE_MACHINE_ID"] = _machineId;
+        // §10: machine id only, and DELIBERATELY no LANDBRIDGE_SESSION_ID — for services and
         // agent-started processes alike. The task-id tag is what the per-task exit sweep reaps
         // by, so carrying it would kill a process the moment its declaring worker's turn ended:
         // exactly the loss this feature exists to prevent. Both kinds are therefore bound to
         // the machine generation and nothing smaller, and both are ended only by an explicit
         // stop, their own exit, or this daemon's restart sweep.
-        psi.Environment.Remove("DOCKET_SESSION_ID");
+        psi.Environment.Remove("LANDBRIDGE_SESSION_ID");
 
         var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
 
@@ -582,7 +582,7 @@ public sealed class ServiceSupervisor : IAsyncDisposable
         }
         catch (Exception e) when (e is System.ComponentModel.Win32Exception or InvalidOperationException or ObjectDisposedException)
         {
-            _log?.Invoke($"docketd: service '{s.Config.Name}' failed to start: {e.Message}");
+            _log?.Invoke($"landbridged: service '{s.Config.Name}' failed to start: {e.Message}");
             lock (s.Gate)
             {
                 s.State = ServiceState.Failed;
@@ -618,7 +618,7 @@ public sealed class ServiceSupervisor : IAsyncDisposable
         if (service.Readiness is { } readiness && !await ProbeAsync(s, readiness, ct))
         {
             _log?.Invoke(
-                $"docketd: service '{s.Config.Name}' did not answer on 127.0.0.1:{readiness.TcpPort} " +
+                $"landbridged: service '{s.Config.Name}' did not answer on 127.0.0.1:{readiness.TcpPort} " +
                 $"within {readiness.Timeout.TotalSeconds:0.#}s");
             Stop(s);
             return false;
@@ -626,7 +626,7 @@ public sealed class ServiceSupervisor : IAsyncDisposable
 
         lock (s.Gate)
             s.State = ServiceState.Running;
-        _log?.Invoke($"docketd: service '{s.Config.Name}' up (pid {process.Id})");
+        _log?.Invoke($"landbridged: service '{s.Config.Name}' up (pid {process.Id})");
         return true;
     }
 

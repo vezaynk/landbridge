@@ -1,12 +1,12 @@
-using Docket.ControlPlane.Tests;
-using Docket.Runner;
+using Landbridge.ControlPlane.Tests;
+using Landbridge.Runner;
 
-namespace Docket.MultiMachine.Tests;
+namespace Landbridge.MultiMachine.Tests;
 
 /// <summary>
 /// The per-CLI fixture the shared real-harness bar is parameterized by. What is left of
 /// "harness-specific" after the ACP migration is mostly naming: the entry point, how this
-/// vendor spells docket's MCP tools, and whether its usage carries a cost. Spawn argv,
+/// vendor spells landbridge's MCP tools, and whether its usage carries a cost. Spawn argv,
 /// stdin policy and event mappings used to live here too — three vendors' worth of them —
 /// and the protocol took all three.
 /// </summary>
@@ -42,7 +42,7 @@ internal sealed class RealHarnessProfile
     public IReadOnlyDictionary<string, string>? ConfigOptions { get; init; }
     /// <summary>
     /// ACP <c>session/set_mode</c> pin, when the agent advertised that mode.
-    /// Goose defaults to <c>auto</c>; Docket pins <c>approve</c>.
+    /// Goose defaults to <c>auto</c>; Landbridge pins <c>approve</c>.
     /// </summary>
     public string? SessionMode { get; init; }
     public Func<FleetRig, IDisposable?>? Attach { get; init; }
@@ -51,15 +51,15 @@ internal sealed class RealHarnessProfile
     public string ParkTools => $"{GetTask},{ReportResult},{RequestInput}";
 
     public string McpToolsRule =>
-        $" Docket's tools are MCP tools, named exactly {GetTask}, {ReportResult} and so " +
-        "on — call them as tools, under those names. There is no `docket` program: no such " +
-        "command exists on this machine, so never run `docket` in a shell, and never try to " +
-        "reach the docket MCP server yourself over HTTP or with curl. (A shell command your " +
-        "assignment explicitly asks for is a different thing, and is fine.) If a docket MCP " +
+        $" Landbridge's tools are MCP tools, named exactly {GetTask}, {ReportResult} and so " +
+        "on — call them as tools, under those names. There is no `landbridge` program: no such " +
+        "command exists on this machine, so never run `landbridge` in a shell, and never try to " +
+        "reach the landbridge MCP server yourself over HTTP or with curl. (A shell command your " +
+        "assignment explicitly asks for is a different thing, and is fine.) If a landbridge MCP " +
         "tool is missing or errors, report that with " + ReportResult + " instead of working around it.";
 
     public string EchoPrompt =>
-        "You are a Docket worker agent. Your FIRST action must be to call the " +
+        "You are a Landbridge worker agent. Your FIRST action must be to call the " +
         GetTask + " tool to read your assignment. The assignment's description tells " +
         "you the exact string to report. Your ONLY other action is to call the " +
         ReportResult + " tool once, with that exact string as resultReference. Do not " +
@@ -67,7 +67,7 @@ internal sealed class RealHarnessProfile
         GetTask + ", then " + ReportResult + "." + McpToolsRule;
 
     public string RememberThenAsk(string nonce) =>
-        "You are a Docket worker agent. Remember this test nonce for the rest of this conversation: " +
+        "You are a Landbridge worker agent. Remember this test nonce for the rest of this conversation: " +
         nonce + ". Do not write it to any file, and do not put it in any tool call yet. Now call " +
         "the " + GetTask + " tool and do exactly what its description tells you. On this first " +
         "turn that means " + RequestInput + ", then stop — do not call " + ReportResult + " yet." +
@@ -117,7 +117,7 @@ internal sealed class RealHarnessProfile
 
     /// <summary>
     /// The park/resume rig, on ACP. There is no <c>resume.args</c> here and that is the
-    /// point: a resumed dispatch takes <c>session/load</c> on the connection docketd opens,
+    /// point: a resumed dispatch takes <c>session/load</c> on the connection landbridged opens,
     /// gated on the agent's <c>loadSession</c> capability — which every agent measured on
     /// 2026-08-15 declares true.
     /// </summary>

@@ -6,10 +6,10 @@
 # it opens a PR, dispatches ci.yml's real-harness tiers against that PR's branch, and merges only
 # if they really passed.
 #
-# ALL of the logic lives in tools/Docket.HarnessBump — a C# console project — because this repo
+# ALL of the logic lives in tools/Landbridge.HarnessBump — a C# console project — because this repo
 # runs no shell scripts (spec §10): external processes are argv spawns, never `run: |` blocks. The
 # only real step below is `dotnet run`. Anything that looks like it wants to be bash here belongs
-# in the tool instead, where it can be unit-tested; see tests/Docket.HarnessBump.Tests, which
+# in the tool instead, where it can be unit-tested; see tests/Landbridge.HarnessBump.Tests, which
 # covers the version compare, the dist-tag read, the ci.yml rewrite and every branch of the
 # decision procedure against fixtures.
 #
@@ -87,9 +87,9 @@ jobs:
       # The whole bot. No arguments: the dry-run switch arrives as an environment variable
       # precisely so this stays a bare `dotnet run` with no expression logic in the YAML.
       - name: Bump the harness CLI pins and verify
-        run: dotnet run --project tools/Docket.HarnessBump -c Release
+        run: dotnet run --project tools/Landbridge.HarnessBump -c Release
         env:
           GH_TOKEN: ${{ secrets.HARNESS_BUMP_TOKEN }}
-          DOCKET_BUMP_DRY_RUN: ${{ inputs.dry_run }}
-          DOCKET_BUMP_COMMITTER_NAME: docket harness-bump bot
-          DOCKET_BUMP_COMMITTER_EMAIL: noreply@github.com
+          LANDBRIDGE_BUMP_DRY_RUN: ${{ inputs.dry_run }}
+          LANDBRIDGE_BUMP_COMMITTER_NAME: landbridge harness-bump bot
+          LANDBRIDGE_BUMP_COMMITTER_EMAIL: noreply@github.com

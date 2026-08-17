@@ -1,13 +1,13 @@
 using System.Net;
-using Docket.Contracts;
-using Docket.ControlPlane;
-using Docket.ControlPlane.Auth;
-using Docket.ControlPlane.Tests;
-using Docket.Core;
-using Docket.Mcp;
-using Docket.Mcp.Auth;
-using Docket.Mcp.Tools;
-using Docket.Runner;
+using Landbridge.Contracts;
+using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.ControlPlane.Tests;
+using Landbridge.Core;
+using Landbridge.Mcp;
+using Landbridge.Mcp.Auth;
+using Landbridge.Mcp.Tools;
+using Landbridge.Runner;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -16,12 +16,12 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-namespace Docket.Mcp.Tests;
+namespace Landbridge.Mcp.Tests;
 
 /// <summary>
 /// The whole spine over the wire (spec §10): the real control-plane host — auth
 /// scheme, connection registry, dispatch loop, and the <c>/runner</c> WebSocket
-/// endpoint — hosted on loopback Kestrel, with the real docketd
+/// endpoint — hosted on loopback Kestrel, with the real landbridged
 /// <see cref="WebSocketControlPlaneChannel"/> dialing in. A submitted task flows
 /// out as a <c>DispatchCommand</c> down the socket the runner dialed, and a
 /// <c>started</c> event flows back. The harness stays fake — no real claude -p.
@@ -67,7 +67,7 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
             sessionId = created.Session.Id;
         }
 
-        // ── docketd dials in with the real channel ──────────────────────────
+        // ── landbridged dials in with the real channel ──────────────────────────
         var dispatched = new TaskCompletionSource<DispatchCommand>(TaskCreationOptions.RunContinuationsAsynchronously);
         await using var channel = new WebSocketControlPlaneChannel(wsUrl, machineToken, TimeProvider.System);
         channel.Start((command, _) =>
@@ -347,9 +347,9 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
         builder.Logging.ClearProviders();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
 
-        builder.Services.AddDbContext<DocketDbContext>(o =>
+        builder.Services.AddDbContext<LandbridgeDbContext>(o =>
             o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
-        builder.Services.AddDocketStore();
+        builder.Services.AddLandbridgeStore();
         builder.Services.AddScoped<RelayGrantService>();
         builder.Services.AddScoped<PreviewMappingService>(); // §8.4: WorkerTools.open_preview
         builder.Services.AddScoped<TokenService>();
@@ -357,9 +357,9 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddHttpContextAccessor();
 
-        builder.Services.AddAuthentication(DocketAuthenticationHandler.SchemeName)
-            .AddScheme<AuthenticationSchemeOptions, DocketAuthenticationHandler>(
-                DocketAuthenticationHandler.SchemeName, configureOptions: null);
+        builder.Services.AddAuthentication(LandbridgeAuthenticationHandler.SchemeName)
+            .AddScheme<AuthenticationSchemeOptions, LandbridgeAuthenticationHandler>(
+                LandbridgeAuthenticationHandler.SchemeName, configureOptions: null);
         builder.Services.AddAuthorization();
 
         builder.Services.AddMcpServer()
@@ -369,7 +369,7 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
 
         builder.Services.AddSingleton<RunnerConnectionRegistry>();
 
-        builder.Services.AddDocketForwarding(); // §8.3: WorkerTools needs the forward orchestrator
+        builder.Services.AddLandbridgeForwarding(); // §8.3: WorkerTools needs the forward orchestrator
         builder.Services.AddSingleton<RunnerEventSink>();
         builder.Services.AddSingleton(new SessionEventListener(pg.ConnectionString));
         builder.Services.AddSingleton<DispatchService>();

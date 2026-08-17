@@ -1,8 +1,8 @@
 using System.Net;
 using System.Text;
-using Docket.Meta.Data;
+using Landbridge.Meta.Data;
 
-namespace Docket.Meta.Web;
+namespace Landbridge.Meta.Web;
 
 /// <summary>
 /// Meta's tiny server-side render kit — no template engine, no client framework,
@@ -59,7 +59,7 @@ internal static class MetaHtml
         sb.Append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
         if (autoRefresh)
             sb.Append("<meta http-equiv=\"refresh\" content=\"5\">");
-        sb.Append($"<title>{E(title)} · Docket Meta</title>");
+        sb.Append($"<title>{E(title)} · Landbridge Meta</title>");
         sb.Append($"<link rel=\"stylesheet\" href=\"{CssPath}\">");
         sb.Append("</head><body>");
         sb.Append(Nav(active));
@@ -74,7 +74,7 @@ internal static class MetaHtml
         string Link(string key, string href, string label) =>
             $"<a class=\"{(key == active ? "active" : "")}\" href=\"{href}\">{E(label)}</a>";
 
-        return "<nav><span class=\"brand\">Docket Meta</span>" +
+        return "<nav><span class=\"brand\">Landbridge Meta</span>" +
                Link("instances", "/instances", "Instances") +
                Link("hosts", "/hosts", "Hosts") +
                "<form class=\"logout\" method=\"post\" action=\"/logout\">" +

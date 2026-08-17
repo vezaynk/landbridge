@@ -15,7 +15,7 @@ const INITIALIZE = {
       fs: { readTextFile: false, writeTextFile: false },
       terminal: false,
     },
-    clientInfo: { name: "docketd-probe", version: "0" },
+    clientInfo: { name: "landbridged-probe", version: "0" },
   },
 };
 

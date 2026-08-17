@@ -1,7 +1,7 @@
 using System.Text.Json.Serialization;
-using Docket.ControlPlane.Auth;
+using Landbridge.ControlPlane.Auth;
 
-namespace Docket.Mcp;
+namespace Landbridge.Mcp;
 
 /// <summary>
 /// The two OAuth 2.1 discovery documents an MCP client fetches to learn how to
@@ -14,7 +14,7 @@ namespace Docket.Mcp;
 /// <item><c>GET /.well-known/oauth-protected-resource</c> — RFC 9728 Protected
 ///   Resource Metadata. This is the document the RFC 9728 §5.1
 ///   <c>WWW-Authenticate</c> challenge (emitted by
-///   <c>DocketAuthenticationHandler</c>) points at.</item>
+///   <c>LandbridgeAuthenticationHandler</c>) points at.</item>
 /// <item><c>GET /.well-known/oauth-authorization-server</c> — RFC 8414
 ///   Authorization Server Metadata. Advertises the authorization/token endpoints,
 ///   S256 PKCE, public-client auth, and CIMD support.</item>
@@ -49,10 +49,10 @@ public static class OAuthMetadataEndpoints
                 // MCP upgrades this to required: at least one AS issuer. This
                 // Instance is its own authorization server (§5).
                 AuthorizationServers = [server.Issuer],
-                // Informational (RFC 9728 §2): Docket only ever reads the
+                // Informational (RFC 9728 §2): Landbridge only ever reads the
                 // Authorization: Bearer header.
                 BearerMethodsSupported = ["header"],
-                ScopesSupported = [OAuthScopes.Docket],
+                ScopesSupported = [OAuthScopes.Landbridge],
             }, JsonOptions));
 
         app.MapGet("/.well-known/oauth-authorization-server", (OAuthServerConfig server) =>
@@ -70,7 +70,7 @@ public static class OAuthMetadataEndpoints
                 CodeChallengeMethodsSupported = [Pkce.S256],
                 // Public clients (§5): no client authentication at the token endpoint.
                 TokenEndpointAuthMethodsSupported = ["none"],
-                ScopesSupported = [OAuthScopes.Docket],
+                ScopesSupported = [OAuthScopes.Landbridge],
                 // Advertise CIMD support so clients present a URL client_id (§5).
                 ClientIdMetadataDocumentSupported = true,
             }, JsonOptions));
@@ -83,17 +83,17 @@ public static class OAuthMetadataEndpoints
 internal static class OAuthScopes
 {
     /// <summary>
-    /// A single coarse scope. Docket's §5 authority model is structural
+    /// A single coarse scope. Landbridge's §5 authority model is structural
     /// (human → lead → worker), not scope-graded, so a completed flow mints the
     /// full human session regardless of requested scope; granular OAuth scopes
     /// are a documented follow-up. Advertised so a client has a concrete value to
     /// request.
     /// </summary>
-    public const string Docket = "docket";
+    public const string Landbridge = "landbridge";
 }
 
 /// <summary>
-/// RFC 9728 Protected Resource Metadata. Only the members Docket populates are
+/// RFC 9728 Protected Resource Metadata. Only the members Landbridge populates are
 /// modelled; snake_case JSON names are explicit rather than convention-derived so
 /// the wire shape is unambiguous.
 /// </summary>

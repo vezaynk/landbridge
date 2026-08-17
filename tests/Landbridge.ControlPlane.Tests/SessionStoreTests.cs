@@ -1,9 +1,9 @@
-using Docket.ControlPlane.Auth;
-using Docket.Core;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.Core;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.ControlPlane.Tests;
+namespace Landbridge.ControlPlane.Tests;
 
 [Collection(PostgresCollection.Name)]
 public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
@@ -18,9 +18,9 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
     private static readonly TeamId Team = TeamId.New();
     private static LeadClaim Lead => new(Team);
 
-    private SessionStore NewStore(DocketDbContext db) => new(db, new FakeTimeProvider());
+    private SessionStore NewStore(LandbridgeDbContext db) => new(db, new FakeTimeProvider());
 
-    private async Task<SessionId> CreateSubmitted(DocketDbContext db, string? profile = null, CompletionMode mode = CompletionMode.Lead)
+    private async Task<SessionId> CreateSubmitted(LandbridgeDbContext db, string? profile = null, CompletionMode mode = CompletionMode.Lead)
     {
         var result = await NewStore(db).CreateAsync(
             new CreateSession(Lead, Team, "pnpm test", mode, profile));

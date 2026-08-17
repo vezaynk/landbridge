@@ -3,10 +3,10 @@ using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-namespace Docket.Runner;
+namespace Landbridge.Runner;
 
 /// <summary>
-/// docketd's call into the plane's §11 permission bridge. ACP
+/// landbridged's call into the plane's §11 permission bridge. ACP
 /// <c>session/request_permission</c> has no MCP channel of its own — the agent
 /// asked the client — so this posts the worker bearer at
 /// <c>POST /worker/permission</c> and waits for the Lead or human verdict.

@@ -2,12 +2,12 @@ using System.Collections.Concurrent;
 using System.ComponentModel;
 using System.Diagnostics;
 
-namespace Docket.Chaos.Tests;
+namespace Landbridge.Chaos.Tests;
 
 /// <summary>
 /// A real OS process this suite owns, with both output streams drained into a
 /// bounded in-memory ring so (a) a full pipe can never block the child — the trap
-/// <c>DocketdStrayReapEndToEndTests</c> guards against by draining stderr — and
+/// <c>LandbridgedStrayReapEndToEndTests</c> guards against by draining stderr — and
 /// (b) a failing scenario can dump a tail of what the process actually said.
 ///
 /// <para>Every wait here takes a hard deadline and returns false rather than

@@ -1,7 +1,7 @@
-using Docket.Core;
+using Landbridge.Core;
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.ControlPlane.Tests;
+namespace Landbridge.ControlPlane.Tests;
 
 [Collection(PostgresCollection.Name)]
 public sealed class SessionEventListenerTests(PostgresFixture pg) : IAsyncLifetime

@@ -1,9 +1,9 @@
 using System.Collections.Concurrent;
 using System.Globalization;
-using Docket.Contracts;
-using Docket.Core;
+using Landbridge.Contracts;
+using Landbridge.Core;
 
-namespace Docket.Runner;
+namespace Landbridge.Runner;
 
 /// <summary>The outcome of handling one runner command.</summary>
 public abstract record CommandOutcome
@@ -88,7 +88,7 @@ public sealed class RunnerDaemon
     /// nothing — it simply acknowledges and does not reply, and the heartbeat says so.
     /// </param>
     /// <param name="log">
-    /// This machine's own stdout, where an operator reads what <c>docketd</c> did (the
+    /// This machine's own stdout, where an operator reads what <c>landbridged</c> did (the
     /// enroll skill sends them here first when a task behaves oddly). Used for <c>stop</c>
     /// outcomes, which have no wire representation: the frozen event vocabulary carries no
     /// delivery field, and the <see cref="CommandOutcome"/> a command handler returns is
@@ -489,7 +489,7 @@ public sealed class RunnerDaemon
     /// <c>exited</c> waits out the liveness window and burns a requeue, a lost
     /// <c>forward-opened</c> fails a relay open on the waiter TTL. It also covers the
     /// start ordering: <c>rebooted</c> is enqueued before anything has dialed
-    /// (<c>docketd</c> starts the daemon, then the socket), and now waits for the
+    /// (<c>landbridged</c> starts the daemon, then the socket), and now waits for the
     /// first connection instead of being published into a null socket.</para>
     ///
     /// <para>Overflow while parked is still bounded — the ring keeps dropping oldest and

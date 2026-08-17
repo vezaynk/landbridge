@@ -1,7 +1,7 @@
-using Docket.ControlPlane;
-using Docket.Core;
+using Landbridge.ControlPlane;
+using Landbridge.Core;
 
-namespace Docket.Mcp;
+namespace Landbridge.Mcp;
 
 /// <summary>
 /// The shared §11 permission-bridge body: open a typed permission request on
@@ -28,7 +28,7 @@ public static class PermissionRelay
 
         if (opened is not StoreResult.Applied)
             return PermissionRelayResult.Denied(
-                "Docket could not put this permission request to your Lead: "
+                "Landbridge could not put this permission request to your Lead: "
                 + Reason(opened)
                 + ". Do not retry the same call; if you cannot proceed without it, stop and "
                 + "say so in your report.");
@@ -36,7 +36,7 @@ public static class PermissionRelay
         var outcome = await store.AwaitPermissionVerdictAsync(caller, pollInterval, clock, ct);
         if (outcome is null)
             return PermissionRelayResult.Denied(
-                "Nobody answered this permission request in time, so Docket stopped waiting and "
+                "Nobody answered this permission request in time, so Landbridge stopped waiting and "
                 + "the session was parked for a person to pick up. Stop here: do not retry the call "
                 + "and do not work around it.");
 

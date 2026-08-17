@@ -1,13 +1,13 @@
 using System.Diagnostics;
-using Docket.Meta.Data;
-using Docket.Meta.Secrets;
+using Landbridge.Meta.Data;
+using Landbridge.Meta.Secrets;
 using Microsoft.EntityFrameworkCore;
 
-namespace Docket.Meta.Tests;
+namespace Landbridge.Meta.Tests;
 
 /// <summary>
 /// An ephemeral Postgres for the migration test, mirroring the plane's fixture: use
-/// <c>DOCKET_TEST_PG</c> when set (CI), else spin a local cluster via initdb/pg_ctl
+/// <c>LANDBRIDGE_TEST_PG</c> when set (CI), else spin a local cluster via initdb/pg_ctl
 /// (no shell — processes spawned via ArgumentList, repo convention). Skips (not
 /// fails) when neither is available, so a checkout without Postgres still runs the
 /// InMemory suites.
@@ -22,7 +22,7 @@ public sealed class MetaPostgresFixture : IAsyncLifetime
 
     public async Task InitializeAsync()
     {
-        var external = Environment.GetEnvironmentVariable("DOCKET_TEST_PG");
+        var external = Environment.GetEnvironmentVariable("LANDBRIDGE_TEST_PG");
         if (!string.IsNullOrWhiteSpace(external))
         {
             ConnectionString = external;
@@ -35,19 +35,19 @@ public sealed class MetaPostgresFixture : IAsyncLifetime
         var pgCtl = Which("pg_ctl");
         if (initdb is null || pgCtl is null)
         {
-            SkipReason = "no DOCKET_TEST_PG and initdb/pg_ctl not on PATH";
+            SkipReason = "no LANDBRIDGE_TEST_PG and initdb/pg_ctl not on PATH";
             return;
         }
 
-        _dataDir = Directory.CreateTempSubdirectory("docket-meta-pg-").FullName;
-        _socketDir = Directory.CreateTempSubdirectory("docket-meta-sock-").FullName;
+        _dataDir = Directory.CreateTempSubdirectory("landbridge-meta-pg-").FullName;
+        _socketDir = Directory.CreateTempSubdirectory("landbridge-meta-sock-").FullName;
         var port = FreePort();
 
-        await Run(initdb, ["-D", _dataDir, "-U", "docket", "--auth=trust", "-E", "UTF8"]);
+        await Run(initdb, ["-D", _dataDir, "-U", "landbridge", "--auth=trust", "-E", "UTF8"]);
         await Run(pgCtl, ["-D", _dataDir, "-w", "start", "-o", $"-p {port} -k {_socketDir} -c listen_addresses=127.0.0.1"]);
 
         ConnectionString =
-            $"Host=127.0.0.1;Port={port};Username=docket;Database=docket_meta;Include Error Detail=true";
+            $"Host=127.0.0.1;Port={port};Username=landbridge;Database=landbridge_meta;Include Error Detail=true";
         Available = true;
         await MigrateAsync();
     }

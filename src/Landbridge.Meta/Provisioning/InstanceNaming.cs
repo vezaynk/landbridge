@@ -1,6 +1,6 @@
 using System.Text.RegularExpressions;
 
-namespace Docket.Meta.Provisioning;
+namespace Landbridge.Meta.Provisioning;
 
 /// <summary>
 /// Derives every stable name for an Instance from its DNS-safe <c>Name</c> (design
@@ -13,20 +13,20 @@ public static partial class InstanceNaming
     /// <summary>The container port every ASP.NET host in an instance listens on (set via ASPNETCORE_URLS).</summary>
     public const int ContainerHttpPort = 8080;
 
-    public static string NetworkName(string name) => $"docket-{name}-net";
-    public static string VolumeName(string name) => $"docket-{name}-pgdata";
-    public static string PgContainer(string name) => $"docket-{name}-pg";
-    public static string McpContainer(string name) => $"docket-{name}-mcp";
-    public static string RelayContainer(string name) => $"docket-{name}-relay";
+    public static string NetworkName(string name) => $"landbridge-{name}-net";
+    public static string VolumeName(string name) => $"landbridge-{name}-pgdata";
+    public static string PgContainer(string name) => $"landbridge-{name}-pg";
+    public static string McpContainer(string name) => $"landbridge-{name}-mcp";
+    public static string RelayContainer(string name) => $"landbridge-{name}-relay";
 
-    public static string McpRouteId(string name) => $"docket-{name}-mcp";
-    public static string RelayRouteId(string name) => $"docket-{name}-relay";
+    public static string McpRouteId(string name) => $"landbridge-{name}-mcp";
+    public static string RelayRouteId(string name) => $"landbridge-{name}-relay";
 
-    /// <summary>The instance's public MCP host: <c>&lt;name&gt;.docket.&lt;domain&gt;</c>.</summary>
-    public static string McpHost(string name, string domain) => $"{name}.docket.{domain}";
+    /// <summary>The instance's public MCP host: <c>&lt;name&gt;.landbridge.&lt;domain&gt;</c>.</summary>
+    public static string McpHost(string name, string domain) => $"{name}.landbridge.{domain}";
 
-    /// <summary>The instance's public relay host: <c>relay-&lt;name&gt;.docket.&lt;domain&gt;</c> (deviation #2).</summary>
-    public static string RelayHost(string name, string domain) => $"relay-{name}.docket.{domain}";
+    /// <summary>The instance's public relay host: <c>relay-&lt;name&gt;.landbridge.&lt;domain&gt;</c> (deviation #2).</summary>
+    public static string RelayHost(string name, string domain) => $"relay-{name}.landbridge.{domain}";
 
     public static string McpPublicUrl(string name, string domain) => $"https://{McpHost(name, domain)}";
     public static string RelayPublicUrl(string name, string domain) => $"https://{RelayHost(name, domain)}";

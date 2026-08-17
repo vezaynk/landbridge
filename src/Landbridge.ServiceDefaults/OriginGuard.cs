@@ -1,17 +1,17 @@
 using Microsoft.AspNetCore.Http;
 
-namespace Docket.Web;
+namespace Landbridge.Web;
 
 /// <summary>
-/// The one same-origin test both of Docket's HTML surfaces apply to a mutating request: the
-/// §12 plane dashboard and the docket-meta panel (design note §1).
+/// The one same-origin test both of Landbridge's HTML surfaces apply to a mutating request: the
+/// §12 plane dashboard and the landbridge-meta panel (design note §1).
 ///
 /// <para>Both are cookie-authenticated, server-rendered forms with no bearer step, so without
 /// this check any page a signed-in operator visits could POST to them and have the browser
 /// attach the session. <c>SameSite=Lax</c> does not close that: it is a <em>site</em> control,
 /// and a §8.4 preview host shares the dashboard's registrable domain <em>by design</em> — so a
 /// worker's own preview page is same-site with the dashboard and its POSTs carry
-/// <c>docket_session</c>. The check is therefore on the <b>origin</b>, which the browser sets
+/// <c>landbridge_session</c>. The check is therefore on the <b>origin</b>, which the browser sets
 /// from the requesting document and script cannot forge.</para>
 ///
 /// <para>It lives in this project because it is the only one both web hosts already reference.

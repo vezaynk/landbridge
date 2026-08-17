@@ -1,7 +1,7 @@
 using System.Threading.Channels;
 using Npgsql;
 
-namespace Docket.ControlPlane;
+namespace Landbridge.ControlPlane;
 
 /// <summary>
 /// Listens for task-event NOTIFYs on a dedicated connection (§3.1: LISTEN
@@ -29,7 +29,7 @@ public sealed class SessionEventListener(string connectionString) : IAsyncDispos
         };
 
         await _connection.OpenAsync(ct);
-        await using (var listen = new NpgsqlCommand($"LISTEN {DocketDbContext.EventChannel}", _connection))
+        await using (var listen = new NpgsqlCommand($"LISTEN {LandbridgeDbContext.EventChannel}", _connection))
             await listen.ExecuteNonQueryAsync(ct);
 
         // Pump WaitAsync in the background; it raises Notification as messages

@@ -1,10 +1,10 @@
-using Docket.Preview;
+using Landbridge.Preview;
 
 var builder = WebApplication.CreateBuilder(args);
 
 // The HTTP preview frontend is a standalone, separately-deployable module (spec
-// §3/§8.4): its own ASP.NET host, not part of Docket.Mcp and not a change to the
-// pure byte-splicer Docket.Relay. It reuses the shared Aspire service defaults
+// §3/§8.4): its own ASP.NET host, not part of Landbridge.Mcp and not a change to the
+// pure byte-splicer Landbridge.Relay. It reuses the shared Aspire service defaults
 // (health, OTel) like the other hosts; the OTLP exporter only activates when
 // OTEL_EXPORTER_OTLP_ENDPOINT is set.
 builder.AddServiceDefaults();

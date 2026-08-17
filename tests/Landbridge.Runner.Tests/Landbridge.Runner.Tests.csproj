@@ -28,18 +28,18 @@
   <ItemGroup>
     <Using Include="Xunit" />
     <!-- The runner wire vocabulary (commands, events, heartbeat, SystemLoad)
-         moved to Docket.Contracts; a global using keeps the existing tests
+         moved to Landbridge.Contracts; a global using keeps the existing tests
          referencing those types unchanged. -->
-    <Using Include="Docket.Contracts" />
+    <Using Include="Landbridge.Contracts" />
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\Docket.Runner\Docket.Runner.csproj" />
+    <ProjectReference Include="..\..\src\Landbridge.Runner\Landbridge.Runner.csproj" />
     <!-- Referenced so the harness binary is built and locatable; the tests
          spawn it as a real child process (§10 conventions — a real spawnable
          child, no shell). -->
-    <ProjectReference Include="..\Docket.Runner.TestHarness\Docket.Runner.TestHarness.csproj" />
-    <ProjectReference Include="..\..\tools\Docket.AcpBridge\Docket.AcpBridge.csproj" />
+    <ProjectReference Include="..\Landbridge.Runner.TestHarness\Landbridge.Runner.TestHarness.csproj" />
+    <ProjectReference Include="..\..\tools\Landbridge.AcpBridge\Landbridge.AcpBridge.csproj" />
   </ItemGroup>
 
 </Project>

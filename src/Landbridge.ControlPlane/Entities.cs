@@ -1,7 +1,7 @@
-using Docket.Contracts;
-using Docket.Core;
+using Landbridge.Contracts;
+using Landbridge.Core;
 
-namespace Docket.ControlPlane;
+namespace Landbridge.ControlPlane;
 
 /// <summary>
 /// The persisted task row. Carries the typed state-machine fields plus the
@@ -80,7 +80,7 @@ public sealed class SessionRow
     /// <summary>
     /// What the worker actually asked (§10/§11) — the content half of
     /// <see cref="InputKind"/>, captured verbatim on the RequestInput transition and
-    /// size-capped at the engine (<see cref="Docket.Core.RequestInput.MaxQuestionBytes"/>).
+    /// size-capped at the engine (<see cref="Landbridge.Core.RequestInput.MaxQuestionBytes"/>).
     /// Opaque: the plane stores it and never parses it (§2 principle 1). Read by the
     /// Lead per task (<c>get_session_question</c>), by a human on the §12 dashboard and
     /// inbox — where the answering happens — and by the resumed worker on
@@ -94,7 +94,7 @@ public sealed class SessionRow
     /// The answer to <see cref="InputQuestion"/> (§10/§11), captured verbatim on
     /// whichever half of the one-call answer path ran — <c>AnswerInput</c> for a still
     /// blocked task, <c>WakeParked</c> for one the wait-TTL sweeper parked first — and
-    /// capped at the engine (<see cref="Docket.Core.AnswerInput.MaxAnswerBytes"/>).
+    /// capped at the engine (<see cref="Landbridge.Core.AnswerInput.MaxAnswerBytes"/>).
     /// This is how the answer reaches the redispatched worker: it surfaces on that
     /// worker's opening <c>get_session</c>, deliberately <b>not</b> through the resume
     /// argv, which would leak the text to any local process reading
@@ -161,7 +161,7 @@ public sealed class SessionRow
     /// <summary>
     /// The §8.1 artifact pointer the worker handed over on the working → verifying
     /// transition — a commit, branch, or URL saying where the finished work lives.
-    /// Opaque: stored verbatim, never dereferenced, never entering <c>Docket.Core</c>
+    /// Opaque: stored verbatim, never dereferenced, never entering <c>Landbridge.Core</c>
     /// (§2 principle 1). §6 <b>requires</b> it for that transition while the
     /// <see cref="WorkerReport"/> beside it stays optional, so it is the one thing every
     /// task that reached verifying has said about its output. Read back by the Lead's
@@ -176,7 +176,7 @@ public sealed class SessionRow
     /// verifying transition next to <see cref="ResultReference"/> — the worker's own
     /// summary of what it did/verified plus proposals. Opaque content the plane
     /// stores verbatim and never parses (§2 principle 1); its size is capped at the
-    /// engine (<see cref="Docket.Core.ReportResult.MaxReportBytes"/>). Null when the
+    /// engine (<see cref="Landbridge.Core.ReportResult.MaxReportBytes"/>). Null when the
     /// worker reported none. Surfaced to the Lead (get_team_state), a successor
     /// worker (get_session), and the §12 dashboard — agent-authored CLAIMS the Lead
     /// verifies before accepting (§13), never authority.
@@ -187,7 +187,7 @@ public sealed class SessionRow
     /// The ambient W3C trace context (traceparent) captured when the Lead created
     /// the task. Opaque transport metadata, exactly like <see cref="ResultReference"/>:
     /// stored verbatim, never dereferenced by the control plane, never entering
-    /// <c>Docket.Core</c>. Dispatch continues the Lead's trace from here so one
+    /// <c>Landbridge.Core</c>. Dispatch continues the Lead's trace from here so one
     /// trace spans create_session → dispatch → runner → worker. Null when no Activity
     /// was sampling at creation.
     /// </summary>
@@ -195,10 +195,10 @@ public sealed class SessionRow
 
     /// <summary>
     /// The opaque harness session ref of the task's most recent work session (§11
-    /// resume), stamped from a <see cref="Docket.Contracts.SessionStartedEvent"/>
-    /// the moment docketd captures it. Transport metadata exactly like
+    /// resume), stamped from a <see cref="Landbridge.Contracts.SessionStartedEvent"/>
+    /// the moment landbridged captures it. Transport metadata exactly like
     /// <see cref="ResultReference"/>/<see cref="TraceContext"/>: stored verbatim,
-    /// never dereferenced, never entering <c>Docket.Core</c> — so it is set outside
+    /// never dereferenced, never entering <c>Landbridge.Core</c> — so it is set outside
     /// the state machine (a targeted column write) and survives state transitions
     /// untouched. This is the <em>only</em> record of it: a park used to snapshot it into a
     /// park-specific column too, which nothing read back, so redispatch resumes from this
@@ -218,7 +218,7 @@ public sealed class SessionRow
     /// <summary>
     /// The task whose machine-local work dir this task's harness runs in (§7, §11), or null
     /// when that is this task's own. Set for a continuation and nothing else; rides every
-    /// dispatch as <see cref="Docket.Contracts.DispatchCommand.WorkDirSession"/>.
+    /// dispatch as <see cref="Landbridge.Contracts.DispatchCommand.WorkDirSession"/>.
     ///
     /// <para><b>A property of continuation itself, not of resume.</b> A continuation works
     /// where its predecessor worked whether or not it resumes that transcript, because the
@@ -520,7 +520,7 @@ public sealed class SessionEventRow
 /// view) — <b>measured and reported, enforced on by nothing</b>.
 ///
 /// <para><b>The harness's claim, kept as such.</b> Every column here was computed by the
-/// harness and relayed through <c>docketd</c> verbatim; the plane sums rows to aggregate and
+/// harness and relayed through <c>landbridged</c> verbatim; the plane sums rows to aggregate and
 /// does no other arithmetic. That is why §12 renders this in a section visually separated from
 /// the wire-derived facts beside it (§2 principle 2): a reader must be able to tell what the
 /// plane observed from what a worker told it, and the same pixel treatment would erase the
@@ -565,7 +565,7 @@ public sealed class SessionUsageRow
     public Guid TeamId { get; set; }
 
     /// <summary>Uncached prompt tokens. Disjoint from the two cache columns — for a harness
-    /// that reports its cache hits inside its input count, docketd subtracted before this
+    /// that reports its cache hits inside its input count, landbridged subtracted before this
     /// arrived (see <see cref="UsageReportedEvent"/>).</summary>
     public long InputTokens { get; set; }
 

@@ -1,4 +1,4 @@
-namespace Docket.Runner.Tests;
+namespace Landbridge.Runner.Tests;
 
 /// <summary>
 /// Back-pressure gating, spec §10 concurrency. Focus: the CPU signal only

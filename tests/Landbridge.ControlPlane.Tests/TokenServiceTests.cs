@@ -1,9 +1,9 @@
-using Docket.ControlPlane.Auth;
-using Docket.Core;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.Core;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.ControlPlane.Tests;
+namespace Landbridge.ControlPlane.Tests;
 
 [Collection(PostgresCollection.Name)]
 public sealed class TokenServiceTests(PostgresFixture pg) : IAsyncLifetime
@@ -29,8 +29,8 @@ public sealed class TokenServiceTests(PostgresFixture pg) : IAsyncLifetime
         var creds = await tokens.ExchangeEnrollmentAsync(enrollment.Token, Decl);
 
         Assert.NotNull(creds);
-        Assert.StartsWith("dkt_m_", creds!.Access.Token);
-        Assert.StartsWith("dkt_r_", creds.Refresh.Token);
+        Assert.StartsWith("lbr_m_", creds!.Access.Token);
+        Assert.StartsWith("lbr_r_", creds.Refresh.Token);
 
         // Single-use (§5): the same enrollment token exchanges nothing again.
         Assert.Null(await tokens.ExchangeEnrollmentAsync(enrollment.Token, Decl));
@@ -195,7 +195,7 @@ public sealed class TokenServiceTests(PostgresFixture pg) : IAsyncLifetime
         await using var db = pg.NewContext();
         var tokens = new TokenService(db, new FakeTimeProvider());
 
-        Assert.Null(await tokens.ValidateAsync("dkt_w_not-a-real-token"));
+        Assert.Null(await tokens.ValidateAsync("lbr_w_not-a-real-token"));
 
         var real = await tokens.MintWorkerTokenAsync(Team, SessionId.New(), WorkerInstanceId.New());
         var tampered = real.Token[..^1] + (real.Token[^1] == 'A' ? 'B' : 'A');

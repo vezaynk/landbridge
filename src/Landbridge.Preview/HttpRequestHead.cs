@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace Docket.Preview;
+namespace Landbridge.Preview;
 
 /// <summary>
 /// The minimal slice of an HTTP/1.1 request the preview frontend needs to
@@ -12,7 +12,7 @@ namespace Docket.Preview;
 ///
 /// <para>Routing is strictly by the <c>Host</c> header (§8.4). The operator session
 /// for a gated preview is read from an <c>Authorization: Bearer</c> header or the
-/// <c>docket_session</c> cookie and forwarded to the control plane, which owns the
+/// <c>landbridge_session</c> cookie and forwarded to the control plane, which owns the
 /// actual validation.</para>
 /// </summary>
 public sealed class HttpRequestHead
@@ -30,13 +30,13 @@ public sealed class HttpRequestHead
     /// bearer path below (a Lead presenting <c>Authorization: Bearer</c>) is the
     /// working gated-access mechanism; the frontend forwards whichever arrives.</para>
     /// </summary>
-    public const string SessionCookieName = "docket_session";
+    public const string SessionCookieName = "landbridge_session";
 
     /// <summary>The per-label preview session cookie the frontend sets on the preview origin (§8.4 gated flow).</summary>
-    public const string PreviewCookieName = "docket_preview";
+    public const string PreviewCookieName = "landbridge_preview";
 
     /// <summary>The query parameter the dashboard confirm redirects back with (§8.4 gated flow).</summary>
-    public const string PreviewCodeQueryKey = "docket_preview_code";
+    public const string PreviewCodeQueryKey = "landbridge_preview_code";
 
     private const int MaxHeadBytes = 64 * 1024;
     private static readonly byte[] HeadTerminator = "\r\n\r\n"u8.ToArray();
@@ -53,13 +53,13 @@ public sealed class HttpRequestHead
     /// <summary>The request-line target (path + query), e.g. <c>/deep/path?x=1</c>, or "/" if unparseable.</summary>
     public string Target { get; init; } = "/";
 
-    /// <summary>The operator session for gating: an <c>Authorization: Bearer</c> or the <c>docket_session</c> cookie, or null.</summary>
+    /// <summary>The operator session for gating: an <c>Authorization: Bearer</c> or the <c>landbridge_session</c> cookie, or null.</summary>
     public string? OperatorSession { get; init; }
 
     /// <summary>The bearer value if the request carried <c>Authorization: Bearer</c> — the tooling path (a browser has none).</summary>
     public string? Bearer { get; init; }
 
-    /// <summary>The per-label preview session from the <c>docket_preview</c> cookie (§8.4 gated flow), or null.</summary>
+    /// <summary>The per-label preview session from the <c>landbridge_preview</c> cookie (§8.4 gated flow), or null.</summary>
     public string? PreviewCookie { get; init; }
 
     /// <summary>The one-time preview-auth code the dashboard redirected back with (§8.4), or null.</summary>
@@ -168,7 +168,7 @@ public sealed class HttpRequestHead
 
     /// <summary>
     /// The request head with all operator auth material removed — <c>Authorization</c>
-    /// dropped entirely, and the <c>docket_session</c> + <c>docket_preview</c> cookies
+    /// dropped entirely, and the <c>landbridge_session</c> + <c>landbridge_preview</c> cookies
     /// removed from the <c>Cookie</c> header (§8.4). This is the ONE deliberate
     /// exception to the never-rewrite rule (§8.4): the frontend splices request bytes
     /// verbatim into team workload code, so an operator's session token or the
@@ -208,7 +208,7 @@ public sealed class HttpRequestHead
         return Encoding.Latin1.GetBytes(sb.ToString());
     }
 
-    /// <summary>The request target with the one-time <c>docket_preview_code</c> query parameter removed (§8.4 clean redirect).</summary>
+    /// <summary>The request target with the one-time <c>landbridge_preview_code</c> query parameter removed (§8.4 clean redirect).</summary>
     public string TargetWithoutCode()
     {
         var q = Target.IndexOf('?');

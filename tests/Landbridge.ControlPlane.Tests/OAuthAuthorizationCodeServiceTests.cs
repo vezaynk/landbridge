@@ -1,10 +1,10 @@
 using System.Security.Cryptography;
 using System.Text;
-using Docket.ControlPlane.Auth;
+using Landbridge.ControlPlane.Auth;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.ControlPlane.Tests;
+namespace Landbridge.ControlPlane.Tests;
 
 /// <summary>
 /// The OAuth 2.1 authorization-code service (spec §5): mint a single-use code
@@ -51,9 +51,9 @@ public sealed class OAuthAuthorizationCodeServiceTests(PostgresFixture pg) : IAs
         var codes = new OAuthAuthorizationCodeService(db, clock);
 
         var issued = await codes.MintAsync(ClientId, RedirectUri, Challenge(Verifier),
-            resource: Server.ResourceId, scope: "docket");
+            resource: Server.ResourceId, scope: "landbridge");
 
-        Assert.StartsWith("dkt_c_", issued.Code);
+        Assert.StartsWith("lbr_c_", issued.Code);
         Assert.Equal(clock.GetUtcNow() + OAuthAuthorizationCodeService.CodeTtl, issued.ExpiresAt);
 
         // Only the hash is at rest (§5): the plaintext never lands in the row.
@@ -63,7 +63,7 @@ public sealed class OAuthAuthorizationCodeServiceTests(PostgresFixture pg) : IAs
         var result = await codes.ConsumeAsync(
             issued.Code, ClientId, RedirectUri, Verifier, Server.ResourceId, Server);
         var ok = Assert.IsType<CodeExchangeResult.Exchanged>(result);
-        Assert.Equal("docket", ok.Scope);
+        Assert.Equal("landbridge", ok.Scope);
     }
 
     [SkippableFact]
@@ -204,6 +204,6 @@ public sealed class OAuthAuthorizationCodeServiceTests(PostgresFixture pg) : IAs
         var codes = new OAuthAuthorizationCodeService(db, new FakeTimeProvider());
 
         Assert.IsType<CodeExchangeResult.InvalidGrant>(
-            await codes.ConsumeAsync("dkt_c_deadbeef", ClientId, RedirectUri, Verifier, Server.ResourceId, Server));
+            await codes.ConsumeAsync("lbr_c_deadbeef", ClientId, RedirectUri, Verifier, Server.ResourceId, Server));
     }
 }

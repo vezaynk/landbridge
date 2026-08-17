@@ -2,7 +2,7 @@ using System.Buffers;
 using System.Net.WebSockets;
 using System.Text;
 
-namespace Docket.AcpBridge;
+namespace Landbridge.AcpBridge;
 
 /// <summary>
 /// One JSON-RPC object per NDJSON line on the stream, one text frame on the

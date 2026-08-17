@@ -1,13 +1,13 @@
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
-using Docket.ControlPlane;
-using Docket.ControlPlane.Tests;
-using Docket.Core;
-using Docket.Relay;
+using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Tests;
+using Landbridge.Core;
+using Landbridge.Relay;
 using Microsoft.Extensions.DependencyInjection;
 
-namespace Docket.Mcp.Tests;
+namespace Landbridge.Mcp.Tests;
 
 /// <summary>
 /// The real relay-side grant validator (spec §8.3) against a real control plane:
@@ -56,7 +56,7 @@ public sealed class ControlPlaneGrantValidatorTests(PostgresFixture pg) : IAsync
         // A replay of either end is refused (single-use per role, §8.3).
         Assert.False(await validator.ValidateAsync(issued.Grant, forwardId, RelayRole.Consumer, ct));
         // A grant the plane never issued is refused.
-        Assert.False(await validator.ValidateAsync("dkt_g_garbage", forwardId, RelayRole.Consumer, ct));
+        Assert.False(await validator.ValidateAsync("lbr_g_garbage", forwardId, RelayRole.Consumer, ct));
 
         await relay.StopAsync(ct);
         await plane.StopAsync(ct);
@@ -75,7 +75,7 @@ public sealed class ControlPlaneGrantValidatorTests(PostgresFixture pg) : IAsync
         await relay.StartAsync(ct);
 
         var validator = relay.Services.GetRequiredService<IGrantValidator>();
-        Assert.False(await validator.ValidateAsync("dkt_g_whatever", Guid.NewGuid().ToString(), RelayRole.Consumer, ct));
+        Assert.False(await validator.ValidateAsync("lbr_g_whatever", Guid.NewGuid().ToString(), RelayRole.Consumer, ct));
 
         await relay.StopAsync(ct);
     }
@@ -136,7 +136,7 @@ public sealed class ControlPlaneGrantValidatorTests(PostgresFixture pg) : IAsync
         var tunnel = RelayGrantTestKit.TunnelUri(relay);
         var forwardId = issued.ForwardId.ToString();
 
-        // Both docketd ends (here, plain ClientWebSockets) present the SAME real
+        // Both landbridged ends (here, plain ClientWebSockets) present the SAME real
         // grant with their own role; the relay validates each against the plane
         // before splicing.
         using var consumer = await RelayGrantTestKit.ConnectTunnelAsync(tunnel, forwardId, issued.Grant, "consumer", ct);

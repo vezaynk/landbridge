@@ -1,9 +1,9 @@
 using System.Net;
-using Docket.Meta.Data;
-using Docket.Meta.Edge;
-using Docket.Meta.Provisioning;
-using Docket.Meta.Secrets;
-using Docket.Meta.Substrate;
+using Landbridge.Meta.Data;
+using Landbridge.Meta.Edge;
+using Landbridge.Meta.Provisioning;
+using Landbridge.Meta.Secrets;
+using Landbridge.Meta.Substrate;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.TestHost;
@@ -12,7 +12,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.DependencyInjection.Extensions;
 using Microsoft.Extensions.Hosting;
 
-namespace Docket.Meta.Tests;
+namespace Landbridge.Meta.Tests;
 
 /// <summary>
 /// End-to-end HTTP coverage of the panel (design note §1) with the store swapped for
@@ -138,7 +138,7 @@ public class EndpointTests : IClassFixture<EndpointTests.Factory>
         var detail = await client.GetAsync($"/instances/{id}");
         detail.EnsureSuccessStatusCode();
         var detailBody = await detail.Content.ReadAsStringAsync();
-        Assert.Contains("web1.docket", detailBody);
+        Assert.Contains("web1.landbridge", detailBody);
         Assert.Contains("VerifyReady", detailBody); // saga event log rendered
     }
 

@@ -1,10 +1,10 @@
-using Docket.Core;
+using Landbridge.Core;
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.Runner.Tests;
+namespace Landbridge.Runner.Tests;
 
 /// <summary>
-/// §10 telemetry ingest: the resolution rules, against an injected view of docketd's
+/// §10 telemetry ingest: the resolution rules, against an injected view of landbridged's
 /// own environment so no fact depends on the ambient one.
 ///
 /// <para>What these pin is <b>visibility</b>: the harness exports its own token/cost
@@ -17,7 +17,7 @@ public sealed class HarnessTelemetryTests
     private const string Task = "0123456789abcdef0123456789abcdef";
     private const string Machine = "machine-42";
 
-    /// <summary>An environment that has nothing OTel in it — a standalone docketd.</summary>
+    /// <summary>An environment that has nothing OTel in it — a standalone landbridged.</summary>
     private static Func<string, string?> NoInheritance => _ => null;
 
     private static Func<string, string?> Inherits(params (string Key, string Value)[] pairs) =>
@@ -64,13 +64,13 @@ public sealed class HarnessTelemetryTests
         Assert.Equal("http/protobuf", env["OTEL_EXPORTER_OTLP_PROTOCOL"]);
 
         // §10: "Token attribution must carry a task id." This is that.
-        Assert.Equal($"docket.session_id={Task},docket.machine_id={Machine}", env["OTEL_RESOURCE_ATTRIBUTES"]);
+        Assert.Equal($"landbridge.session_id={Task},landbridge.machine_id={Machine}", env["OTEL_RESOURCE_ATTRIBUTES"]);
     }
 
     [Fact]
-    public void Docketd_sets_no_harness_specific_variable_of_its_own()
+    public void Landbridged_sets_no_harness_specific_variable_of_its_own()
     {
-        // §10: docketd contains no harness knowledge. Every variable it sets is a
+        // §10: landbridged contains no harness knowledge. Every variable it sets is a
         // vendor-neutral OTel SDK one; a harness's own opt-in flag arrives as config
         // data (telemetry.env), never from a constant in here.
         var env = HarnessTelemetry.SpawnEnvironment(
@@ -114,7 +114,7 @@ public sealed class HarnessTelemetryTests
     [Fact]
     public void An_inherited_endpoint_is_a_destination_on_its_own()
     {
-        // The Aspire dev loop: docketd already exports to the dashboard's OTLP
+        // The Aspire dev loop: landbridged already exports to the dashboard's OTLP
         // endpoint, so a profile only has to opt in — no endpoint to repeat.
         var env = HarnessTelemetry.SpawnEnvironment(
             new TelemetryConfig(Otel: true, Endpoint: null),
@@ -124,7 +124,7 @@ public sealed class HarnessTelemetryTests
 
         Assert.False(requestedWithoutEndpoint);
         Assert.Equal("http://localhost:19015", env["OTEL_EXPORTER_OTLP_ENDPOINT"]);
-        Assert.Contains($"docket.session_id={Task}", env["OTEL_RESOURCE_ATTRIBUTES"]);
+        Assert.Contains($"landbridge.session_id={Task}", env["OTEL_RESOURCE_ATTRIBUTES"]);
     }
 
     [Fact]
@@ -142,7 +142,7 @@ public sealed class HarnessTelemetryTests
     [Fact]
     public void An_inherited_protocol_is_left_alone()
     {
-        // An operator who set the protocol on docketd meant it for the machine, and
+        // An operator who set the protocol on landbridged meant it for the machine, and
         // inheritance already delivers it to the child — so we must not overwrite it
         // with a guess. This is the Aspire case: a gRPC dashboard endpoint on a port
         // that looks like nothing in particular.
@@ -176,7 +176,7 @@ public sealed class HarnessTelemetryTests
     public void Inherited_resource_attributes_are_appended_to_never_clobbered()
     {
         // An operator's own dimensions — a cost centre, an environment tag — are how
-        // this data gets grouped on their side. Docket's attribution joins them.
+        // this data gets grouped on their side. Landbridge's attribution joins them.
         var env = HarnessTelemetry.SpawnEnvironment(
             new TelemetryConfig(Otel: true, Endpoint: "http://127.0.0.1:4318"),
             Task, Machine,
@@ -184,7 +184,7 @@ public sealed class HarnessTelemetryTests
             out _);
 
         Assert.Equal(
-            $"deployment.environment=prod,cost_center=eng-123,docket.session_id={Task},docket.machine_id={Machine}",
+            $"deployment.environment=prod,cost_center=eng-123,landbridge.session_id={Task},landbridge.machine_id={Machine}",
             env["OTEL_RESOURCE_ATTRIBUTES"]);
     }
 
@@ -199,7 +199,7 @@ public sealed class HarnessTelemetryTests
             Task, Machine, NoInheritance, out _);
 
         Assert.Equal(
-            $"team.id=platform,docket.session_id={Task},docket.machine_id={Machine}",
+            $"team.id=platform,landbridge.session_id={Task},landbridge.machine_id={Machine}",
             env["OTEL_RESOURCE_ATTRIBUTES"]);
     }
 
@@ -220,27 +220,27 @@ public sealed class HarnessTelemetryTests
         Assert.Equal("grpc", env["OTEL_EXPORTER_OTLP_PROTOCOL"]);
         Assert.Equal("none", env["OTEL_LOGS_EXPORTER"]);
         Assert.Equal("otlp", env["OTEL_METRICS_EXPORTER"]);
-        Assert.Contains($"docket.session_id={Task}", env["OTEL_RESOURCE_ATTRIBUTES"]);
+        Assert.Contains($"landbridge.session_id={Task}", env["OTEL_RESOURCE_ATTRIBUTES"]);
     }
 
     [Fact]
-    public void Telemetry_env_cannot_reach_the_variables_docketd_owns()
+    public void Telemetry_env_cannot_reach_the_variables_landbridged_owns()
     {
-        // §10 fixes DOCKET_MACHINE_ID/DOCKET_SESSION_ID on every spawn "not configurably":
+        // §10 fixes LANDBRIDGE_MACHINE_ID/LANDBRIDGE_SESSION_ID on every spawn "not configurably":
         // stray-process cleanup scans for them, so a profile that could overwrite one
         // would break restart-equals-reboot, not just mislabel a metric.
         var env = HarnessTelemetry.SpawnEnvironment(
             new TelemetryConfig(Otel: true, Endpoint: "http://127.0.0.1:4318",
                 Env: new Dictionary<string, string>
                 {
-                    ["DOCKET_SESSION_ID"] = "not-this-task",
-                    ["DOCKET_MACHINE_ID"] = "not-this-machine",
-                    ["DOCKET_WORKER_TOKEN"] = "forged",
-                    ["DOCKET_TRACEPARENT"] = "forged",
+                    ["LANDBRIDGE_SESSION_ID"] = "not-this-task",
+                    ["LANDBRIDGE_MACHINE_ID"] = "not-this-machine",
+                    ["LANDBRIDGE_WORKER_TOKEN"] = "forged",
+                    ["LANDBRIDGE_TRACEPARENT"] = "forged",
                 }),
             Task, Machine, NoInheritance, out _);
 
-        Assert.All(env.Keys, key => Assert.DoesNotContain("DOCKET_", key, StringComparison.Ordinal));
+        Assert.All(env.Keys, key => Assert.DoesNotContain("LANDBRIDGE_", key, StringComparison.Ordinal));
     }
 
     [Fact]
@@ -253,7 +253,7 @@ public sealed class HarnessTelemetryTests
             Task, "shared box,user.email=someone@example.com", NoInheritance, out _);
 
         Assert.Equal(
-            $"docket.session_id={Task},docket.machine_id=shared_box_user.email_someone_example.com",
+            $"landbridge.session_id={Task},landbridge.machine_id=shared_box_user.email_someone_example.com",
             env["OTEL_RESOURCE_ATTRIBUTES"]);
     }
 }
@@ -261,7 +261,7 @@ public sealed class HarnessTelemetryTests
 /// <summary>
 /// The same §10 rules, but observed on a REAL spawned child: the harness's
 /// <c>echo-env</c> mode writes the environment it was actually handed, which is the
-/// only way to prove docketd's resolution survives
+/// only way to prove landbridged's resolution survives
 /// <see cref="System.Diagnostics.ProcessStartInfo"/> and reaches a worker.
 /// </summary>
 public sealed class HarnessTelemetrySpawnTests : IDisposable
@@ -290,7 +290,7 @@ public sealed class HarnessTelemetrySpawnTests : IDisposable
                     ["CLAUDE_CODE_ENABLE_TELEMETRY"] = "1",
                     // A second, deliberately unmistakable variable: the ambient
                     // environment may well already carry the Claude Code flag (a
-                    // developer running docketd from a harness that sets its own), so
+                    // developer running landbridged from a harness that sets its own), so
                     // this one proves telemetry.env reached the child from the PROFILE.
                     ["HARNESS_TELEMETRY_TEST_MARKER"] = "from-profile",
                 })),
@@ -306,13 +306,13 @@ public sealed class HarnessTelemetrySpawnTests : IDisposable
         Assert.Equal("otlp", env["OTEL_LOGS_EXPORTER"]);
 
         // Every metric and event the harness emits will carry this, which is what lets
-        // a collector bucket token/cost per Docket task (§10 attribution).
-        Assert.Contains($"docket.session_id={task}", env["OTEL_RESOURCE_ATTRIBUTES"]);
-        Assert.Contains("docket.machine_id=machine-42", env["OTEL_RESOURCE_ATTRIBUTES"]);
+        // a collector bucket token/cost per Landbridge task (§10 attribution).
+        Assert.Contains($"landbridge.session_id={task}", env["OTEL_RESOURCE_ATTRIBUTES"]);
+        Assert.Contains("landbridge.machine_id=machine-42", env["OTEL_RESOURCE_ATTRIBUTES"]);
 
-        // The task id is on the spawn twice for two different consumers: DOCKET_SESSION_ID
+        // The task id is on the spawn twice for two different consumers: LANDBRIDGE_SESSION_ID
         // for hooks and stray cleanup (§10), the resource attribute for the collector.
-        Assert.Equal(task.ToString(), env["DOCKET_SESSION_ID"]);
+        Assert.Equal(task.ToString(), env["LANDBRIDGE_SESSION_ID"]);
 
         Assert.True(supervisor.Kill(task));
     }
@@ -325,11 +325,11 @@ public sealed class HarnessTelemetrySpawnTests : IDisposable
 
         // The default profile: telemetry.otel unset. Whatever the ambient environment
         // holds still flows through by inheritance — that is deliberate, and how
-        // docketd's own exporter is configured — but docketd itself adds nothing.
+        // landbridged's own exporter is configured — but landbridged itself adds nothing.
         supervisor.Spawn(TestKit.Dispatch(task), TestKit.Profile("echo-env"), "machine-42");
 
         var env = await ReadEnvMarker(task);
-        AssertDocketdSetNothing(env, task);
+        AssertLandbridgedSetNothing(env, task);
 
         Assert.True(supervisor.Kill(task));
     }
@@ -341,7 +341,7 @@ public sealed class HarnessTelemetrySpawnTests : IDisposable
         var supervisor = Supervisor();
 
         // otel on, no endpoint configured. Whether one is inherited is the ambient
-        // machine's business, so this covers both: with no destination docketd sets
+        // machine's business, so this covers both: with no destination landbridged sets
         // nothing at all, and with an inherited one it resolves against it (the
         // documented inheritance path, not a no-op).
         supervisor.Spawn(
@@ -355,23 +355,23 @@ public sealed class HarnessTelemetrySpawnTests : IDisposable
         var env = await ReadEnvMarker(task);
 
         if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("OTEL_EXPORTER_OTLP_ENDPOINT")))
-            AssertDocketdSetNothing(env, task);
+            AssertLandbridgedSetNothing(env, task);
         else
-            Assert.Contains($"docket.session_id={task}", env["OTEL_RESOURCE_ATTRIBUTES"]);
+            Assert.Contains($"landbridge.session_id={task}", env["OTEL_RESOURCE_ATTRIBUTES"]);
 
         Assert.True(supervisor.Kill(task));
     }
 
     /// <summary>
-    /// Proves docketd contributed no telemetry of its own, which is not the same as
-    /// the child having none: <c>UseShellExecute=false</c> copies docketd's whole
+    /// Proves landbridged contributed no telemetry of its own, which is not the same as
+    /// the child having none: <c>UseShellExecute=false</c> copies landbridged's whole
     /// environment to the worker, so a machine that already has <c>OTEL_*</c> (or a
     /// harness flag) set — a developer running under a harness that sets its own, or a
-    /// docketd exporting its traces — passes them down regardless of this profile.
-    /// So compare against docketd's own environment rather than asserting absence, and
-    /// assert absence only for <c>docket.session_id</c>, which nothing but this code adds.
+    /// landbridged exporting its traces — passes them down regardless of this profile.
+    /// So compare against landbridged's own environment rather than asserting absence, and
+    /// assert absence only for <c>landbridge.session_id</c>, which nothing but this code adds.
     /// </summary>
-    private static void AssertDocketdSetNothing(Dictionary<string, string> env, SessionId task)
+    private static void AssertLandbridgedSetNothing(Dictionary<string, string> env, SessionId task)
     {
         string[] resolvable =
         [
@@ -390,7 +390,7 @@ public sealed class HarnessTelemetrySpawnTests : IDisposable
             Assert.Equal(ambient, onChild);
         }
 
-        Assert.DoesNotContain("docket.session_id",
+        Assert.DoesNotContain("landbridge.session_id",
             env.TryGetValue("OTEL_RESOURCE_ATTRIBUTES", out var attrs) ? attrs : "");
         Assert.DoesNotContain(task.ToString(),
             env.TryGetValue("OTEL_RESOURCE_ATTRIBUTES", out var same) ? same : "");

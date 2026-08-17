@@ -1,12 +1,12 @@
 using System.Runtime.InteropServices;
 using System.Text.Json.Nodes;
-using Docket.ControlPlane;
-using Docket.ControlPlane.Auth;
-using Docket.Mcp;
-using Docket.Mcp.Auth;
-using Docket.Mcp.Dashboard;
-using Docket.Mcp.Skills;
-using Docket.Mcp.Tools;
+using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.Mcp;
+using Landbridge.Mcp.Auth;
+using Landbridge.Mcp.Dashboard;
+using Landbridge.Mcp.Skills;
+using Landbridge.Mcp.Tools;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.EntityFrameworkCore;
 using OpenTelemetry;
@@ -29,13 +29,13 @@ builder.AddServiceDefaults();
 builder.Services.AddOpenTelemetry()
     .WithTracing(tracing => tracing.AddSource(DispatchService.ActivitySourceName));
 
-var connectionString = builder.Configuration.GetConnectionString("Docket")
-    ?? Environment.GetEnvironmentVariable("DOCKET_DB")
-    ?? "Host=localhost;Database=docket;Username=docket";
+var connectionString = builder.Configuration.GetConnectionString("Landbridge")
+    ?? Environment.GetEnvironmentVariable("LANDBRIDGE_DB")
+    ?? "Host=localhost;Database=landbridge;Username=landbridge";
 
 // The store: one DbContext per request scope; the state machine is the only
 // write path (spec §15).
-builder.Services.AddDbContext<DocketDbContext>(o =>
+builder.Services.AddDbContext<LandbridgeDbContext>(o =>
     o.UseNpgsql(connectionString).UseSnakeCaseNamingConvention());
 // The §15 write path plus the §9.10 per-Team byte accounting it resolves through — one
 // registration, because the two are halves of the same feature.
@@ -43,8 +43,8 @@ builder.Services.AddDbContext<DocketDbContext>(o =>
 // times a task may be requeued for infrastructure reasons (ack timeout, either liveness
 // clock, process exit, reboot) before it is abandoned rather than redispatched. Unset
 // takes the documented default; a non-positive value configures the cap off.
-builder.Services.AddDocketStore(
-    builder.Configuration.GetValue<int?>("Docket:InfrastructureRequeueLimit"));
+builder.Services.AddLandbridgeStore(
+    builder.Configuration.GetValue<int?>("Landbridge:InfrastructureRequeueLimit"));
 builder.Services.AddScoped<TokenService>();
 // §13 un-trust a machine: credentials + command channel + its workers, composed. Scoped
 // like TokenService (it is the same DbContext); the registry and sink it also needs are
@@ -76,9 +76,9 @@ builder.Services.AddSingleton<ICimdClient>(sp =>
 
 // Opaque bearer tokens validated against the store (§5). Every MCP request
 // authenticates as its token's principal; a worker can only reach worker tools.
-builder.Services.AddAuthentication(DocketAuthenticationHandler.SchemeName)
-    .AddScheme<AuthenticationSchemeOptions, DocketAuthenticationHandler>(
-        DocketAuthenticationHandler.SchemeName, configureOptions: null);
+builder.Services.AddAuthentication(LandbridgeAuthenticationHandler.SchemeName)
+    .AddScheme<AuthenticationSchemeOptions, LandbridgeAuthenticationHandler>(
+        LandbridgeAuthenticationHandler.SchemeName, configureOptions: null);
 builder.Services.AddAuthorization();
 
 builder.Services.AddMcpServer()
@@ -86,7 +86,7 @@ builder.Services.AddMcpServer()
     .WithTools<WorkerTools>()
     .WithTools<LeadTools>()
     // §10/§14: the skill bundle ships as MCP resources so it reaches every agent
-    // on connect. Stable docket:// URIs; scoping is advisory (see SkillResources).
+    // on connect. Stable landbridge:// URIs; scoping is advisory (see SkillResources).
     .WithResources<SkillResources>();
 
 // The runner spine (spec §10): the connection registry and event sink are
@@ -97,15 +97,15 @@ builder.Services.AddSingleton<RunnerConnectionRegistry>();
 builder.Services.AddSingleton<RunnerEventSink>();
 builder.Services.AddSingleton(new SessionEventListener(connectionString));
 
-// §8.3: open_forward drives both docketd ends of a forward. The orchestrator +
+// §8.3: open_forward drives both landbridged ends of a forward. The orchestrator +
 // forward-opened waiter are singletons sharing the connection registry above; the
 // event sink completes the waiter when the consumer reports its bound port.
-builder.Services.AddDocketForwarding();
+builder.Services.AddLandbridgeForwarding();
 
-// §13: the public MCP URL a worker dials the plane with. docketd wraps it plus
+// §13: the public MCP URL a worker dials the plane with. landbridged wraps it plus
 // the minted worker token into the harness's --mcp-config at dispatch.
-var publicMcpUrl = builder.Configuration["Docket:PublicMcpUrl"]
-    ?? Environment.GetEnvironmentVariable("DOCKET_PUBLIC_MCP_URL")
+var publicMcpUrl = builder.Configuration["Landbridge:PublicMcpUrl"]
+    ?? Environment.GetEnvironmentVariable("LANDBRIDGE_PUBLIC_MCP_URL")
     ?? DispatchService.DefaultPublicMcpUrl;
 
 // The canonical OAuth identity (§5): resource id, issuer, and the two endpoint
@@ -113,7 +113,7 @@ var publicMcpUrl = builder.Configuration["Docket:PublicMcpUrl"]
 // well-known metadata documents, and authorize/token validation never disagree.
 builder.Services.AddSingleton(OAuthServerConfig.FromPublicMcpUrl(publicMcpUrl));
 // §10 per-task liveness runs on two clocks, both configurable: PerTaskLivenessWindow
-// is how long docketd may go without asserting the harness process is alive (it
+// is how long landbridged may go without asserting the harness process is alive (it
 // asserts every heartbeat), and NoProgressCeiling is how long an alive process may
 // make no progress before it is treated as wedged. A task bearing a registered
 // service (§8.2) is exempt from the second, never the first.
@@ -123,22 +123,22 @@ builder.Services.AddSingleton(sp => new DispatchService(
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILogger<DispatchService>>(),
     sp.GetRequiredService<SessionEventListener>(),
-    livenessWindow: builder.Configuration.GetValue<TimeSpan?>("Docket:PerTaskLivenessWindow"),
+    livenessWindow: builder.Configuration.GetValue<TimeSpan?>("Landbridge:PerTaskLivenessWindow"),
     publicMcpUrl: publicMcpUrl,
-    noProgressCeiling: builder.Configuration.GetValue<TimeSpan?>("Docket:NoProgressCeiling")));
+    noProgressCeiling: builder.Configuration.GetValue<TimeSpan?>("Landbridge:NoProgressCeiling")));
 builder.Services.AddHostedService(sp => sp.GetRequiredService<DispatchService>());
 
 // §11 wait-TTL sweeper: requeues a task whose machine went silent while it
 // waited. Auto-park on wait TTL is off by default (a live ACP session is held
-// until a Lead answers or park_session); set Docket:WaitTtl to restore a timer.
+// until a Lead answers or park_session); set Landbridge:WaitTtl to restore a timer.
 builder.Services.AddHostedService(sp => new WaitTtlSweeper(
     sp.GetRequiredService<IServiceScopeFactory>(),
     sp.GetRequiredService<RunnerConnectionRegistry>(),
     sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILogger<WaitTtlSweeper>>(),
-    waitTtl: builder.Configuration.GetValue<TimeSpan?>("Docket:WaitTtl"),
-    machineLivenessWindow: builder.Configuration.GetValue<TimeSpan?>("Docket:MachineLivenessTtl"),
-    sweepInterval: builder.Configuration.GetValue<TimeSpan?>("Docket:WaitTtlSweepInterval")));
+    waitTtl: builder.Configuration.GetValue<TimeSpan?>("Landbridge:WaitTtl"),
+    machineLivenessWindow: builder.Configuration.GetValue<TimeSpan?>("Landbridge:MachineLivenessTtl"),
+    sweepInterval: builder.Configuration.GetValue<TimeSpan?>("Landbridge:WaitTtlSweepInterval")));
 
 var app = builder.Build();
 
@@ -146,23 +146,23 @@ var app = builder.Build();
 // so a fresh Postgres container comes up with the schema. Production applies
 // migrations out of band and the tests migrate through their fixture — neither
 // sets this flag, so their startup behaviour is unchanged.
-if (app.Configuration.GetValue<bool>("Docket:MigrateOnStartup"))
+if (app.Configuration.GetValue<bool>("Landbridge:MigrateOnStartup"))
 {
     using var scope = app.Services.CreateScope();
-    await scope.ServiceProvider.GetRequiredService<DocketDbContext>()
+    await scope.ServiceProvider.GetRequiredService<LandbridgeDbContext>()
         .Database.MigrateAsync();
 }
 
 // Dev-loop only (set by the Aspire app host): bootstrap a machine identity and
-// drop its access token where docketd can pick it up. Runs AFTER migration so
+// drop its access token where landbridged can pick it up. Runs AFTER migration so
 // the schema exists. This is the dev shortcut around the enrollment handshake a
 // real operator performs out of band (§5, §11) — an enrollment token is minted
 // and immediately exchanged for machine credentials here, then the access token
-// is written to a file the app host hands docketd via DOCKET_MACHINE_TOKEN.
+// is written to a file the app host hands landbridged via LANDBRIDGE_MACHINE_TOKEN.
 // Minting fresh each startup is fine for a throwaway dev cluster. Production
 // never sets this key, so its startup is unchanged. The write happens before
 // app.Run(), so the file exists by the time the host is serving.
-var devSeedTokenFile = app.Configuration["Docket:DevSeed:TokenFile"];
+var devSeedTokenFile = app.Configuration["Landbridge:DevSeed:TokenFile"];
 if (!string.IsNullOrWhiteSpace(devSeedTokenFile))
 {
     using var scope = app.Services.CreateScope();
@@ -172,7 +172,7 @@ if (!string.IsNullOrWhiteSpace(devSeedTokenFile))
     var credentials = await tokens.ExchangeEnrollmentAsync(
         enrollment.Token,
         new MachineDeclaration(
-            Name: "docket-apphost-dev",
+            Name: "landbridge-apphost-dev",
             Purpose: "Aspire dev-loop runner",
             Os: RuntimeInformation.OSDescription,
             PermissionLevel: "standard"))
@@ -198,7 +198,7 @@ if (!string.IsNullOrWhiteSpace(devSeedTokenFile))
 // Aspire health endpoints (/health, /alive), mapped in Development only.
 app.MapDefaultEndpoints();
 
-// docketd dials the runner endpoint outbound as a WebSocket (§10).
+// landbridged dials the runner endpoint outbound as a WebSocket (§10).
 app.UseWebSockets();
 app.UseAuthentication();
 app.UseAuthorization();
@@ -207,7 +207,7 @@ app.UseAuthorization();
 // caller from it.
 app.MapMcp().RequireAuthorization();
 
-// ACP session/request_permission lands in docketd, which is not an MCP client.
+// ACP session/request_permission lands in landbridged, which is not an MCP client.
 // POST /worker/permission is the same PermissionRelay the MCP request_permission
 // tool runs, authenticated with the worker bearer.
 app.MapWorkerPermissionEndpoint();
@@ -225,7 +225,7 @@ app.MapDashboardTranscripts();
 
 // The relay grant-validation endpoint (§8.3): plain HTTP, shared-bearer auth,
 // fail-closed. The relay asks whether a presented grant is valid for a tunnel;
-// this is the real control-plane validator behind Docket.Relay's IGrantValidator.
+// this is the real control-plane validator behind Landbridge.Relay's IGrantValidator.
 // Not in the Principal system — the relay is not a §5 credential class.
 app.MapRelayValidationEndpoint();
 
@@ -238,7 +238,7 @@ app.MapPreviewConnectEndpoint();
 
 // The machine bootstrap surface (§5 Bootstrap, §13): /enroll exchanges a
 // human-issued enrollment token for machine credentials; /machine/refresh
-// re-mints docketd's short-lived access token. Both anonymous — the presented
+// re-mints landbridged's short-lived access token. Both anonymous — the presented
 // token is the credential, validated by TokenService, not a Principal.
 app.MapEnrollmentEndpoints();
 

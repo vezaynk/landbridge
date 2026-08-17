@@ -2,11 +2,11 @@ using System.Text.Json;
 using System.Text.Json.Nodes;
 using System.Text.Json.Serialization.Metadata;
 
-namespace Docket.Contracts;
+namespace Landbridge.Contracts;
 
 /// <summary>
 /// The wire boundary for the frozen contract (§10). Both sides talk through it:
-/// <c>docketd</c> encodes events/heartbeats and decodes commands; the control
+/// <c>landbridged</c> encodes events/heartbeats and decodes commands; the control
 /// plane encodes commands and decodes events/heartbeats. The rule that defines
 /// the contract holds on decode — <b>anything outside the vocabulary is
 /// rejected</b> (returns <c>null</c>) rather than guessed at.
@@ -47,7 +47,7 @@ public static class RunnerWire
     public const string ProcessStopped = "process-stopped";
     public const string ProcessWritten = "process-written";
 
-    /// <summary>The machine-heartbeat envelope discriminator (§10 — docketd's own timer).
+    /// <summary>The machine-heartbeat envelope discriminator (§10 — landbridged's own timer).
     /// Not part of the frozen command/event enum; the heartbeat is the runner's
     /// periodic self-report, carried on the same channel.</summary>
     public const string Heartbeat = "heartbeat";

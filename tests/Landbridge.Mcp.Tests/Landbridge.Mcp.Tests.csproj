@@ -33,28 +33,28 @@
   <!-- Reuse the ControlPlane test suite's ephemeral-Postgres fixture verbatim
        (single source of truth) rather than duplicating it. -->
   <ItemGroup>
-    <Compile Include="..\Docket.ControlPlane.Tests\PostgresFixture.cs" Link="PostgresFixture.cs" />
+    <Compile Include="..\Landbridge.ControlPlane.Tests\PostgresFixture.cs" Link="PostgresFixture.cs" />
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\Docket.Mcp\Docket.Mcp.csproj" />
-    <!-- The end-to-end spine test dials the control plane with the real docketd
+    <ProjectReference Include="..\..\src\Landbridge.Mcp\Landbridge.Mcp.csproj" />
+    <!-- The end-to-end spine test dials the control plane with the real landbridged
          WebSocket channel, so it references the runner. -->
-    <ProjectReference Include="..\..\src\Docket.Runner\Docket.Runner.csproj" />
+    <ProjectReference Include="..\..\src\Landbridge.Runner\Landbridge.Runner.csproj" />
     <!-- The relay grant-validator crown test stands up the real relay host next to
          the plane and splices two ClientWebSockets over a real issued grant (§8.3). -->
-    <ProjectReference Include="..\..\src\Docket.Relay\Docket.Relay.csproj" />
+    <ProjectReference Include="..\..\src\Landbridge.Relay\Landbridge.Relay.csproj" />
     <!-- The §8.4 preview crown drives the real preview frontend through the real
-         relay + a real producer docketd, so it references the preview module. -->
-    <ProjectReference Include="..\..\src\Docket.Preview\Docket.Preview.csproj" />
+         relay + a real producer landbridged, so it references the preview module. -->
+    <ProjectReference Include="..\..\src\Landbridge.Preview\Landbridge.Preview.csproj" />
     <!-- Referenced so the fake worker harness binary is built and locatable; the
          walking-skeleton E2E spawns it as a real MCP-speaking child process
          (§10 conventions — a real spawnable child, no shell). -->
-    <ProjectReference Include="..\Docket.WorkerHarness\Docket.WorkerHarness.csproj" />
+    <ProjectReference Include="..\Landbridge.WorkerHarness\Landbridge.WorkerHarness.csproj" />
     <!-- The §11 resume crown spawns the runner test harness for real (emit-stream to
          report a session id, echo-argv to prove the resume argv), so it references
          it to build and locate that binary. -->
-    <ProjectReference Include="..\Docket.Runner.TestHarness\Docket.Runner.TestHarness.csproj" />
+    <ProjectReference Include="..\Landbridge.Runner.TestHarness\Landbridge.Runner.TestHarness.csproj" />
   </ItemGroup>
 
 </Project>

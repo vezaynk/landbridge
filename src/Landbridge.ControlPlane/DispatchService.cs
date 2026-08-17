@@ -1,14 +1,14 @@
 using System.Diagnostics;
 using System.Text.Json.Nodes;
 using System.Threading.Channels;
-using Docket.Contracts;
-using Docket.ControlPlane.Auth;
-using Docket.Core;
+using Landbridge.Contracts;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.Core;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-namespace Docket.ControlPlane;
+namespace Landbridge.ControlPlane;
 
 /// <summary>
 /// Turns submitted tasks into running dispatches, spec §6/§10. On start it scans
@@ -43,7 +43,7 @@ public sealed class DispatchService : IHostedService
     private readonly TimeSpan _noProgressCeiling;
     private readonly string _publicMcpUrl;
 
-    /// <summary>Aliveness clock default: docketd asserts process-alive far more often
+    /// <summary>Aliveness clock default: landbridged asserts process-alive far more often
     /// (every heartbeat, 15s by default), so silence this long means it stopped.</summary>
     public static readonly TimeSpan DefaultLivenessWindow = TimeSpan.FromSeconds(60);
 
@@ -72,10 +72,10 @@ public sealed class DispatchService : IHostedService
     /// <summary>
     /// The plane's tracing source (§1). The dispatch span opened here continues
     /// the Lead's create_session trace and its W3C id is what rides the wire to the
-    /// runner. Register it with the host's TracerProvider (Docket.Mcp/Program.cs)
+    /// runner. Register it with the host's TracerProvider (Landbridge.Mcp/Program.cs)
     /// so the span exports.
     /// </summary>
-    public const string ActivitySourceName = "Docket.ControlPlane";
+    public const string ActivitySourceName = "Landbridge.ControlPlane";
 
     internal static readonly ActivitySource ActivitySource = new(ActivitySourceName);
 
@@ -250,14 +250,14 @@ public sealed class DispatchService : IHostedService
     /// <para><b>Why it exists.</b> Dispatch→machine tracking lives only in
     /// <see cref="RunnerConnectionRegistry"/>, i.e. in this process's memory. A plane
     /// restart therefore comes back with an empty registry while the machines it dispatched
-    /// to are still running that work — and nothing re-derived it: docketd announces
+    /// to are still running that work — and nothing re-derived it: landbridged announces
     /// <c>rebooted</c> once per <em>process</em> start, so a socket reconnect re-announces
     /// nothing; <see cref="RunnerConnectionRegistry.RecordAlive"/> silently drops signals
     /// for a task it is not tracking; and <see cref="CheckLivenessAsync"/> only iterates
     /// what is tracked. A task left <c>working</c> across the restart was covered by no
     /// clock at all — stranded, with its own liveness signals discarded. Re-adopting on
     /// connect fixes it plane-side, keeping the runner dumb (§10 the-runner-is-transport):
-    /// no new wire member, nothing for docketd to remember.</para>
+    /// no new wire member, nothing for landbridged to remember.</para>
     ///
     /// <para><b>Instance fencing</b> (§9.14) is the store query's, not this method's — see
     /// <see cref="SessionStore.HeldDispatchesOnAsync"/>: only a task whose live incumbent
@@ -318,7 +318,7 @@ public sealed class DispatchService : IHostedService
 
         try
         {
-            // §5, §13: mint the worker token for this instance; docketd injects it,
+            // §5, §13: mint the worker token for this instance; landbridged injects it,
             // wrapped in the MCP client config the worker dials the plane with.
             var minted = await tokens.MintWorkerTokenAsync(task.Team, task.Id, instance, ct);
             var command = new DispatchCommand(
@@ -328,8 +328,8 @@ public sealed class DispatchService : IHostedService
                 // already consumes SpawnSubstitutions; this is the first producer.
                 SpawnSubstitutions: new Dictionary<string, string> { ["mcp_url"] = _publicMcpUrl },
                 // §11 resume: pass the prior work session's ref (present when this task
-                // was worked before and parked/requeued) so docketd continues the
-                // transcript. Opaque metadata surfaced by the store; docketd resumes
+                // was worked before and parked/requeued) so landbridged continues the
+                // transcript. Opaque metadata surfaced by the store; landbridged resumes
                 // only if the resolved profile declares resume.args, else cold-starts.
                 ResumeSessionRef: applied.HarnessSessionRef,
                 // §7/§11 directory inheritance: whose work dir this dispatch runs in. A property
@@ -409,9 +409,9 @@ public sealed class DispatchService : IHostedService
                 : ActivitySource.StartActivity($"dispatch {task}", ActivityKind.Producer);
         if (activity is not null)
         {
-            activity.SetTag("docket.session_id", task.ToString());
-            activity.SetTag("docket.machine_id", machineId);
-            activity.SetTag("docket.profile", profile);
+            activity.SetTag("landbridge.session_id", task.ToString());
+            activity.SetTag("landbridge.machine_id", machineId);
+            activity.SetTag("landbridge.profile", profile);
         }
         return activity;
     }
@@ -419,14 +419,14 @@ public sealed class DispatchService : IHostedService
     /// <summary>
     /// One of the two carriers a worker's identity reaches the harness by (§13): Claude
     /// Code's <c>--mcp-config</c> HTTP shape, with the freshly-minted worker token as a
-    /// bearer header. docketd writes it to <c>{work_dir}/mcp.json</c> (0600) and
+    /// bearer header. landbridged writes it to <c>{work_dir}/mcp.json</c> (0600) and
     /// substitutes the path into the profile's spawn argv — the runner never
     /// interprets it, it is transport (§10). Built with the DOM so the token is
     /// escaped correctly and no serializer reflection is needed.
     ///
-    /// <para>The other carrier is <c>DOCKET_WORKER_TOKEN</c>, stamped on every spawn.
+    /// <para>The other carrier is <c>LANDBRIDGE_WORKER_TOKEN</c>, stamped on every spawn.
     /// The plane still always <em>sends</em> this JSON — it cannot see the profile —
-    /// but docketd writes the file only when spawn/resume argv names
+    /// but landbridged writes the file only when spawn/resume argv names
     /// <c>{mcp_config}</c> (#112 G11). A Grok/Codex/OpenCode profile that never
     /// references it must not leave a live bearer on disk.</para>
     /// </summary>
@@ -435,7 +435,7 @@ public sealed class DispatchService : IHostedService
         {
             ["mcpServers"] = new JsonObject
             {
-                ["docket"] = new JsonObject
+                ["landbridge"] = new JsonObject
                 {
                     ["type"] = "http",
                     ["url"] = _publicMcpUrl,
@@ -463,7 +463,7 @@ public sealed class DispatchService : IHostedService
     /// suspended (§11) and are left tracked; verifying/terminal tasks are simply
     /// untracked.
     ///
-    /// <para><b>Aliveness</b> (<see cref="_livenessWindow"/>, default 60s): docketd
+    /// <para><b>Aliveness</b> (<see cref="_livenessWindow"/>, default 60s): landbridged
     /// has stopped even asserting the harness process exists. That means the process
     /// died without an <c>exited</c> event, or the daemon itself is wedged — either
     /// way the task is not being worked and requeues fast.</para>
@@ -501,7 +501,7 @@ public sealed class DispatchService : IHostedService
     /// take it down with (<see cref="KillAbandonedDispatchAsync"/>, #84). Requeueing revoked
     /// the attempt's authorization and freed the task, but on its own it said nothing to the
     /// machine — so the wedged-but-alive harness this reclaims kept running and kept
-    /// spending model tokens until its <c>docketd</c> restarted and the stray sweep reaped
+    /// spending model tokens until its <c>landbridged</c> restarted and the stray sweep reaped
     /// it. It is a <c>kill</c> rather than the graceful <c>stop</c> of §11: stop's value is
     /// its injected wind-down turn, and a harness that has just failed a liveness clock has
     /// demonstrably stopped reading its input.</para>
@@ -642,7 +642,7 @@ public sealed class DispatchService : IHostedService
     /// successor does not yet exist.</para>
     ///
     /// <para>Uniform across both clocks. An aliveness-loss requeue on a machine whose socket
-    /// is up is the case where <c>docketd</c> is reachable but has stopped reporting this
+    /// is up is the case where <c>landbridged</c> is reachable but has stopped reporting this
     /// task — its supervisor may well still be holding a live process — so it has the same
     /// stray to reap as the wedged-agent case. At the requeue cap the task is abandoned
     /// rather than requeued and this matters most: nothing will ever come back for that

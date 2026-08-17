@@ -1,8 +1,8 @@
 using System.Net;
 using System.Net.Sockets;
 using System.Net.WebSockets;
-using Docket.Contracts;
-using Docket.Core;
+using Landbridge.Contracts;
+using Landbridge.Core;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
@@ -10,10 +10,10 @@ using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.Runner.Tests;
+namespace Landbridge.Runner.Tests;
 
 /// <summary>
-/// The docketd relay data planes (spec §8.3), each end driven in isolation
+/// The landbridged relay data planes (spec §8.3), each end driven in isolation
 /// against a <em>fake</em> relay — a minimal loopback WebSocket server, the same
 /// shape <see cref="WebSocketControlPlaneChannelTests"/> uses for the control
 /// plane. The consumer plane binds loopback-only, reports its bound port via
@@ -45,7 +45,7 @@ public sealed class RelayForwardingTests
         var task = SessionId.New();
         const string forwardId = "fwd-consumer";
         var outcome = await daemon.HandleAsync(new OpenForwardCommand(
-            task, forwardId, "db", RelayTunnel.ConsumerRole, "dkt_g_x", relay.HttpUrl, Port: 0));
+            task, forwardId, "db", RelayTunnel.ConsumerRole, "lbr_g_x", relay.HttpUrl, Port: 0));
         Assert.IsType<CommandOutcome.Acknowledged>(outcome);
 
         // The consumer bound its loopback listener and reported the port.
@@ -53,7 +53,7 @@ public sealed class RelayForwardingTests
         Assert.True(opened.Port > 0, "consumer did not report a bound port");
 
         // Connect to 127.0.0.1:port as the worker's client would — proving the
-        // bind is on loopback, not 0.0.0.0. docketd accepts and opens its tunnel.
+        // bind is on loopback, not 0.0.0.0. landbridged accepts and opens its tunnel.
         using var client = new TcpClient();
         await client.ConnectAsync(IPAddress.Loopback, opened.Port, ct);
         await using var tcp = client.GetStream();
@@ -93,7 +93,7 @@ public sealed class RelayForwardingTests
         var task = SessionId.New();
         const string forwardId = "fwd-lonely";
         await daemon.HandleAsync(new OpenForwardCommand(
-            task, forwardId, "db", RelayTunnel.ConsumerRole, "dkt_g_x", relay.HttpUrl, Port: 0));
+            task, forwardId, "db", RelayTunnel.ConsumerRole, "lbr_g_x", relay.HttpUrl, Port: 0));
 
         // It still binds and reports its port…
         await WaitForEventAsync<ForwardOpenedEvent>(channel, forwardId, ct);
@@ -120,7 +120,7 @@ public sealed class RelayForwardingTests
         var task = SessionId.New();
         const string forwardId = "fwd-producer";
         await daemon.HandleAsync(new OpenForwardCommand(
-            task, forwardId, "db", RelayTunnel.ProducerRole, "dkt_g_x", relay.HttpUrl, service.Port));
+            task, forwardId, "db", RelayTunnel.ProducerRole, "lbr_g_x", relay.HttpUrl, service.Port));
 
         // Producer opened its tunnel and dialed the echo service. Drive bytes in
         // from the relay end: they reach the service, echo back, and return on the
@@ -164,7 +164,7 @@ public sealed class RelayForwardingTests
         var task = SessionId.New();
         const string forwardId = "fwd-closable";
         await daemon.HandleAsync(new OpenForwardCommand(
-            task, forwardId, "db", RelayTunnel.ConsumerRole, "dkt_g_x", relay.HttpUrl, Port: 0));
+            task, forwardId, "db", RelayTunnel.ConsumerRole, "lbr_g_x", relay.HttpUrl, Port: 0));
 
         var opened = await WaitForEventAsync<ForwardOpenedEvent>(channel, forwardId, ct);
         using var client = new TcpClient();
@@ -185,7 +185,7 @@ public sealed class RelayForwardingTests
         Assert.Contains(forwardId, outcome.Detail);
         Assert.DoesNotContain("not held", outcome.Detail);
 
-        // The worker's connection dies: docketd shuts its end of the loopback socket down,
+        // The worker's connection dies: landbridged shuts its end of the loopback socket down,
         // so the next read is EOF (or a reset if the abort raced) — never a live connection
         // outliving the task that authorized it.
         Assert.True(await ConnectionIsDeadAsync(tcp, ct), "the worker's connection survived close-forward");
@@ -218,7 +218,7 @@ public sealed class RelayForwardingTests
         var task = SessionId.New();
         const string forwardId = "fwd-idle-listener";
         await daemon.HandleAsync(new OpenForwardCommand(
-            task, forwardId, "db", RelayTunnel.ConsumerRole, "dkt_g_x", relay.HttpUrl, Port: 0));
+            task, forwardId, "db", RelayTunnel.ConsumerRole, "lbr_g_x", relay.HttpUrl, Port: 0));
         var opened = await WaitForEventAsync<ForwardOpenedEvent>(channel, forwardId, ct);
 
         await daemon.HandleAsync(new CloseForwardCommand(task, forwardId));
@@ -276,7 +276,7 @@ public sealed class RelayForwardingTests
         var task = SessionId.New();
         const string forwardId = "fwd-deadservice";
         await daemon.HandleAsync(new OpenForwardCommand(
-            task, forwardId, "db", RelayTunnel.ProducerRole, "dkt_g_x", "http://127.0.0.1:1", deadPort));
+            task, forwardId, "db", RelayTunnel.ProducerRole, "lbr_g_x", "http://127.0.0.1:1", deadPort));
 
         var closed = await WaitForEventAsync<ForwardClosedEvent>(channel, forwardId, ct);
         Assert.Equal(forwardId, closed.ForwardId);
@@ -316,7 +316,7 @@ public sealed class RelayForwardingTests
             await using var service = await TcpSender.StartAsync(payload); // sends payload, then closes
             var forwardId = $"fwd-final-{i}";
             await daemon.HandleAsync(new OpenForwardCommand(
-                SessionId.New(), forwardId, "db", RelayTunnel.ProducerRole, "dkt_g_x", relay.HttpUrl, service.Port));
+                SessionId.New(), forwardId, "db", RelayTunnel.ProducerRole, "lbr_g_x", relay.HttpUrl, service.Port));
 
             var relaySocket = await relay.NextAsync(ct);
             var received = await ReceiveExactlyAsync(relaySocket, payload.Length, ct);
@@ -338,7 +338,7 @@ public sealed class RelayForwardingTests
     /// registration outliving its process, so the dial lands on whatever else took the
     /// port and the consumer gets plausible wrong answers instead of an error. Nobody
     /// could close that before, because nobody knew which listener was intended. For a
-    /// docketd-supervised service, docketd does.
+    /// landbridged-supervised service, landbridged does.
     /// </summary>
     [Fact]
     public async Task A_dial_for_a_declared_service_that_is_down_is_refused_with_a_reason()
@@ -361,7 +361,7 @@ public sealed class RelayForwardingTests
 
         const string forwardId = "fwd-refused";
         await daemon.HandleAsync(new OpenForwardCommand(
-            SessionId.New(), forwardId, "db", RelayTunnel.ProducerRole, "dkt_g_x",
+            SessionId.New(), forwardId, "db", RelayTunnel.ProducerRole, "lbr_g_x",
             "http://127.0.0.1:1/relay", impostor.Port));
 
         var closed = await WaitForEventAsync<ForwardClosedEvent>(channel, forwardId, ct);
@@ -378,7 +378,7 @@ public sealed class RelayForwardingTests
         var ct = Timeout(out var cts);
         using var _ = cts;
 
-        // A null answer means "docketd declares no service here", which must dial as
+        // A null answer means "landbridged declares no service here", which must dial as
         // before — the port may be a worker-started listener that is none of its
         // business. Refusing on null would break §8.2 forwards that work today.
         await using var service = await TcpEchoServer.StartAsync();
@@ -395,7 +395,7 @@ public sealed class RelayForwardingTests
 
         const string forwardId = "fwd-undeclared";
         await daemon.HandleAsync(new OpenForwardCommand(
-            SessionId.New(), forwardId, "db", RelayTunnel.ProducerRole, "dkt_g_x",
+            SessionId.New(), forwardId, "db", RelayTunnel.ProducerRole, "lbr_g_x",
             relay.HttpUrl, service.Port));
 
         // It dialed: the relay end sees a tunnel, and no refusal is reported.
@@ -416,7 +416,7 @@ public sealed class RelayForwardingTests
         ServiceSupervisor? services = null)
     {
         var config = RunnerConfig.Load("""
-            { "machine": { "work_root": "/tmp/docketd-forward-test" },
+            { "machine": { "work_root": "/tmp/landbridged-forward-test" },
               "profiles": [ { "name": "default", "prompt": "go", "spawn": ["noop"] } ] }
             """);
         var clock = new FakeTimeProvider();
@@ -460,7 +460,7 @@ public sealed class RelayForwardingTests
 
     /// <summary>
     /// Whether the far end of <paramref name="stream"/> has gone: a read that returns 0
-    /// (docketd shut its side down, the clean case) or throws (the socket was reset, which
+    /// (landbridged shut its side down, the clean case) or throws (the socket was reset, which
     /// a teardown race can produce). Bounded so a connection that is still very much alive
     /// fails the assertion instead of hanging the test.
     /// </summary>
@@ -543,7 +543,7 @@ public sealed class RelayForwardingTests
 /// A minimal loopback relay: accepts one WebSocket on <c>/tunnel</c> and hands it
 /// to the test, which drives / echoes bytes on it. It never validates the grant —
 /// grant policy is the real relay's job (covered elsewhere); this exercises the
-/// docketd side of the tunnel in isolation.
+/// landbridged side of the tunnel in isolation.
 /// </summary>
 internal sealed class FakeRelay : IAsyncDisposable
 {

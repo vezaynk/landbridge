@@ -1,12 +1,12 @@
 using System.Collections.Concurrent;
-using Docket.Contracts;
-using Docket.Core;
+using Landbridge.Contracts;
+using Landbridge.Core;
 
-namespace Docket.ControlPlane;
+namespace Landbridge.ControlPlane;
 
 /// <summary>
 /// The in-memory registry of live runner connections, spec §10. Single-node v1:
-/// docketd only dials outbound, so a connection is a WebSocket the control plane
+/// landbridged only dials outbound, so a connection is a WebSocket the control plane
 /// accepted and the send delegate that writes command frames back down it. The
 /// registry holds, per machine, that delegate, the profiles it declares (learned
 /// from its heartbeat), its readiness, its last heartbeat, and the set of tasks
@@ -264,7 +264,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     public void RecordProgress(SessionId task) => Refresh(task, progress: true);
 
     /// <summary>
-    /// Refreshes only the aliveness clock, from an <c>alive</c> event: docketd
+    /// Refreshes only the aliveness clock, from an <c>alive</c> event: landbridged
     /// asserting the harness process still exists, which says nothing about whether
     /// the agent is getting anywhere. Deliberately does <b>not</b> touch the
     /// progress clock — if it did, a wedged-but-running agent would be immortal,
@@ -644,7 +644,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// turn ends (<c>session/cancel</c> answered) and then the process exits — and the
     /// expectation has to survive the first to still be there for the second. So
     /// <c>turn-ended</c> peeks and <c>exited</c> consumes; the ordering is guaranteed by
-    /// docketd, which cancels before it kills. Reading it the other way round would leave the
+    /// landbridged, which cancels before it kills. Reading it the other way round would leave the
     /// genuine exit looking like news and requeue a task twice for one death.</para>
     ///
     /// <para>Do not reach for the agent's own <c>stopReason</c> instead. Measured 2026-08-16:
@@ -694,7 +694,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// <summary>
     /// A tracked dispatch and its two liveness clocks (§10).
     /// <see cref="LastActivity"/> moves on any inbound signal including <c>alive</c>
-    /// — "docketd still says this process exists". <see cref="LastProgress"/> moves
+    /// — "landbridged still says this process exists". <see cref="LastProgress"/> moves
     /// only on a real progress signal — "the agent is getting somewhere". They are
     /// separate because a dead process and a wedged one need different detection
     /// times, and one number cannot carry both.

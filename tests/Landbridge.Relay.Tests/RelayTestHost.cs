@@ -1,19 +1,19 @@
 using System.Net;
 using System.Net.WebSockets;
-using Docket.Contracts;
-using Docket.Relay;
+using Landbridge.Contracts;
+using Landbridge.Relay;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-namespace Docket.Relay.Tests;
+namespace Landbridge.Relay.Tests;
 
 /// <summary>
 /// Stands up the real relay pipeline (<see cref="TunnelEndpoint"/> +
 /// <see cref="ForwardRegistry"/> + an injected <see cref="IGrantValidator"/>) on
-/// a loopback Kestrel port, mirroring how the Docket.Mcp spine tests host the
+/// a loopback Kestrel port, mirroring how the Landbridge.Mcp spine tests host the
 /// control plane on <c>127.0.0.1:0</c>. Tests drive it with real
 /// <see cref="ClientWebSocket"/> connections.
 /// </summary>

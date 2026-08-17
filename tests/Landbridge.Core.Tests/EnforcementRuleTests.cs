@@ -1,4 +1,4 @@
-namespace Docket.Core.Tests;
+namespace Landbridge.Core.Tests;
 
 /// <summary>Negative tests: one per §9 check the engine owns, plus §6 invariants.</summary>
 public class EnforcementRuleTests

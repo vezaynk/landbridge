@@ -1,7 +1,7 @@
-using Docket.ControlPlane.Tests;
-using Docket.Core;
+using Landbridge.ControlPlane.Tests;
+using Landbridge.Core;
 
-namespace Docket.MultiMachine.Tests;
+namespace Landbridge.MultiMachine.Tests;
 
 /// <summary>
 /// The portable real-harness minimum bar: one body per claim, driven by a

@@ -1,7 +1,7 @@
-namespace Docket.Contracts;
+namespace Landbridge.Contracts;
 
 /// <summary>
-/// The machine-level heartbeat, spec §10: docketd on its own timer. Loss means
+/// The machine-level heartbeat, spec §10: landbridged on its own timer. Loss means
 /// every task on the machine is suspect. Carries the derived readiness the
 /// control plane dispatches against — <c>ready</c> unless under back-pressure,
 /// in which case the machine shows as <c>saturated</c> (§10 concurrency) — and
@@ -11,7 +11,7 @@ namespace Docket.Contracts;
 /// it is the runner's periodic self-report.
 /// </summary>
 /// <param name="TranscriptsServable">
-/// Whether this <c>docketd</c> can answer <see cref="ReadTranscriptCommand"/> (§12
+/// Whether this <c>landbridged</c> can answer <see cref="ReadTranscriptCommand"/> (§12
 /// serving). Added because the alternative is a dashboard offering a transcript link
 /// that silently times out against an older runner: a runner predating the command
 /// rejects it at the wire boundary (<see cref="RunnerWire.DecodeCommand(string)"/> returns

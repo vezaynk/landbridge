@@ -1,6 +1,6 @@
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.ControlPlane.Tests;
+namespace Landbridge.ControlPlane.Tests;
 
 /// <summary>
 /// The in-memory one-time-code + per-label preview-session store behind the §8.4
@@ -54,7 +54,7 @@ public sealed class PreviewAuthStoreTests
         Assert.True(store.ValidateSession(session, "abc"));
         Assert.False(store.ValidateSession(session, "xyz")); // wrong label
         Assert.False(store.ValidateSession(null, "abc"));
-        Assert.False(store.ValidateSession("dkt_ps_nope", "abc"));
+        Assert.False(store.ValidateSession("lbr_ps_nope", "abc"));
 
         clock.Advance(PreviewAuthStore.SessionTtl + TimeSpan.FromSeconds(1));
         Assert.False(store.ValidateSession(session, "abc")); // expired

@@ -1,14 +1,14 @@
 {
-  // docketd's config for the Aspire dev loop (§10 runner config). The AppHost
+  // landbridged's config for the Aspire dev loop (§10 runner config). The AppHost
   // reads this template at startup and resolves two placeholders before writing
-  // it out and passing --config to docketd:
+  // it out and passing --config to landbridged:
   //   {work_root}      -> a temp scratch root the AppHost creates for this run
-  //   {worker_harness} -> the absolute path to the built Docket.WorkerHarness
-  // {mcp_config} is left untouched on purpose: docketd's ProcessSupervisor
+  //   {worker_harness} -> the absolute path to the built Landbridge.WorkerHarness
+  // {mcp_config} is left untouched on purpose: landbridged's ProcessSupervisor
   // substitutes it per task with the generated mcp.json path (§13).
   //
   // This is the seam an operator edits to run a REAL agent instead of the no-LLM
-  // harness: swap the profile's "spawn" to e.g. ["claude", "-p", ...] — docketd
+  // harness: swap the profile's "spawn" to e.g. ["claude", "-p", ...] — landbridged
   // needs no code change, only this data (§10). The worker still learns its
   // assignment from the injected {mcp_config}.
   //
@@ -17,11 +17,11 @@
   // default (claude reads it on stdin via --input-format stream-json):
   //   "stop": {
   //     "mode": "message",
-  //     "message": "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Docket is winding this task down (disposition={disposition}, ~{ttl_seconds}s left). Immediately call report_result with a reference to your current progress, then stop — do not begin new work.\"}}",
+  //     "message": "{\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"Landbridge is winding this task down (disposition={disposition}, ~{ttl_seconds}s left). Immediately call report_result with a reference to your current progress, then stop — do not begin new work.\"}}",
   //     "wind_down_seconds": 30
   //   }
   // A real claude profile can also opt into §10 harness telemetry, which needs no
-  // extra infrastructure here: the Aspire dashboard IS an OTLP collector, and docketd
+  // extra infrastructure here: the Aspire dashboard IS an OTLP collector, and landbridged
   // (an Aspire resource) already has its endpoint in its environment, which the worker
   // inherits. So the endpoint can be omitted and only the harness's own knobs matter:
   //   "telemetry": {
@@ -33,11 +33,11 @@
   //     }
   //   }
   // Token/cost metrics then land in the dashboard beside the plane's own traces,
-  // carrying docket.session_id. `grpc` because the dashboard's OTLP endpoint is gRPC;
+  // carrying landbridge.session_id. `grpc` because the dashboard's OTLP endpoint is gRPC;
   // the short interval because the 60s default can outlive a small task. See
   // docs/TELEMETRY.md — these are the harness's own numbers, not the plane's.
   //
-  // docketd injects that turn and waits min(ttl, wind_down_seconds) for a voluntary
+  // landbridged injects that turn and waits min(ttl, wind_down_seconds) for a voluntary
   // exit before a hard tree-kill. The scripted worker below reads stdin only as a
   // dead-man pipe and ignores turns, so it stays signal-mode (no "stop" block): a
   // cancel injects nothing but still grants it the full ttl to exit on its own

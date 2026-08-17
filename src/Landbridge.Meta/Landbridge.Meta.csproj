@@ -1,23 +1,23 @@
 <Project Sdk="Microsoft.NET.Sdk.Web">
 
   <!--
-    docket-meta (spec §3): the human-only provisioning control panel. It is
+    landbridge-meta (spec §3): the human-only provisioning control panel. It is
     STRUCTURALLY not an MCP server — it references neither the MCP SDK nor any
-    Docket plane project (Core / ControlPlane / Mcp). Its only Docket dependency
+    Landbridge plane project (Core / ControlPlane / Mcp). Its only Landbridge dependency
     is ServiceDefaults (shared Aspire health + OTel, MCP-free), so "never an MCP
     server, separate credential class" is guaranteed by the reference graph, not
     a convention. Everything else is EF + Npgsql for meta's own store and
     Docker.DotNet for the substrate.
   -->
   <ItemGroup>
-    <ProjectReference Include="..\Docket.ServiceDefaults\Docket.ServiceDefaults.csproj" />
+    <ProjectReference Include="..\Landbridge.ServiceDefaults\Landbridge.ServiceDefaults.csproj" />
   </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Docker.DotNet" Version="3.125.15" />
     <PackageReference Include="Microsoft.EntityFrameworkCore" Version="10.0.10" />
     <PackageReference Include="EFCore.NamingConventions" Version="10.0.0-rc.1" />
-    <!-- Same pin the plane carries (see Docket.ControlPlane.csproj): the Npgsql
+    <!-- Same pin the plane carries (see Landbridge.ControlPlane.csproj): the Npgsql
          provider and NamingConventions transitively request an older Relational,
          but base EF Core 10.0.10 demands 10.0.10.0 at load time. Without this pin
          the app output ships the older Relational and crashes building the model

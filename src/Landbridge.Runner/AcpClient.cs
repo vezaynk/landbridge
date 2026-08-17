@@ -2,17 +2,17 @@ using System.Buffers;
 using System.Collections.Concurrent;
 using System.Text.Json;
 using System.Threading.Channels;
-using Docket.Contracts;
-using Docket.Core;
+using Landbridge.Contracts;
+using Landbridge.Core;
 
-namespace Docket.Runner;
+namespace Landbridge.Runner;
 
 /// <summary>
 /// §10: the Agent Client Protocol client that <b>drives</b> a worker. JSON-RPC 2.0,
-/// newline-delimited, over the worker's stdin/stdout — docketd sends <c>initialize</c>,
+/// newline-delimited, over the worker's stdin/stdout — landbridged sends <c>initialize</c>,
 /// opens or loads a session, and sends the profile's <c>prompt</c> as the opening turn.
 ///
-/// <para><b>The only way docketd talks to a worker.</b> It previously also read whatever
+/// <para><b>The only way landbridged talks to a worker.</b> It previously also read whatever
 /// NDJSON a harness happened to print, with an <c>events.mapping</c> per vendor describing
 /// where that harness kept its session id, its tool names and its token counters — up to
 /// thirteen keys for one CLI, each a fact about someone else's output format. That mode is
@@ -26,8 +26,8 @@ namespace Docket.Runner;
 ///
 /// <para><b>The dead-man's switch survives, and the spec agrees with it.</b> ACP's stdio
 /// transport defines shutdown as "the client terminates the subprocess after closing
-/// stdin", which is exactly docketd's convention: the held write end means docketd is
-/// alive, and its EOF means docketd is gone. The two mechanisms coincide, so the switch
+/// stdin", which is exactly landbridged's convention: the held write end means landbridged is
+/// alive, and its EOF means landbridged is gone. The two mechanisms coincide, so the switch
 /// costs nothing here — and the per-profile opt-out it used to need is unreachable, because
 /// a harness that blocked reading a held-open pipe was blocking on a <em>prompt</em>, and
 /// stdin no longer carries one.</para>
@@ -83,7 +83,7 @@ public sealed class AcpClient
     public const int AuthRequiredCode = -32000;
 
     /// <summary>
-    /// What docketd calls itself in <c>clientInfo</c>. Read from the assembly rather than
+    /// What landbridged calls itself in <c>clientInfo</c>. Read from the assembly rather than
     /// written as a constant so it cannot drift; agents log it, and a wrong version in
     /// someone else's log is a wasted afternoon.
     /// </summary>
@@ -252,7 +252,7 @@ public sealed class AcpClient
             if (_sessionId is null)
             {
                 _warn(
-                    $"docketd: task {_task.Value}: the ACP handshake failed — {e.Message}. The worker was " +
+                    $"landbridged: task {_task.Value}: the ACP handshake failed — {e.Message}. The worker was " +
                     "spawned but never reached a prompt turn, so it did no work; check that this profile's " +
                     "spawn argv really starts an ACP agent (§10).");
             }
@@ -423,7 +423,7 @@ public sealed class AcpClient
     /// <para>Takes no text, deliberately. The turn is the profile's configured wake-up and
     /// says only "go read your assignment"; the input itself is pulled by the worker over
     /// the authenticated MCP call, which is what makes that read a receipt. See
-    /// <see cref="Docket.Contracts.PromptCommand"/> for the three properties this
+    /// <see cref="Landbridge.Contracts.PromptCommand"/> for the three properties this
     /// protects.</para>
     ///
     /// <para>Deliberately a queue rather than a direct send. The plane's commands are
@@ -442,7 +442,7 @@ public sealed class AcpClient
     {
         if (_request.ResumeSessionRef is { Length: > 0 } && !AgentSupportsLoadSession)
             _warn(
-                $"docketd: task {_task.Value}: the plane handed back a resume ref but this agent does not " +
+                $"landbridged: task {_task.Value}: the plane handed back a resume ref but this agent does not " +
                 "declare the ACP 'loadSession' capability, so the transcript cannot be reloaded and this " +
                 "dispatch is a COLD START. Every redispatch of this task will be one (§11).");
 
@@ -523,7 +523,7 @@ public sealed class AcpClient
     /// <summary>
     /// ACP <c>session/set_mode</c> when the profile named a mode this session
     /// advertised. Goose 1.46 defaults to <c>auto</c> (auto-approve); pinning
-    /// <c>approve</c> is how a Docket profile keeps permissions on the protocol.
+    /// <c>approve</c> is how a Landbridge profile keeps permissions on the protocol.
     /// Unadvertised is skipped, same as <see cref="MaybeApplyConfigOptionsAsync"/>.
     /// </summary>
     private async Task MaybeSetSessionModeAsync(string sessionId, CancellationToken ct)
@@ -593,9 +593,9 @@ public sealed class AcpClient
     {
         w.WriteNumber("protocolVersion", LatestProtocolVersion);
 
-        // Declared honestly, which for docketd means declaring almost nothing. These
+        // Declared honestly, which for landbridged means declaring almost nothing. These
         // capabilities exist for an EDITOR: they let an agent see a file as it sits in an
-        // unsaved buffer, and run a command in the user's terminal panel. A Docket worker
+        // unsaved buffer, and run a command in the user's terminal panel. A Landbridge worker
         // has neither — it has its own work dir and its own shell — so the agent doing its
         // own file and process I/O is not a degradation, it is the arrangement.
         //
@@ -616,8 +616,8 @@ public sealed class AcpClient
         w.WriteEndObject();
 
         w.WriteStartObject("clientInfo");
-        w.WriteString("name", "docketd");
-        w.WriteString("title", "Docket runner");
+        w.WriteString("name", "landbridged");
+        w.WriteString("title", "Landbridge runner");
         w.WriteString("version", ClientVersion);
         w.WriteEndObject();
     }
@@ -724,7 +724,7 @@ public sealed class AcpClient
             // the range this client can actually hold a session over is worth saying.
             if (version < OldestProtocolVersion || version > LatestProtocolVersion)
                 _warn(
-                    $"docketd: task {_task.Value}: the agent negotiated ACP protocol version {version}, which " +
+                    $"landbridged: task {_task.Value}: the agent negotiated ACP protocol version {version}, which " +
                     $"is outside the {OldestProtocolVersion}–{LatestProtocolVersion} range this client speaks. " +
                     "Continuing on the assumption that the session methods are unchanged, but if this task " +
                     "reads oddly — no session ref, no tool calls — that assumption is the first thing to " +
@@ -753,9 +753,9 @@ public sealed class AcpClient
 
         if (!AgentSupportsHttpMcp && _request.McpServers.Count > 0)
             _warn(
-                $"docketd: task {_task.Value}: this agent does not declare the ACP 'mcpCapabilities.http' " +
+                $"landbridged: task {_task.Value}: this agent does not declare the ACP 'mcpCapabilities.http' " +
                 "capability, so the plane's MCP server cannot be handed to it over the wire. The worker will " +
-                "start with NO docket tools unless the machine wires them in out of band — it cannot call " +
+                "start with NO landbridge tools unless the machine wires them in out of band — it cannot call " +
                 "get_session or report_result, so it will do nothing useful (§10).");
     }
 
@@ -869,7 +869,7 @@ public sealed class AcpClient
     }
 
     /// <summary>
-    /// The two notifications that carry something docketd's event vocabulary has a place for:
+    /// The two notifications that carry something landbridged's event vocabulary has a place for:
     /// tool calls (progress) and <c>usage_update</c> (§12 accounting). Everything else ACP
     /// streams — message chunks, thoughts, plans, mode changes — is conversation content,
     /// which §12 captures verbatim through the transcript tee and which the frozen runner
@@ -948,7 +948,7 @@ public sealed class AcpClient
             return;
         }
 
-        await SendErrorAsync(id, -32601, $"docketd does not implement '{method}'", ct).ConfigureAwait(false);
+        await SendErrorAsync(id, -32601, $"landbridged does not implement '{method}'", ct).ConfigureAwait(false);
 
         // Once per method per task. A refusal the agent swallows is the quietest way for a
         // worker to end up unable to touch the filesystem or run a command, and the
@@ -957,8 +957,8 @@ public sealed class AcpClient
         // diagnosis.
         if (_declined.Add(method))
             _warn(
-                $"docketd: task {_task.Value}: the agent asked docketd to perform '{method}' and was refused — " +
-                "this client declares the ACP fs and terminal capabilities UNSUPPORTED, because a Docket " +
+                $"landbridged: task {_task.Value}: the agent asked landbridged to perform '{method}' and was refused — " +
+                "this client declares the ACP fs and terminal capabilities UNSUPPORTED, because a Landbridge " +
                 "worker is expected to use its own work dir and its own shell. An agent that delegates all " +
                 "of its file or command access to the client cannot work under that declaration, and this " +
                 "line is the only sign of it: check whether this harness needs a client-side terminal (§10).");
@@ -1002,7 +1002,7 @@ public sealed class AcpClient
         catch (Exception ex)
         {
             _warn(
-                $"docketd: task {_task.Value}: the plane permission bridge failed ({ex.GetType().Name}: {ex.Message}); " +
+                $"landbridged: task {_task.Value}: the plane permission bridge failed ({ex.GetType().Name}: {ex.Message}); " +
                 "answering the agent with cancelled so it is not wedged inside the tool call.");
             return null;
         }
@@ -1026,9 +1026,9 @@ public sealed class AcpClient
         // the call that gets refused and the worker never starts.
         if (_declined.Add("session/request_permission"))
             _warn(
-                $"docketd: task {_task.Value}: the plane DENIED this worker's permission request for " +
+                $"landbridged: task {_task.Value}: the plane DENIED this worker's permission request for " +
                 $"'{ask.Tool}'{(decision.Message is { Length: > 0 } why ? $" ({why})" : "")}. A worker whose " +
-                "docket tools are denied cannot call get_session or report_result, so it will end its turn " +
+                "landbridge tools are denied cannot call get_session or report_result, so it will end its turn " +
                 "having done nothing — check that a Lead is answering permission requests, or set this " +
                 "profile to a permission mode that does not prompt (§10, §11).");
 
@@ -1309,7 +1309,7 @@ public sealed class AcpClient
             return;
 
         _warn(
-            $"docketd: task {_task.Value}: protocol is 'acp' and the worker produced no JSON-RPC message at " +
+            $"landbridged: task {_task.Value}: protocol is 'acp' and the worker produced no JSON-RPC message at " +
             "all — not even a reply to initialize. Its spawn argv is almost certainly not an ACP agent (an " +
             "ACP-mode profile spawns something like `opencode acp`, not the harness's ordinary run command). " +
             "The task did no work (§10).");

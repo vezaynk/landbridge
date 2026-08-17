@@ -1,8 +1,8 @@
-using Docket.Core;
+using Landbridge.Core;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.ControlPlane.Tests;
+namespace Landbridge.ControlPlane.Tests;
 
 /// <summary>
 /// §6/§11 continuation targeting at the dispatch seam (live path, Postgres-backed).
@@ -27,7 +27,7 @@ public sealed class ContinuationDispatchTests(PostgresFixture pg) : IAsyncLifeti
     private static readonly TeamId Team = TeamId.New();
     private static LeadClaim Lead => new(Team);
 
-    private SessionStore NewStore(DocketDbContext db) => new(db, new FakeTimeProvider());
+    private SessionStore NewStore(LandbridgeDbContext db) => new(db, new FakeTimeProvider());
 
     private static MachineSnapshot Machine(string id, params string[] profiles) =>
         new(id, Ready: true, UnderBackPressure: false,
@@ -36,7 +36,7 @@ public sealed class ContinuationDispatchTests(PostgresFixture pg) : IAsyncLifeti
     /// <summary>Creates a submitted continuation task seeded exactly as the tool would
     /// (same-Team, resolved preferred machine + inherited session ref + policy).</summary>
     private async Task<(SessionId Session, SessionId Continued)> CreateContinuation(
-        DocketDbContext db, string preferredMachine, string? sessionRef, MachineGonePolicy policy,
+        LandbridgeDbContext db, string preferredMachine, string? sessionRef, MachineGonePolicy policy,
         string? profile = null)
     {
         var continued = SessionId.New();

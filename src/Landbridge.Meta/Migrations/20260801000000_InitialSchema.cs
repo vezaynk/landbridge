@@ -1,14 +1,14 @@
-using Docket.Meta.Data;
+using Landbridge.Meta.Data;
 using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 
 #nullable disable
 
-namespace Docket.Meta.Migrations
+namespace Landbridge.Meta.Migrations
 {
     /// <summary>
     /// Meta's initial schema. Hand-authored (the repo convention when <c>dotnet ef</c>
-    /// SIGKILLs mid-scaffold — see Docket.ControlPlane/Migrations). Applied at runtime
+    /// SIGKILLs mid-scaffold — see Landbridge.ControlPlane/Migrations). Applied at runtime
     /// by <c>MigrateAsync</c>: the <c>[DbContext]</c> attribute associates it with
     /// <see cref="MetaDbContext"/> during the migrations-assembly scan, and
     /// <c>[Migration]</c> gives it its id — no design-time snapshot is needed to apply.

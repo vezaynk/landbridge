@@ -1,10 +1,10 @@
-using Docket.ControlPlane.Tests;
+using Landbridge.ControlPlane.Tests;
 
-namespace Docket.MultiMachine.Tests;
+namespace Landbridge.MultiMachine.Tests;
 
 /// <summary>
 /// Paid e2e of the ACP bridge against a real Goose: listen wraps
-/// <c>goose acp</c>, docketd's profile spawn is <c>docket-acp-bridge connect</c>.
+/// <c>goose acp</c>, landbridged's profile spawn is <c>landbridge-acp-bridge connect</c>.
 /// Same opt-in as <see cref="RealGooseCollaborationTests"/> — not a CI cell.
 /// </summary>
 [Trait("Category", RealGooseCollaborationTests.RealGoose)]
@@ -57,14 +57,14 @@ public sealed class RealGooseAcpBridgeTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
 
-        var optedIn = Environment.GetEnvironmentVariable("DOCKET_REAL_GOOSE") is { Length: > 0 } o
+        var optedIn = Environment.GetEnvironmentVariable("LANDBRIDGE_REAL_GOOSE") is { Length: > 0 } o
                       && !o.Equals("0", StringComparison.Ordinal)
                       && !o.Equals("false", StringComparison.OrdinalIgnoreCase);
 
-        Skip.If(!optedIn, "no DOCKET_REAL_GOOSE — the real goose E2E is opt-in");
+        Skip.If(!optedIn, "no LANDBRIDGE_REAL_GOOSE — the real goose E2E is opt-in");
 
-        var bin = RealHarnessProfiles.ResolveBin("goose", "DOCKET_GOOSE_BIN");
-        Skip.If(bin is null, "goose CLI not found (set DOCKET_GOOSE_BIN or put goose on PATH)");
+        var bin = RealHarnessProfiles.ResolveBin("goose", "LANDBRIDGE_GOOSE_BIN");
+        Skip.If(bin is null, "goose CLI not found (set LANDBRIDGE_GOOSE_BIN or put goose on PATH)");
 
         // listen, not connect, is what spawns goose — so the provider must be
         // on this process (the far side inherits it). goose configure is

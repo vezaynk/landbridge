@@ -1,8 +1,8 @@
 using System.Globalization;
-using Docket.Core;
+using Landbridge.Core;
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.Runner.Tests;
+namespace Landbridge.Runner.Tests;
 
 /// <summary>
 /// Daemon orchestration, spec §10: reboot announcement + stray reaping on
@@ -17,7 +17,7 @@ public class RunnerDaemonTests
         var cap = maxConcurrent is { } m ? $", \"max_concurrent\": {m}" : "";
         return RunnerConfig.Load($$"""
         {
-          "machine": { "work_root": "/tmp/docketd-fake", "heartbeat_seconds": {{heartbeatSeconds}} },
+          "machine": { "work_root": "/tmp/landbridged-fake", "heartbeat_seconds": {{heartbeatSeconds}} },
           "profiles": [ { "name": "default", "prompt": "go", "spawn": ["noop"]{{cap}} } ]
         }
         """);
@@ -131,7 +131,7 @@ public class RunnerDaemonTests
     }
 
     /// <summary>
-    /// The start ordering, §10 runner restart: <c>docketd</c> starts the daemon and only
+    /// The start ordering, §10 runner restart: <c>landbridged</c> starts the daemon and only
     /// then dials, so <c>rebooted</c> is always enqueued against a channel with no live
     /// socket. It has to survive that wait — it is the signal that requeues everything
     /// this machine was holding.
@@ -350,7 +350,7 @@ public class RunnerDaemonTests
         // field rather than a vocabulary change.
         var config = RunnerConfig.Load("""
         {
-          "machine": { "work_root": "/tmp/docketd-fake", "heartbeat_seconds": 5 },
+          "machine": { "work_root": "/tmp/landbridged-fake", "heartbeat_seconds": 5 },
           "profiles": [ { "name": "default", "prompt": "go", "spawn": ["noop"] } ],
           "services": [ { "name": "api", "prompt": "go", "spawn": ["/bin/echo"], "port": 7101 } ]
         }
@@ -418,7 +418,7 @@ public class RunnerDaemonTests
         {
             var config = RunnerConfig.Load("""
             {
-              "machine": { "work_root": "/tmp/docketd-fake", "heartbeat_seconds": 5 },
+              "machine": { "work_root": "/tmp/landbridged-fake", "heartbeat_seconds": 5 },
               "profiles": [ { "name": "default", "spawn": ["noop"], "prompt": "go",
                 "processes": { "agent_initiated": true } } ]
             }

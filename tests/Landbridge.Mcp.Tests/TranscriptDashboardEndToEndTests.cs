@@ -1,12 +1,12 @@
 using System.Net;
 using System.Text.Json;
-using Docket.Contracts;
-using Docket.ControlPlane;
-using Docket.ControlPlane.Auth;
-using Docket.ControlPlane.Tests;
-using Docket.Core;
-using Docket.Mcp.Auth;
-using Docket.Mcp.Dashboard;
+using Landbridge.Contracts;
+using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.ControlPlane.Tests;
+using Landbridge.Core;
+using Landbridge.Mcp.Auth;
+using Landbridge.Mcp.Dashboard;
 using Microsoft.AspNetCore.Authentication;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -15,7 +15,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 
-namespace Docket.Mcp.Tests;
+namespace Landbridge.Mcp.Tests;
 
 /// <summary>
 /// The §12 transcript surface over real HTTP: the human-only credential rule, the
@@ -37,7 +37,7 @@ public sealed class TranscriptDashboardEndToEndTests(PostgresFixture pg) : IAsyn
     private const string TranscriptText =
         """
         {"type":"system","subtype":"init","session_id":"s1"}
-        {"type":"assistant","text":"exporting TOKEN=dkt_w_deadbeefcafe1234"}
+        {"type":"assistant","text":"exporting TOKEN=lbr_w_deadbeefcafe1234"}
         {"type":"result","subtype":"success"}
         """;
 
@@ -168,11 +168,11 @@ public sealed class TranscriptDashboardEndToEndTests(PostgresFixture pg) : IAsyn
         Assert.Contains("nosniff", res.Headers.GetValues("X-Content-Type-Options").First());
 
         // The warning leads the BODY, not just the HTML chrome, so it survives a copy-paste.
-        Assert.StartsWith("[docket] Raw harness output, served verbatim.", body);
+        Assert.StartsWith("[landbridge] Raw harness output, served verbatim.", body);
         Assert.Contains("does not redact", body);
         // Verbatim: the planted credential is present, byte for byte, reassembled across ranges.
         Assert.Contains(TranscriptText, body);
-        Assert.Contains("dkt_w_deadbeefcafe1234", body);
+        Assert.Contains("lbr_w_deadbeefcafe1234", body);
         Assert.DoesNotContain("interrupted", body);
     }
 
@@ -202,7 +202,7 @@ public sealed class TranscriptDashboardEndToEndTests(PostgresFixture pg) : IAsyn
         // channel every five seconds — every other §12 view has one; this must not.
         Assert.DoesNotContain("http-equiv=\"refresh\"", html);
         // The page links to the raw stream and never renders transcript bytes itself.
-        Assert.DoesNotContain("dkt_w_deadbeefcafe1234", html);
+        Assert.DoesNotContain("lbr_w_deadbeefcafe1234", html);
     }
 
     [SkippableFact]
@@ -313,20 +313,20 @@ public sealed class TranscriptDashboardEndToEndTests(PostgresFixture pg) : IAsyn
         builder.Logging.ClearProviders();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
 
-        builder.Services.AddDbContext<DocketDbContext>(o =>
+        builder.Services.AddDbContext<LandbridgeDbContext>(o =>
             o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
-        builder.Services.AddDocketStore();
+        builder.Services.AddLandbridgeStore();
         builder.Services.AddScoped<TokenService>();
         builder.Services.AddScoped<DashboardQueries>();
         builder.Services.AddSingleton(TimeProvider.System);
-        builder.Services.AddDocketForwarding();
+        builder.Services.AddLandbridgeForwarding();
         builder.Services.AddSingleton<RunnerEventSink>();
         builder.Services.AddSingleton<IOperatorVerifier>(new ConfiguredOperatorVerifier((string?)null));
         builder.Services.AddHttpContextAccessor();
 
-        builder.Services.AddAuthentication(DocketAuthenticationHandler.SchemeName)
-            .AddScheme<AuthenticationSchemeOptions, DocketAuthenticationHandler>(
-                DocketAuthenticationHandler.SchemeName, configureOptions: null);
+        builder.Services.AddAuthentication(LandbridgeAuthenticationHandler.SchemeName)
+            .AddScheme<AuthenticationSchemeOptions, LandbridgeAuthenticationHandler>(
+                LandbridgeAuthenticationHandler.SchemeName, configureOptions: null);
         builder.Services.AddAuthorization();
 
         var app = builder.Build();

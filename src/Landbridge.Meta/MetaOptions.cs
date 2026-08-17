@@ -1,10 +1,10 @@
-namespace Docket.Meta;
+namespace Landbridge.Meta;
 
 /// <summary>
-/// docket-meta's configuration surface (config section <c>Meta</c>). Everything the
+/// landbridge-meta's configuration surface (config section <c>Meta</c>). Everything the
 /// panel needs beyond the operator passphrase hash (<c>Meta:Operator:PassphraseHash</c>,
 /// read directly by <see cref="Auth.MetaOperatorVerifier"/>) and the store
-/// connection string (<c>ConnectionStrings:Meta</c> / <c>DOCKET_META_DB</c>).
+/// connection string (<c>ConnectionStrings:Meta</c> / <c>LANDBRIDGE_META_DB</c>).
 /// </summary>
 public sealed class MetaOptions
 {
@@ -12,8 +12,8 @@ public sealed class MetaOptions
 
     /// <summary>
     /// The base domain instances are published under: an instance <c>foo</c> gets the
-    /// MCP route <c>foo.docket.&lt;Domain&gt;</c> and the relay route
-    /// <c>relay-foo.docket.&lt;Domain&gt;</c> (design note §4, deviation #2). Wildcard
+    /// MCP route <c>foo.landbridge.&lt;Domain&gt;</c> and the relay route
+    /// <c>relay-foo.landbridge.&lt;Domain&gt;</c> (design note §4, deviation #2). Wildcard
     /// DNS + Caddy TLS automation for these are operator prerequisites (docs/META.md).
     /// </summary>
     public string Domain { get; set; } = "localhost";
@@ -24,8 +24,8 @@ public sealed class MetaOptions
     /// full refs are <c>{McpImageRepo}:{tag}</c> and <c>{RelayImageRepo}:{tag}</c>,
     /// so image rollout (spec §3) moves both together (design note §3).
     /// </summary>
-    public string McpImageRepo { get; set; } = "docket-mcp";
-    public string RelayImageRepo { get; set; } = "docket-relay";
+    public string McpImageRepo { get; set; } = "landbridge-mcp";
+    public string RelayImageRepo { get; set; } = "landbridge-relay";
 
     /// <summary>
     /// The image tag a new instance pins when the create request does not name one
@@ -53,8 +53,8 @@ public sealed class MetaOptions
 
     /// <summary>
     /// When true, meta applies its OWN checked-in migration to its OWN store at
-    /// startup (dev convenience; mirrors the plane's Docket:MigrateOnStartup). This
-    /// is meta's store, unrelated to the per-instance <c>Docket:MigrateOnStartup</c>
+    /// startup (dev convenience; mirrors the plane's Landbridge:MigrateOnStartup). This
+    /// is meta's store, unrelated to the per-instance <c>Landbridge:MigrateOnStartup</c>
     /// meta injects into each instance container (deviation #4).
     /// </summary>
     public bool MigrateOnStartup { get; set; }

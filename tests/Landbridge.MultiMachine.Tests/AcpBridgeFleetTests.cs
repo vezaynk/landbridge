@@ -1,13 +1,13 @@
-using Docket.ControlPlane.Tests;
-using Docket.Core;
-using CollabProgram = Docket.CollabHarness.Program;
+using Landbridge.ControlPlane.Tests;
+using Landbridge.Core;
+using CollabProgram = Landbridge.CollabHarness.Program;
 
-namespace Docket.MultiMachine.Tests;
+namespace Landbridge.MultiMachine.Tests;
 
 /// <summary>
-/// Zero-cost fleet e2e of the ACP bridge: docketd's profile spawn is
-/// <c>docket-acp-bridge connect</c>, and the far side is the scripted
-/// <c>Docket.CollabHarness --acp</c>. Same plane, same MCP, no LLM.
+/// Zero-cost fleet e2e of the ACP bridge: landbridged's profile spawn is
+/// <c>landbridge-acp-bridge connect</c>, and the far side is the scripted
+/// <c>Landbridge.CollabHarness --acp</c>. Same plane, same MCP, no LLM.
 /// </summary>
 [Collection(PostgresCollection.Name)]
 public sealed class AcpBridgeFleetTests(PostgresFixture pg) : IAsyncLifetime
@@ -49,13 +49,13 @@ public sealed class AcpBridgeFleetTests(PostgresFixture pg) : IAsyncLifetime
     {
         var testDir = Path.GetDirectoryName(typeof(AcpBridgeFleetTests).Assembly.Location)!;
         var harnessDir = testDir.Replace(
-            Path.Combine("Docket.MultiMachine.Tests", "bin"),
-            Path.Combine("Docket.CollabHarness", "bin"),
+            Path.Combine("Landbridge.MultiMachine.Tests", "bin"),
+            Path.Combine("Landbridge.CollabHarness", "bin"),
             StringComparison.Ordinal);
         var apphost = Path.Combine(
-            harnessDir, OperatingSystem.IsWindows() ? "Docket.CollabHarness.exe" : "Docket.CollabHarness");
+            harnessDir, OperatingSystem.IsWindows() ? "Landbridge.CollabHarness.exe" : "Landbridge.CollabHarness");
         return File.Exists(apphost)
             ? apphost
-            : throw new FileNotFoundException("Docket.CollabHarness apphost not found at " + apphost);
+            : throw new FileNotFoundException("Landbridge.CollabHarness apphost not found at " + apphost);
     }
 }

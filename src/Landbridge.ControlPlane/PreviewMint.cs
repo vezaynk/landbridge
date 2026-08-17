@@ -1,6 +1,6 @@
-using Docket.Core;
+using Landbridge.Core;
 
-namespace Docket.ControlPlane;
+namespace Landbridge.ControlPlane;
 
 /// <summary>
 /// Shared mint policy for the two §8.4 preview mint surfaces (the worker
@@ -38,7 +38,7 @@ public static class PreviewMint
     /// <summary>
     /// The shareable preview URL for <paramref name="label"/>: the opaque label as
     /// the leftmost subdomain of the configured wildcard base
-    /// (<c>Docket:PreviewUrlBase</c>, e.g. <c>https://preview.example.com</c> or a
+    /// (<c>Landbridge:PreviewUrlBase</c>, e.g. <c>https://preview.example.com</c> or a
     /// dev <c>http://preview.localhost:5200</c>). Preserves scheme + any non-default
     /// port; never encodes structure beyond the single label (§8.4).
     /// </summary>
@@ -50,5 +50,5 @@ public static class PreviewMint
     }
 
     /// <summary>Config key for the wildcard preview base URL both mint surfaces read.</summary>
-    public const string UrlBaseConfigKey = "Docket:PreviewUrlBase";
+    public const string UrlBaseConfigKey = "Landbridge:PreviewUrlBase";
 }

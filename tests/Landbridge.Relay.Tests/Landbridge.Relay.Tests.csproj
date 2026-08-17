@@ -26,7 +26,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\src\Docket.Relay\Docket.Relay.csproj" />
+    <ProjectReference Include="..\..\src\Landbridge.Relay\Landbridge.Relay.csproj" />
   </ItemGroup>
 
 </Project>

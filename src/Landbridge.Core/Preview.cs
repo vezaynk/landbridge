@@ -1,4 +1,4 @@
-namespace Docket.Core;
+namespace Landbridge.Core;
 
 /// <summary>
 /// How a preview mapping admits a browser connection (spec §8.4). Set once at

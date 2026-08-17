@@ -1,7 +1,7 @@
-using Docket.Meta.Data;
+using Landbridge.Meta.Data;
 using Microsoft.EntityFrameworkCore;
 
-namespace Docket.Meta.Secrets;
+namespace Landbridge.Meta.Secrets;
 
 /// <summary>
 /// Re-seals every retained secret under the CURRENT primary key at startup (task

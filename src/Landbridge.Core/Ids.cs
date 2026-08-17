@@ -1,4 +1,4 @@
-namespace Docket.Core;
+namespace Landbridge.Core;
 
 public readonly record struct SessionId(Guid Value)
 {

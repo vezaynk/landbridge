@@ -1,6 +1,6 @@
 using System.Text.Json.Serialization;
 
-namespace Docket.HarnessBump;
+namespace Landbridge.HarnessBump;
 
 public sealed record GhRun(
     [property: JsonPropertyName("databaseId")] long DatabaseId,

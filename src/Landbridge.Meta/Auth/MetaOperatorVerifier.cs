@@ -1,10 +1,10 @@
 using System.Security.Cryptography;
 using System.Text;
 
-namespace Docket.Meta.Auth;
+namespace Landbridge.Meta.Auth;
 
 /// <summary>
-/// Verifies the single meta operator's passphrase (spec §3: docket-meta is
+/// Verifies the single meta operator's passphrase (spec §3: landbridge-meta is
 /// "human-only", a separate credential class from the plane's §5 identities). This
 /// is a deliberate, self-contained copy of the plane's
 /// <c>ConfiguredOperatorVerifier</c> pattern — meta shares no code and no token

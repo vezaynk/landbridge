@@ -1,8 +1,8 @@
 using System.Net;
 using System.Text;
-using Docket.Core;
+using Landbridge.Core;
 
-namespace Docket.Mcp.Dashboard;
+namespace Landbridge.Mcp.Dashboard;
 
 /// <summary>
 /// The dashboard's tiny server-side rendering kit — no template engine, no client
@@ -66,7 +66,7 @@ internal static class DashboardHtml
         sb.Append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
         if (autoRefresh)
             sb.Append("<meta http-equiv=\"refresh\" content=\"5\">");
-        sb.Append($"<title>{E(title)} · Docket</title>");
+        sb.Append($"<title>{E(title)} · Landbridge</title>");
         sb.Append($"<link rel=\"stylesheet\" href=\"{CssPath}\">");
         sb.Append("</head><body>");
         sb.Append(Nav(active));
@@ -81,7 +81,7 @@ internal static class DashboardHtml
         string Link(string key, string href, string label) =>
             $"<a class=\"{(key == active ? "active" : "")}\" href=\"{href}\">{E(label)}</a>";
 
-        return "<nav><span class=\"brand\">Docket</span>" +
+        return "<nav><span class=\"brand\">Landbridge</span>" +
                Link("machines", "/dashboard/machines", "Machines") +
                Link("teams", "/dashboard/teams", "Teams") +
                Link("inbox", "/dashboard/inbox", "Inbox") +

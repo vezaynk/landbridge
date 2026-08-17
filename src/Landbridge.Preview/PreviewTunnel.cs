@@ -1,16 +1,16 @@
 using System.Net.WebSockets;
-using Docket.Contracts;
+using Landbridge.Contracts;
 
-namespace Docket.Preview;
+namespace Landbridge.Preview;
 
 /// <summary>
 /// The consumer end of a relay tunnel, as dialed by the preview frontend (spec
 /// §8.4). The frontend <em>is</em> the consumer (there is no consumer
-/// <c>docketd</c>): it dials the relay's unchanged <c>/tunnel</c> presenting the
+/// <c>landbridged</c>): it dials the relay's unchanged <c>/tunnel</c> presenting the
 /// consumer role + grant + forward id, replays the browser's already-read request
 /// head into the tunnel, and byte-splices the browser connection to the tunnel for
 /// the connection's life — HTTP request/response and a WebSocket upgrade alike, as
-/// opaque bytes. The splice pumps mirror <c>Docket.Runner.RelayForwarder</c>'s
+/// opaque bytes. The splice pumps mirror <c>Landbridge.Runner.RelayForwarder</c>'s
 /// proven pattern (a fresh dependency-free copy — the frontend does not reference
 /// the runner), adapted to a browser <see cref="Stream"/> on one side.
 ///

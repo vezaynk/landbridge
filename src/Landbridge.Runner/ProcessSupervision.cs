@@ -1,13 +1,13 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Globalization;
-using Docket.Contracts;
-using Docket.Core;
+using Landbridge.Contracts;
+using Landbridge.Core;
 
-namespace Docket.Runner;
+namespace Landbridge.Runner;
 
 /// <summary>
-/// What <c>docketd</c> <em>did</em> when it handled a <c>stop</c> (§10) — never what the
+/// What <c>landbridged</c> <em>did</em> when it handled a <c>stop</c> (§10) — never what the
 /// agent did about it. §10 makes the runner transport: it can report the message it sent
 /// and the deadline it armed, and it cannot report what the agent chose to do next.
 /// </summary>
@@ -177,7 +177,7 @@ public sealed class SupervisedSession
     /// §10 Windows containment: the kill-on-close Job Object this worker's whole process tree is
     /// sealed into, or null off Windows / when assignment degraded (an incompatible
     /// nested outer job). Owned here and closed on the kill/exit cleanup paths. When
-    /// docketd dies by any cause the OS closes this handle and the kernel kills every
+    /// landbridged dies by any cause the OS closes this handle and the kernel kills every
     /// process in the job — detached grandchildren included — which is the Windows
     /// containment guarantee the <see cref="StrayReaper"/> reconstructs by discovery
     /// on other platforms.
@@ -197,8 +197,8 @@ public sealed class SupervisedSession
 /// <summary>
 /// Spawns and supervises harness processes, spec §10. <b>No shell, ever</b>:
 /// <c>command</c> is argv passed to <see cref="ProcessStartInfo.ArgumentList"/>
-/// (§10). Every spawn is stamped with <c>DOCKET_MACHINE_ID</c> and
-/// <c>DOCKET_SESSION_ID</c> (§10, not configurable), started in
+/// (§10). Every spawn is stamped with <c>LANDBRIDGE_MACHINE_ID</c> and
+/// <c>LANDBRIDGE_SESSION_ID</c> (§10, not configurable), started in
 /// <c>{work_root}/{session_id}</c> — or in the predecessor's directory when the
 /// dispatch names a <see cref="DispatchCommand.WorkDirSession"/>, which every
 /// continuation does (§7, §11) — and killed as a whole tree so children —
@@ -211,7 +211,7 @@ public sealed class SupervisedSession
 /// PDEATHSIG, which the kernel keys to the forking <em>thread</em>, so forking from a
 /// transient thread-pool thread would spuriously SIGKILL a healthy worker once the
 /// pool retired that thread. On Windows each worker is additionally sealed into a
-/// kill-on-close Job Object (<see cref="WindowsJobObject"/>, §10 Windows containment) so docketd's death
+/// kill-on-close Job Object (<see cref="WindowsJobObject"/>, §10 Windows containment) so landbridged's death
 /// takes the whole tree down with no discovery needed.</para>
 /// </summary>
 public sealed class ProcessSupervisor : IProcessSupervisor
@@ -263,7 +263,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
 
     /// <summary>
     /// The supervised tasks whose OS process is still alive (§10 process-alive). The
-    /// source for the periodic <c>alive</c> event: this is the one fact docketd knows
+    /// source for the periodic <c>alive</c> event: this is the one fact landbridged knows
     /// and the plane cannot observe, so it is the fact that has to travel. Narrower
     /// than <see cref="RunningSessions"/>, which still lists a task between its process
     /// exiting and its bookkeeping being torn down — reporting one of those as alive
@@ -332,7 +332,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             ["work_dir"] = workDir,
         };
         // So a files[] body can write Claude's --mcp-config JSON without the
-        // plane's BuildWorkerMcpConfig helper. Tokens are dkt_<class>_<64 hex>
+        // plane's BuildWorkerMcpConfig helper. Tokens are lbr_<class>_<64 hex>
         // and are safe to splice into JSON. Empty when the dispatch carries none
         // (the same tests that omit McpConfigJson).
         if (dispatch.WorkerToken.Length > 0)
@@ -399,11 +399,11 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             UseShellExecute = false,
             // stdin is redirected for EVERY spawn — including a `stdin: closed` profile,
             // which is redirected precisely so there is a pipe to close (below) rather
-            // than docketd's own inherited stdin, whatever that happens to be.
+            // than landbridged's own inherited stdin, whatever that happens to be.
             //
             // Under the default `deadman` policy the write end is then held open for the
             // child's lifetime (we never close StandardInput). That held pipe IS the
-            // dead-man's signal: if docketd dies — even under SIGKILL — the OS closes the
+            // dead-man's signal: if landbridged dies — even under SIGKILL — the OS closes the
             // write end and a well-behaved harness sees EOF on stdin and kills its own
             // process tree. This is the cooperative first line of defence the StrayReaper
             // only backstops on restart (§10). Message-mode stop reuses the SAME pipe to
@@ -420,29 +420,29 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         for (var i = 1; i < argv.Length; i++)
             psi.ArgumentList.Add(argv[i]);
 
-        psi.Environment["DOCKET_MACHINE_ID"] = machineId;
-        psi.Environment["DOCKET_SESSION_ID"] = dispatch.Session.ToString();
+        psi.Environment["LANDBRIDGE_MACHINE_ID"] = machineId;
+        psi.Environment["LANDBRIDGE_SESSION_ID"] = dispatch.Session.ToString();
         if (dispatch.WorkerToken.Length > 0)
-            psi.Environment["DOCKET_WORKER_TOKEN"] = dispatch.WorkerToken;
+            psi.Environment["LANDBRIDGE_WORKER_TOKEN"] = dispatch.WorkerToken;
         if (substitutions.TryGetValue("mcp_url", out var mcpUrl) && mcpUrl.Length > 0)
-            psi.Environment["DOCKET_MCP_URL"] = mcpUrl;
+            psi.Environment["LANDBRIDGE_MCP_URL"] = mcpUrl;
 
         // §1 tracing: hand the worker the current handle span's W3C id so its root
         // span — and its MCP calls back to the plane — continue the one trace.
-        // Null when nothing is tracing. The child inherits the rest of docketd's
+        // Null when nothing is tracing. The child inherits the rest of landbridged's
         // environment as a copy (ProcessStartInfo does not clear it under
         // UseShellExecute=false), so OTEL_EXPORTER_OTLP_ENDPOINT/…_PROTOCOL flow
         // through unchanged and the worker exports to the same collector.
         if (Activity.Current?.Id is { } traceparent)
-            psi.Environment["DOCKET_TRACEPARENT"] = traceparent;
+            psi.Environment["LANDBRIDGE_TRACEPARENT"] = traceparent;
 
         // #112 G3: the profile's own env, substituted with the same tokens as spawn.
-        // Applied after the reserved DOCKET_* stamps (which it cannot overwrite) and
+        // Applied after the reserved LANDBRIDGE_* stamps (which it cannot overwrite) and
         // before telemetry, so telemetry.env still overlays OTEL_* when otel is on.
         ApplyProfileEnvironment(psi, profile, substitutions);
 
         // §10 telemetry ingest: when this profile opts in, turn the harness's own
-        // exporter on and stamp docket.session_id onto everything it emits, so the
+        // exporter on and stamp landbridge.session_id onto everything it emits, so the
         // operator's collector can bucket token/cost per task (visibility only —
         // nothing here meters or caps, and the plane ingests none of it). Inheritance
         // above is what carries everything not named in the resolved set.
@@ -472,7 +472,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         // into one session file and corrupts the recovery substrate itself"). The flag
         // is what makes its imminent death harmless: a worker instance is identified
         // here by task id alone, so without it the predecessor's exit reaps its
-        // successor's process tree by DOCKET_SESSION_ID, reports the successor's death to
+        // successor's process tree by LANDBRIDGE_SESSION_ID, reports the successor's death to
         // the plane (which requeues the task and revokes the successor's token), and
         // drops the successor out of supervision entirely.
         if (_tasks.TryGetValue(dispatch.Session, out var predecessor))
@@ -606,7 +606,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         }
 
         // §10: started (harness up) is distinct from dispatch ack. Process-spawned
-        // is docketd's own observation; a richer events.source refines it upstream.
+        // is landbridged's own observation; a richer events.source refines it upstream.
         _ring.Enqueue(new StartedEvent(dispatch.Session, _clock.GetUtcNow()));
         return dispatch.Session;
     }
@@ -738,14 +738,14 @@ public sealed class ProcessSupervisor : IProcessSupervisor
 
         _ring.Enqueue(new ExitedEvent(supervised.Session, exitCode, _clock.GetUtcNow()));
 
-        // §10: task-exit stray cleanup keyed by DOCKET_SESSION_ID, best-effort. Every
-        // instance of a task carries the same DOCKET_SESSION_ID, so this is reachable only
+        // §10: task-exit stray cleanup keyed by LANDBRIDGE_SESSION_ID, best-effort. Every
+        // instance of a task carries the same LANDBRIDGE_SESSION_ID, so this is reachable only
         // for the current one — a superseded predecessor returned above rather than
         // reaping the successor it was replaced by (#102).
         try { _taskReaper?.ReapSession(machineId, supervised.Session.ToString()); }
         catch { /* best effort */ }
 
-        // After reap so a hook that accidentally carried DOCKET_SESSION_ID is not
+        // After reap so a hook that accidentally carried LANDBRIDGE_SESSION_ID is not
         // killed mid-run. Best-effort: a failed after_exit must not rewrite the
         // exit the plane already recorded.
         try
@@ -786,7 +786,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
     /// <summary>
     /// §10 Windows containment: creates a kill-on-close Job Object and assigns the freshly-started worker
     /// to it. Never throws — on creation/assignment failure it records the reason,
-    /// logs to stderr (docketd's log sink), and returns null so the spawn survives.
+    /// logs to stderr (landbridged's log sink), and returns null so the spawn survives.
     /// CI runners wrap processes in their own Job Objects; Windows 8+ nests jobs, but
     /// an incompatible outer job can still refuse the assignment, and the held-stdin
     /// dead-man pipe plus the portable tree-kill still cover those cases. The job is
@@ -798,7 +798,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         var job = WindowsJobObject.TryCreateAndAssign(process.Handle, out var failure);
         LastJobAssignmentFailure = failure;
         if (job is null)
-            Console.Error.WriteLine($"docketd: Job Object containment degraded for a worker: {failure}");
+            Console.Error.WriteLine($"landbridged: Job Object containment degraded for a worker: {failure}");
         return job;
     }
 
@@ -862,7 +862,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
 
     /// <summary>
     /// Resolve a <c>files[]</c> path against the work dir so a relative
-    /// <c>.grok/config.toml</c> lands in the clone, not docketd's cwd.
+    /// <c>.grok/config.toml</c> lands in the clone, not landbridged's cwd.
     /// </summary>
     internal static string ResolveUnderWorkDir(string workDir, string path)
         => Path.IsPathRooted(path)
@@ -923,10 +923,10 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             psi.ArgumentList.Add(resolved[i]);
 
         ApplyProfileEnvironment(psi, profileEnv, substitutions);
-        psi.Environment["DOCKET_MACHINE_ID"] = machineId;
-        psi.Environment["DOCKET_HOOK"] = hookName;
-        psi.Environment.Remove("DOCKET_SESSION_ID");
-        psi.Environment.Remove("DOCKET_WORKER_TOKEN");
+        psi.Environment["LANDBRIDGE_MACHINE_ID"] = machineId;
+        psi.Environment["LANDBRIDGE_HOOK"] = hookName;
+        psi.Environment.Remove("LANDBRIDGE_SESSION_ID");
+        psi.Environment.Remove("LANDBRIDGE_WORKER_TOKEN");
 
         using var process = new Process { StartInfo = psi };
         try
@@ -940,7 +940,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         }
         catch
         {
-            Console.Error.WriteLine($"docketd: profile hook '{hookName}' failed to start");
+            Console.Error.WriteLine($"landbridged: profile hook '{hookName}' failed to start");
             return;
         }
 
@@ -955,7 +955,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             var message = $"profile hook '{hookName}' timed out after {HookTimeout.TotalSeconds:0}s";
             if (failClosed)
                 throw new InvalidOperationException(message);
-            Console.Error.WriteLine("docketd: " + message);
+            Console.Error.WriteLine("landbridged: " + message);
             return;
         }
 
@@ -966,7 +966,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             var message = $"profile hook '{hookName}' exited {process.ExitCode}";
             if (failClosed)
                 throw new InvalidOperationException(message);
-            Console.Error.WriteLine("docketd: " + message);
+            Console.Error.WriteLine("landbridged: " + message);
         }
     }
 
@@ -991,8 +991,8 @@ public sealed class ProcessSupervisor : IProcessSupervisor
 
         if (requestedWithoutEndpoint && _telemetryWarnedProfileNames.TryAdd(profile.Name, true))
             Console.Error.WriteLine(
-                $"docketd: profile '{profile.Name}' requests harness telemetry (telemetry.otel) but no endpoint " +
-                $"resolved — set telemetry.endpoint or {HarnessTelemetry.EndpointVar} on docketd. No telemetry " +
+                $"landbridged: profile '{profile.Name}' requests harness telemetry (telemetry.otel) but no endpoint " +
+                $"resolved — set telemetry.endpoint or {HarnessTelemetry.EndpointVar} on landbridged. No telemetry " +
                 "variables were set on the worker.");
     }
 

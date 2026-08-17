@@ -1,11 +1,11 @@
 using System.Collections.Concurrent;
-using Docket.Core;
+using Landbridge.Core;
 using Microsoft.Extensions.Time.Testing;
 
-namespace Docket.Runner.Tests;
+namespace Landbridge.Runner.Tests;
 
 /// <summary>
-/// The dedicated spawner thread (PDEATHSIG thread affinity). docketd must fork every worker from ONE
+/// The dedicated spawner thread (PDEATHSIG thread affinity). landbridged must fork every worker from ONE
 /// long-lived, non-thread-pool OS thread: on Linux the harness arms PDEATHSIG, which
 /// the kernel keys to the forking <em>thread</em>, so forking from a thread-pool
 /// thread that the pool later retires would spuriously SIGKILL a healthy worker.

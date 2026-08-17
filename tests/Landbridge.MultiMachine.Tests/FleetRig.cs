@@ -1,10 +1,10 @@
 using System.Collections.Concurrent;
 using System.Text;
-using Docket.Contracts;
-using Docket.ControlPlane;
-using Docket.ControlPlane.Tests;
-using Docket.Core;
-using Docket.Runner;
+using Landbridge.Contracts;
+using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Tests;
+using Landbridge.Core;
+using Landbridge.Runner;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
@@ -12,12 +12,12 @@ using Microsoft.Extensions.Logging.Abstractions;
 using ModelContextProtocol.Client;
 using ModelContextProtocol.Protocol;
 
-namespace Docket.MultiMachine.Tests;
+namespace Landbridge.MultiMachine.Tests;
 
 /// <summary>
 /// A standing multi-machine fleet for the collaboration scenarios (spec §8.3): one
-/// real control plane + relay, and N real docketd rigs on distinct machine ids, each
-/// spawning <c>Docket.CollabHarness</c>. It generalizes the increment-4 live-fleet
+/// real control plane + relay, and N real landbridged rigs on distinct machine ids, each
+/// spawning <c>Landbridge.CollabHarness</c>. It generalizes the increment-4 live-fleet
 /// crown from a fixed producer/consumer pair to an arbitrary set of enrolled machines.
 ///
 /// <para>Each machine is two seams the §10 socket would occupy: its registry send
@@ -36,7 +36,7 @@ namespace Docket.MultiMachine.Tests;
 ///
 /// <para><paramref name="spawnArgv"/> overrides what each machine's <c>default</c>
 /// profile spawns. Left null (the scripted tier's use) it spawns the no-LLM
-/// <c>Docket.CollabHarness</c>; the key-gated real-<c>claude -p</c> tier passes the
+/// <c>Landbridge.CollabHarness</c>; the key-gated real-<c>claude -p</c> tier passes the
 /// validated claude recipe instead (§10 config-only harness seam), so the very same
 /// fleet drives a real agent with no code change on any surface below this line.</para>
 ///
@@ -82,7 +82,7 @@ internal sealed class FleetRig(
     /// and its consume workers report before exiting, so exits carry no signal there),
     /// ON for the real-harness tiers — where a worker that ends its turn WITHOUT
     /// reporting must requeue the still-<c>working</c> task so a retry can redispatch it,
-    /// exactly as production docketd's socket loop does (§10). Gated on the spawn
+    /// exactly as production landbridged's socket loop does (§10). Gated on the spawn
     /// override so the scripted suite's behaviour is byte-for-byte unchanged.</summary>
     private bool RealWorkerMode => spawnArgv is not null;
 
@@ -567,7 +567,7 @@ internal sealed class FleetRig(
         _machines[machineId].Daemon.ReportProcesses();
 
     /// <summary>
-    /// Beats every machine on a fixed cadence, as a real docketd's heartbeat timer does.
+    /// Beats every machine on a fixed cadence, as a real landbridged's heartbeat timer does.
     /// Real-worker mode only, and the reason it exists is <c>list_processes</c>: an agent
     /// that starts a process and then looks for it must see a heartbeat newer than the
     /// start, and no test should have to know that.
@@ -877,7 +877,7 @@ internal sealed class FleetRig(
     ///
     /// <para>Reading the persisted rows rather than the parsed stream is the whole point of the
     /// fact that uses this: the parser is covered against captured fixtures already, so what is
-    /// unproven is the leg BETWEEN the layers — docketd encoding the event, the wire carrying it,
+    /// unproven is the leg BETWEEN the layers — landbridged encoding the event, the wire carrying it,
     /// the plane's sink storing it. That leg is exactly where a bug hid once, with every layer
     /// green in isolation and nothing sending anything (the <c>EncodeEvent</c> arm that was never
     /// registered), and only a query against the committed row can catch its return.</para>
@@ -889,7 +889,7 @@ internal sealed class FleetRig(
     ///
     /// <para><b>Returns the view, not the row, and that is load-bearing.</b> Storage spells the
     /// unnamed model as the empty string because a composite primary key cannot hold a NULL
-    /// (<c>DocketDbContext</c>), and <see cref="SessionUsageView.From"/> is the one place that
+    /// (<c>LandbridgeDbContext</c>), and <see cref="SessionUsageView.From"/> is the one place that
     /// convention is undone. Handing a test the raw <see cref="SessionUsageRow"/> routed around that
     /// single place, so an unattributed report surfaced as <c>""</c> here while every production
     /// reader saw <c>null</c> — which cost the first real-OpenCode dispatch a red on an otherwise
@@ -959,23 +959,23 @@ internal sealed class FleetRig(
     // ── Harness path resolution (mirrors the live-fleet crown) ──────────────────
 
     /// <summary>
-    /// The built <see cref="Docket.CollabHarness"/> apphost, resolved from its own bin
+    /// The built <see cref="Landbridge.CollabHarness"/> apphost, resolved from its own bin
     /// (not the copy beside this test) — its MCP-client closure is copied local only
     /// there, so the copy beside the test cannot start.
     /// </summary>
-    private static string CollabHarnessPath() => SiblingApphostPath("Docket.CollabHarness");
+    private static string CollabHarnessPath() => SiblingApphostPath("Landbridge.CollabHarness");
 
     /// <summary>
-    /// The built <see cref="Docket.Runner.TestHarness"/> apphost — an absolute path to a real
+    /// The built <see cref="Landbridge.Runner.TestHarness"/> apphost — an absolute path to a real
     /// binary on every platform, which is what a worker's <c>start_process</c> argv needs
-    /// (§10: argv, never a shell, and the process gets docketd's environment rather than a
+    /// (§10: argv, never a shell, and the process gets landbridged's environment rather than a
     /// shell's PATH). Its <c>http-serve</c> mode is the listener the §8.3 scenario forwards to.
     /// </summary>
-    public static string TestHarnessPath() => SiblingApphostPath("Docket.Runner.TestHarness");
+    public static string TestHarnessPath() => SiblingApphostPath("Landbridge.Runner.TestHarness");
 
     /// <summary>
     /// The <c>DOTNET_ROOT</c> a spawned .NET apphost needs, derived from the runtime this test
-    /// is itself running on. An agent-started process gets docketd's environment rather than a
+    /// is itself running on. An agent-started process gets landbridged's environment rather than a
     /// shell's (§10), and an apphost that cannot find a runtime fails at launch with no output —
     /// so a scenario that spawns one has to pass this explicitly through <c>start_process</c>'s
     /// <c>env</c>, which is the same thing the worker skill tells agents to do for <c>PATH</c>.
@@ -992,7 +992,7 @@ internal sealed class FleetRig(
 
     /// <summary>
     /// Put <see cref="DotnetRoot"/> on this process's environment, which an agent-started
-    /// process inherits (docketd's environment is the child's base, §10). Belt and braces
+    /// process inherits (landbridged's environment is the child's base, §10). Belt and braces
     /// alongside telling the agent to pass it in <c>env</c>: the <c>env</c> argument is what the
     /// worker skill documents and is worth exercising, but a scenario should not go red because
     /// a model dropped one optional argument — the interesting failure is a refusal or a missing
@@ -1013,7 +1013,7 @@ internal sealed class FleetRig(
     {
         var testDir = System.IO.Path.GetDirectoryName(typeof(FleetRig).Assembly.Location)!;
         var harnessDir = testDir.Replace(
-            System.IO.Path.Combine("Docket.MultiMachine.Tests", "bin"),
+            System.IO.Path.Combine("Landbridge.MultiMachine.Tests", "bin"),
             System.IO.Path.Combine(stem, "bin"),
             StringComparison.Ordinal);
         var apphost = System.IO.Path.Combine(harnessDir, OperatingSystem.IsWindows() ? stem + ".exe" : stem);
@@ -1026,7 +1026,7 @@ internal sealed class FleetRig(
     private static string NewWorkRoot()
     {
         var dir = System.IO.Path.Combine(
-            System.IO.Path.GetTempPath(), "docket-multimachine-tests", Guid.NewGuid().ToString("N"));
+            System.IO.Path.GetTempPath(), "landbridge-multimachine-tests", Guid.NewGuid().ToString("N"));
         System.IO.Directory.CreateDirectory(dir);
         return dir;
     }

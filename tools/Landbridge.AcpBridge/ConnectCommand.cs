@@ -1,10 +1,10 @@
 using System.Net.WebSockets;
 
-namespace Docket.AcpBridge;
+namespace Landbridge.AcpBridge;
 
 /// <summary>
 /// Profile-side half: stdin/stdout are ACP NDJSON; the WebSocket is the remote.
-/// Exits when either the pipe or the socket ends, so docketd sees a process death.
+/// Exits when either the pipe or the socket ends, so landbridged sees a process death.
 /// </summary>
 internal static class ConnectCommand
 {

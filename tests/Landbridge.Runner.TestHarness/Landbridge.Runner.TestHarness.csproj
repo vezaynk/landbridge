@@ -5,7 +5,7 @@
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
-    <RootNamespace>Docket.Runner.TestHarness</RootNamespace>
+    <RootNamespace>Landbridge.Runner.TestHarness</RootNamespace>
     <IsPackable>false</IsPackable>
     <!-- The dead-man's switch arms PDEATHSIG via [LibraryImport]; its source-gen'd
          marshalling stubs need an unsafe context (see ParentDeathSignal). -->

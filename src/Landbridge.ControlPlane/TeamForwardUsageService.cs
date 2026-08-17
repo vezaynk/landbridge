@@ -1,7 +1,7 @@
-using Docket.Core;
+using Landbridge.Core;
 using Microsoft.EntityFrameworkCore;
 
-namespace Docket.ControlPlane;
+namespace Landbridge.ControlPlane;
 
 /// <summary>
 /// Per-Team relay byte accounting, spec §9 check 10 / §9.10 — <b>measurement without
@@ -27,7 +27,7 @@ namespace Docket.ControlPlane;
 /// row, which survives revocation, so a splice that outlives its grant still attributes
 /// correctly.</para>
 /// </summary>
-public sealed class TeamForwardUsageService(DocketDbContext db, TimeProvider clock)
+public sealed class TeamForwardUsageService(LandbridgeDbContext db, TimeProvider clock)
 {
     /// <summary>
     /// Attributes a batch of per-forward byte deltas to their Teams and adds them to each

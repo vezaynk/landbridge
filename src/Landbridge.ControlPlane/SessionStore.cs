@@ -1,9 +1,9 @@
 using System.Diagnostics;
-using Docket.Contracts;
-using Docket.Core;
+using Landbridge.Contracts;
+using Landbridge.Core;
 using Microsoft.EntityFrameworkCore;
 
-namespace Docket.ControlPlane;
+namespace Landbridge.ControlPlane;
 
 /// <summary>
 /// The only write path to task state (spec §15: the control plane is the only
@@ -22,11 +22,11 @@ namespace Docket.ControlPlane;
 /// transaction, because it is not a write: closing a live relay splice is a command to two
 /// machines (§8.3, <see cref="ForwardTeardownService"/>), so it runs <b>after</b> the commit
 /// and only for what the committed effect said. Null when a host wired the store without
-/// <see cref="ForwardingServiceCollectionExtensions.AddDocketForwarding"/> and in the pure
+/// <see cref="ForwardingServiceCollectionExtensions.AddLandbridgeForwarding"/> and in the pure
 /// store tests, where the rows are the subject and there are no machines to tell.</para>
 /// </summary>
 public sealed class SessionStore(
-    DocketDbContext db,
+    LandbridgeDbContext db,
     TimeProvider clock,
     SessionStorePolicy? policy = null,
     ForwardTeardownService? forwards = null)
@@ -263,7 +263,7 @@ public sealed class SessionStore(
     /// <summary>
     /// The relaying worker tool's wait (§11 permission bridge): block until this task's
     /// pending permission request is decided, then hand back the verdict and its message.
-    /// The one live wait in Docket, and the harness contract is why — a permission prompt
+    /// The one live wait in Landbridge, and the harness contract is why — a permission prompt
     /// has nowhere to deliver an answer to a process that has exited, so the asking process
     /// stays up inside its tool call and this method is what holds it there.
     ///
@@ -840,7 +840,7 @@ public sealed class SessionStore(
 
     /// <summary>
     /// Stamps the opaque harness session ref onto a task row (§11 resume), from a
-    /// <see cref="Docket.Contracts.SessionStartedEvent"/> the runner event sink
+    /// <see cref="Landbridge.Contracts.SessionStartedEvent"/> the runner event sink
     /// received. Not a state transition — this is transport metadata the plane
     /// never interprets (like <see cref="SessionRow.ResultReference"/>/<c>TraceContext</c>),
     /// so it is a targeted set-based write that runs no engine transition, takes no
@@ -970,7 +970,7 @@ public sealed class SessionStore(
             return;
 
         // The empty string IS the unnamed model in storage: a composite primary key cannot
-        // contain a NULL (DocketDbContext explains the trade), and the view maps it back.
+        // contain a NULL (LandbridgeDbContext explains the trade), and the view maps it back.
         var model = report.Model ?? "";
         var row = await db.SessionUsage
             .FirstOrDefaultAsync(u => u.SessionId == report.Session.Value && u.Model == model, ct);
@@ -1258,9 +1258,9 @@ public sealed class SessionStore(
                     break;
 
                 // WriteParkRecord is already reflected by CopyFrom (row park columns).
-                // DiscardWorkspace / DeferWorkspaceDiscardUntilVerdict would be docketd's to
+                // DiscardWorkspace / DeferWorkspaceDiscardUntilVerdict would be landbridged's to
                 // enact, and nothing does (§11: "nothing enacts workspace discard today").
-                // No §10 command carries a workspace discard and docketd reads no event
+                // No §10 command carries a workspace discard and landbridged reads no event
                 // details, so this arm is where the intent stops — a discard cancel and a
                 // preserve cancel leave identical rows.
                 case WriteParkRecord:
@@ -1327,7 +1327,7 @@ public sealed class SessionStore(
             // NOTIFY in the same transaction: subscribers wake only on committed
             // writes, and never on a rolled-back one.
             await db.Database.ExecuteSqlAsync(
-                $"SELECT pg_notify({DocketDbContext.EventChannel}, {sessionId.ToString()})", ct);
+                $"SELECT pg_notify({LandbridgeDbContext.EventChannel}, {sessionId.ToString()})", ct);
             if (ownTx is not null)
                 await ownTx.CommitAsync(ct);
         }

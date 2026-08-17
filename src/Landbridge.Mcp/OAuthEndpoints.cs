@@ -1,16 +1,16 @@
 using System.Net;
 using System.Text;
 using System.Text.Encodings.Web;
-using Docket.ControlPlane.Auth;
+using Landbridge.ControlPlane.Auth;
 using Microsoft.AspNetCore.WebUtilities;
 
-namespace Docket.Mcp;
+namespace Landbridge.Mcp;
 
 /// <summary>
 /// The OAuth 2.1 authorization-code flow (spec §5): <c>/oauth/authorize</c> and
 /// <c>/oauth/token</c>, the front door a human — and an MCP client like Claude
 /// Code acting for one — walks through to obtain the existing opaque
-/// <c>dkt_h_</c> human session token. Plain anonymous HTTP in the narrow,
+/// <c>lbr_h_</c> human session token. Plain anonymous HTTP in the narrow,
 /// non-MCP style of <see cref="EnrollmentEndpoints"/>; the endpoints are the
 /// transport shell and all the credential logic lives in the control-plane
 /// services (<see cref="OAuthAuthorizationCodeService"/>,
@@ -21,7 +21,7 @@ namespace Docket.Mcp;
 /// <see cref="TokenService.IssueHumanSessionAsync"/> — the same seam a §5 human
 /// session has always been minted through — so the token the client receives is
 /// the ordinary opaque human session, validated by the unchanged bearer path in
-/// <c>DocketAuthenticationHandler</c>. This endpoint surface only adds the OAuth
+/// <c>LandbridgeAuthenticationHandler</c>. This endpoint surface only adds the OAuth
 /// wire protocol in front of that mint.</para>
 ///
 /// <para>Every RFC rule enforced is cited at the point it is applied:
@@ -69,7 +69,7 @@ public static class OAuthEndpoints
         HttpContext http, bool isPost, IOperatorVerifier verifier, ICimdClient cimd,
         OAuthAuthorizationCodeService codes, OAuthServerConfig server, ILoggerFactory logs, CancellationToken ct)
     {
-        var log = logs.CreateLogger("Docket.Mcp.OAuth");
+        var log = logs.CreateLogger("Landbridge.Mcp.OAuth");
 
         // Fail-closed (§5, mirrors RelayValidationEndpoints' bearer): with no
         // operator credential configured the authorization server can verify no
@@ -161,7 +161,7 @@ public static class OAuthEndpoints
         HttpContext http, OAuthAuthorizationCodeService codes, TokenService tokens,
         OAuthServerConfig server, TimeProvider clock, ILoggerFactory logs, CancellationToken ct)
     {
-        var log = logs.CreateLogger("Docket.Mcp.OAuth");
+        var log = logs.CreateLogger("Landbridge.Mcp.OAuth");
 
         if (!http.Request.HasFormContentType)
             return TokenError("invalid_request", "token requests are application/x-www-form-urlencoded");
@@ -340,7 +340,7 @@ public static class OAuthEndpoints
         var sb = new StringBuilder();
         sb.Append("<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">");
         sb.Append("<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">");
-        sb.Append("<title>Authorize Docket access</title>");
+        sb.Append("<title>Authorize Landbridge access</title>");
         sb.Append("<style>body{font:16px system-ui,sans-serif;max-width:34rem;margin:3rem auto;padding:0 1rem;color:#111}"
             + "h1{font-size:1.3rem}.client{background:#f4f4f5;border-radius:.5rem;padding:1rem;margin:1rem 0}"
             + ".client b{font-size:1.05rem}.host{color:#555;font-size:.9rem;word-break:break-all}"
@@ -350,7 +350,7 @@ public static class OAuthEndpoints
             + "button{margin-top:1.2rem;padding:.6rem 1.2rem;font-size:1rem;cursor:pointer}"
             + ".err{color:#b00020;margin:.5rem 0}.scope{font-size:.9rem;color:#555}"
             + ".unverified{font-size:.85rem;color:#666;margin:.4rem 0 0}</style></head><body>");
-        sb.Append("<h1>Authorize access to Docket</h1>");
+        sb.Append("<h1>Authorize access to Landbridge</h1>");
 
         // The identity: the client_id host, then the whole client_id URL, then the
         // redirect_uri. client_id is the only field the fetcher proves (it must equal
@@ -374,7 +374,7 @@ public static class OAuthEndpoints
             sb.Append(" &lt;").Append(e.Encode(doc.ClientUri)).Append("&gt;");
         sb.Append("</p></div>");
 
-        sb.Append("<p>This client is requesting a Docket human session");
+        sb.Append("<p>This client is requesting a Landbridge human session");
         if (p.Scope is not null)
             sb.Append(" <span class=\"scope\">(scope: ").Append(e.Encode(p.Scope)).Append(")</span>");
         sb.Append(".</p>");
