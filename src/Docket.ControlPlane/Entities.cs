@@ -120,10 +120,10 @@ public sealed class TaskRow
     /// The verdict a pending permission request was decided with (§11), or null while it is
     /// still undecided. This is the field the relaying worker tool polls: it blocks inside
     /// its own tool call until this lands (or until the wait-TTL sweeper parks the task out
-    /// from under it), then translates it into the harness's permission result. The message
-    /// beside it rides <see cref="InputAnswer"/>, reusing the answer column because it is
-    /// the same thing — the words that came back with the decision. Cleared, with the
-    /// escalation fields, by a new request.
+    /// from under it), then translates it into the harness's permission result. A note
+    /// beside the verdict rides the AnswerPermission event, not
+    /// <see cref="InputAnswer"/> — that column is the Lead's prose to the worker.
+    /// Cleared, with the escalation fields, by a new request.
     /// </summary>
     public PermissionVerdict? PermissionVerdict { get; set; }
 

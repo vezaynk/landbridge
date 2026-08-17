@@ -377,6 +377,9 @@ public sealed record RunnerConfig(
                 }
             }
 
+            if (dto.SessionMode is { Length: 0 })
+                problems.Add($"profile '{name}' session_mode is empty");
+
             built[name] = BuildProfile(dto);
         }
 
@@ -425,7 +428,8 @@ public sealed record RunnerConfig(
             dto.Prompt,
             dto.FollowUp,
             dto.AuthMethod,
-            dto.ConfigOptions);
+            dto.ConfigOptions,
+            dto.SessionMode);
     }
 
     internal static bool IsOctalFileMode(string raw)
@@ -497,7 +501,8 @@ public sealed record ProfileConfig(
     string? Prompt = null,
     string? FollowUp = null,
     string? AuthMethod = null,
-    IReadOnlyDictionary<string, string>? ConfigOptions = null)
+    IReadOnlyDictionary<string, string>? ConfigOptions = null,
+    string? SessionMode = null)
 {
     /// <summary>
     /// §11 / <c>ideas/sessions.md</c>: the turn that wakes this profile's live session when

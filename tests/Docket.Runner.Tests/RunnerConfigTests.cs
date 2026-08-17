@@ -222,6 +222,28 @@ public class RunnerConfigTests
         Assert.Empty(config.Default.Env);
         Assert.Empty(config.Default.Files);
         Assert.Empty(config.Default.ConfigOptions);
+        Assert.Null(config.Default.SessionMode);
+    }
+
+    [Fact]
+    public void Session_mode_is_the_set_mode_pin()
+    {
+        var config = RunnerConfig.Load(AcpProfile(extra: """
+            "session_mode": "approve",
+            """));
+
+        Assert.Equal("approve", config.Default.SessionMode);
+    }
+
+    [Fact]
+    public void Session_mode_refuses_an_empty_string()
+    {
+        Assert.False(RunnerConfig.TryLoad(
+            AcpProfile(extra: """
+            "session_mode": "",
+            """),
+            out _, out var errors));
+        Assert.Contains(errors, e => e.Contains("session_mode") && e.Contains("empty"));
     }
 
     [Fact]

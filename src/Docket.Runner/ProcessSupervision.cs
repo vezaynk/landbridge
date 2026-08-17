@@ -551,7 +551,8 @@ public sealed class ProcessSupervisor : IProcessSupervisor
                     mcpServers,
                     dispatch.ResumeSessionRef,
                     profile.AuthMethod,
-                    profile.ConfigOptions),
+                    profile.ConfigOptions,
+                    profile.SessionMode),
                 onSessionId: sessionId =>
                 {
                     // Same one-per-task guard and the same reason as the stream path: the
