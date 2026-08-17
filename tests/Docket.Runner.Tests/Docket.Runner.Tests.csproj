@@ -39,6 +39,7 @@
          spawn it as a real child process (§10 conventions — a real spawnable
          child, no shell). -->
     <ProjectReference Include="..\Docket.Runner.TestHarness\Docket.Runner.TestHarness.csproj" />
+    <ProjectReference Include="..\..\tools\Docket.AcpBridge\Docket.AcpBridge.csproj" />
   </ItemGroup>
 
 </Project>

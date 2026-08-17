@@ -3,7 +3,7 @@ using Docket.Runner;
 namespace Docket.MultiMachine.Tests;
 
 /// <summary>
-/// The four real-CLI fixtures. What differs per harness is the ACP entry point
+/// The real-CLI fixtures. What differs per harness is the ACP entry point
 /// and how that vendor spells docket's MCP tools. MCP itself rides
 /// <c>session/new</c>; these fixtures do not write a bearer file.
 /// </summary>
@@ -94,6 +94,41 @@ internal static class RealHarnessProfiles
         Usage = UsageExpectation.Tokens,
         SupportsResume = true,
         FailureHypotheses = GrokHypotheses(),
+    };
+
+    public static RealHarnessProfile Goose(string bin) => new()
+    {
+        Name = "goose",
+        // Native. Handshake captured on Goose 1.37.0: protocol 1, loadSession true,
+        // mcp.http true. authMethods lists goose-provider (interactive configure);
+        // session/new succeeded without authenticate. Do not set AuthMethod.
+        AcpSpawn = [bin, "acp"],
+        Bin = bin,
+        GetTask = "docket__get_task",
+        ReportResult = "docket__report_result",
+        RequestInput = "docket__request_input",
+        // Tokens, not Cost. Measured 2026-08-17 through the ACP-bridge turn:
+        // PromptResponse carried buckets. A stored $0.00 is still forbidden.
+        Usage = UsageExpectation.Tokens,
+        SupportsResume = true,
+        FailureHypotheses = GooseHypotheses(),
+    };
+
+    public static RealHarnessProfile GooseViaBridge(string gooseBin, string bridgeBin, string url) => new()
+    {
+        Name = "goose-acp-bridge",
+        AcpSpawn = [bridgeBin, "connect", url],
+        Bin = gooseBin,
+        GetTask = "docket__get_task",
+        ReportResult = "docket__report_result",
+        RequestInput = "docket__request_input",
+        // Tokens, not Cost: first live turn will say whether PromptResponse
+        // carries buckets. A stored $0.00 is still forbidden.
+        Usage = UsageExpectation.Tokens,
+        SupportsResume = true,
+        FailureHypotheses = GooseHypotheses()
+            + "  6. BRIDGE. Far side is `docket-acp-bridge listen -- goose acp`. "
+            + "Connect spawn is the profile. A 409 means two dispatches shared one listen.",
     };
 
     public static string CodexModel =>
@@ -319,4 +354,21 @@ internal static class RealHarnessProfiles
            5. AUTH. XAI_API_KEY (not XAI_KEY) must be in the environment.
 
          """;
+
+    private static string GooseHypotheses() =>
+        """
+
+        Suspect, in order:
+          1. ENTRY POINT. Spawn is `goose acp`, not `goose serve` and not `goose run`.
+          2. AUTH. goose-provider is interactive `goose configure`. The process needs
+             a provider already configured, or GOOSE_PROVIDER / GOOSE_MODEL plus that
+             provider's key. Do not set auth_method to goose-provider.
+          3. TOOL NAMES. Expected spelling is docket__get_task (goose namespaces the
+             `docket` MCP server as `{name}__{tool}`). Confirm on the first turn.
+          4. MODE. session/new defaults to `auto` (auto-approve). This client does
+             not send session/set_mode.
+          5. FS/TERMINAL. This client declares both UNSUPPORTED. A Goose that asks
+             for terminal/create cannot work here.
+
+        """;
 }

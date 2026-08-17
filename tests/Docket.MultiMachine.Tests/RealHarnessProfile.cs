@@ -26,8 +26,8 @@ internal sealed class RealHarnessProfile
 
     /// <summary>
     /// The ACP entry point: the argv that starts this harness as an Agent Client Protocol
-    /// agent over stdio. Natively a subcommand for OpenCode and Grok, an adapter binary for
-    /// Claude and Codex. Carries no prompt — an ACP agent takes none on argv.
+    /// agent over stdio. Natively a subcommand for OpenCode, Grok and Goose, an adapter
+    /// binary for Claude and Codex. Carries no prompt — an ACP agent takes none on argv.
     /// </summary>
     public required string[] AcpSpawn { get; init; }
     /// <summary>

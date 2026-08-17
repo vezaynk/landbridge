@@ -194,8 +194,9 @@ only when something actually does (#112 G11). No profile in this document needs 
 | Codex 1.3.0 | `codex-acp` (adapter) | 1 | ✅ | ✅ | API key or ChatGPT |
 | OpenCode 1.18.18 | `opencode acp` (native) | 1 | ✅ | ✅ | `opencode auth login` |
 | Grok Build | `grok agent stdio` (native) | ? | ? | ? | `XAI_API_KEY` / `grok login` |
+| Goose 1.37.0 | `goose acp` (native) | 1 | ✅ | ✅ | `goose-provider` (available; `session/new` succeeded without it) |
 
-All four measured agents also declare `sessionCapabilities` well beyond the base spec —
+The measured agents also declare `sessionCapabilities` well beyond the base spec —
 `resume`, `fork`, `list`, `close`, and on the two newest `delete` and
 `additionalDirectories`. Nothing here uses them yet; a §11 fork/chain is the obvious future
 customer.
@@ -221,7 +222,7 @@ npm install -g @agentclientprotocol/claude-agent-acp   # NOT @zed-industries/cla
 npm install -g @agentclientprotocol/codex-acp
 ```
 
-OpenCode and Grok need nothing extra — their ACP server is a subcommand of the CLI you
+OpenCode, Grok, and Goose need nothing extra — their ACP server is a subcommand of the CLI you
 already installed. Pin the versions the way you pin the harnesses: an adapter is a second
 upstream between `docketd` and the model, and it moves on its own schedule.
 
@@ -266,9 +267,11 @@ own spelling and each `prompt` below differs only in that.
 |---|---|
 | Claude, Codex | `mcp__docket__get_task` |
 | OpenCode | `docket_get_task` |
-| Grok | `docket__get_task` |
+| Grok, Goose | `docket__get_task` |
 
-Everything else in these four profiles is the same profile.
+Everything else in these profiles is the same profile. Goose's spelling is from its
+extension naming (`{server}__{tool}` on the `docket` MCP server handed over at
+`session/new`), not a live Docket turn — confirm on the first one.
 
 ### Worked example — OpenCode over ACP
 
@@ -422,6 +425,53 @@ gone, along with its side effect of declaring a docket MCP server for every inte
 ```
 
 If Grok turns out to require a client-side terminal, it cannot run under this client today.
+
+### Worked example — Goose over ACP
+
+Native (`goose acp`), no adapter. Handshake captured against Goose 1.37.0: protocol 1,
+`loadSession: true`, `mcpCapabilities.http: true`. `authMethods` lists `goose-provider`
+("Run `goose configure`"), and `session/new` still succeeded without `authenticate` —
+same rule as every other agent: a declared method is *available*, not required. Do
+**not** put `"auth_method": "goose-provider"` on the profile; that method is an
+interactive configure, not a headless key. The operator must already have run
+`goose configure` (or set `GOOSE_PROVIDER` / `GOOSE_MODEL` plus that provider's key).
+
+`goose serve` is the remote HTTP/WebSocket server. It is **not** this profile. Spawn
+is `goose acp`, stdio, one process per task. To put Goose behind a WebSocket instead,
+wrap it with [`docket-acp-bridge`](../../../tools/Docket.AcpBridge/README.md):
+`listen -- goose acp` on the far side, `connect <ws-url>` on `spawn`.
+
+```jsonc
+{
+  "profiles": [
+    {
+      "name": "default",
+      // `goose acp`, NOT `goose serve` and NOT `goose run`. serve is a long-lived
+      // remote transport; run is not the protocol.
+      "spawn": ["goose", "acp"],
+      "prompt": "You are a Docket worker running headless under docketd. You have been dispatched exactly one task. First call the docket__get_task MCP tool to read your assignment (namespace, description, completion_criteria, workspace, attempt). Do the work inside the assigned workspace. When done, call docket__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call docket__request_input instead of guessing.",
+      "follow_up": "There is new input on your assignment. Call docket__get_task to read it, then continue.",
+      // Optional override of whatever `goose configure` stored. Leave unset to use
+      // the machine's existing provider.
+      // "env": { "GOOSE_PROVIDER": "openai", "GOOSE_MODEL": "gpt-4o-mini" },
+      "stop": { "wind_down_seconds": 30 },
+      "logs": { "capture": true }
+    }
+  ]
+}
+```
+
+**Default session mode is `auto`.** Goose 1.37.0's `session/new` result advertises
+modes `auto` / `approve` / `smart_approve` / `chat` and starts on `auto`
+("Automatically approve tool calls"). This client does not send `session/set_mode`,
+so a Goose worker will not route those approvals through
+`session/request_permission`. That is a standing bypass this profile cannot close
+until the client grows a mode pin. Do not also put a bypass flag on `spawn`.
+
+Goose as an *editor* agent often expects the client to provide `fs` and `terminal`.
+This client declares both UNSUPPORTED. A Goose that does its own I/O (its Developer
+extension) can still work; one that asks the client for `terminal/create` cannot.
+Watch for the refusal line below on the first turn.
 
 ### The caveat that could make an ACP worker useless
 

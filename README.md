@@ -110,14 +110,17 @@ CI runs in **four workflows** because they have different needs:
   worker binaries and kills them mid-task; ubuntu-only, because stray discovery is a
   documented deferral on Windows and the scenarios would assert nothing there. The
   **`real-e2e`** matrix is the token-spending real-harness tier, gated to `workflow_dispatch`
-  so an ordinary push can never spend. Four cells (`claude` / `codex` / `opencode` / `grok`)
-  share the job body; display names stay **`real-claude-e2e`** etc. so the bump bot's merge
-  gate still matches. Each cell has its own database and runs only its own trait
-  (`Category=RealClaude` / `Category=RealCodex` / `Category=RealOpenCode` / `Category=RealGrok`),
-  and skips cleanly when its key is absent. Codex and OpenCode also install claude (one shared
-  pin, `if:`-gated) because the mixed-fleet facts need two binaries. The Grok cell maps
-  `XAI_KEY` → `XAI_API_KEY`. Grok has no npm package, so the bump bot never rewrites its
-  install.sh pin, but a dispatch still runs that cell and the merge gate waits for it.
+  so an ordinary push can never spend. Five cells (`claude` / `codex` / `opencode` /
+  `grok` / `goose`) share the job body; display names stay **`real-claude-e2e`** etc. so
+  the bump bot's merge gate still matches. Each cell has its own database and runs only
+  its own trait (`Category=RealClaude` / `Category=RealCodex` / `Category=RealOpenCode` /
+  `Category=RealGrok` / `Category=RealGoose`), and skips cleanly when its key is absent.
+  Codex and OpenCode also install claude (one shared pin, `if:`-gated) because the
+  mixed-fleet facts need two binaries. The Grok cell maps `XAI_KEY` → `XAI_API_KEY`.
+  The Goose cell sets `DOCKET_REAL_GOOSE=1` and runs both the direct `goose acp` bar
+  and the ACP-bridge facts. Grok and Goose have no npm package, so the bump bot never
+  rewrites those install pins, but a dispatch still runs those cells and the merge gate
+  waits for them.
 - **`.github/workflows/harness-bump.yml`** (daily cron) keeps the three harness-CLI pins
   current. See below.
 - **`.github/workflows/os-matrix.yml`** runs the platform-sensitive suites — Core,
@@ -146,10 +149,10 @@ happens to be in flight, at a random time, recording nothing.
 Drift is still caught daily — by a job instead of by accident.
 **[`tools/Docket.HarnessBump`](tools/Docket.HarnessBump/README.md)** compares each pin against that
 package's `dist-tags.latest`, opens a PR when something is newer, dispatches ci.yml against that
-branch, and merges **only if all four real tiers ran and passed**. Grok is not an npm pin — the
-bot never rewrites its install.sh version — but a dispatch of this workflow runs `real-grok-e2e`
-and the merge gate waits for it, because a `real-*` job the gate does not wait on would let a
-bump land while that tier was red. A red bump is left open for a
+branch, and merges **only if all five real tiers ran and passed**. Grok and Goose are not
+npm pins — the bot never rewrites those install versions — but a dispatch of this workflow
+runs `real-grok-e2e` and `real-goose-e2e` and the merge gate waits for them, because a
+`real-*` job the gate does not wait on would let a bump land while that tier was red. A red bump is left open for a
 human; the bot never bisects and never retries. It is a C# console tool with the cron workflow as a
 one-line `dotnet run`, because this repo runs no shell scripts — which also means its rules are
 unit-tested (`dotnet test tests/Docket.HarnessBump.Tests`) rather than discovered on a live run

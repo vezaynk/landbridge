@@ -506,8 +506,8 @@ public sealed record ProfileConfig(
     /// <see cref="Docket.Contracts.PromptCommand"/>).
     ///
     /// <para>The default names no tool, because the spelling is per-harness: claude and
-    /// Codex see <c>mcp__docket__get_task</c>, OpenCode <c>docket_get_task</c>, Grok
-    /// <c>docket__get_task</c>. A profile should say the right one — a worker that was told
+    /// Codex see <c>mcp__docket__get_task</c>, OpenCode <c>docket_get_task</c>, Grok and
+    /// Goose <c>docket__get_task</c>. A profile should say the right one — a worker that was told
     /// to call a tool it does not have goes hunting, and one that was told nothing specific
     /// has been observed reaching for a shell instead.</para>
     /// </summary>
