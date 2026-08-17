@@ -250,7 +250,7 @@ The load-bearing parts:
   There is no `stop.mode`.
 - **Resume is `session/load`.** There is no `resume.args`.
 
-See [runner-config.md](../ideas/skills/references/runner-config.md) for the four
+See [runner-config.md](../ideas/skills/references/runner-config.md) for the
 worked profiles.
 
 ### Progress
@@ -561,10 +561,13 @@ opt-in real-harness tiers), `os-matrix.yml` (the platform-sensitive suites on
 ubuntu/macOS/Windows), and `publish-images.yml` (GHCR runtime images on a `v*` tag).
 
 Paid real-harness e2e (`Category=RealClaude` / `RealCodex` / `RealOpenCode` /
-`RealGrok`) reads API keys from the environment. Locally, put them in user
-secrets on the MultiMachine test project — they are loaded at assembly start
-and published into the process so spawned CLIs inherit them. Process env
-(including CI job secrets) is not overwritten.
+`RealGrok` / `RealGoose`) reads API keys from the environment. Locally, put
+them in user secrets on the MultiMachine test project — they are loaded at
+assembly start and published into the process so spawned CLIs inherit them.
+Process env (including CI job secrets) is not overwritten. Goose also needs
+`DOCKET_REAL_GOOSE=1` (the dispatch cell sets it) plus `GOOSE_PROVIDER` /
+`GOOSE_MODEL`. That cell runs both the direct `goose acp` bar and the
+ACP-bridge facts.
 
 ```bash
 dotnet user-secrets set ANTHROPIC_API_KEY '…' --project tests/Docket.MultiMachine.Tests

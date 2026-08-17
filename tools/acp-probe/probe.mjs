@@ -71,6 +71,7 @@ const targets = [
   ["claude-code-acp (deprecated)", "node_modules/.bin/claude-code-acp", []],
   ["codex-acp", "node_modules/.bin/codex-acp", []],
   ["opencode acp (native)", "node_modules/.bin/opencode", ["acp"]],
+  ["goose acp (native)", "goose", ["acp"]],
 ];
 
 for (const [name, cmd, args] of targets) {

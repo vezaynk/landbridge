@@ -66,6 +66,7 @@
          absolute path on every platform CI runs, which is exactly this harness's job — an
          interpreter that happens to be installed is not a guarantee. -->
     <ProjectReference Include="..\Docket.Runner.TestHarness\Docket.Runner.TestHarness.csproj" />
+    <ProjectReference Include="..\..\tools\Docket.AcpBridge\Docket.AcpBridge.csproj" />
   </ItemGroup>
 
 </Project>

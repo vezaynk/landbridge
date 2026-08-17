@@ -31,6 +31,10 @@ on:
         description: "Grok Build model slug for the real-grok tier (DOCKET_GROK_MODEL)"
         required: false
         default: "grok-4.6"
+      goose_model:
+        description: "Goose model slug for the real-goose tier (GOOSE_MODEL)"
+        required: false
+        default: "claude-haiku-4-5-20251001"
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -176,17 +180,17 @@ jobs:
 
   # ── Opt-in real-harness multi-machine E2E ──────────────────────────────────
   #
-  # Four cells, one job. Token-spending, so workflow_dispatch only (GitHub forbids
+  # Five cells, one job. Token-spending, so workflow_dispatch only (GitHub forbids
   # referencing secrets in a job-level `if:`, so the event gate is what keeps an
   # ordinary push from ever spending). Display names stay `real-<harness>-e2e` so
   # the bump bot's merge gate (`E2eVerifier.RealHarnessJobs`) still matches.
-  # `fail-fast: false` — one red CLI must not cancel the other three.
+  # `fail-fast: false` — one red CLI must not cancel the other four.
   #
   # Each cell runs only its own trait (`Category=RealClaude` / RealCodex /
-  # RealOpenCode / RealGrok) and has its own database, so one cell's ResetAsync
-  # cannot truncate another's fleet. Codex and OpenCode also install claude: the
-  # mixed-fleet facts need both binaries. That claude pin is ONE `run:` line
-  # shared via `if:` — lockstep is structural.
+  # RealOpenCode / RealGrok / RealGoose) and has its own database, so one cell's
+  # ResetAsync cannot truncate another's fleet. Codex and OpenCode also install
+  # claude: the mixed-fleet facts need both binaries. That claude pin is ONE
+  # `run:` line shared via `if:` — lockstep is structural.
   #
   # PINS, and the versions are findings. `latest` moved mid-day on 2026-08-13:
   # one run installed claude 2.1.229 and went 9/9, another installed 2.1.231 and
@@ -200,6 +204,9 @@ jobs:
   #     installer (this repo runs no shell scripts). 0.0.0-dev-* have their own tags.
   #   * grok 1.0.3 via install.sh — no npm package, so the bump bot never rewrites
   #     this pin. The merge gate still waits on the cell.
+  #   * goose 1.46.0 via download_cli.sh + GOOSE_VERSION — also not npm. The
+  #     RealGoose cell runs both the direct `goose acp` bar and the ACP-bridge
+  #     facts. CONFIGURE=false: goose configure is interactive.
   #
   # Models are dispatch inputs, not PRs: the catalogs are server-side (Codex 404'd
   # gpt-5.1-codex-mini then gpt-5.1-codex; OpenCode fetches too). Forks without
@@ -224,6 +231,9 @@ jobs:
           - harness: grok
             category: RealGrok
             db: docket_realgrok
+          - harness: goose
+            category: RealGoose
+            db: docket_realgoose
     env:
       DOTNET_CLI_TELEMETRY_OPTOUT: 1
       DOTNET_NOLOGO: 1
@@ -249,21 +259,21 @@ jobs:
           dotnet-version: 10.0.x
 
       - uses: actions/setup-node@v4
-        if: matrix.harness != 'grok'
+        if: matrix.harness != 'grok' && matrix.harness != 'goose'
         with:
           node-version: 20
 
       # Mixed-fleet cells (codex, opencode) and the claude cell share this pin.
       # One line, so a bump rewrites every cell that needs claude.
       - name: Install claude CLI
-        if: matrix.harness != 'grok'
+        if: matrix.harness != 'grok' && matrix.harness != 'goose'
         run: npm install -g @anthropic-ai/claude-code@2.1.232
 
       # The ACP adapters. Claude and Codex have no native ACP server, so the shared
       # real-harness bar — which now builds its rigs on `protocol: acp` — spawns these
-      # instead of the CLI directly. OpenCode and Grok need nothing: their ACP entry
-      # point is a subcommand of the CLI installed above (`opencode acp`,
-      # `grok agent stdio`).
+      # instead of the CLI directly. OpenCode, Grok and Goose need nothing extra:
+      # their ACP entry point is a subcommand of the CLI (`opencode acp`,
+      # `grok agent stdio`, `goose acp`).
       #
       # Pinned like the CLIs, and deliberately NOT registered with the bump bot
       # (HarnessPackages.All): an adapter is a second upstream between docketd and the
@@ -271,7 +281,7 @@ jobs:
       # break that would first surface as a paid run failing. Capability drift is what
       # tools/acp-probe is for.
       - name: Install claude ACP adapter
-        if: matrix.harness != 'grok'
+        if: matrix.harness != 'grok' && matrix.harness != 'goose'
         run: npm install -g @agentclientprotocol/claude-agent-acp@0.68.0
 
       - name: Install codex CLI
@@ -292,6 +302,16 @@ jobs:
           curl -fsSL https://x.ai/cli/install.sh | bash -s 1.0.3
           echo "$HOME/.grok/bin" >> "$GITHUB_PATH"
 
+      # Pin the release, not `stable`. CONFIGURE=false: the script would otherwise
+      # try `goose configure` on a headless runner. The binary lands in
+      # ~/.local/bin; the cell's GOOSE_PROVIDER / GOOSE_MODEL are job env.
+      - name: Install goose CLI
+        if: matrix.harness == 'goose'
+        run: |
+          curl -fsSL https://github.com/aaif-goose/goose/releases/download/v1.46.0/download_cli.sh \
+            | CONFIGURE=false GOOSE_VERSION=v1.46.0 bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
       - name: Restore
         run: dotnet restore
 
@@ -311,3 +331,6 @@ jobs:
           DOCKET_CODEX_MODEL: ${{ inputs.codex_model || 'gpt-5.3-codex' }}
           DOCKET_OPENCODE_MODEL: ${{ inputs.opencode_model || 'anthropic/claude-haiku-4-5-20251001' }}
           DOCKET_GROK_MODEL: ${{ inputs.grok_model || 'grok-4.6' }}
+          DOCKET_REAL_GOOSE: ${{ matrix.harness == 'goose' && '1' || '' }}
+          GOOSE_PROVIDER: ${{ matrix.harness == 'goose' && 'anthropic' || '' }}
+          GOOSE_MODEL: ${{ inputs.goose_model || 'claude-haiku-4-5-20251001' }}

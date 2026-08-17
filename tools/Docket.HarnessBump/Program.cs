@@ -291,7 +291,7 @@ public static class Program
         }
         body.AppendLine();
         body.AppendLine("The bot is now dispatching `" + options.Workflow + "` on this branch and will wait for");
-        body.AppendLine("`real-claude-e2e`, `real-codex-e2e`, `real-opencode-e2e` and `real-grok-e2e`. **It merges only if all four");
+        body.AppendLine("`real-claude-e2e`, `real-codex-e2e`, `real-opencode-e2e`, `real-grok-e2e` and `real-goose-e2e`. **It merges only if all five");
         body.AppendLine("ran and passed** — a job that goes green because its facts skipped for a missing API key");
         body.AppendLine("counts as not verified.");
         body.AppendLine();

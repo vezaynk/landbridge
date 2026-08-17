@@ -14,7 +14,7 @@ the model, and capabilities are exactly the kind of thing that moves in a minor 
 node tools/acp-probe/probe.mjs
 ```
 
-It probes the four entry points named in
+It probes the entry points named in
 [`runner-config.md`](../../ideas/skills/references/runner-config.md); edit the `targets`
 array to point at whatever you have installed. No credentials are needed — `initialize` is a
 capability handshake and happens before any provider is contacted, which is precisely why
@@ -41,6 +41,11 @@ this is cheap enough to run on every machine during enroll.
 | Claude Code 0.16.2 (deprecated) | `claude-code-acp` | 1 | ✅ | ✅ | `[]` |
 | Codex 1.3.0 | `codex-acp` | 1 | ✅ | ✅ | `api-key`, `chat-gpt` — **required** |
 | OpenCode 1.18.18 | `opencode acp` | 1 | ✅ | ✅ | `[]` |
+| Goose 1.37.0 | `goose acp` | 1 | ✅ | ✅ | `goose-provider` — available; `session/new` succeeded without it |
+
+Goose's row is from a captured 1.37.0 handshake, not a run of this probe in this
+repo. `session/new` succeeded without `authenticate`. Do not put `goose-provider`
+on a profile — that method is interactive `goose configure`.
 
 **Codex is the one that needs the step, and a clean probe does not show it.** `initialize`
 succeeds, and then `session/new` answers `-32000 "Authentication required"` — the whole

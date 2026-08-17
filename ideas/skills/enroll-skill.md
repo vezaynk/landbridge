@@ -82,7 +82,7 @@ Two bars, neither negotiable, neither degrading gracefully. Confirm both by runn
 
 **1. Is it an MCP client?** A worker's only channel to Docket is `docket-mcp` — claiming, reporting, blockers, service registration all happen there. A harness without MCP cannot participate at all, no matter how good it is. Most current agents qualify; Aider is the notable exception.
 
-**2. Is it an ACP agent?** `docketd` speaks Agent Client Protocol over stdio. Native: `grok agent stdio`, `opencode acp`. Adapters: `claude-agent-acp`, `codex-acp`. A CLI that only has `-p` / `exec` / `run` is not enough.
+**2. Is it an ACP agent?** `docketd` speaks Agent Client Protocol over stdio. Native: `grok agent stdio`, `opencode acp`, `goose acp`. Adapters: `claude-agent-acp`, `codex-acp`. A CLI that only has `-p` / `exec` / `run` is not enough. `goose serve` is a remote HTTP/WebSocket server, not this client's transport.
 
 **3. Do not put bypass / always-approve / yolo in `spawn`.** Permissions are `session/request_permission`. docketd posts the worker bearer at `POST /worker/permission` and a Lead or human decides. A bypass flag on argv skips a dialog Docket is now the one answering.
 
@@ -95,8 +95,8 @@ If either bar fails, stop. Report to the human rather than working around it.
 Do not assume the harness or its version. Find out:
 
 1. Which harness is installed, and its version.
-2. The ACP entry point (`claude-agent-acp`, `codex-acp`, `opencode acp`, `grok agent stdio`). A CLI that only has `-p` / `exec` / `run` is not enough.
-3. How this harness spells docket's MCP tools (`mcp__docket__get_task` / `docket_get_task` / `docket__get_task`). That spelling is what `prompt` and `follow_up` must use.
+2. The ACP entry point (`claude-agent-acp`, `codex-acp`, `opencode acp`, `grok agent stdio`, `goose acp`). A CLI that only has `-p` / `exec` / `run` is not enough.
+3. How this harness spells docket's MCP tools (`mcp__docket__get_task` / `docket_get_task` / `docket__get_task`). That spelling is what `prompt` and `follow_up` must use. Goose is expected to use `docket__get_task`.
 4. Whether `initialize` declares `loadSession` and `mcpCapabilities.http`. Run `tools/acp-probe` against a harness this repo has not measured. `loadSession` defaults to false in the spec; without it every redispatch is a cold start.
 5. Whether the agent asks the client for `fs/*` or `terminal/*`. This client declares those UNSUPPORTED. An agent that routes all I/O through the client cannot work here.
 
