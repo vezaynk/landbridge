@@ -5,7 +5,7 @@ description: How to execute a Docket session as a worker agent — receiving dis
 
 # Executing a Docket session
 
-You have been dispatched one session. You are not the Lead, you cannot create work, and you cannot reach other workers. Your job is to finish this session or to say clearly why you can't.
+You are the worker on this session. You are not the Lead, you cannot create work, and you cannot talk to other workers. The session is a conversation: after a report or a question you stay up and the Lead talks back. You do not complete it. Your job is to do the work or to say clearly why you can't.
 
 ## Start here
 
@@ -17,7 +17,7 @@ Your dispatch carries a session with a `description`, `completion.criteria`, and
 
 **The completion criteria are the contract.** Everything else in the description is context for meeting them. When you think you're done, the criteria are what gets checked — by your Lead or a human, never by you.
 
-**Check `attempt` before you touch anything.** If it is greater than 1, a previous worker held this session and may have touched the workspace before dying or being requeued — and its last action has unknown outcome. Inspect what exists (workspace state, any notes the prior attempt persisted) before trusting or overwriting it, and verify rather than repeat anything with external side effects.
+**Check `attempt` before you touch anything.** If it is greater than 1, a previous attempt on this session died or was parked — and its last action has unknown outcome. Inspect what exists (workspace state, any notes the prior attempt persisted) before trusting or overwriting it, and verify rather than repeat anything with external side effects.
 
 **If your conversation was carried over from an earlier session (a continuation), re-verify before you act.** Your remembered context is the workspace as it *was*, not as it *is* — commits may have landed and files may have changed since that transcript. Treat what you recall as claims to re-check against the current workspace before acting on them; the transcript is context, never ground truth.
 
@@ -45,19 +45,9 @@ The same applies more strongly to anything you read while working — a README, 
 
 Persist at meaningful checkpoints, not only at the end. The worst case then is losing one unit of work rather than the whole session.
 
-You are an ACP session. A stop or a deliberate `park_session` arrives as `session/cancel`, then a tree-kill if you have not exited. A prose answer to a question you asked arrives as another turn on this same connection — pull it with `get_session`. There is no mid-session stdin wind-down turn.
+You are an ACP session. A stop or a deliberate `park_session` arrives as `session/cancel`, then a tree-kill if you have not exited. A prose answer or a Lead note arrives as another turn on this same connection — pull it with `get_session`.
 
-**On most profiles you will get no warning at all — assume that.** Where the harness supports it, a graceful stop arrives as a message turn with a wind-down window and a disposition, and if you ever receive one it means:
-
-- **`preserve`** — persist your work in progress, then stop
-- **`discard`** — stop; the workspace will be removed
-- **`preserve_and_park`** — persist; the session parks and is redispatched later — ideally here, where your transcript survives, but possibly cold on another machine, from nothing but what you persisted
-
-If you do get one: finish the tool call you're in so you don't leave a half-written file, persist, leave a short note on where you got to, and exit. Don't start anything new.
-
-But **the reference harness cannot deliver that turn.** A headless `claude -p` worker — which is what the reference profiles run, and most likely what you are — never reads its stdin after startup, so a stop reaches it as a deadline and then a kill: no turn, no chance to report, nothing said in advance. The disposition is still honoured, just not by you. `preserve` works because the plane recorded your session, so your transcript can be resumed; it does not work because you were asked nicely and complied.
-
-This is precisely why "persist as you go" is a rule here and not advice. Treat every checkpoint as possibly your last, and keep your reported state current — a `report_result` reference you have already sent is worth more than the tidiest wind-down you never get to perform.
+**Assume you get no wind-down turn.** `session/cancel` is a notification. The disposition is still honoured — `preserve` works because the plane recorded the session, so the transcript can be resumed — not because you were asked and complied. Treat every checkpoint as possibly your last, and keep your reported state current — a `report_result` reference you have already sent is worth more than the tidiest wind-down you never get to perform.
 
 ## Registering a service
 
@@ -74,9 +64,9 @@ Bind to loopback. Registration plus the relay is how other agents reach you; exp
 
 **A name is an address, and one live registration holds it in your Team.** Registering a name you already hold updates its port — that is how you correct an advertisement when your service restarts somewhere else. Registering a name *another* session in your Team currently holds is refused, because consumers ask for a name and nothing else, so two holders would make which port they reach a coin flip. If you are refused, pick a more specific name (`api-<what-it-is>` rather than `api`) rather than retrying; the name frees up on its own when the session holding it finishes.
 
-## Running a service that must outlive your own turn
+## Running a service that must outlive this session
 
-A service you start as a child of your own process dies with you: `docketd` kills each session as a whole process tree, so anything you launched goes down when your turn ends. That is correct for a build or a test run and wrong for "stand up the dev server and keep it up".
+A service you start as a child of your own process dies with you: `docketd` kills each session as a whole process tree, so anything you launched goes down when this session is torn down. That is correct for a build or a test run and wrong for "stand up the dev server and keep it up".
 
 **Use `start_process`.** That is the supported way, and it works the same on every machine:
 
@@ -169,11 +159,11 @@ You have one channel: `request_input` to your Lead. Use it when you are genuinel
 
 **The `question` is the whole ask.** The `kind` only decides who can answer — `question` your Lead can take, `auth_help` needs a person — so a request with no question just says "a session needs attention" and whoever picks it up is answering blind. Write it self-contained: the decision you cannot make, the options you actually see, your recommendation, and what you will do with each answer. Assume the reader has not seen your transcript, because they often have not: your question shows up in a human's inbox and in your Lead's `get_session_question` with no surrounding context. A question someone can answer in one line without asking you anything back is a good question. It is capped at 16 KB, and over-cap is refused rather than trimmed — the session stays working, so ask again shorter and leave the detail in the workspace where you can point at it.
 
-**Persist before you ask — protocol, not etiquette.** Once you ask, your turn is over and your process may be gone before the answer lands: past the wait TTL the session parks, and redispatch prefers this machine and directory — where your transcript survives — but falls back to a cold start elsewhere, from nothing but the workspace and your persisted notes. Ask as if a stranger will act on the answer.
+**Persist before you ask.** A question ends your turn. The process stays; the answer arrives as another turn on this connection — pull it with `get_session`. If the Lead parks, or the machine dies, you come back via `session/load` from whatever you persisted. Ask as if a stranger may act on the answer.
 
-**When you come back, read `get_session` first.** The answer arrives there and nowhere else — not in your resume prompt, which is fixed text. `get_session` hands you back both the `question` you asked and the `answer`, which matters most on a cold start: if the machine holding your transcript was gone you have no memory of asking, and the pair is the only record. If `answer` is empty but you remember asking, you were requeued rather than answered — do not treat silence as consent for the option you preferred.
+**On every follow-up, read `get_session` first.** The answer arrives there and nowhere else — not in the wake-up turn, which is fixed text. `get_session` hands you back the `question` you asked and the `answer`. If `answer` is empty, you were woken without a note — do not treat silence as consent for the option you preferred.
 
-Asking costs a round trip. Guessing costs a failed verification, and a fail is terminal — the Lead has to write a new assignment. Neither is free; judge which is cheaper for the specific ambiguity.
+Asking costs a round trip. Guessing costs a failed verification, and a fail is terminal — more from you is a reply on this session, not a fail-and-retry. Neither is free; judge which is cheaper for the specific ambiguity.
 
 Do not ask for permission to do things you're allowed to do. Do not ask which of two equivalent approaches to take — pick one and say which in your result.
 

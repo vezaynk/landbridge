@@ -5,7 +5,7 @@ description: How to lead a Docket Team — claiming and reattaching to Teams, de
 
 # Leading a Docket Team
 
-You are the Lead of a Team. A human drives you; workers on other machines execute what you delegate. You hold the plan, they hold one session each. They cannot talk to each other, cannot talk to other Teams, and cannot create work. Everything they need must come from you or from the session you wrote.
+You are the Lead of a Team. A human drives you; workers on other machines execute what you delegate. Each worker is a live session you talk to. They cannot talk to each other, cannot talk to other Teams, and cannot create work. Everything they need must come from you or from the session you wrote.
 
 ## Getting oriented
 
@@ -31,7 +31,7 @@ Before creating a session, check that it carries:
 - **A completion criterion someone else can judge.** See below.
 - **A workspace that cannot collide with anything else running.**
 
-Prefer fewer, larger sessions over many small ones. Each session pays a fixed cost — dispatch, cold start, reading itself into context — and a session too small to justify that cost should have been part of its neighbour.
+Prefer fewer, larger sessions over many small ones. Each new session pays a fixed cost — dispatch, cold start, reading itself into context. Talking back on a live session is cheap; a session too small to justify a spawn should have been a message on its neighbour.
 
 **Split on the machine boundary, not on your mental model.** If two pieces of work need the same running service or the same filesystem, they are one session. Cross-machine coordination is expensive and fragile; a single session with local subagents is usually better than two sessions that need each other.
 
@@ -115,7 +115,7 @@ Do not use profiles to express what kind of work a session is. They describe how
 
 **Answer input requests promptly, and answer them in words.** A worker in `blocked_on_input` occupies a machine. Permission waits stay live inside the ACP session. Prose questions may have ended the turn; the process stays for a follow-up `prompt` so the worker can pull `get_session`. Wait TTL is off by default — a forgotten question holds the lease until you answer or you `park_session`. `park_session` is the deliberate release: the session is cancelled and later wake is `session/load`.
 
-The loop is: `get_session_question` to read the ask, then `answer_input_request(session, answer)` with your decision. **Pass the `answer`.** Without it the session is merely unblocked, and the worker resumes knowing it was answered but not with what — so it guesses (a likely failed verification) or asks the same question again (a second park). Answer the question that was asked, and include enough of *why* that the worker can apply your reasoning to the adjacent cases you didn't enumerate; it is capped at 16 KB, so point at a reference rather than pasting. One call handles either state — if the wait TTL already parked the session, answering wakes it the same way. `get_session_question` also shows any answer already given, which is what to check first after reattaching or a takeover, so you don't answer the same question twice with two different decisions.
+The loop is: `get_session_question` to read the ask, then `answer_input_request(session, answer)` with your decision. **Pass the `answer`.** Without it the session is merely unblocked, and the worker resumes knowing it was answered but not with what — so it guesses or asks the same question again. Answer the question that was asked, and include enough of *why* that the worker can apply your reasoning to the adjacent cases you didn't enumerate; it is capped at 16 KB, so point at a reference rather than pasting. One call handles either state — if the session is already parked, answering wakes it. `get_session_question` also shows any answer already given, which is what to check first after reattaching or a takeover, so you don't answer the same question twice with two different decisions.
 
 Request kinds you will see:
 
@@ -132,7 +132,7 @@ Permissions arrive as ACP `session/request_permission`. There is no bypass / alw
 
 **The worker is still running, blocked inside that tool call.** It hasn't parked and won't be redispatched — your verdict resumes it where it stands. Wait TTL is off by default; use `park_session` if you mean to release the machine.
 
-**You answer with a verdict, not prose.** `get_session_question` shows the tool name and the arguments the harness proposed; then `answer_permission_request(session, 'allow'|'deny', message)`. `answer_input_request` is refused on these — it would requeue a worker that is still alive.
+**You answer with a verdict, not prose.** `get_session_question` shows the tool name and the arguments the harness proposed; then `answer_permission_request(session, 'allow'|'deny', message)`. `answer_input_request` is refused on these — it would treat a live wait as a redispatch.
 
 Approve what follows from the session you wrote: reading and editing inside the assigned workspace, running the project's own build and tests, installing the dependencies the work obviously needs, talking to the hosts the session names. This is the ordinary case and it should be quick.
 
@@ -196,7 +196,7 @@ The same rules as any forward apply: only services registered by a currently-wor
 
 The TTL on a stop is how long the worker gets after `session/cancel` before it is killed. `TTL=0` kills immediately. **The kill path is lossy** — uncommitted work dies. Use it when an agent has stopped being trustworthy, not as a fast default.
 
-**Do not count on the worker being told.** On the reference `claude -p` profiles the TTL is a kill deadline, not a wind-down window the agent participates in: it is never handed the stop turn, so it will not persist on request or file a closing report. What you get back is whatever it had already reported, plus — for `preserve` and `preserve_and_park` — a resumable transcript, because the plane recorded the session before the kill. So a generous TTL buys the chance that the worker finishes and exits on its own, which is worth buying; it does not buy a graceful handover. If you need to know where a long session stands before you stop it, ask while it is still working (`request_input` answers, its reported progress) rather than expecting the stop to elicit it.
+**Do not count on the worker being told.** `session/cancel` is a notification with no reply. The TTL is a kill deadline, not a wind-down the agent is guaranteed to read. What you get back is whatever it had already reported, plus — for `preserve` and `preserve_and_park` — a resumable transcript, because the plane recorded the session before the kill. A generous TTL buys the chance that the worker finishes and exits on its own; it does not buy a graceful handover. If you need to know where a long session stands before you stop it, ask while it is still working rather than expecting the stop to elicit it.
 
 ## Closing out
 
