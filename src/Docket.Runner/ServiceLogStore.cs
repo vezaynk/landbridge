@@ -47,7 +47,7 @@ public sealed class ServiceLogStore
     /// <remarks>
     /// <paramref name="serviceName"/> must already have passed
     /// <see cref="RunnerConfig.IsValidServiceName"/> at config load. That check is what
-    /// keeps this path construction closed: it occupies the slot a <c>TaskId</c> Guid
+    /// keeps this path construction closed: it occupies the slot a <c>SessionId</c> Guid
     /// fills for transcripts, and a Guid is the reason that builder could be called
     /// safe. Never call this with a name from any other source.
     /// </remarks>

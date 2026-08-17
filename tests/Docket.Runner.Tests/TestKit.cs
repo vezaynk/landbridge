@@ -82,7 +82,7 @@ internal static class TestKit
         }
     }
 
-    public static DispatchCommand Dispatch(TaskId task, string profile = "default") =>
+    public static DispatchCommand Dispatch(SessionId task, string profile = "default") =>
         new(task, profile);
 
     public static MachineConfig Machine(string workRoot) =>

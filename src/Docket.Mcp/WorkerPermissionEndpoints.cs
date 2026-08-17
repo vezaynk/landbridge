@@ -24,7 +24,7 @@ public static class WorkerPermissionEndpoints
     private static async Task<IResult> HandleAsync(
         HttpContext http,
         Ask? body,
-        TaskStore store,
+        SessionStore store,
         IConfiguration config,
         TimeProvider clock,
         CancellationToken ct)

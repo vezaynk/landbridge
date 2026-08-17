@@ -73,8 +73,8 @@ public sealed class PermissionBridgeDashboardTests(PostgresFixture pg) : IAsyncL
 
         // Resumed in place: still working, still the same incumbent, never requeued.
         await using var db = pg.NewContext();
-        var row = await db.Tasks.AsNoTracking().SingleAsync(t => t.Id == task.Value);
-        Assert.Equal(TaskState.Working, row.State);
+        var row = await db.Sessions.AsNoTracking().SingleAsync(t => t.Id == task.Value);
+        Assert.Equal(SessionState.Working, row.State);
         Assert.Equal(caller.Instance.Value, row.CurrentInstanceId);
         Assert.Equal(PermissionVerdict.Allow, row.PermissionVerdict);
         Assert.Null(row.InputAnswer);
@@ -96,7 +96,7 @@ public sealed class PermissionBridgeDashboardTests(PostgresFixture pg) : IAsyncL
         var (task, _, _) = await SeedPermissionRequestAsync(team, ct);
         await using (var db = pg.NewContext())
         {
-            var escalated = await new TaskStore(db, TimeProvider.System)
+            var escalated = await new SessionStore(db, TimeProvider.System)
                 .EscalatePermissionAsync(new LeadClaim(team), task, why, ct);
             Assert.IsType<StoreResult.Applied>(escalated);
         }
@@ -114,11 +114,11 @@ public sealed class PermissionBridgeDashboardTests(PostgresFixture pg) : IAsyncL
         Assert.Equal(HttpStatusCode.OK, denied.StatusCode);
 
         await using var check = pg.NewContext();
-        var row = await check.Tasks.AsNoTracking().SingleAsync(t => t.Id == task.Value);
+        var row = await check.Sessions.AsNoTracking().SingleAsync(t => t.Id == task.Value);
         Assert.Equal(PermissionVerdict.Deny, row.PermissionVerdict);
 
-        var decision = await check.TaskEvents.AsNoTracking()
-            .Where(e => e.TaskId == task.Value && e.Kind == nameof(AnswerPermission)).SingleAsync();
+        var decision = await check.SessionEvents.AsNoTracking()
+            .Where(e => e.SessionId == task.Value && e.Kind == nameof(AnswerPermission)).SingleAsync();
         Assert.Equal(PermissionAnswerer.Human, decision.PermissionAnswerer);
     }
 
@@ -149,7 +149,7 @@ public sealed class PermissionBridgeDashboardTests(PostgresFixture pg) : IAsyncL
         {
             Content = new FormUrlEncodedContent(new Dictionary<string, string>
             {
-                ["taskId"] = task.Value.ToString(),
+                ["sessionId"] = task.Value.ToString(),
                 ["verdict"] = "allow",
             }),
         };
@@ -163,7 +163,7 @@ public sealed class PermissionBridgeDashboardTests(PostgresFixture pg) : IAsyncL
 
         // Still pending, so the Lead's own tool is still the path it should have taken.
         await using var db2 = pg.NewContext();
-        Assert.Null(await db2.Tasks.AsNoTracking()
+        Assert.Null(await db2.Sessions.AsNoTracking()
             .Where(t => t.Id == task.Value).Select(t => t.PermissionVerdict).SingleAsync());
     }
 
@@ -233,7 +233,7 @@ public sealed class PermissionBridgeDashboardTests(PostgresFixture pg) : IAsyncL
             p => p.GetProperty("namespace").GetString() == ns);
         Assert.Equal(Tool, request.GetProperty("tool").GetString());
         Assert.Equal(HostileInput, request.GetProperty("input").GetString());
-        Assert.Equal(task.Value, request.GetProperty("taskId").GetGuid());
+        Assert.Equal(task.Value, request.GetProperty("sessionId").GetGuid());
         // Structured, unescaped, and not double-counted as a question.
         Assert.Empty(doc.RootElement.GetProperty("questions").EnumerateArray());
     }
@@ -242,30 +242,30 @@ public sealed class PermissionBridgeDashboardTests(PostgresFixture pg) : IAsyncL
     /// A task dispatched to working whose worker has asked for permission — driven through
     /// the real store, so the row is exactly what the harness's relaying tool would leave.
     /// </summary>
-    private async Task<(TaskId Task, string Namespace, WorkerCaller Caller)> SeedPermissionRequestAsync(
+    private async Task<(SessionId Session, string Namespace, WorkerCaller Caller)> SeedPermissionRequestAsync(
         TeamId team, CancellationToken ct)
     {
         await using var db = pg.NewContext();
-        var store = new TaskStore(db, TimeProvider.System);
+        var store = new SessionStore(db, TimeProvider.System);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(new LeadClaim(team), team, "needs permission", CompletionMode.Lead, null), ct);
+            new CreateSession(new LeadClaim(team), team, "needs permission", CompletionMode.Lead, null), ct);
         var instance = WorkerInstanceId.New();
         Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(AnyMachine, instance, ct));
-        var caller = new WorkerCaller(team, created.Task.Id, instance);
+        var caller = new WorkerCaller(team, created.Session.Id, instance);
         Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(
-            created.Task.Id,
+            created.Session.Id,
             new RequestInput(caller, InputRequestKind.Permission, HostileInput, Tool), ct));
-        return (created.Task.Id, created.Task.Namespace, caller);
+        return (created.Session.Id, created.Session.Namespace, caller);
     }
 
     private async Task<HttpResponseMessage> PostPermissionAsync(
-        WebApplication app, TaskId task, string verdict, string? message, CancellationToken ct)
+        WebApplication app, SessionId task, string verdict, string? message, CancellationToken ct)
     {
         using var client = Client(app);
         var token = await IssueHumanTokenAsync(ct);
         var fields = new Dictionary<string, string>
         {
-            ["taskId"] = task.Value.ToString(),
+            ["sessionId"] = task.Value.ToString(),
             ["verdict"] = verdict,
         };
         if (message is not null) fields["message"] = message;

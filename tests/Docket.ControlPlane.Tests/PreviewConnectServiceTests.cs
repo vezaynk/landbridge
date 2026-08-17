@@ -51,7 +51,7 @@ public sealed class PreviewConnectServiceTests(PostgresFixture pg) : IAsyncLifet
         Assert.Equal(est.ForwardId, cmd.ForwardId);
         Assert.Equal(RelayUrl, cmd.RelayUrl);
         Assert.Equal(port, cmd.Port);
-        Assert.Equal(producerTask, cmd.Task);
+        Assert.Equal(producerTask, cmd.Session);
     }
 
     [SkippableFact]
@@ -216,7 +216,7 @@ public sealed class PreviewConnectServiceTests(PostgresFixture pg) : IAsyncLifet
     /// <summary>
     /// The §8.4 authority the mapping is <em>for</em>: a label minted against one task's
     /// service resolves to that task's registration and nothing else. The mapping has
-    /// recorded its task all along (<c>PreviewMappingRow.TaskId</c>) and connect dropped it,
+    /// recorded its task all along (<c>PreviewMappingRow.SessionId</c>) and connect dropped it,
     /// minting by <c>(Team, name)</c> — so once the label's own task finished and a second
     /// task in the Team registered the same name, an unexpired URL for A's <c>web</c> spliced
     /// a browser into B's <c>web</c>: a preview reaching a service its holder never exposed,
@@ -237,7 +237,7 @@ public sealed class PreviewConnectServiceTests(PostgresFixture pg) : IAsyncLifet
 
         // A finishes: its registration goes with it (ClearServicesAndForwards), which frees
         // the name — and the label, TTL-bound rather than task-bound, outlives it.
-        Assert.IsType<StoreResult.Applied>(await new TaskStore(db, clock).ApplyAsync(
+        Assert.IsType<StoreResult.Applied>(await new SessionStore(db, clock).ApplyAsync(
             taskA, new ReportResult(new WorkerCaller(team, taskA, instanceA), "ref")));
 
         // B, same Team, registers the same name on a different port — legitimate, since the
@@ -259,32 +259,32 @@ public sealed class PreviewConnectServiceTests(PostgresFixture pg) : IAsyncLifet
     /// <see cref="WorkingServiceAsync"/>, also handing back the worker instance — needed
     /// wherever a test drives the producer task's own transition afterwards.
     /// </summary>
-    private static async Task<(TaskId Task, WorkerInstanceId Instance)> WorkingServiceWithInstanceAsync(
+    private static async Task<(SessionId Session, WorkerInstanceId Instance)> WorkingServiceWithInstanceAsync(
         DocketDbContext db, TimeProvider clock, TeamId team, string name, int port)
     {
-        var store = new TaskStore(db, clock);
+        var store = new SessionStore(db, clock);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null));
+            new CreateSession(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null));
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(
             new MachineSnapshot("m1", Ready: true, UnderBackPressure: false, new HashSet<string> { "default" }), instance);
         Assert.IsType<StoreResult.Applied>(
-            await store.RegisterServiceAsync(new WorkerCaller(team, created.Task.Id, instance), name, port));
-        return (created.Task.Id, instance);
+            await store.RegisterServiceAsync(new WorkerCaller(team, created.Session.Id, instance), name, port));
+        return (created.Session.Id, instance);
     }
 
     /// <summary>A working producer task in <paramref name="team"/> with <paramref name="name"/> registered.</summary>
-    private static async Task<(TaskId Task, int Port)> WorkingServiceAsync(
+    private static async Task<(SessionId Session, int Port)> WorkingServiceAsync(
         DocketDbContext db, TimeProvider clock, TeamId team, string name, int port)
     {
-        var store = new TaskStore(db, clock);
+        var store = new SessionStore(db, clock);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null));
+            new CreateSession(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null));
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(
             new MachineSnapshot("m1", Ready: true, UnderBackPressure: false, new HashSet<string> { "default" }), instance);
-        await store.RegisterServiceAsync(new WorkerCaller(team, created.Task.Id, instance), name, port);
-        return (created.Task.Id, port);
+        await store.RegisterServiceAsync(new WorkerCaller(team, created.Session.Id, instance), name, port);
+        return (created.Session.Id, port);
     }
 
     /// <summary>
@@ -293,7 +293,7 @@ public sealed class PreviewConnectServiceTests(PostgresFixture pg) : IAsyncLifet
     /// store (so tests can mint a per-label session).
     /// </summary>
     private static (PreviewConnectService Connect, List<OpenForwardCommand> Sent, PreviewAuthStore PreviewAuth) BuildConnect(
-        DocketDbContext db, TimeProvider clock, params TaskId[] trackedTasks)
+        DocketDbContext db, TimeProvider clock, params SessionId[] trackedTasks)
     {
         var sent = new List<OpenForwardCommand>();
         var registry = new RunnerConnectionRegistry(clock);

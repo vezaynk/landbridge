@@ -15,7 +15,7 @@ namespace Docket.ControlPlane;
 /// the submitted backlog once, then wakes on task-event NOTIFYs (and on a nudge
 /// after a machine becomes ready) to run another dispatch pass. A pass hands
 /// eligible submitted tasks to ready machines via
-/// <see cref="TaskStore.DispatchNextAsync"/> — whose SKIP LOCKED claim picks the
+/// <see cref="SessionStore.DispatchNextAsync"/> — whose SKIP LOCKED claim picks the
 /// task, does the submitted→working transition, and mints the worker instance
 /// <em>before</em> the command is sent, so a failed send — or a throw anywhere
 /// between that commit and the send — requeues a now-working task rather than
@@ -38,7 +38,7 @@ public sealed class DispatchService : IHostedService
     private readonly RunnerConnectionRegistry _registry;
     private readonly TimeProvider _clock;
     private readonly ILogger<DispatchService> _logger;
-    private readonly TaskEventListener? _listener;
+    private readonly SessionEventListener? _listener;
     private readonly TimeSpan _livenessWindow;
     private readonly TimeSpan _noProgressCeiling;
     private readonly string _publicMcpUrl;
@@ -71,7 +71,7 @@ public sealed class DispatchService : IHostedService
 
     /// <summary>
     /// The plane's tracing source (§1). The dispatch span opened here continues
-    /// the Lead's create_task trace and its W3C id is what rides the wire to the
+    /// the Lead's create_session trace and its W3C id is what rides the wire to the
     /// runner. Register it with the host's TracerProvider (Docket.Mcp/Program.cs)
     /// so the span exports.
     /// </summary>
@@ -93,7 +93,7 @@ public sealed class DispatchService : IHostedService
         RunnerConnectionRegistry registry,
         TimeProvider clock,
         ILogger<DispatchService> logger,
-        TaskEventListener? listener = null,
+        SessionEventListener? listener = null,
         TimeSpan? livenessWindow = null,
         string? publicMcpUrl = null,
         TimeSpan? noProgressCeiling = null)
@@ -205,7 +205,7 @@ public sealed class DispatchService : IHostedService
     /// <summary>
     /// One dispatch pass: hands eligible submitted tasks to ready machines until
     /// nothing more claims. Idempotent and safe to run concurrently — the
-    /// SKIP LOCKED claim in <see cref="TaskStore.DispatchNextAsync"/> guarantees
+    /// SKIP LOCKED claim in <see cref="SessionStore.DispatchNextAsync"/> guarantees
     /// no two passes claim the same row.
     /// </summary>
     public async Task RunDispatchPassAsync(CancellationToken ct)
@@ -260,7 +260,7 @@ public sealed class DispatchService : IHostedService
     /// no new wire member, nothing for docketd to remember.</para>
     ///
     /// <para><b>Instance fencing</b> (§9.14) is the store query's, not this method's — see
-    /// <see cref="TaskStore.HeldDispatchesOnAsync"/>: only a task whose live incumbent
+    /// <see cref="SessionStore.HeldDispatchesOnAsync"/>: only a task whose live incumbent
     /// instance was minted for <paramref name="machineId"/> is re-adopted, so a requeued
     /// task is never re-adopted and a stale instance's events are still refused.</para>
     ///
@@ -275,7 +275,7 @@ public sealed class DispatchService : IHostedService
     public async Task<int> RehydrateMachineAsync(string machineId, CancellationToken ct)
     {
         using var scope = _scopes.CreateScope();
-        var store = scope.ServiceProvider.GetRequiredService<TaskStore>();
+        var store = scope.ServiceProvider.GetRequiredService<SessionStore>();
         var held = await store.HeldDispatchesOnAsync(machineId, ct);
         foreach (var task in held)
             _registry.TrackDispatch(machineId, task);
@@ -292,7 +292,7 @@ public sealed class DispatchService : IHostedService
         string machineId, MachineSnapshot snapshot, CancellationToken ct)
     {
         using var scope = _scopes.CreateScope();
-        var store = scope.ServiceProvider.GetRequiredService<TaskStore>();
+        var store = scope.ServiceProvider.GetRequiredService<SessionStore>();
         var tokens = scope.ServiceProvider.GetRequiredService<TokenService>();
 
         var instance = WorkerInstanceId.New();
@@ -304,10 +304,10 @@ public sealed class DispatchService : IHostedService
         if (result is not StoreResult.Applied applied)
             return DispatchOutcome.NothingEligible; // no eligible submitted task for this machine
 
-        var task = applied.Task;
+        var task = applied.Session;
         var profile = task.Profile ?? MachineSnapshot.DefaultProfile;
 
-        // §1 tracing: open the dispatch span, parented on the Lead's create_task
+        // §1 tracing: open the dispatch span, parented on the Lead's create_session
         // trace context stored on the row (opaque transport metadata). This span's
         // W3C id is what the send delegate stamps onto the wire envelope, so the
         // runner — and the worker it spawns — continue the same trace. A null
@@ -339,7 +339,7 @@ public sealed class DispatchService : IHostedService
                 // ResumeSessionRef above is deliberately null. Transcript resume additionally
                 // depends on it, since a harness session resumes only from the directory that
                 // created it. Null for a same-task park-resume, whose dir the runner already picks.
-                WorkDirTask: applied.WorkDirTask);
+                WorkDirSession: applied.WorkDirSession);
 
             _registry.TrackDispatch(machineId, task.Id);
             if (await _registry.SendAsync(machineId, command, ct))
@@ -387,21 +387,21 @@ public sealed class DispatchService : IHostedService
     /// the same store would re-attempt the very write that just failed and lose the requeue
     /// to the same exception. A fresh scope owes nothing to whatever broke.</para>
     /// </summary>
-    private async Task RequeueUndispatchedAsync(TaskId task, CancellationToken ct)
+    private async Task RequeueUndispatchedAsync(SessionId task, CancellationToken ct)
     {
         using var scope = _scopes.CreateScope();
-        var store = scope.ServiceProvider.GetRequiredService<TaskStore>();
+        var store = scope.ServiceProvider.GetRequiredService<SessionStore>();
         await store.ApplyAsync(task, new LivenessLost(LivenessLossReason.AckTimeout), ct);
     }
 
     /// <summary>
-    /// Opens the dispatch span (§1), parented on the row's stored create_task
-    /// trace context when present so one trace spans create_task → dispatch →
+    /// Opens the dispatch span (§1), parented on the row's stored create_session
+    /// trace context when present so one trace spans create_session → dispatch →
     /// runner → worker. Returns null when nothing is listening — tracing then
     /// no-ops and dispatch proceeds unchanged.
     /// </summary>
     private static Activity? StartDispatchActivity(
-        TaskId task, string machineId, string profile, string? parentTraceparent)
+        SessionId task, string machineId, string profile, string? parentTraceparent)
     {
         var activity = parentTraceparent is not null
             && ActivityContext.TryParse(parentTraceparent, null, out var parent)
@@ -409,7 +409,7 @@ public sealed class DispatchService : IHostedService
                 : ActivitySource.StartActivity($"dispatch {task}", ActivityKind.Producer);
         if (activity is not null)
         {
-            activity.SetTag("docket.task_id", task.ToString());
+            activity.SetTag("docket.session_id", task.ToString());
             activity.SetTag("docket.machine_id", machineId);
             activity.SetTag("docket.profile", profile);
         }
@@ -517,28 +517,28 @@ public sealed class DispatchService : IHostedService
                 continue;
 
             using var scope = _scopes.CreateScope();
-            var store = scope.ServiceProvider.GetRequiredService<TaskStore>();
+            var store = scope.ServiceProvider.GetRequiredService<SessionStore>();
             // State AND incumbent, in one read: this decision is about one attempt of one
             // state, and the requeue below is fenced on exactly the pair read here (§9 check
             // 14) so it cannot land on a task that moved between this line and that one.
-            switch (await store.GetIncumbentDispatchAsync(tracked.Task, ct))
+            switch (await store.GetIncumbentDispatchAsync(tracked.Session, ct))
             {
-                case { State: TaskState.Working } dispatch:
+                case { State: SessionState.Working } dispatch:
                     // The progress ceiling alone does not requeue a service-bearing
                     // task; the aliveness clock still does.
-                    if (!notAlive && await store.HasRegisteredServiceAsync(tracked.Task, ct))
+                    if (!notAlive && await store.HasRegisteredServiceAsync(tracked.Session, ct))
                     {
                         _logger.LogDebug(
                             "task {Task} on {Machine} has no progress for {Idle} but bears a registered service; not requeued",
-                            tracked.Task, tracked.Machine, now - tracked.LastProgress);
+                            tracked.Session, tracked.Machine, now - tracked.LastProgress);
                         break;
                     }
 
-                    if (await store.IsAwaitingLeadAsync(tracked.Task, ct))
+                    if (await store.IsAwaitingLeadAsync(tracked.Session, ct))
                     {
                         _logger.LogDebug(
                             "task {Task} on {Machine} is awaiting a Lead follow-up; not requeued",
-                            tracked.Task, tracked.Machine);
+                            tracked.Session, tracked.Machine);
                         break;
                     }
 
@@ -554,10 +554,10 @@ public sealed class DispatchService : IHostedService
                         : LivenessLossReason.NoProgress;
                     _logger.LogWarning(
                         "requeueing task {Task} on {Machine}: {Reason} (last alive {Alive} ago, last progress {Progress} ago)",
-                        tracked.Task, tracked.Machine, reason,
+                        tracked.Session, tracked.Machine, reason,
                         now - tracked.LastActivity, now - tracked.LastProgress);
                     var requeue = await store.ApplyAsync(
-                        tracked.Task, new LivenessLost(reason, dispatch.Instance), ct);
+                        tracked.Session, new LivenessLost(reason, dispatch.Instance), ct);
                     if (requeue is not StoreResult.Applied applied)
                     {
                         // The fence refused, or the row lost the xmin race: the attempt this
@@ -572,39 +572,39 @@ public sealed class DispatchService : IHostedService
                         _logger.LogInformation(
                             "liveness requeue of task {Task} on {Machine} did not apply ({Result}); " +
                             "the dispatch it judged has moved on",
-                            tracked.Task, tracked.Machine, requeue.GetType().Name);
+                            tracked.Session, tracked.Machine, requeue.GetType().Name);
                         break;
                     }
-                    if (applied.Task.State == TaskState.Failed)
+                    if (applied.Session.State == SessionState.Failed)
                         _logger.LogWarning(
                             "task {Task} failed ({Reason}) after {Requeues} infrastructure losses; waiting for the Lead",
-                            tracked.Task, reason, applied.Task.InfrastructureRequeues);
-                    _registry.Untrack(tracked.Task);
+                            tracked.Session, reason, applied.Session.InfrastructureRequeues);
+                    _registry.Untrack(tracked.Session);
                     // Only once the plane has actually given up on this dispatch: a refused
                     // transition means it has not, and killing a process the plane still
                     // considers live would destroy work nothing requeued.
-                    await KillAbandonedDispatchAsync(tracked.Task, tracked.Machine, ct);
+                    await KillAbandonedDispatchAsync(tracked.Session, tracked.Machine, ct);
                     break;
-                case { State: TaskState.Verifying } dispatch:
+                case { State: SessionState.Verifying } dispatch:
                     // A report keeps the process. No-progress while verifying is the
                     // Lead thinking, not a wedge. A dead process is a fail.
                     if (!notAlive)
                         break;
                     _logger.LogWarning(
                         "task {Task} on {Machine} died while verifying; failing the attempt",
-                        tracked.Task, tracked.Machine);
+                        tracked.Session, tracked.Machine);
                     var verifyingLoss = await store.ApplyAsync(
-                        tracked.Task, new LivenessLost(LivenessLossReason.LivenessTimeout, dispatch.Instance), ct);
+                        tracked.Session, new LivenessLost(LivenessLossReason.LivenessTimeout, dispatch.Instance), ct);
                     if (verifyingLoss is StoreResult.Applied)
                     {
-                        _registry.Untrack(tracked.Task);
-                        await KillAbandonedDispatchAsync(tracked.Task, tracked.Machine, ct);
+                        _registry.Untrack(tracked.Session);
+                        await KillAbandonedDispatchAsync(tracked.Session, tracked.Machine, ct);
                     }
                     break;
                 case null:
-                case { State: TaskState.Completed or TaskState.Rejected
-                    or TaskState.Canceled or TaskState.Failed }:
-                    _registry.Untrack(tracked.Task);
+                case { State: SessionState.Completed or SessionState.Rejected
+                    or SessionState.Canceled or SessionState.Failed }:
+                    _registry.Untrack(tracked.Session);
                     break;
                     // blocked_on_input / parked / submitted: leave tracked (§11).
             }
@@ -655,7 +655,7 @@ public sealed class DispatchService : IHostedService
     /// processes; a send-failure requeue never started anything; and a blocked task's harness
     /// has already exited by definition (§11).</para>
     /// </summary>
-    private async Task KillAbandonedDispatchAsync(TaskId task, string machineId, CancellationToken ct)
+    private async Task KillAbandonedDispatchAsync(SessionId task, string machineId, CancellationToken ct)
     {
         if (await _registry.SendKillAsync(machineId, task, CommandedExitEchoWindow, ct))
         {

@@ -29,12 +29,12 @@ public sealed class TranscriptCaptureSupervisorTests : IDisposable
     private ProcessSupervisor Supervisor() =>
         _supervisor ??= new ProcessSupervisor(TestKit.Machine(_workRoot), _ring, _clock, taskReaper: null, transcripts: Store());
 
-    private string TaskDir(TaskId task) => Path.Combine(TranscriptsRoot, task.ToString());
+    private string TaskDir(SessionId task) => Path.Combine(TranscriptsRoot, task.ToString());
 
     [Fact]
     public async Task Capture_on_tees_stdout_and_captures_stderr_while_events_still_fire()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         var supervisor = Supervisor();
 
         var drained = new List<RunnerEvent>();
@@ -93,7 +93,7 @@ public sealed class TranscriptCaptureSupervisorTests : IDisposable
     [Fact]
     public async Task Capture_off_by_default_writes_no_transcript_files()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         var supervisor = Supervisor();
 
         // Terminal events but capture OFF (the default): stdout is still redirected and
@@ -118,7 +118,7 @@ public sealed class TranscriptCaptureSupervisorTests : IDisposable
     [Fact]
     public async Task Each_worker_instance_gets_its_own_file_and_the_prior_stays_intact()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         var supervisor = Supervisor();
 
         // First instance.
@@ -157,7 +157,7 @@ public sealed class TranscriptCaptureSupervisorTests : IDisposable
     [Fact]
     public async Task Reaching_the_size_cap_truncates_the_file_without_killing_the_worker()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         var supervisor = Supervisor();
 
         // A tiny cap the fixture's stdout comfortably exceeds: the transcript stops with
@@ -188,7 +188,7 @@ public sealed class TranscriptCaptureSupervisorTests : IDisposable
     [Fact]
     public async Task Capture_without_an_events_source_still_records_stdout()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         var supervisor = Supervisor();
 
         // events.source = none (no mapping), capture on: stdout is redirected and drained

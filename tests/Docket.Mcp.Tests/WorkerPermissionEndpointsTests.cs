@@ -49,12 +49,12 @@ public sealed class WorkerPermissionEndpointsTests(PostgresFixture pg) : IAsyncL
 
         var pending = client.PostAsJsonAsync("/worker/permission", new { tool = "Bash", input = """{"cmd":"ls"}""" }, ct);
 
-        await WaitUntilBlockedAsync(caller.Task, pending, ct);
+        await WaitUntilBlockedAsync(caller.Session, pending, ct);
 
         await using (var db = pg.NewContext())
         {
-            var applied = await new TaskStore(db, TimeProvider.System).AnswerPermissionAsync(
-                new LeadClaim(Team), caller.Task, PermissionVerdict.Allow, ct: ct);
+            var applied = await new SessionStore(db, TimeProvider.System).AnswerPermissionAsync(
+                new LeadClaim(Team), caller.Session, PermissionVerdict.Allow, ct: ct);
             Assert.IsType<StoreResult.Applied>(applied);
         }
 
@@ -82,30 +82,30 @@ public sealed class WorkerPermissionEndpointsTests(PostgresFixture pg) : IAsyncL
     private async Task<(WorkerCaller Caller, string Token)> SeedWorkingWorkerAsync(CancellationToken ct)
     {
         await using var db = pg.NewContext();
-        var store = new TaskStore(db, TimeProvider.System);
+        var store = new SessionStore(db, TimeProvider.System);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(new LeadClaim(Team), Team, "needs permission", CompletionMode.Lead, null), ct);
+            new CreateSession(new LeadClaim(Team), Team, "needs permission", CompletionMode.Lead, null), ct);
         var instance = WorkerInstanceId.New();
         Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(
             new MachineSnapshot("m1", Ready: true, UnderBackPressure: false, new HashSet<string> { "default" }),
             instance, ct));
         var token = (await new TokenService(db, TimeProvider.System)
-            .MintWorkerTokenAsync(Team, created.Task.Id, instance, ct)).Token;
-        return (new WorkerCaller(Team, created.Task.Id, instance), token);
+            .MintWorkerTokenAsync(Team, created.Session.Id, instance, ct)).Token;
+        return (new WorkerCaller(Team, created.Session.Id, instance), token);
     }
 
-    private async Task WaitUntilBlockedAsync(TaskId task, Task pending, CancellationToken ct)
+    private async Task WaitUntilBlockedAsync(SessionId task, Task pending, CancellationToken ct)
     {
         while (!ct.IsCancellationRequested)
         {
             if (pending.IsCompleted)
                 Assert.Fail("the permission POST returned before the task blocked");
             await using var db = pg.NewContext();
-            var state = await db.Tasks.AsNoTracking()
+            var state = await db.Sessions.AsNoTracking()
                 .Where(t => t.Id == task.Value)
                 .Select(t => t.State)
                 .SingleAsync(ct);
-            if (state == TaskState.BlockedOnInput)
+            if (state == SessionState.BlockedOnInput)
                 return;
             await Task.Delay(10, ct);
         }

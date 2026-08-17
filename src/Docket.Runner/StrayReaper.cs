@@ -3,7 +3,7 @@ using System.Diagnostics;
 namespace Docket.Runner;
 
 /// <summary>A running process carrying docket tags, as discovered by an inventory.</summary>
-public readonly record struct TaggedProcess(int Pid, string MachineId, string? TaskId);
+public readonly record struct TaggedProcess(int Pid, string MachineId, string? SessionId);
 
 /// <summary>
 /// Enumerates processes that carry a <c>DOCKET_MACHINE_ID</c> env var. This is
@@ -71,21 +71,21 @@ public sealed class ProcFsProcessInventory : IProcessInventory
                 continue;
 
             string machineId;
-            string? taskId;
+            string? sessionId;
             try
             {
                 var raw = File.ReadAllText(Path.Combine(dir, "environ"));
                 var env = ParseEnviron(raw);
                 if (!env.TryGetValue("DOCKET_MACHINE_ID", out machineId!))
                     continue;
-                env.TryGetValue("DOCKET_TASK_ID", out taskId);
+                env.TryGetValue("DOCKET_SESSION_ID", out sessionId);
             }
             catch (Exception e) when (e is IOException or UnauthorizedAccessException)
             {
                 continue; // process gone or not ours to read
             }
 
-            found.Add(new TaggedProcess(pid, machineId, taskId));
+            found.Add(new TaggedProcess(pid, machineId, sessionId));
         }
 
         return found;
@@ -145,14 +145,14 @@ public sealed class StrayReaper(IProcessInventory inventory, int selfPid) : IStr
     /// task's group survives group kill and keeps the port. This catches it
     /// while the task id is still known.
     /// </summary>
-    public int ReapTask(string machineId, string taskId)
+    public int ReapSession(string machineId, string sessionId)
     {
         var reaped = 0;
         foreach (var proc in inventory.ListDocketProcesses())
         {
             if (proc.Pid == selfPid
                 || !string.Equals(proc.MachineId, machineId, StringComparison.Ordinal)
-                || !string.Equals(proc.TaskId, taskId, StringComparison.Ordinal))
+                || !string.Equals(proc.SessionId, sessionId, StringComparison.Ordinal))
             {
                 continue;
             }

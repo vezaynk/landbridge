@@ -55,7 +55,7 @@ public readonly record struct StopAck(bool Actioned, StopDelivery Delivery);
 public interface IProcessSupervisor
 {
     /// <summary>Spawns the harness for a dispatched task and emits <c>started</c>.</summary>
-    TaskId Spawn(DispatchCommand dispatch, ProfileConfig profile, string machineId);
+    SessionId Spawn(DispatchCommand dispatch, ProfileConfig profile, string machineId);
 
     /// <summary>
     /// Graceful stop (§10, §11). <c>session/cancel</c> goes to the worker's live ACP
@@ -66,37 +66,37 @@ public interface IProcessSupervisor
     /// <para>The returned <see cref="StopAck"/> reports the runner's own action and nothing
     /// more. See <see cref="StopDelivery"/>.</para>
     /// </summary>
-    Task<StopAck> StopAsync(TaskId task, TimeSpan ttl, StopDisposition disposition, string? reason, CancellationToken ct);
+    Task<StopAck> StopAsync(SessionId task, TimeSpan ttl, StopDisposition disposition, string? reason, CancellationToken ct);
 
     /// <summary>
     /// <c>prompt</c> — queue a follow-up turn on a task's live ACP session
     /// (<c>ideas/sessions.md</c> stage 1). False when this machine holds no such session:
     /// the task is not here, or its worker has ended.
     /// </summary>
-    bool TryPrompt(TaskId task);
+    bool TryPrompt(SessionId task);
 
     /// <summary>Immediate group/tree kill of one task (§10).</summary>
-    bool Kill(TaskId task);
+    bool Kill(SessionId task);
 
     /// <summary>Clean shutdown: kill everything the runner started (§10 runner restart).</summary>
     void KillAll();
 
     int RunningFor(string profile);
     int RunningTotal { get; }
-    IReadOnlyCollection<TaskId> RunningTasks { get; }
+    IReadOnlyCollection<SessionId> RunningSessions { get; }
 
     /// <summary>Supervised tasks whose process is still alive — the source of the
     /// periodic <c>alive</c> event that carries process-alive to the plane (§10).</summary>
-    IReadOnlyCollection<TaskId> LiveTasks { get; }
+    IReadOnlyCollection<SessionId> LiveSessions { get; }
 
     /// <summary>The profile a supervised task runs under, or null if not held here (§10).</summary>
-    string? ProfileFor(TaskId task);
+    string? ProfileFor(SessionId task);
 }
 
 /// <summary>One supervised harness process and the per-task state around it.</summary>
-public sealed class SupervisedTask
+public sealed class SupervisedSession
 {
-    public required TaskId Task { get; init; }
+    public required SessionId Session { get; init; }
     public required string Profile { get; init; }
     public required Process Process { get; init; }
     public required string WorkDir { get; init; }
@@ -198,9 +198,9 @@ public sealed class SupervisedTask
 /// Spawns and supervises harness processes, spec §10. <b>No shell, ever</b>:
 /// <c>command</c> is argv passed to <see cref="ProcessStartInfo.ArgumentList"/>
 /// (§10). Every spawn is stamped with <c>DOCKET_MACHINE_ID</c> and
-/// <c>DOCKET_TASK_ID</c> (§10, not configurable), started in
-/// <c>{work_root}/{task_id}</c> — or in the predecessor's directory when the
-/// dispatch names a <see cref="DispatchCommand.WorkDirTask"/>, which every
+/// <c>DOCKET_SESSION_ID</c> (§10, not configurable), started in
+/// <c>{work_root}/{session_id}</c> — or in the predecessor's directory when the
+/// dispatch names a <see cref="DispatchCommand.WorkDirSession"/>, which every
 /// continuation does (§7, §11) — and killed as a whole tree so children —
 /// subagents, dev servers — go down with the parent (§10 process groups). The portable tree-kill (<see cref="Process.Kill(bool)"/>)
 /// is the group-kill baseline the conventions call for; each task is its own
@@ -222,7 +222,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
     private readonly StrayReaper? _taskReaper;
 
     private readonly TranscriptStore? _transcripts;
-    private readonly ConcurrentDictionary<TaskId, SupervisedTask> _tasks = new();
+    private readonly ConcurrentDictionary<SessionId, SupervisedSession> _tasks = new();
     private readonly SpawnerThread _spawner = new();
 
     /// <summary>Profiles already warned about §10 telemetry with no destination — once each, not once per spawn.</summary>
@@ -259,30 +259,30 @@ public sealed class ProcessSupervisor : IProcessSupervisor
 
     public int RunningTotal => _tasks.Count;
 
-    public IReadOnlyCollection<TaskId> RunningTasks => _tasks.Keys.ToArray();
+    public IReadOnlyCollection<SessionId> RunningSessions => _tasks.Keys.ToArray();
 
     /// <summary>
     /// The supervised tasks whose OS process is still alive (§10 process-alive). The
     /// source for the periodic <c>alive</c> event: this is the one fact docketd knows
     /// and the plane cannot observe, so it is the fact that has to travel. Narrower
-    /// than <see cref="RunningTasks"/>, which still lists a task between its process
+    /// than <see cref="RunningSessions"/>, which still lists a task between its process
     /// exiting and its bookkeeping being torn down — reporting one of those as alive
     /// would hold off a requeue that should happen.
     /// </summary>
-    public IReadOnlyCollection<TaskId> LiveTasks =>
-        _tasks.Values.Where(t => t.ProcessAlive).Select(t => t.Task).ToArray();
+    public IReadOnlyCollection<SessionId> LiveSessions =>
+        _tasks.Values.Where(t => t.ProcessAlive).Select(t => t.Session).ToArray();
 
     public int RunningFor(string profile) =>
         _tasks.Values.Count(t => string.Equals(t.Profile, profile, StringComparison.Ordinal));
 
-    public bool TryGet(TaskId task, out SupervisedTask supervised) => _tasks.TryGetValue(task, out supervised!);
+    public bool TryGet(SessionId task, out SupervisedSession supervised) => _tasks.TryGetValue(task, out supervised!);
 
     /// <summary>
     /// The profile name a supervised task is running under, or null if this machine holds no
     /// such task. §10 agent-started processes consult it: the policy for what a task may
     /// start lives on its profile, and only the machine knows which profile that is.
     /// </summary>
-    public string? ProfileFor(TaskId task) => _tasks.TryGetValue(task, out var t) ? t.Profile : null;
+    public string? ProfileFor(SessionId task) => _tasks.TryGetValue(task, out var t) ? t.Profile : null;
 
     /// <summary>Identity of the thread that executed a spawn's <c>Process.Start</c>.</summary>
     internal readonly record struct SpawnThreadObservation(int ManagedThreadId, bool IsThreadPoolThread);
@@ -304,7 +304,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
     /// </summary>
     internal string? LastJobAssignmentFailure { get; private set; }
 
-    public TaskId Spawn(DispatchCommand dispatch, ProfileConfig profile, string machineId)
+    public SessionId Spawn(DispatchCommand dispatch, ProfileConfig profile, string machineId)
     {
         // §11 resume needs no second argv: the ref travels in the AcpSessionRequest below
         // and becomes `session/load` on the connection this spawn is about to open. One
@@ -320,14 +320,14 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         // artifacts the predecessor left, and the workspace is the work. Transcript resume
         // additionally needs it (a harness session is directory-local, so Claude Code
         // resumes only from the directory that created the session), but does not define it.
-        var dirTask = dispatch.WorkDirTask ?? dispatch.Task;
-        var inheritedDir = dirTask != dispatch.Task;
+        var dirTask = dispatch.WorkDirSession ?? dispatch.Session;
+        var inheritedDir = dirTask != dispatch.Session;
         var workDir = Path.Combine(_machine.WorkRoot, dirTask.ToString());
         Directory.CreateDirectory(workDir);
 
         var substitutions = new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            ["task_id"] = dispatch.Task.ToString(),
+            ["session_id"] = dispatch.Session.ToString(),
             ["machine_id"] = machineId,
             ["work_dir"] = workDir,
         };
@@ -341,7 +341,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         // env may legitimately want it — but it no longer selects an argv. What resumes the
         // transcript is `session/load`, on the connection the spawn below opens.
         if (dispatch.ResumeSessionRef is { Length: > 0 } resumeRef)
-            substitutions["session_id"] = resumeRef;
+            substitutions["harness_session_ref"] = resumeRef;
         if (dispatch.SpawnSubstitutions is not null)
             foreach (var (key, value) in dispatch.SpawnSubstitutions)
                 substitutions[key] = value;
@@ -358,7 +358,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             // config would hand it this task's credential, so a borrowed dir gets a
             // task-scoped name. The task's own dir keeps the documented mcp.json.
             var mcpPath = Path.Combine(
-                workDir, inheritedDir ? $"mcp-{dispatch.Task}.json" : "mcp.json");
+                workDir, inheritedDir ? $"mcp-{dispatch.Session}.json" : "mcp.json");
             File.WriteAllText(mcpPath, dispatch.McpConfigJson);
             SetOwnerOnly(mcpPath);
             substitutions["mcp_config"] = mcpPath;
@@ -421,7 +421,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             psi.ArgumentList.Add(argv[i]);
 
         psi.Environment["DOCKET_MACHINE_ID"] = machineId;
-        psi.Environment["DOCKET_TASK_ID"] = dispatch.Task.ToString();
+        psi.Environment["DOCKET_SESSION_ID"] = dispatch.Session.ToString();
         if (dispatch.WorkerToken.Length > 0)
             psi.Environment["DOCKET_WORKER_TOKEN"] = dispatch.WorkerToken;
         if (substitutions.TryGetValue("mcp_url", out var mcpUrl) && mcpUrl.Length > 0)
@@ -442,16 +442,16 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         ApplyProfileEnvironment(psi, profile, substitutions);
 
         // §10 telemetry ingest: when this profile opts in, turn the harness's own
-        // exporter on and stamp docket.task_id onto everything it emits, so the
+        // exporter on and stamp docket.session_id onto everything it emits, so the
         // operator's collector can bucket token/cost per task (visibility only —
         // nothing here meters or caps, and the plane ingests none of it). Inheritance
         // above is what carries everything not named in the resolved set.
-        ApplyHarnessTelemetry(psi, profile, dispatch.Task.ToString(), machineId);
+        ApplyHarnessTelemetry(psi, profile, dispatch.Session.ToString(), machineId);
 
         var process = new Process { StartInfo = psi, EnableRaisingEvents = true };
-        var supervised = new SupervisedTask
+        var supervised = new SupervisedSession
         {
-            Task = dispatch.Task,
+            Session = dispatch.Session,
             Profile = profile.Name,
             Process = process,
             WorkDir = workDir,
@@ -472,20 +472,20 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         // into one session file and corrupts the recovery substrate itself"). The flag
         // is what makes its imminent death harmless: a worker instance is identified
         // here by task id alone, so without it the predecessor's exit reaps its
-        // successor's process tree by DOCKET_TASK_ID, reports the successor's death to
+        // successor's process tree by DOCKET_SESSION_ID, reports the successor's death to
         // the plane (which requeues the task and revokes the successor's token), and
         // drops the successor out of supervision entirely.
-        if (_tasks.TryGetValue(dispatch.Task, out var predecessor))
+        if (_tasks.TryGetValue(dispatch.Session, out var predecessor))
         {
             predecessor.Superseded = true;
             KillTree(predecessor);
         }
-        _tasks[dispatch.Task] = supervised;
+        _tasks[dispatch.Session] = supervised;
 
         try
         {
             // PDEATHSIG thread affinity: marshal the actual Process.Start onto the one dedicated spawner
-            // thread. The psi construction and SupervisedTask bookkeeping stay on the
+            // thread. The psi construction and SupervisedSession bookkeeping stay on the
             // caller; only the fork must run on a thread that outlives the worker, so
             // Linux PDEATHSIG — keyed to the forking thread — is never tripped by a
             // retiring thread-pool thread. Run blocks and re-throws in the caller's
@@ -508,7 +508,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         }
         catch
         {
-            _tasks.TryRemove(dispatch.Task, out _);
+            _tasks.TryRemove(dispatch.Session, out _);
             if (OperatingSystem.IsWindows())
                 supervised.Job?.Close();
             process.Dispose();
@@ -519,7 +519,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         // are created lazily on the first line, so a silent worker leaves none). The
         // stdout tee and the stderr pump feed it; it is flushed and closed once both
         // end (CaptureDone below).
-        var writer = captureEnabled ? _transcripts!.CreateWriter(dispatch.Task, profile.Logs.MaxBytes) : null;
+        var writer = captureEnabled ? _transcripts!.CreateWriter(dispatch.Session, profile.Logs.MaxBytes) : null;
         supervised.Transcript = writer;
         var feeders = new List<Task>();
 
@@ -541,7 +541,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             supervised.EventReaderCts = cts;
             var mcpServers = AcpMcpServers.FromGeneratedConfig(dispatch.McpConfigJson);
             var client = new AcpClient(
-                dispatch.Task,
+                dispatch.Session,
                 _ring,
                 _clock,
                 new AcpSessionRequest(
@@ -560,7 +560,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
                     if (supervised.SessionId is not null)
                         return;
                     supervised.SessionId = sessionId;
-                    _ring.Enqueue(new SessionStartedEvent(dispatch.Task, sessionId, _clock.GetUtcNow()));
+                    _ring.Enqueue(new SessionStartedEvent(dispatch.Session, sessionId, _clock.GetUtcNow()));
                 },
                 rawLineSink: writer is null ? null : writer.WriteStdoutLine,
                 requestPermission: (ask, permissionCt) =>
@@ -607,12 +607,12 @@ public sealed class ProcessSupervisor : IProcessSupervisor
 
         // §10: started (harness up) is distinct from dispatch ack. Process-spawned
         // is docketd's own observation; a richer events.source refines it upstream.
-        _ring.Enqueue(new StartedEvent(dispatch.Task, _clock.GetUtcNow()));
-        return dispatch.Task;
+        _ring.Enqueue(new StartedEvent(dispatch.Session, _clock.GetUtcNow()));
+        return dispatch.Session;
     }
 
     public async Task<StopAck> StopAsync(
-        TaskId task, TimeSpan ttl, StopDisposition disposition, string? reason, CancellationToken ct)
+        SessionId task, TimeSpan ttl, StopDisposition disposition, string? reason, CancellationToken ct)
     {
         if (!_tasks.TryGetValue(task, out var supervised))
             return new StopAck(false, StopDelivery.NotRunning);
@@ -656,12 +656,12 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         return new StopAck(true, StopDelivery.DeadlineArmed);
     }
 
-    public bool TryPrompt(TaskId task) =>
+    public bool TryPrompt(SessionId task) =>
         _tasks.TryGetValue(task, out var supervised)
         && supervised.Acp is { } acp
         && acp.TryQueueFollowUp();
 
-    public bool Kill(TaskId task)
+    public bool Kill(SessionId task)
     {
         if (!_tasks.TryGetValue(task, out var supervised))
             return false;
@@ -675,15 +675,15 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             KillTree(supervised);
     }
 
-    private void OnExited(SupervisedTask supervised, string machineId)
+    private void OnExited(SupervisedSession supervised, string machineId)
     {
         // §11 resume (#102): remove only if this instance is still the task's — a
         // compare-and-remove, so a superseded predecessor dying mid-resume cannot
         // evict the successor that replaced it in the map. Losing that entry would
         // leave the successor unsupervised: no `alive` events, no stop delivery, no
         // kill, and a stray at teardown.
-        ((ICollection<KeyValuePair<TaskId, SupervisedTask>>)_tasks)
-            .Remove(new KeyValuePair<TaskId, SupervisedTask>(supervised.Task, supervised));
+        ((ICollection<KeyValuePair<SessionId, SupervisedSession>>)_tasks)
+            .Remove(new KeyValuePair<SessionId, SupervisedSession>(supervised.Session, supervised));
         supervised.TtlTimer?.Dispose();
 
         // §10 Terminal events source: the worker is gone, so its stdout is at (or
@@ -736,23 +736,23 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             return;
         }
 
-        _ring.Enqueue(new ExitedEvent(supervised.Task, exitCode, _clock.GetUtcNow()));
+        _ring.Enqueue(new ExitedEvent(supervised.Session, exitCode, _clock.GetUtcNow()));
 
-        // §10: task-exit stray cleanup keyed by DOCKET_TASK_ID, best-effort. Every
-        // instance of a task carries the same DOCKET_TASK_ID, so this is reachable only
+        // §10: task-exit stray cleanup keyed by DOCKET_SESSION_ID, best-effort. Every
+        // instance of a task carries the same DOCKET_SESSION_ID, so this is reachable only
         // for the current one — a superseded predecessor returned above rather than
         // reaping the successor it was replaced by (#102).
-        try { _taskReaper?.ReapTask(machineId, supervised.Task.ToString()); }
+        try { _taskReaper?.ReapSession(machineId, supervised.Session.ToString()); }
         catch { /* best effort */ }
 
-        // After reap so a hook that accidentally carried DOCKET_TASK_ID is not
+        // After reap so a hook that accidentally carried DOCKET_SESSION_ID is not
         // killed mid-run. Best-effort: a failed after_exit must not rewrite the
         // exit the plane already recorded.
         try
         {
             var afterSubs = new Dictionary<string, string>(StringComparer.Ordinal)
             {
-                ["task_id"] = supervised.Task.ToString(),
+                ["session_id"] = supervised.Session.ToString(),
                 ["machine_id"] = machineId,
                 ["work_dir"] = supervised.WorkDir,
             };
@@ -762,7 +762,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         catch { /* best effort */ }
     }
 
-    private static void KillTree(SupervisedTask supervised)
+    private static void KillTree(SupervisedSession supervised)
     {
         supervised.TtlTimer?.Dispose();
         try
@@ -925,7 +925,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         ApplyProfileEnvironment(psi, profileEnv, substitutions);
         psi.Environment["DOCKET_MACHINE_ID"] = machineId;
         psi.Environment["DOCKET_HOOK"] = hookName;
-        psi.Environment.Remove("DOCKET_TASK_ID");
+        psi.Environment.Remove("DOCKET_SESSION_ID");
         psi.Environment.Remove("DOCKET_WORKER_TOKEN");
 
         using var process = new Process { StartInfo = psi };
@@ -977,11 +977,11 @@ public sealed class ProcessSupervisor : IProcessSupervisor
     /// gets nothing set and one warning per profile, since a silent no-op is exactly
     /// the failure an operator would spend an afternoon on.
     /// </summary>
-    private void ApplyHarnessTelemetry(ProcessStartInfo psi, ProfileConfig profile, string taskId, string machineId)
+    private void ApplyHarnessTelemetry(ProcessStartInfo psi, ProfileConfig profile, string sessionId, string machineId)
     {
         var telemetry = HarnessTelemetry.SpawnEnvironment(
             profile.Telemetry,
-            taskId,
+            sessionId,
             machineId,
             Environment.GetEnvironmentVariable,
             out var requestedWithoutEndpoint);

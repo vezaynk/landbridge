@@ -122,7 +122,7 @@ public sealed class DeadMansSwitchTests : IDisposable
     {
         var ring = new OutboundEventRing(capacity: 256);
         var supervisor = new ProcessSupervisor(TestKit.Machine(_workRoot), ring, new FakeTimeProvider());
-        var task = TaskId.New();
+        var task = SessionId.New();
 
         supervisor.Spawn(TestKit.Dispatch(task), TestKit.Profile("spawn-child"), "m");
         var workDir = Path.Combine(_workRoot, task.ToString());

@@ -123,7 +123,7 @@ public sealed class RelayForwarder : IAsyncDisposable
                 // A forward closing is always reported once, whether it spliced,
                 // timed out, or failed to establish (§8.3). A refusal rides along so the
                 // consumer is told why rather than just that.
-                _ring.Enqueue(new ForwardClosedEvent(command.Task, forwardId, refusal));
+                _ring.Enqueue(new ForwardClosedEvent(command.Session, forwardId, refusal));
                 _live.TryRemove(new KeyValuePair<string, LiveForward>(forwardId, live));
                 linked.Dispose();
             }
@@ -140,7 +140,7 @@ public sealed class RelayForwarder : IAsyncDisposable
     ///
     /// <para><b>Resolved by forward id alone.</b> That is the key <see cref="_live"/> and
     /// the relay's own pairing already use, and it is unique per grant;
-    /// <see cref="CloseForwardCommand.Task"/> is correlation, and which end's task it
+    /// <see cref="CloseForwardCommand.Session"/> is correlation, and which end's task it
     /// names depends on which end the plane addressed (see the record's remarks), so
     /// matching on it would import that asymmetry into the runner.</para>
     ///
@@ -184,7 +184,7 @@ public sealed class RelayForwarder : IAsyncDisposable
             // Report the bound port up so the control plane can return it to the
             // worker (§8.3). Emitted before the accept so open_forward unblocks the
             // moment the address is dialable.
-            _ring.Enqueue(new ForwardOpenedEvent(command.Task, command.ForwardId, boundPort));
+            _ring.Enqueue(new ForwardOpenedEvent(command.Session, command.ForwardId, boundPort));
             _log?.Invoke($"forward {command.ForwardId}: consumer bound 127.0.0.1:{boundPort}");
 
             Socket accepted;

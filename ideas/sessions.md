@@ -15,7 +15,7 @@ Three choices were made explicitly on 2026-08-15:
 3. **A session is held indefinitely**, not evicted on a TTL. If the process dies anyway, the
    next invocation resumes it from the transcript via `session/load`. **Implemented:**
    `Docket:WaitTtl` defaults to infinite; the sweeper still requeues a dead machine.
-   `park_task` is the deliberate release.
+   `park_session` is the deliberate release.
 
 The enabling change is already in: every worker is an ACP peer (see
 [`runner-config.md`](skills/references/runner-config.md)) rather than a process whose only
@@ -50,7 +50,7 @@ hang off, and the work is simply lost.
 So the plane still records, durably: the session's harness ref, its workspace and work dir,
 its profile and machine, and its message history. What goes away is the *TTL sweeper that
 proactively converts a live session into a parked row* — not the row.
-That sweeper is now off by default. `park_task` is how a Lead frees the machine.
+That sweeper is now off by default. `park_session` is how a Lead frees the machine.
 
 `session/load` also constrains recovery: the spec requires the same `cwd` and `mcpServers`
 as the original `session/new`. Work dirs already persist, so this is satisfiable, but it
@@ -61,10 +61,10 @@ scratch that any cleanup may reclaim.
 
 **A constraint on every stage below, and the one most easily lost by accident.** The session
 model makes it cheap to *push* a message at a worker. It must not, because the push is not
-the delivery — the worker's own `get_task` is.
+the delivery — the worker's own `get_session` is.
 
 Today the answer to an input request waits on the assignment and reaches the worker on its
-next `get_task` (`WorkerAssignment`, §11). Three properties ride on that being a pull:
+next `get_session` (`WorkerAssignment`, §11). Three properties ride on that being a pull:
 
 1. **It is a receipt.** A pulled answer is one the worker demonstrably received, because it
    asked for it. A pushed one is *delivered to a queue* — the same gap between "written" and
@@ -76,7 +76,7 @@ next `get_task` (`WorkerAssignment`, §11). Three properties ride on that being 
    enrollment tokens out of argv. A live session must not become a second path out of the
    authenticated MCP channel.
 3. **Config stays config.** The turn text has to name the docket tools the way *this* harness
-   spells them (`mcp__docket__get_task` / `docket_get_task` / `docket__get_task`), so it is
+   spells them (`mcp__docket__get_session` / `docket_get_session` / `docket__get_session`), so it is
    profile configuration. Per-message content in a profile-shaped turn mixes the two.
 
 So the §10 `prompt` command carries **no message**: it names a task, the runner sends that
@@ -126,7 +126,7 @@ the *fourth* state named, not the third: a turn ended in `working` is a fault, a
 held idle awaiting input is not, and only the first requeues.
 
 **Concurrency.** *Decided:* do not prescribe `max_concurrent`. Back-pressure is what
-`docketd` observes (memory/disk/load). Waiting sessions may occupy seats; `park_task` is
+`docketd` observes (memory/disk/load). Waiting sessions may occupy seats; `park_session` is
 how a Lead frees one.
 
 **Token lifetime.** *Decided:* the token lives with the instance. Revoke on park, fail,
@@ -149,7 +149,7 @@ Closes the session only on stop/kill.
 **Stage 2 — a question stops suspending.** `request_input` no longer parks: the session goes
 idle-awaiting-input and the Lead's answer is delivered as a follow-up prompt. The wait-TTL
 sweeper is recovery-only (implemented: TTL off by default; machine-death still requeues).
-`park_task` closes a session on purpose. Liveness grows its third state.
+`park_session` closes a session on purpose. Liveness grows its third state.
 **Implemented:** a question stays `working` (permission is still the one
 `blocked_on_input` live wait). `answer_input_request` on a live process is
 `ContinueSession` or `LeadMessage` + `PromptCommand`; a gone process still
@@ -177,14 +177,16 @@ rename, recorded here so the rename does not reopen them:
 - **`session/load` is machine-local** (#175). Work-dir GC is skill advice. Spend is
   metered only — the operator's own provisioning is the cap.
 
-The domain rename (session states, migrations, dashboard reoriented around conversation)
-is still ahead of this file's original stage-3 sentence. The engine now behaves as if
-the session were the record.
+The domain rename is done: the ledger, MCP tools, dashboard, and spec §6/§7/§11
+name the conversation a **session**. The runner wire carries `session` /
+`work_dir_session`. `{session_id}` / `DOCKET_SESSION_ID` is the Docket row;
+`{harness_session_ref}` is the ACP resume token. The pull-is-receipt is
+`get_session`.
 
 **Stage 4 — the Lead can talk back.** *Implemented on the task model.* A fail is
 `Rejected`, not a continuation. More from the same worker is `LeadMessage` /
 `answer_input_request`: the plane doorbells; the worker pulls the text on
-`get_task`. A pending permission still needs a verdict, not prose.
+`get_session`. A pending permission still needs a verdict, not prose.
 Continuations remain for cleanup and for *new* work that should inherit a
 transcript — not for retrying a rejected assignment.
 
@@ -199,7 +201,7 @@ waits in `submitted`. Moving the session to another box is #175.
 - **Does a session span more than one piece of work?** *Decided:* no. New work is a new
   session. A Lead reply on a live report is the same assignment continuing, not a second
   piece of work. A fail or accept ends it.
-- **What closes a session?** `park_task` / accept / fail / cancel: `session/cancel`, token
+- **What closes a session?** `park_session` / accept / fail / cancel: `session/cancel`, token
   revoked. Later wake of a park or fail is `session/load`. An idle session you will not
   speak to again is a leak — park it.
 - **Does the §7 profile still describe how to *launch*?** Under sessions it increasingly

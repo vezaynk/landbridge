@@ -30,7 +30,7 @@ public sealed class SupersededInstanceTests : IDisposable
     /// Returns what arrived if the exit never comes, so a missing one fails on the assertion
     /// rather than on a timeout.
     /// </summary>
-    private async Task<List<RunnerEvent>> EventsThroughExitAsync(TaskId task, TimeSpan timeout)
+    private async Task<List<RunnerEvent>> EventsThroughExitAsync(SessionId task, TimeSpan timeout)
     {
         var events = new List<RunnerEvent>();
         using var cts = new CancellationTokenSource(timeout);
@@ -39,7 +39,7 @@ public sealed class SupersededInstanceTests : IDisposable
             await foreach (var item in _ring.ReadAllAsync(cts.Token))
             {
                 events.Add(item.Event);
-                if (item.Event is ExitedEvent x && x.Task == task)
+                if (item.Event is ExitedEvent x && x.Session == task)
                     break;
             }
         }
@@ -56,7 +56,7 @@ public sealed class SupersededInstanceTests : IDisposable
     [Fact]
     public async Task A_superseded_predecessors_exit_is_not_reported_as_the_tasks_exit()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         var supervisor = new ProcessSupervisor(TestKit.Machine(_workRoot), _ring, _clock);
 
         supervisor.Spawn(TestKit.Dispatch(task), TestKit.Profile("sleeper"), "m");
@@ -83,8 +83,8 @@ public sealed class SupersededInstanceTests : IDisposable
 
         // Two starts, and exactly one exit — the successor's, on the kill above. The
         // predecessor's died first, so had it been reported it would already be in here.
-        Assert.Equal(2, events.Count(e => e is StartedEvent s && s.Task == task));
-        Assert.Single(events, e => e is ExitedEvent x && x.Task == task);
+        Assert.Equal(2, events.Count(e => e is StartedEvent s && s.Session == task));
+        Assert.Single(events, e => e is ExitedEvent x && x.Session == task);
     }
 
     /// <summary>
@@ -95,7 +95,7 @@ public sealed class SupersededInstanceTests : IDisposable
     [Fact]
     public async Task A_superseded_predecessors_exit_does_not_drop_its_successor_from_supervision()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         var supervisor = new ProcessSupervisor(TestKit.Machine(_workRoot), _ring, _clock);
 
         supervisor.Spawn(TestKit.Dispatch(task), TestKit.Profile("sleeper"), "m");
@@ -106,7 +106,7 @@ public sealed class SupersededInstanceTests : IDisposable
 
         Assert.True(supervisor.TryGet(task, out var stillSupervised));
         Assert.True(stillSupervised.ProcessAlive);
-        Assert.Contains(task, supervisor.RunningTasks);
+        Assert.Contains(task, supervisor.RunningSessions);
         Assert.Equal(1, supervisor.RunningFor("default"));
 
         // And it is killable through the task id, which is the property a requeue depends on.
@@ -115,7 +115,7 @@ public sealed class SupersededInstanceTests : IDisposable
 
     /// <summary>
     /// The predecessor's exit does not reap its successor. Task-exit stray cleanup matches
-    /// on <c>DOCKET_TASK_ID</c>, which every instance of a task carries — so run for a
+    /// on <c>DOCKET_SESSION_ID</c>, which every instance of a task carries — so run for a
     /// superseded instance it kills the process tree of the very worker that replaced it.
     /// This is the half that killed the resumed claude outright in #102, before it could
     /// call a single docket tool.
@@ -123,7 +123,7 @@ public sealed class SupersededInstanceTests : IDisposable
     [Fact]
     public async Task A_superseded_predecessors_exit_does_not_reap_its_successor_by_task_id()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         var inventory = new MutableProcessInventory();
         var supervisor = new ProcessSupervisor(
             TestKit.Machine(_workRoot), _ring, _clock,
@@ -158,7 +158,7 @@ public sealed class SupersededInstanceTests : IDisposable
     [Fact]
     public async Task An_unsuperseded_workers_exit_is_still_reported()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         var supervisor = new ProcessSupervisor(TestKit.Machine(_workRoot), _ring, _clock);
 
         supervisor.Spawn(TestKit.Dispatch(task), TestKit.Profile("sleeper"), "m");
@@ -167,7 +167,7 @@ public sealed class SupersededInstanceTests : IDisposable
         Assert.True(await TestKit.WaitUntilAsync(() => !only.ProcessAlive, TimeSpan.FromSeconds(15)));
 
         var events = await EventsThroughExitAsync(task, TimeSpan.FromSeconds(15));
-        Assert.Contains(events, e => e is ExitedEvent x && x.Task == task);
+        Assert.Contains(events, e => e is ExitedEvent x && x.Session == task);
         Assert.Equal(0, supervisor.SupersededExits);
     }
 

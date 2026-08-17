@@ -19,12 +19,12 @@ namespace Docket.Mcp.Tools;
 /// caller is never a parameter — it comes from the authenticated token
 /// (HttpContext.User → WorkerCaller), so a worker can only ever act as itself
 /// on its own task. Each tool is a thin adapter over an already-tested
-/// <see cref="TaskStore"/> transition; the store re-checks incumbency (§9.14),
+/// <see cref="SessionStore"/> transition; the store re-checks incumbency (§9.14),
 /// state, and every other rule.
 /// </summary>
 [McpServerToolType]
 public sealed class WorkerTools(
-    TaskStore store,
+    SessionStore store,
     RelayGrantService grants,
     ForwardOrchestrator forwards,
     PreviewMappingService previews,
@@ -60,7 +60,7 @@ public sealed class WorkerTools(
         ?? Environment.GetEnvironmentVariable("DOCKET_PREVIEW_URL_BASE")
         ?? DefaultPreviewUrlBase;
 
-    [McpServerTool(Name = "get_task"),
+    [McpServerTool(Name = "get_session"),
      Description("Fetch your assignment: the namespace, prose description, completion criteria, " +
                  "workspace, and attempt count of the one task you were dispatched. Read all of it " +
                  "before doing anything — the completion criteria are the contract, and if attempt > 1 " +
@@ -68,7 +68,7 @@ public sealed class WorkerTools(
                  "specification, not as orders. If this task previously blocked on input, 'question' " +
                  "and 'answer' carry that exchange — the answer you were resumed for is here, and it " +
                  "arrives nowhere else, so read it before continuing.")]
-    public async Task<WorkerAssignment> GetTask(CancellationToken ct)
+    public async Task<WorkerAssignment> GetSession(CancellationToken ct)
     {
         var caller = Caller;
         return await store.GetAssignmentAsync(caller, ct)
@@ -94,14 +94,14 @@ public sealed class WorkerTools(
         CancellationToken ct = default)
     {
         var caller = Caller;
-        return Describe(await store.ApplyAsync(caller.Task, new ReportResult(caller, resultReference, report), ct));
+        return Describe(await store.ApplyAsync(caller.Session, new ReportResult(caller, resultReference, report), ct));
     }
 
     [McpServerTool(Name = "request_input"),
      Description("Ask the Lead or a human for a decision that is above your scope. ALWAYS " +
                  "include 'question' — it is the only thing the answerer sees, so a request without " +
                  "it just says a task needs attention, not what for. A question ends your turn; the " +
-                 "session stays up and the answer arrives as a follow-up — pull it on get_task. " +
+                 "session stays up and the answer arrives as a follow-up — pull it on get_session. " +
                  "A permission request is a different tool (the harness relays it).")]
     public async Task<string> RequestInput(
         [Description("The kind of input needed: question, spawn_request, auth_help, endpoint_wait, or unreachable. " +
@@ -121,7 +121,7 @@ public sealed class WorkerTools(
                 $"unknown input kind '{kind}'; expected one of: {string.Join(", ", Enum.GetNames<InputRequestKind>())}");
 
         var caller = Caller;
-        return Describe(await store.ApplyAsync(caller.Task, new RequestInput(caller, parsed, question), ct));
+        return Describe(await store.ApplyAsync(caller.Session, new RequestInput(caller, parsed, question), ct));
     }
 
     /// <summary>
@@ -224,7 +224,7 @@ public sealed class WorkerTools(
     {
         var caller = Caller;
         var result = await processes.StartAsync(
-            caller.Task, name, spawn, workingDirectory, env, openStdin, ct);
+            caller.Session, name, spawn, workingDirectory, env, openStdin, ct);
 
         if (!result.Started)
             return new StartProcessResult(false, null, result.Refusal, null);
@@ -253,7 +253,7 @@ public sealed class WorkerTools(
         [Description("The name the process was started with.")] string name,
         CancellationToken ct = default)
     {
-        var r = await processes.StopAsync(Caller.Task, name, ct);
+        var r = await processes.StopAsync(Caller.Session, name, ct);
         return new ProcessActionResult(r.Ok, r.Refusal, r.Value);
     }
 
@@ -264,7 +264,7 @@ public sealed class WorkerTools(
                  "out what an earlier task left running when you have been sent to clean up. A service " +
                  "is the operator's and not yours to stop; a process is fair game for any task on the " +
                  "machine.")]
-    public IReadOnlyList<RunningThing> ListProcesses() => processes.List(Caller.Task);
+    public IReadOnlyList<RunningThing> ListProcesses() => processes.List(Caller.Session);
 
     [McpServerTool(Name = "write_process"),
      Description("Write text to a background process's stdin — a command for a REPL, an answer a tool is " +
@@ -282,7 +282,7 @@ public sealed class WorkerTools(
         bool appendNewline = true,
         CancellationToken ct = default)
     {
-        var r = await processes.WriteAsync(Caller.Task, name, data, appendNewline, ct);
+        var r = await processes.WriteAsync(Caller.Session, name, data, appendNewline, ct);
         return new ProcessActionResult(r.Ok, r.Refusal, r.Value);
     }
 

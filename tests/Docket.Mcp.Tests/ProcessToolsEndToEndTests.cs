@@ -52,12 +52,12 @@ public sealed class ProcessToolsEndToEndTests(PostgresFixture pg) : IAsyncLifeti
                     if (_live.ContainsKey(s.Name))
                     {
                         await sink.HandleAsync(new ProcessStartedEvent(
-                            s.Task, s.RequestId, s.Name, false, ProcessRefusals.NameTaken), ct);
+                            s.Session, s.RequestId, s.Name, false, ProcessRefusals.NameTaken), ct);
                         return;
                     }
                     _live[s.Name] = null;
                     await sink.HandleAsync(new ProcessStartedEvent(
-                        s.Task, s.RequestId, s.Name, true,
+                        s.Session, s.RequestId, s.Name, true,
                         LogPath: $"/state/processes/{s.Name}"), ct);
                     return;
 
@@ -65,23 +65,23 @@ public sealed class ProcessToolsEndToEndTests(PostgresFixture pg) : IAsyncLifeti
                     if (!_live.ContainsKey(w.Name))
                     {
                         await sink.HandleAsync(new ProcessWrittenEvent(
-                            w.Task, w.RequestId, w.Name, false, 0, ProcessRefusals.NoSuchProcess), ct);
+                            w.Session, w.RequestId, w.Name, false, 0, ProcessRefusals.NoSuchProcess), ct);
                         return;
                     }
                     Written.Add(w.AppendNewline ? w.Data + "\n" : w.Data);
                     await sink.HandleAsync(new ProcessWrittenEvent(
-                        w.Task, w.RequestId, w.Name, true, Written[^1].Length), ct);
+                        w.Session, w.RequestId, w.Name, true, Written[^1].Length), ct);
                     return;
 
                 case StopProcessCommand t:
                     if (!_live.Remove(t.Name))
                     {
                         await sink.HandleAsync(new ProcessStoppedEvent(
-                            t.Task, t.RequestId, t.Name, false, null, ProcessRefusals.NoSuchProcess), ct);
+                            t.Session, t.RequestId, t.Name, false, null, ProcessRefusals.NoSuchProcess), ct);
                         return;
                     }
                     await sink.HandleAsync(new ProcessStoppedEvent(
-                        t.Task, t.RequestId, t.Name, true, ExitCode: 0), ct);
+                        t.Session, t.RequestId, t.Name, true, ExitCode: 0), ct);
                     return;
             }
         };
@@ -102,7 +102,7 @@ public sealed class ProcessToolsEndToEndTests(PostgresFixture pg) : IAsyncLifeti
         var registry = plane.Services.GetRequiredService<RunnerConnectionRegistry>();
         var machine = new StubMachine(plane.Services.GetRequiredService<RunnerEventSink>());
         registry.Register("m1", new HashSet<string> { "default" }, machine.Send);
-        registry.TrackDispatch("m1", worker.Task);
+        registry.TrackDispatch("m1", worker.Session);
 
         await using var client = await RelayGrantTestKit.ConnectMcpAsync(
             RelayGrantTestKit.BaseUri(plane), worker.Token, ct);
@@ -141,7 +141,7 @@ public sealed class ProcessToolsEndToEndTests(PostgresFixture pg) : IAsyncLifeti
         var registry = plane.Services.GetRequiredService<RunnerConnectionRegistry>();
         var machine = new StubMachine(plane.Services.GetRequiredService<RunnerEventSink>());
         registry.Register("m1", new HashSet<string> { "default" }, machine.Send);
-        registry.TrackDispatch("m1", worker.Task);
+        registry.TrackDispatch("m1", worker.Session);
 
         await using var client = await RelayGrantTestKit.ConnectMcpAsync(
             RelayGrantTestKit.BaseUri(plane), worker.Token, ct);
@@ -185,8 +185,8 @@ public sealed class ProcessToolsEndToEndTests(PostgresFixture pg) : IAsyncLifeti
         var registry = plane.Services.GetRequiredService<RunnerConnectionRegistry>();
         var machine = new StubMachine(plane.Services.GetRequiredService<RunnerEventSink>());
         registry.Register("m1", new HashSet<string> { "default" }, machine.Send);
-        registry.TrackDispatch("m1", starter.Task);
-        registry.TrackDispatch("m1", cleaner.Task);
+        registry.TrackDispatch("m1", starter.Session);
+        registry.TrackDispatch("m1", cleaner.Session);
 
         // 1. The first task starts a long-running process.
         await using (var first = await RelayGrantTestKit.ConnectMcpAsync(
@@ -202,7 +202,7 @@ public sealed class ProcessToolsEndToEndTests(PostgresFixture pg) : IAsyncLifeti
 
         // 2. Its task is gone from the plane's point of view — untracked, as a terminal task is.
         //    Nothing about that touches the process.
-        registry.Untrack(starter.Task);
+        registry.Untrack(starter.Session);
         Assert.True(machine.Live.ContainsKey("long-build"),
             "the process must survive its declaring task — that is the whole point of the feature");
 
@@ -211,8 +211,8 @@ public sealed class ProcessToolsEndToEndTests(PostgresFixture pg) : IAsyncLifeti
         // machine does every 15s.
         registry.ApplyHeartbeat("m1", new MachineHeartbeat(
             "m1", Ready: true, UnderBackPressure: false, new SystemLoad(0, 0, 0),
-            RunningTasks: 1, ["default"], DateTimeOffset.UtcNow,
-            Processes: [new ProcessStatus("long-build", ServiceState.Running, starter.Task.Value)]));
+            RunningSessions: 1, ["default"], DateTimeOffset.UtcNow,
+            Processes: [new ProcessStatus("long-build", ServiceState.Running, starter.Session.Value)]));
 
         // 3. The cleanup task — a DIFFERENT task id, as a Lead's continuation carries — can see
         //    it and stop it. This is the half that task-scoped lifetime would have made impossible.
@@ -264,7 +264,7 @@ public sealed class ProcessToolsEndToEndTests(PostgresFixture pg) : IAsyncLifeti
         var registry = plane.Services.GetRequiredService<RunnerConnectionRegistry>();
         var machine = new StubMachine(plane.Services.GetRequiredService<RunnerEventSink>());
         registry.Register("m1", new HashSet<string> { "default" }, machine.Send);
-        registry.TrackDispatch("m1", worker.Task);
+        registry.TrackDispatch("m1", worker.Session);
 
         await using var client = await RelayGrantTestKit.ConnectMcpAsync(
             RelayGrantTestKit.BaseUri(plane), worker.Token, ct);

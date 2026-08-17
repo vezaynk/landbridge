@@ -38,7 +38,7 @@ public class ProfileEnvTests
     }
 
     [Theory]
-    [InlineData("DOCKET_TASK_ID")]
+    [InlineData("DOCKET_SESSION_ID")]
     [InlineData("DOCKET_MACHINE_ID")]
     [InlineData("DOCKET_WORKER_TOKEN")]
     [InlineData("DOCKET_TRACEPARENT")]
@@ -79,7 +79,7 @@ public sealed class ProfileEnvSpawnTests : IDisposable
     [Fact]
     public async Task Profile_env_reaches_the_worker_with_work_dir_substituted()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         var supervisor = Supervisor();
 
         supervisor.Spawn(
@@ -102,7 +102,7 @@ public sealed class ProfileEnvSpawnTests : IDisposable
         // exactly how this failed the Windows leg of #164. docketd must not silently rewrite
         // a value the operator wrote; spawn argv and files[] paths substitute the same way.
         Assert.Equal($"{workDir}/.grok", env["GROK_HOME"]);
-        Assert.Equal(task.ToString(), env["DOCKET_TASK_ID"]);
+        Assert.Equal(task.ToString(), env["DOCKET_SESSION_ID"]);
         Assert.Equal("machine-42", env["DOCKET_MACHINE_ID"]);
 
         Assert.True(supervisor.Kill(task));
@@ -111,7 +111,7 @@ public sealed class ProfileEnvSpawnTests : IDisposable
     [Fact]
     public async Task Telemetry_env_still_overlays_profile_env_when_otel_is_on()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         var supervisor = Supervisor();
 
         supervisor.Spawn(
@@ -141,7 +141,7 @@ public sealed class ProfileEnvSpawnTests : IDisposable
         Assert.True(supervisor.Kill(task));
     }
 
-    private async Task<Dictionary<string, string>> ReadEnvMarker(TaskId task)
+    private async Task<Dictionary<string, string>> ReadEnvMarker(SessionId task)
     {
         var path = Path.Combine(_workRoot, task.ToString(), "env");
         Assert.True(await TestKit.WaitUntilAsync(() => File.Exists(path), TimeSpan.FromSeconds(15)),

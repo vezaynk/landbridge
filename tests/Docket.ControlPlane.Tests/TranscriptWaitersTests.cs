@@ -11,7 +11,7 @@ namespace Docket.ControlPlane.Tests;
 public sealed class TranscriptWaitersTests
 {
     private static TranscriptChunkEvent Reply(string requestId, string text = "chunk") =>
-        new(TaskId.New(), requestId, Text: text, NextOffset: text.Length);
+        new(SessionId.New(), requestId, Text: text, NextOffset: text.Length);
 
     [Fact]
     public async Task A_reply_completes_the_waiter_registered_for_its_request_id()

@@ -6,7 +6,7 @@ using Microsoft.Extensions.Time.Testing;
 namespace Docket.ControlPlane.Tests;
 
 [Collection(PostgresCollection.Name)]
-public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
+public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
 {
     public async Task InitializeAsync()
     {
@@ -18,13 +18,13 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
     private static readonly TeamId Team = TeamId.New();
     private static LeadClaim Lead => new(Team);
 
-    private TaskStore NewStore(DocketDbContext db) => new(db, new FakeTimeProvider());
+    private SessionStore NewStore(DocketDbContext db) => new(db, new FakeTimeProvider());
 
-    private async Task<TaskId> CreateSubmitted(DocketDbContext db, string? profile = null, CompletionMode mode = CompletionMode.Lead)
+    private async Task<SessionId> CreateSubmitted(DocketDbContext db, string? profile = null, CompletionMode mode = CompletionMode.Lead)
     {
         var result = await NewStore(db).CreateAsync(
-            new CreateTask(Lead, Team, "pnpm test", mode, profile));
-        return ((StoreResult.Applied)result).Task.Id;
+            new CreateSession(Lead, Team, "pnpm test", mode, profile));
+        return ((StoreResult.Applied)result).Session.Id;
     }
 
     private static MachineSnapshot Machine(params string[] profiles) =>
@@ -39,9 +39,9 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
 
         var id = await CreateSubmitted(db);
 
-        var row = await db.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
-        Assert.Equal(TaskState.Submitted, row.State);
-        Assert.Equal($"team-{Team}/task-{id}", row.Namespace);
+        var row = await db.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(SessionState.Submitted, row.State);
+        Assert.Equal($"team-{Team}/session-{id}", row.Namespace);
     }
 
     [SkippableFact]
@@ -55,9 +55,9 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         var result = await NewStore(db).DispatchNextAsync(Machine(), instance);
 
         var applied = Assert.IsType<StoreResult.Applied>(result);
-        Assert.Equal(id, applied.Task.Id);
+        Assert.Equal(id, applied.Session.Id);
         await using var verify = pg.NewContext();
-        Assert.Equal(TaskState.Working, (await verify.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value)).State);
+        Assert.Equal(SessionState.Working, (await verify.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value)).State);
         var inst = await verify.WorkerInstances.AsNoTracking().SingleAsync(w => w.Id == instance.Value);
         Assert.False(inst.Revoked);
     }
@@ -110,8 +110,8 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
             await NewStore(db).DispatchNextAsync(Machine("restricted"), WorkerInstanceId.New()));
 
         await using var verify = pg.NewContext();
-        var row = await verify.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
-        Assert.Equal(TaskState.Submitted, row.State);
+        var row = await verify.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(SessionState.Submitted, row.State);
         Assert.Equal(0, row.Attempt);
 
         // Claimable the moment a machine that declares `default` asks — the unchanged half.
@@ -130,7 +130,7 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
 
         db.RegisteredServices.Add(new RegisteredServiceRow
         {
-            TaskId = id.Value, TeamId = Team.Value, Name = "api", Port = 5001, CreatedAt = DateTimeOffset.UtcNow,
+            SessionId = id.Value, TeamId = Team.Value, Name = "api", Port = 5001, CreatedAt = DateTimeOffset.UtcNow,
         });
         await db.SaveChangesAsync();
 
@@ -139,10 +139,10 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
 
         Assert.IsType<StoreResult.Applied>(result);
         await using var verify = pg.NewContext();
-        Assert.Equal(TaskState.Verifying, (await verify.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value)).State);
-        Assert.Single(await verify.RegisteredServices.AsNoTracking().Where(s => s.TaskId == id.Value).ToListAsync());
+        Assert.Equal(SessionState.Verifying, (await verify.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value)).State);
+        Assert.Single(await verify.RegisteredServices.AsNoTracking().Where(s => s.SessionId == id.Value).ToListAsync());
         Assert.IsType<StoreResult.Applied>(await NewStore(db).ApplyAsync(id, new VerdictAccept(new LeadClaim(Team))));
-        Assert.Empty(await verify.RegisteredServices.AsNoTracking().Where(s => s.TaskId == id.Value).ToListAsync());
+        Assert.Empty(await verify.RegisteredServices.AsNoTracking().Where(s => s.SessionId == id.Value).ToListAsync());
     }
 
     [SkippableFact]
@@ -160,15 +160,15 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
 
         var applied = Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(id,
             new ReportResult(new WorkerCaller(Team, id, instance), "git:branch/result-42")));
-        Assert.Equal(TaskState.Verifying, applied.Task.State);
+        Assert.Equal(SessionState.Verifying, applied.Session.State);
 
         await using var v = pg.NewContext();
         Assert.Equal("git:branch/result-42",
-            (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value)).ResultReference);
+            (await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value)).ResultReference);
         // #81: and the read surface actually returns it. Asserting only the raw row is what
         // let this column go write-only — the Lead's per-task fetch is the §7 read.
         Assert.Equal("git:branch/result-42",
-            (await NewStore(v).GetTaskReportAsync(Team, id))!.ResultReference);
+            (await NewStore(v).GetSessionReportAsync(Team, id))!.ResultReference);
     }
 
     [SkippableFact]
@@ -176,8 +176,8 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
     {
         // §10: the worker's optional in-band report is captured verbatim on the row
         // next to the reference. get_team_state stays prose-free (a has_report FLAG,
-        // never the text); the Lead pulls the text per task via get_task_report; a
-        // successor worker sees it on get_task.
+        // never the text); the Lead pulls the text per task via get_session_report; a
+        // successor worker sees it on get_session.
         Skip.IfNot(pg.Available, pg.SkipReason);
         await using var db = pg.NewContext();
         var store = NewStore(db);
@@ -193,14 +193,14 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         await using var v = pg.NewContext();
         var vstore = NewStore(v);
         // On the row, verbatim.
-        Assert.Equal(report, (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value)).WorkerReport);
+        Assert.Equal(report, (await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value)).WorkerReport);
         // get_team_state carries only the FLAG, not the prose (§10 stays prose-free).
-        var summary = (await vstore.GetTeamStateAsync(Team)).Tasks.Single(t => t.TaskId == id.Value);
+        var summary = (await vstore.GetTeamStateAsync(Team)).Sessions.Single(t => t.SessionId == id.Value);
         Assert.True(summary.HasReport);
         // The Lead fetches the text deliberately, per task.
-        var fetched = await vstore.GetTaskReportAsync(Team, id);
+        var fetched = await vstore.GetSessionReportAsync(Team, id);
         Assert.Equal(report, fetched!.Report);
-        // On get_task (the incumbent/successor worker's read).
+        // On get_session (the incumbent/successor worker's read).
         var assignment = await vstore.GetAssignmentAsync(caller);
         Assert.Equal(report, assignment!.Report);
     }
@@ -219,11 +219,11 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
 
         await using var v = pg.NewContext();
         var vstore = NewStore(v);
-        Assert.Null((await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value)).WorkerReport);
+        Assert.Null((await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value)).WorkerReport);
         // No report: the flag is false, and the per-task fetch finds the task (it is
         // the Lead's) but returns a null report.
-        Assert.False((await vstore.GetTeamStateAsync(Team)).Tasks.Single(t => t.TaskId == id.Value).HasReport);
-        var fetched = await vstore.GetTaskReportAsync(Team, id);
+        Assert.False((await vstore.GetTeamStateAsync(Team)).Sessions.Single(t => t.SessionId == id.Value).HasReport);
+        var fetched = await vstore.GetSessionReportAsync(Team, id);
         Assert.NotNull(fetched);
         Assert.Null(fetched!.Report);
         // #81, the asymmetry that makes the reference worth surfacing: §6 REQUIRED it for
@@ -245,7 +245,7 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         await store.DispatchNextAsync(Machine(), instance);
         await store.ApplyAsync(id, new ReportResult(new WorkerCaller(Team, id, instance), "git:ref", "secret report"));
 
-        Assert.Null(await store.GetTaskReportAsync(TeamId.New(), id)); // another Team → null
+        Assert.Null(await store.GetSessionReportAsync(TeamId.New(), id)); // another Team → null
     }
 
     [SkippableFact]
@@ -266,8 +266,8 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(Rule.ReportWithinSizeCap, rejected.Rule);
 
         await using var v = pg.NewContext();
-        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
-        Assert.Equal(TaskState.Working, row.State);
+        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(SessionState.Working, row.State);
         Assert.Null(row.WorkerReport);
     }
 
@@ -277,7 +277,7 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         // §10/§11: the worker's ask is captured verbatim on the row beside the kind, so
         // every surface that answers it can show WHAT is being asked. get_team_state
         // stays prose-free (kind + a flag); the Lead pulls the text per task; the
-        // worker sees its own question back on get_task.
+        // worker sees its own question back on get_session.
         Skip.IfNot(pg.Available, pg.SkipReason);
         await using var db = pg.NewContext();
         var store = NewStore(db);
@@ -292,23 +292,23 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
 
         await using var v = pg.NewContext();
         var vstore = NewStore(v);
-        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
         Assert.Equal(question, row.InputQuestion);
         Assert.Equal(InputRequestKind.Question, row.InputKind);
         Assert.Null(row.InputAnswer); // nobody has answered yet
 
         // get_team_state: the kind and a flag, never the prose (§10).
-        var summary = (await vstore.GetTeamStateAsync(Team)).Tasks.Single(t => t.TaskId == id.Value);
+        var summary = (await vstore.GetTeamStateAsync(Team)).Sessions.Single(t => t.SessionId == id.Value);
         Assert.True(summary.HasQuestion);
         Assert.Equal(InputRequestKind.Question, summary.InputKind);
 
         // The Lead's deliberate per-task fetch carries the text.
-        var fetched = await vstore.GetTaskQuestionAsync(Team, id);
+        var fetched = await vstore.GetSessionQuestionAsync(Team, id);
         Assert.Equal(question, fetched!.Question);
-        Assert.Equal(TaskState.Working, fetched.State);
+        Assert.Equal(SessionState.Working, fetched.State);
         Assert.Null(fetched.Answer);
 
-        // And the incumbent's own get_task read.
+        // And the incumbent's own get_session read.
         var assignment = await vstore.GetAssignmentAsync(caller);
         Assert.Equal(question, assignment!.Question);
     }
@@ -317,7 +317,7 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
     public async Task Answering_persists_the_answer_for_the_redispatched_worker()
     {
         // §11: the answer's whole purpose. The worker that asked is gone, so the answer
-        // waits on the row and reaches the SUCCESSOR instance's get_task.
+        // waits on the row and reaches the SUCCESSOR instance's get_session.
         Skip.IfNot(pg.Available, pg.SkipReason);
         await using var db = pg.NewContext();
         var store = NewStore(db);
@@ -332,7 +332,7 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
 
         await using var v = pg.NewContext();
         var vstore = NewStore(v);
-        Assert.Equal("staging-pg", (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value)).InputAnswer);
+        Assert.Equal("staging-pg", (await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value)).InputAnswer);
 
         // Redispatch: the successor instance reads both halves of the exchange.
         var successor = WorkerInstanceId.New();
@@ -368,7 +368,7 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
             new WorkerCaller(Team, id, second), InputRequestKind.AuthHelp, "I need a staging-pg credential"));
 
         await using var v = pg.NewContext();
-        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
         Assert.Equal("I need a staging-pg credential", row.InputQuestion);
         Assert.Equal(InputRequestKind.AuthHelp, row.InputKind);
         Assert.Null(row.InputAnswer); // the stale answer is gone
@@ -395,8 +395,8 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
             await store.AnswerOrWakeAsync(Lead, id, leaseMachine: "m1", answer: "staging-pg"));
 
         await using var v = pg.NewContext();
-        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
-        Assert.Equal(TaskState.Submitted, row.State);
+        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(SessionState.Submitted, row.State);
         Assert.Equal("staging-pg", row.InputAnswer);
     }
 
@@ -424,7 +424,7 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(id, new WakeParked()));
 
         await using var v = pg.NewContext();
-        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
         Assert.Equal("waiting on service 'api'", row.InputQuestion);
         Assert.Equal("'api' is up on 5173", row.InputAnswer);
     }
@@ -432,7 +432,7 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
     [SkippableFact]
     public async Task Get_task_question_is_team_scoped_and_refuses_a_cross_team_task()
     {
-        // §13: same scoping as GetTaskReportAsync — another Team's task returns null,
+        // §13: same scoping as GetSessionReportAsync — another Team's task returns null,
         // indistinguishable from not-found.
         Skip.IfNot(pg.Available, pg.SkipReason);
         await using var db = pg.NewContext();
@@ -443,8 +443,8 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         await store.ApplyAsync(id, new RequestInput(
             new WorkerCaller(Team, id, instance), InputRequestKind.Question, "secret question"));
 
-        Assert.Null(await store.GetTaskQuestionAsync(TeamId.New(), id));
-        Assert.Null(await store.GetTaskQuestionAsync(Team, new TaskId(Guid.NewGuid())));
+        Assert.Null(await store.GetSessionQuestionAsync(TeamId.New(), id));
+        Assert.Null(await store.GetSessionQuestionAsync(Team, new SessionId(Guid.NewGuid())));
     }
 
     [SkippableFact]
@@ -461,16 +461,16 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
 
         await using var v = pg.NewContext();
         var vstore = NewStore(v);
-        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
         Assert.Null(row.InputQuestion);
         Assert.Null(row.InputAnswer);
         Assert.Null(row.InputKind);
 
-        var summary = (await vstore.GetTeamStateAsync(Team)).Tasks.Single(t => t.TaskId == id.Value);
+        var summary = (await vstore.GetTeamStateAsync(Team)).Sessions.Single(t => t.SessionId == id.Value);
         Assert.False(summary.HasQuestion);
         Assert.Null(summary.InputKind);
 
-        var fetched = await vstore.GetTaskQuestionAsync(Team, id);
+        var fetched = await vstore.GetSessionQuestionAsync(Team, id);
         Assert.NotNull(fetched);
         Assert.Null(fetched!.Question);
         Assert.Null(fetched.Answer);
@@ -496,8 +496,8 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(Rule.QuestionWithinSizeCap, rejected.Rule);
 
         await using var v = pg.NewContext();
-        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
-        Assert.Equal(TaskState.Working, row.State);
+        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(SessionState.Working, row.State);
         Assert.Null(row.InputQuestion);
         Assert.Null(row.BlockedAt);
     }
@@ -520,8 +520,8 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(Rule.AnswerWithinSizeCap, rejected.Rule);
 
         await using var v = pg.NewContext();
-        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
-        Assert.Equal(TaskState.Working, row.State); // still waiting; re-answerable
+        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(SessionState.Working, row.State); // still waiting; re-answerable
         Assert.Null(row.InputAnswer);
     }
 
@@ -540,10 +540,10 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
 
         var applied = Assert.IsType<StoreResult.Applied>(
             await store.ApplyAsync(id, new VerdictAccept(Lead)));
-        Assert.Equal(TaskState.Completed, applied.Task.State);
+        Assert.Equal(SessionState.Completed, applied.Session.State);
 
         await using var v = pg.NewContext();
-        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
         Assert.Equal(VerdictProvenance.LeadSession, row.CompletionProvenance);
     }
 
@@ -569,7 +569,7 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(Rule.IncumbentInstanceOnly, rejected.Rule);
 
         await using var verify = pg.NewContext();
-        var svc = await verify.RegisteredServices.AsNoTracking().SingleAsync(s => s.TaskId == id.Value);
+        var svc = await verify.RegisteredServices.AsNoTracking().SingleAsync(s => s.SessionId == id.Value);
         Assert.Equal("api", svc.Name);
         Assert.Equal(5001, svc.Port);
     }
@@ -596,12 +596,12 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         Assert.IsType<StoreResult.Applied>(await store.RegisterServiceAsync(caller, "api", 5002));
 
         await using var verify = pg.NewContext();
-        var svc = await verify.RegisteredServices.AsNoTracking().SingleAsync(s => s.TaskId == id.Value);
+        var svc = await verify.RegisteredServices.AsNoTracking().SingleAsync(s => s.SessionId == id.Value);
         Assert.Equal("api", svc.Name);
         Assert.Equal(5002, svc.Port);
         // A different name on the same task is a different address, and still its own row.
         Assert.IsType<StoreResult.Applied>(await store.RegisterServiceAsync(caller, "metrics", 5003));
-        Assert.Equal(2, await verify.RegisteredServices.AsNoTracking().CountAsync(s => s.TaskId == id.Value));
+        Assert.Equal(2, await verify.RegisteredServices.AsNoTracking().CountAsync(s => s.SessionId == id.Value));
     }
 
     /// <summary>
@@ -634,7 +634,7 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
 
         await using var verify = pg.NewContext();
         var svc = await verify.RegisteredServices.AsNoTracking().SingleAsync(s => s.Name == "api");
-        Assert.Equal(first.Value, svc.TaskId);
+        Assert.Equal(first.Value, svc.SessionId);
         Assert.Equal(5001, svc.Port);
 
         // The holder finishing frees the name: a report keeps the process (and the
@@ -644,7 +644,7 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(first, new VerdictAccept(new LeadClaim(Team))));
         Assert.IsType<StoreResult.Applied>(await store.RegisterServiceAsync(secondCaller, "api", 5002));
         Assert.Equal(second.Value,
-            (await verify.RegisteredServices.AsNoTracking().SingleAsync(s => s.Name == "api")).TaskId);
+            (await verify.RegisteredServices.AsNoTracking().SingleAsync(s => s.Name == "api")).SessionId);
     }
 
     [SkippableFact]
@@ -659,8 +659,8 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         await NewStore(db).ApplyAsync(id, new LivenessLost(LivenessLossReason.MachineReboot));
 
         await using var verify = pg.NewContext();
-        var row = await verify.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
-        Assert.Equal(TaskState.Failed, row.State);
+        var row = await verify.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(SessionState.Failed, row.State);
         Assert.Equal(1, row.InfrastructureRequeues);
         Assert.Null(row.CurrentInstanceId);
         Assert.True((await verify.WorkerInstances.AsNoTracking().SingleAsync(w => w.Id == instance.Value)).Revoked);
@@ -735,8 +735,8 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
 
         await using (var v = pg.NewContext())
         {
-            var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
-            Assert.Equal(TaskState.Parked, row.State);
+            var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+            Assert.Equal(SessionState.Parked, row.State);
             Assert.Equal("m1", row.ParkMachine);
             Assert.Equal("m1", row.PreferredMachine);
             Assert.Equal(MachineGonePolicy.Pin, row.OnMachineGone);
@@ -745,8 +745,8 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         await store.ApplyAsync(id, new WakeParked());
         await using (var v = pg.NewContext())
         {
-            var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
-            Assert.Equal(TaskState.Submitted, row.State);
+            var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+            Assert.Equal(SessionState.Submitted, row.State);
             // Park record survives into submitted for redispatch affinity (§11).
             Assert.Equal("m1", row.ParkMachine);
         }
@@ -769,12 +769,12 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         // parked, so the held-lease machine is moot (the wake keeps the park record).
         var woken = Assert.IsType<StoreResult.Applied>(
             await store.AnswerOrWakeAsync(Lead, id, leaseMachine: null));
-        Assert.Equal(TaskState.Submitted, woken.Task.State);
+        Assert.Equal(SessionState.Submitted, woken.Session.State);
 
         await using (var v = pg.NewContext())
         {
-            var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
-            Assert.Equal(TaskState.Submitted, row.State);
+            var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+            Assert.Equal(SessionState.Submitted, row.State);
             // Park record survives into submitted for redispatch affinity (§11).
             Assert.Equal("m1", row.ParkMachine);
         }
@@ -782,8 +782,8 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         // Redispatch resumes it; the successor sees the incremented attempt (§11).
         var successor = WorkerInstanceId.New();
         var dispatched = Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(Machine(), successor));
-        Assert.Equal(id, dispatched.Task.Id);
-        Assert.Equal(2, dispatched.Task.Attempt);
+        Assert.Equal(id, dispatched.Session.Id);
+        Assert.Equal(2, dispatched.Session.Attempt);
     }
 
     [SkippableFact]
@@ -795,7 +795,7 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         // preferring the held-lease machine and the stamped resume ref, requeues
         // (→ submitted), and the very next dispatch pass redispatches it WITH resume.
         Skip.IfNot(pg.Available, pg.SkipReason);
-        TaskId id;
+        SessionId id;
         await using (var seed = pg.NewContext())
             id = await SeedBlocked(NewStore(seed));
 
@@ -809,13 +809,13 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         {
             var applied = Assert.IsType<StoreResult.Applied>(
                 await NewStore(db).AnswerOrWakeAsync(Lead, id, leaseMachine: "m1", sessionLive: false));
-            Assert.Equal(TaskState.Submitted, applied.Task.State);
+            Assert.Equal(SessionState.Submitted, applied.Session.State);
         }
 
         await using (var v = pg.NewContext())
         {
-            var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
-            Assert.Equal(TaskState.Submitted, row.State);      // requeued, not left working
+            var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+            Assert.Equal(SessionState.Submitted, row.State);      // requeued, not left working
             Assert.Equal("m1", row.ParkMachine);               // preferred machine (§11)
             Assert.Equal("sess-answer", row.HarnessSessionRef); // the ref redispatch resumes
             Assert.Equal(0, row.InfrastructureRequeues);       // a Lead answer is not an infra requeue (§6)
@@ -828,9 +828,9 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         {
             var dispatched = Assert.IsType<StoreResult.Applied>(
                 await NewStore(db).DispatchNextAsync(Machine(), WorkerInstanceId.New()));
-            Assert.Equal(id, dispatched.Task.Id);
+            Assert.Equal(id, dispatched.Session.Id);
             Assert.Equal("sess-answer", dispatched.HarnessSessionRef);
-            Assert.Equal(2, dispatched.Task.Attempt);
+            Assert.Equal(2, dispatched.Session.Attempt);
         }
     }
 
@@ -844,17 +844,17 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
 
         var applied = Assert.IsType<StoreResult.Applied>(
             await store.AnswerOrWakeAsync(Lead, id, leaseMachine: "m1", answer: "use staging-pg", sessionLive: true));
-        Assert.Equal(TaskState.Working, applied.Task.State);
-        Assert.NotNull(applied.Task.CurrentInstance);
+        Assert.Equal(SessionState.Working, applied.Session.State);
+        Assert.NotNull(applied.Session.CurrentInstance);
 
         await using var v = pg.NewContext();
-        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
-        Assert.Equal(TaskState.Working, row.State);
+        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(SessionState.Working, row.State);
         Assert.NotNull(row.CurrentInstanceId);
         Assert.Equal("use staging-pg", row.InputAnswer);
         Assert.Null(row.ParkMachine);
         Assert.Null(row.BlockedAt);
-        Assert.False((await NewStore(v).GetTeamStateAsync(Team)).Tasks.Single(t => t.TaskId == id.Value).HasQuestion);
+        Assert.False((await NewStore(v).GetTeamStateAsync(Team)).Sessions.Single(t => t.SessionId == id.Value).HasQuestion);
     }
 
     [SkippableFact]
@@ -869,12 +869,12 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
 
         var applied = Assert.IsType<StoreResult.Applied>(
             await store.AnswerOrWakeAsync(Lead, id, leaseMachine: "m1", answer: "keep going on the tests", sessionLive: true));
-        Assert.Equal(TaskState.Working, applied.Task.State);
-        Assert.Equal(instance, applied.Task.CurrentInstance);
+        Assert.Equal(SessionState.Working, applied.Session.State);
+        Assert.Equal(instance, applied.Session.CurrentInstance);
 
         await using var v = pg.NewContext();
-        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
-        Assert.Equal(TaskState.Working, row.State);
+        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(SessionState.Working, row.State);
         Assert.Equal(instance.Value, row.CurrentInstanceId);
         Assert.Equal("keep going on the tests", row.InputAnswer);
         Assert.Null(row.ParkMachine);
@@ -895,12 +895,12 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
 
         var applied = Assert.IsType<StoreResult.Applied>(
             await store.AnswerOrWakeAsync(Lead, id, leaseMachine: "m1", answer: "add a test", sessionLive: true));
-        Assert.Equal(TaskState.Working, applied.Task.State);
-        Assert.Equal(instance, applied.Task.CurrentInstance);
+        Assert.Equal(SessionState.Working, applied.Session.State);
+        Assert.Equal(instance, applied.Session.CurrentInstance);
 
         await using var v = pg.NewContext();
-        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
-        Assert.Equal(TaskState.Working, row.State);
+        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(SessionState.Working, row.State);
         Assert.Equal("add a test", row.InputAnswer);
     }
 
@@ -917,11 +917,11 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
 
         var woken = Assert.IsType<StoreResult.Applied>(
             await store.AnswerOrWakeAsync(Lead, id, leaseMachine: null, answer: "handshake flake — try again"));
-        Assert.Equal(TaskState.Submitted, woken.Task.State);
+        Assert.Equal(SessionState.Submitted, woken.Session.State);
 
         await using var v = pg.NewContext();
-        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
-        Assert.Equal(TaskState.Submitted, row.State);
+        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(SessionState.Submitted, row.State);
         Assert.Equal("handshake flake — try again", row.InputAnswer);
         Assert.Equal(LivenessLossReason.ProcessExited, row.LastRequeueReason);
     }
@@ -940,10 +940,10 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         // (§6, §11). No park machine, and the infrastructure counter is untouched.
         var applied = Assert.IsType<StoreResult.Applied>(
             await store.AnswerOrWakeAsync(Lead, id, leaseMachine: null));
-        Assert.Equal(TaskState.Submitted, applied.Task.State);
+        Assert.Equal(SessionState.Submitted, applied.Session.State);
         await using var v = pg.NewContext();
-        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
-        Assert.Equal(TaskState.Submitted, row.State);
+        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(SessionState.Submitted, row.State);
         Assert.Null(row.ParkMachine);
         Assert.Equal(0, row.InfrastructureRequeues);
     }
@@ -965,7 +965,7 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
             await store.AnswerOrWakeAsync(foreign, id, leaseMachine: null));
         Assert.Equal(Rule.ActorLacksAuthority, rejected.Rule);
         await using var v = pg.NewContext();
-        Assert.Equal(TaskState.Parked, (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value)).State);
+        Assert.Equal(SessionState.Parked, (await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value)).State);
     }
 
     [SkippableFact]
@@ -985,7 +985,7 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
             await store.ApplyAsync(id, new WaitTtlExpired(new ParkRecord("m1"))));
         Assert.Equal(Rule.InvalidSourceState, rejected.Rule);
         await using var v = pg.NewContext();
-        Assert.Equal(TaskState.Submitted, (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value)).State);
+        Assert.Equal(SessionState.Submitted, (await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value)).State);
     }
 
     [SkippableFact]
@@ -1002,21 +1002,21 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         // …and the same one answer call now routes to the wake and requeues it.
         // One call, correct outcome either way — exactly one transition, no double move.
         var woken = Assert.IsType<StoreResult.Applied>(await store.AnswerOrWakeAsync(Lead, id, leaseMachine: null));
-        Assert.Equal(TaskState.Submitted, woken.Task.State);
+        Assert.Equal(SessionState.Submitted, woken.Session.State);
         await using var v = pg.NewContext();
-        Assert.Equal(TaskState.Submitted, (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value)).State);
+        Assert.Equal(SessionState.Submitted, (await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value)).State);
     }
 
     /// <summary>Create → dispatch → block, so the task sits in blocked_on_input.</summary>
-    private async Task<TaskId> SeedBlocked(TaskStore store)
+    private async Task<SessionId> SeedBlocked(SessionStore store)
     {
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(Lead, Team, "needs input", CompletionMode.Lead, null));
+            new CreateSession(Lead, Team, "needs input", CompletionMode.Lead, null));
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(Machine(), instance);
-        await store.ApplyAsync(created.Task.Id,
-            new RequestInput(new WorkerCaller(Team, created.Task.Id, instance), InputRequestKind.Question));
-        return created.Task.Id;
+        await store.ApplyAsync(created.Session.Id,
+            new RequestInput(new WorkerCaller(Team, created.Session.Id, instance), InputRequestKind.Question));
+        return created.Session.Id;
     }
 
     [SkippableFact]
@@ -1032,8 +1032,8 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
 
         Assert.IsType<StoreResult.Rejected>(result);
         await using var verify = pg.NewContext();
-        Assert.Equal(TaskState.Submitted, (await verify.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value)).State);
-        Assert.Empty(await verify.WorkerInstances.AsNoTracking().Where(w => w.TaskId == id.Value).ToListAsync());
+        Assert.Equal(SessionState.Submitted, (await verify.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value)).State);
+        Assert.Empty(await verify.WorkerInstances.AsNoTracking().Where(w => w.SessionId == id.Value).ToListAsync());
     }
 
     [SkippableFact]
@@ -1068,7 +1068,7 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         var id = await CreateSubmittedOnNewContext();
         var instance = WorkerInstanceId.New();
         await using (var d = pg.NewContext())
-            await new TaskStore(d, clock).DispatchNextAsync(Machine(), instance);
+            await new SessionStore(d, clock).DispatchNextAsync(Machine(), instance);
 
         // The dispatched worker's live credential — the thing the effect at issue destroys,
         // and the reason this matters beyond bookkeeping.
@@ -1078,18 +1078,18 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
 
         await using var db = pg.NewContext();
         // This context reads the working row at its current version...
-        _ = await db.Tasks.FirstAsync(t => t.Id == id.Value);
+        _ = await db.Sessions.FirstAsync(t => t.Id == id.Value);
         // ...and the runner then stamps the harness session this dispatch started (§11), an
         // ordinary out-of-band write: the row's xmin moves and its state does not. Every
         // part of the task is healthy, which is what makes this the interesting failure —
         // no crash, no outage, just two writers.
         await using (var runner = pg.NewContext())
-            await new TaskStore(runner, clock).StampHarnessSessionRefAsync(id, "session-1");
+            await new SessionStore(runner, clock).StampHarnessSessionRefAsync(id, "session-1");
 
         // Now the liveness scan requeues off its stale read. The engine agrees (the row this
         // context holds still says working), so the transition runs its effects — revoking
         // the instance — and then loses on the concurrency token.
-        var result = await new TaskStore(db, clock)
+        var result = await new SessionStore(db, clock)
             .ApplyAsync(id, new LivenessLost(LivenessLossReason.LivenessTimeout));
         Assert.IsType<StoreResult.Conflict>(result);
 
@@ -1100,15 +1100,15 @@ public sealed class TaskStoreTests(PostgresFixture pg) : IAsyncLifetime
         // made 401d (§9 check 14), so its result never landed and the task sat working until
         // a clock reclaimed it.
         await using var verify = pg.NewContext();
-        var row = await verify.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
-        Assert.Equal(TaskState.Working, row.State);
+        var row = await verify.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(SessionState.Working, row.State);
         Assert.Equal(instance.Value, row.CurrentInstanceId);
         Assert.False(await verify.WorkerInstances.AsNoTracking()
             .Where(w => w.Id == instance.Value).Select(w => w.Revoked).SingleAsync());
         Assert.IsType<Principal.Worker>(await new TokenService(verify, clock).ValidateAsync(workerToken));
     }
 
-    private async Task<TaskId> CreateSubmittedOnNewContext()
+    private async Task<SessionId> CreateSubmittedOnNewContext()
     {
         await using var db = pg.NewContext();
         return await CreateSubmitted(db);

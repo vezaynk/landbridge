@@ -9,8 +9,8 @@ public class EnforcementRuleTests
     [InlineData("   ")]
     public void Creation_requires_non_empty_completion_criteria(string criteria)
     {
-        var result = TaskStateMachine.Create(
-            new CreateTask(Given.Lead, Given.Team, criteria, CompletionMode.Lead, null),
+        var result = SessionStateMachine.Create(
+            new CreateSession(Given.Lead, Given.Team, criteria, CompletionMode.Lead, null),
             Given.Id, "ns");
         Expect.Rejected(result, Rule.CompletionCriteriaNonEmpty);
     }
@@ -19,8 +19,8 @@ public class EnforcementRuleTests
     [Fact]
     public void Creation_requires_a_server_assigned_namespace()
     {
-        var result = TaskStateMachine.Create(
-            new CreateTask(Given.Lead, Given.Team, "criteria", CompletionMode.Lead, null),
+        var result = SessionStateMachine.Create(
+            new CreateSession(Given.Lead, Given.Team, "criteria", CompletionMode.Lead, null),
             Given.Id, "");
         Expect.Rejected(result, Rule.NamespaceServerAssigned);
     }
@@ -37,10 +37,10 @@ public class EnforcementRuleTests
     [MemberData(nameof(NonLeadActors))]
     public void Only_a_lead_claim_for_the_team_creates_tasks(Actor actor)
     {
-        var result = TaskStateMachine.Create(
-            new CreateTask(actor, Given.Team, "criteria", CompletionMode.Lead, null),
+        var result = SessionStateMachine.Create(
+            new CreateSession(actor, Given.Team, "criteria", CompletionMode.Lead, null),
             Given.Id, "ns");
-        Expect.Rejected(result, Rule.OnlyLeadCreatesTasks);
+        Expect.Rejected(result, Rule.OnlyLeadCreatesSessions);
     }
 
     // §9 check 5 (machine-eligibility half)
@@ -50,8 +50,8 @@ public class EnforcementRuleTests
     [InlineData(true, false, "gpu")]      // declares only 'gpu'; task wants default
     public void Dispatch_requires_an_eligible_machine(bool ready, bool backPressure, string declared)
     {
-        var result = TaskStateMachine.Apply(
-            Given.Task(TaskState.Submitted),
+        var result = SessionStateMachine.Apply(
+            Given.Session(SessionState.Submitted),
             new Dispatch(Given.Machine(ready, backPressure, declared), WorkerInstanceId.New()));
         Expect.Rejected(result, Rule.MachineIneligibleForDispatch);
     }
@@ -59,16 +59,16 @@ public class EnforcementRuleTests
     [Fact]
     public void Dispatch_matches_a_requested_profile_by_exact_name()
     {
-        var task = Given.Task(TaskState.Submitted, profile: "restricted");
+        var task = Given.Session(SessionState.Submitted, profile: "restricted");
 
         Expect.Rejected(
-            TaskStateMachine.Apply(task, new Dispatch(Given.Machine(), WorkerInstanceId.New())),
+            SessionStateMachine.Apply(task, new Dispatch(Given.Machine(), WorkerInstanceId.New())),
             Rule.MachineIneligibleForDispatch);
 
         Expect.Transitioned(
-            TaskStateMachine.Apply(task,
+            SessionStateMachine.Apply(task,
                 new Dispatch(Given.Machine(true, false, "default", "restricted"), WorkerInstanceId.New())),
-            TaskState.Working);
+            SessionState.Working);
     }
 
     // §9 check 4 (doer/judge split) — a task's own worker can never complete it,
@@ -83,9 +83,9 @@ public class EnforcementRuleTests
     [MemberData(nameof(BothModes))]
     public void A_task_worker_cannot_complete_its_own_task(CompletionMode mode)
     {
-        var task = Given.Task(TaskState.Verifying, mode);
+        var task = Given.Session(SessionState.Verifying, mode);
         var incumbent = new WorkerCaller(task.Team, task.Id, task.CurrentInstance!.Value);
-        var result = TaskStateMachine.Apply(task, new VerdictAccept(incumbent));
+        var result = SessionStateMachine.Apply(task, new VerdictAccept(incumbent));
         Expect.Rejected(result, Rule.CompletionByLeadOrHuman);
     }
 
@@ -94,10 +94,10 @@ public class EnforcementRuleTests
     [Fact]
     public void A_lead_completes_a_lead_mode_task_autonomously()
     {
-        var result = TaskStateMachine.Apply(
-            Given.Task(TaskState.Verifying, CompletionMode.Lead),
+        var result = SessionStateMachine.Apply(
+            Given.Session(SessionState.Verifying, CompletionMode.Lead),
             new VerdictAccept(Given.Lead, HumanConfirmed: false));
-        var task = Expect.Transitioned(result, TaskState.Completed);
+        var task = Expect.Transitioned(result, SessionState.Completed);
         Assert.Equal(VerdictProvenance.LeadSession, task.CompletionProvenance);
     }
 
@@ -105,30 +105,30 @@ public class EnforcementRuleTests
     [Fact]
     public void A_lead_claim_completes_a_review_task()
     {
-        var result = TaskStateMachine.Apply(
-            Given.Task(TaskState.Verifying, CompletionMode.Review),
+        var result = SessionStateMachine.Apply(
+            Given.Session(SessionState.Verifying, CompletionMode.Review),
             new VerdictAccept(Given.Lead, HumanConfirmed: false));
-        var task = Expect.Transitioned(result, TaskState.Completed);
+        var task = Expect.Transitioned(result, SessionState.Completed);
         Assert.Equal(VerdictProvenance.LeadSession, task.CompletionProvenance);
     }
 
     [Fact]
     public void A_human_confirmed_lead_verdict_completes_a_review_task()
     {
-        var result = TaskStateMachine.Apply(
-            Given.Task(TaskState.Verifying, CompletionMode.Review),
+        var result = SessionStateMachine.Apply(
+            Given.Session(SessionState.Verifying, CompletionMode.Review),
             new VerdictAccept(Given.Lead, HumanConfirmed: true));
-        var task = Expect.Transitioned(result, TaskState.Completed);
+        var task = Expect.Transitioned(result, SessionState.Completed);
         Assert.Equal(VerdictProvenance.LeadSession, task.CompletionProvenance);
     }
 
     [Fact]
     public void A_human_session_completes_a_review_task_with_human_provenance()
     {
-        var result = TaskStateMachine.Apply(
-            Given.Task(TaskState.Verifying, CompletionMode.Review),
+        var result = SessionStateMachine.Apply(
+            Given.Session(SessionState.Verifying, CompletionMode.Review),
             new VerdictAccept(Given.Human));
-        var task = Expect.Transitioned(result, TaskState.Completed);
+        var task = Expect.Transitioned(result, SessionState.Completed);
         Assert.Equal(VerdictProvenance.Human, task.CompletionProvenance);
     }
 
@@ -136,8 +136,8 @@ public class EnforcementRuleTests
     [Fact]
     public void Cancellation_carries_a_disposition()
     {
-        var result = TaskStateMachine.Apply(
-            Given.Task(TaskState.Working),
+        var result = SessionStateMachine.Apply(
+            Given.Session(SessionState.Working),
             new Cancel(Given.Lead, Disposition: null));
         Expect.Rejected(result, Rule.CancellationCarriesDisposition);
     }
@@ -152,7 +152,7 @@ public class EnforcementRuleTests
     public void The_control_plane_cannot_cancel(CancelDisposition disposition)
     {
         Expect.Rejected(
-            TaskStateMachine.Apply(Given.Task(TaskState.Working),
+            SessionStateMachine.Apply(Given.Session(SessionState.Working),
                 new Cancel(ControlPlaneActor.Instance, disposition)),
             Rule.ActorLacksAuthority);
     }
@@ -161,7 +161,7 @@ public class EnforcementRuleTests
     public void A_foreign_team_lead_cannot_cancel()
     {
         Expect.Rejected(
-            TaskStateMachine.Apply(Given.Task(TaskState.Working),
+            SessionStateMachine.Apply(Given.Session(SessionState.Working),
                 new Cancel(Given.ForeignLead, CancelDisposition.Preserve)),
             Rule.ActorLacksAuthority);
     }
@@ -170,11 +170,11 @@ public class EnforcementRuleTests
     [Fact]
     public void Discard_during_verifying_defers_workspace_removal_until_the_verdict()
     {
-        var result = TaskStateMachine.Apply(
-            Given.Task(TaskState.Verifying),
+        var result = SessionStateMachine.Apply(
+            Given.Session(SessionState.Verifying),
             new Cancel(Given.Lead, CancelDisposition.Discard));
 
-        Expect.Transitioned(result, TaskState.Canceled);
+        Expect.Transitioned(result, SessionState.Canceled);
         var effects = Expect.Effects(result);
         Assert.Contains(new DeferWorkspaceDiscardUntilVerdict(), effects);
         Assert.DoesNotContain(new DiscardWorkspace(), effects);
@@ -183,19 +183,19 @@ public class EnforcementRuleTests
     [Fact]
     public void Discard_outside_verifying_removes_the_workspace()
     {
-        var result = TaskStateMachine.Apply(
-            Given.Task(TaskState.Working),
+        var result = SessionStateMachine.Apply(
+            Given.Session(SessionState.Working),
             new Cancel(Given.Lead, CancelDisposition.Discard));
 
-        Expect.Transitioned(result, TaskState.Canceled);
+        Expect.Transitioned(result, SessionState.Canceled);
         Assert.Contains(new DiscardWorkspace(), Expect.Effects(result));
     }
 
     // §6 — terminal states are final
-    public static TheoryData<TaskState, string> TerminalByCommand()
+    public static TheoryData<SessionState, string> TerminalByCommand()
     {
-        var data = new TheoryData<TaskState, string>();
-        foreach (var state in new[] { TaskState.Completed, TaskState.Rejected, TaskState.Canceled })
+        var data = new TheoryData<SessionState, string>();
+        foreach (var state in new[] { SessionState.Completed, SessionState.Rejected, SessionState.Canceled })
         foreach (var command in CommandNames)
             data.Add(state, command);
         return data;
@@ -204,7 +204,7 @@ public class EnforcementRuleTests
     private static readonly string[] CommandNames =
         ["dispatch", "liveness", "report", "accept", "fail", "request", "answer", "continue", "message", "ttl", "wake", "stop-park", "park", "cancel"];
 
-    private static TaskCommand CommandByName(string name, TaskRecord task) => name switch
+    private static SessionCommand CommandByName(string name, SessionRecord task) => name switch
     {
         "dispatch" => new Dispatch(Given.Machine(), WorkerInstanceId.New()),
         "liveness" => new LivenessLost(LivenessLossReason.LivenessTimeout),
@@ -225,10 +225,10 @@ public class EnforcementRuleTests
 
     [Theory]
     [MemberData(nameof(TerminalByCommand))]
-    public void Terminal_states_refuse_every_command(TaskState terminal, string commandName)
+    public void Terminal_states_refuse_every_command(SessionState terminal, string commandName)
     {
-        var task = Given.Task(terminal, instance: null) with { CurrentInstance = null };
-        var result = TaskStateMachine.Apply(task, CommandByName(commandName, task));
+        var task = Given.Session(terminal, instance: null) with { CurrentInstance = null };
+        var result = SessionStateMachine.Apply(task, CommandByName(commandName, task));
         Expect.Rejected(result, Rule.TerminalStatesAreFinal);
     }
 }

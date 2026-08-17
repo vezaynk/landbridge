@@ -21,7 +21,7 @@ Model defaults to `haiku` to bound spend; override with `DOCKET_SPIKE_MODEL`.
 |---|---|---|
 | `s1` | Park→resume: a session resumes headlessly, with context, from the directory that created it — and only from there | Resume in the original directory recalls session context; resume from a different directory fails |
 | `s2` | `stop` as a message: a disposition delivered over `--input-format stream-json` reaches the agent as a turn and produces a wind-down, not an abort | Agent acknowledges the stop, persists progress to a file, and exits before the hard timeout |
-| `s3` | Tool-call event sourcing: hooks fire per tool call with `DOCKET_TASK_ID` attribution intact | Every tool call in the run POSTs an event carrying the task id and tool name to a loopback listener |
+| `s3` | Tool-call event sourcing: hooks fire per tool call with `DOCKET_SESSION_ID` attribution intact | Every tool call in the run POSTs an event carrying the task id and tool name to a loopback listener |
 
 Record findings (pinned flags, versions, measured timings) in
 `spikes/FINDINGS.md` — that document is the spike deliverable, not the code.

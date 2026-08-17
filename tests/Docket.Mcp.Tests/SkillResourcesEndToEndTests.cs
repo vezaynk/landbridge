@@ -138,14 +138,14 @@ public sealed class SkillResourcesEndToEndTests(PostgresFixture pg) : IAsyncLife
     private async Task<string> MintWorkerTokenAsync(TeamId team, CancellationToken ct)
     {
         await using var db = pg.NewContext();
-        var store = new TaskStore(db, TimeProvider.System);
+        var store = new SessionStore(db, TimeProvider.System);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(new LeadClaim(team), team, "seed", CompletionMode.Lead, null), ct);
+            new CreateSession(new LeadClaim(team), team, "seed", CompletionMode.Lead, null), ct);
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(
             new MachineSnapshot("m1", true, false, new HashSet<string> { "default" }), instance, ct);
         var tokens = new TokenService(db, TimeProvider.System);
-        return (await tokens.MintWorkerTokenAsync(team, created.Task.Id, instance, ct)).Token;
+        return (await tokens.MintWorkerTokenAsync(team, created.Session.Id, instance, ct)).Token;
     }
 
     // A human session claiming the Lead of a Team — mirrors LeadWorkerEndToEndTests.

@@ -33,7 +33,7 @@
   //     }
   //   }
   // Token/cost metrics then land in the dashboard beside the plane's own traces,
-  // carrying docket.task_id. `grpc` because the dashboard's OTLP endpoint is gRPC;
+  // carrying docket.session_id. `grpc` because the dashboard's OTLP endpoint is gRPC;
   // the short interval because the 60s default can outlive a small task. See
   // docs/TELEMETRY.md — these are the harness's own numbers, not the plane's.
   //

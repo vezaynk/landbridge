@@ -47,8 +47,8 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
         StayAliveFor(clock, registry, id, TimeSpan.FromMinutes(10));
         await NewDispatch(clock, registry).CheckLivenessAsync(CancellationToken.None);
 
-        Assert.Equal(TaskState.Working, await StateAsync(clock, id));
-        Assert.Contains(id, registry.TasksOn("m1"));
+        Assert.Equal(SessionState.Working, await StateAsync(clock, id));
+        Assert.Contains(id, registry.SessionsOn("m1"));
     }
 
     [SkippableFact]
@@ -64,8 +64,8 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
         StayAliveFor(clock, registry, id, Ceiling + TimeSpan.FromMinutes(1));
         await NewDispatch(clock, registry).CheckLivenessAsync(CancellationToken.None);
 
-        Assert.Equal(TaskState.Failed, await StateAsync(clock, id));
-        Assert.DoesNotContain(id, registry.TasksOn("m1"));
+        Assert.Equal(SessionState.Failed, await StateAsync(clock, id));
+        Assert.DoesNotContain(id, registry.SessionsOn("m1"));
     }
 
     [SkippableFact]
@@ -81,8 +81,8 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
         clock.Advance(Window + TimeSpan.FromSeconds(1));
         await NewDispatch(clock, registry).CheckLivenessAsync(CancellationToken.None);
 
-        Assert.Equal(TaskState.Failed, await StateAsync(clock, id));
-        Assert.DoesNotContain(id, registry.TasksOn("m1"));
+        Assert.Equal(SessionState.Failed, await StateAsync(clock, id));
+        Assert.DoesNotContain(id, registry.SessionsOn("m1"));
     }
 
     [SkippableFact]
@@ -103,7 +103,7 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
 
         await NewDispatch(clock, registry).CheckLivenessAsync(CancellationToken.None);
 
-        Assert.Equal(TaskState.Working, await StateAsync(clock, id));
+        Assert.Equal(SessionState.Working, await StateAsync(clock, id));
     }
 
     [SkippableFact]
@@ -119,8 +119,8 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
         StayAliveFor(clock, registry, id, TimeSpan.FromHours(4));
         await NewDispatch(clock, registry).CheckLivenessAsync(CancellationToken.None);
 
-        Assert.Equal(TaskState.Working, await StateAsync(clock, id));
-        Assert.Contains(id, registry.TasksOn("m1"));
+        Assert.Equal(SessionState.Working, await StateAsync(clock, id));
+        Assert.Contains(id, registry.SessionsOn("m1"));
     }
 
     [SkippableFact]
@@ -138,7 +138,7 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
         clock.Advance(Window + TimeSpan.FromSeconds(1));
         await NewDispatch(clock, registry).CheckLivenessAsync(CancellationToken.None);
 
-        Assert.Equal(TaskState.Failed, await StateAsync(clock, id));
+        Assert.Equal(SessionState.Failed, await StateAsync(clock, id));
     }
 
     [SkippableFact]
@@ -156,11 +156,11 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
 
         StayAliveFor(clock, registry, id, TimeSpan.FromMinutes(1), step: TimeSpan.FromSeconds(5));
         await dispatch.CheckLivenessAsync(CancellationToken.None);
-        Assert.Equal(TaskState.Working, await StateAsync(clock, id));
+        Assert.Equal(SessionState.Working, await StateAsync(clock, id));
 
         StayAliveFor(clock, registry, id, TimeSpan.FromMinutes(2), step: TimeSpan.FromSeconds(5));
         await dispatch.CheckLivenessAsync(CancellationToken.None);
-        Assert.Equal(TaskState.Failed, await StateAsync(clock, id));
+        Assert.Equal(SessionState.Failed, await StateAsync(clock, id));
     }
 
     [SkippableFact]
@@ -178,8 +178,8 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
         clock.Advance(Ceiling * 2);
         await NewDispatch(clock, registry).CheckLivenessAsync(CancellationToken.None);
 
-        Assert.Equal(TaskState.Working, await StateAsync(clock, id));
-        Assert.Contains(id, registry.TasksOn("m1"));
+        Assert.Equal(SessionState.Working, await StateAsync(clock, id));
+        Assert.Contains(id, registry.SessionsOn("m1"));
     }
 
     [SkippableFact]
@@ -208,8 +208,8 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
         // And the event log keeps both, in order, each with its own reason — which is what
         // makes a requeue loop diagnosable instead of a column of identical rows (§12).
         await using var db = pg.NewContext();
-        var requeues = await db.TaskEvents.AsNoTracking()
-            .Where(e => e.TaskId == id.Value && e.Kind == nameof(LivenessLost))
+        var requeues = await db.SessionEvents.AsNoTracking()
+            .Where(e => e.SessionId == id.Value && e.Kind == nameof(LivenessLost))
             .OrderBy(e => e.Seq)
             .Select(e => new { e.LivenessReason, e.FromState, e.ToState })
             .ToListAsync();
@@ -219,8 +219,8 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
             requeues.Select(e => e.LivenessReason).ToArray());
         Assert.All(requeues, e =>
         {
-            Assert.Equal(TaskState.Working, e.FromState);
-            Assert.Equal(TaskState.Failed, e.ToState);
+            Assert.Equal(SessionState.Working, e.FromState);
+            Assert.Equal(SessionState.Failed, e.ToState);
         });
     }
 
@@ -230,7 +230,7 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
         // A cap of two, so the loop this test drives is short; the shipped default is
-        // TaskRecord.DefaultInfrastructureRequeueLimit. The cap lives on the row, stamped
+        // SessionRecord.DefaultInfrastructureRequeueLimit. The cap lives on the row, stamped
         // at creation (§9 check 7), which is why seeding it here is enough — nothing in
         // the liveness path needs to know the configured value.
         var id = await SeedWorkingTaskAsync(clock, "m1", requeueLimit: 2);
@@ -241,7 +241,7 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
         // machine — exactly the behaviour that must survive the cap.
         StayAliveFor(clock, registry, id, Ceiling + TimeSpan.FromMinutes(1));
         await dispatch.CheckLivenessAsync(CancellationToken.None);
-        Assert.Equal(TaskState.Failed, await StateAsync(clock, id));
+        Assert.Equal(SessionState.Failed, await StateAsync(clock, id));
 
         // A second wedge, after the Lead resumes, fails again. No cap abandonment —
         // Failed is not terminal; the Lead decides whether to resume.
@@ -249,23 +249,23 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
         StayAliveFor(clock, registry, id, Ceiling + TimeSpan.FromMinutes(1));
         await dispatch.CheckLivenessAsync(CancellationToken.None);
 
-        Assert.Equal(TaskState.Failed, await StateAsync(clock, id));
-        Assert.DoesNotContain(id, registry.TasksOn("m1"));
+        Assert.Equal(SessionState.Failed, await StateAsync(clock, id));
+        Assert.DoesNotContain(id, registry.SessionsOn("m1"));
 
         await using var db = pg.NewContext();
-        var row = await db.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        var row = await db.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
         Assert.Equal(2, row.InfrastructureRequeues);
         Assert.Equal(0, row.VerificationFailures);
         Assert.Equal(LivenessLossReason.NoProgress, row.LastRequeueReason);
 
-        var store = new TaskStore(db, clock);
+        var store = new SessionStore(db, clock);
         var team = new TeamId(row.TeamId);
-        var report = await store.GetTaskReportAsync(team, id);
+        var report = await store.GetSessionReportAsync(team, id);
         Assert.Equal(2, report!.InfrastructureRequeues);
         Assert.Equal(LivenessLossReason.NoProgress, report.LastRequeueReason);
 
-        var summary = Assert.Single((await store.GetTeamStateAsync(team)).Tasks);
-        Assert.Equal(TaskState.Failed, summary.State);
+        var summary = Assert.Single((await store.GetTeamStateAsync(team)).Sessions);
+        Assert.Equal(SessionState.Failed, summary.State);
         Assert.Equal(2, summary.InfrastructureRequeues);
         Assert.Equal(LivenessLossReason.NoProgress, summary.LastRequeueReason);
     }
@@ -283,10 +283,10 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
         // so the ~30-minute-per-attempt burn of a model's time ends here.
         clock.Advance(Window + TimeSpan.FromSeconds(1));
         await NewDispatch(clock, registry).CheckLivenessAsync(CancellationToken.None);
-        Assert.Equal(TaskState.Failed, await StateAsync(clock, id));
+        Assert.Equal(SessionState.Failed, await StateAsync(clock, id));
 
         await using var db = pg.NewContext();
-        var claim = await new TaskStore(db, clock).DispatchNextAsync(
+        var claim = await new SessionStore(db, clock).DispatchNextAsync(
             new MachineSnapshot("m1", Ready: true, UnderBackPressure: false, Set("default")),
             WorkerInstanceId.New());
         Assert.IsType<StoreResult.NotFound>(claim);
@@ -301,7 +301,7 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
     /// beats, which is the very thing these tests are distinguishing.
     /// </summary>
     private static void StayAliveFor(
-        FakeTimeProvider clock, RunnerConnectionRegistry registry, TaskId task,
+        FakeTimeProvider clock, RunnerConnectionRegistry registry, SessionId task,
         TimeSpan total, TimeSpan? step = null)
     {
         var beat = step ?? TimeSpan.FromSeconds(15);
@@ -321,7 +321,7 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
             publicMcpUrl: null,
             noProgressCeiling: ceiling ?? Ceiling);
 
-    private static RunnerConnectionRegistry LiveMachine(TimeProvider clock, string machineId, TaskId task)
+    private static RunnerConnectionRegistry LiveMachine(TimeProvider clock, string machineId, SessionId task)
     {
         var registry = new RunnerConnectionRegistry(clock);
         registry.Register(machineId, Set("default"), (_, _) => Task.CompletedTask);
@@ -336,16 +336,16 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
     /// the store policy the host configures, so a cap test drives the real seam rather
     /// than writing the column by hand.
     /// </summary>
-    private async Task<TaskId> SeedWorkingTaskAsync(
+    private async Task<SessionId> SeedWorkingTaskAsync(
         TimeProvider clock, string machineId, bool registerService = false, int? requeueLimit = null)
     {
         await using var db = pg.NewContext();
-        var store = new TaskStore(db, clock,
-            policy: requeueLimit is { } limit ? new TaskStorePolicy(limit) : null);
+        var store = new SessionStore(db, clock,
+            policy: requeueLimit is { } limit ? new SessionStorePolicy(limit) : null);
         var team = TeamId.New();
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(new LeadClaim(team), team, "completion criteria", CompletionMode.Lead, null));
-        var id = created.Task.Id;
+            new CreateSession(new LeadClaim(team), team, "completion criteria", CompletionMode.Lead, null));
+        var id = created.Session.Id;
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(
             new MachineSnapshot(machineId, Ready: true, UnderBackPressure: false, Set("default")), instance);
@@ -356,13 +356,13 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     /// <summary>Takes a working task into blocked_on_input as its own incumbent worker.</summary>
-    private async Task BlockOnInputAsync(TimeProvider clock, TaskId id)
+    private async Task BlockOnInputAsync(TimeProvider clock, SessionId id)
     {
         await using var db = pg.NewContext();
-        var row = await db.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        var row = await db.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
         var caller = new WorkerCaller(
             new TeamId(row.TeamId), id, new WorkerInstanceId(row.CurrentInstanceId!.Value));
-        await new TaskStore(db, clock).ApplyAsync(id, new RequestInput(caller, InputRequestKind.Question));
+        await new SessionStore(db, clock).ApplyAsync(id, new RequestInput(caller, InputRequestKind.Question));
     }
 
     private IServiceScopeFactory ScopeFactory(TimeProvider clock)
@@ -383,11 +383,11 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
     /// the wedge these tests build is not racing a dispatch loop.
     /// </summary>
     private async Task RedispatchAsync(
-        TimeProvider clock, RunnerConnectionRegistry registry, string machineId, TaskId id)
+        TimeProvider clock, RunnerConnectionRegistry registry, string machineId, SessionId id)
     {
         await using var db = pg.NewContext();
-        var store = new TaskStore(db, clock);
-        if (await store.GetStateAsync(id) == TaskState.Failed)
+        var store = new SessionStore(db, clock);
+        if (await store.GetStateAsync(id) == SessionState.Failed)
             Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(id, new WakeParked("retry")));
         Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(
             new MachineSnapshot(machineId, Ready: true, UnderBackPressure: false, Set("default")),
@@ -395,17 +395,17 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
         registry.TrackDispatch(machineId, id);
     }
 
-    private async Task<TaskState?> StateAsync(TimeProvider clock, TaskId id)
+    private async Task<SessionState?> StateAsync(TimeProvider clock, SessionId id)
     {
         await using var db = pg.NewContext();
-        return await new TaskStore(db, clock).GetStateAsync(id);
+        return await new SessionStore(db, clock).GetStateAsync(id);
     }
 
     /// <summary>The live reason on the row — §6's infrastructure counter, with a why (#73).</summary>
-    private async Task<LivenessLossReason?> LastReasonAsync(TaskId id)
+    private async Task<LivenessLossReason?> LastReasonAsync(SessionId id)
     {
         await using var db = pg.NewContext();
-        return await db.Tasks.AsNoTracking()
+        return await db.Sessions.AsNoTracking()
             .Where(t => t.Id == id.Value)
             .Select(t => t.LastRequeueReason)
             .SingleAsync();
@@ -416,5 +416,5 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
 
     private static MachineHeartbeat Heartbeat(string machineId, params string[] profiles) =>
         new(machineId, Ready: true, UnderBackPressure: false,
-            new SystemLoad(0, 0, 0), RunningTasks: 0, profiles, DateTimeOffset.UtcNow);
+            new SystemLoad(0, 0, 0), RunningSessions: 0, profiles, DateTimeOffset.UtcNow);
 }

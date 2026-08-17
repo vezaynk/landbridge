@@ -22,7 +22,7 @@ public sealed class TranscriptReaderTests : IDisposable
 
     /// <summary>Captures one instance of <paramref name="task"/> and returns its writer
     /// (already closed) so a test can read the paths it wrote.</summary>
-    private TranscriptWriter Capture(TaskId task, string[] stdout, string[]? stderr = null)
+    private TranscriptWriter Capture(SessionId task, string[] stdout, string[]? stderr = null)
     {
         var writer = Store().CreateWriter(task, TranscriptDefaults.MaxBytes);
         foreach (var line in stdout)
@@ -34,14 +34,14 @@ public sealed class TranscriptReaderTests : IDisposable
     }
 
     private static ReadTranscriptCommand Range(
-        TaskId task, int ordinal = 1, string stream = TranscriptStreams.Stdout,
+        SessionId task, int ordinal = 1, string stream = TranscriptStreams.Stdout,
         long offset = 0, int maxBytes = TranscriptStreams.DefaultMaxBytes) =>
         new(task, "req-1", ordinal, stream, offset, maxBytes);
 
     /// <summary>Drains a whole stream the way the plane does — one range at a time,
     /// following the cursor — and returns the reassembled text plus the chunk count.</summary>
     private (string Text, int Chunks) DrainStream(
-        TaskId task, int ordinal, string stream, int maxBytes)
+        SessionId task, int ordinal, string stream, int maxBytes)
     {
         var reader = Reader();
         var sb = new StringBuilder();
@@ -70,7 +70,7 @@ public sealed class TranscriptReaderTests : IDisposable
     [Fact]
     public void Inventory_lists_every_captured_instance_with_its_stream_sizes()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         Capture(task, ["first instance stdout"], ["first instance stderr"]);
         Capture(task, ["second instance stdout only"]);
 
@@ -101,7 +101,7 @@ public sealed class TranscriptReaderTests : IDisposable
     {
         // No dir at all: never ran here, capture was off, or the prune sweep took it.
         // One answer for all three — they are indistinguishable after the fact (§12).
-        var reply = Reader().Read(new ReadTranscriptCommand(TaskId.New(), "req-1"));
+        var reply = Reader().Read(new ReadTranscriptCommand(SessionId.New(), "req-1"));
 
         Assert.Equal(TranscriptRefusals.NoTranscript, reply.Refusal);
         Assert.Null(reply.Instances);
@@ -112,7 +112,7 @@ public sealed class TranscriptReaderTests : IDisposable
     {
         // The dir exists (the worker was dispatched here) but both streams stayed silent.
         // Distinct from the no-dir case: it ran here and produced nothing.
-        var task = TaskId.New();
+        var task = SessionId.New();
         Store().CreateWriter(task, TranscriptDefaults.MaxBytes).Dispose();
 
         var reply = Reader().Read(new ReadTranscriptCommand(task, "req-1"));
@@ -129,7 +129,7 @@ public sealed class TranscriptReaderTests : IDisposable
         // Verbatim is the product behavior, not an accident: a planted credential comes
         // back intact, which is exactly why the plane serves this to human operators only
         // and only for terminal tasks (§13, §16 open question 8).
-        var task = TaskId.New();
+        var task = SessionId.New();
         var writer = Capture(task, ["""{"type":"assistant","text":"token dkt_w_deadbeef"}"""]);
 
         var reply = Reader().Read(Range(task));
@@ -143,7 +143,7 @@ public sealed class TranscriptReaderTests : IDisposable
     [Fact]
     public void Chunked_reads_reassemble_the_file_byte_for_byte()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         var lines = Enumerable.Range(0, 200)
             .Select(i => $"{{\"type\":\"assistant\",\"seq\":{i},\"text\":\"line {i} of the transcript\"}}")
             .ToArray();
@@ -163,7 +163,7 @@ public sealed class TranscriptReaderTests : IDisposable
         // The hazard: a 3-byte range over "é" (2 bytes) or "🛠" (4 bytes) splits a
         // character. The reader trims the partial trailing sequence and leaves it for the
         // next range, so reassembly is exact and no replacement character appears.
-        var task = TaskId.New();
+        var task = SessionId.New();
         var writer = Capture(task, ["""{"text":"aé🛠b — naïve ✓ résumé 日本語"}""", """{"text":"🛠🛠🛠"}"""]);
 
         foreach (var maxBytes in new[] { 1, 2, 3, 4, 5, 7 })
@@ -181,7 +181,7 @@ public sealed class TranscriptReaderTests : IDisposable
         // MaxBytes arrives over the wire and decides an allocation here, so an absurd
         // value must be clamped, not honoured — one malformed int should not be able to
         // OOM a machine that is busy running agents.
-        var task = TaskId.New();
+        var task = SessionId.New();
         // ~1.4 MiB, comfortably over the ceiling, so the first range cannot be the whole file.
         Capture(task, Enumerable.Range(0, 20_000).Select(i => $"line {i} padded out to about seventy bytes of transcript text").ToArray());
 
@@ -204,7 +204,7 @@ public sealed class TranscriptReaderTests : IDisposable
     [Fact]
     public void Stderr_is_a_separate_stream()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         var writer = Capture(task, ["stdout content"], ["stderr content", "a warning"]);
 
         var reply = Reader().Read(Range(task, stream: TranscriptStreams.Stderr));
@@ -216,7 +216,7 @@ public sealed class TranscriptReaderTests : IDisposable
     [Fact]
     public void An_offset_at_or_past_the_end_is_eof_with_no_bytes()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         var writer = Capture(task, ["short"]);
         var length = new FileInfo(writer.StdoutPath).Length;
 
@@ -240,7 +240,7 @@ public sealed class TranscriptReaderTests : IDisposable
         // `canceled` is terminal the moment the plane records it, but the harness winds
         // down over the stop TTL (§11), so serving can race a live capture writer. The
         // reader must open share-compatibly (Windows enforces share modes).
-        var task = TaskId.New();
+        var task = SessionId.New();
         var writer = Store().CreateWriter(task, TranscriptDefaults.MaxBytes);
         writer.WriteStdoutLine("while still running");
 
@@ -262,7 +262,7 @@ public sealed class TranscriptReaderTests : IDisposable
     [Fact]
     public void An_ordinal_that_was_never_captured_is_refused_as_an_unknown_instance()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         Capture(task, ["only one instance"]);
 
         var reply = Reader().Read(Range(task, ordinal: 7));
@@ -274,7 +274,7 @@ public sealed class TranscriptReaderTests : IDisposable
     [Fact]
     public void A_stream_that_stayed_silent_is_refused_as_an_unknown_instance()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         Capture(task, ["stdout only"]);
 
         var reply = Reader().Read(Range(task, stream: TranscriptStreams.Stderr));
@@ -285,7 +285,7 @@ public sealed class TranscriptReaderTests : IDisposable
     [Fact]
     public void A_range_read_for_a_task_this_machine_never_ran_is_refused()
     {
-        var reply = Reader().Read(Range(TaskId.New()));
+        var reply = Reader().Read(Range(SessionId.New()));
 
         Assert.Equal(TranscriptRefusals.NoTranscript, reply.Refusal);
     }
@@ -300,7 +300,7 @@ public sealed class TranscriptReaderTests : IDisposable
     {
         // Path construction is closed — the stream name only ever selects a known
         // extension — so a traversal attempt is a vocabulary error, not a path to sanitize.
-        var task = TaskId.New();
+        var task = SessionId.New();
         Capture(task, ["content"]);
 
         var reply = Reader().Read(Range(task, stream: stream));
@@ -316,7 +316,7 @@ public sealed class TranscriptReaderTests : IDisposable
     [InlineData(1, 0, -4096)]
     public void A_malformed_range_is_refused_rather_than_throwing(int ordinal, long offset, int maxBytes)
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         Capture(task, ["content"]);
 
         var reply = Reader().Read(Range(task, ordinal, offset: offset, maxBytes: maxBytes));
@@ -329,7 +329,7 @@ public sealed class TranscriptReaderTests : IDisposable
     {
         // The plane correlates a reply to the range it asked for by request id alone, so
         // it must survive every shape — inventory, range, and refusal.
-        var task = TaskId.New();
+        var task = SessionId.New();
         Capture(task, ["content"]);
         var reader = Reader();
 
@@ -345,6 +345,6 @@ public sealed class TranscriptReaderTests : IDisposable
             inventory => Assert.Equal("req-inventory", inventory.RequestId),
             range => Assert.Equal("req-range", range.RequestId),
             refusal => Assert.Equal("req-refusal", refusal.RequestId));
-        Assert.All(replies.Cast<TranscriptChunkEvent>(), r => Assert.Equal(task, r.Task));
+        Assert.All(replies.Cast<TranscriptChunkEvent>(), r => Assert.Equal(task, r.Session));
     }
 }

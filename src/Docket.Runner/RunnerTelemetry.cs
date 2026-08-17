@@ -11,7 +11,7 @@ namespace Docket.Runner;
 /// <summary>
 /// docketd's tracing (§1 end-to-end observability). The <c>handle</c> span opened
 /// here for an inbound command is parented on the plane's dispatch span via the
-/// wire traceparent, so docketd sits inside the one trace that runs create_task →
+/// wire traceparent, so docketd sits inside the one trace that runs create_session →
 /// dispatch → runner → worker. A spawned worker inherits this span through its
 /// environment (<c>DOCKET_TRACEPARENT</c>, see <see cref="ProcessSupervisor"/>).
 ///
@@ -88,11 +88,11 @@ public static class RunnerTelemetry
 
     private static string TaskOf(RunnerCommand command) => command switch
     {
-        DispatchCommand d => d.Task.ToString(),
-        StopCommand s => s.Task.ToString(),
-        KillCommand k => k.Task.ToString(),
-        OpenForwardCommand o => o.Task.ToString(),
-        CloseForwardCommand c => c.Task.ToString(),
+        DispatchCommand d => d.Session.ToString(),
+        StopCommand s => s.Session.ToString(),
+        KillCommand k => k.Session.ToString(),
+        OpenForwardCommand o => o.Session.ToString(),
+        CloseForwardCommand c => c.Session.ToString(),
         _ => "",
     };
 

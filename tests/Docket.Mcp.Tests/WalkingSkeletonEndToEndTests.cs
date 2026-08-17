@@ -27,7 +27,7 @@ namespace Docket.Mcp.Tests;
 /// spawns the fake worker harness, writing that config to
 /// <c>{work_dir}/mcp.json</c> (0600) and substituting its path into the argv; the
 /// harness authenticates back to the real <c>/mcp</c> endpoint with the
-/// dispatched token, calls <c>get_task</c> to read its assignment, then
+/// dispatched token, calls <c>get_session</c> to read its assignment, then
 /// <c>report_result</c> — driving the task working → verifying.
 ///
 /// This closes the loop the design leans on: a dispatched task reaches a worker
@@ -72,10 +72,10 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
         const string description = "make the suite pass";
         const string criteria = "the suite is green";
         const string workspace = "git:repo@main#task-branch";
-        TaskId taskId;
+        SessionId sessionId;
         await using (var lead = await ConnectAsync(new Uri(baseUrl + "/"), leadToken, ct))
         {
-            var created = await lead.CallToolAsync("create_task", new Dictionary<string, object?>
+            var created = await lead.CallToolAsync("create_session", new Dictionary<string, object?>
             {
                 ["description"] = description,
                 ["completionCriteria"] = criteria,
@@ -84,7 +84,7 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
                 ["workspace"] = workspace,
             }, cancellationToken: ct);
             Assert.NotEqual(true, created.IsError);
-            taskId = new TaskId(Guid.Parse(Assert.Single(created.Content.OfType<TextContentBlock>()).Text));
+            sessionId = new SessionId(Guid.Parse(Assert.Single(created.Content.OfType<TextContentBlock>()).Text));
         }
 
         // ── The runner side: the real supervisor spawns the fake worker harness ──
@@ -123,7 +123,7 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
             });
             registry.ApplyHeartbeat("m1", new MachineHeartbeat(
                 "m1", Ready: true, UnderBackPressure: false,
-                new SystemLoad(0, 0, 0), RunningTasks: 0, ["default"], DateTimeOffset.UtcNow));
+                new SystemLoad(0, 0, 0), RunningSessions: 0, ["default"], DateTimeOffset.UtcNow));
 
             // The real dispatch pass, pointed at THIS server's MCP URL so the
             // generated mcp.json reaches the loopback plane the harness dials.
@@ -134,9 +134,9 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
             await dispatch.RunDispatchPassAsync(ct);
 
             // ── The harness authenticated and reported: working → verifying ──
-            var workDir = Path.Combine(workRoot, taskId.ToString());
+            var workDir = Path.Combine(workRoot, sessionId.ToString());
             var reached = await WaitUntilAsync(
-                async () => await StateAsync(taskId, ct) == TaskState.Verifying,
+                async () => await StateAsync(sessionId, ct) == SessionState.Verifying,
                 TimeSpan.FromSeconds(60));
             if (!reached)
             {
@@ -167,14 +167,14 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
                 "an ACP profile names no {mcp_config}, so docketd should have written no config file — " +
                 "the server rides session/new instead, which is what keeps the worker token off disk");
 
-            // ── get_task delivered the assignment over the wire (§7) ──
-            var assignmentPath = Path.Combine(workDir, "get_task.json");
-            Assert.True(File.Exists(assignmentPath), "the harness never recorded its get_task response");
+            // ── get_session delivered the assignment over the wire (§7) ──
+            var assignmentPath = Path.Combine(workDir, "get_session.json");
+            Assert.True(File.Exists(assignmentPath), "the harness never recorded its get_session response");
             var assignmentJson = await File.ReadAllTextAsync(assignmentPath, ct);
             Assert.Contains(description, assignmentJson);
             Assert.Contains(criteria, assignmentJson);
             Assert.Contains(workspace, assignmentJson);
-            Assert.Contains($"team-{team}/task-{taskId}", assignmentJson); // server-assigned namespace
+            Assert.Contains($"team-{team}/session-{sessionId}", assignmentJson); // server-assigned namespace
             Assert.Contains("\"attempt\":1", assignmentJson);
 
             // ── report_result drove the record through the real state machine ──
@@ -183,8 +183,8 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
             // asserts it — but the skeleton's proof is that the transition committed,
             // not its content.)
             await using (var v = pg.NewContext())
-                Assert.Equal(TaskState.Verifying,
-                    (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == taskId.Value, ct)).State);
+                Assert.Equal(SessionState.Verifying,
+                    (await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == sessionId.Value, ct)).State);
         }
         finally
         {
@@ -194,10 +194,10 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
         }
     }
 
-    private async Task<TaskState?> StateAsync(TaskId id, CancellationToken ct)
+    private async Task<SessionState?> StateAsync(SessionId id, CancellationToken ct)
     {
         await using var db = pg.NewContext();
-        return await new TaskStore(db, TimeProvider.System).GetStateAsync(id, ct);
+        return await new SessionStore(db, TimeProvider.System).GetStateAsync(id, ct);
     }
 
     private WebApplication BuildServer()

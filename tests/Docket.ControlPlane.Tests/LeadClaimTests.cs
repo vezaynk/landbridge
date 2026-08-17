@@ -78,7 +78,7 @@ public sealed class LeadClaimTests(PostgresFixture pg) : IAsyncLifetime
         var tokens = new TokenService(db, new FakeTimeProvider());
 
         // A worker token is not a human session; the derivation is asymmetric (§5).
-        var worker = await tokens.MintWorkerTokenAsync(Team, TaskId.New(), WorkerInstanceId.New());
+        var worker = await tokens.MintWorkerTokenAsync(Team, SessionId.New(), WorkerInstanceId.New());
         Assert.IsType<LeadClaimResult.NoHumanSession>(await tokens.ClaimLeadAsync(worker.Token, Team));
     }
 

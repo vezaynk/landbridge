@@ -110,7 +110,7 @@ public sealed class ConformanceEndpointsTests(PostgresFixture pg) : IAsyncLifeti
         Assert.False(root.GetProperty("workerDone").GetBoolean());
         Assert.Empty(root.GetProperty("machinesDeclaring").EnumerateArray());
 
-        var kinds = root.GetProperty("tasks").EnumerateArray()
+        var kinds = root.GetProperty("sessions").EnumerateArray()
             .Select(t => t.GetProperty("kind").GetString()!)
             .ToArray();
         Assert.Equal(new[] { "identity", "write", "shell" }, kinds);
@@ -128,7 +128,7 @@ public sealed class ConformanceEndpointsTests(PostgresFixture pg) : IAsyncLifeti
         using var progressDoc = JsonDocument.Parse(await progress.Content.ReadAsStringAsync(ct));
         Assert.Equal(runId, progressDoc.RootElement.GetProperty("runId").GetGuid());
         Assert.Equal(3, progressDoc.RootElement.GetProperty("pending").GetInt32());
-        Assert.Equal("Submitted", progressDoc.RootElement.GetProperty("tasks")[0].GetProperty("state").GetString());
+        Assert.Equal("Submitted", progressDoc.RootElement.GetProperty("sessions")[0].GetProperty("state").GetString());
 
         await app.StopAsync(ct);
     }

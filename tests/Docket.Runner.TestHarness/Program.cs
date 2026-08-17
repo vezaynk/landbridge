@@ -7,7 +7,7 @@ namespace Docket.Runner.TestHarness;
 /// A minimal, cross-platform stand-in for a real harness that the runner tests
 /// spawn as a real process — no shell, argv only, matching docketd's own
 /// constraint (§10). It writes markers into its working directory (which the
-/// supervisor sets to <c>{work_root}/{task_id}</c>), so a test can observe env
+/// supervisor sets to <c>{work_root}/{session_id}</c>), so a test can observe env
 /// injection, working directory, stop delivery, process-tree membership, its own OS
 /// pid, and the dead-man's switch without depending on any installed harness.
 ///
@@ -250,7 +250,7 @@ public static class Program
 
             case "hook-env":
                 // Profile hook: record the environment docketd actually handed us, then
-                // exit. Proves DOCKET_TASK_ID / DOCKET_WORKER_TOKEN were stripped.
+                // exit. Proves DOCKET_SESSION_ID / DOCKET_WORKER_TOKEN were stripped.
                 await WriteMarkerAtomicAsync(Path.Combine(cwd, "hook-env"), EnvironmentLines());
                 return 0;
 
@@ -455,7 +455,7 @@ public static class Program
 
     private static async Task WriteStartedAsync(string cwd)
     {
-        var taskId = Environment.GetEnvironmentVariable("DOCKET_TASK_ID") ?? "none";
+        var sessionId = Environment.GetEnvironmentVariable("DOCKET_SESSION_ID") ?? "none";
         var machineId = Environment.GetEnvironmentVariable("DOCKET_MACHINE_ID") ?? "none";
         // Our own OS pid, written BEFORE the `started` marker so a test that polls for
         // `started` and then reads this can never miss it. The §17.8 chaos suite needs it to
@@ -465,7 +465,7 @@ public static class Program
         // saying anything". Redispatch overwrites it, so a test wanting this generation's pid
         // reads it before the requeue.
         await WriteMarkerAtomicAsync(Path.Combine(cwd, "pid"), Environment.ProcessId.ToString());
-        await WriteMarkerAtomicAsync(Path.Combine(cwd, "started"), $"{taskId}\n{machineId}");
+        await WriteMarkerAtomicAsync(Path.Combine(cwd, "started"), $"{sessionId}\n{machineId}");
     }
 
     /// <summary>

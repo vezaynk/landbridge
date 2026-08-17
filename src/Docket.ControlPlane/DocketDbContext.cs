@@ -6,10 +6,10 @@ namespace Docket.ControlPlane;
 
 public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) : DbContext(options)
 {
-    public DbSet<TaskRow> Tasks => Set<TaskRow>();
+    public DbSet<SessionRow> Sessions => Set<SessionRow>();
     public DbSet<WorkerInstanceRow> WorkerInstances => Set<WorkerInstanceRow>();
     public DbSet<RegisteredServiceRow> RegisteredServices => Set<RegisteredServiceRow>();
-    public DbSet<TaskEventRow> TaskEvents => Set<TaskEventRow>();
+    public DbSet<SessionEventRow> SessionEvents => Set<SessionEventRow>();
     public DbSet<CredentialRow> Credentials => Set<CredentialRow>();
     public DbSet<MachineRow> Machines => Set<MachineRow>();
     public DbSet<LeadEventRow> LeadEvents => Set<LeadEventRow>();
@@ -18,10 +18,10 @@ public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) :
     public DbSet<PreviewMappingRow> PreviewMappings => Set<PreviewMappingRow>();
     public DbSet<OAuthAuthorizationCodeRow> OAuthAuthorizationCodes => Set<OAuthAuthorizationCodeRow>();
     public DbSet<TeamForwardUsageRow> TeamForwardUsage => Set<TeamForwardUsageRow>();
-    public DbSet<TaskUsageRow> TaskUsage => Set<TaskUsageRow>();
+    public DbSet<SessionUsageRow> SessionUsage => Set<SessionUsageRow>();
 
     /// <summary>The channel dispatch/transition NOTIFYs land on (§3.1 LISTEN/NOTIFY).</summary>
-    public const string EventChannel = "docket_task_events";
+    public const string EventChannel = "docket_session_events";
 
     /// <summary>One live lead↔machine binding per human (§8.3 human path) — named so
     /// <see cref="LeadMachineBindingService"/> can tell the two races apart from the
@@ -45,9 +45,9 @@ public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) :
 
     protected override void OnModelCreating(ModelBuilder b)
     {
-        b.Entity<TaskRow>(e =>
+        b.Entity<SessionRow>(e =>
         {
-            e.ToTable("tasks");
+            e.ToTable("sessions");
             e.HasKey(t => t.Id);
             e.HasIndex(t => t.Namespace).IsUnique();
             // Partial index over the dispatch hot path (§3.1: split hot from cold).
@@ -79,7 +79,7 @@ public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) :
         {
             e.ToTable("worker_instances");
             e.HasKey(w => w.Id);
-            e.HasIndex(w => w.TaskId);
+            e.HasIndex(w => w.SessionId);
         });
 
         b.Entity<RegisteredServiceRow>(e =>
@@ -87,7 +87,7 @@ public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) :
             e.ToTable("registered_services");
             e.HasKey(s => s.Seq);
             e.Property(s => s.Seq).UseIdentityAlwaysColumn();
-            e.HasIndex(s => s.TaskId);
+            e.HasIndex(s => s.SessionId);
             // (team_id, name) is the address every resolver is handed — open_forward, an
             // §8.4 preview, the §8.3 human path — so its uniqueness is the invariant, not a
             // read's. Unique rather than merely indexed because two rows for one name made
@@ -98,12 +98,12 @@ public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) :
             e.HasIndex(s => new { s.TeamId, s.Name }).IsUnique();
         });
 
-        b.Entity<TaskEventRow>(e =>
+        b.Entity<SessionEventRow>(e =>
         {
-            e.ToTable("task_events");
+            e.ToTable("session_events");
             e.HasKey(ev => ev.Seq);
             e.Property(ev => ev.Seq).UseIdentityAlwaysColumn();
-            e.HasIndex(ev => ev.TaskId);
+            e.HasIndex(ev => ev.SessionId);
             e.Property(ev => ev.FromState).HasConversion<string>();
             e.Property(ev => ev.ToState).HasConversion<string>();
             // The typed input-request kind stores as its enum name, exactly like
@@ -176,7 +176,7 @@ public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) :
             e.HasIndex(g => g.ForwardId).IsUnique();
             // Revocation targets every live grant a leaving-working task produced
             // (ClearServicesAndForwards); index the column that join keys on.
-            e.HasIndex(g => g.ProducerTaskId);
+            e.HasIndex(g => g.ProducerSessionId);
         });
 
         b.Entity<PreviewMappingRow>(e =>
@@ -200,17 +200,17 @@ public sealed class DocketDbContext(DbContextOptions<DocketDbContext> options) :
             e.HasIndex(c => c.CodeHash).IsUnique();
         });
 
-        b.Entity<TaskUsageRow>(e =>
+        b.Entity<SessionUsageRow>(e =>
         {
-            e.ToTable("task_usage");
+            e.ToTable("session_usage");
             // (task, model) is the key: one dispatch may report several models, and a report
             // for a model already seen must update that row rather than add another — the
             // counters are cumulative, so a second row would double the total (§10).
             // Postgres treats NULLs as distinct in a unique index but a composite PRIMARY KEY
             // cannot contain one at all, so the unnamed model is stored as the empty string and
-            // mapped back to null on read (TaskUsageView) — the alternative, a surrogate key
+            // mapped back to null on read (SessionUsageView) — the alternative, a surrogate key
             // plus a partial index, buys nothing here and hides the invariant.
-            e.HasKey(u => new { u.TaskId, u.Model });
+            e.HasKey(u => new { u.SessionId, u.Model });
             e.Property(u => u.Model).HasDefaultValue("");
             // The Team roll-up (§12) filters on this, and it is the only non-key predicate.
             e.HasIndex(u => u.TeamId);

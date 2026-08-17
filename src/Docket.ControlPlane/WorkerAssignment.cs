@@ -3,7 +3,7 @@ using System.Text.Json.Serialization;
 namespace Docket.ControlPlane;
 
 /// <summary>
-/// A dispatched worker's assignment (§7), returned by the <c>get_task</c> worker
+/// A dispatched worker's assignment (§7), returned by the <c>get_session</c> worker
 /// tool — the first thing a worker reads (worker-skill.md). It carries the
 /// server-assigned <c>namespace</c>, the Lead's prose <c>description</c>, the
 /// opaque <c>completion_criteria</c> and <c>workspace</c>, and the

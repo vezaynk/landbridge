@@ -51,7 +51,7 @@ public sealed class DocketdStrayReapEndToEndTests
             };
             psi.ArgumentList.Add("spawn-child");
             psi.Environment["DOCKET_MACHINE_ID"] = machineId;
-            psi.Environment["DOCKET_TASK_ID"] = Guid.NewGuid().ToString();
+            psi.Environment["DOCKET_SESSION_ID"] = Guid.NewGuid().ToString();
             // …and disables PDEATHSIG for the planted tree: on Linux the arm is
             // keyed to the spawning THREAD (an xunit pool thread here), whose
             // retirement mid-test would kill the stray early. Real strays outlive

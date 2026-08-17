@@ -73,18 +73,18 @@ public sealed class PreviewConnectService(
         //
         // Resolved by (task, name) from the mapping, never by name alone: the label was
         // minted against ONE task's service and the mapping records which
-        // (PreviewMappingRow.TaskId). Passing only the name made that column write-only and
+        // (PreviewMappingRow.SessionId). Passing only the name made that column write-only and
         // handed the URL whatever answered to the name at connect time — so a label minted
         // for task A's `web` could splice to task B's `web` once A finished, which is a
         // preview reaching a service its holder never exposed. The task is the authority
         // here; the name alone is not.
         if (await grants.IssueForPreviewAsync(
-                new TeamId(mapping.TeamId), new TaskId(mapping.TaskId), mapping.ServiceName, ct)
+                new TeamId(mapping.TeamId), new SessionId(mapping.SessionId), mapping.ServiceName, ct)
             is not RelayGrantResult.Issued issued)
         {
             logger.LogInformation(
                 "preview connect: check 11 refused for team {Team} task {Task} service {Service}",
-                mapping.TeamId, mapping.TaskId, mapping.ServiceName);
+                mapping.TeamId, mapping.SessionId, mapping.ServiceName);
             return new PreviewConnectResult.Unavailable(
                 $"service '{mapping.ServiceName}' is not currently reachable");
         }

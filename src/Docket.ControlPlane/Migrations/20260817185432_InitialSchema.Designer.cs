@@ -12,8 +12,8 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Docket.ControlPlane.Migrations
 {
     [DbContext(typeof(DocketDbContext))]
-    [Migration("20260803180000_AddTeamForwardUsage")]
-    partial class AddTeamForwardUsage
+    [Migration("20260817185432_InitialSchema")]
+    partial class InitialSchema
     {
         /// <inheritdoc />
         protected override void BuildTargetModel(ModelBuilder modelBuilder)
@@ -69,9 +69,9 @@ namespace Docket.ControlPlane.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("revoked_at");
 
-                    b.Property<Guid?>("TaskId")
+                    b.Property<Guid?>("SessionId")
                         .HasColumnType("uuid")
-                        .HasColumnName("task_id");
+                        .HasColumnName("session_id");
 
                     b.Property<Guid?>("TeamId")
                         .HasColumnType("uuid")
@@ -303,9 +303,9 @@ namespace Docket.ControlPlane.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("consumer_instance_id");
 
-                    b.Property<Guid?>("ConsumerTaskId")
+                    b.Property<Guid?>("ConsumerSessionId")
                         .HasColumnType("uuid")
-                        .HasColumnName("consumer_task_id");
+                        .HasColumnName("consumer_session_id");
 
                     b.Property<DateTimeOffset>("CreatedAt")
                         .HasColumnType("timestamp with time zone")
@@ -324,9 +324,9 @@ namespace Docket.ControlPlane.Migrations
                         .HasColumnType("text")
                         .HasColumnName("grant_hash");
 
-                    b.Property<Guid>("ProducerTaskId")
+                    b.Property<Guid>("ProducerSessionId")
                         .HasColumnType("uuid")
-                        .HasColumnName("producer_task_id");
+                        .HasColumnName("producer_session_id");
 
                     b.Property<bool>("Revoked")
                         .HasColumnType("boolean")
@@ -360,8 +360,8 @@ namespace Docket.ControlPlane.Migrations
                         .IsUnique()
                         .HasDatabaseName("ix_relay_grants_grant_hash");
 
-                    b.HasIndex("ProducerTaskId")
-                        .HasDatabaseName("ix_relay_grants_producer_task_id");
+                    b.HasIndex("ProducerSessionId")
+                        .HasDatabaseName("ix_relay_grants_producer_session_id");
 
                     b.ToTable("relay_grants", (string)null);
                 });
@@ -378,10 +378,6 @@ namespace Docket.ControlPlane.Migrations
                         .HasColumnType("text")
                         .HasColumnName("auth_policy");
 
-                    b.Property<DateTimeOffset>("CreatedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("created_at");
-
                     b.Property<DateTimeOffset>("ExpiresAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("expires_at");
@@ -396,9 +392,9 @@ namespace Docket.ControlPlane.Migrations
                         .HasColumnType("text")
                         .HasColumnName("service_name");
 
-                    b.Property<Guid>("TaskId")
+                    b.Property<Guid>("SessionId")
                         .HasColumnType("uuid")
-                        .HasColumnName("task_id");
+                        .HasColumnName("session_id");
 
                     b.Property<Guid>("TeamId")
                         .HasColumnType("uuid")
@@ -436,9 +432,9 @@ namespace Docket.ControlPlane.Migrations
                         .HasColumnType("integer")
                         .HasColumnName("port");
 
-                    b.Property<Guid>("TaskId")
+                    b.Property<Guid>("SessionId")
                         .HasColumnType("uuid")
-                        .HasColumnName("task_id");
+                        .HasColumnName("session_id");
 
                     b.Property<Guid>("TeamId")
                         .HasColumnType("uuid")
@@ -447,16 +443,17 @@ namespace Docket.ControlPlane.Migrations
                     b.HasKey("Seq")
                         .HasName("pk_registered_services");
 
-                    b.HasIndex("TaskId")
-                        .HasDatabaseName("ix_registered_services_task_id");
+                    b.HasIndex("SessionId")
+                        .HasDatabaseName("ix_registered_services_session_id");
 
                     b.HasIndex("TeamId", "Name")
+                        .IsUnique()
                         .HasDatabaseName("ix_registered_services_team_id_name");
 
                     b.ToTable("registered_services", (string)null);
                 });
 
-            modelBuilder.Entity("Docket.ControlPlane.TaskEventRow", b =>
+            modelBuilder.Entity("Docket.ControlPlane.SessionEventRow", b =>
                 {
                     b.Property<long>("Seq")
                         .ValueGeneratedOnAdd()
@@ -498,9 +495,25 @@ namespace Docket.ControlPlane.Migrations
                         .HasColumnType("text")
                         .HasColumnName("kind");
 
+                    b.Property<string>("LivenessReason")
+                        .HasColumnType("text")
+                        .HasColumnName("liveness_reason");
+
                     b.Property<DateTimeOffset>("OccurredAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("occurred_at");
+
+                    b.Property<string>("PermissionAnswerer")
+                        .HasColumnType("text")
+                        .HasColumnName("permission_answerer");
+
+                    b.Property<string>("PermissionVerdict")
+                        .HasColumnType("text")
+                        .HasColumnName("permission_verdict");
+
+                    b.Property<Guid>("SessionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("session_id");
 
                     b.Property<string>("SubagentId")
                         .HasColumnType("text")
@@ -509,10 +522,6 @@ namespace Docket.ControlPlane.Migrations
                     b.Property<string>("SubagentParentId")
                         .HasColumnType("text")
                         .HasColumnName("subagent_parent_id");
-
-                    b.Property<Guid>("TaskId")
-                        .HasColumnType("uuid")
-                        .HasColumnName("task_id");
 
                     b.Property<Guid>("TeamId")
                         .HasColumnType("uuid")
@@ -523,15 +532,15 @@ namespace Docket.ControlPlane.Migrations
                         .HasColumnName("to_state");
 
                     b.HasKey("Seq")
-                        .HasName("pk_task_events");
+                        .HasName("pk_session_events");
 
-                    b.HasIndex("TaskId")
-                        .HasDatabaseName("ix_task_events_task_id");
+                    b.HasIndex("SessionId")
+                        .HasDatabaseName("ix_session_events_session_id");
 
-                    b.ToTable("task_events", (string)null);
+                    b.ToTable("session_events", (string)null);
                 });
 
-            modelBuilder.Entity("Docket.ControlPlane.TaskRow", b =>
+            modelBuilder.Entity("Docket.ControlPlane.SessionRow", b =>
                 {
                     b.Property<Guid>("Id")
                         .ValueGeneratedOnAdd()
@@ -560,9 +569,9 @@ namespace Docket.ControlPlane.Migrations
                         .HasColumnType("text")
                         .HasColumnName("completion_provenance");
 
-                    b.Property<Guid?>("ContinuesTaskId")
+                    b.Property<Guid?>("ContinuesSessionId")
                         .HasColumnType("uuid")
-                        .HasColumnName("continues_task_id");
+                        .HasColumnName("continues_session_id");
 
                     b.Property<Guid?>("CurrentInstanceId")
                         .HasColumnType("uuid")
@@ -577,9 +586,29 @@ namespace Docket.ControlPlane.Migrations
                         .HasColumnType("text")
                         .HasColumnName("harness_session_ref");
 
+                    b.Property<int>("InfrastructureRequeueLimit")
+                        .HasColumnType("integer")
+                        .HasColumnName("infrastructure_requeue_limit");
+
                     b.Property<int>("InfrastructureRequeues")
                         .HasColumnType("integer")
                         .HasColumnName("infrastructure_requeues");
+
+                    b.Property<string>("InputAnswer")
+                        .HasColumnType("text")
+                        .HasColumnName("input_answer");
+
+                    b.Property<string>("InputKind")
+                        .HasColumnType("text")
+                        .HasColumnName("input_kind");
+
+                    b.Property<string>("InputQuestion")
+                        .HasColumnType("text")
+                        .HasColumnName("input_question");
+
+                    b.Property<string>("LastRequeueReason")
+                        .HasColumnType("text")
+                        .HasColumnName("last_requeue_reason");
 
                     b.Property<string>("Namespace")
                         .IsRequired()
@@ -590,21 +619,25 @@ namespace Docket.ControlPlane.Migrations
                         .HasColumnType("text")
                         .HasColumnName("on_machine_gone");
 
-                    b.Property<int?>("ParkAttempt")
-                        .HasColumnType("integer")
-                        .HasColumnName("park_attempt");
-
-                    b.Property<string>("ParkDirectory")
-                        .HasColumnType("text")
-                        .HasColumnName("park_directory");
-
                     b.Property<string>("ParkMachine")
                         .HasColumnType("text")
                         .HasColumnName("park_machine");
 
-                    b.Property<string>("ParkSessionRef")
+                    b.Property<DateTimeOffset?>("PermissionEscalatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("permission_escalated_at");
+
+                    b.Property<string>("PermissionEscalationReason")
                         .HasColumnType("text")
-                        .HasColumnName("park_session_ref");
+                        .HasColumnName("permission_escalation_reason");
+
+                    b.Property<string>("PermissionTool")
+                        .HasColumnType("text")
+                        .HasColumnName("permission_tool");
+
+                    b.Property<string>("PermissionVerdict")
+                        .HasColumnType("text")
+                        .HasColumnName("permission_verdict");
 
                     b.Property<string>("PreferredMachine")
                         .HasColumnType("text")
@@ -645,6 +678,10 @@ namespace Docket.ControlPlane.Migrations
                         .HasColumnType("xid")
                         .HasColumnName("xmin");
 
+                    b.Property<Guid?>("WorkDirSessionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("work_dir_session_id");
+
                     b.Property<string>("WorkerReport")
                         .HasColumnType("text")
                         .HasColumnName("worker_report");
@@ -654,50 +691,76 @@ namespace Docket.ControlPlane.Migrations
                         .HasColumnName("workspace");
 
                     b.HasKey("Id")
-                        .HasName("pk_tasks");
+                        .HasName("pk_sessions");
 
                     b.HasIndex("Namespace")
                         .IsUnique()
-                        .HasDatabaseName("ix_tasks_namespace");
+                        .HasDatabaseName("ix_sessions_namespace");
 
                     b.HasIndex("State", "Profile")
-                        .HasDatabaseName("ix_tasks_state_profile")
+                        .HasDatabaseName("ix_sessions_state_profile")
                         .HasFilter("state = 'Submitted'");
 
-                    b.ToTable("tasks", (string)null);
+                    b.ToTable("sessions", (string)null);
                 });
 
-            modelBuilder.Entity("Docket.ControlPlane.TeamBudgetRow", b =>
+            modelBuilder.Entity("Docket.ControlPlane.SessionUsageRow", b =>
                 {
+                    b.Property<Guid>("SessionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("session_id");
+
+                    b.Property<string>("Model")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("text")
+                        .HasDefaultValue("")
+                        .HasColumnName("model");
+
+                    b.Property<long>("CacheReadTokens")
+                        .HasColumnType("bigint")
+                        .HasColumnName("cache_read_tokens");
+
+                    b.Property<long>("CacheWriteTokens")
+                        .HasColumnType("bigint")
+                        .HasColumnName("cache_write_tokens");
+
+                    b.Property<decimal?>("CostUsd")
+                        .HasColumnType("numeric")
+                        .HasColumnName("cost_usd");
+
+                    b.Property<long>("InputTokens")
+                        .HasColumnType("bigint")
+                        .HasColumnName("input_tokens");
+
+                    b.Property<long>("OutputTokens")
+                        .HasColumnType("bigint")
+                        .HasColumnName("output_tokens");
+
+                    b.Property<long?>("ReasoningOutputTokens")
+                        .HasColumnType("bigint")
+                        .HasColumnName("reasoning_output_tokens");
+
+                    b.Property<DateTimeOffset>("ReportedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("reported_at");
+
                     b.Property<Guid>("TeamId")
                         .HasColumnType("uuid")
                         .HasColumnName("team_id");
 
-                    b.Property<decimal?>("CeilingUsd")
-                        .HasColumnType("numeric")
-                        .HasColumnName("ceiling_usd");
+                    b.HasKey("SessionId", "Model")
+                        .HasName("pk_session_usage");
 
-                    b.Property<decimal>("CommittedUsd")
-                        .HasColumnType("numeric")
-                        .HasColumnName("committed_usd");
+                    b.HasIndex("TeamId")
+                        .HasDatabaseName("ix_session_usage_team_id");
 
-                    b.Property<decimal?>("PerTaskUsd")
-                        .HasColumnType("numeric")
-                        .HasColumnName("per_task_usd");
-
-                    b.Property<DateTimeOffset>("UpdatedAt")
-                        .HasColumnType("timestamp with time zone")
-                        .HasColumnName("updated_at");
-
-                    b.HasKey("TeamId")
-                        .HasName("pk_team_budgets");
-
-                    b.ToTable("team_budgets", (string)null);
+                    b.ToTable("session_usage", (string)null);
                 });
 
             modelBuilder.Entity("Docket.ControlPlane.TeamForwardUsageRow", b =>
                 {
                     b.Property<Guid>("TeamId")
+                        .ValueGeneratedOnAdd()
                         .HasColumnType("uuid")
                         .HasColumnName("team_id");
 
@@ -738,15 +801,15 @@ namespace Docket.ControlPlane.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("revoked_at");
 
-                    b.Property<Guid>("TaskId")
+                    b.Property<Guid>("SessionId")
                         .HasColumnType("uuid")
-                        .HasColumnName("task_id");
+                        .HasColumnName("session_id");
 
                     b.HasKey("Id")
                         .HasName("pk_worker_instances");
 
-                    b.HasIndex("TaskId")
-                        .HasDatabaseName("ix_worker_instances_task_id");
+                    b.HasIndex("SessionId")
+                        .HasDatabaseName("ix_worker_instances_session_id");
 
                     b.ToTable("worker_instances", (string)null);
                 });

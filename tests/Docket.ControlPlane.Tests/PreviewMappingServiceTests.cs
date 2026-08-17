@@ -29,13 +29,13 @@ public sealed class PreviewMappingServiceTests(PostgresFixture pg) : IAsyncLifet
         await using var db = pg.NewContext();
         var clock = new FakeTimeProvider();
         var svc = new PreviewMappingService(db, clock);
-        var task = TaskId.New();
+        var task = SessionId.New();
 
         var mint = await svc.CreateAsync(Team, task, "web", PreviewAuthPolicy.Gated, TimeSpan.FromMinutes(30));
 
         var resolved = Assert.IsType<PreviewResolveResult.Found>(await svc.ResolveAsync(mint.Label));
         Assert.Equal(Team.Value, resolved.Mapping.TeamId);
-        Assert.Equal(task.Value, resolved.Mapping.TaskId);
+        Assert.Equal(task.Value, resolved.Mapping.SessionId);
         Assert.Equal("web", resolved.Mapping.ServiceName);
         Assert.Equal(PreviewAuthPolicy.Gated, resolved.Mapping.AuthPolicy);
     }
@@ -60,7 +60,7 @@ public sealed class PreviewMappingServiceTests(PostgresFixture pg) : IAsyncLifet
         var clock = new FakeTimeProvider();
         var svc = new PreviewMappingService(db, clock);
 
-        var mint = await svc.CreateAsync(Team, TaskId.New(), "web", PreviewAuthPolicy.Public, TimeSpan.FromMinutes(5));
+        var mint = await svc.CreateAsync(Team, SessionId.New(), "web", PreviewAuthPolicy.Public, TimeSpan.FromMinutes(5));
 
         // Still live just before expiry.
         clock.Advance(TimeSpan.FromMinutes(5) - TimeSpan.FromSeconds(1));
@@ -78,8 +78,8 @@ public sealed class PreviewMappingServiceTests(PostgresFixture pg) : IAsyncLifet
         await using var db = pg.NewContext();
         var svc = new PreviewMappingService(db, new FakeTimeProvider());
 
-        var a = await svc.CreateAsync(Team, TaskId.New(), "web", PreviewAuthPolicy.Public, TimeSpan.FromMinutes(5));
-        var b = await svc.CreateAsync(Team, TaskId.New(), "web", PreviewAuthPolicy.Public, TimeSpan.FromMinutes(5));
+        var a = await svc.CreateAsync(Team, SessionId.New(), "web", PreviewAuthPolicy.Public, TimeSpan.FromMinutes(5));
+        var b = await svc.CreateAsync(Team, SessionId.New(), "web", PreviewAuthPolicy.Public, TimeSpan.FromMinutes(5));
 
         Assert.NotEqual(a.Label, b.Label);
         foreach (var label in new[] { a.Label, b.Label })
@@ -98,7 +98,7 @@ public sealed class PreviewMappingServiceTests(PostgresFixture pg) : IAsyncLifet
         await using var db = pg.NewContext();
         var svc = new PreviewMappingService(db, new FakeTimeProvider());
 
-        var mint = await svc.CreateAsync(Team, TaskId.New(), "web", PreviewAuthPolicy.Public, TimeSpan.FromMinutes(5));
+        var mint = await svc.CreateAsync(Team, SessionId.New(), "web", PreviewAuthPolicy.Public, TimeSpan.FromMinutes(5));
 
         // A browser/DNS may upcase the host label; resolution must still match (§8.4).
         Assert.IsType<PreviewResolveResult.Found>(await svc.ResolveAsync(mint.Label.ToUpperInvariant()));

@@ -134,7 +134,7 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
             // ── Producer: create + dispatch task A onto "mp" (the only ready machine,
             //    and the only submitted task), then wait until its worker has bound
             //    the echo service and registered it.
-            var taskA = await CreateTaskAsync(baseUrl, leadToken, $"relay-serve:{ServiceName}", ct);
+            var taskA = await CreateSessionAsync(baseUrl, leadToken, $"relay-serve:{ServiceName}", ct);
             SetReady(registry, "mp", ready: true);
             SetReady(registry, "mc", ready: false);
             await dispatch.RunDispatchPassAsync(ct);
@@ -145,7 +145,7 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
 
             // ── Consumer: create + dispatch task B onto "mc" (now the only ready
             //    machine, and A is working so B is the only submitted task).
-            var taskB = await CreateTaskAsync(baseUrl, leadToken, $"relay-consume:{ServiceName}", ct);
+            var taskB = await CreateSessionAsync(baseUrl, leadToken, $"relay-consume:{ServiceName}", ct);
             SetReady(registry, "mp", ready: false);
             SetReady(registry, "mc", ready: true);
             await dispatch.RunDispatchPassAsync(ct);
@@ -153,14 +153,14 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
             // ── The consumer worker opened the forward, round-tripped bytes through
             //    the real relay, and reported — driving working → verifying.
             var reached = await WaitUntilAsync(
-                async () => await StateAsync(taskB, ct) == TaskState.Verifying, TimeSpan.FromSeconds(60));
+                async () => await StateAsync(taskB, ct) == SessionState.Verifying, TimeSpan.FromSeconds(60));
             if (!reached)
                 Assert.Fail("consumer worker never drove its task to verifying. " + await DiagnoseAsync(workRoot, taskB, ct));
 
             // The result reference is the worker's own proof the bytes round-tripped.
             string? reference;
             await using (var v = pg.NewContext())
-                reference = (await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == taskB.Value, ct)).ResultReference;
+                reference = (await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == taskB.Value, ct)).ResultReference;
             Assert.NotNull(reference);
             Assert.StartsWith("relay-echo:ok:", reference);
 
@@ -206,7 +206,7 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
             var instanceA = await IncumbentInstanceAsync(taskA, ct);
             await using (var scope = plane.Services.CreateAsyncScope())
             {
-                var store = scope.ServiceProvider.GetRequiredService<TaskStore>();
+                var store = scope.ServiceProvider.GetRequiredService<SessionStore>();
                 Assert.IsType<StoreResult.Applied>(
                     await store.ApplyAsync(
                         taskA, new ReportResult(new WorkerCaller(team, taskA, instanceA), "served"), ct));
@@ -246,12 +246,12 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
     private static void SetReady(RunnerConnectionRegistry registry, string machineId, bool ready) =>
         registry.ApplyHeartbeat(machineId, new MachineHeartbeat(
             machineId, Ready: ready, UnderBackPressure: false,
-            new SystemLoad(0, 0, 0), RunningTasks: 0, ["default"], DateTimeOffset.UtcNow));
+            new SystemLoad(0, 0, 0), RunningSessions: 0, ["default"], DateTimeOffset.UtcNow));
 
-    private async Task<TaskId> CreateTaskAsync(string baseUrl, string leadToken, string description, CancellationToken ct)
+    private async Task<SessionId> CreateSessionAsync(string baseUrl, string leadToken, string description, CancellationToken ct)
     {
         await using var lead = await RelayGrantTestKit.ConnectMcpAsync(new Uri(baseUrl + "/"), leadToken, ct);
-        var created = await lead.CallToolAsync("create_task", new Dictionary<string, object?>
+        var created = await lead.CallToolAsync("create_session", new Dictionary<string, object?>
         {
             ["description"] = description,
             ["completionCriteria"] = "the byte path holds",
@@ -260,7 +260,7 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
             ["workspace"] = "relay-fleet-e2e",
         }, cancellationToken: ct);
         Assert.NotEqual(true, created.IsError);
-        return new TaskId(Guid.Parse(Assert.Single(created.Content.OfType<TextContentBlock>()).Text));
+        return new SessionId(Guid.Parse(Assert.Single(created.Content.OfType<TextContentBlock>()).Text));
     }
 
     private async Task<bool> ServiceExistsAsync(TeamId team, string name, CancellationToken ct)
@@ -270,20 +270,20 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
             .AnyAsync(s => s.TeamId == team.Value && s.Name == name, ct);
     }
 
-    private async Task<TaskState?> StateAsync(TaskId id, CancellationToken ct)
+    private async Task<SessionState?> StateAsync(SessionId id, CancellationToken ct)
     {
         await using var db = pg.NewContext();
-        return await new TaskStore(db, TimeProvider.System).GetStateAsync(id, ct);
+        return await new SessionStore(db, TimeProvider.System).GetStateAsync(id, ct);
     }
 
     /// <summary>
     /// A task's incumbent worker instance, read off the row — the tokens themselves stay
     /// inside the harness processes, so this is how the test speaks as one of them.
     /// </summary>
-    private async Task<WorkerInstanceId> IncumbentInstanceAsync(TaskId id, CancellationToken ct)
+    private async Task<WorkerInstanceId> IncumbentInstanceAsync(SessionId id, CancellationToken ct)
     {
         await using var db = pg.NewContext();
-        var current = (await db.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value, ct)).CurrentInstanceId;
+        var current = (await db.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value, ct)).CurrentInstanceId;
         Assert.NotNull(current);
         return new WorkerInstanceId(current.Value);
     }
@@ -326,7 +326,7 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
     }
 
     /// <summary>The harness diagnostic for a task's work dir, if it left one.</summary>
-    private static async Task<string> DiagnoseAsync(string workRoot, TaskId task, CancellationToken ct)
+    private static async Task<string> DiagnoseAsync(string workRoot, SessionId task, CancellationToken ct)
     {
         var errPath = System.IO.Path.Combine(workRoot, task.ToString(), "harness_error.txt");
         return System.IO.File.Exists(errPath)

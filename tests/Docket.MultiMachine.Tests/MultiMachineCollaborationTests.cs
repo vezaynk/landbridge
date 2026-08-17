@@ -50,7 +50,7 @@ public sealed class MultiMachineCollaborationTests(PostgresFixture pg) : IAsyncL
         await rig.AddMachineAsync("B");
 
         // A binds the handshake service and stays working.
-        var serve = await rig.CreateTaskAsync("handshake-serve", ct);
+        var serve = await rig.CreateSessionAsync("handshake-serve", ct);
         await rig.DispatchToAsync("A", ct);
         Assert.True(
             await FleetRig.WaitUntilAsync(() => rig.ServiceExistsAsync("handshake", ct), Bound),
@@ -64,10 +64,10 @@ public sealed class MultiMachineCollaborationTests(PostgresFixture pg) : IAsyncL
             "machine A never wrote its handshake nonce marker");
 
         // B opens the forward, reads the nonce, and reports it.
-        var consume = await rig.CreateTaskAsync("handshake-consume", ct);
+        var consume = await rig.CreateSessionAsync("handshake-consume", ct);
         await rig.DispatchToAsync("B", ct);
         Assert.True(
-            await FleetRig.WaitUntilAsync(async () => await rig.StateAsync(consume, ct) == TaskState.Verifying, Bound),
+            await FleetRig.WaitUntilAsync(async () => await rig.StateAsync(consume, ct) == SessionState.Verifying, Bound),
             "machine B never drove its consume task to verifying. " + await rig.DiagnoseAsync(consume, ct));
 
         Assert.Equal($"handshake:{nonce}", await rig.ResultReferenceAsync(consume, ct));
@@ -93,16 +93,16 @@ public sealed class MultiMachineCollaborationTests(PostgresFixture pg) : IAsyncL
         await rig.AddMachineAsync("A");
         await rig.AddMachineAsync("B");
 
-        var serve = await rig.CreateTaskAsync("compute-serve", ct);
+        var serve = await rig.CreateSessionAsync("compute-serve", ct);
         await rig.DispatchToAsync("A", ct);
         Assert.True(
             await FleetRig.WaitUntilAsync(() => rig.ServiceExistsAsync("compute", ct), Bound),
             "machine A never registered the compute service. " + await rig.DiagnoseAsync(serve, ct));
 
-        var test = await rig.CreateTaskAsync("compute-test", ct);
+        var test = await rig.CreateSessionAsync("compute-test", ct);
         await rig.DispatchToAsync("B", ct);
         Assert.True(
-            await FleetRig.WaitUntilAsync(async () => await rig.StateAsync(test, ct) == TaskState.Verifying, Bound),
+            await FleetRig.WaitUntilAsync(async () => await rig.StateAsync(test, ct) == SessionState.Verifying, Bound),
             "machine B never drove its compute-test task to verifying. " + await rig.DiagnoseAsync(test, ct));
 
         // The worker only reports pass after every input round-tripped incremented; a
@@ -132,15 +132,15 @@ public sealed class MultiMachineCollaborationTests(PostgresFixture pg) : IAsyncL
 
         string[] seeds = ["alpha", "bravo", "charlie"];
         string[] targets = ["A", "B", "A"]; // round-robin → guaranteed cross-machine
-        var tasks = new List<TaskId>();
+        var tasks = new List<SessionId>();
 
         for (var i = 0; i < seeds.Length; i++)
         {
-            var task = await rig.CreateTaskAsync($"map:{seeds[i]}", ct);
+            var task = await rig.CreateSessionAsync($"map:{seeds[i]}", ct);
             await rig.DispatchToAsync(targets[i], ct);
             var seed = seeds[i];
             Assert.True(
-                await FleetRig.WaitUntilAsync(async () => await rig.StateAsync(task, ct) == TaskState.Verifying, Bound),
+                await FleetRig.WaitUntilAsync(async () => await rig.StateAsync(task, ct) == SessionState.Verifying, Bound),
                 $"map:{seed} never reached verifying. " + await rig.DiagnoseAsync(task, ct));
             tasks.Add(task);
         }
@@ -171,16 +171,16 @@ public sealed class MultiMachineCollaborationTests(PostgresFixture pg) : IAsyncL
         await rig.AddMachineAsync("A");
         await rig.AddMachineAsync("B");
 
-        var serve = await rig.CreateTaskAsync("datastore-serve", ct);
+        var serve = await rig.CreateSessionAsync("datastore-serve", ct);
         await rig.DispatchToAsync("A", ct);
         Assert.True(
             await FleetRig.WaitUntilAsync(() => rig.ServiceExistsAsync("db", ct), Bound),
             "machine A never registered the datastore service. " + await rig.DiagnoseAsync(serve, ct));
 
-        var query = await rig.CreateTaskAsync("db-query", ct);
+        var query = await rig.CreateSessionAsync("db-query", ct);
         await rig.DispatchToAsync("B", ct);
         Assert.True(
-            await FleetRig.WaitUntilAsync(async () => await rig.StateAsync(query, ct) == TaskState.Verifying, Bound),
+            await FleetRig.WaitUntilAsync(async () => await rig.StateAsync(query, ct) == SessionState.Verifying, Bound),
             "machine B never drove its db-query task to verifying. " + await rig.DiagnoseAsync(query, ct));
 
         Assert.Equal($"row:{CollabProgram.DatastoreSeedValue}", await rig.ResultReferenceAsync(query, ct));
@@ -197,7 +197,7 @@ public sealed class MultiMachineCollaborationTests(PostgresFixture pg) : IAsyncL
     /// left whether or not the conversation survived; the workspace is the work.
     ///
     /// <para>The proof is filesystem-level and needs no cooperation from the harness beyond
-    /// what every role already does: each writes its own assignment to <c>get_task.json</c>
+    /// what every role already does: each writes its own assignment to <c>get_session.json</c>
     /// in its working directory, so finding the <em>continuation's</em> task id in a file
     /// under the <em>predecessor's</em> directory can only mean it ran there. Its own
     /// directory is never created.</para>
@@ -213,10 +213,10 @@ public sealed class MultiMachineCollaborationTests(PostgresFixture pg) : IAsyncL
         await rig.StartAsync(ct);
         await rig.AddMachineAsync("A");
 
-        var first = await rig.CreateTaskAsync("echo:predecessor-was-here", ct);
+        var first = await rig.CreateSessionAsync("echo:predecessor-was-here", ct);
         await rig.DispatchToAsync("A", ct);
         Assert.True(
-            await FleetRig.WaitUntilAsync(async () => await rig.StateAsync(first, ct) == TaskState.Verifying, Bound),
+            await FleetRig.WaitUntilAsync(async () => await rig.StateAsync(first, ct) == SessionState.Verifying, Bound),
             "the predecessor never reached verifying. " + await rig.DiagnoseAsync(first, ct));
         Assert.Equal("echo:predecessor-was-here", await rig.ResultReferenceAsync(first, ct));
 
@@ -224,17 +224,17 @@ public sealed class MultiMachineCollaborationTests(PostgresFixture pg) : IAsyncL
         // cold-starts. The directory must follow it anyway.
         Assert.Null(await rig.HarnessSessionRefAsync(first, ct));
 
-        var second = await rig.CreateTaskAsync("echo:successor-ran", ct, continues: first);
+        var second = await rig.CreateSessionAsync("echo:successor-ran", ct, continues: first);
         await rig.DispatchToAsync("A", ct);
         Assert.True(
-            await FleetRig.WaitUntilAsync(async () => await rig.StateAsync(second, ct) == TaskState.Verifying, Bound),
+            await FleetRig.WaitUntilAsync(async () => await rig.StateAsync(second, ct) == SessionState.Verifying, Bound),
             "the continuation never reached verifying. " + await rig.DiagnoseAsync(second, ct));
 
         // The continuation's OWN assignment, sitting in the PREDECESSOR's directory.
-        var inherited = await rig.ReadMarkerAsync("A", first, "get_task.json", ct);
+        var inherited = await rig.ReadMarkerAsync("A", first, "get_session.json", ct);
         Assert.NotNull(inherited);
         Assert.Contains(second.ToString(), inherited);
         // And it never got a directory of its own.
-        Assert.Null(await rig.ReadMarkerAsync("A", second, "get_task.json", ct));
+        Assert.Null(await rig.ReadMarkerAsync("A", second, "get_session.json", ct));
     }
 }

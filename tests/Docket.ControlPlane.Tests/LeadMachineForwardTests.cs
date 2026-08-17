@@ -42,17 +42,17 @@ public sealed class LeadMachineForwardTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     /// <summary>A working producer task in <paramref name="team"/> with a registered service.</summary>
-    private static async Task<TaskId> WorkingServiceAsync(
+    private static async Task<SessionId> WorkingServiceAsync(
         DocketDbContext db, TimeProvider clock, TeamId team, string serviceName, int port = 5432)
     {
-        var store = new TaskStore(db, clock);
+        var store = new SessionStore(db, clock);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null));
+            new CreateSession(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null));
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(DispatchTarget(), instance);
         Assert.IsType<StoreResult.Applied>(
-            await store.RegisterServiceAsync(new WorkerCaller(team, created.Task.Id, instance), serviceName, port));
-        return created.Task.Id;
+            await store.RegisterServiceAsync(new WorkerCaller(team, created.Session.Id, instance), serviceName, port));
+        return created.Session.Id;
     }
 
     // ── The binding ───────────────────────────────────────────────────────────
@@ -280,11 +280,11 @@ public sealed class LeadMachineForwardTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(RelayUrl, consumer.Command.RelayUrl);
         // No task of its own: the consumer command carries the producer's id, for
         // forward-opened/forward-closed correlation only.
-        Assert.Equal(producerTask, consumer.Command.Task);
+        Assert.Equal(producerTask, consumer.Command.Session);
 
         var producer = Assert.Single(sent, s => s.Command.Role == RelayTunnel.ProducerRole);
         Assert.Equal("producer-machine", producer.Machine);
-        Assert.Equal(producerTask, producer.Command.Task);
+        Assert.Equal(producerTask, producer.Command.Session);
         Assert.Equal(5432, producer.Command.Port);
         Assert.Equal(issued.Grant, producer.Command.Grant);
         Assert.Equal(consumer.Command.ForwardId, producer.Command.ForwardId);
@@ -292,8 +292,8 @@ public sealed class LeadMachineForwardTests(PostgresFixture pg) : IAsyncLifetime
         // The grant is minted against the producer with no consumer task bound —
         // the consumer is a person's docketd, not a worker instance (§8.3).
         var row = await db.RelayGrants.AsNoTracking().SingleAsync(g => g.ForwardId == issued.ForwardId);
-        Assert.Equal(producerTask.Value, row.ProducerTaskId);
-        Assert.Null(row.ConsumerTaskId);
+        Assert.Equal(producerTask.Value, row.ProducerSessionId);
+        Assert.Null(row.ConsumerSessionId);
         Assert.Null(row.ConsumerInstanceId);
         Assert.Equal(team.Value, row.TeamId);
         // Single-use per role, exactly as the worker path.
@@ -361,7 +361,7 @@ public sealed class LeadMachineForwardTests(PostgresFixture pg) : IAsyncLifetime
 
         // …and nothing once it leaves working: ClearServicesAndForwards took the
         // registration and the live grants with it (§6, §9 check 11).
-        await new TaskStore(db, clock).ApplyAsync(
+        await new SessionStore(db, clock).ApplyAsync(
             producerTask, new LivenessLost(LivenessLossReason.LivenessTimeout));
 
         var refused = Assert.IsType<RelayGrantResult.Refused>(await grants.IssueForLeadAsync(team, "db"));

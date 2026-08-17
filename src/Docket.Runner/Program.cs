@@ -314,7 +314,7 @@ internal sealed class ConsoleControlPlaneChannel : IControlPlaneChannel
 
     public Task<bool> HeartbeatAsync(MachineHeartbeat heartbeat, CancellationToken ct)
     {
-        Console.WriteLine($"heartbeat ready={heartbeat.Ready} running={heartbeat.RunningTasks} mem={heartbeat.Load.MemoryLoad:P0} disk={heartbeat.Load.DiskUsage:P0}");
+        Console.WriteLine($"heartbeat ready={heartbeat.Ready} running={heartbeat.RunningSessions} mem={heartbeat.Load.MemoryLoad:P0} disk={heartbeat.Load.DiskUsage:P0}");
         return Task.FromResult(true);
     }
 }

@@ -6,13 +6,13 @@ namespace Docket.Runner.Tests;
 /// drop-oldest with a gap marker.</summary>
 public class OutboundEventRingTests
 {
-    private static ToolCallEvent Event(TaskId task, int seq) =>
+    private static ToolCallEvent Event(SessionId task, int seq) =>
         new(task, seq.ToString(), DateTimeOffset.UnixEpoch);
 
     [Fact]
     public async Task Drops_oldest_and_records_the_gap_on_the_next_survivor()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         var ring = new OutboundEventRing(capacity: 3);
 
         for (var i = 1; i <= 6; i++)
@@ -35,7 +35,7 @@ public class OutboundEventRingTests
     [Fact]
     public async Task Within_capacity_nothing_drops_and_order_is_preserved()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         var ring = new OutboundEventRing(capacity: 8);
 
         ring.Enqueue(Event(task, 1));

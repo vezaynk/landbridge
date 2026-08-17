@@ -57,7 +57,7 @@ internal static class ConformanceEndpoints
     /// <c>GET /dashboard/conformance/{runId}</c>.
     /// </summary>
     private static async Task<IResult> HandleStartAsync(
-        HttpContext http, TokenService tokens, TaskStore store,
+        HttpContext http, TokenService tokens, SessionStore store,
         RunnerConnectionRegistry registry, IConfiguration config, CancellationToken ct)
     {
         if (CrossOriginRefusal(http, config) is { } refusal)
@@ -72,11 +72,11 @@ internal static class ConformanceEndpoints
             var runId = TeamId.New();
             var lead = new LeadClaim(runId);
             var specs = ConformanceCatalog.For(runId.Value);
-            var created = new List<ConformanceTaskView>(specs.Count);
+            var created = new List<ConformanceSessionView>(specs.Count);
             foreach (var spec in specs)
             {
                 var result = await store.CreateAsync(
-                    new CreateTask(
+                    new CreateSession(
                         lead, runId, spec.CompletionCriteria, CompletionMode.Lead, profile,
                         Description: spec.Description,
                         Workspace: ConformanceCatalog.WorkspaceOf(spec.Kind)),
@@ -84,8 +84,8 @@ internal static class ConformanceEndpoints
                 if (result is not StoreResult.Applied applied)
                     return Results.Json(new { error = "failed to create a dummy task", detail = result.ToString() },
                         Json, statusCode: StatusCodes.Status500InternalServerError);
-                created.Add(new ConformanceTaskView(
-                    applied.Task.Id.Value, spec.Kind, applied.Task.State, applied.Task.Attempt,
+                created.Add(new ConformanceSessionView(
+                    applied.Session.Id.Value, spec.Kind, applied.Session.State, applied.Session.Attempt,
                     ResultReference: null, LastRequeueReason: null));
             }
 
@@ -118,7 +118,7 @@ internal static class ConformanceEndpoints
             }
 
             var profile = rows[0].Profile ?? "";
-            var tasks = rows.Select(r => new ConformanceTaskView(
+            var tasks = rows.Select(r => new ConformanceSessionView(
                 r.Id,
                 ConformanceCatalog.KindOf(r.Workspace) ?? "unknown",
                 r.State, r.Attempt, r.ResultReference, r.LastRequeueReason?.ToString())).ToList();
@@ -192,10 +192,10 @@ internal static class ConformanceEndpoints
         "this form is same-origin only: the request carried no Origin from the dashboard's own host";
 }
 
-internal sealed record ConformanceTaskView(
-    Guid TaskId,
+internal sealed record ConformanceSessionView(
+    Guid SessionId,
     string Kind,
-    TaskState State,
+    SessionState State,
     int Attempt,
     string? ResultReference,
     string? LastRequeueReason);
@@ -211,10 +211,10 @@ internal sealed record ConformanceRunView(
     int Failed,
     bool WorkerDone,
     IReadOnlyList<string> MachinesDeclaring,
-    IReadOnlyList<ConformanceTaskView> Tasks)
+    IReadOnlyList<ConformanceSessionView> Sessions)
 {
     public static ConformanceRunView From(
-        Guid runId, string profile, IReadOnlyList<ConformanceTaskView> tasks,
+        Guid runId, string profile, IReadOnlyList<ConformanceSessionView> tasks,
         IReadOnlyList<string> machines)
     {
         var pending = 0;

@@ -13,7 +13,7 @@ namespace Docket.Mcp;
 public static class PermissionRelay
 {
     public static async Task<PermissionRelayResult> OpenAndAwaitAsync(
-        TaskStore store,
+        SessionStore store,
         WorkerCaller caller,
         string tool,
         string proposedInput,
@@ -22,7 +22,7 @@ public static class PermissionRelay
         CancellationToken ct)
     {
         var opened = await store.ApplyAsync(
-            caller.Task,
+            caller.Session,
             new RequestInput(caller, InputRequestKind.Permission, proposedInput, tool),
             ct);
 

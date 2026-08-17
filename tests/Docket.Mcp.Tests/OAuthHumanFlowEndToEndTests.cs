@@ -171,7 +171,7 @@ public sealed class OAuthHumanFlowEndToEndTests(PostgresFixture pg) : IAsyncLife
             }
 
             await using var lead = await OAuthTestKit.ConnectMcpAsync(new Uri(baseUrl + "/"), leadToken, ct);
-            var created = await lead.CallToolAsync("create_task", new Dictionary<string, object?>
+            var created = await lead.CallToolAsync("create_session", new Dictionary<string, object?>
             {
                 ["description"] = "prove the front door opens onto the real system",
                 ["completionCriteria"] = "a task exists",
@@ -181,8 +181,8 @@ public sealed class OAuthHumanFlowEndToEndTests(PostgresFixture pg) : IAsyncLife
             }, cancellationToken: ct);
 
             Assert.NotEqual(true, created.IsError);
-            var taskId = Assert.Single(created.Content.OfType<TextContentBlock>()).Text;
-            Assert.True(Guid.TryParse(taskId, out _));
+            var sessionId = Assert.Single(created.Content.OfType<TextContentBlock>()).Text;
+            Assert.True(Guid.TryParse(sessionId, out _));
         }
         finally
         {

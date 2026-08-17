@@ -15,26 +15,26 @@ public class QuestionAnswerCapTests
 {
     private static TransitionResult Ask(string? question)
     {
-        var task = Given.Task(TaskState.Working);
-        return TaskStateMachine.Apply(
+        var task = Given.Session(SessionState.Working);
+        return SessionStateMachine.Apply(
             task, new RequestInput(Given.IncumbentOf(task), InputRequestKind.Question, question));
     }
 
     private static TransitionResult Answer(string? answer) =>
-        TaskStateMachine.Apply(
-            Given.Task(TaskState.BlockedOnInput), new AnswerInput(Given.Lead, Given.Park, answer));
+        SessionStateMachine.Apply(
+            Given.Session(SessionState.BlockedOnInput), new AnswerInput(Given.Lead, Given.Park, answer));
 
     private static TransitionResult Wake(string? answer) =>
-        TaskStateMachine.Apply(Given.Task(TaskState.Parked), new WakeParked(answer));
+        SessionStateMachine.Apply(Given.Session(SessionState.Parked), new WakeParked(answer));
 
     [Fact]
     public void A_null_question_is_accepted() =>
-        Expect.Transitioned(Ask(null), TaskState.Working); // a question is a turn, not a phase
+        Expect.Transitioned(Ask(null), SessionState.Working); // a question is a turn, not a phase
 
     [Fact]
     public void A_question_at_the_cap_is_accepted() =>
         Expect.Transitioned(
-            Ask(new string('x', RequestInput.MaxQuestionBytes)), TaskState.Working);
+            Ask(new string('x', RequestInput.MaxQuestionBytes)), SessionState.Working);
 
     [Fact]
     public void A_question_one_byte_over_the_cap_is_rejected() =>
@@ -43,11 +43,11 @@ public class QuestionAnswerCapTests
 
     [Fact]
     public void A_null_answer_is_accepted() =>
-        Expect.Transitioned(Answer(null), TaskState.Submitted); // unblocking without words is legal
+        Expect.Transitioned(Answer(null), SessionState.Submitted); // unblocking without words is legal
 
     [Fact]
     public void An_answer_at_the_cap_is_accepted() =>
-        Expect.Transitioned(Answer(new string('x', AnswerInput.MaxAnswerBytes)), TaskState.Submitted);
+        Expect.Transitioned(Answer(new string('x', AnswerInput.MaxAnswerBytes)), SessionState.Submitted);
 
     [Fact]
     public void An_answer_one_byte_over_the_cap_is_rejected() =>
@@ -60,15 +60,15 @@ public class QuestionAnswerCapTests
         // One answer, two branches (§11): a Lead does not know whether the wait-TTL
         // sweeper parked the task first, so the same text must be accepted or refused
         // the same way either way — otherwise the cap depends on a race.
-        Expect.Transitioned(Wake(new string('x', AnswerInput.MaxAnswerBytes)), TaskState.Submitted);
+        Expect.Transitioned(Wake(new string('x', AnswerInput.MaxAnswerBytes)), SessionState.Submitted);
         Expect.Rejected(Wake(new string('x', AnswerInput.MaxAnswerBytes + 1)), Rule.AnswerWithinSizeCap);
 
-        var continueAt = TaskStateMachine.Apply(
-            Given.Task(TaskState.BlockedOnInput),
+        var continueAt = SessionStateMachine.Apply(
+            Given.Session(SessionState.BlockedOnInput),
             new ContinueSession(Given.Lead, new string('x', AnswerInput.MaxAnswerBytes)));
-        Expect.Transitioned(continueAt, TaskState.Working);
-        var continueOver = TaskStateMachine.Apply(
-            Given.Task(TaskState.BlockedOnInput),
+        Expect.Transitioned(continueAt, SessionState.Working);
+        var continueOver = SessionStateMachine.Apply(
+            Given.Session(SessionState.BlockedOnInput),
             new ContinueSession(Given.Lead, new string('x', AnswerInput.MaxAnswerBytes + 1)));
         Expect.Rejected(continueOver, Rule.AnswerWithinSizeCap);
     }
@@ -96,13 +96,13 @@ public class QuestionAnswerCapTests
     {
         // The engine rejects rather than truncates: a truncated question is a wrong
         // question, and the worker has no way to know it was cut.
-        var task = Given.Task(TaskState.Working);
-        var result = TaskStateMachine.Apply(task, new RequestInput(
+        var task = Given.Session(SessionState.Working);
+        var result = SessionStateMachine.Apply(task, new RequestInput(
             Given.IncumbentOf(task), InputRequestKind.Question,
             new string('x', RequestInput.MaxQuestionBytes + 1)));
 
         Expect.Rejected(result, Rule.QuestionWithinSizeCap);
-        Assert.Equal(TaskState.Working, task.State); // the record is untouched
+        Assert.Equal(SessionState.Working, task.State); // the record is untouched
     }
 
     [Fact]
@@ -110,11 +110,11 @@ public class QuestionAnswerCapTests
     {
         // §2 principle 1: content rides the command and is the store's to persist. The
         // engine's own state carries the kind's consequence (blocked) and nothing else.
-        var task = Given.Task(TaskState.Working);
+        var task = Given.Session(SessionState.Working);
         var moved = Expect.Transitioned(
-            TaskStateMachine.Apply(task, new RequestInput(
+            SessionStateMachine.Apply(task, new RequestInput(
                 Given.IncumbentOf(task), InputRequestKind.Question, "which database?")),
-            TaskState.Working);
+            SessionState.Working);
 
         Assert.DoesNotContain(
             "which database?",

@@ -44,7 +44,7 @@ public sealed class DeadmanSwitchTests : IDisposable
     [Fact]
     public async Task The_deadman_default_still_holds_the_pipe_open_and_the_worker_keeps_running()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         var supervisor = Supervisor();
 
         supervisor.Spawn(TestKit.Dispatch(task), TestKit.Profile("run"), "machine-42");
@@ -78,7 +78,7 @@ public sealed class DeadmanSwitchTests : IDisposable
     [Fact]
     public async Task A_deadman_worker_still_trips_its_switch_when_the_pipe_closes()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         var supervisor = Supervisor();
 
         supervisor.Spawn(TestKit.Dispatch(task), TestKit.Profile("run"), "m");

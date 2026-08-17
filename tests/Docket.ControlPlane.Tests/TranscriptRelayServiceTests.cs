@@ -34,7 +34,7 @@ public sealed class TranscriptRelayServiceTests(PostgresFixture pg) : IAsyncLife
         var rig = Rig();
         var task = await SeedTerminalTaskAsync(rig);
         rig.AnswerWith(command => new TranscriptChunkEvent(
-            command.Task, command.RequestId, Text: "verbatim bytes\n", NextOffset: 15, Eof: true));
+            command.Session, command.RequestId, Text: "verbatim bytes\n", NextOffset: 15, Eof: true));
 
         var result = await rig.Relay.ReadAsync(task, Machine, ordinal: 1, TranscriptStreams.Stdout, offset: 0);
 
@@ -44,17 +44,17 @@ public sealed class TranscriptRelayServiceTests(PostgresFixture pg) : IAsyncLife
     }
 
     [SkippableTheory]
-    [InlineData(TaskState.Submitted)]
-    [InlineData(TaskState.Working)]
-    [InlineData(TaskState.Verifying)]
-    public async Task A_task_that_can_still_run_is_refused(TaskState state)
+    [InlineData(SessionState.Submitted)]
+    [InlineData(SessionState.Working)]
+    [InlineData(SessionState.Verifying)]
+    public async Task A_task_that_can_still_run_is_refused(SessionState state)
     {
         // The compensating control for verbatim serving is scope: only a task that can never
         // run again is readable (§12/§13, redaction unresolved — §16 open question 8).
         //
         // `verifying` is the load-bearing case and is deliberately EXCLUDED. Unlike every
         // other transition out of working, report_result does NOT emit
-        // RevokeWorkerInstanceToken (TaskStateMachine.ApplyReportResult) — the revoke waits
+        // RevokeWorkerInstanceToken (SessionStateMachine.ApplyReportResult) — the revoke waits
         // for the verdict — so a verifying task's transcript can still carry a LIVE dkt_w_
         // token that would be replayable by anyone who read it. Do not widen this to
         // verifying without changing that, however tempting it is to let a reviewer read the
@@ -77,9 +77,9 @@ public sealed class TranscriptRelayServiceTests(PostgresFixture pg) : IAsyncLife
         Skip.IfNot(pg.Available, pg.SkipReason);
         var rig = Rig();
 
-        var result = await rig.Relay.ListAsync(TaskId.New(), Machine);
+        var result = await rig.Relay.ListAsync(SessionId.New(), Machine);
 
-        Assert.Equal(TranscriptUnavailable.NoSuchTask, Assert.IsType<TranscriptResult.Unavailable>(result).Reason);
+        Assert.Equal(TranscriptUnavailable.NoSuchSession, Assert.IsType<TranscriptResult.Unavailable>(result).Reason);
         Assert.Empty(rig.Sent);
     }
 
@@ -124,7 +124,7 @@ public sealed class TranscriptRelayServiceTests(PostgresFixture pg) : IAsyncLife
         var rig = Rig();
         var task = await SeedTerminalTaskAsync(rig);
         rig.AnswerWith(command => new TranscriptChunkEvent(
-            command.Task, command.RequestId, Refusal: TranscriptRefusals.NoTranscript));
+            command.Session, command.RequestId, Refusal: TranscriptRefusals.NoTranscript));
 
         var result = await rig.Relay.ListAsync(task, Machine);
 
@@ -141,7 +141,7 @@ public sealed class TranscriptRelayServiceTests(PostgresFixture pg) : IAsyncLife
         var rig = Rig();
         var task = await SeedTerminalTaskAsync(rig);
         rig.AnswerWith(command => new TranscriptChunkEvent(
-            command.Task, command.RequestId, Eof: true,
+            command.Session, command.RequestId, Eof: true,
             Instances: [new TranscriptInstance(1, 4096, 128, DateTimeOffset.UtcNow)]));
 
         var result = await rig.Relay.ListAsync(task, Machine);
@@ -172,7 +172,7 @@ public sealed class TranscriptRelayServiceTests(PostgresFixture pg) : IAsyncLife
 
         // And the gate reopens once the first finishes.
         await AdvanceUntilDoneAsync(rig.Clock, first);
-        rig.AnswerWith(command => new TranscriptChunkEvent(command.Task, command.RequestId, Eof: true, Instances: []));
+        rig.AnswerWith(command => new TranscriptChunkEvent(command.Session, command.RequestId, Eof: true, Instances: []));
         Assert.IsType<TranscriptResult.Inventory>(await rig.Relay.ListAsync(task, Machine));
     }
 
@@ -239,7 +239,7 @@ public sealed class TranscriptRelayServiceTests(PostgresFixture pg) : IAsyncLife
             // Ready + a live snapshot, which is what the relay's connectivity check reads.
             registry.ApplyHeartbeat(Machine, new MachineHeartbeat(
                 Machine, Ready: true, UnderBackPressure: false, new SystemLoad(0, 0, 0),
-                RunningTasks: 0, Profiles: ["default"], At: clock.GetUtcNow(), TranscriptsServable: true));
+                RunningSessions: 0, Profiles: ["default"], At: clock.GetUtcNow(), TranscriptsServable: true));
         }
 
         return harness;
@@ -274,39 +274,39 @@ public sealed class TranscriptRelayServiceTests(PostgresFixture pg) : IAsyncLife
 
     /// <summary>Create → dispatch → report → accept: a completed task, the common case for
     /// reading a transcript after the fact.</summary>
-    private async Task<TaskId> SeedTerminalTaskAsync(Harness rig) =>
-        await SeedTaskInStateAsync(rig, TaskState.Completed);
+    private async Task<SessionId> SeedTerminalTaskAsync(Harness rig) =>
+        await SeedTaskInStateAsync(rig, SessionState.Completed);
 
     /// <summary>Drives a real task to <paramref name="state"/> through the state machine, so
     /// the gate is tested against states the engine actually produces.</summary>
-    private async Task<TaskId> SeedTaskInStateAsync(Harness rig, TaskState state)
+    private async Task<SessionId> SeedTaskInStateAsync(Harness rig, SessionState state)
     {
         var team = TeamId.New();
         var lead = new LeadClaim(team);
         await using var db = pg.NewContext();
-        var store = new TaskStore(db, rig.Clock);
+        var store = new SessionStore(db, rig.Clock);
 
-        var created = (StoreResult.Applied)await store.CreateAsync(new CreateTask(
+        var created = (StoreResult.Applied)await store.CreateAsync(new CreateSession(
             lead, team, "completion criteria", CompletionMode.Lead, Profile: null));
-        var id = created.Task.Id;
-        if (state == TaskState.Submitted)
+        var id = created.Session.Id;
+        if (state == SessionState.Submitted)
             return id;
 
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(
             new MachineSnapshot(Machine, Ready: true, UnderBackPressure: false, new HashSet<string> { "default" }),
             instance);
-        if (state == TaskState.Working)
+        if (state == SessionState.Working)
             return id;
 
         await store.ApplyAsync(id, new ReportResult(new WorkerCaller(team, id, instance), "result-ref"));
-        if (state == TaskState.Verifying)
+        if (state == SessionState.Verifying)
             return id;
 
         await store.ApplyAsync(id, state switch
         {
-            TaskState.Completed => new VerdictAccept(lead),
-            TaskState.Canceled => new Cancel(new HumanSession(), CancelDisposition.Preserve),
+            SessionState.Completed => new VerdictAccept(lead),
+            SessionState.Canceled => new Cancel(new HumanSession(), CancelDisposition.Preserve),
             _ => throw new ArgumentOutOfRangeException(nameof(state), state, "unsupported seed state"),
         });
         return id;

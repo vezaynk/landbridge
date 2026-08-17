@@ -31,7 +31,7 @@ public sealed class PreviewMappingService(DocketDbContext db, TimeProvider clock
     /// not be at connect time), matching how a forward grant re-checks at issue.
     /// </summary>
     public async Task<PreviewMintResult> CreateAsync(
-        TeamId team, TaskId task, string serviceName, PreviewAuthPolicy authPolicy, TimeSpan ttl,
+        TeamId team, SessionId task, string serviceName, PreviewAuthPolicy authPolicy, TimeSpan ttl,
         CancellationToken ct = default)
     {
         var now = clock.GetUtcNow();
@@ -41,7 +41,7 @@ public sealed class PreviewMappingService(DocketDbContext db, TimeProvider clock
             Id = Guid.NewGuid(),
             LabelHash = Hash(label),
             TeamId = team.Value,
-            TaskId = task.Value,
+            SessionId = task.Value,
             ServiceName = serviceName,
             AuthPolicy = authPolicy,
             // No created-at: a mapping's whole lifetime is ExpiresAt, which is what resolve
@@ -66,10 +66,10 @@ public sealed class PreviewMappingService(DocketDbContext db, TimeProvider clock
         CancellationToken ct = default)
     {
         var owns = await db.RegisteredServices.AsNoTracking().AnyAsync(
-            s => s.TeamId == caller.Team.Value && s.TaskId == caller.Task.Value && s.Name == serviceName, ct);
+            s => s.TeamId == caller.Team.Value && s.SessionId == caller.Session.Value && s.Name == serviceName, ct);
         if (!owns)
             return null;
-        return await CreateAsync(caller.Team, caller.Task, serviceName, authPolicy, ttl, ct);
+        return await CreateAsync(caller.Team, caller.Session, serviceName, authPolicy, ttl, ct);
     }
 
     /// <summary>

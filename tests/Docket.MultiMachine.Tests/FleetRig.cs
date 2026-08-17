@@ -93,17 +93,17 @@ internal sealed class FleetRig(
     /// unlike <see cref="MachineOf"/> which reflects live registry tracking and is cleared
     /// when a worker exits (requeue-on-exit untracks). The real tier asserts against this
     /// so "which machine ran it" survives the worker's own exit.</summary>
-    private readonly ConcurrentDictionary<TaskId, string> _ranOn = new();
+    private readonly ConcurrentDictionary<SessionId, string> _ranOn = new();
 
     /// <summary>Per-task spawn/exit tallies the ring pump captures (real-worker mode), so
     /// a timeout diagnostic can say whether the worker spawned, how many times, and with
     /// what last exit code — the difference between "never dispatched" and "spawned but
     /// never reported".</summary>
-    private readonly ConcurrentDictionary<TaskId, WorkerObservation> _observations = new();
+    private readonly ConcurrentDictionary<SessionId, WorkerObservation> _observations = new();
 
     /// <summary>How each task's last <c>stop</c> was delivered (§10) — message-injected or
     /// signal/kill. The distinction is the whole content of a graceful-stop assertion.</summary>
-    private readonly ConcurrentDictionary<TaskId, StopAck> _stopAcks = new();
+    private readonly ConcurrentDictionary<SessionId, StopAck> _stopAcks = new();
 
     /// <summary>Each machine's own process-supervision log. The <em>reason</em> a spawn failed
     /// lives only here — the agent is told a bare <c>spawn_failed</c> — so a process scenario's
@@ -253,13 +253,13 @@ internal sealed class FleetRig(
     /// whether the agent was handed an injected turn or merely a kill deadline.</summary>
     private async Task StopOnMachineAsync(MachineRig machine, StopCommand stop, CancellationToken ct)
     {
-        var ack = await machine.Supervisor.StopAsync(stop.Task, stop.Ttl, stop.Disposition, stop.Reason, ct);
-        _stopAcks[stop.Task] = ack;
+        var ack = await machine.Supervisor.StopAsync(stop.Session, stop.Ttl, stop.Disposition, stop.Reason, ct);
+        _stopAcks[stop.Session] = ack;
     }
 
     private static Task PromptOnMachineAsync(MachineRig machine, PromptCommand prompt)
     {
-        machine.Supervisor.TryPrompt(prompt.Task);
+        machine.Supervisor.TryPrompt(prompt.Session);
         return Task.CompletedTask;
     }
 
@@ -270,17 +270,17 @@ internal sealed class FleetRig(
     /// Returns false when the machine is unreachable.
     /// </summary>
     public Task<bool> SendStopAsync(
-        string machineId, TaskId task, TimeSpan ttl, StopDisposition disposition, string? reason,
+        string machineId, SessionId task, TimeSpan ttl, StopDisposition disposition, string? reason,
         CancellationToken ct) =>
         _registry.SendAsync(machineId, new StopCommand(task, ttl, disposition, reason), ct);
 
     /// <summary>How the machine acked the last <c>stop</c> for this task (§10) — the honest
     /// answer to "was the agent told, or just killed".</summary>
-    public StopAck? StopAckFor(TaskId task) => _stopAcks.TryGetValue(task, out var ack) ? ack : null;
+    public StopAck? StopAckFor(SessionId task) => _stopAcks.TryGetValue(task, out var ack) ? ack : null;
 
     private Task Spawn(MachineRig machine, DispatchCommand dispatch)
     {
-        _ranOn[dispatch.Task] = machine.Id; // sticky: survives the worker's own exit/untrack
+        _ranOn[dispatch.Session] = machine.Id; // sticky: survives the worker's own exit/untrack
         machine.Supervisor.Spawn(dispatch, machine.Profile, machine.Id);
         return Task.CompletedTask;
     }
@@ -305,7 +305,7 @@ internal sealed class FleetRig(
     /// Accept a verifying task over the real Lead MCP surface, driving it to <c>completed</c>
     /// — the terminal state a transcript is readable in (§12).
     /// </summary>
-    public async Task AcceptAsync(TaskId task, CancellationToken ct)
+    public async Task AcceptAsync(SessionId task, CancellationToken ct)
     {
         await using var lead = await PlaneProbe.ConnectMcpAsync(new Uri(_baseUrl + "/"), _leadToken, ct);
         await PlaneProbe.AcceptAsync(lead, task, ct);
@@ -317,10 +317,10 @@ internal sealed class FleetRig(
     /// the agent that has the context". Seeds the new row's session ref and preferred machine
     /// from that task, so its first dispatch prefers the machine holding the transcript.
     /// </param>
-    public async Task<TaskId> CreateTaskAsync(string description, CancellationToken ct, TaskId? continues = null)
+    public async Task<SessionId> CreateSessionAsync(string description, CancellationToken ct, SessionId? continues = null)
     {
         await using var lead = await PlaneProbe.ConnectMcpAsync(new Uri(_baseUrl + "/"), _leadToken, ct);
-        return await PlaneProbe.CreateTaskAsync(
+        return await PlaneProbe.CreateSessionAsync(
             lead, description,
             completionCriteria: "the byte path holds",
             workspace: $"multimachine-{Guid.NewGuid():N}",
@@ -329,15 +329,15 @@ internal sealed class FleetRig(
 
     /// <summary>
     /// The question a worker asked with <c>request_input</c>, read over the real Lead MCP
-    /// surface (<c>get_task_question</c>) — proof the ask crossed the wire, and the thing a
+    /// surface (<c>get_session_question</c>) — proof the ask crossed the wire, and the thing a
     /// Lead reads before answering.
     /// </summary>
-    public async Task<string> QuestionAsync(TaskId task, CancellationToken ct)
+    public async Task<string> QuestionAsync(SessionId task, CancellationToken ct)
     {
         await using var lead = await PlaneProbe.ConnectMcpAsync(new Uri(_baseUrl + "/"), _leadToken, ct);
-        var read = await lead.CallToolAsync("get_task_question", new Dictionary<string, object?>
+        var read = await lead.CallToolAsync("get_session_question", new Dictionary<string, object?>
         {
-            ["taskId"] = task.Value.ToString(),
+            ["sessionId"] = task.Value.ToString(),
         }, cancellationToken: ct);
         Assert.NotEqual(true, read.IsError);
         return string.Concat(read.Content.OfType<TextContentBlock>().Select(b => b.Text));
@@ -345,7 +345,7 @@ internal sealed class FleetRig(
 
     /// <summary>
     /// Release a live ACP session on purpose over the real Lead MCP surface
-    /// (<c>park_task</c>, §11): the task parks, its worker-instance token is revoked and the
+    /// (<c>park_session</c>, §11): the task parks, its worker-instance token is revoked and the
     /// machine gets a <c>preserve_and_park</c> stop. Waits for the process to actually go,
     /// because the park record commits before the stop is even sent — answering while the
     /// old session is still winding down would race a redispatch against its predecessor.
@@ -354,14 +354,14 @@ internal sealed class FleetRig(
     /// <c>ideas/sessions.md</c> stage 2 an answer to a <em>live</em> session continues it in
     /// place, so this is the only route left to the §11 park → <c>session/load</c> path.</para>
     /// </summary>
-    public async Task ParkTaskAsync(TaskId task, CancellationToken ct)
+    public async Task ParkTaskAsync(SessionId task, CancellationToken ct)
     {
         var exitsBefore = WorkerObserved(task)?.Exits ?? 0;
         await using (var lead = await PlaneProbe.ConnectMcpAsync(new Uri(_baseUrl + "/"), _leadToken, ct))
         {
-            var parked = await lead.CallToolAsync("park_task", new Dictionary<string, object?>
+            var parked = await lead.CallToolAsync("park_session", new Dictionary<string, object?>
             {
-                ["taskId"] = task.Value.ToString(),
+                ["sessionId"] = task.Value.ToString(),
             }, cancellationToken: ct);
             Assert.NotEqual(true, parked.IsError);
         }
@@ -370,7 +370,7 @@ internal sealed class FleetRig(
             await WaitUntilAsync(
                 () => Task.FromResult((WorkerObserved(task)?.Exits ?? 0) > exitsBefore),
                 TimeSpan.FromSeconds(60)),
-            $"park_task did not bring down the worker for {task} within 60s — a redispatch from "
+            $"park_session did not bring down the worker for {task} within 60s — a redispatch from "
             + "here would race the session it is meant to replace.");
     }
 
@@ -379,14 +379,14 @@ internal sealed class FleetRig(
     /// continues in place on the same instance; a task whose session is gone — or one
     /// <see cref="ParkTaskAsync"/> already parked — is requeued for redispatch <em>with its
     /// transcript resumed</em>. The answer itself reaches the worker on its next
-    /// <c>get_task</c> and never through spawn argv (§13).
+    /// <c>get_session</c> and never through spawn argv (§13).
     /// </summary>
-    public async Task AnswerAsync(TaskId task, string answer, CancellationToken ct)
+    public async Task AnswerAsync(SessionId task, string answer, CancellationToken ct)
     {
         await using var lead = await PlaneProbe.ConnectMcpAsync(new Uri(_baseUrl + "/"), _leadToken, ct);
         var answered = await lead.CallToolAsync("answer_input_request", new Dictionary<string, object?>
         {
-            ["taskId"] = task.Value.ToString(),
+            ["sessionId"] = task.Value.ToString(),
             ["answer"] = answer,
         }, cancellationToken: ct);
         Assert.NotEqual(true, answered.IsError);
@@ -398,11 +398,11 @@ internal sealed class FleetRig(
     /// polling loop can tell "blocked on a permission request" from "blocked on a question"
     /// without spending a Lead round trip per tick.
     /// </summary>
-    public async Task<(string? Tool, string? Input)?> PendingPermissionAsync(TaskId task, CancellationToken ct)
+    public async Task<(string? Tool, string? Input)?> PendingPermissionAsync(SessionId task, CancellationToken ct)
     {
         await using var db = pg.NewContext();
-        var row = await db.Tasks.AsNoTracking().SingleOrDefaultAsync(t => t.Id == task.Value, ct);
-        return row is { State: TaskState.BlockedOnInput, InputKind: InputRequestKind.Permission }
+        var row = await db.Sessions.AsNoTracking().SingleOrDefaultAsync(t => t.Id == task.Value, ct);
+        return row is { State: SessionState.BlockedOnInput, InputKind: InputRequestKind.Permission }
             ? (row.PermissionTool, row.InputQuestion)
             : null;
     }
@@ -411,11 +411,11 @@ internal sealed class FleetRig(
     /// A live session that asked a question and is idle for the Lead. Questions
     /// no longer leave <c>working</c>.
     /// </summary>
-    public async Task<bool> HasPendingQuestionAsync(TaskId task, CancellationToken ct)
+    public async Task<bool> HasPendingQuestionAsync(SessionId task, CancellationToken ct)
     {
         await using var db = pg.NewContext();
-        var row = await db.Tasks.AsNoTracking().SingleOrDefaultAsync(t => t.Id == task.Value, ct);
-        return row is { State: TaskState.Working, InputKind: InputRequestKind.Question, BlockedAt: not null };
+        var row = await db.Sessions.AsNoTracking().SingleOrDefaultAsync(t => t.Id == task.Value, ct);
+        return row is { State: SessionState.Working, InputKind: InputRequestKind.Question, BlockedAt: not null };
     }
 
     /// <summary>
@@ -425,12 +425,12 @@ internal sealed class FleetRig(
     /// it in place.
     /// </summary>
     public async Task AnswerPermissionAsync(
-        TaskId task, string verdict, string? message, CancellationToken ct)
+        SessionId task, string verdict, string? message, CancellationToken ct)
     {
         await using var lead = await PlaneProbe.ConnectMcpAsync(new Uri(_baseUrl + "/"), _leadToken, ct);
         var answered = await lead.CallToolAsync("answer_permission_request", new Dictionary<string, object?>
         {
-            ["taskId"] = task.Value.ToString(),
+            ["sessionId"] = task.Value.ToString(),
             ["verdict"] = verdict,
             ["message"] = message,
         }, cancellationToken: ct);
@@ -439,10 +439,10 @@ internal sealed class FleetRig(
 
     /// <summary>The opaque harness session ref stamped from the worker's own
     /// <c>session-started</c> (§11) — null until the harness reports one.</summary>
-    public async Task<string?> HarnessSessionRefAsync(TaskId task, CancellationToken ct)
+    public async Task<string?> HarnessSessionRefAsync(SessionId task, CancellationToken ct)
     {
         await using var db = pg.NewContext();
-        return (await db.Tasks.AsNoTracking().SingleAsync(t => t.Id == task.Value, ct)).HarnessSessionRef;
+        return (await db.Sessions.AsNoTracking().SingleAsync(t => t.Id == task.Value, ct)).HarnessSessionRef;
     }
 
     /// <summary>
@@ -457,7 +457,7 @@ internal sealed class FleetRig(
     /// the first's transcript — a cold start mints a new one.</para>
     /// </summary>
     public IReadOnlyList<string> InstanceSessionIdsOn(
-        string machineId, TaskId task, Func<string, string?>? sessionIdOfLine = null)
+        string machineId, SessionId task, Func<string, string?>? sessionIdOfLine = null)
     {
         var extract = sessionIdOfLine ?? SessionIdOfInitLine;
         var dir = System.IO.Path.Combine(
@@ -516,10 +516,10 @@ internal sealed class FleetRig(
     /// <summary>The park record's machine (§11), null when unparked, alongside the harness
     /// session ref a redispatch would resume — which lives on the task row rather than in the
     /// park record, and so is present whether or not the task ever parked.</summary>
-    public async Task<(string? Machine, string? SessionRef)> ParkAsync(TaskId task, CancellationToken ct)
+    public async Task<(string? Machine, string? SessionRef)> ParkAsync(SessionId task, CancellationToken ct)
     {
         await using var db = pg.NewContext();
-        var row = await db.Tasks.AsNoTracking().SingleAsync(t => t.Id == task.Value, ct);
+        var row = await db.Sessions.AsNoTracking().SingleAsync(t => t.Id == task.Value, ct);
         return (row.ParkMachine, row.HarnessSessionRef);
     }
 
@@ -556,7 +556,7 @@ internal sealed class FleetRig(
         var machine = _machines[machineId];
         _registry.ApplyHeartbeat(machineId, new MachineHeartbeat(
             machineId, Ready: _ready.GetValueOrDefault(machineId), UnderBackPressure: false,
-            new SystemLoad(0, 0, 0), RunningTasks: machine.Supervisor.RunningTotal, ["default"],
+            new SystemLoad(0, 0, 0), RunningSessions: machine.Supervisor.RunningTotal, ["default"],
             DateTimeOffset.UtcNow,
             Processes: machine.Daemon.ReportProcesses()));
     }
@@ -604,9 +604,9 @@ internal sealed class FleetRig(
                 try
                 {
                     await using var db = pg.NewContext();
-                    var pending = await db.Tasks.AsNoTracking()
+                    var pending = await db.Sessions.AsNoTracking()
                         .Where(t => t.TeamId == Team.Value
-                            && t.State == TaskState.BlockedOnInput
+                            && t.State == SessionState.BlockedOnInput
                             && t.InputKind == InputRequestKind.Permission)
                         .Select(t => t.Id)
                         .ToListAsync(ct);
@@ -614,7 +614,7 @@ internal sealed class FleetRig(
                     {
                         try
                         {
-                            await AnswerPermissionAsync(new TaskId(id), "allow", "e2e auto-allow", ct);
+                            await AnswerPermissionAsync(new SessionId(id), "allow", "e2e auto-allow", ct);
                         }
                         catch (OperationCanceledException) { throw; }
                         catch { /* already answered, parked, or tearing down */ }
@@ -638,7 +638,7 @@ internal sealed class FleetRig(
             .AnyAsync(s => s.TeamId == Team.Value && s.Name == name, ct);
     }
 
-    public async Task<TaskState?> StateAsync(TaskId id, CancellationToken ct)
+    public async Task<SessionState?> StateAsync(SessionId id, CancellationToken ct)
     {
         await using var db = pg.NewContext();
         return await PlaneProbe.StateAsync(db, id, ct);
@@ -646,14 +646,14 @@ internal sealed class FleetRig(
 
     /// <summary>The machine a task is currently tracked as dispatched to (§10) — the
     /// fan-out scenario asserts the set of these spans ≥2 distinct machines.</summary>
-    public string? MachineOf(TaskId task) => _registry.MachineFor(task);
+    public string? MachineOf(SessionId task) => _registry.MachineFor(task);
 
     /// <summary>The machine a task was last spawned on — sticky, so it survives the
     /// worker's own exit (which untracks the live binding). The real tier asserts on this.</summary>
-    public string? MachineRanOn(TaskId task) => _ranOn.TryGetValue(task, out var m) ? m : null;
+    public string? MachineRanOn(SessionId task) => _ranOn.TryGetValue(task, out var m) ? m : null;
 
     /// <summary>
-    /// Drive a task to <see cref="TaskState.Verifying"/> on <paramref name="machineId"/>,
+    /// Drive a task to <see cref="SessionState.Verifying"/> on <paramref name="machineId"/>,
     /// tolerant of a worker that ends its turn without reporting. Each time the task is
     /// claimable (the initial submit, and every requeue-on-exit surfaced by the drained
     /// ring), a fresh worker is spawned — up to <paramref name="maxAttempts"/> — within
@@ -663,9 +663,9 @@ internal sealed class FleetRig(
     /// flakes one turn no longer reds the whole opt-in job.
     /// </summary>
     public Task<bool> DispatchUntilVerifyingAsync(
-        TaskId task, string machineId, int maxAttempts, TimeSpan budget, CancellationToken ct) =>
+        SessionId task, string machineId, int maxAttempts, TimeSpan budget, CancellationToken ct) =>
         DispatchUntilAsync(
-            task, machineId, async () => await StateAsync(task, ct) == TaskState.Verifying,
+            task, machineId, async () => await StateAsync(task, ct) == SessionState.Verifying,
             maxAttempts, budget, ct);
 
     /// <summary>
@@ -682,7 +682,7 @@ internal sealed class FleetRig(
     /// completion test is a predicate rather than a fixed state.</para>
     /// </summary>
     public async Task<bool> DispatchUntilAsync(
-        TaskId task, string machineId, Func<Task<bool>> done, int maxAttempts, TimeSpan budget,
+        SessionId task, string machineId, Func<Task<bool>> done, int maxAttempts, TimeSpan budget,
         CancellationToken ct)
     {
         var deadline = DateTime.UtcNow + budget;
@@ -693,14 +693,14 @@ internal sealed class FleetRig(
                 return true;
             var state = await StateAsync(task, ct);
             // Infra loss is fail-and-park. The Lead would resume; the bar does that.
-            if (state == TaskState.Failed && attempts < maxAttempts)
+            if (state == SessionState.Failed && attempts < maxAttempts)
             {
                 await using var db = pg.NewContext();
-                var store = new TaskStore(db, TimeProvider.System);
+                var store = new SessionStore(db, TimeProvider.System);
                 await store.ApplyAsync(task, new WakeParked("e2e: resume after fail"), ct);
                 state = await StateAsync(task, ct);
             }
-            if (state == TaskState.Submitted && attempts < maxAttempts)
+            if (state == SessionState.Submitted && attempts < maxAttempts)
             {
                 await DispatchToAsync(machineId, ct);
                 attempts++;
@@ -720,7 +720,7 @@ internal sealed class FleetRig(
     /// started+exited pair with the task requeued) from "reported something rejected"
     /// (verifying with an unexpected result ref) — so the NEXT CI failure needs no guesswork.
     /// </summary>
-    public async Task<string> RealWorkerDiagnosticsAsync(TaskId task, CancellationToken ct)
+    public async Task<string> RealWorkerDiagnosticsAsync(SessionId task, CancellationToken ct)
     {
         var sb = new StringBuilder();
         sb.AppendLine($"REAL-WORKER DIAGNOSTICS for task {task}:");
@@ -781,7 +781,7 @@ internal sealed class FleetRig(
 
     /// <summary>Tail of a task's captured harness output on one machine (§12), bounded so a
     /// failure message stays readable — a stream-json line can be kilobytes.</summary>
-    private static void AppendTranscriptTail(StringBuilder sb, string machineId, string workRoot, TaskId task)
+    private static void AppendTranscriptTail(StringBuilder sb, string machineId, string workRoot, SessionId task)
     {
         var dir = System.IO.Path.Combine(workRoot, TranscriptDefaults.DirName, task.ToString());
         if (!System.IO.Directory.Exists(dir))
@@ -839,10 +839,10 @@ internal sealed class FleetRig(
         switch (evt)
         {
             case StartedEvent s:
-                _observations.GetOrAdd(s.Task, static _ => new WorkerObservation()).Starts++;
+                _observations.GetOrAdd(s.Session, static _ => new WorkerObservation()).Starts++;
                 break;
             case ExitedEvent e:
-                var o = _observations.GetOrAdd(e.Task, static _ => new WorkerObservation());
+                var o = _observations.GetOrAdd(e.Session, static _ => new WorkerObservation());
                 o.Exits++;
                 o.LastExitCode = e.ExitCode;
                 break;
@@ -862,13 +862,13 @@ internal sealed class FleetRig(
     /// fact a stop scenario turns on — a voluntary wind-down exits 0, a wind-down deadline kill
     /// does not — so it is read here rather than inferred from the task's state.
     /// </summary>
-    public (int Starts, int Exits, int? LastExitCode)? WorkerObserved(TaskId task) =>
+    public (int Starts, int Exits, int? LastExitCode)? WorkerObserved(SessionId task) =>
         _observations.TryGetValue(task, out var o) ? (o.Starts, o.Exits, o.LastExitCode) : null;
 
-    public async Task<string?> ResultReferenceAsync(TaskId id, CancellationToken ct)
+    public async Task<string?> ResultReferenceAsync(SessionId id, CancellationToken ct)
     {
         await using var db = pg.NewContext();
-        return (await db.Tasks.AsNoTracking().SingleAsync(t => t.Id == id.Value, ct)).ResultReference;
+        return (await db.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value, ct)).ResultReference;
     }
 
     /// <summary>
@@ -889,25 +889,25 @@ internal sealed class FleetRig(
     ///
     /// <para><b>Returns the view, not the row, and that is load-bearing.</b> Storage spells the
     /// unnamed model as the empty string because a composite primary key cannot hold a NULL
-    /// (<c>DocketDbContext</c>), and <see cref="TaskUsageView.From"/> is the one place that
-    /// convention is undone. Handing a test the raw <see cref="TaskUsageRow"/> routed around that
+    /// (<c>DocketDbContext</c>), and <see cref="SessionUsageView.From"/> is the one place that
+    /// convention is undone. Handing a test the raw <see cref="SessionUsageRow"/> routed around that
     /// single place, so an unattributed report surfaced as <c>""</c> here while every production
     /// reader saw <c>null</c> — which cost the first real-OpenCode dispatch a red on an otherwise
     /// green run, because OpenCode names no model and was the first harness to exercise this path.
     /// Reading through the view means a test asserts the same <c>model is null ⟺ unnamed</c>
     /// invariant the §12 surfaces do, rather than a storage detail.</para>
     /// </summary>
-    public async Task<IReadOnlyList<TaskUsageView>> ReportedUsageAsync(TaskId id, CancellationToken ct)
+    public async Task<IReadOnlyList<SessionUsageView>> ReportedUsageAsync(SessionId id, CancellationToken ct)
     {
         await using var db = pg.NewContext();
-        var rows = await db.TaskUsage.AsNoTracking()
-            .Where(u => u.TaskId == id.Value)
+        var rows = await db.SessionUsage.AsNoTracking()
+            .Where(u => u.SessionId == id.Value)
             .ToListAsync(ct);
-        return [.. rows.Select(TaskUsageView.From)];
+        return [.. rows.Select(SessionUsageView.From)];
     }
 
     /// <summary>Read a collaborator marker from the machine's work dir for a task, or null.</summary>
-    public async Task<string?> ReadMarkerAsync(string machineId, TaskId task, string markerName, CancellationToken ct)
+    public async Task<string?> ReadMarkerAsync(string machineId, SessionId task, string markerName, CancellationToken ct)
     {
         var path = System.IO.Path.Combine(_machines[machineId].WorkRoot, task.ToString(), markerName);
         if (!System.IO.File.Exists(path))
@@ -917,7 +917,7 @@ internal sealed class FleetRig(
     }
 
     /// <summary>Any harness diagnostic a failing collaborator left, across every machine.</summary>
-    public async Task<string> DiagnoseAsync(TaskId task, CancellationToken ct)
+    public async Task<string> DiagnoseAsync(SessionId task, CancellationToken ct)
     {
         foreach (var (id, machine) in _machines)
         {

@@ -75,7 +75,7 @@ internal sealed class RealHarnessProfile
 
     /// <summary>
     /// Wake after <c>session/load</c>. Must work for two different redispatches:
-    /// a first-leg retry that never asked (no answer on get_task — ask, then stop)
+    /// a first-leg retry that never asked (no answer on get_session — ask, then stop)
     /// and a park/resume (answer is there — report the nonce). Sending only
     /// "report now" made OpenCode's silent first turn skip the ask on retry.
     /// </summary>

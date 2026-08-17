@@ -9,7 +9,7 @@ namespace Docket.ControlPlane;
 /// task id carried by each notification so a caller — the dispatch loop, a
 /// subscribed Lead view — can react without polling.
 /// </summary>
-public sealed class TaskEventListener(string connectionString) : IAsyncDisposable
+public sealed class SessionEventListener(string connectionString) : IAsyncDisposable
 {
     private NpgsqlConnection? _connection;
 

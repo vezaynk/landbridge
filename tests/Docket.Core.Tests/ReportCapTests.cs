@@ -9,17 +9,17 @@ public class ReportCapTests
 {
     private static TransitionResult Report(string? report)
     {
-        var task = Given.Task(TaskState.Working);
-        return TaskStateMachine.Apply(task, new ReportResult(Given.IncumbentOf(task), "git:ref", report));
+        var task = Given.Session(SessionState.Working);
+        return SessionStateMachine.Apply(task, new ReportResult(Given.IncumbentOf(task), "git:ref", report));
     }
 
     [Fact]
     public void A_null_report_is_accepted() =>
-        Expect.Transitioned(Report(null), TaskState.Verifying); // back-compat: report is optional
+        Expect.Transitioned(Report(null), SessionState.Verifying); // back-compat: report is optional
 
     [Fact]
     public void A_report_at_the_cap_is_accepted() =>
-        Expect.Transitioned(Report(new string('x', ReportResult.MaxReportBytes)), TaskState.Verifying);
+        Expect.Transitioned(Report(new string('x', ReportResult.MaxReportBytes)), SessionState.Verifying);
 
     [Fact]
     public void A_report_one_byte_over_the_cap_is_rejected() =>

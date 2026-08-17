@@ -20,13 +20,13 @@ internal static class DashboardTranscriptRenderer
     /// and liveness.
     /// </summary>
     public static string Index(
-        TaskId task,
+        SessionId task,
         IReadOnlyList<TranscriptLocationView> locations,
         IReadOnlyList<TranscriptMachineInventory> inventories,
         DateTimeOffset now)
     {
         var sb = new StringBuilder();
-        sb.Append($"<h1>Transcripts · task <code>{E(ShortId(task.Value))}</code></h1>");
+        sb.Append($"<h1>Transcripts · session <code>{E(ShortId(task.Value))}</code></h1>");
         sb.Append($"<p class=\"sub mono\">{E(task.Value)}</p>");
         sb.Append(WarningBanner());
 
@@ -94,13 +94,13 @@ internal static class DashboardTranscriptRenderer
     }
 
     /// <summary>A link to the raw stream, or a dash when that stream captured nothing.</summary>
-    private static string StreamCell(TaskId task, string machine, int ordinal, string stream, long bytes)
+    private static string StreamCell(SessionId task, string machine, int ordinal, string stream, long bytes)
     {
         if (bytes == 0)
             return "—";
         // &amp; in an attribute, not a bare & — the rest of this dashboard escapes everything
         // it emits, and a query string is no exception.
-        var href = $"/dashboard/tasks/{task.Value}/transcript" +
+        var href = $"/dashboard/sessions/{task.Value}/transcript" +
                    $"?machine={Uri.EscapeDataString(machine)}&amp;ordinal={ordinal}&amp;stream={stream}";
         return $"<a href=\"{href}\">{E(Bytes(bytes))}</a>";
     }
@@ -131,7 +131,7 @@ internal static class DashboardTranscriptRenderer
                   "human operator session.</p>");
         sb.Append("<p class=\"sub\">A full transcript is unbounded, unredacted, untrusted text carrying " +
                   "everything the agent read — far beyond the bounded worker report a Lead reads with " +
-                  "<code>get_task_report</code>. Sign in as an operator to read it.</p>");
+                  "<code>get_session_report</code>. Sign in as an operator to read it.</p>");
         return Page("Transcripts", "teams", sb.ToString(), autoRefresh: false);
     }
 

@@ -7,7 +7,7 @@ namespace Docket.Core;
 /// liveness) live in the control plane, which expresses their expiry as
 /// commands.
 /// </summary>
-public abstract record TaskCommand(Actor Actor);
+public abstract record SessionCommand(Actor Actor);
 
 /// <summary>
 /// → submitted. Only a lead claim may create tasks (§9 check 3).
@@ -15,8 +15,8 @@ public abstract record TaskCommand(Actor Actor);
 /// <see cref="Description"/> (prose instructions, §7) and <see cref="Workspace"/>
 /// (the Lead-assigned opaque isolation blob, §7) ride along as content the
 /// <em>engine never interprets</em> — exactly like <see cref="CompletionCriteria"/>,
-/// which <see cref="TaskStateMachine.Create"/> only checks for non-emptiness and
-/// never lands on the pure-state <see cref="TaskRecord"/>. The store persists all
+/// which <see cref="SessionStateMachine.Create"/> only checks for non-emptiness and
+/// never lands on the pure-state <see cref="SessionRecord"/>. The store persists all
 /// three verbatim; the state machine stays free of task content (§2 principle 1).
 ///
 /// <para><see cref="Continues"/> switches the task to <b>continuation targeting</b>
@@ -26,7 +26,7 @@ public abstract record TaskCommand(Actor Actor);
 /// profile declarable) and never dereferences a task id or session ref (§2
 /// principle 1). Null for ordinary profile targeting.</para>
 /// </summary>
-public sealed record CreateTask(
+public sealed record CreateSession(
     Actor Actor,
     TeamId Team,
     string CompletionCriteria,
@@ -34,12 +34,12 @@ public sealed record CreateTask(
     string? Profile,
     string Description = "",
     string? Workspace = null,
-    Continuation? Continues = null) : TaskCommand(Actor);
+    Continuation? Continues = null) : SessionCommand(Actor);
 
 /// <summary>
 /// Continuation targeting facts (§6/§11), resolved by the control plane from the
 /// continued task's row and the live connection registry <em>before</em> the
-/// <see cref="CreateTask"/> command reaches the engine. Everything here is opaque
+/// <see cref="CreateSession"/> command reaches the engine. Everything here is opaque
 /// to the engine — it dereferences none of it — but two fields gate creation:
 /// <see cref="ContinuedTeam"/> must equal the creating Team (continuation is
 /// same-Team only), and, when <see cref="PreferredMachineProfiles"/> is known
@@ -57,7 +57,7 @@ public sealed record CreateTask(
 /// profile-declarable check — dispatch's own profile routing still applies.</para>
 /// </summary>
 public sealed record Continuation(
-    TaskId ContinuedTask,
+    SessionId ContinuedSession,
     TeamId ContinuedTeam,
     string? PreferredMachine,
     string? InheritedSessionRef,
@@ -70,7 +70,7 @@ public sealed record Continuation(
 /// (§9 check 5) — this command carries the machine-eligibility half.
 /// </summary>
 public sealed record Dispatch(MachineSnapshot Machine, WorkerInstanceId NewInstance)
-    : TaskCommand(ControlPlaneActor.Instance);
+    : SessionCommand(ControlPlaneActor.Instance);
 
 /// <summary>
 /// working|blocked_on_input → submitted (infrastructure counter), or → canceled once
@@ -100,7 +100,7 @@ public sealed record Dispatch(MachineSnapshot Machine, WorkerInstanceId NewInsta
 /// </list>
 /// </summary>
 public sealed record LivenessLost(LivenessLossReason Reason, WorkerInstanceId? Instance = null)
-    : TaskCommand(ControlPlaneActor.Instance);
+    : SessionCommand(ControlPlaneActor.Instance);
 
 /// <summary>
 /// working → verifying. Requires a result reference (§6).
@@ -115,7 +115,7 @@ public sealed record LivenessLost(LivenessLossReason Reason, WorkerInstanceId? I
 /// real detail in the workspace behind the reference rather than in the plane.</para>
 /// </summary>
 public sealed record ReportResult(Actor Actor, string? ResultReference, string? Report = null)
-    : TaskCommand(Actor)
+    : SessionCommand(Actor)
 {
     /// <summary>The in-band report's hard cap, 16 KiB of UTF-8 (§10). Over-cap is
     /// refused at report time (<see cref="Rule.ReportWithinSizeCap"/>) so detail
@@ -128,14 +128,14 @@ public sealed record ReportResult(Actor Actor, string? ResultReference, string? 
 /// verifying → completed. Caller identity is not an agent. Review mode trusts
 /// the Lead; <see cref="HumanConfirmed"/> is accepted but not gated on.
 /// </summary>
-public sealed record VerdictAccept(Actor Actor, bool HumanConfirmed = false) : TaskCommand(Actor);
+public sealed record VerdictAccept(Actor Actor, bool HumanConfirmed = false) : SessionCommand(Actor);
 
 /// <summary>
 /// verifying → rejected. A fail is not a redispatch: if the Lead wants more
 /// from this worker they reply (<see cref="LeadMessage"/>) instead. Same
 /// identity gate as <see cref="VerdictAccept"/>.
 /// </summary>
-public sealed record VerdictFail(Actor Actor, bool HumanConfirmed = false) : TaskCommand(Actor);
+public sealed record VerdictFail(Actor Actor, bool HumanConfirmed = false) : SessionCommand(Actor);
 
 /// <summary>
 /// working → blocked_on_input. Requires a typed request kind (§6).
@@ -165,7 +165,7 @@ public sealed record VerdictFail(Actor Actor, bool HumanConfirmed = false) : Tas
 /// </summary>
 public sealed record RequestInput(
     Actor Actor, InputRequestKind? Kind, string? Question = null, string? PermissionTool = null)
-    : TaskCommand(Actor)
+    : SessionCommand(Actor)
 {
     /// <summary>The question's hard cap: the same 16 KiB in-band class as the worker's
     /// report (<see cref="ReportResult.MaxReportBytes"/>) — one number for every piece
@@ -195,7 +195,7 @@ public sealed record RequestInput(
 /// unblocks the task, and the redispatched worker resumes knowing it was answered
 /// but not with what, which is how a worker guesses or asks the same question
 /// again. Opaque content, capped at <see cref="MaxAnswerBytes"/>, persisted by the
-/// store and read back by the resumed worker's opening <c>get_task</c> — never
+/// store and read back by the resumed worker's opening <c>get_session</c> — never
 /// through argv, which leaks via <c>ps</c> (§13).</para>
 ///
 /// <para><see cref="PendingKind"/> is the live kind of the request being answered, supplied
@@ -210,7 +210,7 @@ public sealed record RequestInput(
 /// </summary>
 public sealed record AnswerInput(
     Actor Actor, ParkRecord? Park, string? Answer = null, InputRequestKind? PendingKind = null)
-    : TaskCommand(Actor)
+    : SessionCommand(Actor)
 {
     /// <summary>The answer's hard cap, the same in-band class as the question and the
     /// report (§10). Over-cap is refused (<see cref="Rule.AnswerWithinSizeCap"/>) and
@@ -224,7 +224,7 @@ public sealed record AnswerInput(
 /// it has to exist: the harness's permission contract has no resumed-answer seam — it
 /// blocks inside the relaying tool call and there is nowhere to deliver a verdict to a
 /// process that has exited — so unlike <see cref="AnswerInput"/> this revokes no token,
-/// writes no park record, and leaves <see cref="TaskRecord.CurrentInstance"/> exactly as
+/// writes no park record, and leaves <see cref="SessionRecord.CurrentInstance"/> exactly as
 /// it was. The asking worker is still the incumbent and picks up its own tool call.
 ///
 /// <para><see cref="PendingKind"/> and <see cref="EscalatedToHuman"/> are facts the store
@@ -247,7 +247,7 @@ public sealed record AnswerPermission(
     InputRequestKind? PendingKind,
     bool EscalatedToHuman,
     PermissionVerdict Verdict,
-    string? Message = null) : TaskCommand(Actor)
+    string? Message = null) : SessionCommand(Actor)
 {
     /// <summary>The verdict message's cap — the same in-band class as the answer it
     /// replaces (§10).</summary>
@@ -266,11 +266,11 @@ public sealed record AnswerPermission(
 /// capped like the verdict message.</para>
 /// </summary>
 public sealed record EscalatePermission(
-    Actor Actor, InputRequestKind? PendingKind, string Reason) : TaskCommand(Actor);
+    Actor Actor, InputRequestKind? PendingKind, string Reason) : SessionCommand(Actor);
 
 /// <summary>blocked_on_input → parked: wait TTL expired, lease released (§6, §11).
 /// Off by default under ACP (wait is indefinite); kept for explicit config.</summary>
-public sealed record WaitTtlExpired(ParkRecord Park) : TaskCommand(ControlPlaneActor.Instance);
+public sealed record WaitTtlExpired(ParkRecord Park) : SessionCommand(ControlPlaneActor.Instance);
 
 /// <summary>
 /// working | blocked_on_input → parked: a Lead or human released the session on
@@ -278,14 +278,14 @@ public sealed record WaitTtlExpired(ParkRecord Park) : TaskCommand(ControlPlaneA
 /// is revoked; a later wake is session/load (or PromptCommand if the process
 /// is still up — it will not be after cancel).
 /// </summary>
-public sealed record Park(Actor Actor, ParkRecord Record) : TaskCommand(Actor);
+public sealed record Park(Actor Actor, ParkRecord Record) : SessionCommand(Actor);
 
 /// <summary>
 /// blocked_on_input → working: a Lead or human answered a still-live ACP
 /// session. The process is idle waiting for a follow-up prompt, so this keeps
 /// the incumbent instance, revokes nothing, and writes no park record. The
 /// plane then sends <c>PromptCommand</c>; the worker pulls the answer on
-/// <c>get_task</c> (ideas/sessions.md).
+/// <c>get_session</c> (ideas/sessions.md).
 ///
 /// <para><see cref="PendingKind"/> is the live kind of the request being
 /// answered, supplied by the store off the task row. A
@@ -295,16 +295,16 @@ public sealed record Park(Actor Actor, ParkRecord Record) : TaskCommand(Actor);
 /// follow-up turn.</para>
 /// </summary>
 public sealed record ContinueSession(
-    Actor Actor, string? Answer = null, InputRequestKind? PendingKind = null) : TaskCommand(Actor);
+    Actor Actor, string? Answer = null, InputRequestKind? PendingKind = null) : SessionCommand(Actor);
 
 /// <summary>
 /// working → working: the Lead or a human sent a follow-up without a pending
 /// question. The process is still up; the plane doorbells it and the worker
-/// pulls the text on <c>get_task</c>. The Claude-subagent shape: the parent
+/// pulls the text on <c>get_session</c>. The Claude-subagent shape: the parent
 /// speaks when it has something to say, not only when the child files a ticket.
 /// </summary>
 public sealed record LeadMessage(
-    Actor Actor, string? Text = null, InputRequestKind? PendingKind = null) : TaskCommand(Actor);
+    Actor Actor, string? Text = null, InputRequestKind? PendingKind = null) : SessionCommand(Actor);
 
 /// <summary>
 /// parked → submitted: the awaited answer or endpoint landed. Redispatch then
@@ -318,10 +318,10 @@ public sealed record LeadMessage(
 /// <see cref="InputRequestKind.EndpointWait"/> consumer woken because the service
 /// registered. Same cap and opacity as <see cref="AnswerInput.Answer"/>.</para>
 /// </summary>
-public sealed record WakeParked(string? Answer = null) : TaskCommand(ControlPlaneActor.Instance);
+public sealed record WakeParked(string? Answer = null) : SessionCommand(ControlPlaneActor.Instance);
 
 /// <summary>working → parked: stop with disposition preserve_and_park (§6, §11).</summary>
-public sealed record StopPreserveAndPark(Actor Actor, ParkRecord Park) : TaskCommand(Actor);
+public sealed record StopPreserveAndPark(Actor Actor, ParkRecord Park) : SessionCommand(Actor);
 
 /// <summary>
 /// any → canceled. Disposition required (§9 check 12), and the actor is a Lead or a
@@ -329,4 +329,4 @@ public sealed record StopPreserveAndPark(Actor Actor, ParkRecord Park) : TaskCom
 /// one thing it gives up on is <em>placing</em> the work, and that path is the §9 check 7
 /// requeue cap inside <c>LivenessLost</c> — not a command anyone sends (§6).
 /// </summary>
-public sealed record Cancel(Actor Actor, CancelDisposition? Disposition) : TaskCommand(Actor);
+public sealed record Cancel(Actor Actor, CancelDisposition? Disposition) : SessionCommand(Actor);

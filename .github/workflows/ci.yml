@@ -197,7 +197,7 @@ jobs:
   # went 7/2 on identical test code. npm prints no version. Do not go back to
   # `latest`; the daily bump bot carries these pins forward on evidence.
   #   * claude-code 2.1.232 — the stopgap after 2.1.231 read "call the docket
-  #     get_task tool" as a shell command. Prompt clarity (#150) is the durable fix.
+  #     get_session tool" as a shell command. Prompt clarity (#150) is the durable fix.
   #   * @openai/codex 0.147.0 — rust-v0.147.0, the source citations and the green
   #     baseline. latest is the release line; 0.148.0-alpha.* sit under `alpha`.
   #   * opencode-ai 1.18.18 — green on dispatch 31740997672. npm, not the vendor

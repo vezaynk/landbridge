@@ -21,9 +21,9 @@ namespace Docket.WorkerHarness;
 /// It reads the MCP client config <c>docketd</c> injected (§13) — the
 /// <c>--mcp-config</c> path <c>ProcessSupervisor</c> substituted into its
 /// argv, pointing at <c>{work_dir}/mcp.json</c> — connects to the plane with the
-/// dispatched worker token as a bearer credential, and calls <c>get_task</c> to
-/// learn its assignment. The raw <c>get_task</c> response is written to
-/// <c>./get_task.json</c> in the work dir so the harnessing test can assert the
+/// dispatched worker token as a bearer credential, and calls <c>get_session</c> to
+/// learn its assignment. The raw <c>get_session</c> response is written to
+/// <c>./get_session.json</c> in the work dir so the harnessing test can assert the
 /// assignment crossed the wire intact.
 ///
 /// <para>What it does next is driven by the task's opaque prose <b>description</b>
@@ -91,7 +91,7 @@ public static class Program
 
         // §1 tracing: root the worker's span on the traceparent docketd injected
         // (DOCKET_TRACEPARENT), so this process — and its MCP calls back to the
-        // plane — continue the one trace that began at the Lead's create_task. The
+        // plane — continue the one trace that began at the Lead's create_session. The
         // root span stays current for the whole run; disposed last so it (and, when
         // a collector is configured, the export) flushes before the process exits.
         using var telemetry = WorkerTelemetry.Start(cwd);
@@ -132,7 +132,7 @@ public static class Program
     }
 
     /// <summary>
-    /// The scripted work itself — <c>get_task</c>, branch on the description, then serve,
+    /// The scripted work itself — <c>get_session</c>, branch on the description, then serve,
     /// consume, or report. Identical under both protocols by construction: this is the body
     /// that used to live inline in <see cref="Main"/>, and keeping one copy is what makes an
     /// ACP E2E a test of the transport rather than of a second worker implementation.
@@ -144,12 +144,12 @@ public static class Program
 
         // ── Learn the assignment (§7): namespace, description, criteria, workspace, attempt.
         var assignment = await client.CallToolAsync(
-            "get_task", new Dictionary<string, object?>(), cancellationToken: setupCts.Token);
+            "get_session", new Dictionary<string, object?>(), cancellationToken: setupCts.Token);
         if (assignment.IsError == true)
-            throw new InvalidOperationException("get_task returned an error: " + TextOf(assignment));
+            throw new InvalidOperationException("get_session returned an error: " + TextOf(assignment));
 
         var assignmentJson = TextOf(assignment);
-        await File.WriteAllTextAsync(Path.Combine(cwd, "get_task.json"), assignmentJson, ct);
+        await File.WriteAllTextAsync(Path.Combine(cwd, "get_session.json"), assignmentJson, ct);
 
         // ── Branch on the description (§7): the opaque prose is the channel that
         //    tells the worker what to do, so one 'default' profile drives a whole
@@ -269,7 +269,7 @@ public static class Program
         return 0;
     }
 
-    /// <summary>The task's prose description from a <c>get_task</c> response, or null if absent/malformed.</summary>
+    /// <summary>The task's prose description from a <c>get_session</c> response, or null if absent/malformed.</summary>
     private static string? DescriptionOf(string assignmentJson)
     {
         try
@@ -426,7 +426,7 @@ public static class Program
 
     private static string TextOf(CallToolResult result)
     {
-        // A typed tool return (get_task) also surfaces as structured content; a
+        // A typed tool return (get_session) also surfaces as structured content; a
         // string return (report_result) is a text block. Prefer structured, fall
         // back to the joined text blocks.
         if (result.StructuredContent is { } structured)
@@ -438,10 +438,10 @@ public static class Program
 
 /// <summary>
 /// The worker's OpenTelemetry setup (§1). Roots a span on <c>DOCKET_TRACEPARENT</c>
-/// so the worker sits inside the trace that began at the Lead's <c>create_task</c>,
+/// so the worker sits inside the trace that began at the Lead's <c>create_session</c>,
 /// and — when <c>OTEL_EXPORTER_OTLP_ENDPOINT</c> is set — exports it plus the MCP
 /// calls it makes (HttpClient instrumentation nests them and injects the
-/// traceparent, so the plane continues the trace on <c>get_task</c>/<c>report_result</c>).
+/// traceparent, so the plane continues the trace on <c>get_session</c>/<c>report_result</c>).
 ///
 /// When no collector is configured (e.g. the deterministic continuity test) a bare
 /// <see cref="ActivityListener"/> still makes the root span sample, so its trace id

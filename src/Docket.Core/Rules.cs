@@ -23,9 +23,9 @@ public enum Rule
 {
     CompletionCriteriaNonEmpty = 1,
     NamespaceServerAssigned = 2,
-    OnlyLeadCreatesTasks = 3,
+    OnlyLeadCreatesSessions = 3,
     CompletionByLeadOrHuman = 4,
-    SingleDispatchPerTask = 5,
+    SingleDispatchPerSession = 5,
     OneLeadPerTeam = 6,
     LivenessTimeoutRequeue = 7,
     VerificationRetriesExhausted = 8,
@@ -86,11 +86,11 @@ public abstract record TransitionResult
 {
     private TransitionResult() { }
 
-    public sealed record Transitioned(TaskRecord Task, IReadOnlyList<Effect> Effects) : TransitionResult;
+    public sealed record Transitioned(SessionRecord Session, IReadOnlyList<Effect> Effects) : TransitionResult;
 
     public sealed record Rejected(Rule Rule, string Reason) : TransitionResult;
 
-    internal static TransitionResult Ok(TaskRecord task, params Effect[] effects) =>
+    internal static TransitionResult Ok(SessionRecord task, params Effect[] effects) =>
         new Transitioned(task, effects);
 
     internal static TransitionResult Reject(Rule rule, string reason) =>

@@ -58,7 +58,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// over</b>, and the new connection re-derives them from committed state through
     /// <see cref="DispatchService.RehydrateMachineAsync"/>. Committed state is the
     /// authority and is instance-fenced (§9.14,
-    /// <see cref="TaskStore.HeldDispatchesOnAsync"/>): it re-adopts exactly the tasks whose
+    /// <see cref="SessionStore.HeldDispatchesOnAsync"/>): it re-adopts exactly the tasks whose
     /// live incumbent instance was minted for this machine. Carrying the old map over would
     /// instead preserve entries that fence rejects — a task requeued out from under this
     /// machine while the stale socket still listed it — leaving a dead dispatch tracked and
@@ -94,7 +94,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// <para>Returning them is what makes that order possible: removal and the read are
     /// one step, so there is no window in which the connection is unreachable but its
     /// tasks are still unknown. A caller that unregistered first and then asked
-    /// <see cref="TasksOn"/> would get an empty list and requeue nothing — stranding
+    /// <see cref="SessionsOn"/> would get an empty list and requeue nothing — stranding
     /// exactly the tasks the disconnect was supposed to free.</para>
     ///
     /// <para>Once the connection is out of the dictionary the machine is invisible to
@@ -148,7 +148,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
         if (!_connections.TryRemove(machineId, out var conn))
             return new UnregisterOutcome(false, []);
 
-        TaskId[] held;
+        SessionId[] held;
         lock (conn.Gate)
             held = conn.Dispatched.Keys.ToArray();
 
@@ -246,7 +246,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// instead of being requeued the instant its machine comes back. No-ops when the
     /// machine has no live connection.
     /// </summary>
-    public void TrackDispatch(string machineId, TaskId task)
+    public void TrackDispatch(string machineId, SessionId task)
     {
         if (!_connections.TryGetValue(machineId, out var conn))
             return;
@@ -261,7 +261,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// per-task liveness). Progress implies aliveness, so this is the strictly
     /// stronger of the two records.
     /// </summary>
-    public void RecordProgress(TaskId task) => Refresh(task, progress: true);
+    public void RecordProgress(SessionId task) => Refresh(task, progress: true);
 
     /// <summary>
     /// Refreshes only the aliveness clock, from an <c>alive</c> event: docketd
@@ -270,9 +270,9 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// progress clock — if it did, a wedged-but-running agent would be immortal,
     /// which is the whole reason the two clocks are separate (§10).
     /// </summary>
-    public void RecordAlive(TaskId task) => Refresh(task, progress: false);
+    public void RecordAlive(SessionId task) => Refresh(task, progress: false);
 
-    private void Refresh(TaskId task, bool progress)
+    private void Refresh(SessionId task, bool progress)
     {
         var now = clock.GetUtcNow();
         foreach (var conn in _connections.Values)
@@ -293,7 +293,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     }
 
     /// <summary>Stops tracking a task on every machine (exit, requeue, reboot).</summary>
-    public void Untrack(TaskId task)
+    public void Untrack(SessionId task)
     {
         foreach (var conn in _connections.Values)
             lock (conn.Gate)
@@ -306,7 +306,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// subsequent <see cref="HasLiveProcess"/> is false: answering then
     /// redispatches rather than sending <c>PromptCommand</c> into a dead session.
     /// </summary>
-    public void MarkProcessGone(TaskId task)
+    public void MarkProcessGone(SessionId task)
     {
         foreach (var conn in _connections.Values)
         {
@@ -327,7 +327,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// a blocked task stays tracked after its process exits so the sweeper can
     /// find it. An in-place answer is only honest when the process is still up.
     /// </summary>
-    public bool HasLiveProcess(TaskId task)
+    public bool HasLiveProcess(SessionId task)
     {
         foreach (var conn in _connections.Values)
         {
@@ -352,7 +352,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// <see cref="DispatchService.RehydrateMachineAsync"/>); callers treat that
     /// conservatively.
     /// </summary>
-    public string? MachineFor(TaskId task)
+    public string? MachineFor(SessionId task)
     {
         foreach (var (id, conn) in _connections)
         {
@@ -403,7 +403,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     }
 
     /// <summary>The tasks currently tracked as dispatched to a machine.</summary>
-    public IReadOnlyList<TaskId> TasksOn(string machineId)
+    public IReadOnlyList<SessionId> SessionsOn(string machineId)
     {
         if (!_connections.TryGetValue(machineId, out var conn))
             return [];
@@ -527,10 +527,10 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// only need the yes/no — the lease is what a blocked task's recovery affinity
     /// hangs on (§11).
     /// </summary>
-    public bool IsLeaseHeld(TaskId task)
+    public bool IsLeaseHeld(SessionId task)
     {
         foreach (var tracked in AllTracked())
-            if (tracked.Task == task)
+            if (tracked.Session == task)
                 return SnapshotFor(tracked.Machine) is not null;
         return false;
     }
@@ -592,7 +592,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// everything it held anyway.</para>
     /// </summary>
     public async Task<bool> SendKillAsync(
-        string machineId, TaskId task, TimeSpan expectExitWithin, CancellationToken ct)
+        string machineId, SessionId task, TimeSpan expectExitWithin, CancellationToken ct)
     {
         if (!_connections.TryGetValue(machineId, out var conn))
             return false;
@@ -620,7 +620,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// that swallowing is the safer error inside it and the wrong one outside
     /// (<see cref="DispatchService.CommandedExitEchoWindow"/>).</para>
     /// </summary>
-    public bool ConsumeCommandedExit(TaskId task)
+    public bool ConsumeCommandedExit(SessionId task)
     {
         var now = clock.GetUtcNow();
         foreach (var conn in _connections.Values)
@@ -652,7 +652,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// that word identifies who reported the stop and not who ordered it — and a worker that
     /// wedges itself would be read as a kill the plane is already handling.</para>
     /// </summary>
-    public bool HasCommandedExit(TaskId task)
+    public bool HasCommandedExit(SessionId task)
     {
         var now = clock.GetUtcNow();
         foreach (var conn in _connections.Values)
@@ -689,7 +689,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// requeue — and the tasks it held. Always <c>false</c> and empty for a superseded
     /// connection (#94).
     /// </summary>
-    public readonly record struct UnregisterOutcome(bool Unregistered, IReadOnlyList<TaskId> Held);
+    public readonly record struct UnregisterOutcome(bool Unregistered, IReadOnlyList<SessionId> Held);
 
     /// <summary>
     /// A tracked dispatch and its two liveness clocks (§10).
@@ -700,7 +700,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// times, and one number cannot carry both.
     /// </summary>
     public readonly record struct TrackedTask(
-        TaskId Task, string Machine, DateTimeOffset LastActivity, DateTimeOffset LastProgress);
+        SessionId Session, string Machine, DateTimeOffset LastActivity, DateTimeOffset LastProgress);
 
     /// <summary>The two clocks kept per dispatched task; see <see cref="TrackedTask"/>.
     /// <see cref="ProcessGone"/> is set when the harness exits but the task stays
@@ -723,7 +723,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
 
         /// <summary>Kills the plane ordered on this connection, each with the instant its
         /// echo stops being expected; see <see cref="SendKillAsync"/>.</summary>
-        public Dictionary<TaskId, DateTimeOffset> CommandedExits { get; } = new();
+        public Dictionary<SessionId, DateTimeOffset> CommandedExits { get; } = new();
 
         public IReadOnlySet<string> Profiles { get; set; } = new HashSet<string>(StringComparer.Ordinal);
         public bool Ready { get; set; }
@@ -731,6 +731,6 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
         public DateTimeOffset LastHeartbeat { get; set; }
         public IReadOnlyList<ServiceStatus> Services { get; set; } = [];
         public IReadOnlyList<ProcessStatus> Processes { get; set; } = [];
-        public Dictionary<TaskId, TaskActivity> Dispatched { get; } = new();
+        public Dictionary<SessionId, TaskActivity> Dispatched { get; } = new();
     }
 }

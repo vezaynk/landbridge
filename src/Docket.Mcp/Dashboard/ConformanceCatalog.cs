@@ -16,7 +16,7 @@ internal static class ConformanceCatalog
 
     public static readonly IReadOnlyList<string> Kinds = ["identity", "write", "shell"];
 
-    public static IReadOnlyList<ConformanceTaskSpec> For(Guid runId)
+    public static IReadOnlyList<ConformanceSessionSpec> For(Guid runId)
     {
         var nonce = "dkt-smoke-" + runId.ToString("N")[..8];
         return
@@ -24,7 +24,7 @@ internal static class ConformanceCatalog
             new("identity",
                 "This is a Docket enrollment check (kind: identity). " +
                 "Report this machine's hostname, the process current working directory, " +
-                "and the first 8 hex characters of the DOCKET_TASK_ID environment variable. " +
+                "and the first 8 hex characters of the DOCKET_SESSION_ID environment variable. " +
                 "Do not restate this ask. Call report_result with a reference that includes those three facts.",
                 "The result reference names a hostname, a working directory path, and an 8-character hex prefix."),
             new("write",
@@ -48,14 +48,14 @@ internal static class ConformanceCatalog
             ? workspace[WorkspacePrefix.Length..]
             : null;
 
-    public static string Bucket(TaskState state) => state switch
+    public static string Bucket(SessionState state) => state switch
     {
-        TaskState.Verifying => "verifying",
-        TaskState.Completed => "completed",
-        TaskState.Rejected or TaskState.Canceled or TaskState.Failed => "failed",
+        SessionState.Verifying => "verifying",
+        SessionState.Completed => "completed",
+        SessionState.Rejected or SessionState.Canceled or SessionState.Failed => "failed",
         _ => "pending",
     };
 }
 
-internal readonly record struct ConformanceTaskSpec(
+internal readonly record struct ConformanceSessionSpec(
     string Kind, string Description, string CompletionCriteria);

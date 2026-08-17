@@ -28,7 +28,7 @@ public sealed class ProfileRoutingTests
 
         var view = registry.ProfileRouting();
 
-        // Exactly the declared set — the names create_task can match, and no others.
+        // Exactly the declared set — the names create_session can match, and no others.
         Assert.Equal(new[] { "default", "gpu" }, view.Profiles.Select(p => p.Profile));
         // Both machines declaring `default` are listed under it; only m1 offers `gpu`.
         Assert.Equal(new[] { "m1", "m2" }, Entry(view, "default").Machines.Select(m => m.MachineId));
@@ -131,10 +131,10 @@ public sealed class ProfileRoutingTests
     }
 
     [Fact]
-    public void The_view_names_the_profile_an_omitted_create_task_profile_resolves_to()
+    public void The_view_names_the_profile_an_omitted_create_session_profile_resolves_to()
     {
         // A Lead that omits `profile` still routes on a name — `default` — and the engine
-        // matches it exactly like any other (TaskStateMachine's ApplyDispatch). So a fleet
+        // matches it exactly like any other (SessionStateMachine's ApplyDispatch). So a fleet
         // where nothing declares `default` cannot run plain tasks at all, and this field is
         // what lets a Lead notice that rather than watch them queue forever.
         var registry = new RunnerConnectionRegistry(_clock);
@@ -164,7 +164,7 @@ public sealed class ProfileRoutingTests
         var registration = registry.Register(machineId, new HashSet<string>(profiles), Send);
         registry.ApplyHeartbeat(registration.Token, new MachineHeartbeat(
             machineId, Ready: true, underBackPressure, new SystemLoad(0, 0, 0),
-            RunningTasks: 0, profiles, _clock.GetUtcNow()));
+            RunningSessions: 0, profiles, _clock.GetUtcNow()));
         return registration.Token;
     }
 

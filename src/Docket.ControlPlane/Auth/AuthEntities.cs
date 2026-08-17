@@ -45,7 +45,7 @@ public sealed class CredentialRow
     // Claims. Which are set depends on Kind.
     public Guid? MachineId { get; set; }
     public Guid? TeamId { get; set; }
-    public Guid? TaskId { get; set; }
+    public Guid? SessionId { get; set; }
     public Guid? WorkerInstanceId { get; set; }
 
     /// <summary>

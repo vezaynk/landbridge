@@ -10,7 +10,7 @@ namespace Docket.Core;
 /// the three survived contact with where those facts actually live: the directory never had
 /// a producer at all (the plane cannot observe a machine's filesystem layout, and §11's
 /// directory inheritance is expressed as a task id instead — see
-/// <see cref="TaskRecord.Park"/>'s callers and the work-dir task on the dispatch command);
+/// <see cref="SessionRecord.Park"/>'s callers and the work-dir task on the dispatch command);
 /// and the session ref and attempt were copied out of the live <c>tasks</c> columns on the
 /// way in and written to park-specific columns on the way out that nothing ever read back.
 /// Redispatch reads the live <c>harness_session_ref</c> and <c>attempt</c>, which is why the
@@ -38,7 +38,7 @@ public sealed record MachineSnapshot(
 /// blocker_note) and the opaque blobs (workspace, completion.criteria content)
 /// live at the storage layer; nothing here requires interpreting them.
 /// </summary>
-public sealed record TaskRecord
+public sealed record SessionRecord
 {
     /// <summary>
     /// The default infrastructure requeue cap (§9 check 7). Five is enough that a task
@@ -49,15 +49,15 @@ public sealed record TaskRecord
     /// </summary>
     public const int DefaultInfrastructureRequeueLimit = 5;
 
-    public required TaskId Id { get; init; }
+    public required SessionId Id { get; init; }
     public required TeamId Team { get; init; }
 
-    /// <summary>Server-assigned team-{id}/task-{id}; uniqueness is structural (§9 check 2).</summary>
+    /// <summary>Server-assigned team-{id}/session-{id}; uniqueness is structural (§9 check 2).</summary>
     public required string Namespace { get; init; }
 
     public required CompletionMode CompletionMode { get; init; }
 
-    public TaskState State { get; init; } = TaskState.Submitted;
+    public SessionState State { get; init; } = SessionState.Submitted;
 
     /// <summary>Optional runner profile name; exact-match routing, never interpreted (§7).</summary>
     public string? Profile { get; init; }
@@ -88,7 +88,7 @@ public sealed record TaskRecord
     /// Why this task was last requeued for infrastructure reasons (§6), or null if it
     /// never was. Typed state the engine takes off the command — the same shape as
     /// <see cref="CompletionProvenance"/> — so the store persists it and the Lead
-    /// (<c>get_task_report</c>, <c>get_team_state</c>) and the §12 dashboard can tell
+    /// (<c>get_session_report</c>, <c>get_team_state</c>) and the §12 dashboard can tell
     /// requeue causes apart instead of counting identical events (#73). On an
     /// at-cap abandonment this is the reason that ended the task.
     /// </summary>

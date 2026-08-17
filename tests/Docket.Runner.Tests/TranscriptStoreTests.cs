@@ -20,7 +20,7 @@ public sealed class TranscriptStoreTests : IDisposable
     [Fact]
     public async Task Writer_writes_stdout_and_stderr_lines_verbatim()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         var writer = Store().CreateWriter(task, TranscriptDefaults.MaxBytes);
 
         string[] stdout =
@@ -46,7 +46,7 @@ public sealed class TranscriptStoreTests : IDisposable
     {
         // Files open lazily on the first line, so a worker that writes nothing to a
         // stream leaves no empty transcript file.
-        var task = TaskId.New();
+        var task = SessionId.New();
         var writer = Store().CreateWriter(task, TranscriptDefaults.MaxBytes);
         writer.WriteStdoutLine("only stdout here");
         writer.Dispose();
@@ -58,7 +58,7 @@ public sealed class TranscriptStoreTests : IDisposable
     [Fact]
     public async Task Writer_stops_at_the_size_cap_with_a_truncation_marker()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         // Each line is 10 chars + '\n' = 11 bytes. A 40-byte cap admits three lines
         // (33 bytes); the fourth would cross it, so a marker lands instead and writing
         // stops — later lines are dropped, never written.
@@ -82,7 +82,7 @@ public sealed class TranscriptStoreTests : IDisposable
     [Fact]
     public async Task Store_assigns_a_new_ordinal_per_instance_and_leaves_the_prior_intact()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         var store = Store();
 
         var first = store.CreateWriter(task, TranscriptDefaults.MaxBytes);
@@ -106,12 +106,12 @@ public sealed class TranscriptStoreTests : IDisposable
     {
         var store = Store(TimeSpan.FromDays(7));
 
-        var stale = TaskId.New();
+        var stale = SessionId.New();
         var staleWriter = store.CreateWriter(stale, TranscriptDefaults.MaxBytes);
         staleWriter.WriteStdoutLine("old work");
         staleWriter.Dispose();
 
-        var recent = TaskId.New();
+        var recent = SessionId.New();
         var recentWriter = store.CreateWriter(recent, TranscriptDefaults.MaxBytes);
         recentWriter.WriteStdoutLine("recent work");
         recentWriter.Dispose();
@@ -134,7 +134,7 @@ public sealed class TranscriptStoreTests : IDisposable
         // stores no bytes and has no tier of its own, so once the local sweep takes a task
         // dir the §12 serving path can only report that nothing is held (§12).
         var store = Store(TimeSpan.FromDays(7));
-        var task = TaskId.New();
+        var task = SessionId.New();
         var writer = store.CreateWriter(task, TranscriptDefaults.MaxBytes);
         writer.WriteStdoutLine("work that will age out");
         writer.Dispose();
@@ -154,7 +154,7 @@ public sealed class TranscriptStoreTests : IDisposable
     {
         var store = Store(TimeSpan.Zero); // 0 (or negative) disables pruning entirely
 
-        var task = TaskId.New();
+        var task = SessionId.New();
         var writer = store.CreateWriter(task, TranscriptDefaults.MaxBytes);
         writer.WriteStdoutLine("ancient");
         writer.Dispose();

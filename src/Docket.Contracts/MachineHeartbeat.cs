@@ -41,7 +41,7 @@ public sealed record MachineHeartbeat(
     bool Ready,
     bool UnderBackPressure,
     SystemLoad Load,
-    int RunningTasks,
+    int RunningSessions,
     IReadOnlyList<string> Profiles,
     DateTimeOffset At,
     bool TranscriptsServable = false,
@@ -55,7 +55,7 @@ public sealed record MachineHeartbeat(
 /// restart-supervised; a process is agent-started and never restarted, so <see cref="ServiceState.Exited"/>
 /// is a resting state here rather than a transient one.
 /// </summary>
-/// <param name="DeclaredByTask">Provenance, not ownership: the task whose worker started it.
+/// <param name="DeclaredBySession">Provenance, not ownership: the task whose worker started it.
 /// The process is machine-scoped and outlives that task, and any worker on this machine may
 /// stop it — which is what lets a Lead's cleanup continuation tidy up.</param>
 /// <param name="StdinOpen">Whether it has a usable stdin pipe — false unless the starter asked
@@ -64,7 +64,7 @@ public sealed record MachineHeartbeat(
 public sealed record ProcessStatus(
     string Name,
     ServiceState State,
-    Guid DeclaredByTask,
+    Guid DeclaredBySession,
     DateTimeOffset? StartedAt = null,
     int? ExitCode = null,
     DateTimeOffset? ExitedAt = null,

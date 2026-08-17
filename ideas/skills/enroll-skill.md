@@ -86,7 +86,7 @@ Two bars, neither negotiable, neither degrading gracefully. Confirm both by runn
 
 **3. Do not put bypass / always-approve / yolo in `spawn`.** Permissions are `session/request_permission`. docketd posts the worker bearer at `POST /worker/permission` and a Lead or human decides. A bypass flag on argv skips a dialog Docket is now the one answering.
 
-Then test **park**: `park_task` a live task and confirm the process is gone. Wait TTL is off by default — a forgotten question holds the lease until you answer or park.
+Then test **park**: `park_session` a live task and confirm the process is gone. Wait TTL is off by default — a forgotten question holds the lease until you answer or park.
 
 If either bar fails, stop. Report to the human rather than working around it.
 
@@ -96,7 +96,7 @@ Do not assume the harness or its version. Find out:
 
 1. Which harness is installed, and its version.
 2. The ACP entry point (`claude-agent-acp`, `codex-acp`, `opencode acp`, `grok agent stdio`, `goose acp`). A CLI that only has `-p` / `exec` / `run` is not enough.
-3. How this harness spells docket's MCP tools (`mcp__docket__get_task` / `docket_get_task` / `docket__get_task`). That spelling is what `prompt` and `follow_up` must use. Goose is expected to use `docket__get_task`.
+3. How this harness spells docket's MCP tools (`mcp__docket__get_session` / `docket_get_session` / `docket__get_session`). That spelling is what `prompt` and `follow_up` must use. Goose is expected to use `docket__get_session`.
 4. Whether `initialize` declares `loadSession` and `mcpCapabilities.http`. Run `tools/acp-probe` against a harness this repo has not measured. `loadSession` defaults to false in the spec; without it every redispatch is a cold start.
 5. Whether the agent asks the client for `fs/*` or `terminal/*`. This client declares those UNSUPPORTED. An agent that routes all I/O through the client cannot work here.
 
@@ -142,7 +142,7 @@ So check it once, by hand, with the human. The failure you are hunting is the qu
 
 **Run `docketd` in the foreground for this, or tail its journal.** Its stdout is the only place several of these failures appear at all. On start it prints one line — `docketd up: machine=… profiles=[…] strays_reaped=… control=…`. A config that does not parse never gets that far; `docketd` prints the error and exits non-zero before it connects.
 
-Then mint the dummy-task set (next section), or have the human's Lead create one trivial task (`create_task`, omit `profile` so it uses `default`) — "report this machine's hostname and working directory" is enough — and follow it:
+Then mint the dummy-task set (next section), or have the human's Lead create one trivial task (`create_session`, omit `profile` so it uses `default`) — "report this machine's hostname and working directory" is enough — and follow it:
 
 | Watch | Where | Healthy |
 |---|---|---|
@@ -162,7 +162,7 @@ The failures worth naming, and what each really looks like:
 - **The worker cannot authenticate to the plane.** Do not wait for an `auth-failed` event. The plane can record one, but `docketd` never emits one, so none will arrive. A rejected worker token appears as a 401 inside the harness's own output and `report_result` simply never lands — the transcript again.
 - **`Failed` after one attempt.** The plane does not requeue. Handshake flakes, spawn failures, and dead processes land as `Failed` with a plane-authored reason and wait for the Lead. If you see `Attempt` climbing, a Lead is resuming those failures on purpose — read the last reason, not the count.
 
-**Then test the kill path, and do not skip it because dispatch worked.** Have the human cancel the task mid-flight (`cancel_task`, disposition `preserve`) and confirm the process is actually gone — that is the assertion that matters, and it holds on every profile. A machine that dispatches but cannot be stopped looks fine right up until someone needs to stop a runaway agent — the worst possible moment to find out.
+**Then test the kill path, and do not skip it because dispatch worked.** Have the human cancel the task mid-flight (`cancel_session`, disposition `preserve`) and confirm the process is actually gone — that is the assertion that matters, and it holds on every profile. A machine that dispatches but cannot be stopped looks fine right up until someone needs to stop a runaway agent — the worst possible moment to find out.
 
 **What to expect from stop.** A stop is `session/cancel` plus the wind-down deadline. The runner reports that the cancel was *sent*, never that the agent obeyed it (cancel is a notification with no reply). Confirm the process is gone after the deadline. There is no `stop.mode` to choose.
 
@@ -185,7 +185,7 @@ A browser can do the same from `/dashboard/conformance`. Same-origin only, human
 
 | kind | What the worker must do |
 |---|---|
-| `identity` | Report hostname, cwd, and the first 8 hex of `$DOCKET_TASK_ID` |
+| `identity` | Report hostname, cwd, and the first 8 hex of `$DOCKET_SESSION_ID` |
 | `write` | Write `smoke.txt` in the workspace containing only the hostname |
 | `shell` | `echo` a nonce (`dkt-smoke-` plus the run id prefix) and report that line |
 

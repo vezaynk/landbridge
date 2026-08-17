@@ -1,8 +1,8 @@
 namespace Docket.Core;
 
-public readonly record struct TaskId(Guid Value)
+public readonly record struct SessionId(Guid Value)
 {
-    public static TaskId New() => new(Guid.NewGuid());
+    public static SessionId New() => new(Guid.NewGuid());
     public override string ToString() => Value.ToString("N");
 }
 

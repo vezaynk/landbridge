@@ -22,12 +22,12 @@ namespace Docket.ControlPlane;
 /// later: the relay splices exactly two ends per forward id, so closing the producer's
 /// tunnel ends theirs.
 /// </param>
-public readonly record struct ForwardTeardown(TaskId Producer, string ForwardId, TaskId? Consumer);
+public readonly record struct ForwardTeardown(SessionId Producer, string ForwardId, SessionId? Consumer);
 
 /// <summary>
 /// Tells the machines holding a task's relay forwards to close them, at the moment the
 /// task leaves <c>working</c> (spec §8.3: "an established splice persists <b>until the
-/// owning task leaves <c>working</c></b>"). Driven from <see cref="TaskStore"/>'s
+/// owning task leaves <c>working</c></b>"). Driven from <see cref="SessionStore"/>'s
 /// <c>ClearServicesAndForwards</c> effect, alongside the service-row delete and the grant
 /// revoke that were already there.
 ///
@@ -35,7 +35,7 @@ public readonly record struct ForwardTeardown(TaskId Producer, string ForwardId,
 /// else — revoking it stops the next tunnel and says nothing to a splice already running.
 /// Where the plane killed the worker the splice ended by accident (the tree-kill takes the
 /// producer's sockets with it, so the tunnels die by RST); where nothing was killed —
-/// <c>report_result</c>, <c>cancel_task</c> — the splice and the consumer end's idle
+/// <c>report_result</c>, <c>cancel_session</c> — the splice and the consumer end's idle
 /// loopback listener outlived the task that authorized them. This is the command that
 /// makes the spec's bound true rather than incidental.</para>
 ///
@@ -71,7 +71,7 @@ public sealed class ForwardTeardownService(
         }
     }
 
-    private async Task CloseEndAsync(TaskId end, ForwardTeardown forward, string role, CancellationToken ct)
+    private async Task CloseEndAsync(SessionId end, ForwardTeardown forward, string role, CancellationToken ct)
     {
         // The end's own task id, not the producer's: a worker's consumer end received
         // open-forward under its own task, and close-forward's task field is correlation

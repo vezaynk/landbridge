@@ -72,7 +72,7 @@ public sealed class ForwardDataPlaneEndToEndTests(PostgresFixture pg) : IAsyncLi
         // hands the open-forward command straight to its docketd (§10).
         registry.Register("mc", new HashSet<string> { "default" }, consumerDaemon.Send);
         registry.Register("mp", new HashSet<string> { "default" }, producerDaemon.Send);
-        registry.TrackDispatch("mc", consumer.Task);
+        registry.TrackDispatch("mc", consumer.Session);
         registry.TrackDispatch("mp", producerTask);
 
         // ── Consumer worker: open_forward over real MCP → a loopback address ────

@@ -62,15 +62,15 @@ public sealed class RelayGrantRow
     // records the producer + Team but has no consumer worker instance to bind. A
     // forward grant (§8.3) always sets both; a preview grant leaves both null.
     // Neither validation (ValidateAsync) nor revocation (ClearServicesAndForwards,
-    // keyed on ProducerTaskId) reads these, so binding is attribution only.
-    public Guid? ConsumerTaskId { get; set; }
+    // keyed on ProducerSessionId) reads these, so binding is attribution only.
+    public Guid? ConsumerSessionId { get; set; }
     public Guid? ConsumerInstanceId { get; set; }
 
     /// <summary>The registered service name the forward resolves to (§8.2).</summary>
     public string ServiceName { get; set; } = "";
 
     /// <summary>The task that registered the service — the forward's producer end (§8.3).</summary>
-    public Guid ProducerTaskId { get; set; }
+    public Guid ProducerSessionId { get; set; }
 
     public Guid TeamId { get; set; }
 
@@ -109,7 +109,7 @@ public abstract record RelayGrantResult
     /// the result rather than being re-queried by the orchestrator.
     /// </summary>
     public sealed record Issued(
-        string Grant, Guid ForwardId, DateTimeOffset ExpiresAt, TaskId Producer, int Port) : RelayGrantResult;
+        string Grant, Guid ForwardId, DateTimeOffset ExpiresAt, SessionId Producer, int Port) : RelayGrantResult;
 
     /// <summary>
     /// Refused (§9 check 11 — forwards resolve only to registered services owned

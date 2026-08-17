@@ -50,7 +50,7 @@ public sealed class ForwardOrchestrator(
         CancellationToken ct = default) =>
         // A worker's consumer end is the machine its own task was dispatched to.
         EstablishCoreAsync(
-            registry.MachineFor(consumer.Task), consumer.Task, "your machine",
+            registry.MachineFor(consumer.Session), consumer.Session, "your machine",
             issued, serviceName, relayUrl, ct);
 
     /// <summary>
@@ -84,7 +84,7 @@ public sealed class ForwardOrchestrator(
     /// carries for event correlation only.
     /// </summary>
     private async Task<ForwardEstablishResult> EstablishCoreAsync(
-        string? consumerMachine, TaskId consumerCorrelation, string consumerLabel,
+        string? consumerMachine, SessionId consumerCorrelation, string consumerLabel,
         RelayGrantResult.Issued issued, string serviceName, string relayUrl,
         CancellationToken ct)
     {
@@ -147,7 +147,7 @@ public sealed class ForwardOrchestrator(
     /// endpoint renders a clean status rather than a hang.
     /// </summary>
     public async Task<bool> SendProducerDialAsync(
-        TaskId producer, string forwardId, string serviceName, string grant, string relayUrl, int port,
+        SessionId producer, string forwardId, string serviceName, string grant, string relayUrl, int port,
         CancellationToken ct = default)
     {
         var producerMachine = registry.MachineFor(producer);

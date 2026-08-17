@@ -16,7 +16,7 @@ namespace Docket.Mcp.Tests;
 
 /// <summary>
 /// §6/§11 continuation targeting through the surfaces a Lead actually touches: the
-/// <c>create_task(continues:)</c> tool orchestration (resolving the continued task's
+/// <c>create_session(continues:)</c> tool orchestration (resolving the continued task's
 /// row + the live machine, defaulting the profile, rejecting cross-Team and
 /// undeclared-profile requests) and the spawn seam — a continuation dispatch that
 /// resumes the inherited session id on its preferred machine, observed as
@@ -49,18 +49,18 @@ public sealed class ContinuationEndToEndTests(PostgresFixture pg) : IAsyncLifeti
     /// <summary>Seeds a continued task (Team, profile, harness session ref) and, unless
     /// <paramref name="track"/> is false, makes the registry report it running on
     /// <paramref name="machine"/> with <paramref name="machineProfiles"/>.</summary>
-    private async Task<TaskId> SeedContinued(
+    private async Task<SessionId> SeedContinued(
         RunnerConnectionRegistry registry, TeamId team, string machine, string? profile, string? sessionRef,
         bool track = true, params string[] machineProfiles)
     {
         var profiles = machineProfiles.Length == 0 ? new[] { "default" } : machineProfiles;
-        TaskId id;
+        SessionId id;
         await using (var db = pg.NewContext())
         {
-            var store = new TaskStore(db, _clock);
-            var created = (StoreResult.Applied)await store.CreateAsync(new CreateTask(
+            var store = new SessionStore(db, _clock);
+            var created = (StoreResult.Applied)await store.CreateAsync(new CreateSession(
                 new LeadClaim(team), team, "criteria", CompletionMode.Lead, profile));
-            id = created.Task.Id;
+            id = created.Session.Id;
             if (sessionRef is not null)
                 await store.StampHarnessSessionRefAsync(id, sessionRef);
         }
@@ -69,7 +69,7 @@ public sealed class ContinuationEndToEndTests(PostgresFixture pg) : IAsyncLifeti
             registry.Register(machine, new HashSet<string>(profiles, StringComparer.Ordinal), (_, _) => Task.CompletedTask);
             registry.ApplyHeartbeat(machine, new MachineHeartbeat(
                 machine, Ready: true, UnderBackPressure: false, new SystemLoad(0, 0, 0),
-                RunningTasks: 0, profiles, DateTimeOffset.UtcNow));
+                RunningSessions: 0, profiles, DateTimeOffset.UtcNow));
             registry.TrackDispatch(machine, id);
         }
         return id;
@@ -85,31 +85,31 @@ public sealed class ContinuationEndToEndTests(PostgresFixture pg) : IAsyncLifeti
     /// afterwards and it never parked, which is the ordinary shape of a predecessor a Lead wants
     /// to continue.
     /// </summary>
-    private async Task<TaskId> SeedRanAndFinished(TeamId team, string machine, string sessionRef)
+    private async Task<SessionId> SeedRanAndFinished(TeamId team, string machine, string sessionRef)
     {
-        TaskId id;
+        SessionId id;
         WorkerInstanceId instance;
         // Two contexts on purpose: StampHarnessSessionRefAsync is an ExecuteUpdate, so it moves
         // the row's xmin without the tracked entity knowing, and a transition applied afterwards
         // on the same context loses the optimistic-concurrency check it never saw coming.
         await using (var db = pg.NewContext())
         {
-            var store = new TaskStore(db, _clock);
-            var created = (StoreResult.Applied)await store.CreateAsync(new CreateTask(
+            var store = new SessionStore(db, _clock);
+            var created = (StoreResult.Applied)await store.CreateAsync(new CreateSession(
                 new LeadClaim(team), team, "criteria", CompletionMode.Lead, Profile: null));
-            id = created.Task.Id;
+            id = created.Session.Id;
 
             var dispatched = Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(
                 new MachineSnapshot(machine, Ready: true, UnderBackPressure: false, Profiles()),
                 WorkerInstanceId.New()));
-            Assert.Equal(id, dispatched.Task.Id);
-            instance = dispatched.Task.CurrentInstance!.Value;
+            Assert.Equal(id, dispatched.Session.Id);
+            instance = dispatched.Session.CurrentInstance!.Value;
 
             await store.StampHarnessSessionRefAsync(id, sessionRef);
         }
         await using (var db = pg.NewContext())
         {
-            var store = new TaskStore(db, _clock);
+            var store = new SessionStore(db, _clock);
             Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(
                 id, new ReportResult(new WorkerCaller(team, id, instance), "ref")));
             Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(id, new VerdictAccept(new LeadClaim(team))));
@@ -124,14 +124,14 @@ public sealed class ContinuationEndToEndTests(PostgresFixture pg) : IAsyncLifeti
         var registry = new RunnerConnectionRegistry(_clock);
         var continued = await SeedContinued(registry, Team, "m1", profile: null, sessionRef: "sess-1");
 
-        var newIdText = await LeadFor(Team, registry).CreateTask(
+        var newIdText = await LeadFor(Team, registry).CreateSession(
             "resume the work", "ship it", "lead", profile: null, workspace: null, CancellationToken.None,
             continues: continued.ToString());
 
         var newId = Guid.Parse(newIdText);
         await using var v = pg.NewContext();
-        var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == newId);
-        Assert.Equal(continued.Value, row.ContinuesTaskId);
+        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == newId);
+        Assert.Equal(continued.Value, row.ContinuesSessionId);
         Assert.Equal("m1", row.PreferredMachine);
         Assert.Equal(MachineGonePolicy.Degrade, row.OnMachineGone); // default policy
         Assert.Equal("sess-1", row.HarnessSessionRef);
@@ -145,7 +145,7 @@ public sealed class ContinuationEndToEndTests(PostgresFixture pg) : IAsyncLifeti
         var otherTeam = TeamId.New();
         var foreign = await SeedContinued(registry, otherTeam, "m1", profile: null, sessionRef: "sess-1");
 
-        var ex = await Assert.ThrowsAsync<McpException>(() => LeadFor(Team, registry).CreateTask(
+        var ex = await Assert.ThrowsAsync<McpException>(() => LeadFor(Team, registry).CreateSession(
             "resume", "ship it", "lead", null, null, CancellationToken.None, continues: foreign.ToString()));
         Assert.Contains("another Team", ex.Message);
     }
@@ -161,7 +161,7 @@ public sealed class ContinuationEndToEndTests(PostgresFixture pg) : IAsyncLifeti
         var continued = await SeedContinued(
             registry, Team, "m1", profile: null, sessionRef: "sess-1", track: true, machineProfiles: "default");
 
-        var ex = await Assert.ThrowsAsync<McpException>(() => LeadFor(Team, registry).CreateTask(
+        var ex = await Assert.ThrowsAsync<McpException>(() => LeadFor(Team, registry).CreateSession(
             "resume", "ship it", "lead", profile: "gpu", workspace: null, CancellationToken.None,
             continues: continued.ToString()));
         Assert.Contains(nameof(Rule.ContinuationProfileDeclaredByPreferredMachine), ex.Message);
@@ -178,31 +178,31 @@ public sealed class ContinuationEndToEndTests(PostgresFixture pg) : IAsyncLifeti
         var registry = new RunnerConnectionRegistry(_clock); // empty: m1 is gone
         var continued = await SeedRanAndFinished(Team, "m1", "sess-1");
 
-        var newIdText = await LeadFor(Team, registry).CreateTask(
+        var newIdText = await LeadFor(Team, registry).CreateSession(
             "carry on", "ship it", "lead", null, null, CancellationToken.None,
             continues: continued.ToString());
 
-        var newId = new TaskId(Guid.Parse(newIdText));
+        var newId = new SessionId(Guid.Parse(newIdText));
         await using var db = pg.NewContext();
-        var row = await db.Tasks.AsNoTracking().SingleAsync(t => t.Id == newId.Value);
-        Assert.Equal(continued.Value, row.ContinuesTaskId);
+        var row = await db.Sessions.AsNoTracking().SingleAsync(t => t.Id == newId.Value);
+        Assert.Equal(continued.Value, row.ContinuesSessionId);
         Assert.Equal("m1", row.PreferredMachine); // seeded from the instance row
         Assert.Equal(MachineGonePolicy.Degrade, row.OnMachineGone);
         Assert.Equal("sess-1", row.HarnessSessionRef);
-        Assert.Equal(continued.Value, row.WorkDirTaskId); // §11: the directory follows regardless
+        Assert.Equal(continued.Value, row.WorkDirSessionId); // §11: the directory follows regardless
 
         // And the machine-gone question is answered where §6/§11 puts it — at dispatch, by the
         // policy the Lead chose. m2 claims it, cold-starts, and the dropped conversation is
         // recorded rather than silently lost. Refusing at creation pre-empted all of this.
-        var store = new TaskStore(db, _clock);
+        var store = new SessionStore(db, _clock);
         var applied = Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(
             new MachineSnapshot("m2", Ready: true, UnderBackPressure: false, Profiles()),
             WorkerInstanceId.New(), CancellationToken.None, connectedMachines: ["m2"]));
-        Assert.Equal(newId, applied.Task.Id);
+        Assert.Equal(newId, applied.Session.Id);
         Assert.Null(applied.HarnessSessionRef);          // cold start: transcript abandoned
-        Assert.Equal(continued, applied.WorkDirTask);    // directory still inherited
-        Assert.True(await db.TaskEvents.AnyAsync(e =>
-            e.TaskId == newId.Value && e.Kind == TaskEventRow.ContinuationMemoryLostKind));
+        Assert.Equal(continued, applied.WorkDirSession);    // directory still inherited
+        Assert.True(await db.SessionEvents.AnyAsync(e =>
+            e.SessionId == newId.Value && e.Kind == SessionEventRow.ContinuationMemoryLostKind));
     }
 
     [SkippableFact]
@@ -215,7 +215,7 @@ public sealed class ContinuationEndToEndTests(PostgresFixture pg) : IAsyncLifeti
         var registry = new RunnerConnectionRegistry(_clock);
         var continued = await SeedContinued(registry, Team, "m1", profile: null, sessionRef: null, track: false);
 
-        var ex = await Assert.ThrowsAsync<McpException>(() => LeadFor(Team, registry).CreateTask(
+        var ex = await Assert.ThrowsAsync<McpException>(() => LeadFor(Team, registry).CreateSession(
             "resume", "ship it", "lead", null, null, CancellationToken.None, continues: continued.ToString()));
         Assert.Contains("never been dispatched", ex.Message);
     }
@@ -226,7 +226,7 @@ public sealed class ContinuationEndToEndTests(PostgresFixture pg) : IAsyncLifeti
         Skip.IfNot(pg.Available, pg.SkipReason);
         var registry = new RunnerConnectionRegistry(_clock);
 
-        var ex = await Assert.ThrowsAsync<McpException>(() => LeadFor(Team, registry).CreateTask(
+        var ex = await Assert.ThrowsAsync<McpException>(() => LeadFor(Team, registry).CreateSession(
             "do the thing", "ship it", "lead", null, null, CancellationToken.None, onMachineGone: "pin"));
         Assert.Contains("continues", ex.Message);
     }
@@ -251,23 +251,23 @@ public sealed class ContinuationEndToEndTests(PostgresFixture pg) : IAsyncLifeti
             var team = TeamId.New();
             var snapshot = new MachineSnapshot("m1", Ready: true, UnderBackPressure: false, Set("default"));
 
-            TaskId taskId;
+            SessionId sessionId;
             string? resumeRef;
             await using (var db = pg.NewContext())
             {
-                var store = new TaskStore(db, clock);
+                var store = new SessionStore(db, clock);
                 // A continuation seeded exactly as the tool would, preferring m1 with an
                 // inherited session ref. No real continued row needed — the seeding is
                 // what drives resume (the engine only validated Team + profile).
-                var created = (StoreResult.Applied)await store.CreateAsync(new CreateTask(
+                var created = (StoreResult.Applied)await store.CreateAsync(new CreateSession(
                     new LeadClaim(team), team, "criteria", CompletionMode.Lead, null,
-                    Continues: new Continuation(TaskId.New(), team, "m1", inherited, MachineGonePolicy.Degrade, null)));
-                taskId = created.Task.Id;
+                    Continues: new Continuation(SessionId.New(), team, "m1", inherited, MachineGonePolicy.Degrade, null)));
+                sessionId = created.Session.Id;
 
                 // First dispatch prefers m1 and carries the inherited ref back.
                 var applied = (StoreResult.Applied)await store.DispatchNextAsync(
                     snapshot, WorkerInstanceId.New(), ct, ["m1"]);
-                Assert.Equal(taskId, applied.Task.Id);
+                Assert.Equal(sessionId, applied.Session.Id);
                 resumeRef = applied.HarnessSessionRef;
                 Assert.Equal(inherited, resumeRef);
             }
@@ -276,11 +276,11 @@ public sealed class ContinuationEndToEndTests(PostgresFixture pg) : IAsyncLifeti
             // supervisor: resuming (ref present + profile declares resume.args) rebuilds
             // session/load carrying the inherited id, on the connection the spawn opens.
             var dispatch = new DispatchCommand(
-                taskId, "default", WorkerToken: "worker-1",
+                sessionId, "default", WorkerToken: "worker-1",
                 McpConfigJson: """{"mcpServers":{}}""", ResumeSessionRef: resumeRef);
             supervisor.Spawn(dispatch, profile, "m1");
 
-            var sessionPath = Path.Combine(workRoot, taskId.ToString(), "acp_session.json");
+            var sessionPath = Path.Combine(workRoot, sessionId.ToString(), "acp_session.json");
             Assert.True(
                 await WaitUntilAsync(
                     () => Task.FromResult(

@@ -76,7 +76,7 @@ public sealed class PostgresFixture : IAsyncLifetime
         // limit and its byte tally), so a row surviving a reset silently changes what a later
         // test measures — and a class sharing one static TeamId would inherit it.
         await db.Database.ExecuteSqlRawAsync(
-            "TRUNCATE tasks, worker_instances, registered_services, task_events, credentials, machines, lead_events, lead_machine_bindings, preview_mappings, relay_grants, team_forward_usage, task_usage RESTART IDENTITY CASCADE");
+            "TRUNCATE sessions, worker_instances, registered_services, session_events, credentials, machines, lead_events, lead_machine_bindings, preview_mappings, relay_grants, team_forward_usage, session_usage RESTART IDENTITY CASCADE");
     }
 
     private async Task MigrateAsync()

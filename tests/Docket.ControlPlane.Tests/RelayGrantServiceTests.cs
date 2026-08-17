@@ -33,17 +33,17 @@ public sealed class RelayGrantServiceTests(PostgresFixture pg) : IAsyncLifetime
     /// registered <paramref name="serviceName"/> — the precondition IssueAsync
     /// checks. Returns the producer's task id.
     /// </summary>
-    private static async Task<TaskId> WorkingServiceAsync(
+    private static async Task<SessionId> WorkingServiceAsync(
         DocketDbContext db, TimeProvider clock, TeamId team, string serviceName)
     {
-        var store = new TaskStore(db, clock);
+        var store = new SessionStore(db, clock);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(LeadFor(team), team, "criteria", CompletionMode.Lead, null));
+            new CreateSession(LeadFor(team), team, "criteria", CompletionMode.Lead, null));
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(Machine(), instance);
-        var caller = new WorkerCaller(team, created.Task.Id, instance);
+        var caller = new WorkerCaller(team, created.Session.Id, instance);
         Assert.IsType<StoreResult.Applied>(await store.RegisterServiceAsync(caller, serviceName, 5432));
-        return created.Task.Id;
+        return created.Session.Id;
     }
 
     // ── Issuance ──────────────────────────────────────────────────────────────
@@ -57,7 +57,7 @@ public sealed class RelayGrantServiceTests(PostgresFixture pg) : IAsyncLifetime
         var producer = await WorkingServiceAsync(db, clock, Team, "db");
         var grants = new RelayGrantService(db, clock);
 
-        var consumer = new WorkerCaller(Team, TaskId.New(), WorkerInstanceId.New());
+        var consumer = new WorkerCaller(Team, SessionId.New(), WorkerInstanceId.New());
         var issued = Assert.IsType<RelayGrantResult.Issued>(await grants.IssueAsync(consumer, "db"));
 
         Assert.StartsWith("dkt_g_", issued.Grant);
@@ -65,8 +65,8 @@ public sealed class RelayGrantServiceTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(clock.GetUtcNow() + RelayGrantService.GrantTtl, issued.ExpiresAt);
 
         var row = await db.RelayGrants.AsNoTracking().SingleAsync(g => g.ForwardId == issued.ForwardId);
-        Assert.Equal(producer.Value, row.ProducerTaskId);
-        Assert.Equal(consumer.Task.Value, row.ConsumerTaskId);
+        Assert.Equal(producer.Value, row.ProducerSessionId);
+        Assert.Equal(consumer.Session.Value, row.ConsumerSessionId);
         Assert.Equal("db", row.ServiceName);
         Assert.False(row.Revoked);
         // Only the hash is at rest — never the grant itself (§5).
@@ -81,7 +81,7 @@ public sealed class RelayGrantServiceTests(PostgresFixture pg) : IAsyncLifetime
         var clock = new FakeTimeProvider();
         var grants = new RelayGrantService(db, clock);
 
-        var consumer = new WorkerCaller(Team, TaskId.New(), WorkerInstanceId.New());
+        var consumer = new WorkerCaller(Team, SessionId.New(), WorkerInstanceId.New());
         var refused = Assert.IsType<RelayGrantResult.Refused>(await grants.IssueAsync(consumer, "nope"));
 
         Assert.Equal(Rule.ForwardsRequireRegistration, refused.Rule);
@@ -94,20 +94,20 @@ public sealed class RelayGrantServiceTests(PostgresFixture pg) : IAsyncLifetime
         Skip.IfNot(pg.Available, pg.SkipReason);
         await using var db = pg.NewContext();
         var clock = new FakeTimeProvider();
-        var store = new TaskStore(db, clock);
+        var store = new SessionStore(db, clock);
 
         // A submitted (never-working) producer with a registered-services row
         // inserted directly: the store refuses to register while not working, so
         // we manufacture the defensive case the working-owner check exists for.
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(LeadFor(Team), Team, "criteria", CompletionMode.Lead, null));
+            new CreateSession(LeadFor(Team), Team, "criteria", CompletionMode.Lead, null));
         db.RegisteredServices.Add(new RegisteredServiceRow
         {
-            TaskId = created.Task.Id.Value, TeamId = Team.Value, Name = "db", Port = 5432, CreatedAt = clock.GetUtcNow(),
+            SessionId = created.Session.Id.Value, TeamId = Team.Value, Name = "db", Port = 5432, CreatedAt = clock.GetUtcNow(),
         });
         await db.SaveChangesAsync();
 
-        var consumer = new WorkerCaller(Team, TaskId.New(), WorkerInstanceId.New());
+        var consumer = new WorkerCaller(Team, SessionId.New(), WorkerInstanceId.New());
         var refused = Assert.IsType<RelayGrantResult.Refused>(await new RelayGrantService(db, clock).IssueAsync(consumer, "db"));
 
         Assert.Equal(Rule.ForwardsRequireRegistration, refused.Rule);
@@ -125,7 +125,7 @@ public sealed class RelayGrantServiceTests(PostgresFixture pg) : IAsyncLifetime
 
         // A consumer in a different Team cannot even learn the service exists (§8.2).
         var otherTeam = TeamId.New();
-        var consumer = new WorkerCaller(otherTeam, TaskId.New(), WorkerInstanceId.New());
+        var consumer = new WorkerCaller(otherTeam, SessionId.New(), WorkerInstanceId.New());
         var refused = Assert.IsType<RelayGrantResult.Refused>(await grants.IssueAsync(consumer, "secret-db"));
 
         Assert.Equal(Rule.ForwardsRequireRegistration, refused.Rule);
@@ -143,7 +143,7 @@ public sealed class RelayGrantServiceTests(PostgresFixture pg) : IAsyncLifetime
         var clock = new FakeTimeProvider();
         await WorkingServiceAsync(db, clock, Team, "db");
         var grants = new RelayGrantService(db, clock);
-        var consumer = new WorkerCaller(Team, TaskId.New(), WorkerInstanceId.New());
+        var consumer = new WorkerCaller(Team, SessionId.New(), WorkerInstanceId.New());
         var issued = Assert.IsType<RelayGrantResult.Issued>(await grants.IssueAsync(consumer, "db"));
 
         // Each end opens once: consumer and producer both validate true.
@@ -159,7 +159,7 @@ public sealed class RelayGrantServiceTests(PostgresFixture pg) : IAsyncLifetime
         var clock = new FakeTimeProvider();
         await WorkingServiceAsync(db, clock, Team, "db");
         var grants = new RelayGrantService(db, clock);
-        var consumer = new WorkerCaller(Team, TaskId.New(), WorkerInstanceId.New());
+        var consumer = new WorkerCaller(Team, SessionId.New(), WorkerInstanceId.New());
         var issued = Assert.IsType<RelayGrantResult.Issued>(await grants.IssueAsync(consumer, "db"));
 
         Assert.False(await grants.ValidateAsync(issued.Grant, Guid.NewGuid(), RelayGrantRole.Consumer));
@@ -173,7 +173,7 @@ public sealed class RelayGrantServiceTests(PostgresFixture pg) : IAsyncLifetime
         var clock = new FakeTimeProvider();
         await WorkingServiceAsync(db, clock, Team, "db");
         var grants = new RelayGrantService(db, clock);
-        var consumer = new WorkerCaller(Team, TaskId.New(), WorkerInstanceId.New());
+        var consumer = new WorkerCaller(Team, SessionId.New(), WorkerInstanceId.New());
         var issued = Assert.IsType<RelayGrantResult.Issued>(await grants.IssueAsync(consumer, "db"));
 
         // Expiry gates open (§8.3): once the TTL lapses, no tunnel may be opened.
@@ -189,7 +189,7 @@ public sealed class RelayGrantServiceTests(PostgresFixture pg) : IAsyncLifetime
         var clock = new FakeTimeProvider();
         await WorkingServiceAsync(db, clock, Team, "db");
         var grants = new RelayGrantService(db, clock);
-        var consumer = new WorkerCaller(Team, TaskId.New(), WorkerInstanceId.New());
+        var consumer = new WorkerCaller(Team, SessionId.New(), WorkerInstanceId.New());
         var issued = Assert.IsType<RelayGrantResult.Issued>(await grants.IssueAsync(consumer, "db"));
 
         Assert.True(await grants.ValidateAsync(issued.Grant, issued.ForwardId, RelayGrantRole.Consumer));
@@ -207,7 +207,7 @@ public sealed class RelayGrantServiceTests(PostgresFixture pg) : IAsyncLifetime
         var clock = new FakeTimeProvider();
         await WorkingServiceAsync(db, clock, Team, "db");
         var grants = new RelayGrantService(db, clock);
-        var consumer = new WorkerCaller(Team, TaskId.New(), WorkerInstanceId.New());
+        var consumer = new WorkerCaller(Team, SessionId.New(), WorkerInstanceId.New());
         var issued = Assert.IsType<RelayGrantResult.Issued>(await grants.IssueAsync(consumer, "db"));
 
         await db.RelayGrants.Where(g => g.ForwardId == issued.ForwardId)
@@ -222,26 +222,26 @@ public sealed class RelayGrantServiceTests(PostgresFixture pg) : IAsyncLifetime
         Skip.IfNot(pg.Available, pg.SkipReason);
         await using var db = pg.NewContext();
         var clock = new FakeTimeProvider();
-        var store = new TaskStore(db, clock);
+        var store = new SessionStore(db, clock);
 
         // Producer working + service registered; a consumer holds a live grant.
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(LeadFor(Team), Team, "criteria", CompletionMode.Lead, null));
+            new CreateSession(LeadFor(Team), Team, "criteria", CompletionMode.Lead, null));
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(Machine(), instance);
-        var producerCaller = new WorkerCaller(Team, created.Task.Id, instance);
+        var producerCaller = new WorkerCaller(Team, created.Session.Id, instance);
         Assert.IsType<StoreResult.Applied>(await store.RegisterServiceAsync(producerCaller, "db", 5432));
 
         var grants = new RelayGrantService(db, clock);
-        var consumer = new WorkerCaller(Team, TaskId.New(), WorkerInstanceId.New());
+        var consumer = new WorkerCaller(Team, SessionId.New(), WorkerInstanceId.New());
         var issued = Assert.IsType<RelayGrantResult.Issued>(await grants.IssueAsync(consumer, "db"));
 
         // The producer leaves working: ClearServicesAndForwards clears its
         // registered services AND revokes its live grants (§6/§8.3), one atomic step.
-        await store.ApplyAsync(created.Task.Id, new LivenessLost(LivenessLossReason.LivenessTimeout));
+        await store.ApplyAsync(created.Session.Id, new LivenessLost(LivenessLossReason.LivenessTimeout));
 
         await using var verify = pg.NewContext();
-        Assert.Empty(await verify.RegisteredServices.AsNoTracking().Where(s => s.TaskId == created.Task.Id.Value).ToListAsync());
+        Assert.Empty(await verify.RegisteredServices.AsNoTracking().Where(s => s.SessionId == created.Session.Id.Value).ToListAsync());
         Assert.True((await verify.RelayGrants.AsNoTracking().SingleAsync(g => g.ForwardId == issued.ForwardId)).Revoked);
         // The revoked grant no longer opens a tunnel.
         Assert.False(await grants.ValidateAsync(issued.Grant, issued.ForwardId, RelayGrantRole.Consumer));
@@ -263,7 +263,7 @@ public sealed class RelayGrantServiceTests(PostgresFixture pg) : IAsyncLifetime
         var team = TeamId.New();
         await WorkingServiceAsync(db, clock, team, "db");
         var grants = new RelayGrantService(db, clock, forwardsPerWindow: 3, forwardWindow: TimeSpan.FromMinutes(1));
-        var consumer = new WorkerCaller(team, TaskId.New(), WorkerInstanceId.New());
+        var consumer = new WorkerCaller(team, SessionId.New(), WorkerInstanceId.New());
 
         for (var i = 0; i < 3; i++)
             Assert.IsType<RelayGrantResult.Issued>(await grants.IssueAsync(consumer, "db"));
@@ -291,12 +291,12 @@ public sealed class RelayGrantServiceTests(PostgresFixture pg) : IAsyncLifetime
         await WorkingServiceAsync(db, clock, other, "db");
         var grants = new RelayGrantService(db, clock, forwardsPerWindow: 2, forwardWindow: TimeSpan.FromMinutes(1));
 
-        var noisy = new WorkerCaller(loud, TaskId.New(), WorkerInstanceId.New());
+        var noisy = new WorkerCaller(loud, SessionId.New(), WorkerInstanceId.New());
         for (var i = 0; i < 2; i++)
             Assert.IsType<RelayGrantResult.Issued>(await grants.IssueAsync(noisy, "db"));
         Assert.IsType<RelayGrantResult.Refused>(await grants.IssueAsync(noisy, "db"));
 
-        var quiet = new WorkerCaller(other, TaskId.New(), WorkerInstanceId.New());
+        var quiet = new WorkerCaller(other, SessionId.New(), WorkerInstanceId.New());
         Assert.IsType<RelayGrantResult.Issued>(await grants.IssueAsync(quiet, "db"));
     }
 
@@ -312,7 +312,7 @@ public sealed class RelayGrantServiceTests(PostgresFixture pg) : IAsyncLifetime
         var team = TeamId.New();
         await WorkingServiceAsync(db, clock, team, "db");
         var grants = new RelayGrantService(db, clock, forwardsPerWindow: 2, forwardWindow: TimeSpan.FromMinutes(1));
-        var consumer = new WorkerCaller(team, TaskId.New(), WorkerInstanceId.New());
+        var consumer = new WorkerCaller(team, SessionId.New(), WorkerInstanceId.New());
 
         // Two mints, neither ever validated into a tunnel.
         Assert.IsType<RelayGrantResult.Issued>(await grants.IssueAsync(consumer, "db"));

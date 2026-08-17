@@ -16,21 +16,21 @@ one shape and an entry point per harness.
 
 | Section | Field | Notes |
 |---|---|---|
-| `machine` | `work_root` | Per-task scratch dirs; `docketd` spawns each task in `{work_root}/{task_id}` (§10). Not the workspace. |
+| `machine` | `work_root` | Per-task scratch dirs; `docketd` spawns each task in `{work_root}/{session_id}` (§10). Not the workspace. |
 | `machine` | `heartbeat_seconds` | Machine-liveness cadence, in seconds (§10); default `15`. |
 | `machine` | `back_pressure` | `max_cpu_load` / `max_memory_load` / `max_disk_usage` in [0,1]; defaults `0.90` / `0.90` / `0.95`, tune per box (§10). CPU is not yet observed cross-platform, so `max_cpu_load` is currently inert — memory and disk carry the signal (§10). |
 | `profiles[]` | `name` | Profile identifier. `profiles` is a JSON **array**; exactly one entry MUST be named `default` (§10). |
 | `profiles[]` | `spawn` | argv passed to `execve` — **never a shell** (§10). Substitutions below. |
-| `profiles[]` | `follow_up` | The turn sent to **wake a live session** when there is new input on the assignment — an answered question today, a Lead's message later (`ideas/sessions.md`). **Configuration, never content**: the input itself stays on the assignment and is pulled by the worker's own authenticated `get_task`, which is what makes that read a *receipt*. Pushing the text here instead would reduce delivery to "queued", put answer content on a second path out of the MCP channel, and mix per-message content into profile config. Name the docket tools the way *this* harness spells them; the default names none. |
+| `profiles[]` | `follow_up` | The turn sent to **wake a live session** when there is new input on the assignment — an answered question today, a Lead's message later (`ideas/sessions.md`). **Configuration, never content**: the input itself stays on the assignment and is pulled by the worker's own authenticated `get_session`, which is what makes that read a *receipt*. Pushing the text here instead would reduce delivery to "queued", put answer content on a second path out of the MCP channel, and mix per-message content into profile config. Name the docket tools the way *this* harness spells them; the default names none. |
 | `profiles[]` | `prompt` | The worker's opening turn, sent as `session/prompt`. **Required**: an ACP agent takes no prompt on argv, so a profile without one spawns an agent that completes the handshake, waits, and does nothing. No default is possible — the text has to name the docket tools the way *this* harness spells them. Same `{...}` substitutions as the spawn argv. |
 | `profiles[]` | `auth_method` | Which of the agent's declared ACP `authMethods` to use. Consulted **only** when the agent refuses `session/new` with `-32000 "authentication required"` — a declared method means authentication is *available*, not required, so an agent already holding a credential is never authenticated. **Required on that refusal.** Unset is a fail, not a guess at the first declared method (that is often a browser login). `codex-acp` needs `"auth_method": "api-key"`. The request carries a method id and nothing else — the credential is the agent's own business, read from its environment (see `env`), so this key never holds a secret. `claude-agent-acp` declares no methods and needs none. |
 | `profiles[]` | `config_options` | String map sent as ACP `session/set_config_option` after `session/new` (or `session/load`). Each key is a `configId` the agent advertised on that session; the value must be one of that option's listed values. An unadvertised key, or a value the agent did not list, is skipped — not an error. OpenCode ACP defaults to `opencode/big-pickle` and ignores `opencode.json`, so this is how you pin `"model": "anthropic/claude-haiku-4-5-20251001"`. Leave it unset on an agent that advertises nothing (`claude-agent-acp`, and so far `codex-acp`). Strings only: boolean ACP options require a client capability this client does not declare. |
 | `profiles[]` | `session_mode` | ACP `session/set_mode` after `session/new` (or `session/load`). Sent only when that session advertised the `modeId`. Goose 1.46 defaults to `auto` (auto-approve); pin `"approve"` so permissions stay on `session/request_permission`. Unadvertised is skipped, not an error. |
 | `profiles[]` | `stop` | `wind_down_seconds` (default `30`) — the window an agent gets to end its turn after `session/cancel` before the portable tree-kill backstops it. No `mode` and no `message`: a stop is a cancel the agent is *specified* to honour, so there is nothing left for a mode to select. `ttl=0` kills immediately (§9 check 12). |
-| `profiles[]` | `env` | String map stamped on every spawn (and resume) of this profile. Values take the same `{task_id}` / `{machine_id}` / `{work_dir}` / `{session_id}` / `{mcp_url}` / `{worker_token}` substitutions `spawn` does. Applied after the reserved `DOCKET_*` stamps and before `telemetry.env`. The four names docketd owns — `DOCKET_MACHINE_ID`, `DOCKET_TASK_ID`, `DOCKET_WORKER_TOKEN`, `DOCKET_TRACEPARENT` — are **refused at load**, not silently dropped. Use this to isolate a home (`GROK_HOME` / `CODEX_HOME`) only when the operator asked for a sealed box. Prefer `files[]` for additive project-local MCP. |
+| `profiles[]` | `env` | String map stamped on every spawn (and resume) of this profile. Values take the same `{session_id}` / `{machine_id}` / `{work_dir}` / `{harness_session_ref}` / `{mcp_url}` / `{worker_token}` substitutions `spawn` does. Applied after the reserved `DOCKET_*` stamps and before `telemetry.env`. The four names docketd owns — `DOCKET_MACHINE_ID`, `DOCKET_SESSION_ID`, `DOCKET_WORKER_TOKEN`, `DOCKET_TRACEPARENT` — are **refused at load**, not silently dropped. Use this to isolate a home (`GROK_HOME` / `CODEX_HOME`) only when the operator asked for a sealed box. Prefer `files[]` for additive project-local MCP. |
 | `profiles[]` | `files` | Files written into `{work_dir}` **before** the harness starts (#112 G2). Each entry is `path` + `contents` (both substituted) and optional `mode` (octal, default `0600`). A relative path is resolved against the work dir (so `.grok/config.toml` and `{work_dir}/.grok/config.toml` land in the same place). After substitution the path must stay under the work dir — `..` that escapes fails the spawn. Parent directories are created. This is how a Grok profile drops `{work_dir}/.grok/config.toml` so Grok **merges** docket with `~/.grok` instead of replacing it. |
-| `profiles[]` | `hooks` | Argv hooks, **never a shell** (§10). `before_spawn` runs after `files[]` and before `Process.Start`; non-zero or timeout (10s) is fail-closed (`spawn_failed`). `after_exit` is best-effort after the worker's `exited` and stray reap, skipped for superseded instances. Hook processes get `DOCKET_MACHINE_ID`, `DOCKET_HOOK`, and the same `profiles[].env` map the worker does (minus reserved `DOCKET_*`), not `DOCKET_TASK_ID` / `DOCKET_WORKER_TOKEN`. Use only when the harness will not read a project-local file (Codex / `CODEX_HOME`). |
-| `profiles[]` | `telemetry` | `otel` bool (opt-in, default **false**), `endpoint` (OTLP destination; falls back to the one docketd inherited), and `env` (a string map of harness-specific variables, applied verbatim). When on, docketd sets the vendor-neutral `OTEL_*` exporter variables and appends `docket.task_id`/`docket.machine_id` to `OTEL_RESOURCE_ATTRIBUTES`, so the harness's own token/cost telemetry is attributable per task (§10). `otel: true` with **no endpoint configured and none inherited sets nothing at all** and warns once — telemetry is never enabled without a destination. Claude Code additionally needs `"env": { "CLAUDE_CODE_ENABLE_TELEMETRY": "1" }` (its own flag is data, since docketd holds no harness knowledge). **Visibility only**: Docket ingests none of it and enforces no ceiling — see [docs/TELEMETRY.md](../../../docs/TELEMETRY.md). |
+| `profiles[]` | `hooks` | Argv hooks, **never a shell** (§10). `before_spawn` runs after `files[]` and before `Process.Start`; non-zero or timeout (10s) is fail-closed (`spawn_failed`). `after_exit` is best-effort after the worker's `exited` and stray reap, skipped for superseded instances. Hook processes get `DOCKET_MACHINE_ID`, `DOCKET_HOOK`, and the same `profiles[].env` map the worker does (minus reserved `DOCKET_*`), not `DOCKET_SESSION_ID` / `DOCKET_WORKER_TOKEN`. Use only when the harness will not read a project-local file (Codex / `CODEX_HOME`). |
+| `profiles[]` | `telemetry` | `otel` bool (opt-in, default **false**), `endpoint` (OTLP destination; falls back to the one docketd inherited), and `env` (a string map of harness-specific variables, applied verbatim). When on, docketd sets the vendor-neutral `OTEL_*` exporter variables and appends `docket.session_id`/`docket.machine_id` to `OTEL_RESOURCE_ATTRIBUTES`, so the harness's own token/cost telemetry is attributable per task (§10). `otel: true` with **no endpoint configured and none inherited sets nothing at all** and warns once — telemetry is never enabled without a destination. Claude Code additionally needs `"env": { "CLAUDE_CODE_ENABLE_TELEMETRY": "1" }` (its own flag is data, since docketd holds no harness knowledge). **Visibility only**: Docket ingests none of it and enforces no ceiling — see [docs/TELEMETRY.md](../../../docs/TELEMETRY.md). |
 | `profiles[]` | `logs` | §12 machine-local transcript capture: `capture` (bool, default **false**), `max_bytes` (per-stream cap, default 50 MiB), `prune_after_days` (local hygiene, default 7, `0` disables). There is no `format` or `path`: both were read by nothing and have been removed, and a config still carrying either is accepted unchanged — see [Transcript capture](#transcript-capture-12) below. |
 | `profiles[]` | `max_concurrent` | Optional hard cap for a licence/rate/posture reason, unrelated to load (§10). |
 | `profiles[]` | `processes` | §10 agent-started **processes**: `agent_initiated` (bool, default **false**) and `max` (default 8). Named `processes`, not `services` — they are different things (§10). Whether a task on this profile may call `start_process`, and how many the machine may hold. |
@@ -62,7 +62,7 @@ here and `docketd` supervises it as **its own child**, outside every task's tree
 
 **Why this is not an escape hatch.** The process is not a descendant of any harness, so
 the task tree-kill does not reach it, and it is tagged with `DOCKET_MACHINE_ID` but
-deliberately **not** `DOCKET_TASK_ID` — so the restart sweep (keyed on machine id) reaps
+deliberately **not** `DOCKET_SESSION_ID` — so the restart sweep (keyed on machine id) reaps
 the previous generation when `docketd` restarts, while per-task exit cleanup (which
 requires a matching task id) steps over it. It escapes the task's lifetime while staying
 inside Docket's kill guarantee, on every OS, with no `setsid` and no environment
@@ -136,13 +136,13 @@ spawn, not configurably — §10):
 
 | Token / env | Value |
 |---|---|
-| `{task_id}` / `DOCKET_TASK_ID` | The dispatched task id. |
+| `{session_id}` / `DOCKET_SESSION_ID` | The dispatched Docket session id. |
 | `{machine_id}` / `DOCKET_MACHINE_ID` | This machine's id. |
-| `{work_dir}` | `{work_root}/{task_id}`, the spawn cwd. |
+| `{work_dir}` | `{work_root}/{session_id}`, the spawn cwd. |
 | `{mcp_config}` | Path to the generated MCP config `docketd` writes to `{work_dir}/mcp.json` (mode 0600) — **only when this token appears in spawn or resume argv**. Prefer `files[]` + `{worker_token}` / `{mcp_url}` (below) for a new profile; this token is the Claude convenience that remains so existing argv keeps working. |
 | `{mcp_url}` | The plane's public MCP URL (`Docket:PublicMcpUrl`). Filled by the plane on every dispatch so a `files[]` body can name the URL without parsing `mcp.json`. Also stamped on the worker as `DOCKET_MCP_URL`. |
 | `{worker_token}` | The minted worker-instance token (`dkt_w_` + 64 hex). For a `files[]` body that must embed the bearer (Claude's `--mcp-config` does not expand `${DOCKET_WORKER_TOKEN}`). Same secret as `DOCKET_WORKER_TOKEN` on the spawn env. |
-| `{session_id}` | Unused on an ACP profile. Resume is `session/load` on the connection, not an argv token. |
+| `{harness_session_ref}` | The ACP harness resume token, when the plane has one. Resume itself is `session/load` on the connection, not an argv token. |
 | `DOCKET_WORKER_TOKEN` | The minted worker-instance token (also `{worker_token}`). |
 
 ## The plane's MCP server, and how a worker gets it
@@ -266,9 +266,9 @@ own spelling and each `prompt` below differs only in that.
 
 | Harness | Docket tool spelling |
 |---|---|
-| Claude, Codex | `mcp__docket__get_task` |
-| OpenCode | `docket_get_task` |
-| Grok, Goose | `docket__get_task` |
+| Claude, Codex | `mcp__docket__get_session` |
+| OpenCode | `docket_get_session` |
+| Grok, Goose | `docket__get_session` |
 
 Everything else in these profiles is the same profile. Goose's spelling is from its
 extension naming (`{server}__{tool}` on the `docket` MCP server handed over at
@@ -297,11 +297,11 @@ follow differ only in the spawn argv and the tool spelling.
       // The opening turn, on the wire instead of in the argv. Note the tool names are
       // still harness-specific: ACP standardizes the CLIENT-agent channel, not the
       // agent-MCP one, so OpenCode still spells docket's tools `docket_<name>`.
-      "prompt": "You are a Docket worker running headless under docketd. You have been dispatched exactly one task. First call the docket_get_task MCP tool to read your assignment (namespace, description, completion_criteria, workspace, attempt). Do the work inside the assigned workspace. When done, call docket_report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call docket_request_input instead of guessing.",
+      "prompt": "You are a Docket worker running headless under docketd. You have been dispatched exactly one session. First call the docket_get_session MCP tool to read your assignment (namespace, description, completion_criteria, workspace, attempt). Do the work inside the assigned workspace. When done, call docket_report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call docket_request_input instead of guessing.",
       // The wake-up turn, sent when there is new input on the assignment (an answered
       // question). Configuration, never content: the answer is pulled by the worker over
       // MCP, and that pull is the read receipt (§11).
-      "follow_up": "There is new input on your assignment. Call docket_get_task to read it, then continue.",
+      "follow_up": "There is new input on your assignment. Call docket_get_session to read it, then continue.",
       // No events block: ACP is the event source. No resume block: resume is session/load.
       // No stdin key: deadman is correct and `closed` is refused.
       "stop": { "wind_down_seconds": 30 },
@@ -338,8 +338,8 @@ there is no interactive login step in the enroll path.
       "name": "default",
       // The adapter, not `claude`. It spawns claude itself.
       "spawn": ["claude-agent-acp"],
-      "prompt": "You are a Docket worker running headless under docketd. You have been dispatched exactly one task. First call the mcp__docket__get_task MCP tool to read your assignment (namespace, description, completion_criteria, workspace, attempt). Read the docket-worker skill. Do the work inside the assigned workspace. When done, call mcp__docket__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call mcp__docket__request_input instead of guessing. You do not verify or complete the task yourself.",
-      "follow_up": "There is new input on your assignment. Call mcp__docket__get_task to read it, then continue.",
+      "prompt": "You are a Docket worker running headless under docketd. You have been dispatched exactly one session. First call the mcp__docket__get_session MCP tool to read your assignment (namespace, description, completion_criteria, workspace, attempt). Read the docket-worker skill. Do the work inside the assigned workspace. When done, call mcp__docket__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call mcp__docket__request_input instead of guessing. You do not verify or complete the task yourself.",
+      "follow_up": "There is new input on your assignment. Call mcp__docket__get_session to read it, then continue.",
       // Model and turn caps are the adapter's business, not a docketd key — it reads the
       // same environment claude does. `--max-turns` has no ACP equivalent, so on this
       // profile the bound is the model plus the §10 no-progress ceiling. See the cost note.
@@ -371,8 +371,8 @@ ACP simply has.
     {
       "name": "default",
       "spawn": ["codex-acp"],
-      "prompt": "You are a Docket worker running headless under docketd. You have been dispatched exactly one task. First call the mcp__docket__get_task MCP tool to read your assignment. Do the work inside the assigned workspace. When done, call mcp__docket__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call mcp__docket__request_input instead of guessing.",
-      "follow_up": "There is new input on your assignment. Call mcp__docket__get_task to read it, then continue.",
+      "prompt": "You are a Docket worker running headless under docketd. You have been dispatched exactly one session. First call the mcp__docket__get_session MCP tool to read your assignment. Do the work inside the assigned workspace. When done, call mcp__docket__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call mcp__docket__request_input instead of guessing.",
+      "follow_up": "There is new input on your assignment. Call mcp__docket__get_session to read it, then continue.",
       // codex-acp refuses session/new until ACP `authenticate` has run, and declares two
       // methods: `api-key` (from the environment) and `chat-gpt` (a cached login). The
       // method is required on the profile — guessing the first declared one is how a
@@ -413,8 +413,8 @@ gone, along with its side effect of declaring a docket MCP server for every inte
       // `grok agent stdio`, NOT `grok -p --output-format streaming-json`. The latter is an
       // output shape that merely resembles ACP; the former is the protocol.
       "spawn": ["grok", "agent", "stdio"],
-      "prompt": "You are a Docket worker running headless under docketd. You have been dispatched exactly one task. First call the docket__get_task MCP tool to read your assignment (namespace, description, completion_criteria, workspace, attempt). Do the work inside the assigned workspace. When done, call docket__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call docket__request_input instead of guessing.",
-      "follow_up": "There is new input on your assignment. Call docket__get_task to read it, then continue.",
+      "prompt": "You are a Docket worker running headless under docketd. You have been dispatched exactly one session. First call the docket__get_session MCP tool to read your assignment (namespace, description, completion_criteria, workspace, attempt). Do the work inside the assigned workspace. When done, call docket__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call docket__request_input instead of guessing.",
+      "follow_up": "There is new input on your assignment. Call docket__get_session to read it, then continue.",
       // 1.0.4+ gates project-local config behind folder trust and a work dir is a
       // throwaway folder. Carried over from the stream profile; re-confirm under ACP.
       "env": { "GROK_FOLDER_TRUST": "0" },
@@ -450,8 +450,8 @@ wrap it with [`docket-acp-bridge`](../../../tools/Docket.AcpBridge/README.md):
       // `goose acp`, NOT `goose serve` and NOT `goose run`. serve is a long-lived
       // remote transport; run is not the protocol.
       "spawn": ["goose", "acp"],
-      "prompt": "You are a Docket worker running headless under docketd. You have been dispatched exactly one task. First call the docket__get_task MCP tool to read your assignment (namespace, description, completion_criteria, workspace, attempt). Do the work inside the assigned workspace. When done, call docket__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call docket__request_input instead of guessing.",
-      "follow_up": "There is new input on your assignment. Call docket__get_task to read it, then continue.",
+      "prompt": "You are a Docket worker running headless under docketd. You have been dispatched exactly one session. First call the docket__get_session MCP tool to read your assignment (namespace, description, completion_criteria, workspace, attempt). Do the work inside the assigned workspace. When done, call docket__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself. If you are blocked or a decision is above your scope, call docket__request_input instead of guessing.",
+      "follow_up": "There is new input on your assignment. Call docket__get_session to read it, then continue.",
       // Goose 1.46's session/new starts on `auto` (auto-approve). Pin approve so
       // tool calls go through session/request_permission. Skipped if this
       // session did not advertise the mode.
@@ -562,7 +562,7 @@ derivable and deliberately not stored.
 
 Three things the mapping does deliberately:
 
-- **Reports cumulative totals, not per-turn ones.** `TaskStore.RecordUsageAsync` keeps a
+- **Reports cumulative totals, not per-turn ones.** `SessionStore.RecordUsageAsync` keeps a
   high-water mark per bucket, so per-turn reports would leave the row holding the largest
   single turn rather than the dispatch's spend.
 - **Treats an explicit zero cost as no cost.** OpenCode priced a 14,321-token turn at
@@ -589,8 +589,8 @@ background processes (§10 `start_process`). Permissions go through
 
 ```jsonc
 "spawn": ["claude-agent-acp"],
-"prompt": "<opening turn naming mcp__docket__get_task / report_result / request_input>",
-"follow_up": "There is new input on your assignment. Call mcp__docket__get_task to read it, then continue.",
+"prompt": "<opening turn naming mcp__docket__get_session / report_result / request_input>",
+"follow_up": "There is new input on your assignment. Call mcp__docket__get_session to read it, then continue.",
 "processes": { "agent_initiated": true }
 ```
 
@@ -653,10 +653,10 @@ Docket is now the one answering.
 A live ACP session is held **indefinitely**. `Docket:WaitTtl` is off by default (infinite).
 The sweeper still requeues a task whose machine died while waiting.
 
-**`park_task` is the release.** A Lead or human who wants the machine back sends it; the
+**`park_session` is the release.** A Lead or human who wants the machine back sends it; the
 runner `session/cancel`s, the instance token is revoked, and a later wake is `session/load`.
 Answering a still-live wait is `answer_input_request`, which delivers the profile's
-`follow_up` turn so the worker pulls `get_task`. Do not put bypass / `--always-approve` /
+`follow_up` turn so the worker pulls `get_session`. Do not put bypass / `--always-approve` /
 `--auto` in `spawn` — permissions are protocol, not argv.
 
 
@@ -750,7 +750,7 @@ unknown keys are ignored — and behaves exactly as it already did.
 
 The automated walking-skeleton test
 (`Docket.Mcp.Tests/WalkingSkeletonEndToEndTests`) proves the dispatch → spawn →
-authenticate → `get_task` → `report_result` loop with a **scripted** MCP worker
+authenticate → `get_session` → `report_result` loop with a **scripted** MCP worker
 (`Docket.WorkerHarness`), no LLM. Running the argv above against **real**
 `claude -p` — confirming the bootstrap prompt, permission posture, and hooks
 actually behave on *your* machine — is the operator-run validation and belongs to

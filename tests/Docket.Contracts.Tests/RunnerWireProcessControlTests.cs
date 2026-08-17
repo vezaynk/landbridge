@@ -18,7 +18,7 @@ public class RunnerWireProcessControlTests
     public void Start_process_command_round_trips_with_all_fields()
     {
         var original = new StartProcessCommand(
-            TaskId.New(),
+            SessionId.New(),
             "req-1",
             "devserver",
             Spawn: ["npm", "run", "dev", "--", "--port=3000"],
@@ -31,7 +31,7 @@ public class RunnerWireProcessControlTests
 
         // Record value-equality compares the collection members by reference, so
         // the argv and the env are asserted on their contents.
-        Assert.Equal(original.Task, decoded.Task);
+        Assert.Equal(original.Session, decoded.Session);
         Assert.Equal(original.RequestId, decoded.RequestId);
         Assert.Equal(original.Name, decoded.Name);
         Assert.Equal(original.Spawn, decoded.Spawn);
@@ -43,7 +43,7 @@ public class RunnerWireProcessControlTests
     [Fact]
     public void Start_process_command_round_trips_with_only_the_required_fields()
     {
-        var original = new StartProcessCommand(TaskId.New(), "req-1", "tailer", Spawn: ["tail", "-f", "log"]);
+        var original = new StartProcessCommand(SessionId.New(), "req-1", "tailer", Spawn: ["tail", "-f", "log"]);
 
         var decoded = Assert.IsType<StartProcessCommand>(
             RunnerWire.DecodeCommand(RunnerWire.EncodeCommand(original)));
@@ -59,7 +59,7 @@ public class RunnerWireProcessControlTests
     [Fact]
     public void Stop_process_command_round_trips()
     {
-        var original = new StopProcessCommand(TaskId.New(), "req-2", "devserver");
+        var original = new StopProcessCommand(SessionId.New(), "req-2", "devserver");
 
         var decoded = Assert.IsType<StopProcessCommand>(
             RunnerWire.DecodeCommand(RunnerWire.EncodeCommand(original)));
@@ -73,7 +73,7 @@ public class RunnerWireProcessControlTests
         // The payload is bytes for a pipe, not prose: quotes, backslashes, tabs,
         // newlines, and multi-byte characters all survive the envelope unchanged.
         var original = new WriteProcessCommand(
-            TaskId.New(), "req-3", "repl",
+            SessionId.New(), "req-3", "repl",
             Data: "print(\"a \\\" quote\")\n\tindented, émoji 🛠\r\n",
             AppendNewline: false);
 
@@ -88,7 +88,7 @@ public class RunnerWireProcessControlTests
     [Fact]
     public void Write_process_command_defaults_to_appending_a_newline()
     {
-        var original = new WriteProcessCommand(TaskId.New(), "req-3", "repl", Data: "help");
+        var original = new WriteProcessCommand(SessionId.New(), "req-3", "repl", Data: "help");
 
         var decoded = Assert.IsType<WriteProcessCommand>(
             RunnerWire.DecodeCommand(RunnerWire.EncodeCommand(original)));
@@ -103,7 +103,7 @@ public class RunnerWireProcessControlTests
         // The 16 KB cap is a shared constant, so a payload right at it has to
         // survive the envelope; the cap is enforced above the wire, not by it.
         var data = new string('x', ProcessStdin.MaxBytes);
-        var original = new WriteProcessCommand(TaskId.New(), "req-4", "repl", Data: data);
+        var original = new WriteProcessCommand(SessionId.New(), "req-4", "repl", Data: data);
 
         var decoded = Assert.IsType<WriteProcessCommand>(
             RunnerWire.DecodeCommand(RunnerWire.EncodeCommand(original)));
@@ -118,7 +118,7 @@ public class RunnerWireProcessControlTests
     public void Process_started_event_round_trips_a_success_with_its_log_path()
     {
         var original = new ProcessStartedEvent(
-            TaskId.New(), "req-1", "devserver", Started: true, LogPath: "/work/task-3/.docket/devserver.log");
+            SessionId.New(), "req-1", "devserver", Started: true, LogPath: "/work/task-3/.docket/devserver.log");
 
         var decoded = Assert.IsType<ProcessStartedEvent>(
             RunnerWire.DecodeEvent(RunnerWire.EncodeEvent(original)));
@@ -145,7 +145,7 @@ public class RunnerWireProcessControlTests
                  })
         {
             var original = new ProcessStartedEvent(
-                TaskId.New(), "req-1", "devserver", Started: false, Refusal: refusal);
+                SessionId.New(), "req-1", "devserver", Started: false, Refusal: refusal);
 
             var decoded = Assert.IsType<ProcessStartedEvent>(
                 RunnerWire.DecodeEvent(RunnerWire.EncodeEvent(original)));
@@ -161,7 +161,7 @@ public class RunnerWireProcessControlTests
     public void Process_stopped_event_round_trips_an_observed_exit_code()
     {
         var original = new ProcessStoppedEvent(
-            TaskId.New(), "req-2", "devserver", Stopped: true, ExitCode: 143);
+            SessionId.New(), "req-2", "devserver", Stopped: true, ExitCode: 143);
 
         var decoded = Assert.IsType<ProcessStoppedEvent>(
             RunnerWire.DecodeEvent(RunnerWire.EncodeEvent(original)));
@@ -176,8 +176,8 @@ public class RunnerWireProcessControlTests
     {
         // "The machine observed no code" and "it exited 0" are different facts;
         // a nullable that flattened to 0 on the wire would conflate them.
-        var unobserved = new ProcessStoppedEvent(TaskId.New(), "req-2", "gone", Stopped: true);
-        var exitedZero = new ProcessStoppedEvent(TaskId.New(), "req-2", "clean", Stopped: true, ExitCode: 0);
+        var unobserved = new ProcessStoppedEvent(SessionId.New(), "req-2", "gone", Stopped: true);
+        var exitedZero = new ProcessStoppedEvent(SessionId.New(), "req-2", "clean", Stopped: true, ExitCode: 0);
 
         var decodedUnobserved = Assert.IsType<ProcessStoppedEvent>(
             RunnerWire.DecodeEvent(RunnerWire.EncodeEvent(unobserved)));
@@ -192,7 +192,7 @@ public class RunnerWireProcessControlTests
     public void Process_stopped_event_round_trips_a_refusal_for_an_unknown_name()
     {
         var original = new ProcessStoppedEvent(
-            TaskId.New(), "req-2", "never-started", Stopped: false, Refusal: ProcessRefusals.NoSuchProcess);
+            SessionId.New(), "req-2", "never-started", Stopped: false, Refusal: ProcessRefusals.NoSuchProcess);
 
         var decoded = Assert.IsType<ProcessStoppedEvent>(
             RunnerWire.DecodeEvent(RunnerWire.EncodeEvent(original)));
@@ -206,7 +206,7 @@ public class RunnerWireProcessControlTests
     public void Process_written_event_round_trips_the_accepted_byte_count()
     {
         var original = new ProcessWrittenEvent(
-            TaskId.New(), "req-3", "repl", Written: true, Bytes: 4096);
+            SessionId.New(), "req-3", "repl", Written: true, Bytes: 4096);
 
         var decoded = Assert.IsType<ProcessWrittenEvent>(
             RunnerWire.DecodeEvent(RunnerWire.EncodeEvent(original)));
@@ -221,7 +221,7 @@ public class RunnerWireProcessControlTests
     public void Process_written_event_round_trips_a_refusal_with_no_bytes_accepted()
     {
         var original = new ProcessWrittenEvent(
-            TaskId.New(), "req-3", "repl", Written: false, Refusal: ProcessRefusals.StdinNotOpened);
+            SessionId.New(), "req-3", "repl", Written: false, Refusal: ProcessRefusals.StdinNotOpened);
 
         var decoded = Assert.IsType<ProcessWrittenEvent>(
             RunnerWire.DecodeEvent(RunnerWire.EncodeEvent(original)));
@@ -266,9 +266,9 @@ public class RunnerWireProcessControlTests
     public void A_process_reply_is_not_accepted_as_a_command_and_vice_versa()
     {
         var reply = RunnerWire.EncodeEvent(
-            new ProcessStartedEvent(TaskId.New(), "req-1", "devserver", Started: true));
+            new ProcessStartedEvent(SessionId.New(), "req-1", "devserver", Started: true));
         var command = RunnerWire.EncodeCommand(
-            new StartProcessCommand(TaskId.New(), "req-1", "devserver", Spawn: ["true"]));
+            new StartProcessCommand(SessionId.New(), "req-1", "devserver", Spawn: ["true"]));
 
         Assert.Null(RunnerWire.DecodeCommand(reply));
         Assert.Null(RunnerWire.DecodeEvent(command));
@@ -309,7 +309,7 @@ public class RunnerWireProcessControlTests
         // §1 tracing is envelope metadata, so it rides the process family too and
         // leaves the domain record untouched.
         const string traceparent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
-        var original = new StartProcessCommand(TaskId.New(), "req-1", "devserver", Spawn: ["true"]);
+        var original = new StartProcessCommand(SessionId.New(), "req-1", "devserver", Spawn: ["true"]);
 
         var decoded = Assert.IsType<StartProcessCommand>(
             RunnerWire.DecodeCommand(RunnerWire.EncodeCommand(original, traceparent), out var decodedTp));

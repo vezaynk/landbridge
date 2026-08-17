@@ -11,7 +11,7 @@ namespace Docket.ControlPlane;
 /// <see cref="RunnerConnectionRegistry"/> for live machine state — returning small
 /// view records that both the HTML renderer and its JSON twin serialize (§4/§12:
 /// every view is also consumable as structured data by a Lead). Kept deliberately
-/// out of <see cref="TaskStore"/>: the store is the write path (§15), this is a
+/// out of <see cref="SessionStore"/>: the store is the write path (§15), this is a
 /// bystander that only observes.
 ///
 /// <para><b>Every read here is instance-wide unless the caller scopes it.</b> The §12 views are
@@ -42,10 +42,10 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
 {
     // The task states that mean a Team is still doing something (§12: idle Teams
     // drift to the bottom). Everything else is terminal or empty.
-    private static readonly TaskState[] ActiveStates =
+    private static readonly SessionState[] ActiveStates =
     [
-        TaskState.Submitted, TaskState.Working, TaskState.Verifying,
-        TaskState.BlockedOnInput, TaskState.Parked, TaskState.Failed,
+        SessionState.Submitted, SessionState.Working, SessionState.Verifying,
+        SessionState.BlockedOnInput, SessionState.Parked, SessionState.Failed,
     ];
 
     // How many distinct auth failures the inbox carries (§12). Smaller than the event
@@ -82,11 +82,11 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
             .ToDictionary(b => b.MachineId.ToString(), b => (b.HumanId, b.BoundAt), StringComparer.Ordinal);
 
         // Resolve owning Team + namespace + state for every tracked task in one read.
-        var taskIds = ids.SelectMany(id => registry.TasksOn(id).Select(t => t.Value)).Distinct().ToArray();
-        var taskInfo = taskIds.Length == 0
-            ? new Dictionary<Guid, (Guid Team, string Namespace, TaskState State)>()
-            : await db.Tasks.AsNoTracking()
-                .Where(t => taskIds.Contains(t.Id))
+        var sessionIds = ids.SelectMany(id => registry.SessionsOn(id).Select(t => t.Value)).Distinct().ToArray();
+        var taskInfo = sessionIds.Length == 0
+            ? new Dictionary<Guid, (Guid Team, string Namespace, SessionState State)>()
+            : await db.Sessions.AsNoTracking()
+                .Where(t => sessionIds.Contains(t.Id))
                 .Select(t => new { t.Id, t.TeamId, t.Namespace, t.State })
                 .ToDictionaryAsync(t => t.Id, t => (Team: t.TeamId, Namespace: t.Namespace, State: t.State), ct);
 
@@ -96,10 +96,10 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
             var snapshot = registry.SnapshotFor(id);
             if (snapshot is null)
                 continue; // raced away between enumeration and read
-            var tasks = registry.TasksOn(id)
+            var tasks = registry.SessionsOn(id)
                 .Select(t => taskInfo.TryGetValue(t.Value, out var info)
-                    ? new MachineTaskView(t.Value, info.Team, info.Namespace, info.State)
-                    : new MachineTaskView(t.Value, Guid.Empty, "(unknown)", TaskState.Working))
+                    ? new MachineSessionView(t.Value, info.Team, info.Namespace, info.State)
+                    : new MachineSessionView(t.Value, Guid.Empty, "(unknown)", SessionState.Working))
                 .OrderBy(t => t.Namespace, StringComparer.Ordinal)
                 .ToList();
             var isBound = boundBy.TryGetValue(id, out var bound);
@@ -135,8 +135,8 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
     {
         // One place says what a scoped read means, so none of the aggregates below can be
         // left unfiltered by accident — each is a whole-instance read otherwise.
-        var tasks = db.Tasks.AsNoTracking();
-        var events = db.TaskEvents.AsNoTracking();
+        var tasks = db.Sessions.AsNoTracking();
+        var events = db.SessionEvents.AsNoTracking();
         var services = db.RegisteredServices.AsNoTracking();
         var credentials = db.Credentials.AsNoTracking();
         var forwards = db.TeamForwardUsage.AsNoTracking();
@@ -158,15 +158,15 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
         // stamp BlockedAt and clear it when the wait ends.
         var openByTeam = await tasks
             .Where(t => t.BlockedAt != null
-                && (t.State == TaskState.BlockedOnInput
-                    || (t.State == TaskState.Working && t.InputKind != null
+                && (t.State == SessionState.BlockedOnInput
+                    || (t.State == SessionState.Working && t.InputKind != null
                         && t.InputKind != InputRequestKind.Permission)))
             .GroupBy(t => t.TeamId)
             .Select(g => new { TeamId = g.Key, Count = g.Count() })
             .ToDictionaryAsync(x => x.TeamId, x => x.Count, ct);
 
         var parksByTeam = await events
-            .Where(e => e.ToState == TaskState.Parked)
+            .Where(e => e.ToState == SessionState.Parked)
             .GroupBy(e => e.TeamId)
             .Select(g => new { TeamId = g.Key, Count = g.Count() })
             .ToDictionaryAsync(x => x.TeamId, x => x.Count, ct);
@@ -236,7 +236,7 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
     /// </summary>
     public async Task<TeamDetail?> GetTeamAsync(Guid teamId, CancellationToken ct = default)
     {
-        var tasks = await db.Tasks.AsNoTracking()
+        var tasks = await db.Sessions.AsNoTracking()
             .Where(t => t.TeamId == teamId)
             .Select(t => new
             {
@@ -248,7 +248,7 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
                 t.BlockedAt,
                 Parked = t.ParkMachine != null,
                 t.ParkMachine,
-                t.ContinuesTaskId,
+                t.ContinuesSessionId,
                 t.CompletionProvenance,
                 t.WorkerReport,
                 // §8.1 (#81): the artifact pointer the worker handed over, so a human
@@ -274,26 +274,26 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
         if (tasks.Count == 0 && lead is null)
             return null;
 
-        var parksByTask = await db.TaskEvents.AsNoTracking()
-            .Where(e => e.TeamId == teamId && e.ToState == TaskState.Parked)
-            .GroupBy(e => e.TaskId)
-            .Select(g => new { TaskId = g.Key, Count = g.Count() })
-            .ToDictionaryAsync(x => x.TaskId, x => x.Count, ct);
+        var parksByTask = await db.SessionEvents.AsNoTracking()
+            .Where(e => e.TeamId == teamId && e.ToState == SessionState.Parked)
+            .GroupBy(e => e.SessionId)
+            .Select(g => new { SessionId = g.Key, Count = g.Count() })
+            .ToDictionaryAsync(x => x.SessionId, x => x.Count, ct);
 
         var services = await db.RegisteredServices.AsNoTracking()
             .Where(s => s.TeamId == teamId)
             .OrderBy(s => s.Name)
-            .Select(s => new ServiceView(s.Name, s.Port, s.TaskId, s.CreatedAt))
+            .Select(s => new ServiceView(s.Name, s.Port, s.SessionId, s.CreatedAt))
             .ToListAsync(ct);
 
-        var lastActivity = await db.TaskEvents.AsNoTracking()
+        var lastActivity = await db.SessionEvents.AsNoTracking()
             .Where(e => e.TeamId == teamId)
             .MaxAsync(e => (DateTimeOffset?)e.OccurredAt, ct);
 
         // §10/§12 measured view: what this Team's harnesses said they consumed, rolled up per
         // model across every task. Read straight off the denormalized team_id rather than
         // joining through tasks, which is what that index is for.
-        var usageRows = await db.TaskUsage.AsNoTracking()
+        var usageRows = await db.SessionUsage.AsNoTracking()
             .Where(u => u.TeamId == teamId)
             .ToListAsync(ct);
         var usage = TeamUsageView.From(usageRows);
@@ -305,16 +305,16 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
 
         var taskRows = tasks
             .OrderBy(t => t.Namespace, StringComparer.Ordinal)
-            .Select(t => new TeamTaskView(
+            .Select(t => new TeamSessionView(
                 t.Id, t.Namespace, t.State, t.CompletionMode, t.Attempt,
                 parksByTask.GetValueOrDefault(t.Id),
                 t.Parked ? t.ParkMachine : null,
                 t.BlockedAt is not null
-                    && (t.State == TaskState.BlockedOnInput
-                        || (t.State == TaskState.Working && t.InputKind != InputRequestKind.Permission))
+                    && (t.State == SessionState.BlockedOnInput
+                        || (t.State == SessionState.Working && t.InputKind != InputRequestKind.Permission))
                     ? t.BlockedAt : null,
-                t.ContinuesTaskId,
-                t.State == TaskState.Completed ? t.CompletionProvenance : null,
+                t.ContinuesSessionId,
+                t.State == SessionState.Completed ? t.CompletionProvenance : null,
                 t.WorkerReport,
                 t.ResultReference,
                 t.InputKind,
@@ -332,9 +332,9 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
         var inputRequests = taskRows
             .Where(t => t.BlockedAt is not null
                 && t.InputKind != InputRequestKind.Permission
-                && (t.State == TaskState.BlockedOnInput || t.State == TaskState.Working))
+                && (t.State == SessionState.BlockedOnInput || t.State == SessionState.Working))
             .Select(t => new InputRequestView(
-                t.TaskId, t.Namespace, teamId, t.BlockedAt, t.InputKind, t.Question))
+                t.SessionId, t.Namespace, teamId, t.BlockedAt, t.InputKind, t.Question))
             .ToList();
 
         return new TeamDetail(
@@ -367,10 +367,10 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
     /// instead of silently listing fewer attempts than the task had.</para>
     /// </summary>
     public async Task<IReadOnlyList<TranscriptLocationView>> GetTranscriptLocationsAsync(
-        Guid taskId, CancellationToken ct = default)
+        Guid sessionId, CancellationToken ct = default)
     {
         var instances = await db.WorkerInstances.AsNoTracking()
-            .Where(w => w.TaskId == taskId)
+            .Where(w => w.SessionId == sessionId)
             .OrderByDescending(w => w.CreatedAt)
             .Select(w => new { w.Id, w.MachineId, w.CreatedAt })
             .ToListAsync(ct);
@@ -414,8 +414,8 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
     /// </param>
     public async Task<InboxView> GetInboxAsync(Guid? teamScope = null, CancellationToken ct = default)
     {
-        var scopedTasks = db.Tasks.AsNoTracking();
-        var scopedEvents = db.TaskEvents.AsNoTracking();
+        var scopedTasks = db.Sessions.AsNoTracking();
+        var scopedEvents = db.SessionEvents.AsNoTracking();
         if (teamScope is { } only)
         {
             scopedTasks = scopedTasks.Where(t => t.TeamId == only);
@@ -426,8 +426,8 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
             .Where(t => t.InputKind != InputRequestKind.Permission
                         && t.InputKind != null
                         && t.BlockedAt != null
-                        && (t.State == TaskState.BlockedOnInput
-                            || t.State == TaskState.Working))
+                        && (t.State == SessionState.BlockedOnInput
+                            || t.State == SessionState.Working))
             .OrderBy(t => t.BlockedAt)
             .Select(t => new InputRequestView(
                 t.Id, t.Namespace, t.TeamId, t.BlockedAt, t.InputKind, t.InputQuestion))
@@ -436,7 +436,7 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
         // Oldest first, like the questions above: age is what matters on a queue whose items
         // each have a worker blocked behind them and a wait TTL running down.
         var permissionRequests = await scopedTasks
-            .Where(t => t.State == TaskState.BlockedOnInput
+            .Where(t => t.State == SessionState.BlockedOnInput
                         && t.InputKind == InputRequestKind.Permission)
             .OrderBy(t => t.BlockedAt)
             .Select(t => new PermissionRequestView(
@@ -446,20 +446,20 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
             .ToListAsync(ct);
 
         var awaitingReview = await scopedTasks
-            .Where(t => t.State == TaskState.Verifying && t.CompletionMode == CompletionMode.Review)
+            .Where(t => t.State == SessionState.Verifying && t.CompletionMode == CompletionMode.Review)
             .OrderBy(t => t.Namespace)
             .Select(t => new ReviewItemView(t.Id, t.Namespace, t.TeamId))
             .ToListAsync(ct);
 
         var parked = await scopedTasks
-            .Where(t => t.State == TaskState.Parked)
+            .Where(t => t.State == SessionState.Parked)
             .OrderBy(t => t.Namespace)
             .Select(t => new ParkedItemView(
                 t.Id, t.Namespace, t.TeamId, t.ParkMachine, t.InputKind, t.InputQuestion))
             .ToListAsync(ct);
 
         var failed = await scopedTasks
-            .Where(t => t.State == TaskState.Failed)
+            .Where(t => t.State == SessionState.Failed)
             .OrderBy(t => t.Namespace)
             .Select(t => new FailedItemView(
                 t.Id, t.Namespace, t.TeamId, t.LastRequeueReason, t.InfrastructureRequeues))
@@ -479,16 +479,16 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
             .Where(t => ActiveStates.Contains(t.State))
             .Select(t => new { t.Id, t.Namespace, t.State })
             .ToDictionaryAsync(t => t.Id, t => (t.Namespace, t.State), ct);
-        var liveTaskIds = liveTasks.Keys.ToArray();
+        var liveSessionIds = liveTasks.Keys.ToArray();
 
         // Collapsed by the facts that identify the same problem: a retrying worker writes one
         // row per attempt, and what that repetition is worth to a person is the count and the
         // newest of them, not a wall of identical rows.
         var failureGroups = await scopedEvents
-            .Where(e => e.Kind == TaskEventRow.AuthFailedKind && liveTaskIds.Contains(e.TaskId))
+            .Where(e => e.Kind == SessionEventRow.AuthFailedKind && liveSessionIds.Contains(e.SessionId))
             .GroupBy(e => new
             {
-                e.TaskId, e.TeamId, e.AuthOperation, e.AuthTarget, e.AuthErrorCode, e.AuthMissingScope,
+                e.SessionId, e.TeamId, e.AuthOperation, e.AuthTarget, e.AuthErrorCode, e.AuthMissingScope,
             })
             .Select(g => new
             {
@@ -502,10 +502,10 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
 
         var authFailures = failureGroups
             .Select(g => new AuthFailureItemView(
-                g.Key.TaskId,
-                liveTasks[g.Key.TaskId].Namespace,
+                g.Key.SessionId,
+                liveTasks[g.Key.SessionId].Namespace,
                 g.Key.TeamId,
-                liveTasks[g.Key.TaskId].State,
+                liveTasks[g.Key.SessionId].State,
                 g.Key.AuthOperation,
                 g.Key.AuthTarget,
                 g.Key.AuthErrorCode,
@@ -532,7 +532,7 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
     public async Task<IReadOnlyList<DashboardEvent>> GetEventsAsync(
         int limit = 200, Guid? teamScope = null, CancellationToken ct = default)
     {
-        var scopedTaskEvents = db.TaskEvents.AsNoTracking();
+        var scopedTaskEvents = db.SessionEvents.AsNoTracking();
         var scopedLeadEvents = db.LeadEvents.AsNoTracking();
         if (teamScope is { } only)
         {
@@ -545,7 +545,7 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
             .Take(limit)
             .Select(e => new
             {
-                e.OccurredAt, e.Kind, e.FromState, e.ToState, e.Detail, e.TeamId, e.TaskId,
+                e.OccurredAt, e.Kind, e.FromState, e.ToState, e.Detail, e.TeamId, e.SessionId,
                 // Derived-telemetry columns (#50) — carried to the JSON twin as
                 // structured fields, unset off their own kind.
                 e.InputKind,
@@ -563,11 +563,11 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
 
         // Resolve namespaces for the events in view in a single follow-up read,
         // rather than a join EF might struggle to translate through the Take.
-        var eventTaskIds = rawTaskEvents.Select(e => e.TaskId).Distinct().ToArray();
-        var namespaceById = eventTaskIds.Length == 0
+        var eventSessionIds = rawTaskEvents.Select(e => e.SessionId).Distinct().ToArray();
+        var namespaceById = eventSessionIds.Length == 0
             ? new Dictionary<Guid, string>()
-            : await db.Tasks.AsNoTracking()
-                .Where(t => eventTaskIds.Contains(t.Id))
+            : await db.Sessions.AsNoTracking()
+                .Where(t => eventSessionIds.Contains(t.Id))
                 .Select(t => new { t.Id, t.Namespace })
                 .ToDictionaryAsync(t => t.Id, t => t.Namespace, ct);
 
@@ -579,8 +579,8 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
             e.ToState,
             e.Detail,
             e.TeamId,
-            e.TaskId,
-            namespaceById.GetValueOrDefault(e.TaskId),
+            e.SessionId,
+            namespaceById.GetValueOrDefault(e.SessionId),
             null,
             null,
             e.InputKind,
@@ -624,13 +624,13 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
     /// Tasks belonging to a conformance run. A run is a Team created solely to
     /// hold those dummy tasks, so this is a Team-scoped read with no extra table.
     /// </summary>
-    public async Task<IReadOnlyList<ConformanceTaskRow>> GetConformanceTasksAsync(
+    public async Task<IReadOnlyList<ConformanceSessionRow>> GetConformanceTasksAsync(
         Guid runId, CancellationToken ct = default)
     {
-        return await db.Tasks.AsNoTracking()
+        return await db.Sessions.AsNoTracking()
             .Where(t => t.TeamId == runId)
             .OrderBy(t => t.Id)
-            .Select(t => new ConformanceTaskRow(
+            .Select(t => new ConformanceSessionRow(
                 t.Id, t.State, t.Attempt, t.Workspace, t.Profile,
                 t.ResultReference, t.LastRequeueReason))
             .ToListAsync(ct);
@@ -638,7 +638,7 @@ public sealed class DashboardQueries(DocketDbContext db, RunnerConnectionRegistr
 
     /// <summary>The profile the run's tasks were aimed at, or null when the run is empty.</summary>
     public async Task<string?> GetConformanceProfileAsync(Guid runId, CancellationToken ct = default) =>
-        await db.Tasks.AsNoTracking()
+        await db.Sessions.AsNoTracking()
             .Where(t => t.TeamId == runId)
             .Select(t => t.Profile)
             .FirstOrDefaultAsync(ct);
@@ -657,25 +657,25 @@ public sealed record MachineView(
     bool UnderBackPressure,
     DateTimeOffset? LastHeartbeat,
     IReadOnlyList<string> Profiles,
-    IReadOnlyList<MachineTaskView> RunningTasks,
+    IReadOnlyList<MachineSessionView> RunningSessions,
     Guid? BoundToHuman = null,
     DateTimeOffset? BoundAt = null,
     IReadOnlyList<ServiceStatus>? Services = null,
     IReadOnlyList<ProcessStatus>? Processes = null);
 
 /// <summary>A task running on a machine, tagged with its owning Team (§12).</summary>
-public sealed record MachineTaskView(Guid TaskId, Guid TeamId, string Namespace, TaskState State);
+public sealed record MachineSessionView(Guid SessionId, Guid TeamId, string Namespace, SessionState State);
 
 /// <summary>One dummy task in an operator profile-check run.</summary>
-public sealed record ConformanceTaskRow(
-    Guid Id, TaskState State, int Attempt, string? Workspace, string? Profile,
+public sealed record ConformanceSessionRow(
+    Guid Id, SessionState State, int Attempt, string? Workspace, string? Profile,
     string? ResultReference, LivenessLossReason? LastRequeueReason);
 
 /// <summary>One Team's one-line overview for the sorted Team list (§12).</summary>
 public sealed record TeamOverview(
     Guid TeamId,
-    int TotalTasks,
-    IReadOnlyDictionary<TaskState, int> CountsByState,
+    int TotalSessions,
+    IReadOnlyDictionary<SessionState, int> CountsByState,
     int TotalParks,
     int ServiceCount,
     int OpenInputRequests,
@@ -688,9 +688,9 @@ public sealed record TeamOverview(
 /// <summary>One Team in full — the §4 reattachment surface as structured data (§12).</summary>
 public sealed record TeamDetail(
     Guid TeamId,
-    int TotalTasks,
-    IReadOnlyDictionary<TaskState, int> CountsByState,
-    IReadOnlyList<TeamTaskView> Tasks,
+    int TotalSessions,
+    IReadOnlyDictionary<SessionState, int> CountsByState,
+    IReadOnlyList<TeamSessionView> Sessions,
     IReadOnlyList<ServiceView> Services,
     IReadOnlyList<InputRequestView> OpenInputRequests,
     Guid? LeadHumanId,
@@ -714,16 +714,16 @@ public sealed record TeamDetail(
 /// (§9 check 7), and the reason behind the last requeue (#73): a canceled task whose
 /// count reached its cap was abandoned by the plane, not called off by a person, and
 /// this is where that difference becomes visible.</para></summary>
-public sealed record TeamTaskView(
-    Guid TaskId,
+public sealed record TeamSessionView(
+    Guid SessionId,
     string Namespace,
-    TaskState State,
+    SessionState State,
     CompletionMode Mode,
     int Attempt,
     int Parks,
     string? ParkMachine,
     DateTimeOffset? BlockedAt,
-    Guid? ContinuesTaskId,
+    Guid? ContinuesSessionId,
     VerdictProvenance? CompletionProvenance,
     string? Report,
     string? ResultReference,
@@ -731,18 +731,18 @@ public sealed record TeamTaskView(
     string? Question,
     string? Answer,
     int InfrastructureRequeues = 0,
-    int InfrastructureRequeueLimit = TaskRecord.DefaultInfrastructureRequeueLimit,
+    int InfrastructureRequeueLimit = SessionRecord.DefaultInfrastructureRequeueLimit,
     LivenessLossReason? LastRequeueReason = null);
 
 /// <summary>A live registered service on a Team (§8.2, §12).</summary>
-public sealed record ServiceView(string Name, int Port, Guid TaskId, DateTimeOffset CreatedAt);
+public sealed record ServiceView(string Name, int Port, Guid SessionId, DateTimeOffset CreatedAt);
 
 /// <summary>A blocked_on_input task — an open question (§12) — with the typed
 /// <see cref="Kind"/> that says who can answer it and the worker's own
 /// <see cref="Question"/>. Both are null for a request that carried neither, and for
 /// rows blocked before the columns existed.</summary>
 public sealed record InputRequestView(
-    Guid TaskId,
+    Guid SessionId,
     string Namespace,
     Guid TeamId,
     DateTimeOffset? BlockedAt,
@@ -750,13 +750,13 @@ public sealed record InputRequestView(
     string? Question);
 
 /// <summary>A verifying task in review mode, awaiting a human verdict (§7, §12).</summary>
-public sealed record ReviewItemView(Guid TaskId, string Namespace, Guid TeamId);
+public sealed record ReviewItemView(Guid SessionId, string Namespace, Guid TeamId);
 
 /// <summary>A parked task awaiting an answer (§11, §12), carrying the question it is
 /// still waiting on — a park is a question that outlived its lease, so the inbox
 /// needs the same text here as in the open-questions list.</summary>
 public sealed record ParkedItemView(
-    Guid TaskId,
+    Guid SessionId,
     string Namespace,
     Guid TeamId,
     string? ParkMachine,
@@ -766,7 +766,7 @@ public sealed record ParkedItemView(
 /// <summary>An attempt the plane parked because infrastructure gave up. Resume
 /// is a Lead note — not an automatic requeue.</summary>
 public sealed record FailedItemView(
-    Guid TaskId,
+    Guid SessionId,
     string Namespace,
     Guid TeamId,
     LivenessLossReason? Reason,
@@ -784,10 +784,10 @@ public sealed record FailedItemView(
 /// before the columns existed, nothing at all).
 /// </summary>
 public sealed record AuthFailureItemView(
-    Guid TaskId,
+    Guid SessionId,
     string Namespace,
     Guid TeamId,
-    TaskState State,
+    SessionState State,
     string? Operation,
     string? Target,
     string? ErrorCode,
@@ -832,11 +832,11 @@ public sealed record DashboardEvent(
     DateTimeOffset OccurredAt,
     string Source,
     string Kind,
-    TaskState? FromState,
-    TaskState? ToState,
+    SessionState? FromState,
+    SessionState? ToState,
     string? Detail,
     Guid TeamId,
-    Guid? TaskId,
+    Guid? SessionId,
     string? Namespace,
     Guid? HumanId,
     Guid? PriorHumanId,
@@ -865,8 +865,8 @@ public sealed record DashboardEvent(
 /// A portion OF <paramref name="OutputTokens"/> where the harness breaks one out, null
 /// otherwise. Never added to a total — see <see cref="TotalTokens"/>.
 /// </param>
-public sealed record TaskUsageView(
-    Guid TaskId,
+public sealed record SessionUsageView(
+    Guid SessionId,
     string? Model,
     long InputTokens,
     long OutputTokens,
@@ -891,8 +891,8 @@ public sealed record TaskUsageView(
 
     /// <summary>The one row→view mapping, so the empty-string-is-the-unnamed-model convention
     /// (see <c>DocketDbContext</c>) is undone in exactly one place.</summary>
-    public static TaskUsageView From(TaskUsageRow row) => new(
-        row.TaskId,
+    public static SessionUsageView From(SessionUsageRow row) => new(
+        row.SessionId,
         string.IsNullOrEmpty(row.Model) ? null : row.Model,
         row.InputTokens,
         row.OutputTokens,
@@ -910,7 +910,7 @@ public sealed record TaskUsageView(
 /// an absence of measurement is not a measurement of nothing.
 /// </summary>
 public sealed record TeamUsageView(
-    IReadOnlyList<TaskUsageView> ByModel,
+    IReadOnlyList<SessionUsageView> ByModel,
     long InputTokens,
     long OutputTokens,
     long CacheReadTokens,
@@ -936,10 +936,10 @@ public sealed record TeamUsageView(
     /// because each is the harness's own figure for its own tokens; a model that reported none
     /// contributes nothing and flips <see cref="CostIsPartial"/> instead of being guessed at.
     /// </summary>
-    public static TeamUsageView From(IReadOnlyList<TaskUsageRow> rows)
+    public static TeamUsageView From(IReadOnlyList<SessionUsageRow> rows)
     {
         var byModel = rows
-            .Select(TaskUsageView.From)
+            .Select(SessionUsageView.From)
             .OrderByDescending(u => u.TotalTokens)
             .ToList();
         var costs = byModel.Where(m => m.CostUsd is not null).Select(m => m.CostUsd!.Value).ToList();

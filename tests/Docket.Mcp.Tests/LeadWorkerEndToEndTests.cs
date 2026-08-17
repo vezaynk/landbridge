@@ -62,10 +62,10 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         }
 
         // ── Lead: create a task over MCP ────────────────────────────────────
-        TaskId taskId;
+        SessionId sessionId;
         await using (var lead = await ConnectAsync(baseUri, leadToken, ct))
         {
-            var created = await lead.CallToolAsync("create_task", new Dictionary<string, object?>
+            var created = await lead.CallToolAsync("create_session", new Dictionary<string, object?>
             {
                 ["description"] = "make the suite pass",
                 ["completionCriteria"] = "the suite is green",
@@ -76,7 +76,7 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
 
             Assert.NotEqual(true, created.IsError);
             var idText = Assert.Single(created.Content.OfType<TextContentBlock>()).Text;
-            taskId = new TaskId(Guid.Parse(idText));
+            sessionId = new SessionId(Guid.Parse(idText));
         }
 
         // ── Control plane: dispatch mints the incumbent worker instance ─────
@@ -84,13 +84,13 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         string workerToken;
         await using (var db = pg.NewContext())
         {
-            var store = new TaskStore(db, TimeProvider.System);
+            var store = new SessionStore(db, TimeProvider.System);
             var machine = new MachineSnapshot("m1", Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });
             var dispatched = Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(machine, instance, ct));
-            Assert.Equal(taskId, dispatched.Task.Id);
+            Assert.Equal(sessionId, dispatched.Session.Id);
 
             var tokens = new TokenService(db, TimeProvider.System);
-            workerToken = (await tokens.MintWorkerTokenAsync(team, taskId, instance, ct)).Token;
+            workerToken = (await tokens.MintWorkerTokenAsync(team, sessionId, instance, ct)).Token;
         }
 
         // ── Worker: report the result over its own MCP connection ───────────
@@ -108,8 +108,8 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         // ── The record moved through the state machine, not around it ───────
         await using (var v = pg.NewContext())
         {
-            var row = await v.Tasks.AsNoTracking().SingleAsync(t => t.Id == taskId.Value, ct);
-            Assert.Equal(TaskState.Verifying, row.State);
+            var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == sessionId.Value, ct);
+            Assert.Equal(SessionState.Verifying, row.State);
         }
 
         await app.StopAsync(ct);
@@ -120,8 +120,8 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
     {
         // §10/§11 over the wire: the whole human-in-the-loop loop through real MCP tool
         // calls — request_input(question) → get_team_state (kind + flag, no prose) →
-        // get_task_question (delimited) → answer_input_request(answer) → the
-        // redispatched worker's get_task carries the answer. This is the round trip the
+        // get_session_question (delimited) → answer_input_request(answer) → the
+        // redispatched worker's get_session carries the answer. This is the round trip the
         // park/resume machinery existed for and could not previously complete.
         Skip.IfNot(pg.Available, pg.SkipReason);
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
@@ -144,16 +144,16 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             leadToken = claim.Token.Token;
         }
 
-        TaskId taskId;
+        SessionId sessionId;
         await using (var lead = await ConnectAsync(baseUri, leadToken, ct))
         {
-            var created = await lead.CallToolAsync("create_task", new Dictionary<string, object?>
+            var created = await lead.CallToolAsync("create_session", new Dictionary<string, object?>
             {
                 ["description"] = "add the index",
                 ["completionCriteria"] = "the migration applies",
                 ["mode"] = "lead",
             }, cancellationToken: ct);
-            taskId = new TaskId(Guid.Parse(Assert.Single(created.Content.OfType<TextContentBlock>()).Text));
+            sessionId = new SessionId(Guid.Parse(Assert.Single(created.Content.OfType<TextContentBlock>()).Text));
         }
 
         var machine = new MachineSnapshot("m1", Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });
@@ -162,11 +162,11 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         string firstWorkerToken;
         await using (var db = pg.NewContext())
         {
-            var store = new TaskStore(db, TimeProvider.System);
+            var store = new SessionStore(db, TimeProvider.System);
             var instance = WorkerInstanceId.New();
             await store.DispatchNextAsync(machine, instance, ct);
             firstWorkerToken = (await new TokenService(db, TimeProvider.System)
-                .MintWorkerTokenAsync(team, taskId, instance, ct)).Token;
+                .MintWorkerTokenAsync(team, sessionId, instance, ct)).Token;
         }
         await using (var worker = await ConnectAsync(baseUri, firstWorkerToken, ct))
         {
@@ -190,9 +190,9 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             Assert.Contains("hasQuestion", stateText, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain(question, stateText, StringComparison.Ordinal);
 
-            var read = await lead.CallToolAsync("get_task_question", new Dictionary<string, object?>
+            var read = await lead.CallToolAsync("get_session_question", new Dictionary<string, object?>
             {
-                ["taskId"] = taskId.ToString(),
+                ["sessionId"] = sessionId.ToString(),
             }, cancellationToken: ct);
             var readText = Assert.Single(read.Content.OfType<TextContentBlock>()).Text;
             Assert.Contains(question, readText, StringComparison.Ordinal);
@@ -200,28 +200,28 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
 
             var answered = await lead.CallToolAsync("answer_input_request", new Dictionary<string, object?>
             {
-                ["taskId"] = taskId.ToString(),
+                ["sessionId"] = sessionId.ToString(),
                 ["answer"] = answer,
             }, cancellationToken: ct);
             Assert.NotEqual(true, answered.IsError);
             Assert.Contains("Submitted", Assert.Single(answered.Content.OfType<TextContentBlock>()).Text);
         }
 
-        // ── The successor worker: get_task carries the answer ────────────────
+        // ── The successor worker: get_session carries the answer ────────────────
         string successorToken;
         await using (var db = pg.NewContext())
         {
-            var store = new TaskStore(db, TimeProvider.System);
+            var store = new SessionStore(db, TimeProvider.System);
             var successor = WorkerInstanceId.New();
             var dispatched = Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(machine, successor, ct));
-            Assert.Equal(taskId, dispatched.Task.Id);
+            Assert.Equal(sessionId, dispatched.Session.Id);
             successorToken = (await new TokenService(db, TimeProvider.System)
-                .MintWorkerTokenAsync(team, taskId, successor, ct)).Token;
+                .MintWorkerTokenAsync(team, sessionId, successor, ct)).Token;
         }
         await using (var worker = await ConnectAsync(baseUri, successorToken, ct))
         {
             var assignment = await worker.CallToolAsync(
-                "get_task", new Dictionary<string, object?>(), cancellationToken: ct);
+                "get_session", new Dictionary<string, object?>(), cancellationToken: ct);
             var text = Assert.Single(assignment.Content.OfType<TextContentBlock>()).Text;
 
             // Parsed, not substring-matched: the wire escapes non-ASCII (the answer's
@@ -236,7 +236,7 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task A_worker_token_cannot_reach_the_lead_create_task_tool()
+    public async Task A_worker_token_cannot_reach_the_lead_create_session_tool()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
@@ -249,22 +249,22 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         var team = TeamId.New();
 
         // A worker token authenticates (it is a valid principal) but carries no
-        // lead claim, so create_task must refuse it — authority is structural (§5).
+        // lead claim, so create_session must refuse it — authority is structural (§5).
         string workerToken;
         await using (var db = pg.NewContext())
         {
-            var store = new TaskStore(db, TimeProvider.System);
+            var store = new SessionStore(db, TimeProvider.System);
             var created = (StoreResult.Applied)await store.CreateAsync(
-                new CreateTask(new LeadClaim(team), team, "seed", CompletionMode.Lead, null), ct);
+                new CreateSession(new LeadClaim(team), team, "seed", CompletionMode.Lead, null), ct);
             var instance = WorkerInstanceId.New();
             await store.DispatchNextAsync(
                 new MachineSnapshot("m1", true, false, new HashSet<string> { "default" }), instance, ct);
             var tokens = new TokenService(db, TimeProvider.System);
-            workerToken = (await tokens.MintWorkerTokenAsync(team, created.Task.Id, instance, ct)).Token;
+            workerToken = (await tokens.MintWorkerTokenAsync(team, created.Session.Id, instance, ct)).Token;
         }
 
         await using var worker = await ConnectAsync(baseUri, workerToken, ct);
-        var result = await worker.CallToolAsync("create_task", new Dictionary<string, object?>
+        var result = await worker.CallToolAsync("create_session", new Dictionary<string, object?>
         {
             ["description"] = "should not happen",
             ["completionCriteria"] = "should not happen",
@@ -307,7 +307,7 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         registry.ApplyHeartbeat("m2", Heartbeat("m2", "default"));
 
         string leadToken;
-        TaskId seeded;
+        SessionId seeded;
         string workerToken;
         await using (var db = pg.NewContext())
         {
@@ -318,10 +318,10 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
 
             // A real dispatched worker in the same Team, so its token is a valid principal
             // that simply carries no lead claim.
-            var store = new TaskStore(db, TimeProvider.System);
+            var store = new SessionStore(db, TimeProvider.System);
             var created = (StoreResult.Applied)await store.CreateAsync(
-                new CreateTask(new LeadClaim(team), team, "seed", CompletionMode.Lead, null), ct);
-            seeded = created.Task.Id;
+                new CreateSession(new LeadClaim(team), team, "seed", CompletionMode.Lead, null), ct);
+            seeded = created.Session.Id;
             var instance = WorkerInstanceId.New();
             await store.DispatchNextAsync(
                 new MachineSnapshot("m1", true, false, new HashSet<string> { "default" }), instance, ct);
@@ -361,7 +361,7 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             });
 
             // The narrow profile carries only the machine declaring it, which is the whole
-            // point of reading this before setting create_task(profile:).
+            // point of reading this before setting create_session(profile:).
             Assert.Equal(
                 new[] { "m1" },
                 profiles.Single(p => p.GetProperty("profile").GetString() == "gpu")
@@ -388,7 +388,7 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
 
     private static MachineHeartbeat Heartbeat(string machineId, params string[] profiles) =>
         new(machineId, Ready: true, UnderBackPressure: false,
-            new SystemLoad(0, 0, 0), RunningTasks: 0, profiles, DateTimeOffset.UtcNow);
+            new SystemLoad(0, 0, 0), RunningSessions: 0, profiles, DateTimeOffset.UtcNow);
 
     private WebApplication BuildServer()
     {

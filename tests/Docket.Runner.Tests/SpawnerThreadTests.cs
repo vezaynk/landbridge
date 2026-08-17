@@ -63,7 +63,7 @@ public sealed class SpawnerThreadTests : IDisposable
     [Fact]
     public async Task Supervisor_spawns_on_the_dedicated_non_threadpool_thread()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         var supervisor = Supervisor();
 
         supervisor.Spawn(TestKit.Dispatch(task), TestKit.Profile("run"), "m");
@@ -85,8 +85,8 @@ public sealed class SpawnerThreadTests : IDisposable
     public async Task Concurrent_spawns_serialize_through_the_one_thread_and_both_start()
     {
         var supervisor = Supervisor();
-        var a = TaskId.New();
-        var b = TaskId.New();
+        var a = SessionId.New();
+        var b = SessionId.New();
 
         // Two concurrent Spawn calls, each blocking on the single spawner thread; both
         // must succeed (serialized, not dropped or deadlocked).

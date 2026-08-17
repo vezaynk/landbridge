@@ -6,16 +6,16 @@ namespace Docket.ControlPlane;
 /// <summary>
 /// The persisted task row. Carries the typed state-machine fields plus the
 /// opaque blobs the control plane stores and never interprets (§2 principle 1,
-/// §7). Only <see cref="TaskStore"/> writes it, and only by running a
-/// transition through <see cref="TaskStateMachine"/>.
+/// §7). Only <see cref="SessionStore"/> writes it, and only by running a
+/// transition through <see cref="SessionStateMachine"/>.
 /// </summary>
-public sealed class TaskRow
+public sealed class SessionRow
 {
     public Guid Id { get; set; }
     public Guid TeamId { get; set; }
     public string Namespace { get; set; } = "";
     public CompletionMode CompletionMode { get; set; }
-    public TaskState State { get; set; }
+    public SessionState State { get; set; }
     public string? Profile { get; set; }
 
     public int Attempt { get; set; }
@@ -35,9 +35,9 @@ public sealed class TaskRow
     /// <summary>
     /// Why this task was last requeued for infrastructure reasons (§6), carried by
     /// <see cref="CopyFrom"/> off the engine's record. The event row records every
-    /// requeue's reason as history (<see cref="TaskEventRow.LivenessReason"/>); this is
+    /// requeue's reason as history (<see cref="SessionEventRow.LivenessReason"/>); this is
     /// the <em>live</em> one — the same row-vs-event-log split
-    /// <see cref="InputKind"/> makes — so <c>get_team_state</c>, <c>get_task_report</c>,
+    /// <see cref="InputKind"/> makes — so <c>get_team_state</c>, <c>get_session_report</c>,
     /// and the §12 task views can say why a task keeps coming back (or, on a task the
     /// cap abandoned, why it stopped) without walking the log. Null until the first
     /// infrastructure requeue; retained afterwards.
@@ -56,10 +56,10 @@ public sealed class TaskRow
     public string? ParkMachine { get; set; }
 
     /// <summary>
-    /// When the task most recently entered <see cref="TaskState.BlockedOnInput"/>,
+    /// When the task most recently entered <see cref="SessionState.BlockedOnInput"/>,
     /// or null when it is not blocked. Opaque plane plumbing captured in
-    /// <see cref="TaskStore.RunTransition"/> on the RequestInput path and cleared
-    /// on the way out — never an engine field, so <see cref="TaskRecord"/> stays
+    /// <see cref="SessionStore.RunTransition"/> on the RequestInput path and cleared
+    /// on the way out — never an engine field, so <see cref="SessionRecord"/> stays
     /// free of clocks (§6: timers live in the control plane). The wait-TTL sweeper
     /// (§11) ages this against the configured wait TTL to decide when to park.
     /// </summary>
@@ -68,7 +68,7 @@ public sealed class TaskRow
     /// <summary>
     /// The typed kind of the task's most recent input request (§6/§11), captured on the
     /// RequestInput path beside <see cref="BlockedAt"/>. The event row already records
-    /// every request's kind as history (<see cref="TaskEventRow.InputKind"/>); this is
+    /// every request's kind as history (<see cref="SessionEventRow.InputKind"/>); this is
     /// the <em>live</em> one, so the §12 human surfaces and <c>get_team_state</c> can say
     /// what kind of attention a waiting task needs without walking the event log — the
     /// same row-vs-event-log split <see cref="BlockedAt"/> already makes. Structure, not
@@ -82,9 +82,9 @@ public sealed class TaskRow
     /// <see cref="InputKind"/>, captured verbatim on the RequestInput transition and
     /// size-capped at the engine (<see cref="Docket.Core.RequestInput.MaxQuestionBytes"/>).
     /// Opaque: the plane stores it and never parses it (§2 principle 1). Read by the
-    /// Lead per task (<c>get_task_question</c>), by a human on the §12 dashboard and
+    /// Lead per task (<c>get_session_question</c>), by a human on the §12 dashboard and
     /// inbox — where the answering happens — and by the resumed worker on
-    /// <c>get_task</c>, which matters most on a cold start, where the transcript that
+    /// <c>get_session</c>, which matters most on a cold start, where the transcript that
     /// held the question is gone. Retained past the answer so the pair stays readable;
     /// a <em>new</em> question overwrites it and clears <see cref="InputAnswer"/>.
     /// </summary>
@@ -96,7 +96,7 @@ public sealed class TaskRow
     /// blocked task, <c>WakeParked</c> for one the wait-TTL sweeper parked first — and
     /// capped at the engine (<see cref="Docket.Core.AnswerInput.MaxAnswerBytes"/>).
     /// This is how the answer reaches the redispatched worker: it surfaces on that
-    /// worker's opening <c>get_task</c>, deliberately <b>not</b> through the resume
+    /// worker's opening <c>get_session</c>, deliberately <b>not</b> through the resume
     /// argv, which would leak the text to any local process reading
     /// <c>/proc/&lt;pid&gt;/cmdline</c> (§13, the same reason tokens never ride argv).
     /// Null when nobody has answered yet, or when the answer carried no words (an
@@ -152,7 +152,7 @@ public sealed class TaskRow
     /// <summary>
     /// The Lead's prose instructions (§7 <c>description</c>). Opaque: the worker
     /// reads it (worker-skill.md), the control plane never parses it. Captured at
-    /// creation and handed back by <c>get_task</c>.
+    /// creation and handed back by <c>get_session</c>.
     /// </summary>
     public string Description { get; set; } = "";
 
@@ -165,7 +165,7 @@ public sealed class TaskRow
     /// (§2 principle 1). §6 <b>requires</b> it for that transition while the
     /// <see cref="WorkerReport"/> beside it stays optional, so it is the one thing every
     /// task that reached verifying has said about its output. Read back by the Lead's
-    /// <c>get_task_report</c> fetch and the §12 dashboard — the §7 adjudication read
+    /// <c>get_session_report</c> fetch and the §12 dashboard — the §7 adjudication read
     /// (#81) — as agent-authored CLAIMS to resolve against reality, never authority.
     /// Null until the task reaches verifying.
     /// </summary>
@@ -178,7 +178,7 @@ public sealed class TaskRow
     /// stores verbatim and never parses (§2 principle 1); its size is capped at the
     /// engine (<see cref="Docket.Core.ReportResult.MaxReportBytes"/>). Null when the
     /// worker reported none. Surfaced to the Lead (get_team_state), a successor
-    /// worker (get_task), and the §12 dashboard — agent-authored CLAIMS the Lead
+    /// worker (get_session), and the §12 dashboard — agent-authored CLAIMS the Lead
     /// verifies before accepting (§13), never authority.
     /// </summary>
     public string? WorkerReport { get; set; }
@@ -188,7 +188,7 @@ public sealed class TaskRow
     /// the task. Opaque transport metadata, exactly like <see cref="ResultReference"/>:
     /// stored verbatim, never dereferenced by the control plane, never entering
     /// <c>Docket.Core</c>. Dispatch continues the Lead's trace from here so one
-    /// trace spans create_task → dispatch → runner → worker. Null when no Activity
+    /// trace spans create_session → dispatch → runner → worker. Null when no Activity
     /// was sampling at creation.
     /// </summary>
     public string? TraceContext { get; set; }
@@ -209,16 +209,16 @@ public sealed class TaskRow
     /// <summary>
     /// Continuation lineage (§6/§11): the prior task whose harness session this task
     /// resumes, or null for an ordinary profile-targeted task. Seeded at creation
-    /// from <c>create_task(continues:)</c> and rendered as the Y-continues-X link in
+    /// from <c>create_session(continues:)</c> and rendered as the Y-continues-X link in
     /// <c>get_team_state</c> and the dashboard task view. Opaque — the plane stores
     /// the id and never dereferences the state machine through it.
     /// </summary>
-    public Guid? ContinuesTaskId { get; set; }
+    public Guid? ContinuesSessionId { get; set; }
 
     /// <summary>
     /// The task whose machine-local work dir this task's harness runs in (§7, §11), or null
     /// when that is this task's own. Set for a continuation and nothing else; rides every
-    /// dispatch as <see cref="Docket.Contracts.DispatchCommand.WorkDirTask"/>.
+    /// dispatch as <see cref="Docket.Contracts.DispatchCommand.WorkDirSession"/>.
     ///
     /// <para><b>A property of continuation itself, not of resume.</b> A continuation works
     /// where its predecessor worked whether or not it resumes that transcript, because the
@@ -228,7 +228,7 @@ public sealed class TaskRow
     /// task's directory stays the same across every attempt. Transcript resume additionally
     /// requires it (a session is directory-local), but does not define it.</para>
     ///
-    /// <para>Distinct from <see cref="ContinuesTaskId"/>, which is <em>lineage</em>, and it
+    /// <para>Distinct from <see cref="ContinuesSessionId"/>, which is <em>lineage</em>, and it
     /// has to be: lineage names the immediate predecessor, while a chain (a continuation of
     /// a continuation — §11 calls chains natural) does not create a directory per link. B
     /// continuing A works in A's dir, so B has no dir of its own, and C continuing B works
@@ -236,13 +236,13 @@ public sealed class TaskRow
     /// own value, else the source itself), which also makes it O(1) at dispatch rather than
     /// a walk up the lineage.</para>
     /// </summary>
-    public Guid? WorkDirTaskId { get; set; }
+    public Guid? WorkDirSessionId { get; set; }
 
     /// <summary>
     /// Continuation dispatch affinity (§6/§11): the machine that last held/ran the
     /// continued task. Distinct from <see cref="ParkMachine"/> — a submitted
     /// continuation is not parked — so it does not perturb park semantics or the
-    /// dashboard "parked on" signal. <see cref="TaskStore.DispatchNextAsync"/> makes
+    /// dashboard "parked on" signal. <see cref="SessionStore.DispatchNextAsync"/> makes
     /// this the preferred machine (park-record-style affinity): the task is claimable
     /// on this machine (and resumes there), and on another machine only under
     /// <see cref="OnMachineGone"/> = <see cref="MachineGonePolicy.Degrade"/> once this
@@ -272,9 +272,9 @@ public sealed class TaskRow
     /// <summary>Postgres system column, used as the optimistic-concurrency token.</summary>
     public uint Version { get; set; }
 
-    internal TaskRecord ToDomain() => new()
+    internal SessionRecord ToDomain() => new()
     {
-        Id = new TaskId(Id),
+        Id = new SessionId(Id),
         Team = new TeamId(TeamId),
         Namespace = Namespace,
         CompletionMode = CompletionMode,
@@ -291,7 +291,7 @@ public sealed class TaskRow
         CompletionProvenance = CompletionProvenance,
     };
 
-    internal void CopyFrom(TaskRecord task)
+    internal void CopyFrom(SessionRecord task)
     {
         State = task.State;
         Attempt = task.Attempt;
@@ -315,7 +315,7 @@ public sealed class TaskRow
 public sealed class WorkerInstanceRow
 {
     public Guid Id { get; set; }
-    public Guid TaskId { get; set; }
+    public Guid SessionId { get; set; }
     public bool Revoked { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
 
@@ -329,8 +329,8 @@ public sealed class WorkerInstanceRow
     /// requeued across two machines has an instance row for each, and transcript ordinals
     /// are per-machine, so the pair (machine, ordinal) is what identifies a captured
     /// instance. Nothing else remembers this once the task is terminal: the in-memory
-    /// registry untracks a task when it exits, <see cref="TaskRow.ParkMachine"/> only
-    /// covers parked tasks, and <see cref="TaskRow.PreferredMachine"/> is the
+    /// registry untracks a task when it exits, <see cref="SessionRow.ParkMachine"/> only
+    /// covers parked tasks, and <see cref="SessionRow.PreferredMachine"/> is the
     /// continuation pin plus the same-task session/load pin after park or fail.
     ///
     /// <para>Nullable for rows written before this column existed; a null simply means the
@@ -342,24 +342,24 @@ public sealed class WorkerInstanceRow
 
 /// <summary>
 /// A registered live endpoint (§8.2). Rows for a task are cleared when it
-/// leaves <see cref="TaskState.Working"/> (the ClearServicesAndForwards
+/// leaves <see cref="SessionState.Working"/> (the ClearServicesAndForwards
 /// effect) — with one exception: a task blocked on a <b>permission</b> request
 /// keeps its registrations, because that worker is still alive inside its tool
-/// call and returns to <see cref="TaskState.Working"/> as the same incumbent
+/// call and returns to <see cref="SessionState.Working"/> as the same incumbent
 /// (§11 permission bridge). It keeps them through a subsequent park or requeue
 /// too, since the clearing effect is only ever emitted from
-/// <see cref="TaskState.Working"/>.
+/// <see cref="SessionState.Working"/>.
 ///
 /// <para><c>(TeamId, Name)</c> is <b>unique</b>: the name is the Team-scoped address every
 /// resolver is handed, so one live row may hold it (<see cref="Rule.ServiceNameUniqueInTeam"/>,
-/// enforced by the index and by <c>TaskStore.RegisterServiceAsync</c>, which updates a task's
+/// enforced by the index and by <c>SessionStore.RegisterServiceAsync</c>, which updates a task's
 /// own row and refuses another task's). Since a row exists only while its task is working, a
 /// finished task's name is free for the next one.</para>
 /// </summary>
 public sealed class RegisteredServiceRow
 {
     public long Seq { get; set; }
-    public Guid TaskId { get; set; }
+    public Guid SessionId { get; set; }
     public Guid TeamId { get; set; }
     public string Name { get; set; } = "";
     public int Port { get; set; }
@@ -395,12 +395,12 @@ public sealed class PreviewMappingRow
 
     /// <summary>
     /// The task that owns the previewed service, and <b>half of what the label resolves
-    /// to</b>: <see cref="PreviewConnectService"/> mints against <c>(TaskId, ServiceName)</c>,
+    /// to</b>: <see cref="PreviewConnectService"/> mints against <c>(SessionId, ServiceName)</c>,
     /// so check 11 re-verifies <em>this</em> registration is still working at connect rather
     /// than accepting whatever else answers to the name in the Team by then. Resolving by
     /// name alone let a label outlive its subject and reach a different task's service.
     /// </summary>
-    public Guid TaskId { get; set; }
+    public Guid SessionId { get; set; }
 
     /// <summary>The registered service name the preview resolves to (§8.2).</summary>
     public string ServiceName { get; set; } = "";
@@ -429,7 +429,7 @@ public sealed class PreviewMappingRow
 /// kind, so the JSON twin stays a clean structured shape rather than a mashed
 /// string (§12: every view is consumable as structured data).</para>
 /// </summary>
-public sealed class TaskEventRow
+public sealed class SessionEventRow
 {
     /// <summary>The <see cref="Kind"/> of an <c>auth-failed</c> telemetry row (§11) —
     /// a wire-vocabulary name, not a command type, shared by the writer and the
@@ -451,11 +451,11 @@ public sealed class TaskEventRow
     public const string ContinuationMemoryLostKind = "continuation-memory-lost";
 
     public long Seq { get; set; }
-    public Guid TaskId { get; set; }
+    public Guid SessionId { get; set; }
     public Guid TeamId { get; set; }
     public string Kind { get; set; } = "";
-    public TaskState? FromState { get; set; }
-    public TaskState? ToState { get; set; }
+    public SessionState? FromState { get; set; }
+    public SessionState? ToState { get; set; }
     public string? Detail { get; set; }
     public DateTimeOffset OccurredAt { get; set; }
 
@@ -549,10 +549,10 @@ public sealed class TaskEventRow
 /// an addition to it (Codex breaks it out, Claude's stream does not expose one). It is stored
 /// because it is free and a real cost lever, and it is excluded from every total on purpose.</para>
 /// </summary>
-public sealed class TaskUsageRow
+public sealed class SessionUsageRow
 {
     /// <summary>The task whose dispatch reported this. Half the composite key.</summary>
-    public Guid TaskId { get; set; }
+    public Guid SessionId { get; set; }
 
     /// <summary>The model the HARNESS named for these tokens, or null when it named none — the
     /// other half of the key. Opaque: the plane never parses or validates it, so a harness

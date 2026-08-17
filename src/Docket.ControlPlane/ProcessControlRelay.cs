@@ -55,7 +55,7 @@ public sealed class ProcessControlRelay(RunnerConnectionRegistry registry)
 
     /// <summary>Start an agent-declared background process on the machine holding this task.</summary>
     public async Task<ProcessStartOutcome> StartAsync(
-        TaskId task, string name, IReadOnlyList<string> spawn, string? workingDirectory,
+        SessionId task, string name, IReadOnlyList<string> spawn, string? workingDirectory,
         IReadOnlyDictionary<string, string>? env, bool openStdin, CancellationToken ct)
     {
         var sent = await AskAsync(
@@ -74,7 +74,7 @@ public sealed class ProcessControlRelay(RunnerConnectionRegistry registry)
     }
 
     /// <summary>Stop a named process on the machine holding this task.</summary>
-    public async Task<ProcessControlOutcome> StopAsync(TaskId task, string name, CancellationToken ct)
+    public async Task<ProcessControlOutcome> StopAsync(SessionId task, string name, CancellationToken ct)
     {
         var sent = await AskAsync(
             task, ControlTimeout, requestId => new StopProcessCommand(task, requestId, name), ct);
@@ -90,7 +90,7 @@ public sealed class ProcessControlRelay(RunnerConnectionRegistry registry)
 
     /// <summary>Write to a named process's stdin on the machine holding this task.</summary>
     public async Task<ProcessControlOutcome> WriteAsync(
-        TaskId task, string name, string data, bool appendNewline, CancellationToken ct)
+        SessionId task, string name, string data, bool appendNewline, CancellationToken ct)
     {
         var sent = await AskAsync(
             task, ControlTimeout,
@@ -118,7 +118,7 @@ public sealed class ProcessControlRelay(RunnerConnectionRegistry registry)
     /// lost its notes cannot otherwise discover what an earlier task left running, and guessing
     /// names is not a recovery path.</para>
     /// </summary>
-    public IReadOnlyList<RunningThing> List(TaskId task)
+    public IReadOnlyList<RunningThing> List(SessionId task)
     {
         var machine = registry.MachineFor(task);
         if (machine is null)
@@ -145,7 +145,7 @@ public sealed class ProcessControlRelay(RunnerConnectionRegistry registry)
     }
 
     private async Task<Answer> AskAsync(
-        TaskId task, TimeSpan timeout, Func<string, RunnerCommand> build, CancellationToken ct)
+        SessionId task, TimeSpan timeout, Func<string, RunnerCommand> build, CancellationToken ct)
     {
         var machine = registry.MachineFor(task);
         if (machine is null)

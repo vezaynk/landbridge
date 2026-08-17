@@ -258,10 +258,10 @@ public sealed class TokenService(DocketDbContext db, TimeProvider clock)
     /// validity tracks the instance row.
     /// </summary>
     public async Task<IssuedToken> MintWorkerTokenAsync(
-        TeamId team, TaskId task, WorkerInstanceId instance, CancellationToken ct = default)
+        TeamId team, SessionId task, WorkerInstanceId instance, CancellationToken ct = default)
     {
         var (token, row) = NewCredential(CredentialKind.Worker, ttl: null,
-            teamId: team.Value, taskId: task.Value, instanceId: instance.Value);
+            teamId: team.Value, sessionId: task.Value, instanceId: instance.Value);
         db.Set<CredentialRow>().Add(row);
         await db.SaveChangesAsync(ct);
         return new IssuedToken(token, row.Id, null);
@@ -304,7 +304,7 @@ public sealed class TokenService(DocketDbContext db, TimeProvider clock)
                 return incumbent
                     ? new Principal.Worker(new WorkerCaller(
                         new TeamId(row.TeamId!.Value),
-                        new TaskId(row.TaskId!.Value),
+                        new SessionId(row.SessionId!.Value),
                         new WorkerInstanceId(row.WorkerInstanceId!.Value)))
                     : null;
 
@@ -367,7 +367,7 @@ public sealed class TokenService(DocketDbContext db, TimeProvider clock)
 
     private (string Token, CredentialRow Row) NewCredential(
         CredentialKind kind, TimeSpan? ttl,
-        Guid? machineId = null, Guid? teamId = null, Guid? taskId = null, Guid? instanceId = null,
+        Guid? machineId = null, Guid? teamId = null, Guid? sessionId = null, Guid? instanceId = null,
         Guid? humanId = null)
     {
         // 64 hex chars = 256 bits of entropy, URL-safe with no munging.
@@ -380,7 +380,7 @@ public sealed class TokenService(DocketDbContext db, TimeProvider clock)
             Kind = kind,
             MachineId = machineId,
             TeamId = teamId,
-            TaskId = taskId,
+            SessionId = sessionId,
             WorkerInstanceId = instanceId,
             HumanId = humanId,
             CreatedAt = now,

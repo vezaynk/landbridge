@@ -257,7 +257,7 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
                 // ever exported into the test process's own environment, a restarted
                 // docketd would kill the test runner itself.
                 ["DOCKET_MACHINE_ID"] = MachineId,
-                ["DOCKET_TASK_ID"] = Guid.NewGuid().ToString(),
+                ["DOCKET_SESSION_ID"] = Guid.NewGuid().ToString(),
                 ["DOCKET_TEST_DISABLE_PDEATHSIG"] = "1",
             },
             workingDirectory: strayDir,
@@ -286,10 +286,10 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     /// drives a task to <c>verifying</c>, <see cref="ChaosProfiles.Wedge"/> is the
     /// worker that emits nothing and reports nothing.
     /// </summary>
-    public async Task<TaskId> CreateTaskAsync(string description, string? profile, CancellationToken ct)
+    public async Task<SessionId> CreateSessionAsync(string description, string? profile, CancellationToken ct)
     {
         await using var lead = await ConnectLeadAsync(ct);
-        var task = await PlaneProbe.CreateTaskAsync(
+        var task = await PlaneProbe.CreateSessionAsync(
             lead, description,
             completionCriteria: "the chaos scenario holds",
             workspace: $"chaos-{Guid.NewGuid():N}",
@@ -299,7 +299,7 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     }
 
     /// <summary>Accept a verifying task as the Lead, driving it to <c>completed</c> (§7).</summary>
-    public async Task AcceptAsync(TaskId task, CancellationToken ct)
+    public async Task AcceptAsync(SessionId task, CancellationToken ct)
     {
         await using var lead = await ConnectLeadAsync(ct);
         await PlaneProbe.AcceptAsync(lead, task, ct);
@@ -309,10 +309,10 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     /// Lead resume of a failed attempt. The plane no longer requeues; the bar
     /// simulates the Lead waking the park so dispatch can place it again.
     /// </summary>
-    public async Task ResumeFailedAsync(TaskId task, CancellationToken ct)
+    public async Task ResumeFailedAsync(SessionId task, CancellationToken ct)
     {
         await using var db = pg.NewContext();
-        var store = new TaskStore(db, TimeProvider.System);
+        var store = new SessionStore(db, TimeProvider.System);
         var result = await store.ApplyAsync(task, new WakeParked("chaos: resume after fail"), ct);
         if (result is not StoreResult.Applied)
             throw new InvalidOperationException($"resume of {task} did not apply: {result.GetType().Name}");
@@ -345,7 +345,7 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     /// scenario with a different correct outcome: the task has no live process, so the
     /// aliveness clock reclaims it as <c>LivenessTimeout</c> and it never was mid-task.</para>
     /// </summary>
-    public bool WorkerStarted(TaskId task) =>
+    public bool WorkerStarted(SessionId task) =>
         File.Exists(Path.Combine(_workRoot, task.ToString(), "started"));
 
     /// <summary>
@@ -358,7 +358,7 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     /// overwrites the marker in place — the work dir is per task, not per attempt — so a
     /// scenario that wants a particular attempt's pid reads it while that attempt is live.</para>
     /// </summary>
-    public int? WorkerPid(TaskId task)
+    public int? WorkerPid(SessionId task)
     {
         try
         {
@@ -402,7 +402,7 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     /// until the file exists. Redispatch overwrites it in place, so a scenario that
     /// wants the PREDECESSOR's token has to read it before the requeue.
     /// </summary>
-    public async Task<string?> InjectedWorkerTokenAsync(TaskId task, CancellationToken ct)
+    public async Task<string?> InjectedWorkerTokenAsync(SessionId task, CancellationToken ct)
     {
         var path = Path.Combine(_workRoot, task.ToString(), "mcp.json");
         if (!File.Exists(path))
@@ -424,21 +424,21 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
 
     // ── Bounded reads of committed control-plane state ──────────────────────────
 
-    public async Task<TaskState?> StateAsync(TaskId task, CancellationToken ct)
+    public async Task<SessionState?> StateAsync(SessionId task, CancellationToken ct)
     {
         await using var db = pg.NewContext();
         return await PlaneProbe.StateAsync(db, task, ct);
     }
 
     /// <summary>The committed row facts the scenarios assert on, in one read.</summary>
-    public async Task<TaskFacts?> FactsAsync(TaskId task, CancellationToken ct)
+    public async Task<TaskFacts?> FactsAsync(SessionId task, CancellationToken ct)
     {
         await using var db = pg.NewContext();
-        var row = await db.Tasks.AsNoTracking().SingleOrDefaultAsync(t => t.Id == task.Value, ct);
+        var row = await db.Sessions.AsNoTracking().SingleOrDefaultAsync(t => t.Id == task.Value, ct);
         if (row is null)
             return null;
         var liveInstances = await db.WorkerInstances.AsNoTracking()
-            .CountAsync(w => w.TaskId == task.Value && !w.Revoked, ct);
+            .CountAsync(w => w.SessionId == task.Value && !w.Revoked, ct);
         return new TaskFacts(
             row.State, row.Attempt, row.InfrastructureRequeues, row.CurrentInstanceId, row.ResultReference,
             liveInstances, row.LastRequeueReason, row.InfrastructureRequeueLimit);
@@ -453,11 +453,11 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     /// <c>LivenessLost</c>.
     /// </summary>
     public async Task<IReadOnlyList<LivenessLossReason?>> RequeueReasonsAsync(
-        TaskId task, CancellationToken ct)
+        SessionId task, CancellationToken ct)
     {
         await using var db = pg.NewContext();
-        return await db.TaskEvents.AsNoTracking()
-            .Where(e => e.TaskId == task.Value && e.Kind == nameof(LivenessLost))
+        return await db.SessionEvents.AsNoTracking()
+            .Where(e => e.SessionId == task.Value && e.Kind == nameof(LivenessLost))
             .OrderBy(e => e.OccurredAt)
             .Select(e => e.LivenessReason)
             .ToListAsync(ct);
@@ -473,7 +473,7 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
         Func<Task<bool>> condition, TimeSpan timeout, CancellationToken ct) =>
         PlaneProbe.WaitUntilAsync(condition, timeout, ct);
 
-    public Task<bool> WaitForStateAsync(TaskId task, TaskState state, TimeSpan timeout, CancellationToken ct) =>
+    public Task<bool> WaitForStateAsync(SessionId task, SessionState state, TimeSpan timeout, CancellationToken ct) =>
         WaitUntilAsync(async () => await StateAsync(task, ct) == state, timeout, ct);
 
     // ── Diagnostics ─────────────────────────────────────────────────────────────
@@ -484,7 +484,7 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     /// its live worker instances, and its ordered control-plane event log. Every
     /// deadline in this suite routes its failure message through here.
     /// </summary>
-    public async Task<string> DiagnoseAsync(IEnumerable<TaskId> tasks, CancellationToken ct)
+    public async Task<string> DiagnoseAsync(IEnumerable<SessionId> tasks, CancellationToken ct)
     {
         var sb = new StringBuilder();
         sb.AppendLine("╔═ CHAOS DIAGNOSTICS ═══════════════════════════════════════════");
@@ -526,7 +526,7 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     /// path with argv only:
     /// <list type="bullet">
     /// <item><c>default</c> — <c>Docket.WorkerHarness</c>, which dials the plane with
-    /// its injected token, calls <c>get_task</c>, reports a result and exits: a task
+    /// its injected token, calls <c>get_session</c>, reports a result and exits: a task
     /// that reaches <c>verifying</c> on its own.</item>
     /// <item><c>wedge</c> — <c>Docket.Runner.TestHarness run</c>, which writes a marker
     /// and then only watches stdin. It never speaks MCP, so it registers no service and
@@ -668,7 +668,7 @@ internal readonly record struct StrayTree(int Pid, int GrandchildPid)
 
 /// <summary>The committed task facts the scenarios assert on.</summary>
 internal readonly record struct TaskFacts(
-    TaskState State,
+    SessionState State,
     int Attempt,
     int InfrastructureRequeues,
     Guid? CurrentInstanceId,

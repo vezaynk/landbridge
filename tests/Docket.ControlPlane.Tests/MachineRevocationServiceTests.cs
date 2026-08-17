@@ -64,8 +64,8 @@ public sealed class MachineRevocationServiceTests(PostgresFixture pg) : IAsyncLi
 
         // Its work went back in the queue rather than being abandoned on a box no one
         // trusts — the same fact, and the same reason, as the socket dying on its own.
-        Assert.Equal(1, revoked.TasksRequeued);
-        Assert.Equal(TaskState.Failed, await StateAsync(clock, task));
+        Assert.Equal(1, revoked.SessionsRequeued);
+        Assert.Equal(SessionState.Failed, await StateAsync(clock, task));
 
         // The worker token stops authenticating, which is the half the credential sweep
         // cannot reach: a worker credential carries no machine id, only {team, task,
@@ -113,7 +113,7 @@ public sealed class MachineRevocationServiceTests(PostgresFixture pg) : IAsyncLi
 
         var revoked = await RevokeAsync(clock, registry, machineId);
 
-        Assert.Equal(0, revoked.TasksRequeued);
+        Assert.Equal(0, revoked.SessionsRequeued);
         Assert.Equal(1, revoked.WorkersRevoked);
         await using var db = pg.NewContext();
         Assert.Null(await new TokenService(db, clock).ValidateAsync(workerToken));
@@ -146,8 +146,8 @@ public sealed class MachineRevocationServiceTests(PostgresFixture pg) : IAsyncLi
 
         Assert.Null(registry.SnapshotFor(doomed));
         Assert.NotNull(registry.SnapshotFor(spared));
-        Assert.Contains(sparedTask, registry.TasksOn(spared));
-        Assert.Equal(TaskState.Working, await StateAsync(clock, sparedTask));
+        Assert.Contains(sparedTask, registry.SessionsOn(spared));
+        Assert.Equal(SessionState.Working, await StateAsync(clock, sparedTask));
 
         await using var db = pg.NewContext();
         var tokens = new TokenService(db, clock);
@@ -171,7 +171,7 @@ public sealed class MachineRevocationServiceTests(PostgresFixture pg) : IAsyncLi
 
         var first = await RevokeAsync(clock, registry, machineId);
         Assert.False(first.ChannelClosed);
-        Assert.Equal(0, first.TasksRequeued);
+        Assert.Equal(0, first.SessionsRequeued);
         Assert.Equal(0, first.WorkersRevoked);
 
         var again = await RevokeAsync(clock, registry, machineId);
@@ -213,36 +213,36 @@ public sealed class MachineRevocationServiceTests(PostgresFixture pg) : IAsyncLi
     /// worker instance row records the machine and the worker token is the one that dispatch
     /// would have shipped down the socket.
     /// </summary>
-    private async Task<(TaskId Task, string WorkerToken)> DispatchOntoAsync(
+    private async Task<(SessionId Session, string WorkerToken)> DispatchOntoAsync(
         TimeProvider clock, TeamId team, string machineId, RunnerConnectionRegistry registry)
     {
         await using var db = pg.NewContext();
-        var store = new TaskStore(db, clock);
+        var store = new SessionStore(db, clock);
         Assert.IsType<StoreResult.Applied>(await store.CreateAsync(
-            new CreateTask(new LeadClaim(team), team, "the work on the box", CompletionMode.Lead, null)));
+            new CreateSession(new LeadClaim(team), team, "the work on the box", CompletionMode.Lead, null)));
 
         // The claim picks the task, exactly as the dispatch loop's does, so the id comes back
         // from the store rather than being assumed.
         var instance = WorkerInstanceId.New();
         var dispatched = Assert.IsType<StoreResult.Applied>(
             await store.DispatchNextAsync(registry.SnapshotFor(machineId)!, instance));
-        registry.TrackDispatch(machineId, dispatched.Task.Id);
+        registry.TrackDispatch(machineId, dispatched.Session.Id);
         var token = await new TokenService(db, clock)
-            .MintWorkerTokenAsync(team, dispatched.Task.Id, instance);
-        return (dispatched.Task.Id, token.Token);
+            .MintWorkerTokenAsync(team, dispatched.Session.Id, instance);
+        return (dispatched.Session.Id, token.Token);
     }
 
-    private async Task<TaskState?> StateAsync(TimeProvider clock, TaskId task)
+    private async Task<SessionState?> StateAsync(TimeProvider clock, SessionId task)
     {
         await using var db = pg.NewContext();
-        return await new TaskStore(db, clock).GetStateAsync(task);
+        return await new SessionStore(db, clock).GetStateAsync(task);
     }
 
     private static IReadOnlySet<string> Profiles() => new HashSet<string>(StringComparer.Ordinal) { "default" };
 
     private static MachineHeartbeat Ready(string machineId) =>
         new(machineId, Ready: true, UnderBackPressure: false,
-            new SystemLoad(0, 0, 0), RunningTasks: 0, ["default"], DateTimeOffset.UtcNow);
+            new SystemLoad(0, 0, 0), RunningSessions: 0, ["default"], DateTimeOffset.UtcNow);
 
     private IServiceScopeFactory ScopeFactory(TimeProvider clock)
     {

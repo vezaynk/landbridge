@@ -84,7 +84,7 @@ public sealed class ProfileFilesSpawnTests : IDisposable
     [Fact]
     public async Task Declared_file_is_written_with_substitutions_before_the_worker_starts()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         var supervisor = Supervisor();
 
         supervisor.Spawn(
@@ -95,7 +95,7 @@ public sealed class ProfileFilesSpawnTests : IDisposable
             [
                 new ProfileFile(
                     "{work_dir}/.grok/config.toml",
-                    "url = \"{mcp_url}\"\ntask = \"{task_id}\"\n"),
+                    "url = \"{mcp_url}\"\ntask = \"{session_id}\"\n"),
             ]),
             "machine-42");
 
@@ -120,7 +120,7 @@ public sealed class ProfileFilesSpawnTests : IDisposable
     [Fact]
     public async Task A_claude_shaped_file_can_be_written_from_worker_token_and_mcp_url()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         Supervisor().Spawn(
             new DispatchCommand(
                 task, "default",
@@ -129,7 +129,7 @@ public sealed class ProfileFilesSpawnTests : IDisposable
             TestKit.Profile("echo-env", files:
             [
                 new ProfileFile(
-                    "{work_dir}/mcp-{task_id}.json",
+                    "{work_dir}/mcp-{session_id}.json",
                     """{"mcpServers":{"docket":{"type":"http","url":"{mcp_url}","headers":{"Authorization":"Bearer {worker_token}"}}}}"""),
             ]),
             "m");
@@ -145,7 +145,7 @@ public sealed class ProfileFilesSpawnTests : IDisposable
     [Fact]
     public async Task A_relative_file_path_is_written_under_the_work_dir()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         Supervisor().Spawn(
             TestKit.Dispatch(task),
             TestKit.Profile("echo-env", files:
@@ -163,7 +163,7 @@ public sealed class ProfileFilesSpawnTests : IDisposable
     [Fact]
     public async Task Mcp_json_is_not_written_when_the_argv_never_names_it()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         Supervisor().Spawn(
             new DispatchCommand(task, "default", McpConfigJson: """{"mcpServers":{}}"""),
             TestKit.Profile("echo-env"),
@@ -179,7 +179,7 @@ public sealed class ProfileFilesSpawnTests : IDisposable
     [Fact]
     public void A_path_that_escapes_the_work_dir_fails_the_spawn()
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         var supervisor = Supervisor();
 
         var ex = Assert.Throws<InvalidOperationException>(() =>

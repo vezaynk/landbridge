@@ -96,7 +96,7 @@ public class RunnerDaemonTests
         var channel = new InMemoryControlPlaneChannel { Connected = false };
         var h = Build(channel: channel);
         await h.Daemon.StartAsync();
-        var task = TaskId.New();
+        var task = SessionId.New();
 
         h.Ring.Enqueue(new SessionStartedEvent(task, "sess-1", h.Clock.GetUtcNow()));
 
@@ -174,7 +174,7 @@ public class RunnerDaemonTests
     {
         var channel = new InMemoryControlPlaneChannel { Connected = false };
         var h = Build(channel: channel);
-        var task = TaskId.New();
+        var task = SessionId.New();
         await h.Daemon.StartAsync();
 
         // Park the pump: it drains rebooted, is refused, and holds it.
@@ -224,7 +224,7 @@ public class RunnerDaemonTests
         var h = Build();
         h.Load.Load = new SystemLoad(CpuLoad: 0, MemoryLoad: 0.99, DiskUsage: 0); // over the 0.90 default
 
-        var outcome = await h.Daemon.HandleAsync(TestKit.Dispatch(TaskId.New()));
+        var outcome = await h.Daemon.HandleAsync(TestKit.Dispatch(SessionId.New()));
 
         var refused = Assert.IsType<CommandOutcome.Refused>(outcome);
         Assert.Equal(RefuseReason.BackPressure, refused.Reason);
@@ -238,8 +238,8 @@ public class RunnerDaemonTests
     {
         var h = Build(Config(maxConcurrent: 1));
 
-        var first = await h.Daemon.HandleAsync(TestKit.Dispatch(TaskId.New()));
-        var second = await h.Daemon.HandleAsync(TestKit.Dispatch(TaskId.New()));
+        var first = await h.Daemon.HandleAsync(TestKit.Dispatch(SessionId.New()));
+        var second = await h.Daemon.HandleAsync(TestKit.Dispatch(SessionId.New()));
 
         Assert.IsType<CommandOutcome.Accepted>(first);
         var refused = Assert.IsType<CommandOutcome.Refused>(second);
@@ -254,7 +254,7 @@ public class RunnerDaemonTests
     {
         var h = Build();
 
-        var outcome = await h.Daemon.HandleAsync(TestKit.Dispatch(TaskId.New(), profile: "ghost"));
+        var outcome = await h.Daemon.HandleAsync(TestKit.Dispatch(SessionId.New(), profile: "ghost"));
 
         var refused = Assert.IsType<CommandOutcome.Refused>(outcome);
         Assert.Equal(RefuseReason.UnknownProfile, refused.Reason);
@@ -266,12 +266,12 @@ public class RunnerDaemonTests
     public async Task It_accepts_a_dispatch_when_healthy()
     {
         var h = Build();
-        var task = TaskId.New();
+        var task = SessionId.New();
 
         var outcome = await h.Daemon.HandleAsync(TestKit.Dispatch(task));
 
         var accepted = Assert.IsType<CommandOutcome.Accepted>(outcome);
-        Assert.Equal(task, accepted.Task);
+        Assert.Equal(task, accepted.Session);
         Assert.Single(h.Supervisor.Spawned);
 
         await h.Daemon.ShutdownAsync();
@@ -307,8 +307,8 @@ public class RunnerDaemonTests
         // else after `started`. Without these events the plane requeues every task
         // that outlives its liveness window.
         var h = Build();
-        var alive = TaskId.New();
-        var dies = TaskId.New();
+        var alive = SessionId.New();
+        var dies = SessionId.New();
         await h.Daemon.HandleAsync(TestKit.Dispatch(alive));
         await h.Daemon.HandleAsync(TestKit.Dispatch(dies));
         await h.Daemon.StartAsync();
@@ -394,7 +394,7 @@ public class RunnerDaemonTests
         await h.Daemon.StartAsync(); // the ring pump is what carries the reply to the channel
 
         var outcome = await h.Daemon.HandleAsync(new StartProcessCommand(
-            TaskId.New(), "req-1", "dev", [TestKit.HarnessPath(), "sleeper"]));
+            SessionId.New(), "req-1", "dev", [TestKit.HarnessPath(), "sleeper"]));
 
         Assert.IsType<CommandOutcome.Acknowledged>(outcome);
         Assert.True(await TestKit.WaitUntilAsync(
@@ -431,7 +431,7 @@ public class RunnerDaemonTests
             await h.Daemon.StartAsync();
 
             // The daemon resolves the profile from the supervised task, so dispatch one first.
-            var task = TaskId.New();
+            var task = SessionId.New();
             await h.Daemon.HandleAsync(TestKit.Dispatch(task));
 
             await h.Daemon.HandleAsync(new StartProcessCommand(
@@ -453,14 +453,14 @@ public class RunnerDaemonTests
         }
     }
 
-    private static int AliveFor(Harness h, TaskId task) =>
-        h.Recorded.Events.Count(e => e.Event is AliveEvent a && a.Task == task);
+    private static int AliveFor(Harness h, SessionId task) =>
+        h.Recorded.Events.Count(e => e.Event is AliveEvent a && a.Session == task);
 
     [Fact]
     public async Task Stop_and_kill_are_always_actioned_as_the_control_channel()
     {
         var h = Build();
-        var task = TaskId.New();
+        var task = SessionId.New();
 
         var stop = await h.Daemon.HandleAsync(new StopCommand(task, TimeSpan.FromSeconds(30), StopDisposition.Preserve));
         var kill = await h.Daemon.HandleAsync(new KillCommand(task));
@@ -490,7 +490,7 @@ public class RunnerDaemonTests
     public async Task The_stop_the_operator_reads_names_what_this_machine_did_and_never_claims_the_agent_read_it()
     {
         var h = Build();
-        var task = TaskId.New();
+        var task = SessionId.New();
         var ttl = TimeSpan.FromSeconds(45);
 
         h.Supervisor.StopAckOverride = new StopAck(true, StopDelivery.CancelSent);
@@ -523,7 +523,7 @@ public class RunnerDaemonTests
     public async Task Shutdown_kills_everything_it_started()
     {
         var h = Build();
-        await h.Daemon.HandleAsync(TestKit.Dispatch(TaskId.New()));
+        await h.Daemon.HandleAsync(TestKit.Dispatch(SessionId.New()));
 
         await h.Daemon.ShutdownAsync();
 
@@ -590,7 +590,7 @@ public class RunnerDaemonTests
         // withholds serving) must not crash on a command it cannot answer.
         var h = Build();
 
-        var outcome = await h.Daemon.HandleAsync(new ReadTranscriptCommand(TaskId.New(), "req-1", Ordinal: 1));
+        var outcome = await h.Daemon.HandleAsync(new ReadTranscriptCommand(SessionId.New(), "req-1", Ordinal: 1));
 
         Assert.Contains("serving unavailable", Assert.IsType<CommandOutcome.Acknowledged>(outcome).Detail);
         Assert.DoesNotContain(h.Recorded.Events, e => e.Event is TranscriptChunkEvent);
@@ -631,9 +631,9 @@ internal sealed class TempTranscripts : IDisposable
     public TranscriptReader Reader() => new(Store());
 
     /// <summary>Captures one instance for a fresh task and returns its id.</summary>
-    public TaskId Capture(string[] stdout)
+    public SessionId Capture(string[] stdout)
     {
-        var task = TaskId.New();
+        var task = SessionId.New();
         var writer = Store().CreateWriter(task, TranscriptDefaults.MaxBytes);
         foreach (var line in stdout)
             writer.WriteStdoutLine(line);
@@ -673,22 +673,22 @@ internal sealed class FakeProcessSupervisor : IProcessSupervisor
     private readonly Dictionary<string, int> _running = new(StringComparer.Ordinal);
 
     public List<DispatchCommand> Spawned { get; } = [];
-    public List<TaskId> Stopped { get; } = [];
-    public List<TaskId> Killed { get; } = [];
+    public List<SessionId> Stopped { get; } = [];
+    public List<SessionId> Killed { get; } = [];
     public bool KilledAll { get; private set; }
 
-    public TaskId Spawn(DispatchCommand dispatch, ProfileConfig profile, string machineId)
+    public SessionId Spawn(DispatchCommand dispatch, ProfileConfig profile, string machineId)
     {
         Spawned.Add(dispatch);
         _running[profile.Name] = RunningFor(profile.Name) + 1;
-        return dispatch.Task;
+        return dispatch.Session;
     }
 
     /// <summary>Forces the ack a stop returns, so a test can drive the daemon's
     /// operator-facing wording down each path. Null keeps the default below.</summary>
     public StopAck? StopAckOverride { get; set; }
 
-    public Task<StopAck> StopAsync(TaskId task, TimeSpan ttl, StopDisposition disposition, string? reason, CancellationToken ct)
+    public Task<StopAck> StopAsync(SessionId task, TimeSpan ttl, StopDisposition disposition, string? reason, CancellationToken ct)
     {
         Stopped.Add(task);
         return Task.FromResult(StopAckOverride
@@ -698,16 +698,16 @@ internal sealed class FakeProcessSupervisor : IProcessSupervisor
     /// <summary>Follow-up turns the daemon routed here, and whether a live session took them
     /// (<c>ideas/sessions.md</c> stage 1). Null keeps the "no live session" default, which is
     /// what every stream-mode task answers.</summary>
-    public List<TaskId> Prompted { get; } = [];
+    public List<SessionId> Prompted { get; } = [];
     public bool? PromptAccepted { get; set; }
 
-    public bool TryPrompt(TaskId task)
+    public bool TryPrompt(SessionId task)
     {
         Prompted.Add(task);
         return PromptAccepted ?? false;
     }
 
-    public bool Kill(TaskId task)
+    public bool Kill(SessionId task)
     {
         Killed.Add(task);
         return true;
@@ -723,22 +723,22 @@ internal sealed class FakeProcessSupervisor : IProcessSupervisor
 
     public int RunningTotal => _running.Values.Sum();
 
-    public IReadOnlyCollection<TaskId> RunningTasks => Spawned.Select(s => s.Task).ToArray();
+    public IReadOnlyCollection<SessionId> RunningSessions => Spawned.Select(s => s.Session).ToArray();
 
     /// <summary>
     /// Every spawned task is "process-alive" unless a test declares otherwise via
     /// <see cref="Exited"/> — which is how the alive-emitter tests express a process
     /// that has died but whose bookkeeping is still around.
     /// </summary>
-    public HashSet<TaskId> Exited { get; } = [];
+    public HashSet<SessionId> Exited { get; } = [];
 
-    public IReadOnlyCollection<TaskId> LiveTasks =>
-        Spawned.Select(s => s.Task).Where(t => !Exited.Contains(t)).ToArray();
+    public IReadOnlyCollection<SessionId> LiveSessions =>
+        Spawned.Select(s => s.Session).Where(t => !Exited.Contains(t)).ToArray();
 
     /// <summary>Every spawned task ran on "default" unless a test says otherwise — enough for
     /// §10 agent-service policy lookups, which only need the profile name.</summary>
-    public string? ProfileFor(TaskId task) =>
-        Spawned.Any(s => s.Task == task) ? "default" : null;
+    public string? ProfileFor(SessionId task) =>
+        Spawned.Any(s => s.Session == task) ? "default" : null;
 }
 
 /// <summary>A reaper that reports a fixed count and records the machine it was asked to clean.</summary>

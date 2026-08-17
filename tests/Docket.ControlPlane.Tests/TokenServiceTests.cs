@@ -95,7 +95,7 @@ public sealed class TokenServiceTests(PostgresFixture pg) : IAsyncLifetime
         // §9 check 13: nothing but an enrollment token enters the exchange.
         var creds = await tokens.ExchangeEnrollmentAsync(
             (await tokens.IssueEnrollmentTokenAsync()).Token, Decl);
-        var worker = await tokens.MintWorkerTokenAsync(Team, TaskId.New(), WorkerInstanceId.New());
+        var worker = await tokens.MintWorkerTokenAsync(Team, SessionId.New(), WorkerInstanceId.New());
 
         Assert.Null(await tokens.ExchangeEnrollmentAsync(creds!.Access.Token, Decl));
         Assert.Null(await tokens.ExchangeEnrollmentAsync(creds.Refresh.Token, Decl));
@@ -147,11 +147,11 @@ public sealed class TokenServiceTests(PostgresFixture pg) : IAsyncLifetime
         await using var db = pg.NewContext();
         var tokens = new TokenService(db, new FakeTimeProvider());
 
-        var task = TaskId.New();
+        var task = SessionId.New();
         var instance = WorkerInstanceId.New();
         db.WorkerInstances.Add(new WorkerInstanceRow
         {
-            Id = instance.Value, TaskId = task.Value, CreatedAt = DateTimeOffset.UtcNow,
+            Id = instance.Value, SessionId = task.Value, CreatedAt = DateTimeOffset.UtcNow,
         });
         await db.SaveChangesAsync();
 
@@ -171,19 +171,19 @@ public sealed class TokenServiceTests(PostgresFixture pg) : IAsyncLifetime
         // which has no revocation state of its own — stops authenticating.
         await using var db = pg.NewContext();
         var clock = new FakeTimeProvider();
-        var store = new TaskStore(db, clock);
+        var store = new SessionStore(db, clock);
         var tokens = new TokenService(db, clock);
 
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateTask(new LeadClaim(Team), Team, "criteria", CompletionMode.Lead, null));
+            new CreateSession(new LeadClaim(Team), Team, "criteria", CompletionMode.Lead, null));
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(
             new MachineSnapshot("m1", true, false, new HashSet<string> { "default" }), instance);
-        var minted = await tokens.MintWorkerTokenAsync(Team, created.Task.Id, instance);
+        var minted = await tokens.MintWorkerTokenAsync(Team, created.Session.Id, instance);
 
         Assert.IsType<Principal.Worker>(await tokens.ValidateAsync(minted.Token));
 
-        await store.ApplyAsync(created.Task.Id, new LivenessLost(LivenessLossReason.LivenessTimeout));
+        await store.ApplyAsync(created.Session.Id, new LivenessLost(LivenessLossReason.LivenessTimeout));
 
         Assert.Null(await tokens.ValidateAsync(minted.Token));
     }
@@ -197,7 +197,7 @@ public sealed class TokenServiceTests(PostgresFixture pg) : IAsyncLifetime
 
         Assert.Null(await tokens.ValidateAsync("dkt_w_not-a-real-token"));
 
-        var real = await tokens.MintWorkerTokenAsync(Team, TaskId.New(), WorkerInstanceId.New());
+        var real = await tokens.MintWorkerTokenAsync(Team, SessionId.New(), WorkerInstanceId.New());
         var tampered = real.Token[..^1] + (real.Token[^1] == 'A' ? 'B' : 'A');
         Assert.Null(await tokens.ValidateAsync(tampered));
 

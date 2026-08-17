@@ -31,9 +31,9 @@ namespace Docket.MultiMachine.Tests;
 /// (1) The dead-man incompatibility is the same landmine but <em>silent</em> — where a hung
 /// <c>codex exec</c> prints <c>Reading additional input from stdin...</c> to stderr, OpenCode
 /// prints nothing at all and leaves an empty transcript. (2) MCP tool names are
-/// <c>docket_get_task</c>, not <c>mcp__docket__get_task</c>
+/// <c>docket_get_session</c>, not <c>mcp__docket__get_session</c>
 /// (<c>packages/opencode/src/mcp/catalog.ts:119</c>), and the worker prompts here spell that
-/// underscore form rather than the bare <c>get_task</c> they used to — see
+/// underscore form rather than the bare <c>get_session</c> they used to — see
 /// <see cref="McpToolsRule"/> for why the portable bare spelling turned out to cost more than it
 /// bought. (3) There is no tool-call <em>start</em>
 /// event, only completion (<c>run.ts:719</c>), so the progress clock necessarily lags by each
@@ -56,24 +56,24 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
 
     /// <summary>
     /// The standing rule both prompts here carry, ported from the claude tier where it fixed a real
-    /// failure — a prompt that said "call the docket get_task tool" was read as a shell command and
-    /// the worker ran <c>docket get_task</c> instead of calling its MCP tool.
+    /// failure — a prompt that said "call the docket get_session tool" was read as a shell command and
+    /// the worker ran <c>docket get_session</c> instead of calling its MCP tool.
     ///
     /// <para><b>The spelling is this tier's own, and that is the whole subtlety.</b> OpenCode names
-    /// docket's tools <c>docket_get_task</c> (<c>mcp/catalog.ts:119</c>), where claude and Codex
-    /// both use <c>mcp__docket__get_task</c>. Porting the claude wording verbatim would name a tool
+    /// docket's tools <c>docket_get_session</c> (<c>mcp/catalog.ts:119</c>), where claude and Codex
+    /// both use <c>mcp__docket__get_session</c>. Porting the claude wording verbatim would name a tool
     /// that does not exist on this harness — inventing a phantom tool, which is precisely the bug
     /// this rule exists to prevent. So the underscore form here is not a typo, and a "consistency"
     /// edit that aligns it with the other two tiers breaks this one.</para>
     ///
     /// <para>This supersedes OC-G3's original reasoning, which named the tools <em>bare</em>
-    /// (<c>get_task</c>) on the grounds that the bare form is the one spelling that ports across
+    /// (<c>get_session</c>) on the grounds that the bare form is the one spelling that ports across
     /// all three harnesses. That was true and is still true — but portability was buying less than
-    /// it cost: the bare form is exactly what a worker misread as <c>docket get_task</c>. Each tier
+    /// it cost: the bare form is exactly what a worker misread as <c>docket get_session</c>. Each tier
     /// naming its own real tool is unambiguous in a way no shared spelling can be.</para>
     /// </summary>
     private const string McpToolsRule =
-        " Docket's tools are MCP tools, named exactly docket_get_task, docket_report_result and so " +
+        " Docket's tools are MCP tools, named exactly docket_get_session, docket_report_result and so " +
         "on — call them as tools, under those names. There is no `docket` program: no such command " +
         "exists on this machine, so never run `docket` in a shell, and never try to reach the " +
         "docket MCP server yourself over HTTP or with curl. (A shell command your assignment " +
@@ -134,7 +134,7 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
         using var config = profile.AttachTo(rig);
         await rig.AddMachineAsync("A");
 
-        var task = await rig.CreateTaskAsync(EchoDescription("A", NewToken()), ct);
+        var task = await rig.CreateSessionAsync(EchoDescription("A", NewToken()), ct);
         await rig.DispatchToAsync("A", ct);
 
         // Wait for the worker to be genuinely under way — a session ref means its stream started,
@@ -203,7 +203,7 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
 
         // Step A, on the claude machine: mint + report an unforgeable token.
         var token = NewToken();
-        var stepA = await rig.CreateTaskAsync(EchoDescription("A", token), ct);
+        var stepA = await rig.CreateSessionAsync(EchoDescription("A", token), ct);
         Assert.True(
             await rig.DispatchUntilVerifyingAsync(stepA, "A", MaxAttempts, PerLegBudget, ct),
             "the real claude worker never drove step A to verifying.\n"
@@ -214,7 +214,7 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
         Assert.Contains(token, referenceA);
 
         // Step B, on the opencode machine: report the token the claude worker produced.
-        var stepB = await rig.CreateTaskAsync(EchoDescription("B", token), ct);
+        var stepB = await rig.CreateSessionAsync(EchoDescription("B", token), ct);
         Assert.True(
             await rig.DispatchUntilVerifyingAsync(stepB, "B", MaxAttempts, PerLegBudget, ct),
             "the real opencode worker never confirmed the cross-harness handoff.\n"
@@ -255,7 +255,7 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
     /// and the fact fails on its assertions rather than hanging until the outer deadline.
     /// </summary>
     private const string SlowWorkerPrompt =
-        "You are a Docket worker agent. First call the docket_get_task tool to read your "
+        "You are a Docket worker agent. First call the docket_get_session tool to read your "
         + "assignment. Then, before reporting anything, count slowly from 1 to 400, writing each "
         + "number on its own line with a short remark about it. Only after finishing the count "
         + "may you call the docket_report_result tool with the exact string from the description."
@@ -326,7 +326,7 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
               agent that ran with no docket tools and reported nothing. Check that "oauth": false
               is present too — without it OAuth auto-detection can displace the header.
            3. TOOL NAMES. OpenCode spells MCP tools <server>_<tool>, so the worker is looking for
-              docket_get_task, NOT mcp__docket__get_task (mcp/catalog.ts:119). A prompt that
+              docket_get_session, NOT mcp__docket__get_session (mcp/catalog.ts:119). A prompt that
               names the qualified form will have the agent hunting a tool that does not exist.
            4. PERMISSIONS. session/request_permission is answered by the plane, not --auto.
            5. AUTH. ANTHROPIC_API_KEY must be in the environment, or the machine's opencode must

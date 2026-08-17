@@ -15,7 +15,7 @@ namespace Docket.Runner;
 /// know on its own: which task the spend belongs to. §10: "Token attribution must
 /// carry a task id" — a shared machine's spend is otherwise unattributable to the
 /// work that caused it. That id rides <c>OTEL_RESOURCE_ATTRIBUTES</c> as
-/// <c>docket.task_id</c>.</para>
+/// <c>docket.session_id</c>.</para>
 ///
 /// <para><b>No harness knowledge (§10).</b> docketd sets only vendor-neutral
 /// OTel SDK variables — the ones any OTel-emitting harness reads. A harness's own
@@ -42,11 +42,11 @@ public static class HarnessTelemetry
     public const string MetricsExporterVar = "OTEL_METRICS_EXPORTER";
     public const string LogsExporterVar = "OTEL_LOGS_EXPORTER";
 
-    /// <summary>Carries <c>docket.task_id</c> — the attribution §10 requires — onto every metric and event.</summary>
+    /// <summary>Carries <c>docket.session_id</c> — the attribution §10 requires — onto every metric and event.</summary>
     public const string ResourceAttributesVar = "OTEL_RESOURCE_ATTRIBUTES";
 
     /// <summary>The task-attribution key stamped on everything the harness emits.</summary>
-    public const string TaskAttribute = "docket.task_id";
+    public const string TaskAttribute = "docket.session_id";
 
     /// <summary>Which machine's collector-visible spend this is — one Team's tasks can span machines, and vice versa.</summary>
     public const string MachineAttribute = "docket.machine_id";
@@ -64,7 +64,7 @@ public static class HarnessTelemetry
 
     /// <summary>
     /// Variables docketd owns and neither <c>telemetry.env</c> nor <c>profiles[].env</c>
-    /// can set. §10 fixes <c>DOCKET_MACHINE_ID</c>/<c>DOCKET_TASK_ID</c> on every spawn
+    /// can set. §10 fixes <c>DOCKET_MACHINE_ID</c>/<c>DOCKET_SESSION_ID</c> on every spawn
     /// "not configurably" — stray-process cleanup scans for them, so a profile that
     /// could overwrite one would break the restart-equals-reboot guarantee rather than
     /// just mislabel a metric. The worker token and traceparent are per-spawn
@@ -73,7 +73,7 @@ public static class HarnessTelemetry
     internal static readonly HashSet<string> Reserved = new(StringComparer.Ordinal)
     {
         "DOCKET_MACHINE_ID",
-        "DOCKET_TASK_ID",
+        "DOCKET_SESSION_ID",
         "DOCKET_WORKER_TOKEN",
         "DOCKET_TRACEPARENT",
     };
@@ -99,7 +99,7 @@ public static class HarnessTelemetry
     /// </param>
     public static IReadOnlyDictionary<string, string> SpawnEnvironment(
         TelemetryConfig telemetry,
-        string taskId,
+        string sessionId,
         string machineId,
         Func<string, string?> inherited,
         out bool requestedWithoutEndpoint)
@@ -145,7 +145,7 @@ public static class HarnessTelemetry
         // they arrived by inheritance or from telemetry.env.
         var baseAttributes = Trimmed(env.TryGetValue(ResourceAttributesVar, out var fromConfig) ? fromConfig : null)
             ?? Trimmed(inherited(ResourceAttributesVar));
-        env[ResourceAttributesVar] = AppendAttributes(baseAttributes, taskId, machineId);
+        env[ResourceAttributesVar] = AppendAttributes(baseAttributes, sessionId, machineId);
 
         return env;
     }
@@ -156,10 +156,10 @@ public static class HarnessTelemetry
     /// encoding gives <c>,</c> and <c>=</c> structural meaning — a machine id an
     /// operator chose freely must not be able to forge or split an attribute.
     /// </summary>
-    private static string AppendAttributes(string? existing, string taskId, string machineId)
+    private static string AppendAttributes(string? existing, string sessionId, string machineId)
     {
         var mine = string.Create(CultureInfo.InvariantCulture,
-            $"{TaskAttribute}={Sanitize(taskId)},{MachineAttribute}={Sanitize(machineId)}");
+            $"{TaskAttribute}={Sanitize(sessionId)},{MachineAttribute}={Sanitize(machineId)}");
         return existing is null ? mine : existing.TrimEnd(',') + "," + mine;
     }
 

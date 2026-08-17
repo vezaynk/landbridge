@@ -75,7 +75,7 @@ public sealed class TranscriptStore
     /// restart-safe (the dir persists across restarts). Files are created lazily on
     /// first write, so a silent worker leaves no empty files.
     /// </summary>
-    public TranscriptWriter CreateWriter(TaskId task, long maxBytes)
+    public TranscriptWriter CreateWriter(SessionId task, long maxBytes)
     {
         var dir = Path.Combine(_root, task.ToString());
         Directory.CreateDirectory(dir);
@@ -99,7 +99,7 @@ public sealed class TranscriptStore
     /// <para>An <em>empty</em> list is a different, honest answer: the task ran here and
     /// captured nothing (files open lazily, so a silent worker leaves only the dir).</para>
     /// </summary>
-    public IReadOnlyList<TranscriptInstance>? Inventory(TaskId task)
+    public IReadOnlyList<TranscriptInstance>? Inventory(SessionId task)
     {
         var dir = Path.Combine(_root, task.ToString());
         if (!Directory.Exists(dir))
@@ -144,11 +144,11 @@ public sealed class TranscriptStore
     /// never captured (§12 serving). <paramref name="stream"/> is a
     /// <see cref="TranscriptStreams"/> name; anything else returns null rather than
     /// touching the filesystem. Path construction is closed by design — a
-    /// <see cref="TaskId"/> is a Guid, the ordinal is formatted from an <c>int</c>, and
+    /// <see cref="SessionId"/> is a Guid, the ordinal is formatted from an <c>int</c>, and
     /// the extension comes from the validated stream name — so nothing from the wire can
     /// steer the path outside the transcripts root.
     /// </summary>
-    public string? ResolveFile(TaskId task, int ordinal, string stream)
+    public string? ResolveFile(SessionId task, int ordinal, string stream)
     {
         if (ordinal < 1)
             return null;
@@ -166,7 +166,7 @@ public sealed class TranscriptStore
     }
 
     /// <summary>Whether this machine holds any transcript directory for the task.</summary>
-    public bool Holds(TaskId task) => Directory.Exists(Path.Combine(_root, task.ToString()));
+    public bool Holds(SessionId task) => Directory.Exists(Path.Combine(_root, task.ToString()));
 
     private static DateTimeOffset Newer(DateTimeOffset a, DateTimeOffset b) => a > b ? a : b;
 

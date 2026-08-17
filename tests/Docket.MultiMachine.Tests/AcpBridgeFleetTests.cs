@@ -33,10 +33,10 @@ public sealed class AcpBridgeFleetTests(PostgresFixture pg) : IAsyncLifetime
         await rig.AddMachineAsync("A");
 
         const string seed = "bridge-seed";
-        var task = await rig.CreateTaskAsync("map:" + seed, ct);
+        var task = await rig.CreateSessionAsync("map:" + seed, ct);
         await rig.DispatchToAsync("A", ct);
         Assert.True(
-            await FleetRig.WaitUntilAsync(async () => await rig.StateAsync(task, ct) == TaskState.Verifying, TimeSpan.FromSeconds(30)),
+            await FleetRig.WaitUntilAsync(async () => await rig.StateAsync(task, ct) == SessionState.Verifying, TimeSpan.FromSeconds(30)),
             "bridged scripted worker never reached verifying. " + await rig.DiagnoseAsync(task, ct));
         Assert.Equal("map:" + CollabProgram.MapTransform(seed), await rig.ResultReferenceAsync(task, ct));
     }
