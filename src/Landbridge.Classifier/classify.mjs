@@ -1,6 +1,6 @@
 /**
- * Stateless classification. Read-only shell first; optional two-stage LLM
- * next. Unknown / error is Ask. Never Deny.
+ * Stateless classification. Read-only shell first, Qwen destroy-guard next,
+ * optional two-stage LLM last. Unknown / error is Ask. Never Deny.
  */
 
 const SHELL_TOOLS = new Set([
@@ -58,6 +58,8 @@ export function extractCommand(input) {
 
 export async function classify({ tool, input }, hooks = {}) {
   const isReadOnly = typeof hooks === "function" ? hooks : hooks.isReadOnly;
+  const matchDestructive =
+    typeof hooks === "function" ? undefined : hooks.matchDestructive;
   const llm = typeof hooks === "function" ? undefined : hooks.llm;
   const name = lastSegment(tool);
   const isShell = SHELL_TOOLS.has(name);
@@ -73,6 +75,21 @@ export async function classify({ tool, input }, hooks = {}) {
     if (ok) return { disposition: "allow", via: "readonly-shell", reason: "" };
   } else if (isShell && !command) {
     return { disposition: "ask", via: "no-command", reason: "" };
+  }
+
+  if (isShell && command && typeof matchDestructive === "function") {
+    try {
+      const hit = matchDestructive(command);
+      if (hit?.blocked) {
+        return {
+          disposition: "ask",
+          via: "destructive-command",
+          reason: hit.reason ?? "",
+        };
+      }
+    } catch {
+      return { disposition: "ask", via: "checker-error", reason: "" };
+    }
   }
 
   if (typeof llm === "function") {

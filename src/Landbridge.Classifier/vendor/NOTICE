@@ -1,10 +1,14 @@
 vendor/qwen-readonly.mjs is a tree-shaken bundle of Qwen Code's
 isShellCommandReadOnly checker (Apache-2.0).
+destroy-guard.mjs is Qwen's Layer 0 regex destroy list from
+packages/core/src/permissions/destructive-commands.ts. A match is Ask
+here, not a hard block.
 
 Source: https://github.com/QwenLM/qwen-code
 Commit: b4f5079dc0cc89ce1448785898ab72b358399c95
 Files: packages/core/src/utils/shellReadOnlyChecker.ts
        packages/core/src/utils/shell-safety-rules.ts
        packages/core/src/utils/shell-utils.ts
+       packages/core/src/permissions/destructive-commands.ts
 
-Rebuild: node install-qwen.mjs
+Rebuild checker: node install-qwen.mjs

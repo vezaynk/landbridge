@@ -47,7 +47,9 @@ Two dashboards:
   below. The Aspire / Development host uses the passphrase `dev`; production
   is fail-closed until you set `Landbridge:Operator:PassphraseHash`.
 
-The classifier sidecar auto-allows read-only shell without a model. Set
+The classifier sidecar auto-allows read-only shell without a model, then
+Asks on Qwen's destroy-guard list (`git reset --hard`, `git clean -f`,
+`terraform destroy`, …) so a model outage cannot wave those through. Set
 `LANDBRIDGE_CLASSIFIER_API_KEY` (or `DASHSCOPE_API_KEY` / `OPENAI_API_KEY`) as
 an AppHost user secret to turn on Qwen's two-stage LLM for everything else.
 `LANDBRIDGE_CLASSIFIER_BASE_URL` and `LANDBRIDGE_CLASSIFIER_MODEL` are optional

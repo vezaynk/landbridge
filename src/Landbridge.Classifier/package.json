@@ -9,7 +9,7 @@
   },
   "scripts": {
     "start": "node server.mjs",
-    "test": "node --test classify.test.mjs llm.test.mjs",
+    "test": "node --test classify.test.mjs llm.test.mjs destroy-guard.test.mjs",
     "install-qwen": "node install-qwen.mjs"
   }
 }

@@ -1,5 +1,6 @@
 import http from "node:http";
 import { classify } from "./classify.mjs";
+import { matchDestructiveCommand } from "./destroy-guard.mjs";
 import { makeLlmClassifier, readLlmConfig } from "./llm.mjs";
 import { isShellCommandReadOnly } from "./vendor/qwen-readonly.mjs";
 
@@ -61,7 +62,7 @@ const server = http.createServer(async (req, res) => {
   try {
     const result = await classify(
       { tool: body.tool, input: body.input ?? null },
-      { isReadOnly: isShellCommandReadOnly, llm },
+      { isReadOnly: isShellCommandReadOnly, matchDestructive: matchDestructiveCommand, llm },
     );
     send(res, 200, result);
   } catch {
