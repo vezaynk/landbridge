@@ -47,11 +47,12 @@ Two dashboards:
   is fail-closed until you set `Landbridge:Operator:PassphraseHash`.
 
 The loop stands up a *standing fleet* and does **not** auto-create a task. Create
-work as a Lead over MCP, exactly as in production. The dispatched worker is
-`Landbridge.WorkerHarness`, a scripted no-LLM MCP client that exercises the full
-dispatch → `get_session` → `report_result` protocol; see
-[running a real harness](#pointing-a-worker-at-a-real-harness) to swap it for
-`claude -p`.
+work as a Lead over MCP, exactly as in production. Each seeded box spawns the
+real ACP harness (`codex-acp`, `claude-agent-acp`, `grok agent stdio`). Put the
+provider keys in user secrets (or the environment); landbridged inherits them
+and the child harness reads them. They never go in the runner config. The
+scripted no-LLM `Landbridge.WorkerHarness` is still what the automated tests
+drive — not this loop.
 
 ### Dev-seed shortcut
 
@@ -69,9 +70,28 @@ AppHost starts one `landbridged` per file and hands it that box's
 | `grok-linux` | linux | `grok-apphost-linux`, `any-linux` |
 
 No Team is minted. A human Lead creates work and aims it at one of those
-profile names. Spawn is still the scripted `Landbridge.WorkerHarness`; swapping
-a box to a real ACP harness is a config-only edit of
-[`landbridged.dev.json`](../src/Landbridge.AppHost/landbridged.dev.json).
+profile names. Spawn is the real ACP entry point for that harness. AppHost
+generates each box's runner config at startup (prompt, `follow_up`,
+`auth_method` for Codex, `GROK_FOLDER_TRUST=0` for Grok). The same keys the
+paid MultiMachine e2e uses also feed this loop:
+
+```bash
+# Either store works. Process env wins if both are set.
+dotnet user-secrets set ANTHROPIC_API_KEY '…' --project src/Landbridge.AppHost
+dotnet user-secrets set CODEX_API_KEY     '…' --project src/Landbridge.AppHost
+dotnet user-secrets set XAI_API_KEY       '…' --project src/Landbridge.AppHost
+
+# Already stored for the paid e2e? Leave them there — AppHost loads that
+# secrets id too.
+dotnet user-secrets set ANTHROPIC_API_KEY '…' --project tests/Landbridge.MultiMachine.Tests
+```
+
+`ANTHROPIC_KEY`, `OPENAI_KEY` / `OPENAI_API_KEY`, and `XAI_KEY` are accepted
+and stamped as the names the CLIs actually read. A missing key is a warning,
+not a failed start: that box still enrolls, but the harness cannot authenticate
+to the provider. Adapters (`claude-agent-acp`, `codex-acp`) and `grok` must be
+on `PATH` when you launch Aspire; AppHost resolves them to absolute paths so
+landbridged does not depend on Aspire's own `PATH`.
 
 ## Authenticating a human
 
@@ -198,8 +218,8 @@ children, keeps up, and verifies at dial. Those are the operator's, not an agent
 worker can see them in `list_processes` but cannot stop them. The full schema and a worked
 Claude Code profile live in
 [`ideas/skills/references/runner-config.md`](../ideas/skills/references/runner-config.md).
-The dev-loop template is
-[`src/Landbridge.AppHost/landbridged.dev.json`](../src/Landbridge.AppHost/landbridged.dev.json).
+The Aspire loop generates the same shape per box (see
+[`src/Landbridge.AppHost/DevBoxConfig.cs`](../src/Landbridge.AppHost/DevBoxConfig.cs)).
 
 `machine`: `work_root` (per-task scratch dirs — `landbridged` spawns each task in
 `{work_root}/{session_id}`, which is *not* the workspace), `heartbeat_seconds`
@@ -227,24 +247,12 @@ into each `spawn` arg at dispatch: `{session_id}`, `{machine_id}`, `{work_dir}`
 writes to `{work_dir}/mcp.json`, mode `0600`). It also stamps `LANDBRIDGE_MACHINE_ID`,
 `LANDBRIDGE_SESSION_ID`, and `LANDBRIDGE_WORKER_TOKEN` on the child.
 
-> Note: `{work_root}`, `{worker_harness}`, and `{specific_profile}` in `landbridged.dev.json` are
-> **AppHost** placeholders resolved *before* the file reaches `landbridged` (the
-> AppHost writes out a resolved copy); they are not `landbridged` substitution tokens.
-> `landbridged`'s tokens are the five listed above.
-
 ### Pointing a worker at a real harness
 
-This is the config-only swap the whole design turns on: to run a real agent
-instead of the no-LLM harness, change the `default` profile's `spawn` argv — no
-code change to `landbridged` (spec §10). The dev template's
-
-```json
-"spawn": ["{worker_harness}", "--acp"],
-"prompt": "Do the task you have been assigned."
-```
-
-becomes a real ACP entry point (abridged from the worked example in the
-runner-config reference):
+The Aspire loop already does this. On a standalone `landbridged` (production, or
+a box you enroll by hand) the same swap is config-only — no code change to
+`landbridged` (spec §10). There is no reserved `default` profile. Abridged from
+the worked example in the runner-config reference:
 
 ```json
 "spawn": ["claude-agent-acp"],
@@ -588,5 +596,6 @@ dotnet user-secrets set CODEX_API_KEY     '…' --project tests/Landbridge.Multi
 dotnet user-secrets set XAI_API_KEY       '…' --project tests/Landbridge.MultiMachine.Tests
 ```
 
-`ANTHROPIC_KEY`, `OPENAI_KEY` / `OPENAI_API_KEY`, and `XAI_KEY` are accepted
-and aliased to the names the CLIs actually read.
+The Aspire loop loads this same secrets id, so one store feeds both the paid
+e2e and the local fleet. `ANTHROPIC_KEY`, `OPENAI_KEY` / `OPENAI_API_KEY`, and
+`XAI_KEY` are accepted and aliased to the names the CLIs actually read.

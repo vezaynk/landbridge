@@ -72,10 +72,11 @@ Two dashboards:
   needs `Landbridge:Operator:PassphraseHash` (see `docs/RUNNING.md`).
 
 The dev loop stands up a *standing fleet*: three linux boxes, no Team, no task.
-A human Lead creates work over MCP, exactly as in production. The dispatched
-worker is a scripted, no-LLM harness (`Landbridge.WorkerHarness`) that exercises the
-full protocol; swapping in a real Codex / Claude / Grok ACP spawn is a
-config-only change documented in `docs/RUNNING.md`.
+A human Lead creates work over MCP, exactly as in production. Each box spawns
+the real ACP harness (`codex-acp`, `claude-agent-acp`, `grok agent stdio`).
+Provider keys come from user secrets (AppHost or the MultiMachine test store)
+or the environment — they are never written into the runner config. See
+`docs/RUNNING.md`.
 
 Guides: **[docs/RUNNING.md](docs/RUNNING.md)** (operator/developer, config
 reference, running `landbridged` as a service),

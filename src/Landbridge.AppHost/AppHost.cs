@@ -8,17 +8,34 @@
 // (the cross-process insight §1 is built around).
 //
 // Three landbridged boxes enroll (via dev-seeded tokens, below), dial /runner,
-// and stand ready: a linux Codex, Claude, and Grok machine. No Team is minted
-// — a human Lead creates work over MCP, exactly as in production.
+// and stand ready: a linux Codex, Claude, and Grok machine. Each box spawns
+// the real ACP harness (`codex-acp`, `claude-agent-acp`, `grok agent stdio`).
+// Provider keys come from AppHost user secrets, the MultiMachine secrets id
+// (so the same local store the paid e2e uses also feeds this loop), or the
+// process environment — stamped on that box's landbridged so the child inherits
+// them. They never go in the runner config. No Team is minted — a human Lead
+// creates work over MCP, exactly as in production.
 //
-// Scope note: OTel on landbridged/the worker is out of scope (landbridged is not a Host
-// builder, so it gets no ServiceDefaults); its console logs stream to the
-// dashboard as a resource. Propagating runner traces is a follow-up.
+// landbridged is not a Host builder, so it gets no ServiceDefaults traces.
+// The Claude box opts into harness OTLP (`telemetry.otel`) so token/cost
+// metrics can land in the Aspire dashboard. Console logs stream as a resource.
+using Microsoft.Extensions.Configuration;
 using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
 var builder = DistributedApplication.CreateBuilder(args);
+
+// AppHost's own UserSecretsId is already in the configuration. Also load the
+// MultiMachine test secrets so a key stored for the paid e2e is reused here
+// without a second `dotnet user-secrets set`. Last-added would override env,
+// so FirstNonEmpty still prefers the process environment.
+builder.Configuration.AddJsonFile(UserSecretsPath(DevBoxConfig.MultiMachineSecretsId), optional: true, reloadOnChange: false);
+
+var providerKeys = new DevBoxConfig.ProviderKeys(
+    Anthropic: DevBoxConfig.FirstNonEmpty(builder.Configuration, "ANTHROPIC_API_KEY", "ANTHROPIC_KEY"),
+    Codex: DevBoxConfig.FirstNonEmpty(builder.Configuration, "CODEX_API_KEY", "OPENAI_API_KEY", "OPENAI_KEY"),
+    Xai: DevBoxConfig.FirstNonEmpty(builder.Configuration, "XAI_API_KEY", "XAI_KEY"));
 
 // The plane's fixed dev URL. Sibling processes reach it directly at this known
 // address: landbridged dials ws://127.0.0.1:5050/runner, and the spawned worker
@@ -174,8 +191,12 @@ foreach (var harness in devHarnesses)
     var profile = $"{harness}-apphost-linux";
     var boxWork = Directory.CreateDirectory(Path.Combine(runDir, "work", box)).FullName;
     var boxState = Directory.CreateDirectory(Path.Combine(runDir, "state", box)).FullName;
-    var configPath = WriteResolvedLandbridgedConfig(boxWork, profile);
+    var configPath = DevBoxConfig.Write(runDir, boxWork, harness, profile);
     var seedPath = Path.Combine(seedDir, $"{box}.json");
+    if (providerKeys.For(harness) is null)
+        Console.Error.WriteLine(
+            $"landbridge-apphost: {box} has no {DevBoxConfig.CanonicalKeyName(harness)} " +
+            "(user secrets / env); that box will spawn but cannot authenticate to the provider.");
 
     builder.AddProject<Projects.Landbridge_Runner>($"landbridged-{harness}")
         .WithArgs("--config", configPath, "--state-dir", boxState)
@@ -186,6 +207,10 @@ foreach (var harness in devHarnesses)
             var seed = await ReadSeedWithRetryAsync(seedPath, TimeSpan.FromSeconds(30));
             ctx.EnvironmentVariables["LANDBRIDGE_MACHINE_TOKEN"] = seed.MachineToken;
             ctx.EnvironmentVariables["LANDBRIDGE_MACHINE_ID"] = seed.MachineId;
+            // landbridged does not expand `{env:…}` in profile env. Stamp the
+            // canonical name this harness reads so the ACP child inherits it.
+            if (providerKeys.For(harness) is { } key)
+                ctx.EnvironmentVariables[DevBoxConfig.CanonicalKeyName(harness)] = key;
         });
 }
 
@@ -197,43 +222,12 @@ foreach (var harness in devHarnesses)
 
 builder.Build().Run();
 
-// Reads src/Landbridge.AppHost/landbridged.dev.json (copied beside the AppHost assembly),
-// substitutes {work_root}, {worker_harness}, and {specific_profile}, and writes
-// the resolved config to a temp file. {mcp_config} is left untouched for
-// landbridged to fill per task.
-string WriteResolvedLandbridgedConfig(string resolvedWorkRoot, string specificProfile)
+static string UserSecretsPath(string id)
 {
-    var templatePath = Path.Combine(AppContext.BaseDirectory, "landbridged.dev.json");
-    var template = File.ReadAllText(templatePath);
-    var resolved = template
-        .Replace("\"{work_root}\"", JsonSerializer.Serialize(resolvedWorkRoot), StringComparison.Ordinal)
-        .Replace("\"{worker_harness}\"", JsonSerializer.Serialize(ResolveWorkerHarnessPath()), StringComparison.Ordinal)
-        .Replace("\"{specific_profile}\"", JsonSerializer.Serialize(specificProfile), StringComparison.Ordinal);
-
-    var outPath = Path.Combine(runDir, $"landbridged.{specificProfile}.json");
-    File.WriteAllText(outPath, resolved);
-    return outPath;
-}
-
-// The absolute path to the built Landbridge.WorkerHarness apphost, resolved from the
-// AppHost's OWN build output → the sibling test project's bin (mirroring
-// WalkingSkeletonEndToEndTests.WorkerHarnessPath). A build-only ProjectReference
-// in the .csproj guarantees the harness is built first; here we only need its
-// path. The harness is resolved from its own bin (not copied beside the AppHost)
-// because its MCP-client dependency closure is copied local only there.
-static string ResolveWorkerHarnessPath()
-{
-    const string stem = "Landbridge.WorkerHarness";
-    var appHostDir = AppContext.BaseDirectory; // .../src/Landbridge.AppHost/bin/<config>/net10.0/
-    var harnessDir = appHostDir.Replace(
-        Path.Combine("src", "Landbridge.AppHost", "bin"),
-        Path.Combine("tests", stem, "bin"),
-        StringComparison.Ordinal);
-    var apphost = Path.Combine(harnessDir, OperatingSystem.IsWindows() ? stem + ".exe" : stem);
-    return File.Exists(apphost)
-        ? apphost
-        : throw new FileNotFoundException(
-            $"worker harness apphost not found at {apphost}; is Landbridge.WorkerHarness built?");
+    var root = OperatingSystem.IsWindows()
+        ? Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "Microsoft", "UserSecrets")
+        : Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".microsoft", "usersecrets");
+    return Path.Combine(root, id, "secrets.json");
 }
 
 static async Task<(string MachineId, string MachineToken)> ReadSeedWithRetryAsync(string path, TimeSpan timeout)
