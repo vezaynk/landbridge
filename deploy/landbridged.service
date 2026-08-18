@@ -16,7 +16,7 @@
 
 [Unit]
 Description=Landbridge runner daemon (landbridged)
-Documentation=https://github.com/vezaynk/landbridge-mcp/blob/master/docs/RUNNING.md
+Documentation=https://github.com/vezaynk/landbridge/blob/master/docs/RUNNING.md
 
 # landbridged only ever dials OUT (the control-plane WebSocket, relay tunnels) and
 # reconnects with backoff forever — 200ms doubling to a 10s ceiling — so it does

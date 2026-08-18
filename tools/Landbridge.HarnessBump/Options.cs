@@ -5,7 +5,7 @@ public sealed record Options
 {
     public string RepoRoot { get; init; } = Directory.GetCurrentDirectory();
     public string Repository { get; init; } =
-        Environment.GetEnvironmentVariable("GITHUB_REPOSITORY") is { Length: > 0 } r ? r : "vezaynk/landbridge-mcp";
+        Environment.GetEnvironmentVariable("GITHUB_REPOSITORY") is { Length: > 0 } r ? r : "vezaynk/landbridge";
     public string Workflow { get; init; } = "ci.yml";
     public string CiPath { get; init; } = ".github/workflows/ci.yml";
     public string BaseBranch { get; init; } = "master";
