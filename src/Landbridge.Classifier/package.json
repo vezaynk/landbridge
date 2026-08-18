@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Plane-side permission classifier. First cut: Qwen read-only shell check only.",
+  "description": "Plane-side permission classifier: Qwen read-only shell, destroy-guard, two-stage LLM.",
   "engines": {
     "node": ">=22"
   },

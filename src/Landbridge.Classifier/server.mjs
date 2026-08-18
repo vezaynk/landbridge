@@ -5,7 +5,14 @@ import { makeLlmClassifier, readLlmConfig } from "./llm.mjs";
 import { isShellCommandReadOnly } from "./vendor/qwen-readonly.mjs";
 
 const PORT = Number.parseInt(process.env.PORT ?? "5310", 10);
-const llm = makeLlmClassifier(readLlmConfig(process.env));
+const llmConfig = readLlmConfig(process.env);
+if (!llmConfig) {
+  process.stderr.write(
+    "landbridge-classifier: LANDBRIDGE_CLASSIFIER_API_KEY and LANDBRIDGE_CLASSIFIER_MODEL are required\n",
+  );
+  process.exit(1);
+}
+const llm = makeLlmClassifier(llmConfig);
 
 function send(res, status, body) {
   const json = JSON.stringify(body);

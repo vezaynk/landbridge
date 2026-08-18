@@ -13,10 +13,10 @@ export function sanitizeReason(raw) {
 
 export function readLlmConfig(env = process.env) {
   const apiKey = (env.LANDBRIDGE_CLASSIFIER_API_KEY ?? "").trim();
-  if (!apiKey) return null;
+  const model = (env.LANDBRIDGE_CLASSIFIER_MODEL ?? "").trim();
+  if (!apiKey || !model) return null;
   let baseUrl = (env.LANDBRIDGE_CLASSIFIER_BASE_URL ?? "https://api.openai.com/v1").trim();
   if (baseUrl.endsWith("/")) baseUrl = baseUrl.slice(0, -1);
-  const model = (env.LANDBRIDGE_CLASSIFIER_MODEL ?? "gpt-4o-mini").trim();
   return { apiKey, baseUrl, model };
 }
 

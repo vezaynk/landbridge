@@ -1,11 +1,24 @@
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
 import { test } from "node:test";
+import { fileURLToPath } from "node:url";
 import { makeLlmClassifier, readLlmConfig, sanitizeReason } from "./llm.mjs";
 
-test("readLlmConfig requires a key", () => {
+test("readLlmConfig requires a key and a model", () => {
   assert.equal(readLlmConfig({}), null);
-  assert.equal(readLlmConfig({ LANDBRIDGE_CLASSIFIER_API_KEY: "   " }), null);
-  const cfg = readLlmConfig({ LANDBRIDGE_CLASSIFIER_API_KEY: "sk-test" });
+  assert.equal(readLlmConfig({ LANDBRIDGE_CLASSIFIER_API_KEY: "sk-test" }), null);
+  assert.equal(readLlmConfig({ LANDBRIDGE_CLASSIFIER_MODEL: "gpt-4o-mini" }), null);
+  assert.equal(
+    readLlmConfig({
+      LANDBRIDGE_CLASSIFIER_API_KEY: "   ",
+      LANDBRIDGE_CLASSIFIER_MODEL: "gpt-4o-mini",
+    }),
+    null,
+  );
+  const cfg = readLlmConfig({
+    LANDBRIDGE_CLASSIFIER_API_KEY: "sk-test",
+    LANDBRIDGE_CLASSIFIER_MODEL: "gpt-4o-mini",
+  });
   assert.equal(cfg.apiKey, "sk-test");
   assert.equal(cfg.model, "gpt-4o-mini");
 });
@@ -86,4 +99,22 @@ test("stage 2 block is Ask with a sanitized reason", async () => {
   assert.equal(r.disposition, "ask");
   assert.equal(r.via, "classifier-block");
   assert.equal(r.reason, "pipe to shell");
+});
+
+test("server exits 1 without a key and a model", async () => {
+  const env = { ...process.env, PORT: "0" };
+  delete env.LANDBRIDGE_CLASSIFIER_API_KEY;
+  delete env.LANDBRIDGE_CLASSIFIER_MODEL;
+  const child = spawn(process.execPath, [fileURLToPath(new URL("./server.mjs", import.meta.url))], {
+    env,
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  const chunks = [];
+  child.stderr.on("data", (c) => chunks.push(c));
+  const code = await new Promise((resolve, reject) => {
+    child.on("exit", resolve);
+    child.on("error", reject);
+  });
+  assert.equal(code, 1);
+  assert.match(Buffer.concat(chunks).toString(), /LANDBRIDGE_CLASSIFIER_API_KEY and LANDBRIDGE_CLASSIFIER_MODEL are required/);
 });

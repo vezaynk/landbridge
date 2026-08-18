@@ -195,28 +195,33 @@ builder.AddProject<Projects.Landbridge_Preview>("preview", options => options.Ex
     .WithEnvironment("Preview__ControlPlaneBearer", previewConnectBearer)
     .WithHttpHealthCheck("/health");
 
-// Qwen read-only-shell classifier. Optional at runtime: if this resource is
-// down the plane Asks. Un-proxied so the plane can dial 127.0.0.1:5310.
-var repoRoot = Path.GetFullPath(Path.Combine(builder.AppHostDirectory, "..", ".."));
-var classifier = builder.AddDockerfile("classifier", Path.Combine(repoRoot, "src/Landbridge.Classifier"), "Dockerfile")
-    .WithHttpEndpoint(port: classifierPort, targetPort: classifierPort, isProxied: false)
-    .WithEnvironment("PORT", classifierPort.ToString())
-    .WithHttpHealthCheck("/health");
+// Qwen permission classifier. Un-proxied so the plane can dial 127.0.0.1:5310.
+// Key + model are required: the sidecar exits 1 without them. A start that
+// looks healthy then only does read-only shell is the quiet failure we already
+// refuse for harness keys. If the resource is down at runtime the plane Asks.
 var classifierKey = DevBoxConfig.FirstNonEmpty(
     builder.Configuration,
     "LANDBRIDGE_CLASSIFIER_API_KEY",
     "DASHSCOPE_API_KEY",
     "OPENAI_API_KEY");
-if (classifierKey is { Length: > 0 })
-    classifier.WithEnvironment("LANDBRIDGE_CLASSIFIER_API_KEY", classifierKey);
+var classifierModel = DevBoxConfig.FirstNonEmpty(
+    builder.Configuration, "LANDBRIDGE_CLASSIFIER_MODEL");
+if (classifierKey is not { Length: > 0 } || classifierModel is not { Length: > 0 })
+    throw new InvalidOperationException(
+        "landbridge-apphost: LANDBRIDGE_CLASSIFIER_API_KEY and LANDBRIDGE_CLASSIFIER_MODEL are required. " +
+        "Set them as user secrets on src/Landbridge.AppHost or in the environment.");
+
+var repoRoot = Path.GetFullPath(Path.Combine(builder.AppHostDirectory, "..", ".."));
+var classifier = builder.AddDockerfile("classifier", Path.Combine(repoRoot, "src/Landbridge.Classifier"), "Dockerfile")
+    .WithHttpEndpoint(port: classifierPort, targetPort: classifierPort, isProxied: false)
+    .WithEnvironment("PORT", classifierPort.ToString())
+    .WithEnvironment("LANDBRIDGE_CLASSIFIER_API_KEY", classifierKey)
+    .WithEnvironment("LANDBRIDGE_CLASSIFIER_MODEL", classifierModel)
+    .WithHttpHealthCheck("/health");
 var classifierBase = DevBoxConfig.FirstNonEmpty(
     builder.Configuration, "LANDBRIDGE_CLASSIFIER_BASE_URL");
 if (classifierBase is { Length: > 0 })
     classifier.WithEnvironment("LANDBRIDGE_CLASSIFIER_BASE_URL", classifierBase);
-var classifierModel = DevBoxConfig.FirstNonEmpty(
-    builder.Configuration, "LANDBRIDGE_CLASSIFIER_MODEL");
-if (classifierModel is { Length: > 0 })
-    classifier.WithEnvironment("LANDBRIDGE_CLASSIFIER_MODEL", classifierModel);
 mcp.WaitFor(classifier);
 mcp.WithEnvironment("Landbridge__Classifier__TimeoutMs", "45000");
 

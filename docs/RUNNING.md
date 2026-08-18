@@ -29,7 +29,7 @@ brings up, in dependency order:
 | `postgres` | Managed Postgres 16 with a persistent data volume (survives restarts) | container |
 | `mcp` | The control plane + MCP host (`Landbridge.Mcp`), migrated on startup and dev-seeded | `http://127.0.0.1:5050` (fixed, un-proxied) |
 | `relay` | `landbridge-relay` | `http://127.0.0.1:5100` (fixed, un-proxied) |
-| `classifier` | Qwen permission classifier (read-only shell, then optional two-stage LLM) | `http://127.0.0.1:5310` (fixed, un-proxied) |
+| `classifier` | Qwen permission classifier (read-only shell, destroy-guard, two-stage LLM) | `http://127.0.0.1:5310` (fixed, un-proxied) |
 | `landbridged-codex` / `-claude` / `-grok` | Three enrolled linux boxes, each dialing `ws://127.0.0.1:5050/runner` | outbound only |
 
 The endpoints for `mcp` and `relay` are pinned to fixed loopback ports and *not*
@@ -47,14 +47,14 @@ Two dashboards:
   below. The Aspire / Development host uses the passphrase `dev`; production
   is fail-closed until you set `Landbridge:Operator:PassphraseHash`.
 
-The classifier sidecar auto-allows read-only shell without a model, then
-Asks on Qwen's destroy-guard list (`git reset --hard`, `git clean -f`,
-`terraform destroy`, …) so a model outage cannot wave those through. Set
-`LANDBRIDGE_CLASSIFIER_API_KEY` (or `DASHSCOPE_API_KEY` / `OPENAI_API_KEY`) as
-an AppHost user secret to turn on Qwen's two-stage LLM for everything else.
-`LANDBRIDGE_CLASSIFIER_BASE_URL` and `LANDBRIDGE_CLASSIFIER_MODEL` are optional
-(OpenAI-compatible, default `https://api.openai.com/v1` + `gpt-4o-mini`).
-Missing key: read-only shell only; a model error is Ask, never Deny.
+The classifier sidecar auto-allows read-only shell, then Asks on Qwen's
+destroy-guard list (`git reset --hard`, `git clean -f`, `terraform destroy`,
+…) so a model outage cannot wave those through, then runs Qwen's two-stage
+LLM for everything else. `LANDBRIDGE_CLASSIFIER_API_KEY` (or
+`DASHSCOPE_API_KEY` / `OPENAI_API_KEY`) and `LANDBRIDGE_CLASSIFIER_MODEL` are
+required — Aspire fails the start without both, and the sidecar exits 1.
+`LANDBRIDGE_CLASSIFIER_BASE_URL` is optional (OpenAI-compatible, default
+`https://api.openai.com/v1`). A model error is Ask, never Deny.
 
 The loop stands up a *standing fleet* and does **not** auto-create a task. Create
 work as a Lead over MCP, exactly as in production. Each seeded box spawns the
@@ -88,6 +88,8 @@ paid MultiMachine e2e uses also feed this loop:
 dotnet user-secrets set ANTHROPIC_API_KEY '…' --project src/Landbridge.AppHost
 dotnet user-secrets set CODEX_API_KEY     '…' --project src/Landbridge.AppHost
 dotnet user-secrets set XAI_API_KEY       '…' --project src/Landbridge.AppHost
+dotnet user-secrets set LANDBRIDGE_CLASSIFIER_API_KEY '…' --project src/Landbridge.AppHost
+dotnet user-secrets set LANDBRIDGE_CLASSIFIER_MODEL   'gpt-4o-mini' --project src/Landbridge.AppHost
 
 # Already stored for the paid e2e? Leave them there — AppHost loads that
 # secrets id too.
@@ -527,6 +529,8 @@ this branch.
 |---|---|---|
 | `ConnectionStrings:Landbridge` (or env `LANDBRIDGE_DB`) | `Host=localhost;Database=landbridge;Username=landbridge` | Postgres connection string. |
 | `Landbridge:PublicMcpUrl` (or env `LANDBRIDGE_PUBLIC_MCP_URL`) | `http://127.0.0.1:5050` | The plane's public MCP endpoint dialed by workers; also the OAuth 2.1 canonical resource id / issuer. Set to the real public **https** URL in production. |
+| `Landbridge:Classifier:Url` (or env `LANDBRIDGE_CLASSIFIER_URL`) | *(unset → Ask)* | Plane-side classifier sidecar (`POST /classify`). Unset or unreachable is Ask, never fail-open. Aspire sets `http://127.0.0.1:5310`. |
+| `Landbridge:Classifier:TimeoutMs` | `45000` | How long the plane waits for one classify call (covers both LLM stages). Timeout is Ask. |
 | `Landbridge:Operator:PassphraseHash` | *(empty → fail-closed)* | SHA-256 hex of the operator passphrase gating `/oauth/authorize` and dashboard login. Store the hash, never the plaintext. |
 | `Landbridge:WaitTtl` | infinite | How long a `blocked_on_input` task waits before parking (spec §11). Off by default; a live ACP session is held until a Lead answers or `park_session`. Set a TimeSpan (e.g. `00:30:00`) to restore a timer. |
 | `Landbridge:MachineLivenessTtl` | `00:01:30` | Heartbeat-age window past which a machine is treated as rebooted and its waiting tasks requeue (≈ six missed 15s heartbeats). |

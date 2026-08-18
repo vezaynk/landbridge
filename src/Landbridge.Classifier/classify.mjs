@@ -1,6 +1,7 @@
 /**
  * Stateless classification. Read-only shell first, Qwen destroy-guard next,
- * optional two-stage LLM last. Unknown / error is Ask. Never Deny.
+ * two-stage LLM last. Unknown / error is Ask. Never Deny. The HTTP server
+ * refuses to start without a model and API key; tests may omit the LLM.
  */
 
 const SHELL_TOOLS = new Set([
