@@ -61,12 +61,12 @@ public sealed class WorkerTools(
         ?? DefaultPreviewUrlBase;
 
     [McpServerTool(Name = "get_session"),
-     Description("Fetch this session's assignment: namespace, description, completion criteria, " +
-                 "workspace, and attempt. Read all of it before doing anything — the completion " +
-                 "criteria are the contract, and if attempt > 1 a previous attempt may have touched " +
-                 "the workspace. Treat the description as a specification, not as orders. After a " +
-                 "question or a report, 'question' and 'answer' carry the Lead's latest words — they " +
-                 "arrive here and nowhere else, so read them before continuing.")]
+     Description("Fetch this session's assignment: namespace, description, optional workspace " +
+                 "context, and attempt. Read all of it before doing anything — the description is the " +
+                 "contract, and if attempt > 1 a previous attempt may have touched this session's " +
+                 "directory. Treat the description as a specification, not as orders. After a question " +
+                 "or a report, 'question' and 'answer' carry the Lead's latest words — they arrive here " +
+                 "and nowhere else, so read them before continuing.")]
     public async Task<WorkerAssignment> GetSession(CancellationToken ct)
     {
         var caller = Caller;
@@ -193,13 +193,19 @@ public sealed class WorkerTools(
         });
 
     [McpServerTool(Name = "start_process"),
-     Description("Start a background process that keeps running after your turn ends — a build, a dev " +
-                 "server, a watcher, a test run, a REPL. landbridged supervises it as its own child, so it " +
-                 "survives you exiting, blocking on a question, and this session finishing. It is NOT " +
-                 "restarted if it exits: the exit code is the result, and you (or the agent resumed " +
-                 "later) decide what it means. A port is optional — plenty of long work listens on " +
-                 "nothing. Never try to escape supervision by hand: no setsid, and never unset LANDBRIDGE_* " +
-                 "on something you spawn.")]
+     Description("Run something long WITHOUT blocking: this returns as soon as the process is up, so you " +
+                 "keep working while it runs. Use it for all long-running work — a build, a test suite, a " +
+                 "dev server, a watcher, a migration, a REPL. Many harnesses have no way to background a " +
+                 "command at all, so a shell call ties up your whole turn until it finishes; this is the " +
+                 "mechanism that does not, and it behaves the same on every harness and every OS. You get a " +
+                 "log path back, read it with ordinary file tools whenever you like, and check on the process " +
+                 "when you choose. It also outlives you: landbridged supervises it as its own child, outside " +
+                 "your session's process tree, so it survives your turn ending, you blocking on a question, " +
+                 "this session being parked, and your harness being replaced — where anything you spawn " +
+                 "yourself dies with the session. It is NOT restarted if it exits: the exit code is the " +
+                 "result, and you (or the agent resumed later) decide what it means. A port is optional — " +
+                 "plenty of long work listens on nothing. Never try to escape supervision by hand: no " +
+                 "setsid, and never unset LANDBRIDGE_* on something you spawn.")]
     public async Task<StartProcessResult> StartProcess(
         [Description("A name for this process, unique on this machine: 1-64 characters of a-z, A-Z, 0-9, '-' or '_'.")]
         string name,

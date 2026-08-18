@@ -53,12 +53,11 @@ public sealed class LandbridgeDbContext(DbContextOptions<LandbridgeDbContext> op
             // Partial index over the dispatch hot path (§3.1: split hot from cold).
             e.HasIndex(t => new { t.State, t.Profile }).HasFilter("state = 'Submitted'");
             e.Property(t => t.State).HasConversion<string>();
-            e.Property(t => t.CompletionMode).HasConversion<string>();
             // §9 check 4 completion provenance stores as its enum name, like the
             // other enum columns; null until the task reaches completed.
             e.Property(t => t.CompletionProvenance).HasConversion<string>();
             // §6/§11 continuation targeting: the machine-gone policy stores as its
-            // enum name, exactly like State/CompletionMode above, so the dispatch
+            // enum name, exactly like State above, so the dispatch
             // SQL can match the literal 'Degrade'.
             e.Property(t => t.OnMachineGone).HasConversion<string>();
             // §11: the live input request's kind, stored as its enum name like the

@@ -50,7 +50,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         Skip.IfNot(pg.Available, pg.SkipReason);
         var tools = LeadFor(new Principal.Lead(Team));
 
-        var idText = await tools.CreateSession("build the thing", "ship it", "lead", null, "ws:main", CancellationToken.None);
+        var idText = await tools.CreateSession("build the thing", "default", "ws:main", CancellationToken.None);
 
         var id = Guid.Parse(idText);
         await using var v = pg.NewContext();
@@ -71,70 +71,29 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         // The description is the worker's instructions; the tool refuses an empty
         // one before the command ever reaches the store.
         var ex = await Assert.ThrowsAsync<McpException>(
-            () => tools.CreateSession("   ", "ship it", "lead", null, null, CancellationToken.None));
+            () => tools.CreateSession("   ", "default", null, CancellationToken.None));
         Assert.Contains("description", ex.Message);
     }
 
     [SkippableFact]
-    public async Task Create_task_surfaces_the_engine_rejection_for_empty_criteria()
+    public async Task Create_task_rejects_an_empty_profile()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var tools = LeadFor(new Principal.Lead(Team));
 
         var ex = await Assert.ThrowsAsync<McpException>(
-            () => tools.CreateSession("build the thing", "   ", "lead", null, null, CancellationToken.None));
-        Assert.Contains(nameof(Rule.CompletionCriteriaNonEmpty), ex.Message);
+            () => tools.CreateSession("build the thing", "   ", null, CancellationToken.None));
+        Assert.Contains("profile", ex.Message);
     }
 
     [SkippableFact]
-    public async Task Create_task_rejects_an_unknown_completion_mode()
+    public async Task Submit_review_completes_and_records_lead_provenance()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
+        var sessionId = await SeedTaskInVerifying();
         var tools = LeadFor(new Principal.Lead(Team));
 
-        await Assert.ThrowsAsync<McpException>(
-            () => tools.CreateSession("build the thing", "ship it", "eventually", null, null, CancellationToken.None));
-    }
-
-    [SkippableFact]
-    public async Task Submit_review_in_review_mode_trusts_the_lead()
-    {
-        Skip.IfNot(pg.Available, pg.SkipReason);
-        var sessionId = await SeedReviewTaskInVerifying();
-        var tools = LeadFor(new Principal.Lead(Team));
-
-        var ok = await tools.SubmitReview(sessionId.ToString(), "accept", humanConfirmed: false, CancellationToken.None);
-        Assert.Contains("Completed", ok);
-        await using var v = pg.NewContext();
-        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == sessionId.Value);
-        Assert.Equal(SessionState.Completed, row.State);
-        Assert.Equal(VerdictProvenance.LeadSession, row.CompletionProvenance);
-    }
-
-    [SkippableFact]
-    public async Task Create_task_defaults_to_lead_mode_when_mode_is_omitted()
-    {
-        Skip.IfNot(pg.Available, pg.SkipReason);
-        var tools = LeadFor(new Principal.Lead(Team));
-
-        // §7: mode omitted (null) defaults to lead — the Claude Code default.
-        var idText = await tools.CreateSession("build the thing", "ship it", mode: null, null, null, CancellationToken.None);
-
-        var id = Guid.Parse(idText);
-        await using var v = pg.NewContext();
-        Assert.Equal(CompletionMode.Lead, (await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id)).CompletionMode);
-    }
-
-    [SkippableFact]
-    public async Task Submit_review_in_lead_mode_completes_without_human_confirmation_and_records_provenance()
-    {
-        Skip.IfNot(pg.Available, pg.SkipReason);
-        var sessionId = await SeedTaskInVerifying(CompletionMode.Lead);
-        var tools = LeadFor(new Principal.Lead(Team));
-
-        // §9 check 4: in lead mode the Lead's own verdict completes the task — no
-        // humanConfirmed — and the completion records lead-session provenance.
-        var ok = await tools.SubmitReview(sessionId.ToString(), "accept", humanConfirmed: false, CancellationToken.None);
+        var ok = await tools.SubmitReview(sessionId.ToString(), "accept", CancellationToken.None);
         Assert.Contains("Completed", ok);
 
         await using var v = pg.NewContext();
@@ -148,8 +107,8 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var tools = LeadFor(new Principal.Lead(Team));
-        await tools.CreateSession("first", "a", "lead", null, null, CancellationToken.None);
-        await tools.CreateSession("second", "b", "review", null, null, CancellationToken.None);
+        await tools.CreateSession("first", "default", null, CancellationToken.None);
+        await tools.CreateSession("second", "default", null, CancellationToken.None);
 
         var view = await tools.GetTeamState(CancellationToken.None);
 
@@ -164,7 +123,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var tools = LeadFor(new Principal.Lead(Team));
-        var idText = await tools.CreateSession("build the thing", "a", "lead", null, null, CancellationToken.None);
+        var idText = await tools.CreateSession("build the thing", "default", null, CancellationToken.None);
 
         var msg = await tools.CancelTask(idText, "preserve", CancellationToken.None);
 
@@ -303,7 +262,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
 
         // §4: not a bare authorization error — the reason names who and when.
         var ex = await Assert.ThrowsAsync<McpException>(
-            () => tools.CreateSession("build the thing", "a", "lead", null, null, CancellationToken.None));
+            () => tools.CreateSession("build the thing", "default", null, CancellationToken.None));
         Assert.Contains("taken over", ex.Message);
         Assert.Contains(evictedBy.ToString("N"), ex.Message);
 
@@ -319,7 +278,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         var tools = LeadFor(worker);
 
         await Assert.ThrowsAsync<McpException>(
-            () => tools.CreateSession("build the thing", "a", "lead", null, null, CancellationToken.None));
+            () => tools.CreateSession("build the thing", "default", null, CancellationToken.None));
     }
 
     [SkippableFact]
@@ -340,8 +299,6 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
 
         Assert.Equal(new[] { "default", "gpu" }, view.Profiles.Select(p => p.Profile));
         Assert.Equal(2, view.ConnectedMachines);
-        Assert.Equal(MachineSnapshot.DefaultProfile, view.DefaultProfile);
-
         var shared = view.Profiles.Single(p => p.Profile == "default");
         Assert.Equal(new[] { "m1", "m2" }, shared.Machines.Select(m => m.MachineId));
         Assert.True(shared.Dispatchable);
@@ -399,7 +356,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         await using var db = pg.NewContext();
         var store = new SessionStore(db, _clock);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateSession(new LeadClaim(Team), Team, "needs input", CompletionMode.Lead, null));
+            new CreateSession(new LeadClaim(Team), Team, "needs input", "default"));
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(Machine(), instance);
         await store.ApplyAsync(created.Session.Id,
@@ -713,7 +670,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         await using var db = pg.NewContext();
         var store = new SessionStore(db, _clock);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateSession(new LeadClaim(team), team, "needs input", CompletionMode.Lead, null));
+            new CreateSession(new LeadClaim(team), team, "needs input", "default"));
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(Machine(), instance);
         await store.ApplyAsync(created.Session.Id,
@@ -728,7 +685,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         await using var db = pg.NewContext();
         var store = new SessionStore(db, _clock);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateSession(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null));
+            new CreateSession(new LeadClaim(team), team, "criteria", "default"));
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(Machine(), instance);
         await store.ApplyAsync(created.Session.Id,
@@ -742,7 +699,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     {
         await using var db = pg.NewContext();
         var created = (StoreResult.Applied)await new SessionStore(db, _clock).CreateAsync(
-            new CreateSession(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null));
+            new CreateSession(new LeadClaim(team), team, "criteria", "default"));
         return created.Session.Id;
     }
 
@@ -762,7 +719,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         // creating store needs to know it — nothing on the liveness path reads the config.
         var store = new SessionStore(db, _clock, policy: new SessionStorePolicy(requeueLimit));
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateSession(new LeadClaim(Team), Team, "criteria", CompletionMode.Lead, null));
+            new CreateSession(new LeadClaim(Team), Team, "criteria", "default"));
         var id = created.Session.Id;
 
         for (var i = 0; i < requeues; i++)
@@ -785,15 +742,12 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         return id;
     }
 
-    /// <summary>Drives a review-mode task all the way to verifying via the store.</summary>
-    private Task<SessionId> SeedReviewTaskInVerifying() => SeedTaskInVerifying(CompletionMode.Review);
-
-    private async Task<SessionId> SeedTaskInVerifying(CompletionMode mode)
+    private async Task<SessionId> SeedTaskInVerifying()
     {
         await using var db = pg.NewContext();
         var store = new SessionStore(db, _clock);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateSession(new LeadClaim(Team), Team, "adjudicate this", mode, null));
+            new CreateSession(new LeadClaim(Team), Team, "adjudicate this", "default"));
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(Machine(), instance);
         await store.ApplyAsync(created.Session.Id,

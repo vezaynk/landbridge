@@ -21,18 +21,16 @@ internal static class Given
 
     public static SessionRecord Session(
         SessionState state = SessionState.Submitted,
-        CompletionMode mode = CompletionMode.Lead,
         WorkerInstanceId? instance = null,
         int verificationFailures = 0,
         int retryLimit = 3,
-        string? profile = null,
+        string? profile = "default",
         int infrastructureRequeues = 0,
         int requeueLimit = SessionRecord.DefaultInfrastructureRequeueLimit) => new()
     {
         Id = Id,
         Team = Team,
         Namespace = $"team-{Team}/session-{Id}",
-        CompletionMode = mode,
         State = state,
         Profile = profile,
         Attempt = state == SessionState.Submitted ? 0 : 1,

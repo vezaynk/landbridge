@@ -552,16 +552,6 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("blocked_at");
 
-                    b.Property<string>("CompletionCriteria")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("completion_criteria");
-
-                    b.Property<string>("CompletionMode")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("completion_mode");
-
                     b.Property<string>("CompletionProvenance")
                         .HasColumnType("text")
                         .HasColumnName("completion_provenance");

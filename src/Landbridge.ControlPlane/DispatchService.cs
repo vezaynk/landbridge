@@ -56,7 +56,7 @@ public sealed class DispatchService : IHostedService
     public static readonly TimeSpan DefaultNoProgressCeiling = TimeSpan.FromMinutes(30);
 
     /// <summary>The default plane MCP URL a worker dials when config supplies none (§10).</summary>
-    public const string DefaultPublicMcpUrl = "http://127.0.0.1:5000";
+    public const string DefaultPublicMcpUrl = "http://127.0.0.1:5050";
 
     /// <summary>
     /// How long the plane keeps expecting the <c>exited</c> its own liveness-loss
@@ -305,7 +305,8 @@ public sealed class DispatchService : IHostedService
             return DispatchOutcome.NothingEligible; // no eligible submitted task for this machine
 
         var task = applied.Session;
-        var profile = task.Profile ?? MachineSnapshot.DefaultProfile;
+        var profile = task.Profile
+            ?? throw new InvalidOperationException($"session {task.Id} has no profile");
 
         // §1 tracing: open the dispatch span, parented on the Lead's create_session
         // trace context stored on the row (opaque transport metadata). This span's

@@ -219,7 +219,7 @@ public sealed class MachineRevocationServiceTests(PostgresFixture pg) : IAsyncLi
         await using var db = pg.NewContext();
         var store = new SessionStore(db, clock);
         Assert.IsType<StoreResult.Applied>(await store.CreateAsync(
-            new CreateSession(new LeadClaim(team), team, "the work on the box", CompletionMode.Lead, null)));
+            new CreateSession(new LeadClaim(team), team, "the work on the box", "default")));
 
         // The claim picks the task, exactly as the dispatch loop's does, so the id comes back
         // from the store rather than being assumed.

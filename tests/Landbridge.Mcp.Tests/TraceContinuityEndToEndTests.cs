@@ -92,9 +92,7 @@ public sealed class TraceContinuityEndToEndTests(PostgresFixture pg, ITestOutput
             var created = await lead.CallToolAsync("create_session", new Dictionary<string, object?>
             {
                 ["description"] = "trace me end to end",
-                ["completionCriteria"] = "the trace connects",
-                ["mode"] = "lead",
-                ["profile"] = null,
+                ["profile"] = "default",
                 ["workspace"] = "git:repo@main#trace",
             }, cancellationToken: ct);
             Assert.NotEqual(true, created.IsError);

@@ -22,11 +22,17 @@ using System.Text.Json.Nodes;
 var builder = DistributedApplication.CreateBuilder(args);
 
 // The plane's fixed dev URL. Sibling processes reach it directly at this known
-// address: landbridged dials ws://127.0.0.1:5000/runner, and the spawned worker
-// dials http://127.0.0.1:5000/ (DispatchService.DefaultPublicMcpUrl). Keeping it
+// address: landbridged dials ws://127.0.0.1:5050/runner, and the spawned worker
+// dials http://127.0.0.1:5050/ (DispatchService.DefaultPublicMcpUrl). Keeping it
 // fixed and un-proxied (below) means those siblings need no Aspire awareness.
 const string mcpHost = "127.0.0.1";
-const int mcpPort = 5000;
+// NOT 5000, and not 7000 either: macOS ControlCenter binds both for AirPlay
+// Receiver, on *every* interface. Kestrel here binds 127.0.0.1 only, so the two
+// coexist -- but Aspire's WithHttpHealthCheck resolves via localhost, gets ::1
+// first, reaches AirPlay instead of the plane, and reads its 403 as unhealthy.
+// WaitFor(mcp) then never releases and relay, preview and landbridged never
+// start, with nothing in any log to say why.
+const int mcpPort = 5050;
 var mcpUrl = $"http://{mcpHost}:{mcpPort}";
 
 // The relay's fixed dev URL (spec §8.3). Pinned and UN-proxied like the plane:
@@ -84,7 +90,7 @@ var landbridgeDb = builder.AddPostgres("postgres")
 // picks it up (all three are dev-loop-only signals production never sets).
 //
 // The endpoint is pinned to a fixed port and NOT proxied by DCP: the sibling
-// landbridged/worker processes dial 127.0.0.1:5000 directly, so an ephemeral proxy
+// landbridged/worker processes dial 127.0.0.1:5050 directly, so an ephemeral proxy
 // port in front of Kestrel would be invisible to them. ASPNETCORE_URLS binds
 // Kestrel to exactly that loopback address. WithHttpHealthCheck makes WaitFor
 // (below) gate landbridged's start on the host actually serving — which is strictly

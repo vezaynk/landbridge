@@ -86,7 +86,7 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
             {
                 var store = new SessionStore(db, clock);
                 var created = (StoreResult.Applied)await store.CreateAsync(
-                    new CreateSession(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null), ct);
+                    new CreateSession(new LeadClaim(team), team, "criteria", "default"), ct);
                 sessionId = created.Session.Id;
             }
 

@@ -542,7 +542,7 @@ public sealed class DashboardScopeAndOriginTests(PostgresFixture pg) : IAsyncLif
         await using var db = pg.NewContext();
         var store = new SessionStore(db, TimeProvider.System);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateSession(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null), ct);
+            new CreateSession(new LeadClaim(team), team, "criteria", "default"), ct);
         var instance = WorkerInstanceId.New();
         // Deterministic: this is the only submitted task at the moment it dispatches.
         Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(AnyMachine, instance, ct));

@@ -53,15 +53,9 @@ public sealed record LeadMachineView(Guid MachineId, string MachineName, DateTim
 /// anything (a machine's profiles arrive on its first heartbeat, §10). Those are different
 /// problems and a Lead that cannot tell them apart waits on the wrong one.</para>
 /// </summary>
-/// <param name="DefaultProfile">The profile an omitted <c>create_session(profile:)</c> resolves
-/// to — <c>default</c>. Carried rather than left implicit because it is the one profile name
-/// a Lead uses without typing it: if it is absent from <see cref="Profiles"/>, or present but
-/// not <see cref="ProfileRoutingEntry.Dispatchable"/>, then plain profile-less tasks are not
-/// routable either, which is otherwise an invisible fleet condition.</param>
 public sealed record ProfileRoutingView(
     IReadOnlyList<ProfileRoutingEntry> Profiles,
-    int ConnectedMachines,
-    string DefaultProfile = MachineSnapshot.DefaultProfile);
+    int ConnectedMachines);
 
 /// <summary>
 /// One declared profile and where it can run. A profile appears here if and only if some
@@ -128,7 +122,6 @@ public sealed record TeamSessionSummary(
     Guid SessionId,
     string Namespace,
     SessionState State,
-    CompletionMode Mode,
     int Attempt,
     bool Parked,
     Guid? ContinuesSessionId,

@@ -21,7 +21,7 @@ namespace Landbridge.Core;
 /// </summary>
 public enum Rule
 {
-    CompletionCriteriaNonEmpty = 1,
+    DescriptionNonEmpty = 1,
     NamespaceServerAssigned = 2,
     OnlyLeadCreatesSessions = 3,
     CompletionByLeadOrHuman = 4,
@@ -35,6 +35,7 @@ public enum Rule
     CancellationCarriesDisposition = 12,
     TokenExchangeNarrowing = 13,
     IncumbentInstanceOnly = 14,
+    ProfileRequired = 15,
 
     // §6 structural invariants
     TerminalStatesAreFinal = 100,

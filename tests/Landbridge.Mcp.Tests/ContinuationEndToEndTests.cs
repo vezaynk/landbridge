@@ -58,8 +58,7 @@ public sealed class ContinuationEndToEndTests(PostgresFixture pg) : IAsyncLifeti
         await using (var db = pg.NewContext())
         {
             var store = new SessionStore(db, _clock);
-            var created = (StoreResult.Applied)await store.CreateAsync(new CreateSession(
-                new LeadClaim(team), team, "criteria", CompletionMode.Lead, profile));
+            var created = (StoreResult.Applied)await store.CreateAsync(new CreateSession(new LeadClaim(team), team, "criteria", profile ?? "default"));
             id = created.Session.Id;
             if (sessionRef is not null)
                 await store.StampHarnessSessionRefAsync(id, sessionRef);
@@ -95,8 +94,7 @@ public sealed class ContinuationEndToEndTests(PostgresFixture pg) : IAsyncLifeti
         await using (var db = pg.NewContext())
         {
             var store = new SessionStore(db, _clock);
-            var created = (StoreResult.Applied)await store.CreateAsync(new CreateSession(
-                new LeadClaim(team), team, "criteria", CompletionMode.Lead, Profile: null));
+            var created = (StoreResult.Applied)await store.CreateAsync(new CreateSession(new LeadClaim(team), team, "criteria", Profile: "default"));
             id = created.Session.Id;
 
             var dispatched = Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(
@@ -125,7 +123,7 @@ public sealed class ContinuationEndToEndTests(PostgresFixture pg) : IAsyncLifeti
         var continued = await SeedContinued(registry, Team, "m1", profile: null, sessionRef: "sess-1");
 
         var newIdText = await LeadFor(Team, registry).CreateSession(
-            "resume the work", "ship it", "lead", profile: null, workspace: null, CancellationToken.None,
+            "resume the work", "default", workspace: null, CancellationToken.None,
             continues: continued.ToString());
 
         var newId = Guid.Parse(newIdText);
@@ -146,7 +144,7 @@ public sealed class ContinuationEndToEndTests(PostgresFixture pg) : IAsyncLifeti
         var foreign = await SeedContinued(registry, otherTeam, "m1", profile: null, sessionRef: "sess-1");
 
         var ex = await Assert.ThrowsAsync<McpException>(() => LeadFor(Team, registry).CreateSession(
-            "resume", "ship it", "lead", null, null, CancellationToken.None, continues: foreign.ToString()));
+            "resume", "default", null, CancellationToken.None, continues: foreign.ToString()));
         Assert.Contains("another Team", ex.Message);
     }
 
@@ -162,7 +160,7 @@ public sealed class ContinuationEndToEndTests(PostgresFixture pg) : IAsyncLifeti
             registry, Team, "m1", profile: null, sessionRef: "sess-1", track: true, machineProfiles: "default");
 
         var ex = await Assert.ThrowsAsync<McpException>(() => LeadFor(Team, registry).CreateSession(
-            "resume", "ship it", "lead", profile: "gpu", workspace: null, CancellationToken.None,
+            "resume", "gpu", workspace: null, CancellationToken.None,
             continues: continued.ToString()));
         Assert.Contains(nameof(Rule.ContinuationProfileDeclaredByPreferredMachine), ex.Message);
     }
@@ -179,7 +177,7 @@ public sealed class ContinuationEndToEndTests(PostgresFixture pg) : IAsyncLifeti
         var continued = await SeedRanAndFinished(Team, "m1", "sess-1");
 
         var newIdText = await LeadFor(Team, registry).CreateSession(
-            "carry on", "ship it", "lead", null, null, CancellationToken.None,
+            "carry on", "default", null, CancellationToken.None,
             continues: continued.ToString());
 
         var newId = new SessionId(Guid.Parse(newIdText));
@@ -216,7 +214,7 @@ public sealed class ContinuationEndToEndTests(PostgresFixture pg) : IAsyncLifeti
         var continued = await SeedContinued(registry, Team, "m1", profile: null, sessionRef: null, track: false);
 
         var ex = await Assert.ThrowsAsync<McpException>(() => LeadFor(Team, registry).CreateSession(
-            "resume", "ship it", "lead", null, null, CancellationToken.None, continues: continued.ToString()));
+            "resume", "default", null, CancellationToken.None, continues: continued.ToString()));
         Assert.Contains("never been dispatched", ex.Message);
     }
 
@@ -227,7 +225,7 @@ public sealed class ContinuationEndToEndTests(PostgresFixture pg) : IAsyncLifeti
         var registry = new RunnerConnectionRegistry(_clock);
 
         var ex = await Assert.ThrowsAsync<McpException>(() => LeadFor(Team, registry).CreateSession(
-            "do the thing", "ship it", "lead", null, null, CancellationToken.None, onMachineGone: "pin"));
+            "do the thing", "default", null, CancellationToken.None, onMachineGone: "pin"));
         Assert.Contains("continues", ex.Message);
     }
 
@@ -259,8 +257,7 @@ public sealed class ContinuationEndToEndTests(PostgresFixture pg) : IAsyncLifeti
                 // A continuation seeded exactly as the tool would, preferring m1 with an
                 // inherited session ref. No real continued row needed — the seeding is
                 // what drives resume (the engine only validated Team + profile).
-                var created = (StoreResult.Applied)await store.CreateAsync(new CreateSession(
-                    new LeadClaim(team), team, "criteria", CompletionMode.Lead, null,
+                var created = (StoreResult.Applied)await store.CreateAsync(new CreateSession(new LeadClaim(team), team, "criteria", "default",
                     Continues: new Continuation(SessionId.New(), team, "m1", inherited, MachineGonePolicy.Degrade, null)));
                 sessionId = created.Session.Id;
 

@@ -322,7 +322,6 @@ internal sealed class FleetRig(
         await using var lead = await PlaneProbe.ConnectMcpAsync(new Uri(_baseUrl + "/"), _leadToken, ct);
         return await PlaneProbe.CreateSessionAsync(
             lead, description,
-            completionCriteria: "the byte path holds",
             workspace: $"multimachine-{Guid.NewGuid():N}",
             ct, continues: continues);
     }

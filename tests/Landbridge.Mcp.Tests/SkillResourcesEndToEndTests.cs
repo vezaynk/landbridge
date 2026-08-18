@@ -140,7 +140,7 @@ public sealed class SkillResourcesEndToEndTests(PostgresFixture pg) : IAsyncLife
         await using var db = pg.NewContext();
         var store = new SessionStore(db, TimeProvider.System);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateSession(new LeadClaim(team), team, "seed", CompletionMode.Lead, null), ct);
+            new CreateSession(new LeadClaim(team), team, "seed", "default"), ct);
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(
             new MachineSnapshot("m1", true, false, new HashSet<string> { "default" }), instance, ct);
