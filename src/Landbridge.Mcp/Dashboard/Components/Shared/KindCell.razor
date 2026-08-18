@@ -1,0 +1,12 @@
+@if (Kind is null)
+{
+    <span class="nt">not recorded</span>
+}
+else
+{
+    <code>@KindText(Kind)</code>
+}
+
+@code {
+    [Parameter] public InputRequestKind? Kind { get; set; }
+}

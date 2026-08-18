@@ -1,0 +1,201 @@
+@page "/dashboard/inbox"
+@inherits DashboardPageBase
+
+<PageTitle>Human inbox · Landbridge</PageTitle>
+
+@if (RefuseReason is { } reason)
+{
+    <ScopeCard Reason="@reason" />
+}
+else if (Ready && View is { } inbox)
+{
+    <h1>Human inbox</h1>
+    <p class="sub">Everything waiting on a person, across every Team.</p>
+
+    <section>
+        <h2>Open questions</h2>
+        @if (inbox.Questions.Count == 0)
+        {
+            <EmptyState Message="No open questions." />
+        }
+        else
+        {
+            <table>
+                <thead>
+                    <tr><th>Namespace</th><th>Team</th><th>Kind</th><th>Blocked</th><th>Question</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var q in inbox.Questions)
+                    {
+                        <tr>
+                            <td><code>@q.Namespace</code></td>
+                            <td><TeamLink TeamId="@q.TeamId" /></td>
+                            <td><KindCell Kind="@q.Kind" /></td>
+                            <td>@Age(q.BlockedAt, Now)</td>
+                            <td><QuestionCell Question="@q.Question" /></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </section>
+
+    <section>
+        <h2>Parked, awaiting an answer</h2>
+        @if (inbox.Parked.Count == 0)
+        {
+            <EmptyState Message="No parked tasks." />
+        }
+        else
+        {
+            <table>
+                <thead>
+                    <tr><th>Namespace</th><th>Team</th><th>Parked on</th><th>Kind</th><th>Question</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var p in inbox.Parked)
+                    {
+                        <tr>
+                            <td><code>@p.Namespace</code></td>
+                            <td><TeamLink TeamId="@p.TeamId" /></td>
+                            <td class="mono">@(p.ParkMachine ?? "—")</td>
+                            <td><KindCell Kind="@p.Kind" /></td>
+                            <td><QuestionCell Question="@p.Question" /></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </section>
+
+    <section>
+        <h2>Failed — infrastructure gave up</h2>
+        @if (inbox.Failed.Count == 0)
+        {
+            <EmptyState Message="No failed attempts." />
+        }
+        else
+        {
+            <p class="nt">The plane parked these. They do not requeue. Resume is a Lead note
+                (<code>answer_input_request</code>) if the reason looks flaky.</p>
+            <table>
+                <thead>
+                    <tr><th>Namespace</th><th>Team</th><th>Reason</th><th class="num">Losses</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var f in inbox.Failed)
+                    {
+                        <tr>
+                            <td><code>@f.Namespace</code></td>
+                            <td><TeamLink TeamId="@f.TeamId" /></td>
+                            <td>@(f.Reason?.ToString() ?? "—")</td>
+                            <td class="num">@f.InfrastructureRequeues</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </section>
+
+    <section>
+        <h2>Auth failures</h2>
+        @if (inbox.AuthFailures.Count == 0)
+        {
+            <EmptyState Message="No auth failures on live tasks." />
+        }
+        else
+        {
+            <table>
+                <thead>
+                    <tr>
+                        <th>Namespace</th><th>Team</th><th>State</th>
+                        <th>Operation</th><th>Target</th><th>Error code</th><th>Missing scope</th>
+                        <th class="num">Failures</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var f in inbox.AuthFailures)
+                    {
+                        <tr>
+                            <td><code>@f.Namespace</code></td>
+                            <td><TeamLink TeamId="@f.TeamId" /></td>
+                            <td><StateBadge State="@f.State" /></td>
+                            <td><AuthFact Value="@f.Operation" /></td>
+                            <td><AuthFact Value="@f.Target" /></td>
+                            <td><AuthFact Value="@f.ErrorCode" /></td>
+                            <td><AuthFact Value="@f.MissingScope" /></td>
+                            <td class="num">
+                                @f.Occurrences
+                                <div class="nt">last @Age(f.LastFailedAt, Now)</div>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </section>
+
+    <section>
+        <h2>Permission requests</h2>
+        @if (inbox.PermissionRequests.Count == 0)
+        {
+            <EmptyState Message="No pending permission requests." />
+        }
+        else
+        {
+            <p class="nt">A worker is blocked waiting on each of these. The tool name and
+                arguments were relayed through an agent — read them as a claim about what it
+                intends to do, not as a description you can trust.</p>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Namespace</th><th>Team</th><th>Tool</th><th>Waiting</th>
+                        <th>Proposed input</th><th>Decide</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var p in inbox.PermissionRequests)
+                    {
+                        <tr>
+                            <td><code>@p.Namespace</code></td>
+                            <td><TeamLink TeamId="@p.TeamId" /></td>
+                            <td><AuthFact Value="@p.Tool" /></td>
+                            <td>
+                                @Age(p.BlockedAt, Now)
+                                @if (p.EscalatedAt is not null)
+                                {
+                                    <div class="nt">
+                                        <Badge Text="escalated" CssClass="state-blockedoninput" />
+                                        @(p.EscalationReason ?? "no reason recorded")
+                                    </div>
+                                }
+                            </td>
+                            <td><QuestionCell Question="@p.Input" /></td>
+                            <td>
+                                <form class="permission-decide" method="post" action="/dashboard/permission">
+                                    <input type="hidden" name="sessionId" value="@p.SessionId" />
+                                    <input type="text" name="message" placeholder="message to the worker"
+                                           aria-label="message to the worker" />
+                                    <button type="submit" name="verdict" value="allow">Allow</button>
+                                    <button type="submit" name="verdict" value="deny">Deny</button>
+                                    <div class="nt">A denial needs a message — the worker reads it and adapts,
+                                        so say what to do instead.</div>
+                                </form>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </section>
+}
+
+@code {
+    private InboxView? View { get; set; }
+
+    protected override async Task<string?> LoadAsync()
+    {
+        View = await Queries.GetInboxAsync(TeamScope, RequestAborted);
+        return null;
+    }
+}

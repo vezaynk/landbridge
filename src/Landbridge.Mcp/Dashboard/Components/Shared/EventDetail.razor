@@ -1,0 +1,67 @@
+@if (Event.PermissionVerdict is { } verdict)
+{
+    var css = verdict == PermissionVerdict.Allow ? "state-working" : "state-rejected";
+    <Badge Text="@verdict.ToString().ToLowerInvariant()" CssClass="@css" />
+    @if (Event.PermissionAnswerer is { } answerer)
+    {
+        <span class="nt">by @answerer.ToString().ToLowerInvariant()</span>
+    }
+    else
+    {
+        <span class="nt">by an unrecorded answerer</span>
+    }
+    @if (!string.IsNullOrEmpty(Event.Detail))
+    {
+        <span class="nt">@Event.Detail</span>
+    }
+}
+else if (Event.InputKind is { } kind)
+{
+    <Badge Text="@kind.ToString()" CssClass="state-blockedoninput" />
+}
+else if (Event.LivenessReason is { } reason)
+{
+    <Badge Text="@reason.ToString()" CssClass="state-submitted" />
+    @if (Event.ToState == SessionState.Canceled)
+    {
+        <span class="nt">requeue cap reached — abandoned</span>
+    }
+}
+else if (Event.Kind == SessionEventRow.AuthFailedKind)
+{
+    <span class="nt">@(Event.AuthOperation ?? "—") on <code>@(Event.AuthTarget ?? "—")</code>
+        failed <code>@(Event.AuthErrorCode ?? "—")</code>
+        @if (Event.AuthMissingScope is { } s)
+        {
+            <text>, missing scope </text><code>@s</code>
+        }
+    </span>
+}
+else if (Event.Kind == SessionEventRow.SubagentSpawnedKind)
+{
+    <span class="nt">subagent </span>
+    @if (Event.SubagentId is { } a)
+    {
+        <code>@a</code>
+    }
+    else
+    {
+        <span class="nt">unnamed</span>
+    }
+    @if (Event.SubagentParentId is { } p)
+    {
+        <text> under </text><code>@p</code>
+    }
+}
+else if (string.IsNullOrEmpty(Event.Detail))
+{
+    <span class="nt">—</span>
+}
+else
+{
+    <span class="nt">@Event.Detail</span>
+}
+
+@code {
+    [Parameter, EditorRequired] public DashboardEvent Event { get; set; } = default!;
+}

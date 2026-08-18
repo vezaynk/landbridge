@@ -1,0 +1,23 @@
+<DashboardDocument Title="Preview created" ActiveKey="teams">
+<section class="card">
+    <h1>Preview created</h1>
+    <p class="sub">@Policy.ToString().ToLowerInvariant() preview — expires @ExpiresAt.ToString("u").</p>
+    <p><a class="preview-url mono" href="@Url">@Url</a></p>
+    @if (Policy == PreviewAuthPolicy.Public)
+    {
+        <p class="nt">Anyone with this link can open it until it expires. Public previews are short-lived by design.</p>
+    }
+    else
+    {
+        <p class="nt">Opening this link requires a Landbridge operator session in the browser.</p>
+    }
+    <p><a href="/dashboard/teams/@TeamId">← back to the Team</a></p>
+</section>
+</DashboardDocument>
+
+@code {
+    [Parameter] public string Url { get; set; } = "";
+    [Parameter] public PreviewAuthPolicy Policy { get; set; }
+    [Parameter] public DateTimeOffset ExpiresAt { get; set; }
+    [Parameter] public Guid TeamId { get; set; }
+}

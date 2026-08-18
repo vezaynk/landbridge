@@ -1,0 +1,59 @@
+@inherits LayoutComponentBase
+@inject NavigationManager Nav
+
+<PageTitle>@Title · Landbridge</PageTitle>
+<nav>
+    <span class="brand">Landbridge</span>
+    <a class="@Active("machines")" href="/dashboard/machines">Machines</a>
+    <a class="@Active("teams")" href="/dashboard/teams">Teams</a>
+    <a class="@Active("inbox")" href="/dashboard/inbox">Inbox</a>
+    <a class="@Active("events")" href="/dashboard/events">Events</a>
+    <a class="@Active("conformance")" href="/dashboard/conformance">Profile check</a>
+    @if (!ShouldHideSignOut)
+    {
+        <form class="logout" method="post" action="/dashboard/logout">
+            <button type="submit">Sign out</button>
+        </form>
+    }
+</nav>
+<main>
+    @Body
+</main>
+
+@code {
+    [Parameter] public string Title { get; set; } = "Dashboard";
+    [Parameter] public string ActiveKey { get; set; } = "";
+    [Parameter] public bool HideSignOut { get; set; }
+
+    private bool ShouldHideSignOut
+    {
+        get
+        {
+            if (HideSignOut)
+                return true;
+            var path = new Uri(Nav.Uri).AbsolutePath;
+            return path.StartsWith("/dashboard/login", StringComparison.Ordinal);
+        }
+    }
+
+    private string Active(string key)
+    {
+        var path = new Uri(Nav.Uri).AbsolutePath;
+        var current = ActiveKey;
+        if (string.IsNullOrEmpty(current))
+        {
+            current = path switch
+            {
+                "/dashboard/machines" => "machines",
+                "/dashboard/teams" => "teams",
+                var p when p.StartsWith("/dashboard/teams/", StringComparison.Ordinal) => "teams",
+                "/dashboard/inbox" => "inbox",
+                "/dashboard/events" => "events",
+                var p when p.StartsWith("/dashboard/conformance", StringComparison.Ordinal) => "conformance",
+                var p when p.StartsWith("/dashboard/sessions/", StringComparison.Ordinal) => "teams",
+                _ => "",
+            };
+        }
+        return key == current ? "active" : "";
+    }
+}

@@ -1,0 +1,8 @@
+<DashboardDocument Title="Sign in" HideSignOut="true">
+    <Login Error="@Error" Next="@Next" />
+</DashboardDocument>
+
+@code {
+    [Parameter] public string? Error { get; set; }
+    [Parameter] public string? Next { get; set; }
+}

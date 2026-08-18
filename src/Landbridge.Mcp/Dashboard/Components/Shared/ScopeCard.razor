@@ -1,0 +1,9 @@
+<div class="login-wrap card">
+    <h1>Not for this session</h1>
+    <p class="err">@Reason</p>
+    <p><a href="/dashboard/teams">← Teams</a></p>
+</div>
+
+@code {
+    [Parameter, EditorRequired] public string Reason { get; set; } = "";
+}

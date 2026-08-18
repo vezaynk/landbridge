@@ -1,0 +1,39 @@
+@* Full HTML document for RazorComponentResult pages (POST results, stream refusals).
+   Routed pages go through App.razor + DashboardLayout instead. *@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>@Title · Landbridge</title>
+    <link rel="stylesheet" href="/dashboard/dashboard.css" />
+</head>
+<body>
+    <nav>
+        <span class="brand">Landbridge</span>
+        <a class="@Active("machines")" href="/dashboard/machines">Machines</a>
+        <a class="@Active("teams")" href="/dashboard/teams">Teams</a>
+        <a class="@Active("inbox")" href="/dashboard/inbox">Inbox</a>
+        <a class="@Active("events")" href="/dashboard/events">Events</a>
+        <a class="@Active("conformance")" href="/dashboard/conformance">Profile check</a>
+        @if (!HideSignOut)
+        {
+            <form class="logout" method="post" action="/dashboard/logout">
+                <button type="submit">Sign out</button>
+            </form>
+        }
+    </nav>
+    <main>
+        @ChildContent
+    </main>
+</body>
+</html>
+
+@code {
+    [Parameter] public string Title { get; set; } = "Dashboard";
+    [Parameter] public string ActiveKey { get; set; } = "";
+    [Parameter] public bool HideSignOut { get; set; }
+    [Parameter] public RenderFragment? ChildContent { get; set; }
+
+    private string Active(string key) => key == ActiveKey ? "active" : "";
+}

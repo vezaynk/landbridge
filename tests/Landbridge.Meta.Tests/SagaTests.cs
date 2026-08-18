@@ -61,6 +61,7 @@ public class SagaTests
         Assert.Equal("https://relay-acme.landbridge.example.com", mcp["Landbridge__RelayUrl"]);
         // The dev-only gates are never set on a meta-provisioned instance (ruling #1 area).
         Assert.False(mcp.ContainsKey("Landbridge__DevSeed__TokenFile"));
+        Assert.False(mcp.ContainsKey("Landbridge__DevSeed__TokenDir"));
         Assert.False(mcp.ContainsKey("Landbridge__Oauth__AllowInsecureClientMetadata"));
         // No signing key is injected (ruling #1: opaque tokens, no consumer).
         Assert.DoesNotContain(mcp.Keys, k => k.Contains("SigningKey", StringComparison.OrdinalIgnoreCase));

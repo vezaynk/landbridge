@@ -1,0 +1,102 @@
+<section class="measured">
+    <h2>Measured usage <span class="measured-tag">reported by the harness</span></h2>
+    <p class="sub">Every number in this section was computed by the <strong>worker's own
+        harness</strong> and relayed verbatim — not observed by the control plane, and enforced on
+        by nothing. A harness can under-report, mis-report, or report nothing at all. Treat it as
+        the worker's claim about itself (§2 principle 2, §10).</p>
+
+    @if (Team.Usage is not { Measured: true } usage)
+    {
+        <EmptyState Message="Nothing reported yet — no harness on this Team has sent a usage report. An absence of measurement, not a measurement of zero." />
+    }
+    else
+    {
+        <table>
+            <thead>
+                <tr>
+                    <th>Model</th>
+                    <th class="num">Input</th><th class="num">Output</th>
+                    <th class="num">Cache read</th><th class="num">Cache write</th>
+                    <th class="num">Total</th><th class="num">Cost</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var m in usage.ByModel)
+                {
+                    <tr>
+                        <td>
+                            @if (m.Model is { Length: > 0 } name)
+                            {
+                                <code>@name</code>
+                            }
+                            else
+                            {
+                                <span class="nt" title="this harness names no model; the tokens are still real">not reported</span>
+                            }
+                        </td>
+                        <td class="num">@Tokens(m.InputTokens)</td>
+                        <td class="num">@Tokens(m.OutputTokens)</td>
+                        <td class="num">@Tokens(m.CacheReadTokens)</td>
+                        <td class="num">@Tokens(m.CacheWriteTokens)</td>
+                        <td class="num">@Tokens(m.TotalTokens)</td>
+                        <td class="num">
+                            @if (m.CostUsd is { } c && m.CostProvenance == UsageCostProvenance.Reported)
+                            {
+                                @Usd(c) <span class="nt">USD</span>
+                            }
+                            else if (m.CostUsd is { } d && m.CostProvenance == UsageCostProvenance.Derived)
+                            {
+                                <span title="derived by Landbridge from token counts, not reported by the harness">~@Usd(d) <span class="nt">USD est.</span></span>
+                            }
+                            else
+                            {
+                                <span class="nt" title="this harness reports no cost">not reported</span>
+                            }
+                        </td>
+                    </tr>
+                }
+            </tbody>
+            <tfoot>
+                <tr>
+                    <td>All models</td>
+                    <td class="num">@Tokens(usage.InputTokens)</td>
+                    <td class="num">@Tokens(usage.OutputTokens)</td>
+                    <td class="num">@Tokens(usage.CacheReadTokens)</td>
+                    <td class="num">@Tokens(usage.CacheWriteTokens)</td>
+                    <td class="num">@Tokens(usage.TotalTokens)</td>
+                    <td class="num">
+                        @if (usage.ReportedCostUsd is { } total)
+                        {
+                            @Usd(total) <span class="nt">USD</span>
+                        }
+                        else
+                        {
+                            <span class="nt" title="this harness reports no cost">not reported</span>
+                        }
+                    </td>
+                </tr>
+            </tfoot>
+        </table>
+
+        @if (usage.ByModel.Any(m => m.ReasoningOutputTokens is > 0))
+        {
+            var reasoningTokens = Tokens(usage.ByModel.Where(m => m.ReasoningOutputTokens is > 0).Sum(m => m.ReasoningOutputTokens!.Value));
+            <p class="nt">Of the output above, @reasoningTokens
+                tokens were reported as reasoning — a portion <em>of</em> output, not an addition to it.
+                Only some harnesses break this out.</p>
+        }
+        @if (usage.CostIsPartial)
+        {
+            <p class="nt">The cost total covers only the models that reported one, so it is a
+                <strong>floor, not a total</strong>. A harness that reports tokens but no dollars leaves
+                its cost blank here; nothing multiplies tokens into a price to fill the gap.</p>
+        }
+        <p class="nt">Last report @(usage.ReportedAt?.ToString("u", CultureInfo.InvariantCulture) ?? "—").
+            Reports are cumulative and best-effort: this trails a live worker by up to one report, and a
+            worker killed before its last one leaves that tail uncounted.</p>
+    }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public TeamDetail Team { get; set; } = default!;
+}

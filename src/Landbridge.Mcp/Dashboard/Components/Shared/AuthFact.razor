@@ -1,0 +1,12 @@
+@if (string.IsNullOrEmpty(Value))
+{
+    <span class="nt">not reported</span>
+}
+else
+{
+    <code>@Value</code>
+}
+
+@code {
+    [Parameter] public string? Value { get; set; }
+}

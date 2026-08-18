@@ -1,0 +1,91 @@
+@page "/dashboard/conformance/{RunId:guid}"
+@inherits DashboardPageBase
+@inject RunnerConnectionRegistry Registry
+
+<PageTitle>Profile check · Landbridge</PageTitle>
+
+@if (RefuseReason is { } reason)
+{
+    <ScopeCard Reason="@reason" />
+}
+else if (Ready && Run is { } run)
+{
+    <h1>Profile check</h1>
+    <p class="sub">Profile <span class="mono">@run.Profile</span> —
+        @(run.Verifying + run.Completed)/@run.Total workers reported.
+        This page refreshes.</p>
+    @if (run.MachinesDeclaring.Count == 0)
+    {
+        <p class="err">No connected machine currently declares this profile.
+            Tasks will sit in Submitted until one does.</p>
+    }
+    else
+    {
+        <p>Declared by @run.MachinesDeclaring.Count machine(s):
+            @foreach (var id in run.MachinesDeclaring)
+            {
+                <span class="mono">@id</span>
+            }
+            .</p>
+    }
+    <div class="metrics">
+        <div class="metric"><div class="n">@run.Pending</div><div class="l">pending</div></div>
+        <div class="metric"><div class="n">@run.Verifying</div><div class="l">verifying</div></div>
+        <div class="metric"><div class="n">@run.Completed</div><div class="l">completed</div></div>
+        <div class="metric"><div class="n">@run.Failed</div><div class="l">failed</div></div>
+    </div>
+    <table>
+        <thead>
+            <tr><th>Kind</th><th>State</th><th>Attempt</th><th>Result</th></tr>
+        </thead>
+        <tbody>
+            @foreach (var t in run.Sessions)
+            {
+                <tr>
+                    <td class="mono">@t.Kind</td>
+                    <td>@t.State</td>
+                    <td>@t.Attempt</td>
+                    <td class="mono">@(t.ResultReference ?? t.LastRequeueReason ?? "—")</td>
+                </tr>
+            }
+        </tbody>
+    </table>
+    <p>
+        <a href="/dashboard/teams/@run.RunId">Team view</a> ·
+        <a href="/dashboard/conformance">Start another</a>
+    </p>
+}
+
+@code {
+    [Parameter] public Guid RunId { get; set; }
+    private ConformanceRunView? Run { get; set; }
+
+    protected override async Task<string?> LoadAsync()
+    {
+        if (Principal is not Principal.Human)
+        {
+            return "profile checks are a human-operator view; a Lead session sees its own Team's tasks "
+                + "on /dashboard/teams and through get_team_state";
+        }
+        var rows = await Queries.GetConformanceTasksAsync(RunId, RequestAborted);
+        if (rows.Count == 0)
+        {
+            StatusOnRefuse = StatusCodes.Status404NotFound;
+            return "No such run.";
+        }
+        var profile = rows[0].Profile ?? "";
+        var tasks = rows.Select(r => new ConformanceSessionView(
+            r.Id,
+            ConformanceCatalog.KindOf(r.Workspace) ?? "unknown",
+            r.State, r.Attempt, r.ResultReference, r.LastRequeueReason?.ToString())).ToList();
+        var machines = new List<string>();
+        foreach (var id in Registry.MachineIds())
+        {
+            var snap = Registry.SnapshotFor(id);
+            if (snap?.DeclaredProfiles.Contains(profile) == true)
+                machines.Add(id);
+        }
+        Run = ConformanceRunView.From(RunId, profile, tasks, machines);
+        return null;
+    }
+}

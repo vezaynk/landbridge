@@ -1,0 +1,37 @@
+@page "/dashboard/conformance"
+@inherits DashboardPageBase
+
+<PageTitle>Profile check · Landbridge</PageTitle>
+
+@if (RefuseReason is { } reason)
+{
+    <ScopeCard Reason="@reason" />
+}
+else if (Ready)
+{
+    <h1>Profile check</h1>
+    <p class="sub">Mint dummy sessions aimed at one profile.
+        A worker that reaches <span class="mono">verifying</span> called
+        <span class="mono">report_result</span> — the plane does not judge the answers.
+        Any ready machine that declares that name may claim them.</p>
+    <form class="card conformance-start" method="post" action="/dashboard/conformance">
+        <label for="profile">Profile</label>
+        <input id="profile" type="text" name="profile"
+               class="mono" spellcheck="false" autocomplete="off" required />
+        <p class="nt">Exact name from the runner config. Required.</p>
+        <button type="submit">Start check</button>
+    </form>
+}
+
+@code {
+    protected override Task<string?> LoadAsync()
+    {
+        if (Principal is not Principal.Human)
+        {
+            return Task.FromResult<string?>(
+                "profile checks are a human-operator view; a Lead session sees its own Team's tasks "
+                + "on /dashboard/teams and through get_team_state");
+        }
+        return Task.FromResult<string?>(null);
+    }
+}

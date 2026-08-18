@@ -1,0 +1,156 @@
+@page "/dashboard/sessions/{SessionId:guid}/transcripts"
+@inherits DashboardPageBase
+@inject TranscriptRelayService Relay
+
+<PageTitle>Transcripts · @ShortId(SessionId) · Landbridge</PageTitle>
+
+@if (RefuseReason is { } reason)
+{
+    <div class="login-wrap card">
+        <h1>Transcripts are a human surface</h1>
+        <p class="empty">@reason</p>
+        <p class="sub">A full transcript is unbounded, unredacted, untrusted text carrying
+            everything the agent read — far beyond the bounded worker report a Lead reads with
+            <code>get_session_report</code>. Sign in as an operator to read it.</p>
+    </div>
+}
+else if (Ready)
+{
+    <h1>Transcripts · session <code>@ShortId(SessionId)</code></h1>
+    <p class="sub mono">@SessionId</p>
+    <section class="metrics">
+        <div class="metric">
+            <div class="l">Raw harness output, served verbatim. It may contain credentials, customer data, or anything
+                else the agent read or printed. Landbridge does not redact transcripts (§13). Do not paste it
+                into a ticket, a chat, or another agent.</div>
+        </div>
+    </section>
+
+    <section>
+        <h2>Dispatches</h2>
+        @if (Locations.Count == 0)
+        {
+            <EmptyState Message="This task was never dispatched, so nothing was ever captured." />
+        }
+        else
+        {
+            <table>
+                <thead>
+                    <tr><th>Dispatched</th><th>Machine</th><th>Readable now</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var l in Locations)
+                    {
+                        <tr>
+                            <td>@Age(l.DispatchedAt, Now)</td>
+                            <td>
+                                @if (l.Machine is null)
+                                {
+                                    <span class="nt" title="not tracked yet">machine: n/a</span>
+                                }
+                                else
+                                {
+                                    <code>@l.Machine</code>
+                                }
+                            </td>
+                            <td>
+                                @if (l.Machine is null)
+                                {
+                                    <text>not recorded for this attempt</text>
+                                }
+                                else if (l.Connected)
+                                {
+                                    <Badge Text="machine connected" CssClass="state-working" />
+                                }
+                                else
+                                {
+                                    <Badge Text="machine offline" CssClass="state-parked" />
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </section>
+
+    <section>
+        <h2>Captured streams</h2>
+        @if (Inventories.Count == 0)
+        {
+            <EmptyState Message="No machine that ran this task is connected. Transcripts live only on the machine that captured them, so there is nothing to read until one reconnects." />
+        }
+        @foreach (var inv in Inventories)
+        {
+            <h3>Machine <code>@inv.Machine</code></h3>
+            @if (inv.Unavailable is { } why)
+            {
+                <EmptyState Message="@why" />
+            }
+            else if (inv.Instances.Count == 0)
+            {
+                <EmptyState Message="This machine ran the task but captured nothing — transcript capture is off for its profile, or the worker wrote no output." />
+            }
+            else
+            {
+                <table>
+                    <thead>
+                        <tr>
+                            <th class="num">Instance</th><th>Last write</th><th>stdout</th><th>stderr</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var i in inv.Instances)
+                        {
+                            <tr>
+                                <td class="num">@i.Ordinal.ToString("D4")</td>
+                                <td>@Age(i.LastWrite, Now)</td>
+                                <td>@StreamLink(inv.Machine, i.Ordinal, "stdout", i.StdoutBytes)</td>
+                                <td>@StreamLink(inv.Machine, i.Ordinal, "stderr", i.StderrBytes)</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            }
+        }
+    </section>
+}
+
+@code {
+    [Parameter] public Guid SessionId { get; set; }
+    private IReadOnlyList<TranscriptLocationView> Locations { get; set; } = [];
+    private IReadOnlyList<TranscriptMachineInventory> Inventories { get; set; } = [];
+    protected override bool AutoRefresh => false;
+
+    protected override async Task<string?> LoadAsync()
+    {
+        if (Principal is not Principal.Human)
+            return "This session is a Lead credential. Transcripts are served only to a human operator session.";
+        var ct = RequestAborted;
+        Locations = await Queries.GetTranscriptLocationsAsync(SessionId, ct);
+        var task = new SessionId(SessionId);
+        var inventories = new List<TranscriptMachineInventory>();
+        foreach (var machine in Locations
+                     .Where(l => l is { Connected: true, Machine: not null })
+                     .Select(l => l.Machine!)
+                     .Distinct(StringComparer.Ordinal))
+        {
+            inventories.Add(await Relay.ListAsync(task, machine, ct) switch
+            {
+                TranscriptResult.Inventory inv => new TranscriptMachineInventory(machine, inv.Instances, null),
+                TranscriptResult.Unavailable u => new TranscriptMachineInventory(machine, [], u.Detail),
+                _ => new TranscriptMachineInventory(machine, [], "Unexpected reply."),
+            });
+        }
+        Inventories = inventories;
+        return null;
+    }
+
+    private RenderFragment StreamLink(string machine, int ordinal, string stream, long bytes)
+    {
+        if (bytes == 0)
+            return @<text>—</text>;
+        var href = $"/dashboard/sessions/{SessionId}/transcript?machine={Uri.EscapeDataString(machine)}&ordinal={ordinal}&stream={stream}";
+        return @<a href="@href">@StreamBytes(bytes)</a>;
+    }
+}

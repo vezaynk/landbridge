@@ -1,0 +1,234 @@
+@page "/dashboard/teams/{TeamIdText}"
+@inherits DashboardPageBase
+
+<PageTitle>Team @ShortId(TeamId) · Landbridge</PageTitle>
+
+@if (RefuseReason is { } reason)
+{
+    <ScopeCard Reason="@reason" />
+}
+else if (Ready && Team is { } team)
+{
+    <h1>Team <code>@ShortId(team.TeamId)</code></h1>
+    <p class="sub mono">@team.TeamId</p>
+
+    <section class="metrics">
+        <div class="metric"><div class="n">@team.TotalSessions</div><div class="l">sessions</div></div>
+        <div class="metric"><div class="n">@team.Sessions.Sum(t => t.Parks)</div><div class="l">parks total</div></div>
+        <div class="metric"><div class="n">@team.Services.Count</div><div class="l">services</div></div>
+        <div class="metric"><div class="n">@team.OpenInputRequests.Count</div><div class="l">open requests</div></div>
+        @if (team.ForwardUsage is { Measured: true } burn)
+        {
+            <div class="metric"><div class="n">@Bytes(burn.ForwardedBytes)</div><div class="l">byte burn</div></div>
+        }
+        else
+        {
+            <div class="metric"><div class="n nt">n/a</div><div class="l">byte burn</div></div>
+        }
+    </section>
+
+    <MeasuredUsage Team="@team" />
+    <RelayBytes Team="@team" />
+
+    <section>
+        <h2>Lead</h2>
+        @if (team.LeadHumanId is { } h)
+        {
+            <Badge Text="attached" CssClass="ready" />
+            <span class="mono">@ShortId(h)</span>
+            <span class="nt">since @Age(team.LeadSince, Now)</span>
+        }
+        else
+        {
+            <span class="nt">leadless</span>
+        }
+        <div class="nt">last activity @Age(team.LastActivity, Now)</div>
+    </section>
+
+    <section>
+        <h2>Sessions</h2>
+        @if (team.Sessions.Count == 0)
+        {
+            <EmptyState Message="No sessions." />
+        }
+        else
+        {
+            <table>
+                <thead>
+                    <tr>
+                        <th>Namespace</th><th>State</th>
+                        <th class="num">Attempt</th><th class="num">Parks</th><th>Detail</th>
+                        <th>Result</th><th>Report</th><th>Q&amp;A</th><th>Transcript</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var t in team.Sessions)
+                    {
+                        <tr>
+                            <td><code>@t.Namespace</code></td>
+                            <td><StateBadge State="@t.State" /></td>
+                            <td class="num">@t.Attempt</td>
+                            <td class="num">
+                                @if (t.Parks > 0)
+                                {
+                                    <span class="parks-hot">@t.Parks</span>
+                                }
+                                else
+                                {
+                                    <text>0</text>
+                                }
+                            </td>
+                            <td><SessionDetail Cell="@t" Now="@Now" /></td>
+                            <td>
+                                @if (t.ResultReference is { Length: > 0 } r)
+                                {
+                                    <code>@r</code>
+                                }
+                                else
+                                {
+                                    <span class="nt">—</span>
+                                }
+                            </td>
+                            <td>
+                                @if (t.Report is { Length: > 0 } report)
+                                {
+                                    <details><summary>report</summary><pre class="report">@report</pre></details>
+                                }
+                                else
+                                {
+                                    <span class="nt">—</span>
+                                }
+                            </td>
+                            <td>
+                                @if (t.Question is { Length: > 0 } q)
+                                {
+                                    <details>
+                                        <summary>@KindText(t.InputKind)</summary>
+                                        <pre class="report">@q</pre>
+                                        @if (t.Answer is { Length: > 0 } a)
+                                        {
+                                            <pre class="report">@a</pre>
+                                        }
+                                        else
+                                        {
+                                            <p class="nt">Not yet answered.</p>
+                                        }
+                                    </details>
+                                }
+                                else
+                                {
+                                    <span class="nt">—</span>
+                                }
+                            </td>
+                            <td>
+                                @if (t.State.IsTerminal())
+                                {
+                                    <a href="/dashboard/sessions/@t.SessionId/transcripts">transcript</a>
+                                }
+                                else
+                                {
+                                    <span class="nt" title="readable once the task reaches a terminal state (§12)">not yet</span>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </section>
+
+    <section>
+        <h2>Registered services</h2>
+        @if (team.Services.Count == 0)
+        {
+            <EmptyState Message="No services registered." />
+        }
+        else
+        {
+            <table>
+                <thead>
+                    <tr><th>Name</th><th class="num">Port</th><th>Task</th><th>Since</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var s in team.Services)
+                    {
+                        <tr>
+                            <td>@s.Name</td>
+                            <td class="num">@s.Port</td>
+                            <td class="mono">@ShortId(s.SessionId)</td>
+                            <td>@Age(s.CreatedAt, Now)</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+            <form class="preview-mint" method="post" action="/dashboard/preview">
+                <input type="hidden" name="teamId" value="@team.TeamId" />
+                <strong>Create preview</strong>
+                <select name="service" aria-label="service">
+                    @foreach (var s in team.Services)
+                    {
+                        <option value="@s.SessionId:@s.Name">@s.Name</option>
+                    }
+                </select>
+                <select name="auth" aria-label="visibility">
+                    <option value="gated">gated (operator only)</option>
+                    <option value="public">public (anyone with the link)</option>
+                </select>
+                <input type="number" name="ttl" min="1" placeholder="TTL min" aria-label="ttl minutes" />
+                <button type="submit">Create</button>
+            </form>
+        }
+    </section>
+
+    <section>
+        <h2>Open input requests</h2>
+        @if (team.OpenInputRequests.Count == 0)
+        {
+            <EmptyState Message="Nothing blocked on input." />
+        }
+        else
+        {
+            <table>
+                <thead>
+                    <tr><th>Namespace</th><th>Kind</th><th>Blocked</th><th>Question</th></tr>
+                </thead>
+                <tbody>
+                    @foreach (var r in team.OpenInputRequests)
+                    {
+                        <tr>
+                            <td><code>@r.Namespace</code></td>
+                            <td><KindCell Kind="@r.Kind" /></td>
+                            <td>@Age(r.BlockedAt, Now)</td>
+                            <td><QuestionCell Question="@r.Question" /></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        }
+    </section>
+}
+
+@code {
+    [Parameter] public string TeamIdText { get; set; } = "";
+    private Guid TeamId { get; set; }
+    private TeamDetail? Team { get; set; }
+
+    protected override async Task<string?> LoadAsync()
+    {
+        if (!Guid.TryParse(TeamIdText, out var id))
+        {
+            StatusOnRefuse = StatusCodes.Status400BadRequest;
+            return "invalid team id";
+        }
+        TeamId = id;
+        if (!OperatorMayAccess(new TeamId(TeamId)))
+            return "this session may only read its own Team";
+        Team = await Queries.GetTeamAsync(TeamId, RequestAborted);
+        if (Team is null)
+        {
+            StatusOnRefuse = StatusCodes.Status404NotFound;
+            return "no such team";
+        }
+        return null;
+    }
+}

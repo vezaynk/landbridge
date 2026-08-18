@@ -77,7 +77,12 @@ public static class RunnerEndpoint
             await sendLock.WaitAsync(ct);
             try
             {
-                await socket.SendAsync(bytes, WebSocketMessageType.Text, endOfMessage: true, ct);
+                // A hung write used to stall the dispatch loop: the claim is already
+                // committed, SendAsync never returned, and the task sat Working with
+                // no spawn. Bound it so the existing failed-send requeue can run.
+                using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                timeout.CancelAfter(TimeSpan.FromSeconds(5));
+                await socket.SendAsync(bytes, WebSocketMessageType.Text, endOfMessage: true, timeout.Token);
             }
             finally
             {

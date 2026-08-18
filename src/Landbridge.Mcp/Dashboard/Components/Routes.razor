@@ -1,0 +1,14 @@
+<Router AppAssembly="typeof(App).Assembly">
+    <Found Context="routeData">
+        <RouteView RouteData="routeData" DefaultLayout="typeof(Layout.DashboardLayout)" />
+        <FocusOnNavigate RouteData="routeData" Selector="h1" />
+    </Found>
+    <NotFound>
+        <LayoutView Layout="typeof(Layout.DashboardLayout)">
+            <div class="login-wrap card">
+                <h1>Not found</h1>
+                <p class="empty">That dashboard page does not exist.</p>
+            </div>
+        </LayoutView>
+    </NotFound>
+</Router>

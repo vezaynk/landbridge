@@ -1,0 +1,12 @@
+@if (TeamId == Guid.Empty)
+{
+    <span class="nt">—</span>
+}
+else
+{
+    <a class="mono" href="/dashboard/teams/@TeamId">@ShortId(TeamId)</a>
+}
+
+@code {
+    [Parameter] public Guid TeamId { get; set; }
+}

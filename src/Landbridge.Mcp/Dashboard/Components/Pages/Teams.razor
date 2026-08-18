@@ -1,0 +1,92 @@
+@page "/dashboard/teams"
+@inherits DashboardPageBase
+
+<PageTitle>Teams · Landbridge</PageTitle>
+
+@if (RefuseReason is { } reason)
+{
+    <ScopeCard Reason="@reason" />
+}
+else if (Ready)
+{
+    <h1>Teams</h1>
+    <p class="sub">Every Team by state. Idle Teams sink to the bottom.
+        Parks per task is the decomposition-starvation signal (§12).</p>
+
+    @if (List.Count == 0)
+    {
+        <EmptyState Message="No Teams yet." />
+    }
+    else
+    {
+        <section>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Team</th><th>States</th><th>Lead</th>
+                        <th class="num">Parks</th><th class="num">Services</th><th class="num">Open</th>
+                        <th>Byte burn</th><th>Last activity</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var t in List)
+                    {
+                        <tr class="@(t.IsIdle ? "idle-row" : "")">
+                            <td>
+                                <TeamLink TeamId="@t.TeamId" />
+                                <div class="nt">@t.TotalSessions tasks</div>
+                            </td>
+                            <td>
+                                <div class="pill-row">
+                                    @foreach (var state in Enum.GetValues<SessionState>())
+                                    {
+                                        if (t.CountsByState.TryGetValue(state, out var n) && n > 0)
+                                        {
+                                            <span class="badge @StateClass(state)">@state @n</span>
+                                        }
+                                    }
+                                </div>
+                            </td>
+                            <td>
+                                @if (t.LeadHumanId is { } h)
+                                {
+                                    <Badge Text="attached" CssClass="ready" />
+                                    <span class="mono">@ShortId(h)</span>
+                                    <span class="nt">since @Age(t.LeadSince, Now)</span>
+                                }
+                                else
+                                {
+                                    <span class="nt">leadless</span>
+                                }
+                            </td>
+                            <td class="num">@t.TotalParks</td>
+                            <td class="num">@t.ServiceCount</td>
+                            <td class="num">@t.OpenInputRequests</td>
+                            <td>
+                                @if (t.ForwardUsage is { Measured: true } u)
+                                {
+                                    @Bytes(u.ForwardedBytes)
+                                }
+                                else
+                                {
+                                    <span class="nt" title="no relay has reported">not reported</span>
+                                }
+                            </td>
+                            <td>@Age(t.LastActivity, Now)</td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </section>
+    }
+}
+
+@code {
+    private IReadOnlyList<TeamOverview> List { get; set; } = [];
+
+    protected override async Task<string?> LoadAsync()
+    {
+        List = await Queries.GetTeamsAsync(TeamScope, RequestAborted);
+        return null;
+    }
+}

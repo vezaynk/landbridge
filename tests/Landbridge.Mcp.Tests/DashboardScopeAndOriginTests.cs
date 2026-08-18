@@ -435,7 +435,7 @@ public sealed class DashboardScopeAndOriginTests(PostgresFixture pg) : IAsyncLif
             o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
         builder.Services.AddLandbridgeStore();
         builder.Services.AddScoped<TokenService>();
-        builder.Services.AddScoped<DashboardQueries>();
+        builder.Services.AddDashboard();
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<RunnerConnectionRegistry>();
         // §13 revoke, the fourth origin-guarded write on this surface: the service plus the

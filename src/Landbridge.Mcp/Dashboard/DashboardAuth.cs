@@ -31,7 +31,7 @@ internal static class DashboardAuth
     /// </summary>
     public static async Task<Principal?> ResolveAsync(HttpContext http, TokenService tokens, CancellationToken ct)
     {
-        var token = BearerToken(http) ?? http.Request.Cookies[CookieName];
+        var token = ReadToken(http);
         if (string.IsNullOrWhiteSpace(token))
             return null;
 
@@ -72,6 +72,14 @@ internal static class DashboardAuth
             Path = "/dashboard",
         });
     }
+
+    /// <summary>
+    /// The bearer or cookie token on this request. Pages capture it on the first
+    /// prerender — Blazor Server circuits have no <see cref="HttpContext"/> on later
+    /// turns, so refresh ticks re-validate this string rather than re-reading cookies.
+    /// </summary>
+    internal static string? ReadToken(HttpContext http) =>
+        BearerToken(http) ?? http.Request.Cookies[CookieName];
 
     private static string? BearerToken(HttpContext http)
     {

@@ -1,0 +1,48 @@
+@page "/dashboard/login"
+@layout DashboardLayout
+@inject NavigationManager Nav
+@inject IOperatorVerifier Verifier
+
+<PageTitle>Sign in · Landbridge</PageTitle>
+
+<div class="login-wrap card">
+    <h1>Sign in</h1>
+    <p class="sub">Enter the operator passphrase to open the dashboard.</p>
+    @if (!string.IsNullOrEmpty(Error))
+    {
+        <p class="err">@Error</p>
+    }
+    else if (!Verifier.IsConfigured)
+    {
+        <p class="err">No operator passphrase is configured, so this door is closed (503).
+            Set <span class="mono">Landbridge:Operator:PassphraseHash</span> to the SHA-256 hex
+            of the passphrase. The Aspire / Development host uses the passphrase
+            <span class="mono">dev</span>.</p>
+    }
+    <form method="post" action="/dashboard/login">
+        @if (!string.IsNullOrEmpty(Next))
+        {
+            <input type="hidden" name="next" value="@Next" />
+        }
+        <input type="password" name="passphrase" placeholder="Operator passphrase"
+               autofocus autocomplete="current-password" />
+        <label class="or">or paste a token</label>
+        <input type="password" name="token" placeholder="lbr_h_… / lbr_l_…" autocomplete="off" />
+        <button type="submit">Sign in</button>
+    </form>
+    <p class="seam">Third-party clients (e.g. Claude Code) sign in through the OAuth 2.1
+        flow. This form is the first-party operator door on the authorization server.</p>
+</div>
+
+@code {
+    [Parameter] public string? Error { get; set; }
+    [Parameter] public string? Next { get; set; }
+    [SupplyParameterFromQuery(Name = "error")] public string? ErrorQuery { get; set; }
+    [SupplyParameterFromQuery(Name = "next")] public string? NextQuery { get; set; }
+
+    protected override void OnParametersSet()
+    {
+        Error ??= ErrorQuery;
+        Next ??= NextQuery;
+    }
+}
