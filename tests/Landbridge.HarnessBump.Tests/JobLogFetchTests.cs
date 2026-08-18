@@ -10,7 +10,7 @@ namespace Landbridge.HarnessBump.Tests;
 /// </summary>
 public class JobLogFetchTests
 {
-    private const string Repo = "vezaynk/landbridge-mcp";
+    private const string Repo = "vezaynk/landbridge";
     private const long JobId = 94861882031;
 
     [Fact]
