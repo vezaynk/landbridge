@@ -1,6 +1,6 @@
 # Sessions
 
-A design note for the move from **tasks** to **sessions** as Docket's primary domain object.
+A design note for the move from **tasks** to **sessions** as Landbridge's primary domain object.
 Not a spec change yet — §6, §7 and §11 still describe the task model, and they stay
 authoritative until the ladder at the bottom of this file has actually been climbed.
 
@@ -14,7 +14,7 @@ Three choices were made explicitly on 2026-08-15:
    arrives as a fresh `session/prompt` on the same connection, not as a redispatch.
 3. **A session is held indefinitely**, not evicted on a TTL. If the process dies anyway, the
    next invocation resumes it from the transcript via `session/load`. **Implemented:**
-   `Docket:WaitTtl` defaults to infinite; the sweeper still requeues a dead machine.
+   `Landbridge:WaitTtl` defaults to infinite; the sweeper still requeues a dead machine.
    `park_session` is the deliberate release.
 
 The enabling change is already in: every worker is an ACP peer (see
@@ -75,8 +75,8 @@ next `get_session` (`WorkerAssignment`, §11). Three properties ride on that bei
    world-readable through `ps` and `/proc/<pid>/cmdline` — the same reason §13 keeps
    enrollment tokens out of argv. A live session must not become a second path out of the
    authenticated MCP channel.
-3. **Config stays config.** The turn text has to name the docket tools the way *this* harness
-   spells them (`mcp__docket__get_session` / `docket_get_session` / `docket__get_session`), so it is
+3. **Config stays config.** The turn text has to name the landbridge tools the way *this* harness
+   spells them (`mcp__landbridge__get_session` / `landbridge_get_session` / `landbridge__get_session`), so it is
    profile configuration. Per-message content in a profile-shaped turn mixes the two.
 
 So the §10 `prompt` command carries **no message**: it names a task, the runner sends that
@@ -126,7 +126,7 @@ the *fourth* state named, not the third: a turn ended in `working` is a fault, a
 held idle awaiting input is not, and only the first requeues.
 
 **Concurrency.** *Decided:* do not prescribe `max_concurrent`. Back-pressure is what
-`docketd` observes (memory/disk/load). Waiting sessions may occupy seats; `park_session` is
+`landbridged` observes (memory/disk/load). Waiting sessions may occupy seats; `park_session` is
 how a Lead frees one.
 
 **Token lifetime.** *Decided:* the token lives with the instance. Revoke on park, fail,
@@ -179,7 +179,7 @@ rename, recorded here so the rename does not reopen them:
 
 The domain rename is done: the ledger, MCP tools, dashboard, and spec §6/§7/§11
 name the conversation a **session**. The runner wire carries `session` /
-`work_dir_session`. `{session_id}` / `DOCKET_SESSION_ID` is the Docket row;
+`work_dir_session`. `{session_id}` / `LANDBRIDGE_SESSION_ID` is the Landbridge row;
 `{harness_session_ref}` is the ACP resume token. The pull-is-receipt is
 `get_session`.
 
@@ -207,7 +207,7 @@ waits in `submitted`. Moving the session to another box is #175.
 - **Does the §7 profile still describe how to *launch*?** Under sessions it increasingly
   describes how to *reach* — which is a different thing, and may want a different key than
   `spawn`.
-- **Cost.** *Decided:* Docket meters, it does not cap. `PromptResponse.usage` still
+- **Cost.** *Decided:* Landbridge meters, it does not cap. `PromptResponse.usage` still
   feeds the §12 measured view. Spend limits belong to the operator's own
   provisioning (provider key ceilings, billing alerts, how many machines they
   enroll). There is no plane dollar ceiling and no `--max-turns` successor.

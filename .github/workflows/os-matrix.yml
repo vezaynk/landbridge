@@ -45,21 +45,21 @@ jobs:
         run: dotnet restore
 
       # TreatWarningsAsErrors is on; this also builds the runner/worker test
-      # harness apphosts and the real docketd binary the E2E tests spawn.
+      # harness apphosts and the real landbridged binary the E2E tests spawn.
       - name: Build
         run: dotnet build --no-restore -c Release
 
-      - name: Test - Docket.Core (pure engine)
-        run: dotnet test tests/Docket.Core.Tests --no-build -c Release
+      - name: Test - Landbridge.Core (pure engine)
+        run: dotnet test tests/Landbridge.Core.Tests --no-build -c Release
 
-      - name: Test - Docket.Contracts (wire vocabulary)
-        run: dotnet test tests/Docket.Contracts.Tests --no-build -c Release
+      - name: Test - Landbridge.Contracts (wire vocabulary)
+        run: dotnet test tests/Landbridge.Contracts.Tests --no-build -c Release
 
-      - name: Test - Docket.Runner (per-OS supervision, discovery, reap E2E)
-        run: dotnet test tests/Docket.Runner.Tests --no-build -c Release
+      - name: Test - Landbridge.Runner (per-OS supervision, discovery, reap E2E)
+        run: dotnet test tests/Landbridge.Runner.Tests --no-build -c Release
 
-      - name: Test - Docket.Relay (splice core)
-        run: dotnet test tests/Docket.Relay.Tests --no-build -c Release
+      - name: Test - Landbridge.Relay (splice core)
+        run: dotnet test tests/Landbridge.Relay.Tests --no-build -c Release
 
-      - name: Test - Docket.Preview (HTTP preview frontend, §8.4)
-        run: dotnet test tests/Docket.Preview.Tests --no-build -c Release
+      - name: Test - Landbridge.Preview (HTTP preview frontend, §8.4)
+        run: dotnet test tests/Landbridge.Preview.Tests --no-build -c Release

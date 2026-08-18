@@ -1,0 +1,281 @@
+namespace Landbridge.Core.Tests;
+
+/// <summary>
+/// §9 check 14 (incumbent-only transitions), the zombie-replay scenario it
+/// exists for, and the park/recovery paths of §11.
+/// </summary>
+public class InstanceFencingAndParkTests
+{
+    [Fact]
+    public void A_non_incumbent_instance_cannot_report_a_result()
+    {
+        var task = Given.Session(SessionState.Working);
+        var zombie = new WorkerCaller(task.Team, task.Id, WorkerInstanceId.New());
+
+        Expect.Rejected(
+            SessionStateMachine.Apply(task, new ReportResult(zombie, "half-done-ref")),
+            Rule.IncumbentInstanceOnly);
+    }
+
+    [Fact]
+    public void A_non_incumbent_instance_cannot_block_the_task_on_input()
+    {
+        var task = Given.Session(SessionState.Working);
+        var zombie = new WorkerCaller(task.Team, task.Id, WorkerInstanceId.New());
+
+        Expect.Rejected(
+            SessionStateMachine.Apply(task, new RequestInput(zombie, InputRequestKind.Question)),
+            Rule.IncumbentInstanceOnly);
+    }
+
+    [Fact]
+    public void A_worker_token_scoped_to_another_task_lacks_authority_entirely()
+    {
+        var task = Given.Session(SessionState.Working);
+        var foreign = new WorkerCaller(task.Team, SessionId.New(), task.CurrentInstance!.Value);
+
+        Expect.Rejected(
+            SessionStateMachine.Apply(task, new ReportResult(foreign, "ref")),
+            Rule.ActorLacksAuthority);
+    }
+
+    [Fact]
+    public void Zombie_replay_after_requeue_is_fenced_end_to_end()
+    {
+        // M3 scenario from the audit: liveness loss requeues the task, a new
+        // instance is dispatched, and the orphaned predecessor tries to flip
+        // the state under it.
+        var task = Given.Session(SessionState.Working);
+        var zombieInstance = task.CurrentInstance!.Value;
+
+        var failed = Expect.Transitioned(
+            SessionStateMachine.Apply(task, new LivenessLost(LivenessLossReason.LivenessTimeout)),
+            SessionState.Failed);
+        var submitted = Expect.Transitioned(
+            SessionStateMachine.Apply(failed, new WakeParked("retry")),
+            SessionState.Submitted);
+
+        var successor = WorkerInstanceId.New();
+        var redispatched = Expect.Transitioned(
+            SessionStateMachine.Apply(submitted, new Dispatch(Given.Machine(), successor)),
+            SessionState.Working);
+        Assert.Equal(2, redispatched.Attempt);
+
+        var zombie = new WorkerCaller(task.Team, task.Id, zombieInstance);
+        Expect.Rejected(
+            SessionStateMachine.Apply(redispatched, new ReportResult(zombie, "stale-ref")),
+            Rule.IncumbentInstanceOnly);
+        Expect.Rejected(
+            SessionStateMachine.Apply(redispatched, new RequestInput(zombie, InputRequestKind.Question)),
+            Rule.IncumbentInstanceOnly);
+
+        // The incumbent proceeds untouched.
+        Expect.Transitioned(
+            SessionStateMachine.Apply(redispatched,
+                new ReportResult(new WorkerCaller(task.Team, task.Id, successor), "real-ref")),
+            SessionState.Verifying);
+    }
+
+    [Fact]
+    public void Requeue_from_blocked_on_input_uses_the_infrastructure_counter_and_releases_services()
+    {
+        // A permission wait keeps the process and its services. Infra death releases both.
+        var task = Given.Session(SessionState.BlockedOnInput);
+
+        var result = SessionStateMachine.Apply(task, new LivenessLost(LivenessLossReason.MachineReboot));
+
+        var next = Expect.Transitioned(result, SessionState.Failed);
+        Assert.Equal(1, next.InfrastructureRequeues);
+        Assert.Contains(new ClearServicesAndForwards(), Expect.Effects(result));
+    }
+
+    [Fact]
+    public void A_liveness_loss_that_names_its_attempt_still_fails_that_attempt()
+    {
+        // The positive control for the fence: in the ordinary case the attempt the clock
+        // judged is still the one on the task, and naming it changes nothing.
+        var task = Given.Session(SessionState.Working);
+        var judged = task.CurrentInstance!.Value;
+
+        var result = SessionStateMachine.Apply(
+            task, new LivenessLost(LivenessLossReason.NoProgress, judged));
+
+        var next = Expect.Transitioned(result, SessionState.Failed);
+        Assert.Equal(1, next.InfrastructureRequeues);
+        Assert.Contains(new RevokeWorkerInstanceToken(judged), Expect.Effects(result));
+    }
+
+    [Fact]
+    public void A_liveness_loss_cannot_requeue_a_task_that_parked_on_a_permission_request()
+    {
+        // The plane's per-dispatch clocks read the row, decide, and then apply — and a
+        // permission request committing in that window parks the task while KEEPING its
+        // instance, because the asking worker is alive inside the tool call it is waiting in
+        // (§11). Unfenced, the requeue landed on it anyway: a §9 check 7 requeue against a
+        // task nothing was wrong with, the waiting worker's token revoked under it, and the
+        // scan's follow-up kill (#84) aimed at a live process.
+        var working = Given.Session(SessionState.Working);
+        var judged = working.CurrentInstance!.Value;
+
+        var blocked = Expect.Transitioned(
+            SessionStateMachine.Apply(working, new RequestInput(
+                Given.IncumbentOf(working), InputRequestKind.Permission,
+                Question: "run `rm -rf build`?", PermissionTool: "Bash")),
+            SessionState.BlockedOnInput);
+        Assert.Equal(judged, blocked.CurrentInstance);
+
+        Expect.Rejected(
+            SessionStateMachine.Apply(blocked, new LivenessLost(LivenessLossReason.NoProgress, judged)),
+            Rule.IncumbentInstanceOnly);
+    }
+
+    [Fact]
+    public void A_liveness_loss_cannot_requeue_the_successor_of_the_attempt_it_judged()
+    {
+        // The same window, the other move the task can make in it: requeued (by a disconnect,
+        // a reboot) and redispatched before the decision arrives. Applying it then requeues a
+        // healthy successor for its predecessor's silence — two requeues off the cap for one
+        // loss, and a kill sent to the worker that is actually making progress.
+        var task = Given.Session(SessionState.Working);
+        var judged = task.CurrentInstance!.Value;
+
+        var failed = Expect.Transitioned(
+            SessionStateMachine.Apply(task, new LivenessLost(LivenessLossReason.MachineReboot)),
+            SessionState.Failed);
+        var submitted = Expect.Transitioned(
+            SessionStateMachine.Apply(failed, new WakeParked()),
+            SessionState.Submitted);
+        var redispatched = Expect.Transitioned(
+            SessionStateMachine.Apply(submitted, new Dispatch(Given.Machine(), WorkerInstanceId.New())),
+            SessionState.Working);
+
+        Expect.Rejected(
+            SessionStateMachine.Apply(redispatched, new LivenessLost(LivenessLossReason.NoProgress, judged)),
+            Rule.IncumbentInstanceOnly);
+        Assert.Equal(1, redispatched.InfrastructureRequeues);
+    }
+
+    [Fact]
+    public void An_answer_after_the_machine_is_gone_still_requeues_for_a_cold_start()
+    {
+        // The dispatched machine is gone, so there is no park record to write (null
+        // park). The answer still requeues the task (→ submitted) rather than
+        // rejecting: redispatch cold-starts it elsewhere from the workspace (§11).
+        // No park record is written and the infrastructure counter is untouched (§6).
+        var task = Given.Session(SessionState.BlockedOnInput);
+        var incumbent = task.CurrentInstance!.Value;
+
+        var result = SessionStateMachine.Apply(task, new AnswerInput(Given.Lead, Park: null));
+
+        var next = Expect.Transitioned(result, SessionState.Submitted);
+        Assert.Null(next.Park);
+        Assert.Null(next.CurrentInstance);
+        Assert.Equal(0, next.InfrastructureRequeues);
+        var effects = Expect.Effects(result);
+        Assert.Contains(new RevokeWorkerInstanceToken(incumbent), effects);
+        Assert.DoesNotContain(effects, e => e is WriteParkRecord);
+    }
+
+    [Fact]
+    public void Workers_cannot_answer_input_requests()
+    {
+        var task = Given.Session(SessionState.BlockedOnInput);
+        Expect.Rejected(
+            SessionStateMachine.Apply(task, new AnswerInput(Given.IncumbentOf(task), Given.Park)),
+            Rule.ActorLacksAuthority);
+        Expect.Rejected(
+            SessionStateMachine.Apply(task, new ContinueSession(Given.IncumbentOf(task), "no")),
+            Rule.ActorLacksAuthority);
+    }
+
+    [Fact]
+    public void Request_input_requires_a_typed_kind()
+    {
+        var task = Given.Session(SessionState.Working);
+        Expect.Rejected(
+            SessionStateMachine.Apply(task, new RequestInput(Given.IncumbentOf(task), Kind: null)),
+            Rule.TypedRequestKindRequired);
+    }
+
+    [Fact]
+    public void Report_result_requires_a_result_reference()
+    {
+        var task = Given.Session(SessionState.Working);
+        Expect.Rejected(
+            SessionStateMachine.Apply(task, new ReportResult(Given.IncumbentOf(task), " ")),
+            Rule.ResultReferenceRequired);
+    }
+
+    [Fact]
+    public void Only_the_lead_may_park_a_working_task()
+    {
+        var task = Given.Session(SessionState.Working);
+        Expect.Rejected(
+            SessionStateMachine.Apply(task, new StopPreserveAndPark(Given.ForeignLead, Given.Park)),
+            Rule.ActorLacksAuthority);
+    }
+
+    [Fact]
+    public void Park_wake_redispatch_chain_preserves_affinity_and_counts_attempts()
+    {
+        // blocked → parked → submitted → working: the §11 recovery path.
+        var task = Given.Session(SessionState.BlockedOnInput) with { Attempt = 1 };
+
+        var parked = Expect.Transitioned(
+            SessionStateMachine.Apply(task, new WaitTtlExpired(Given.Park)), SessionState.Parked);
+
+        var woken = Expect.Transitioned(
+            SessionStateMachine.Apply(parked, new WakeParked()), SessionState.Submitted);
+        Assert.Equal(Given.Park, woken.Park); // redispatch reads this for affinity
+
+        var resumed = Expect.Transitioned(
+            SessionStateMachine.Apply(woken, new Dispatch(Given.Machine(), WorkerInstanceId.New())),
+            SessionState.Working);
+        Assert.Equal(2, resumed.Attempt); // successor can see it inherited a workspace
+    }
+
+    [Theory]
+    [InlineData(SessionState.Submitted)]
+    [InlineData(SessionState.Verifying)]
+    public void Wait_ttl_only_applies_to_a_waiting_task(SessionState state)
+    {
+        Expect.Rejected(
+            SessionStateMachine.Apply(Given.Session(state), new WaitTtlExpired(Given.Park)),
+            Rule.InvalidSourceState);
+    }
+
+    [Fact]
+    public void Wait_ttl_parks_a_working_task_that_is_idle_for_the_lead()
+    {
+        Expect.Transitioned(
+            SessionStateMachine.Apply(Given.Session(SessionState.Working), new WaitTtlExpired(Given.Park)),
+            SessionState.Parked);
+    }
+
+    [Theory]
+    [InlineData(SessionState.Submitted)]
+    [InlineData(SessionState.Working)]
+    [InlineData(SessionState.BlockedOnInput)]
+    public void Wake_only_applies_to_parked_tasks(SessionState state)
+    {
+        Expect.Rejected(
+            SessionStateMachine.Apply(Given.Session(state), new WakeParked()),
+            Rule.InvalidSourceState);
+    }
+
+    [Fact]
+    public void Cancel_reaches_every_non_terminal_state()
+    {
+        foreach (var state in new[]
+                 {
+                     SessionState.Submitted, SessionState.Working, SessionState.Verifying,
+                     SessionState.BlockedOnInput, SessionState.Parked, SessionState.Failed,
+                 })
+        {
+            var result = SessionStateMachine.Apply(
+                Given.Session(state),
+                new Cancel(Given.Lead, CancelDisposition.Preserve));
+            Expect.Transitioned(result, SessionState.Canceled);
+        }
+    }
+}

@@ -1,0 +1,38 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Landbridge.Runner</RootNamespace>
+    <AssemblyName>landbridged</AssemblyName>
+    <!-- AOT-friendly: no EF, no ASP.NET, JSON via a source-gen'd context (§10).
+         IsAotCompatible turns on the trim/AOT analyzers so drift is caught in
+         the normal warnings-as-errors build rather than at publish time. -->
+    <IsAotCompatible>true</IsAotCompatible>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <!-- macOS stray discovery reads process env via LibraryImport'd libproc /
+         sysctl with pointer signatures (MacOsProcessInventory); the source-gen'd
+         P/Invoke stubs and our mib/buffer marshalling need an unsafe context. -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Landbridge.Core\Landbridge.Core.csproj" />
+    <ProjectReference Include="..\Landbridge.Contracts\Landbridge.Contracts.csproj" />
+  </ItemGroup>
+
+  <!-- §1 tracing: landbridged exports traces/metrics to the Aspire dashboard when
+       OTEL_EXPORTER_OTLP_ENDPOINT is set. Versions match Landbridge.ServiceDefaults.
+       The OTLP setup is isolated behind RunnerTelemetry.TryStartOtelExport (with a
+       narrowly-scoped trim/AOT suppression) so the rest of the runner stays
+       AOT-clean under IsAotCompatible. -->
+  <ItemGroup>
+    <PackageReference Include="OpenTelemetry" Version="1.15.3" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.15.3" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.15.1" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" Version="1.15.1" />
+  </ItemGroup>
+
+</Project>

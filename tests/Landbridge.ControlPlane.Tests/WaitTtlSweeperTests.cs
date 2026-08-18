@@ -1,0 +1,306 @@
+using Landbridge.Contracts;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.Core;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Time.Testing;
+
+namespace Landbridge.ControlPlane.Tests;
+
+/// <summary>
+/// The §11 wait-TTL sweeper: the control-plane driver that ends a task's stay in
+/// blocked_on_input. A blocked task whose Lead never answers must not hold its
+/// lease forever — the sweeper parks it when the wait TTL elapses (§6:
+/// blocked_on_input → parked) and requeues it when its machine goes silent (§6:
+/// blocked_on_input → submitted). FakeTimeProvider drives every deadline; the
+/// final case starts the real hosted loop to prove the timer fires end to end.
+/// A driven RunnerConnectionRegistry stands in for live machine connections.
+/// </summary>
+[Collection(PostgresCollection.Name)]
+public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
+{
+    public async Task InitializeAsync()
+    {
+        if (pg.Available) await pg.ResetAsync();
+    }
+
+    public Task DisposeAsync() => Task.CompletedTask;
+
+    [SkippableFact]
+    public async Task Wait_ttl_not_yet_expired_leaves_the_waiting_task()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+        var team = TeamId.New();
+        var (id, _) = await SeedBlockedTaskAsync(clock, team, "m1");
+        var registry = LiveMachine(clock, "m1", id);
+
+        // Comfortably under the 30-minute TTL, machine still live.
+        var sweeper = NewSweeper(clock, registry,
+            waitTtl: TimeSpan.FromMinutes(30), machineWindow: TimeSpan.FromHours(1));
+        clock.Advance(TimeSpan.FromMinutes(29));
+        await sweeper.SweepAsync(CancellationToken.None);
+
+        Assert.Equal(SessionState.Working, await StateAsync(clock, id));
+        Assert.Contains(id, registry.SessionsOn("m1"));
+    }
+
+    [SkippableFact]
+    public async Task Expired_wait_ttl_parks_the_task_writes_a_park_record_and_revokes_the_worker_token()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+        var team = TeamId.New();
+        var (id, instance) = await SeedBlockedTaskAsync(clock, team, "m1", registerService: true);
+        var registry = LiveMachine(clock, "m1", id);
+
+        // Machine window > wait TTL, so the machine stays live as the TTL elapses:
+        // the task parks, it is not requeued.
+        var sweeper = NewSweeper(clock, registry,
+            waitTtl: TimeSpan.FromMinutes(30), machineWindow: TimeSpan.FromHours(2));
+        clock.Advance(TimeSpan.FromMinutes(31));
+        await sweeper.SweepAsync(CancellationToken.None);
+
+        await using var v = pg.NewContext();
+        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(SessionState.Parked, row.State);
+        // Park record (§11): the machine, which is the whole record.
+        Assert.Equal("m1", row.ParkMachine);
+        // The attempt a redispatch will report stays on the row and is read live from
+        // there, never snapshotted into the park.
+        Assert.Equal(1, row.Attempt);
+        // This task reported no session ref (no session-started event — the next test
+        // covers the case where it did), so this park cold-starts from the workspace.
+        // §11's directory inheritance is a task id on the dispatch, not a path the plane
+        // ever holds, which is why no directory appears anywhere here.
+        Assert.Null(row.HarnessSessionRef);
+        Assert.Null(row.CurrentInstanceId);
+        Assert.Null(row.BlockedAt); // cleared on the way out of blocked_on_input
+
+        // §5/§11: the predecessor worker-instance token is revoked before any resume.
+        Assert.True((await v.WorkerInstances.AsNoTracking().SingleAsync(w => w.Id == instance.Value)).Revoked);
+
+        // Services are cleared on the park itself (a question no longer tears them
+        // down — the session stays). A parked task has none.
+        Assert.Empty(await v.RegisteredServices.AsNoTracking().Where(s => s.SessionId == id.Value).ToListAsync());
+
+        // The old dispatch is untracked so a later wake/redispatch starts clean.
+        Assert.Empty(registry.SessionsOn("m1"));
+    }
+
+    [SkippableFact]
+    public async Task Expired_wait_ttl_park_leaves_the_harness_session_ref_intact_to_resume_from()
+    {
+        // §11 resume: unlike the null case above, a task whose work session reported its ref
+        // (stamped on the row by the SessionStartedEvent sink) still carries it after parking
+        // — so redispatch resumes the transcript. The park does not copy it anywhere; the row
+        // is the one record of it, and dispatch reads it from there.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+        var team = TeamId.New();
+        var (id, _) = await SeedBlockedTaskAsync(clock, team, "m1");
+        await using (var db = pg.NewContext())
+            await new SessionStore(db, clock).StampHarnessSessionRefAsync(id, "sess-park");
+        var registry = LiveMachine(clock, "m1", id);
+
+        var sweeper = NewSweeper(clock, registry,
+            waitTtl: TimeSpan.FromMinutes(30), machineWindow: TimeSpan.FromHours(2));
+        clock.Advance(TimeSpan.FromMinutes(31));
+        await sweeper.SweepAsync(CancellationToken.None);
+
+        await using var v = pg.NewContext();
+        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(SessionState.Parked, row.State);
+        Assert.Equal("m1", row.ParkMachine);
+        // Survives the park on the row it was stamped on — the ref dispatch resumes from.
+        Assert.Equal("sess-park", row.HarnessSessionRef);
+    }
+
+    [SkippableFact]
+    public async Task Machine_going_silent_while_waiting_requeues_the_task_to_submitted()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+        var team = TeamId.New();
+        var (id, instance) = await SeedBlockedTaskAsync(clock, team, "m1");
+        var registry = LiveMachine(clock, "m1", id);
+
+        // The machine stops heartbeating; the sweep runs well before the wait TTL
+        // but past the 90-second liveness window — the machine is gone (§6).
+        var sweeper = NewSweeper(clock, registry,
+            waitTtl: TimeSpan.FromMinutes(30), machineWindow: TimeSpan.FromSeconds(90));
+        clock.Advance(TimeSpan.FromMinutes(2));
+        await sweeper.SweepAsync(CancellationToken.None);
+
+        await using var v = pg.NewContext();
+        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(SessionState.Failed, row.State);
+        Assert.Equal(1, row.InfrastructureRequeues); // infra counter, never verification (§6)
+        Assert.Equal("m1", row.ParkMachine); // pin session/load to the last box
+        Assert.Equal("m1", row.PreferredMachine);
+        Assert.Equal(MachineGonePolicy.Pin, row.OnMachineGone);
+        Assert.Null(row.CurrentInstanceId);
+        Assert.True((await v.WorkerInstances.AsNoTracking().SingleAsync(w => w.Id == instance.Value)).Revoked);
+        Assert.Empty(registry.SessionsOn("m1"));
+    }
+
+    [SkippableFact]
+    public async Task Wait_ttl_expiry_is_rejected_once_a_lead_has_answered()
+    {
+        // The answer-vs-sweep race at the store: a sweep decided to park a task a
+        // Lead answered a beat earlier. WaitTtlExpired lands on a now-submitted task
+        // (the answer requeued it for redispatch) and the engine rejects it (wrong
+        // source state) — nothing is written, the answer stands.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+        var team = TeamId.New();
+        var (id, _) = await SeedBlockedTaskAsync(clock, team, "m1");
+
+        await using var db = pg.NewContext();
+        var store = new SessionStore(db, clock);
+        var answerPark = new ParkRecord("m1");
+        Assert.IsType<StoreResult.Applied>(
+            await store.ApplyAsync(id, new AnswerInput(new LeadClaim(team), answerPark)));
+
+        var park = new ParkRecord("m1");
+        var rejected = Assert.IsType<StoreResult.Rejected>(
+            await store.ApplyAsync(id, new WaitTtlExpired(park)));
+        Assert.Equal(Rule.InvalidSourceState, rejected.Rule);
+        Assert.Equal(SessionState.Submitted, await StateAsync(clock, id));
+    }
+
+    [SkippableFact]
+    public async Task An_answered_task_is_not_in_the_blocked_backlog_so_the_sweep_no_ops()
+    {
+        // The same race one layer up: once the Lead's answer lands, the task is no
+        // longer blocked, so a full sweep pass finds nothing to park even past the
+        // TTL — the task is already requeued for redispatch (submitted), not parked.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+        var team = TeamId.New();
+        var (id, _) = await SeedBlockedTaskAsync(clock, team, "m1");
+        var registry = LiveMachine(clock, "m1", id);
+
+        var answerPark = new ParkRecord("m1");
+        await using (var db = pg.NewContext())
+            await new SessionStore(db, clock).ApplyAsync(id, new AnswerInput(new LeadClaim(team), answerPark));
+
+        var sweeper = NewSweeper(clock, registry,
+            waitTtl: TimeSpan.FromMinutes(30), machineWindow: TimeSpan.FromHours(2));
+        clock.Advance(TimeSpan.FromMinutes(31)); // past what would have been the TTL
+        await sweeper.SweepAsync(CancellationToken.None);
+
+        Assert.Equal(SessionState.Submitted, await StateAsync(clock, id));
+    }
+
+    [SkippableFact]
+    public async Task The_hosted_sweeper_loop_parks_an_expired_task_end_to_end()
+    {
+        // The real hosted service on its TimeProvider timer, real clock, short
+        // period — proving the loop fires a sweep and drives the park without a
+        // manual SweepAsync call.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = TimeProvider.System;
+        var team = TeamId.New();
+        var (id, _) = await SeedBlockedTaskAsync(clock, team, "m1");
+        var registry = LiveMachine(clock, "m1", id);
+
+        var sweeper = NewSweeper(clock, registry,
+            waitTtl: TimeSpan.FromMilliseconds(1),     // already expired the instant it blocked
+            machineWindow: TimeSpan.FromHours(1),      // machine stays live → parks, not requeues
+            sweepInterval: TimeSpan.FromMilliseconds(100));
+
+        await sweeper.StartAsync(CancellationToken.None);
+        try
+        {
+            await WaitUntilAsync(
+                async () => await StateAsync(clock, id) == SessionState.Parked,
+                TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            await sweeper.StopAsync(CancellationToken.None);
+        }
+
+        await using var v = pg.NewContext();
+        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(SessionState.Parked, row.State);
+        Assert.Equal("m1", row.ParkMachine);
+    }
+
+    // ── Helpers ─────────────────────────────────────────────────────────────────
+
+    private WaitTtlSweeper NewSweeper(
+        TimeProvider clock, RunnerConnectionRegistry registry,
+        TimeSpan? waitTtl = null, TimeSpan? machineWindow = null, TimeSpan? sweepInterval = null) =>
+        new(ScopeFactory(clock), registry, clock, NullLogger<WaitTtlSweeper>.Instance,
+            waitTtl, machineWindow, sweepInterval);
+
+    /// <summary>A registry with one ready machine heartbeating now, tracking the task —
+    /// exactly what DispatchService would have set up at dispatch.</summary>
+    private static RunnerConnectionRegistry LiveMachine(TimeProvider clock, string machineId, SessionId task)
+    {
+        var registry = new RunnerConnectionRegistry(clock);
+        registry.Register(machineId, Set("default"), (_, _) => Task.CompletedTask);
+        registry.ApplyHeartbeat(machineId, Heartbeat(machineId, "default"));
+        registry.TrackDispatch(machineId, task);
+        return registry;
+    }
+
+    /// <summary>Create → dispatch → block, so the task sits in blocked_on_input with
+    /// BlockedAt stamped at the current (fake or real) clock reading.</summary>
+    private async Task<(SessionId Id, WorkerInstanceId Instance)> SeedBlockedTaskAsync(
+        TimeProvider clock, TeamId team, string machineId, bool registerService = false)
+    {
+        await using var db = pg.NewContext();
+        var store = new SessionStore(db, clock);
+        var created = (StoreResult.Applied)await store.CreateAsync(
+            new CreateSession(new LeadClaim(team), team, "completion criteria", CompletionMode.Lead, null));
+        var id = created.Session.Id;
+        var instance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(
+            new MachineSnapshot(machineId, Ready: true, UnderBackPressure: false, Set("default")), instance);
+        var caller = new WorkerCaller(team, id, instance);
+        if (registerService)
+            Assert.IsType<StoreResult.Applied>(await store.RegisterServiceAsync(caller, "api", 5001));
+        await store.ApplyAsync(id, new RequestInput(caller, InputRequestKind.Question));
+        return (id, instance);
+    }
+
+    private IServiceScopeFactory ScopeFactory(TimeProvider clock)
+    {
+        var services = new ServiceCollection();
+        services.AddDbContext<LandbridgeDbContext>(o =>
+            o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
+        services.AddLandbridgeStore();
+        services.AddScoped<TokenService>();
+        services.AddSingleton(clock);
+        return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
+    }
+
+    private async Task<SessionState?> StateAsync(TimeProvider clock, SessionId id)
+    {
+        await using var db = pg.NewContext();
+        return await new SessionStore(db, clock).GetStateAsync(id);
+    }
+
+    private static async Task WaitUntilAsync(Func<Task<bool>> condition, TimeSpan timeout)
+    {
+        var deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (await condition())
+                return;
+            await Task.Delay(50);
+        }
+        throw new TimeoutException("condition not met within the timeout");
+    }
+
+    private static IReadOnlySet<string> Set(params string[] names) =>
+        new HashSet<string>(names, StringComparer.Ordinal);
+
+    private static MachineHeartbeat Heartbeat(string machineId, params string[] profiles) =>
+        new(machineId, Ready: true, UnderBackPressure: false,
+            new SystemLoad(0, 0, 0), RunningSessions: 0, profiles, DateTimeOffset.UtcNow);
+}

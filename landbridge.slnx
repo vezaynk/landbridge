@@ -1,0 +1,37 @@
+<Solution>
+  <Folder Name="/spikes/">
+    <Project Path="spikes/Landbridge.Spikes/Landbridge.Spikes.csproj" />
+  </Folder>
+  <Folder Name="/src/">
+    <Project Path="src/Landbridge.AppHost/Landbridge.AppHost.csproj" />
+    <Project Path="src/Landbridge.Contracts/Landbridge.Contracts.csproj" />
+    <Project Path="src/Landbridge.ControlPlane/Landbridge.ControlPlane.csproj" />
+    <Project Path="src/Landbridge.Core/Landbridge.Core.csproj" />
+    <Project Path="src/Landbridge.Mcp/Landbridge.Mcp.csproj" />
+    <Project Path="src/Landbridge.Meta/Landbridge.Meta.csproj" />
+    <Project Path="src/Landbridge.Preview/Landbridge.Preview.csproj" />
+    <Project Path="src/Landbridge.Relay/Landbridge.Relay.csproj" />
+    <Project Path="src/Landbridge.Runner/Landbridge.Runner.csproj" />
+    <Project Path="src/Landbridge.ServiceDefaults/Landbridge.ServiceDefaults.csproj" />
+  </Folder>
+  <Folder Name="/tools/">
+    <Project Path="tools/Landbridge.AcpBridge/Landbridge.AcpBridge.csproj" />
+    <Project Path="tools/Landbridge.HarnessBump/Landbridge.HarnessBump.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/Landbridge.ControlPlane.Tests/Landbridge.ControlPlane.Tests.csproj" />
+    <Project Path="tests/Landbridge.HarnessBump.Tests/Landbridge.HarnessBump.Tests.csproj" />
+    <Project Path="tests/Landbridge.Contracts.Tests/Landbridge.Contracts.Tests.csproj" />
+    <Project Path="tests/Landbridge.Core.Tests/Landbridge.Core.Tests.csproj" />
+    <Project Path="tests/Landbridge.Mcp.Tests/Landbridge.Mcp.Tests.csproj" />
+    <Project Path="tests/Landbridge.Meta.Tests/Landbridge.Meta.Tests.csproj" />
+    <Project Path="tests/Landbridge.Preview.Tests/Landbridge.Preview.Tests.csproj" />
+    <Project Path="tests/Landbridge.Relay.Tests/Landbridge.Relay.Tests.csproj" />
+    <Project Path="tests/Landbridge.Chaos.Tests/Landbridge.Chaos.Tests.csproj" />
+    <Project Path="tests/Landbridge.CollabHarness/Landbridge.CollabHarness.csproj" />
+    <Project Path="tests/Landbridge.MultiMachine.Tests/Landbridge.MultiMachine.Tests.csproj" />
+    <Project Path="tests/Landbridge.Runner.Tests/Landbridge.Runner.Tests.csproj" />
+    <Project Path="tests/Landbridge.Runner.TestHarness/Landbridge.Runner.TestHarness.csproj" />
+    <Project Path="tests/Landbridge.WorkerHarness/Landbridge.WorkerHarness.csproj" />
+  </Folder>
+</Solution>

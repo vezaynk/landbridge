@@ -1,0 +1,151 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  landbridged — the Landbridge per-machine runner daemon (spec §10), as a launchd job.
+
+  This file is written as a LaunchAgent: it goes in
+  ~/Library/LaunchAgents/com.landbridge.landbridged.plist and runs as you, inside your
+  login session. That is the right default for a Mac workstation, and the wrong
+  choice for a headless rack Mac — the trade, and the LaunchDaemon edits, are in
+  docs/RUNNING.md ("LaunchAgent or LaunchDaemon"). Installing it is the human
+  operator's step, not an enrolling agent's (ideas/skills/enroll-skill.md).
+
+  Substitute every /Users/YOU and every path marked SUBSTITUTE. Two launchd
+  facts that bite here:
+    * launchd does NOT expand ~, $HOME, or any variable in these values. Every
+      path must be absolute and literal.
+    * landbridged copies its own environment onto every harness child at spawn, so
+      EnvironmentVariables below is also the environment `claude` runs with.
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.landbridge.landbridged</string>
+
+    <!-- SUBSTITUTE: where you published the binary, and where the config and
+         state dir live. Publish with:
+           dotnet publish src/Landbridge.Runner -c Release -o /usr/local/libexec/landbridged
+         (AssemblyName is `landbridged`; add -r osx-arm64 --self-contained if the
+         box has no .NET runtime.) --config is required — landbridged exits 2
+         without it. --state-dir is passed explicitly rather than left to the
+         fallback chain (--state-dir → $LANDBRIDGE_STATE_DIR → $XDG_STATE_HOME/landbridge
+         → ~/.landbridge) so this file and the enroll command cannot disagree about
+         where credentials.json and the §12 transcripts live. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/local/libexec/landbridged/landbridged</string>
+        <string>--config</string>
+        <string>/Users/YOU/.config/landbridged/config.json</string>
+        <string>--state-dir</string>
+        <string>/Users/YOU/.landbridge</string>
+    </array>
+
+    <!-- Start on load (and so at login, for an agent) rather than waiting for a
+         first request — landbridged has no socket to be launched on demand by. -->
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- Unconditional restart: landbridged holds no state, so a restart killing its
+         agents and requeueing their tasks is the designed behaviour, not a loss.
+         launchd throttles respawns to one per ThrottleInterval (10s default).
+         Caveat, since launchd has no equivalent of systemd's
+         RestartPreventExitStatus: a bad config exits 2 and will respawn every
+         10s forever. The reason is on the first line of StandardErrorPath — read
+         it there rather than wondering why the machine never appears. -->
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- SUBSTITUTE the user. launchd creates these FILES but not their parent
+         directories; ~/Library/Logs exists on every Mac, any other choice you
+         must mkdir first. Nothing rotates them — add a newsyslog.d entry if the
+         box is long-lived. Note that a profile with neither logs.capture nor
+         events.source: terminal leaves its worker's stdout inherited, so raw
+         agent output lands in this file instead of the 0600 transcript store. -->
+    <key>StandardOutPath</key>
+    <string>/Users/YOU/Library/Logs/landbridged.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/YOU/Library/Logs/landbridged.err.log</string>
+
+    <!-- Its own cwd is not load-bearing (each worker is spawned in
+         {work_root}/{task_id}) but a defined one beats launchd's default of /. -->
+    <key>WorkingDirectory</key>
+    <string>/Users/YOU/.landbridge</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <!-- SUBSTITUTE, and read this one: it is the most common cause of "works
+             in my Terminal, fails under launchd". launchd gives a job only
+             /usr/bin:/bin:/usr/sbin:/sbin — no /opt/homebrew/bin, no
+             /usr/local/bin, no nvm shim dir. Because landbridged hands its
+             environment to every child, a missing entry here means the harness
+             spawn fails with ENOENT and tasks fail on this machine only. Put the
+             directories holding claude, node, git and docker in this list. -->
+        <key>PATH</key>
+        <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+
+        <!-- A LaunchAgent already inherits HOME from your user record; it is set
+             explicitly because the harness resolves ~/.claude, ~/.gitconfig and
+             ~/.ssh from it, and because the LaunchDaemon variant MUST set it (a
+             system-context job otherwise has no usable home). -->
+        <key>HOME</key>
+        <string>/Users/YOU</string>
+
+        <!-- Optional: the ws(s)://…/runner URL. Omit it and landbridged derives one
+             from the control URL saved by `landbridged --enroll` (http→ws,
+             https→wss, /runner), which is what you want on a real machine.
+             Do NOT put LANDBRIDGE_MACHINE_TOKEN here: that is the dev-loop fixed
+             token, never refreshed, and setting it makes landbridged ignore the
+             enrolled credentials and stop refreshing them. Anything secret in
+             this file is world-readable at 0644 in your LaunchAgents dir.
+        <key>LANDBRIDGE_CONTROL_URL</key>
+        <string>wss://plane.example.com/runner</string>
+        -->
+    </dict>
+
+    <!-- launchd sends SIGTERM on `bootout`/`kickstart -k`, then SIGKILL after
+         ExitTimeOut (20s default). landbridged handles SIGTERM and runs its own
+         ordered teardown — kill every worker's process tree, close every §8.3
+         relay tunnel (10s cap per forward), join in-flight transcript reads,
+         drain the event ring. 45 matches the systemd unit's TimeoutStopSec and
+         leaves room for the relay handshakes.
+
+         What this does NOT buy: a graceful agent wind-down. SIGTERM to landbridged
+         hard-kills every running worker at once — no stop turn is injected, and
+         stop.wind_down_seconds applies only to a `stop` command from the control
+         plane (§10/§11). Drain the machine from the plane first if you want the
+         agents to finish. -->
+    <key>ExitTimeOut</key>
+    <integer>45</integer>
+
+    <!-- Standard, deliberately not Background: ProcessType Background opts the
+         job and its children into system resource throttling (lower CPU and I/O
+         priority, App Nap-style behaviour), which is exactly wrong for a machine
+         whose entire purpose is running agent builds and test suites. -->
+    <key>ProcessType</key>
+    <string>Standard</string>
+
+    <!-- macOS gives a launchd job 256 open files by default, which a
+         node-based harness plus landbridged's per-worker pipes and relay tunnels can
+         exhaust. Soft limits only: raising the hard limit needs root, and a
+         LaunchAgent has none. -->
+    <key>SoftResourceLimits</key>
+    <dict>
+        <key>NumberOfFiles</key>
+        <integer>8192</integer>
+    </dict>
+
+    <!-- AbandonProcessGroup is deliberately absent (i.e. false). macOS has no
+         cgroup, so the default behaviour — launchd killing what remains of the
+         job's process group when the job dies — is the closest equivalent to
+         systemd's cgroup backstop, and workers inherit landbridged's process group.
+         Setting it true would leave orphaned agents holding ports and burning
+         tokens until landbridged's next start swept them. A worker that calls setsid
+         escapes the group regardless; that is precisely what landbridged's stray
+         reaper and its per-session LANDBRIDGE_SESSION_ID sweep exist to catch. -->
+
+    <!-- LimitLoadToSessionType Aqua is the default for ~/Library/LaunchAgents
+         and is left implicit. It is also the LaunchAgent's central limitation:
+         the job lives and dies with your GUI session, so it does not survive
+         logout. See docs/RUNNING.md before choosing this over a LaunchDaemon. -->
+</dict>
+</plist>

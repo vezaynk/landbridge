@@ -1,0 +1,21 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <!-- landbridge-relay is a standalone, separately-deployable module (spec §3): its
+       own ASP.NET host, NOT part of Landbridge.Mcp. It reuses the shared Aspire
+       service defaults (health, OTel) like the other hosts do. -->
+  <ItemGroup>
+    <ProjectReference Include="..\Landbridge.ServiceDefaults\Landbridge.ServiceDefaults.csproj" />
+    <!-- §8.3: the tunnel header names + role strings are shared with the runner's
+         tunnel client via Landbridge.Contracts (RelayTunnel), so the two ends agree on
+         one set of constants. The relay references Contracts; the runner never
+         references Landbridge.Relay. -->
+    <ProjectReference Include="..\Landbridge.Contracts\Landbridge.Contracts.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+</Project>

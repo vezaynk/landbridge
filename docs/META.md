@@ -1,6 +1,6 @@
-# docket-meta — operator guide
+# landbridge-meta — operator guide
 
-`docket-meta` is Docket's provisioning control panel (spec §3). It is **human-only**:
+`landbridge-meta` is Landbridge's provisioning control panel (spec §3). It is **human-only**:
 a server-rendered web panel behind an operator passphrase, with **no MCP surface and
 no agent access** — a separate credential class and, ideally, a separate network from
 the Instances it creates. It owns Account labels, Instance lifecycle (create, suspend,
@@ -9,7 +9,7 @@ and image rollout. It does **not** route work between Instances, aggregate a
 cross-Instance view, or hold shared agent identity.
 
 An **Instance** is a per-host recipe: a dedicated Docker network, a Postgres container
-on a named volume, a `docket-mcp` container, and a `docket-relay` container, co-located
+on a named volume, a `landbridge-mcp` container, and a `landbridge-relay` container, co-located
 on one host and completely independent of every other Instance.
 
 ---
@@ -40,11 +40,11 @@ range** meta allocates published ports from.
 Point wildcard DNS at your edge:
 
 ```
-*.docket.<domain>   →   <edge public IP>
+*.landbridge.<domain>   →   <edge public IP>
 ```
 
-An Instance named `acme` is published at `acme.docket.<domain>` (the MCP/plane endpoint)
-and `relay-acme.docket.<domain>` (the relay endpoint — `docketd` on customer machines
+An Instance named `acme` is published at `acme.landbridge.<domain>` (the MCP/plane endpoint)
+and `relay-acme.landbridge.<domain>` (the relay endpoint — `landbridged` on customer machines
 dials this directly, §8.3, so it needs its own public route).
 
 ### 1.3 An edge Caddy with the admin API
@@ -63,19 +63,19 @@ Minimal base config (`caddy run --config base.json`):
 }
 ```
 
-Caddy's own certificate automation issues certs for each `*.docket.<domain>` host as
+Caddy's own certificate automation issues certs for each `*.landbridge.<domain>` host as
 routes appear. Set `Meta:CaddyAdminUrl` to the admin endpoint and `Meta:CaddyServerName`
 to the server key (`srv0` above). Secure the admin endpoint — it is a control surface.
 
-### 1.4 Published docket images
+### 1.4 Published landbridge images
 
 Meta **does not build images** — it pulls pinned tags and runs them. Both images come from
 the repo's **Publish images** workflow (`.github/workflows/publish-images.yml`), which
 publishes to GHCR:
 
 ```
-ghcr.io/vezaynk/docket-mcp
-ghcr.io/vezaynk/docket-relay
+ghcr.io/vezaynk/landbridge-mcp
+ghcr.io/vezaynk/landbridge-relay
 ```
 
 **Publishing.** The workflow is deliberate, never per-push. Either push a version tag
@@ -113,7 +113,7 @@ configure and every host can pull.
 
 **If a package has to stay private** (an air-gapped or otherwise closed deployment) the only
 option today is to pre-pull on every Docker host: `docker login ghcr.io` with a PAT carrying
-`read:packages`, then `docker pull ghcr.io/vezaynk/docket-mcp:<tag>` and the same for the
+`read:packages`, then `docker pull ghcr.io/vezaynk/landbridge-mcp:<tag>` and the same for the
 relay, so meta's present-locally check short-circuits before it would pull. Two caveats
 worth knowing before you rely on it: a host-side `docker login` alone is **not** enough — the
 daemon does not use the CLI's credentials for meta's API-driven pull — and the pre-pull must
@@ -129,25 +129,25 @@ applies — see the step log on the Instance detail page (§4).
 **runtime-only** — they COPY a `dotnet publish` output — so the build is a two-step:
 
 ```
-# from the repo root, for each of Docket.Mcp and Docket.Relay:
-dotnet publish src/Docket.Mcp   -c Release -o out/mcp
-dotnet publish src/Docket.Relay -c Release -o out/relay
-docker build -f docker/Docket.Mcp.Dockerfile   -t <registry>/docket-mcp:<tag>   out/mcp
-docker build -f docker/Docket.Relay.Dockerfile -t <registry>/docket-relay:<tag> out/relay
-docker push <registry>/docket-mcp:<tag>
-docker push <registry>/docket-relay:<tag>
+# from the repo root, for each of Landbridge.Mcp and Landbridge.Relay:
+dotnet publish src/Landbridge.Mcp   -c Release -o out/mcp
+dotnet publish src/Landbridge.Relay -c Release -o out/relay
+docker build -f docker/Landbridge.Mcp.Dockerfile   -t <registry>/landbridge-mcp:<tag>   out/mcp
+docker build -f docker/Landbridge.Relay.Dockerfile -t <registry>/landbridge-relay:<tag> out/relay
+docker push <registry>/landbridge-mcp:<tag>
+docker push <registry>/landbridge-relay:<tag>
 ```
 
 ---
 
 ## 2. Configuration
 
-`docket-meta` reads its own config section and its own store connection string. It never
+`landbridge-meta` reads its own config section and its own store connection string. It never
 touches an Instance's database.
 
 | Key | Meaning |
 |---|---|
-| `ConnectionStrings:Meta` / `DOCKET_META_DB` | Meta's own Postgres. |
+| `ConnectionStrings:Meta` / `LANDBRIDGE_META_DB` | Meta's own Postgres. |
 | `Meta:Operator:PassphraseHash` | SHA-256 **hex** of the operator passphrase. Fail-closed (503 login) when unset. Generate: `printf '%s' 'your-passphrase' \| shasum -a 256`. |
 | `Meta:Domain` | Base domain for the two routes per Instance. |
 | `Meta:McpImageRepo` / `Meta:RelayImageRepo` | Image repositories (no tag). |
@@ -159,7 +159,7 @@ touches an Instance's database.
 
 Run migrations for meta's store out of band in production (`Meta:MigrateOnStartup=true` is
 the dev shortcut). Each **Instance** container self-migrates on boot — meta sets
-`Docket:MigrateOnStartup=true` in the plane container's env, and image upgrades rely on it.
+`Landbridge:MigrateOnStartup=true` in the plane container's env, and image upgrades rely on it.
 
 ### 2.1 Key management
 
@@ -233,19 +233,19 @@ tombstoned), so a destroyed Instance holds nothing a future key rotation needs.
 At create, before any container exists, meta generates the Instance's secrets and records
 a `provisioning` row. It then injects:
 
-- `Docket:Operator:PassphraseHash` — the **hash** of a freshly generated operator
+- `Landbridge:Operator:PassphraseHash` — the **hash** of a freshly generated operator
   passphrase. The **plaintext is shown once** on the create page and never stored; copy it
   and hand it to the Instance's operator.
-- `ConnectionStrings:Docket` — the private Postgres, reachable by container name on the
+- `ConnectionStrings:Landbridge` — the private Postgres, reachable by container name on the
   Instance's network.
-- `Docket:PublicMcpUrl` — `https://<name>.docket.<domain>` (also the OAuth issuer/resource id).
-- `Docket:RelayUrl` — `https://relay-<name>.docket.<domain>`.
-- `Docket:RelayValidation:Bearer` — a shared secret, also set as `Relay:ControlPlane:Bearer`
+- `Landbridge:PublicMcpUrl` — `https://<name>.landbridge.<domain>` (also the OAuth issuer/resource id).
+- `Landbridge:RelayUrl` — `https://relay-<name>.landbridge.<domain>`.
+- `Landbridge:RelayValidation:Bearer` — a shared secret, also set as `Relay:ControlPlane:Bearer`
   on the relay container, so the relay validates grants against the plane.
-- `Docket:MigrateOnStartup=true`.
+- `Landbridge:MigrateOnStartup=true`.
 
-Meta **never** sets the dev-only gates (`Docket:DevSeed:TokenFile`,
-`Docket:Oauth:AllowInsecureClientMetadata`): a production Instance is passphrase-gated with
+Meta **never** sets the dev-only gates (`Landbridge:DevSeed:TokenFile`,
+`Landbridge:Oauth:AllowInsecureClientMetadata`): a production Instance is passphrase-gated with
 real OAuth and no seeded identities. Enroll machines and provision a verifier through the
 Instance's own §5 flows after creation.
 
@@ -253,7 +253,7 @@ Meta **retains** the DB password and relay bearer (it must re-inject them on res
 upgrade), encrypted at rest under the master key from §2.1. Only the operator passphrase is
 shown-once-and-discarded.
 
-> **No signing key.** Docket's tokens are opaque and hashed at rest (spec §5, §13) — there
+> **No signing key.** Landbridge's tokens are opaque and hashed at rest (spec §5, §13) — there
 > is no signing/HMAC key for an Instance to hold today, so meta generates and injects none.
 > The concept is reserved for a future consumer.
 

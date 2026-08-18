@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Landbridge.WorkerHarness</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <!-- The dead-man's switch arms PDEATHSIG via [LibraryImport]; its source-gen'd
+         marshalling stubs need an unsafe context (see ParentDeathSignal). -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <!-- The dead-man's switch's Linux (PDEATHSIG) half is identical across both
+       reference harnesses; share it as a linked source file so each carries the
+       exact convention a BYO harness would copy (§10). -->
+  <ItemGroup>
+    <Compile Include="../HarnessSupport/ParentDeathSignal.cs" Link="ParentDeathSignal.cs" />
+    <!-- The ACP agent loop, linked for the same reason: both harnesses answer the same
+         four methods, and the E2E tiers now drive them through landbridged's real AcpClient. -->
+    <Compile Include="../HarnessSupport/AcpAgentLoop.cs" Link="AcpAgentLoop.cs" />
+  </ItemGroup>
+
+  <!-- A real MCP client, because the whole point of the walking skeleton is a
+       REAL process speaking REAL MCP back to the plane (no LLM). -->
+  <ItemGroup>
+    <PackageReference Include="ModelContextProtocol" Version="2.0.0-rc.1" />
+  </ItemGroup>
+
+  <!-- §1 tracing: the worker roots its span on LANDBRIDGE_TRACEPARENT and, when a
+       collector is configured, exports it — and its get_session/report_result MCP
+       calls (via HttpClient instrumentation) — so the plane continues the one
+       trace. Versions match Landbridge.ServiceDefaults. -->
+  <ItemGroup>
+    <PackageReference Include="OpenTelemetry" Version="1.15.3" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.15.3" />
+    <PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.15.1" />
+  </ItemGroup>
+
+</Project>

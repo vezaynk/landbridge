@@ -1,0 +1,254 @@
+# landbridged — the Landbridge per-machine runner daemon (spec §10), as a systemd service.
+#
+# Copy to /etc/systemd/system/landbridged.service and substitute the lines marked
+# SUBSTITUTE. Installing and enabling this is a privileged, system-level change
+# that the human operator performs — an enrolling agent prepares the file and
+# explains it, it does not run the install (ideas/skills/enroll-skill.md,
+# "Registering the daemon"). The exact commands are in docs/RUNNING.md.
+#
+# Read this before editing: landbridged spawns arbitrary agent harness processes
+# (`claude -p`, …) as its own children and is itself the containment boundary for
+# them. Every setting below that touches signals, the filesystem, /proc, or the
+# network therefore applies to the AGENTS too, not just to the daemon. That is
+# why the hardening here is deliberately modest, why each non-obvious line says
+# why, and why there is a list at the bottom of settings that are deliberately
+# absent.
+
+[Unit]
+Description=Landbridge runner daemon (landbridged)
+Documentation=https://github.com/vezaynk/landbridge-mcp/blob/master/docs/RUNNING.md
+
+# landbridged only ever dials OUT (the control-plane WebSocket, relay tunnels) and
+# reconnects with backoff forever — 200ms doubling to a 10s ceiling — so it does
+# not actually require the network to be up when it starts. Ordering after
+# network-online.target only avoids a burst of pointless failed dials at boot.
+# Wants= is required: After= alone never pulls the target in.
+Wants=network-online.target
+After=network-online.target
+
+# The default start rate limit (5 starts in 10s, after which the unit goes to
+# failed and STAYS down) is wrong for a fleet daemon whose only job is to be
+# reachable. Widen it rather than remove it, so a genuinely broken machine still
+# stops flapping and surfaces as failed instead of looping forever.
+StartLimitIntervalSec=300
+StartLimitBurst=10
+
+[Service]
+# Type=exec, not simple: systemd holds the start job open until execve() has
+# succeeded, so `systemctl start` fails loudly on a bad ExecStart path instead of
+# reporting success for a process that never ran.
+Type=exec
+
+# SUBSTITUTE — the dedicated unprivileged account landbridged runs as, and which
+# every dispatched agent therefore also runs as. Create it before enabling:
+#
+#   sudo useradd --system --create-home --home-dir /home/landbridged \
+#        --shell /usr/sbin/nologin landbridged
+#
+# It needs a REAL home directory (not --no-create-home): the harness reads its
+# own config and credentials out of $HOME — ~/.claude, ~/.gitconfig, ~/.ssh — and
+# landbridged hands its environment to every child verbatim.
+User=landbridged
+Group=landbridged
+
+# /var/lib/landbridged, created and chowned to User=/Group= by systemd on every
+# start (also exported as $STATE_DIRECTORY). This is the --state-dir below:
+# credentials.json (the enrolled machine's refresh token) and the §12 transcripts
+# live here and must survive a restart.
+StateDirectory=landbridged
+# landbridged chmods the state dir to 0700 itself when it saves credentials (§13).
+# Declaring 0700 here stops systemd from resetting it to 0755 on the next start.
+StateDirectoryMode=0700
+
+# Its own cwd is not load-bearing — each worker is spawned in
+# {work_root}/{task_id} — but a defined one beats inheriting /.
+WorkingDirectory=/var/lib/landbridged
+
+# SUBSTITUTE — where you published the binary and where the runner config lives:
+#
+#   dotnet publish src/Landbridge.Runner -c Release -o /opt/landbridged
+#
+# (AssemblyName is `landbridged`; add -r linux-x64 --self-contained if the box has no
+# .NET runtime.) --config is required and landbridged exits 2 without it. --state-dir
+# is passed explicitly rather than left to the fallback chain
+# (--state-dir → $LANDBRIDGE_STATE_DIR → $XDG_STATE_HOME/landbridge → ~/.landbridge), so the
+# unit and the enroll command cannot disagree about where credentials live.
+ExecStart=/opt/landbridged/landbridged --config /etc/landbridged/config.json --state-dir /var/lib/landbridged
+
+# Non-secret runtime config; the leading `-` means "ignore if absent". Keep
+# secrets out of it: on a production machine the machine credentials come from
+# `landbridged --enroll` and are refreshed automatically. LANDBRIDGE_MACHINE_TOKEN is the
+# DEV-LOOP path — a fixed token that is never refreshed — so setting it here makes
+# landbridged ignore the enrolled credentials and stop refreshing them. If you do put
+# a secret in this file, make it root-owned 0600: systemd reads it as root before
+# dropping to User=. Typical contents: LANDBRIDGE_CONTROL_URL,
+# OTEL_EXPORTER_OTLP_ENDPOINT.
+EnvironmentFile=-/etc/landbridged/landbridged.env
+
+# SUBSTITUTE — and read this one, it is the most common cause of "works in my
+# shell, fails under systemd". landbridged copies its own environment onto every
+# harness child at spawn, and systemd gives a service only a minimal compiled-in
+# PATH (/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin). If
+# `claude`, `node`, `git`, or `docker` live anywhere else — nvm, ~/.local/bin,
+# /opt/… — the spawn fails with ENOENT and tasks fail on this machine only.
+# systemd already sets HOME/USER/LOGNAME/SHELL from the User= passwd entry, so
+# those are not repeated here.
+Environment=PATH=/home/landbridged/.local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+# ---------------------------------------------------------------------------
+# Shutdown — matched to what landbridged actually does with a signal
+# ---------------------------------------------------------------------------
+# landbridged registers PosixSignal handlers for SIGINT and SIGTERM and sets
+# ctx.Cancel = true, suppressing the runtime's default terminate so its own
+# shutdown path runs (src/Landbridge.Runner/Program.cs). That path is:
+#   1. supervisor.KillAll()      — Process.Kill(entireProcessTree: true) per worker
+#   2. forwarder.DisposeAsync()  — close every live §8.3 relay tunnel
+#   3. join in-flight transcript reads, drain the outbound event ring
+# SIGTERM is therefore the correct stop signal and is also systemd's default;
+# it is named here only because getting it wrong is silent.
+KillSignal=SIGTERM
+
+# KillMode=mixed is load-bearing. The default (control-group) SIGTERMs every
+# process in the cgroup at once — i.e. it fires SIGTERM straight at the agent
+# harnesses behind landbridged's back, racing the ordered teardown above and losing
+# the final transcript flush and the per-task exit events. mixed sends SIGTERM to
+# the MAIN process only, letting landbridged tear its children down with its own
+# semantics (whole-tree kill, plus the harness's own PDEATHSIG on Linux), and
+# still SIGKILLs whatever is left in the cgroup afterwards as the backstop.
+# Do not "simplify" this to KillMode=process: that drops the backstop and lets a
+# grandchild that escaped the tree walk survive into the next start.
+KillMode=mixed
+
+# Bounded by what that teardown can actually take: the relay close handshake is
+# capped at 10s per forward (RelayForwarder.CloseHandshakeTimeout) and transcript
+# reads are bounded by logs.max_bytes; the rest is non-blocking. 45s is
+# comfortably generous, and the cgroup SIGKILL closes it out if landbridged wedges.
+#
+# Note what this timeout is NOT. A SIGTERM to landbridged hard-kills every running
+# worker immediately: no stop turn is injected, and stop.wind_down_seconds /
+# min(ttl, wind_down) apply only to a `stop` command arriving from the control
+# plane, never to daemon shutdown (§10/§11). The tasks requeue, which is
+# deliberate — landbridged holds no state. To wind agents down gracefully before a
+# planned restart, drain the machine from the control plane FIRST, then
+# `systemctl stop landbridged`.
+TimeoutStopSec=45
+
+Restart=always
+# Long enough not to hammer a plane that is down; short enough that a machine
+# that crashed is usually back before the plane's MachineLivenessTtl (90s) treats
+# it as rebooted.
+RestartSec=5
+# landbridged exits 2 on a usage error or a missing/unreadable --config, and 1 on a
+# config that fails validation (Program.cs). Neither is fixed by restarting, so
+# restarting would crash-loop and bury the reason in the journal. Every other
+# exit — a crash, an OOM kill, a clean exit(0) — still restarts.
+RestartPreventExitStatus=1 2
+
+# A worker agent running a big build is a plausible OOM-kill victim. The default
+# OOMPolicy=stop would take the ENTIRE service down with it — landbridged and every
+# other agent running on the box. continue keeps landbridged up; it observes the
+# worker's exit as a normal task failure and the plane requeues that one task.
+OOMPolicy=continue
+
+# landbridged holds up to three pipes per worker plus its control socket and relay
+# tunnels, and the harnesses themselves (node, git, compilers) are fd-hungry.
+LimitNOFILE=65536
+# An agent's process tree fans out: harness → subagents → dev servers → test
+# runners. This cap is per-unit and shared by every concurrent worker on the box,
+# so DefaultTasksMax (15% of kernel pid_max, often ~4900) is tighter than it looks.
+TasksMax=8192
+
+# landbridged logs to stdout/stderr; journal is systemd's default, named here so both
+# `journalctl -u landbridged` and `journalctl -t landbridged` work.
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=landbridged
+# Heads-up: a profile with neither logs.capture nor events.source: terminal
+# leaves its worker's stdout inherited, so raw agent output lands in the journal —
+# readable by the systemd-journal group, and not the 0600 transcript store. Turn
+# on logs.capture (§12) for the profiles whose output matters, and treat the
+# journal as non-secret.
+
+# ---------------------------------------------------------------------------
+# Hardening — modest on purpose
+# ---------------------------------------------------------------------------
+# landbridged exists to run arbitrary agent harnesses, typically with
+# --permission-mode bypassPermissions, and those children inherit its namespaces.
+# Every sandbox knob is therefore also a restriction on what a dispatched agent
+# can do — sometimes exactly what you want, never free. What is kept below does
+# not narrow the filesystem, network, or /proc view that landbridged and its workers
+# actually depend on.
+
+# No setuid escalation from the service or anything it spawns. This also
+# permanently disables `sudo` for every worker, which is the intent: a dispatched,
+# prompt-injectable agent should not be able to escalate. Drop it only if a
+# profile genuinely needs privileged commands, knowing what you are handing over.
+NoNewPrivileges=yes
+
+# Private /tmp and /var/tmp for the service and its whole worker tree, so one
+# task's scratch cannot collide with or be read by anything outside the unit.
+# Caveat: it also hides sockets that live in /tmp — if a worker needs a forwarded
+# ssh-agent or a tool whose socket is under /tmp, move that socket or drop this.
+PrivateTmp=yes
+
+# Cheap and side-effect-free for this workload: landbridged never tunes the kernel,
+# loads modules, or sets the clock, and neither should an agent.
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectClock=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+
+# Everything landbridged and its workers create is owner-only. landbridged already forces
+# 0600/0700 on credentials and transcripts explicitly; this extends the same
+# posture to the per-task work dirs and to whatever an agent writes in them.
+UMask=0077
+
+# ---------------------------------------------------------------------------
+# Deliberately NOT set — each of these breaks something specific
+# ---------------------------------------------------------------------------
+# ProtectProc=invisible  /  ProcSubset=pid
+#     Both break real features. On start landbridged reaps stray harness processes by
+#     scanning /proc/<pid>/environ for LANDBRIDGE_MACHINE_ID
+#     (ProcFsProcessInventory) — that sweep is what makes the kill guarantee
+#     survive a SIGKILLed daemon, and it finds nothing when other PIDs are
+#     hidden. ProcSubset=pid additionally hides /proc/stat, where the §10
+#     back-pressure CPU sampler reads, so max_cpu_load silently stops gating.
+#
+# ProtectHome=yes | read-only
+#     The harness reads ~/.claude, ~/.gitconfig and ~/.ssh out of $HOME and
+#     writes session state back; read-only breaks it as thoroughly as yes.
+#
+# ProtectSystem=strict | full
+#     Workers do arbitrary real work — cloning repos, installing toolchains,
+#     writing to a workspace that can be anywhere on the box. strict fails the
+#     moment a task touches a path nobody predicted. If you want it anyway, use
+#     ProtectSystem=full plus ReadWritePaths= for the state dir, work_root, and
+#     every workspace root you dispatch against — then expect to maintain that
+#     list forever.
+#
+# MemoryDenyWriteExecute=yes
+#     Kills the .NET JIT, and every other JIT a worker might run.
+#
+# PrivateNetwork / IPAddressDeny / RestrictAddressFamilies
+#     landbridged dials the control plane and binds local listeners for §8.3 relay
+#     forwards, and the agents it runs need the network to do their work at all.
+#
+# SystemCallFilter=@system-service
+#     landbridged itself is fine under it, but the filter is inherited by every
+#     harness, compiler, container runtime and test process an agent starts.
+#     Not worth the debugging.
+#
+# MemoryMax= / MemoryHigh=
+#     Not a hardening no-op. Memory back-pressure reads
+#     GC.GetGCMemoryInfo().TotalAvailableMemoryBytes, which under a cgroup limit
+#     reports the LIMIT rather than the machine. Setting these silently redefines
+#     max_memory_load as "share of this unit's cgroup" and can get workers
+#     OOM-killed at a threshold the operator never chose.
+#
+# DynamicUser=yes
+#     No stable uid and no stable home: the harness loses its config, and every
+#     file a previous run left behind becomes unreadable.
+
+[Install]
+WantedBy=multi-user.target

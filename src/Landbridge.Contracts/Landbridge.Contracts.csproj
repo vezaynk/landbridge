@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <RootNamespace>Landbridge.Contracts</RootNamespace>
+    <!-- Shared by the AOT runner (landbridged), so the wire vocabulary stays
+         AOT-clean: no reflection, JSON via a source-gen'd context (§10). The
+         analyzers here catch trim/AOT drift at build time under
+         warnings-as-errors, exactly as they do in Landbridge.Runner. -->
+    <IsAotCompatible>true</IsAotCompatible>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Landbridge.Core\Landbridge.Core.csproj" />
+  </ItemGroup>
+
+</Project>

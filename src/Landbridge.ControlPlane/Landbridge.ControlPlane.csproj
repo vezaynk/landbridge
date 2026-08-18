@@ -1,0 +1,35 @@
+﻿<Project Sdk="Microsoft.NET.Sdk">
+
+  <ItemGroup>
+    <ProjectReference Include="..\Landbridge.Core\Landbridge.Core.csproj" />
+    <ProjectReference Include="..\Landbridge.Contracts\Landbridge.Contracts.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="EFCore.NamingConventions" Version="10.0.0-rc.1" />
+    <!-- IHostedService (DispatchService) lives here; the DI/logging abstractions
+         come transitively with EF Core. -->
+    <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.0" />
+    <!-- Pin Relational to the base EF Core version. The Npgsql provider (10.0.3)
+         and NamingConventions transitively request an older Relational (10.0.4),
+         but base EF Core and Design are 10.0.10 and demand Relational 10.0.10.0 at
+         load time. Without this pin the app output ships 10.0.4 and crashes
+         constructing the model at startup (roll-forward can't go down a patch).
+         The test host masked it by pinning the aligned graph; running the Mcp app
+         standalone under Aspire surfaced it. This explicit pin forces 10.0.10
+         everywhere and clears the MSB3277 conflict warnings. -->
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Relational" Version="10.0.10" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="10.0.10">
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+      <PrivateAssets>all</PrivateAssets>
+    </PackageReference>
+    <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="10.0.3" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+</Project>

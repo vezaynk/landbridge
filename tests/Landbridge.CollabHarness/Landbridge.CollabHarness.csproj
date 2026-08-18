@@ -1,0 +1,33 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Landbridge.CollabHarness</RootNamespace>
+    <IsPackable>false</IsPackable>
+    <!-- The dead-man's switch arms PDEATHSIG via [LibraryImport]; its source-gen'd
+         marshalling stubs need an unsafe context (see ParentDeathSignal). -->
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+  </PropertyGroup>
+
+  <!-- The dead-man's switch's Linux (PDEATHSIG) half is the same convention every
+       reference harness carries; link the single shared source so this scripted
+       collaborator behaves exactly like Landbridge.WorkerHarness under a dying landbridged
+       (§10). Linked (not copied), so there is one source of truth. -->
+  <ItemGroup>
+    <Compile Include="../HarnessSupport/ParentDeathSignal.cs" Link="ParentDeathSignal.cs" />
+    <!-- The ACP agent loop, linked for the same reason: both harnesses answer the same
+         four methods, and the E2E tiers now drive them through landbridged's real AcpClient. -->
+    <Compile Include="../HarnessSupport/AcpAgentLoop.cs" Link="AcpAgentLoop.cs" />
+  </ItemGroup>
+
+  <!-- A real MCP client, because the whole point of the scripted tier is a REAL
+       process speaking REAL MCP back to the plane (no LLM), exactly like the
+       walking-skeleton worker it mirrors. -->
+  <ItemGroup>
+    <PackageReference Include="ModelContextProtocol" Version="2.0.0-rc.1" />
+  </ItemGroup>
+
+</Project>

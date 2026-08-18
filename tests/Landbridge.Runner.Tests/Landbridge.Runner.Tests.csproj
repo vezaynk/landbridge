@@ -1,0 +1,45 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <IsPackable>false</IsPackable>
+  </PropertyGroup>
+
+  <!-- The WebSocket channel test hosts a minimal loopback control plane on
+       Kestrel that speaks the runner contract, so it needs the ASP.NET Core
+       shared framework. -->
+  <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="coverlet.collector" Version="6.0.4" />
+    <PackageReference Include="Microsoft.Extensions.TimeProvider.Testing" Version="10.8.0" />
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
+    <PackageReference Include="xunit" Version="2.9.3" />
+    <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
+    <!-- The macOS stray-discovery integration test is gated to darwin with
+         SkippableFact so it runs for real on macOS and cleanly skips elsewhere. -->
+    <PackageReference Include="Xunit.SkippableFact" Version="1.5.61" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Using Include="Xunit" />
+    <!-- The runner wire vocabulary (commands, events, heartbeat, SystemLoad)
+         moved to Landbridge.Contracts; a global using keeps the existing tests
+         referencing those types unchanged. -->
+    <Using Include="Landbridge.Contracts" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\src\Landbridge.Runner\Landbridge.Runner.csproj" />
+    <!-- Referenced so the harness binary is built and locatable; the tests
+         spawn it as a real child process (§10 conventions — a real spawnable
+         child, no shell). -->
+    <ProjectReference Include="..\Landbridge.Runner.TestHarness\Landbridge.Runner.TestHarness.csproj" />
+    <ProjectReference Include="..\..\tools\Landbridge.AcpBridge\Landbridge.AcpBridge.csproj" />
+  </ItemGroup>
+
+</Project>

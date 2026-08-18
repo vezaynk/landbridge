@@ -1,0 +1,193 @@
+using Landbridge.ControlPlane.Tests;
+using Landbridge.Runner;
+
+namespace Landbridge.MultiMachine.Tests;
+
+/// <summary>
+/// The per-CLI fixture the shared real-harness bar is parameterized by. What is left of
+/// "harness-specific" after the ACP migration is mostly naming: the entry point, how this
+/// vendor spells landbridge's MCP tools, and whether its usage carries a cost. Spawn argv,
+/// stdin policy and event mappings used to live here too — three vendors' worth of them —
+/// and the protocol took all three.
+/// </summary>
+internal sealed class RealHarnessProfile
+{
+    public required string Name { get; init; }
+    public required string Bin { get; init; }
+    public IReadOnlyList<ProfileFile>? Files { get; init; }
+    public IReadOnlyDictionary<string, string>? Env { get; init; }
+    public required string GetTask { get; init; }
+    public required string ReportResult { get; init; }
+    public required string RequestInput { get; init; }
+    public required UsageExpectation Usage { get; init; }
+    public bool NamesModel { get; init; }
+    public required bool SupportsResume { get; init; }
+    public string FailureHypotheses { get; init; } = "";
+
+    /// <summary>
+    /// The ACP entry point: the argv that starts this harness as an Agent Client Protocol
+    /// agent over stdio. Natively a subcommand for OpenCode, Grok and Goose, an adapter
+    /// binary for Claude and Codex. Carries no prompt — an ACP agent takes none on argv.
+    /// </summary>
+    public required string[] AcpSpawn { get; init; }
+    /// <summary>
+    /// ACP <c>authenticate</c> method id, when the agent refuses <c>session/new</c>.
+    /// Codex offers <c>api-key</c> and <c>chat-gpt</c>; only the first works unattended.
+    /// </summary>
+    public string? AuthMethod { get; init; }
+    /// <summary>
+    /// ACP <c>session/set_config_option</c> pins, when the agent advertises them.
+    /// OpenCode ACP otherwise sits on <c>opencode/big-pickle</c> and never turns.
+    /// </summary>
+    public IReadOnlyDictionary<string, string>? ConfigOptions { get; init; }
+    /// <summary>
+    /// ACP <c>session/set_mode</c> pin, when the agent advertised that mode.
+    /// Goose defaults to <c>auto</c>; Landbridge pins <c>approve</c>.
+    /// </summary>
+    public string? SessionMode { get; init; }
+    public Func<FleetRig, IDisposable?>? Attach { get; init; }
+
+    public string EchoTools => $"{GetTask},{ReportResult}";
+    public string ParkTools => $"{GetTask},{ReportResult},{RequestInput}";
+
+    public string McpToolsRule =>
+        $" Landbridge's tools are MCP tools, named exactly {GetTask}, {ReportResult} and so " +
+        "on — call them as tools, under those names. There is no `landbridge` program: no such " +
+        "command exists on this machine, so never run `landbridge` in a shell, and never try to " +
+        "reach the landbridge MCP server yourself over HTTP or with curl. (A shell command your " +
+        "assignment explicitly asks for is a different thing, and is fine.) If a landbridge MCP " +
+        "tool is missing or errors, report that with " + ReportResult + " instead of working around it.";
+
+    public string EchoPrompt =>
+        "You are a Landbridge worker agent. Your FIRST action must be to call the " +
+        GetTask + " tool to read your assignment. The assignment's description tells " +
+        "you the exact string to report. Your ONLY other action is to call the " +
+        ReportResult + " tool once, with that exact string as resultReference. Do not " +
+        "write files, do not explain, do not ask questions. Two tool calls total: " +
+        GetTask + ", then " + ReportResult + "." + McpToolsRule;
+
+    public string RememberThenAsk(string nonce) =>
+        "You are a Landbridge worker agent. Remember this test nonce for the rest of this conversation: " +
+        nonce + ". Do not write it to any file, and do not put it in any tool call yet. Now call " +
+        "the " + GetTask + " tool and do exactly what its description tells you. On this first " +
+        "turn that means " + RequestInput + ", then stop — do not call " + ReportResult + " yet." +
+        McpToolsRule;
+
+    /// <summary>
+    /// Wake after <c>session/load</c>. Must work for two different redispatches:
+    /// a first-leg retry that never asked (no answer on get_session — ask, then stop)
+    /// and a park/resume (answer is there — report the nonce). Sending only
+    /// "report now" made OpenCode's silent first turn skip the ask on retry.
+    /// </summary>
+    public string ResumeAndReport =>
+        "Your session resumed. FIRST call " + GetTask + ". " +
+        "If the assignment has no answer yet, call " + RequestInput + " exactly once as " +
+        "the assignment describes, then stop — do not call " + ReportResult + ". " +
+        "If the assignment already has an answer, call " + ReportResult + " exactly once, " +
+        "with resultReference set to the exact nonce you were asked to remember, and nothing else." +
+        McpToolsRule;
+
+    public string AskThenStopDescription =>
+        "Call " + RequestInput + " exactly once, with kind 'question' and question set to this exact " +
+        "text (no quotes, no other text):\n\n" +
+        "may I report the remembered value now?\n\n" +
+        "Then stop and end your turn. Do NOT call " + ReportResult + " on this turn. Do not create or " +
+        "edit files.";
+
+    /// <summary>
+    /// The wake-up turn for a live ACP session. Says only "read your assignment" — the
+    /// answer itself is pulled over the authenticated MCP call, and that pull is the read
+    /// receipt (§11). Names the tools the way this harness spells them.
+    /// </summary>
+    public string FollowUpTurn =>
+        "There is new input on your assignment. Call the " + GetTask + " tool to read it, " +
+        "then continue." + McpToolsRule;
+
+    /// <summary>
+    /// The echo rig, on ACP. Note what is gone against the stream construction it replaces:
+    /// no <c>events.mapping</c> (the shapes are in the spec), no <c>stdin</c> policy (stdin
+    /// is the request channel and <c>closed</c> is refused), and no <c>files</c> (the plane's
+    /// MCP server rides <c>session/new</c> instead of a config file with a live token in it).
+    /// <c>env</c> stays: it configures the process, not the protocol.
+    /// </summary>
+    public FleetRig OpenEchoRig(PostgresFixture pg) =>
+        new(pg, AcpSpawn, env: Env,
+            prompt: EchoPrompt, followUp: FollowUpTurn, authMethod: AuthMethod,
+            configOptions: ConfigOptions, sessionMode: SessionMode);
+
+    /// <summary>
+    /// The park/resume rig, on ACP. There is no <c>resume.args</c> here and that is the
+    /// point: a resumed dispatch takes <c>session/load</c> on the connection landbridged opens,
+    /// gated on the agent's <c>loadSession</c> capability — which every agent measured on
+    /// 2026-08-15 declares true.
+    /// </summary>
+    public FleetRig OpenParkRig(PostgresFixture pg, string nonce)
+    {
+        if (!SupportsResume)
+            throw new InvalidOperationException(Name + " does not support resume — the park bar must skip.");
+        return new FleetRig(
+            pg, AcpSpawn, env: Env,
+            prompt: RememberThenAsk(nonce), followUp: ResumeAndReport, authMethod: AuthMethod,
+            configOptions: ConfigOptions, sessionMode: SessionMode);
+    }
+
+    public IDisposable? AttachTo(FleetRig rig) => Attach?.Invoke(rig);
+
+    /// <summary>
+    /// Pull a session id off one captured stdout line. The bar uses this as the
+    /// <em>harness-side</em> proof of a resume: two instances reporting the same id cannot
+    /// be a cold start, independently of what the plane recorded.
+    ///
+    /// <para>A worker's stdout is the agent's half of a JSON-RPC conversation. The id
+    /// arrives on <c>session/new</c> as <c>result.sessionId</c>. <c>session/load</c>
+    /// often echoes none — the ref we asked for <em>is</em> the session — so the
+    /// successor's proof is the <c>sessionId</c> on later <c>session/update</c>
+    /// notifications, not a second <c>session/new</c>.</para>
+    /// </summary>
+    public string? SessionIdFromLine(string line)
+    {
+        if (string.IsNullOrWhiteSpace(line)) return null;
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(line);
+            var root = doc.RootElement;
+            if (root.ValueKind != System.Text.Json.JsonValueKind.Object) return null;
+            if (!root.TryGetProperty("jsonrpc", out _))
+                return null;
+
+            // session/new (and any agent that echoes an id from session/load).
+            if (root.TryGetProperty("result", out var result)
+                && result.ValueKind == System.Text.Json.JsonValueKind.Object
+                && result.TryGetProperty("sessionId", out var acpId)
+                && acpId.ValueKind == System.Text.Json.JsonValueKind.String)
+                return acpId.GetString();
+
+            // session/load typically has no result.sessionId. The replayed
+            // conversation still names the session on every session/update.
+            if (root.TryGetProperty("method", out var method)
+                && method.ValueKind == System.Text.Json.JsonValueKind.String
+                && method.GetString() == "session/update"
+                && root.TryGetProperty("params", out var p)
+                && p.ValueKind == System.Text.Json.JsonValueKind.Object
+                && p.TryGetProperty("sessionId", out var updateId)
+                && updateId.ValueKind == System.Text.Json.JsonValueKind.String)
+                return updateId.GetString();
+
+            return null;
+        }
+        catch (System.Text.Json.JsonException)
+        {
+            return null;
+        }
+    }
+}
+
+internal enum UsageExpectation
+{
+    /// <summary>The agent reports no usage the bar can assert on.</summary>
+    None,
+    /// <summary>Tokens land, but the agent computes no cost (Codex, OpenCode).</summary>
+    Tokens,
+    /// <summary>The agent self-reports a positive USD cost (Claude, Grok).</summary>
+    Cost,
+}

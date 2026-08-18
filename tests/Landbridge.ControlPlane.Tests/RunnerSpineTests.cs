@@ -1,0 +1,693 @@
+using Landbridge.Contracts;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.Core;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging.Abstractions;
+using Microsoft.Extensions.Time.Testing;
+
+namespace Landbridge.ControlPlane.Tests;
+
+/// <summary>
+/// The control-plane half of the integration spine (spec §6/§10): the dispatch
+/// loop turns submitted tasks into running dispatches against registered ready
+/// machines, and the runner event sink drives liveness/requeue. A fake
+/// connection records the commands the registry would ship down a socket, so
+/// the loop is exercised without any real transport.
+/// </summary>
+[Collection(PostgresCollection.Name)]
+public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
+{
+    public async Task InitializeAsync()
+    {
+        if (pg.Available) await pg.ResetAsync();
+    }
+
+    public Task DisposeAsync() => Task.CompletedTask;
+
+    // ── Dispatch ──────────────────────────────────────────────────────────────
+
+    [SkippableFact]
+    public async Task Dispatches_a_submitted_task_to_a_registered_ready_machine()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = TimeProvider.System;
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var sessionId = await SeedSubmittedTaskAsync(clock, team, profile: null);
+
+        var registry = new RunnerConnectionRegistry(clock);
+        var captured = new List<RunnerCommand>();
+        registry.Register("m1", Set("default"), (cmd, _) => { captured.Add(cmd); return Task.CompletedTask; });
+        registry.ApplyHeartbeat("m1", Heartbeat("m1", "default"));
+
+        var dispatch = new DispatchService(scopes, registry, clock, NullLogger<DispatchService>.Instance);
+        await dispatch.RunDispatchPassAsync(CancellationToken.None);
+
+        // The DispatchCommand for this task was shipped to the machine.
+        var command = Assert.IsType<DispatchCommand>(Assert.Single(captured));
+        Assert.Equal(sessionId, command.Session);
+        Assert.Equal("default", command.Profile);
+        Assert.NotEqual("", command.WorkerToken);
+        // A first dispatch has never parked, so it carries no resume ref (§11).
+        Assert.Null(command.ResumeSessionRef);
+
+        // The task moved submitted → working, and it is tracked on the machine.
+        Assert.Equal(SessionState.Working, await StateAsync(clock, sessionId));
+        Assert.Contains(sessionId, registry.SessionsOn("m1"));
+
+        // The minted worker token validates to a Worker principal for this task.
+        await using var db = pg.NewContext();
+        var principal = await new TokenService(db, clock).ValidateAsync(command.WorkerToken);
+        var worker = Assert.IsType<Principal.Worker>(principal);
+        Assert.Equal(sessionId, worker.Caller.Session);
+        Assert.Equal(team, worker.Caller.Team);
+    }
+
+    [SkippableFact]
+    public async Task Does_not_dispatch_a_task_whose_profile_no_machine_declares()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = TimeProvider.System;
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var sessionId = await SeedSubmittedTaskAsync(clock, team, profile: "gpu");
+
+        var registry = new RunnerConnectionRegistry(clock);
+        var captured = new List<RunnerCommand>();
+        registry.Register("m1", Set("default"), (cmd, _) => { captured.Add(cmd); return Task.CompletedTask; });
+        registry.ApplyHeartbeat("m1", Heartbeat("m1", "default")); // declares only "default"
+
+        var dispatch = new DispatchService(scopes, registry, clock, NullLogger<DispatchService>.Instance);
+        await dispatch.RunDispatchPassAsync(CancellationToken.None);
+
+        Assert.Empty(captured);
+        Assert.Equal(SessionState.Submitted, await StateAsync(clock, sessionId));
+    }
+
+    [SkippableFact]
+    public async Task Dispatch_of_a_task_with_a_stored_session_ref_sets_resume_session_ref_on_the_command()
+    {
+        // §11 resume: a task worked before and requeued/parked carries a harness
+        // session ref on its row; (re)dispatch surfaces it (opaque, via the store)
+        // and DispatchService rides it back on the DispatchCommand so landbridged can
+        // continue the transcript.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = TimeProvider.System;
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var sessionId = await SeedSubmittedTaskAsync(clock, team, profile: null);
+
+        // Stamp the prior work session's ref exactly as the SessionStartedEvent sink
+        // would have, before this dispatch.
+        await using (var db = pg.NewContext())
+            await new SessionStore(db, clock).StampHarnessSessionRefAsync(sessionId, "sess-prior");
+
+        var registry = new RunnerConnectionRegistry(clock);
+        var captured = new List<RunnerCommand>();
+        registry.Register("m1", Set("default"), (cmd, _) => { captured.Add(cmd); return Task.CompletedTask; });
+        registry.ApplyHeartbeat("m1", Heartbeat("m1", "default"));
+
+        var dispatch = new DispatchService(scopes, registry, clock, NullLogger<DispatchService>.Instance);
+        await dispatch.RunDispatchPassAsync(CancellationToken.None);
+
+        var command = Assert.IsType<DispatchCommand>(Assert.Single(captured));
+        Assert.Equal(sessionId, command.Session);
+        Assert.Equal("sess-prior", command.ResumeSessionRef);
+    }
+
+    // ── Lease liveness ──────────────────────────────────────────────────────────
+
+    [Fact]
+    public void Lease_is_held_while_tracked_on_a_connected_machine_and_lost_when_it_goes()
+    {
+        var clock = new FakeTimeProvider();
+        var registry = new RunnerConnectionRegistry(clock);
+        var task = SessionId.New();
+
+        // Never dispatched: no lease.
+        Assert.False(registry.IsLeaseHeld(task));
+
+        var connection = registry.Register("m1", Set("default"), (_, _) => Task.CompletedTask);
+        registry.TrackDispatch("m1", task);
+        Assert.True(registry.IsLeaseHeld(task));
+
+        // Socket closed: the machine is gone, and its lease with it (§10) — an
+        // answered input must not resume the task onto a dead machine.
+        registry.Unregister(connection.Token);
+        Assert.False(registry.IsLeaseHeld(task));
+    }
+
+    [Fact]
+    public void Lease_is_lost_when_the_task_is_untracked()
+    {
+        var registry = new RunnerConnectionRegistry(new FakeTimeProvider());
+        var task = SessionId.New();
+        registry.Register("m1", Set("default"), (_, _) => Task.CompletedTask);
+        registry.TrackDispatch("m1", task);
+
+        registry.Untrack(task); // exit / requeue / reboot
+
+        Assert.False(registry.IsLeaseHeld(task));
+    }
+
+    // ── Event sink: liveness / requeue ──────────────────────────────────────────
+
+    [SkippableFact]
+    public async Task Started_event_refreshes_task_activity()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+        var registry = new RunnerConnectionRegistry(clock);
+        registry.Register("m1", Set("default"), (_, _) => Task.CompletedTask);
+        var task = SessionId.New();
+        registry.TrackDispatch("m1", task); // stamped at t0
+
+        clock.Advance(TimeSpan.FromSeconds(30));
+        var sink = new RunnerEventSink(ScopeFactory(clock), registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
+        await sink.HandleAsync(new StartedEvent(task, clock.GetUtcNow()));
+
+        // Activity advanced to t0+30 and the task stays tracked (started confirms
+        // the harness is up; requeue-on-disconnect still applies).
+        var tracked = Assert.Single(registry.AllTracked());
+        Assert.Equal(task, tracked.Session);
+        Assert.Equal(clock.GetUtcNow(), tracked.LastActivity);
+    }
+
+    [SkippableFact]
+    public async Task Usage_reported_event_persists_and_is_not_a_liveness_signal()
+    {
+        // §10 telemetry ingest: the sink stores the harness's own account of what a dispatch
+        // consumed. It deliberately refreshes NEITHER clock — a usage report says what has
+        // already been spent, and a worker wedged mid-turn can still emit one, so treating an
+        // accounting line as progress would make a hung task undetectable (the exact failure the
+        // two clocks exist to catch).
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var sessionId = await SeedWorkingTaskAsync(clock, team, "m1");
+
+        var registry = new RunnerConnectionRegistry(clock);
+        registry.Register("m1", Set("default"), (_, _) => Task.CompletedTask);
+        registry.TrackDispatch("m1", sessionId); // both clocks stamped at t0
+        var t0 = clock.GetUtcNow();
+        clock.Advance(TimeSpan.FromSeconds(30));
+
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
+        await sink.HandleAsync(new UsageReportedEvent(
+            sessionId, "claude-sonnet-5[1m]",
+            InputTokens: 2, OutputTokens: 4, CacheReadTokens: 18282, CacheWriteTokens: 17178,
+            ReasoningOutputTokens: null, CostUsd: 0.1086186m, At: clock.GetUtcNow()));
+
+        await using var db = pg.NewContext();
+        var row = await db.SessionUsage.AsNoTracking().SingleAsync(u => u.SessionId == sessionId.Value);
+        Assert.Equal("claude-sonnet-5[1m]", row.Model);
+        Assert.Equal(18282, row.CacheReadTokens);
+        Assert.Equal(0.1086186m, row.CostUsd);
+        Assert.Equal(team.Value, row.TeamId);
+
+        // Neither clock moved: still t0, thirty seconds after the report was handled.
+        var tracked = Assert.Single(registry.AllTracked());
+        Assert.Equal(t0, tracked.LastActivity);
+        Assert.Equal(t0, tracked.LastProgress);
+    }
+
+    [SkippableFact]
+    public async Task Session_started_event_stamps_the_harness_session_ref_on_the_row()
+    {
+        // §11 resume: the sink writes the opaque ref verbatim onto the task row
+        // (never interpreted, like ResultReference) and refreshes activity like any
+        // other liveness signal. Later a park copies it and redispatch resumes.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var sessionId = await SeedWorkingTaskAsync(clock, team, "m1");
+
+        var registry = new RunnerConnectionRegistry(clock);
+        registry.Register("m1", Set("default"), (_, _) => Task.CompletedTask);
+        registry.TrackDispatch("m1", sessionId); // stamped at t0
+        clock.Advance(TimeSpan.FromSeconds(30));
+
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
+        await sink.HandleAsync(new SessionStartedEvent(sessionId, "sess-xyz", clock.GetUtcNow()));
+
+        await using var db = pg.NewContext();
+        var row = await db.Sessions.AsNoTracking().SingleAsync(t => t.Id == sessionId.Value);
+        Assert.Equal("sess-xyz", row.HarnessSessionRef);
+        // The task stays working and tracked; activity advanced to t0+30.
+        Assert.Equal(SessionState.Working, row.State);
+        var tracked = Assert.Single(registry.AllTracked());
+        Assert.Equal(clock.GetUtcNow(), tracked.LastActivity);
+    }
+
+    [SkippableFact]
+    public async Task Exited_while_working_requeues_the_task_to_submitted()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = TimeProvider.System;
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var sessionId = await SeedWorkingTaskAsync(clock, team, "m1");
+
+        var registry = new RunnerConnectionRegistry(clock);
+        registry.Register("m1", Set("default"), (_, _) => Task.CompletedTask);
+        registry.TrackDispatch("m1", sessionId);
+
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
+        await sink.HandleAsync(new ExitedEvent(sessionId, ExitCode: 0, clock.GetUtcNow()));
+
+        Assert.Equal(SessionState.Failed, await StateAsync(clock, sessionId));
+        Assert.Empty(registry.SessionsOn("m1"));
+    }
+
+    [SkippableFact]
+    public async Task Rebooted_requeues_every_task_the_machine_held()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = TimeProvider.System;
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var first = await SeedWorkingTaskAsync(clock, team, "m1");
+        var second = await SeedWorkingTaskAsync(clock, team, "m1");
+
+        var registry = new RunnerConnectionRegistry(clock);
+        registry.Register("m1", Set("default"), (_, _) => Task.CompletedTask);
+        registry.TrackDispatch("m1", first);
+        registry.TrackDispatch("m1", second);
+
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
+        await sink.HandleAsync(new RebootedEvent("m1", clock.GetUtcNow()));
+
+        Assert.Equal(SessionState.Failed, await StateAsync(clock, first));
+        Assert.Equal(SessionState.Failed, await StateAsync(clock, second));
+        Assert.Empty(registry.SessionsOn("m1"));
+    }
+
+    // ── Event sink: exit while blocked stays tracked (§6/§11) ────────────────────
+
+    [SkippableFact]
+    public async Task Exited_while_blocked_on_input_leaves_the_task_tracked_so_the_sweeper_can_park_it()
+    {
+        // A worker asks a question (stays working) and its process exits. That is
+        // not a failure: the exit must NOT untrack the task, or the wait-TTL
+        // sweeper's MachineFor look-up returns null and the task strands forever
+        // (never parked on TTL, never requeued on machine death). Mark the
+        // process gone so an answer redispatches; the sweeper still parks on TTL.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var (id, _) = await SeedBlockedTaskAsync(clock, team, "m1");
+        var registry = LiveMachine(clock, "m1", id);
+
+        // Worker exits while blocked — expected, not a disconnect.
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
+        await sink.HandleAsync(new ExitedEvent(id, ExitCode: 0, clock.GetUtcNow()));
+
+        // Still blocked, still tracked: the machine keeps the lease so the sweeper
+        // can find it (before the fix the exit untracked it here and the sweeper
+        // skipped it — MachineFor was null).
+        Assert.Equal(SessionState.Working, await StateAsync(clock, id));
+        Assert.Equal("m1", registry.MachineFor(id));
+        Assert.False(registry.HasLiveProcess(id));
+
+        // Wait TTL elapses with the machine still heartbeating → the sweeper parks.
+        var sweeper = NewSweeper(clock, registry,
+            waitTtl: TimeSpan.FromMinutes(30), machineWindow: TimeSpan.FromHours(2));
+        clock.Advance(TimeSpan.FromMinutes(31));
+        await sweeper.SweepAsync(CancellationToken.None);
+
+        await using var v = pg.NewContext();
+        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(SessionState.Parked, row.State);
+        Assert.Equal("m1", row.ParkMachine);
+        Assert.Empty(registry.SessionsOn("m1")); // sweeper untracks on the park
+    }
+
+    [SkippableFact]
+    public async Task Exited_while_blocked_on_a_silent_machine_leaves_it_tracked_so_the_sweeper_requeues_it()
+    {
+        // Same exit-while-blocked, but the machine then goes silent past the
+        // liveness window: because the exit left the task tracked, the sweeper
+        // still resolves its machine, judges it dead, and requeues the task
+        // (blocked_on_input → submitted, infra counter) instead of stranding it.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var (id, instance) = await SeedBlockedTaskAsync(clock, team, "m1");
+        var registry = LiveMachine(clock, "m1", id);
+
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
+        await sink.HandleAsync(new ExitedEvent(id, ExitCode: 0, clock.GetUtcNow()));
+        Assert.Equal("m1", registry.MachineFor(id));
+
+        // Heartbeat goes stale before the wait TTL; the sweep requeues.
+        var sweeper = NewSweeper(clock, registry,
+            waitTtl: TimeSpan.FromMinutes(30), machineWindow: TimeSpan.FromSeconds(90));
+        clock.Advance(TimeSpan.FromMinutes(2));
+        await sweeper.SweepAsync(CancellationToken.None);
+
+        await using var v = pg.NewContext();
+        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(SessionState.Failed, row.State);
+        Assert.Equal(1, row.InfrastructureRequeues); // infra counter, never verification (§6)
+        Assert.Equal("m1", row.ParkMachine);          // pin session/load; gone means wait
+        Assert.True((await v.WorkerInstances.AsNoTracking().SingleAsync(w => w.Id == instance.Value)).Revoked);
+        Assert.Empty(registry.SessionsOn("m1"));
+    }
+
+    [SkippableFact]
+    public async Task Exited_while_verifying_fails_the_attempt()
+    {
+        // A report keeps the process so the Lead can reply. If that process then
+        // dies, the attempt fails — the Lead cannot doorbell a corpse.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = TimeProvider.System;
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var (id, instance) = await SeedWorkingTaskWithInstanceAsync(clock, team, "m1");
+        await using (var db = pg.NewContext())
+            await new SessionStore(db, clock).ApplyAsync(
+                id, new ReportResult(new WorkerCaller(team, id, instance), "git:ref-1"));
+
+        var registry = new RunnerConnectionRegistry(clock);
+        registry.Register("m1", Set("default"), (_, _) => Task.CompletedTask);
+        registry.TrackDispatch("m1", id);
+
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
+        await sink.HandleAsync(new ExitedEvent(id, ExitCode: 0, clock.GetUtcNow()));
+
+        Assert.Equal(SessionState.Failed, await StateAsync(clock, id));
+        Assert.Empty(registry.SessionsOn("m1"));
+    }
+
+    // ── Event sink: turn-ended (§10, ideas/sessions.md stage 1) ──────────────────
+    //
+    // The signal the task model could not produce. There, a worker that finished a turn had
+    // also exited, so its silence arrived as a death and requeued on that. An ACP session
+    // outlives its turn by design: the process stays up and keeps heartbeating, so neither
+    // liveness clock will ever fire on a worker that simply stopped talking. Measured
+    // 2026-08-16 against a real claude-agent-acp worker — stopReason end_turn, nothing
+    // reported, task pinned in working for the full eight-minute budget.
+
+    [SkippableFact]
+    public async Task Turn_ended_while_still_working_requeues_the_task_with_its_own_reason()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = TimeProvider.System;
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var (id, instance) = await SeedWorkingTaskWithInstanceAsync(clock, team, "m1");
+        var registry = LiveMachine(clock, "m1", id);
+
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
+        await sink.HandleAsync(new TurnEndedEvent(id, "end_turn", clock.GetUtcNow()));
+
+        await using var v = pg.NewContext();
+        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(SessionState.Failed, row.State);
+        Assert.Equal(1, row.InfrastructureRequeues); // infra counter, never verification
+        // The trail says the agent stopped, not that the harness died — different remedies.
+        Assert.Equal(LivenessLossReason.TurnEndedWithoutResult, row.LastRequeueReason);
+        Assert.True((await v.WorkerInstances.AsNoTracking().SingleAsync(w => w.Id == instance.Value)).Revoked);
+    }
+
+    [SkippableFact]
+    public async Task Turn_ended_after_the_worker_reported_is_moot()
+    {
+        // The overwhelmingly common path, and the one that must never requeue: a worker
+        // waits for report_result to return before ending its turn, so working → verifying
+        // is committed by the time this arrives.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = TimeProvider.System;
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var (id, instance) = await SeedWorkingTaskWithInstanceAsync(clock, team, "m1");
+        await using (var db = pg.NewContext())
+            await new SessionStore(db, clock).ApplyAsync(
+                id, new ReportResult(new WorkerCaller(team, id, instance), "git:ref-1"));
+        var registry = LiveMachine(clock, "m1", id);
+
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
+        await sink.HandleAsync(new TurnEndedEvent(id, "end_turn", clock.GetUtcNow()));
+
+        await using var v = pg.NewContext();
+        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(SessionState.Verifying, row.State);
+        Assert.Equal(0, row.InfrastructureRequeues);
+    }
+
+    [SkippableFact]
+    public async Task Turn_ended_after_the_worker_asked_a_question_is_moot()
+    {
+        // Stage 2's whole point: asking ends the turn and the session stays alive waiting to
+        // be prompted with the answer. Requeuing here would undo it.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var (id, _) = await SeedBlockedTaskAsync(clock, team, "m1");
+        var registry = LiveMachine(clock, "m1", id);
+
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
+        await sink.HandleAsync(new TurnEndedEvent(id, "end_turn", clock.GetUtcNow()));
+
+        Assert.Equal(SessionState.Working, await StateAsync(clock, id));
+        Assert.Equal("m1", registry.MachineFor(id));
+    }
+
+    [SkippableFact]
+    public async Task A_turn_ended_by_the_planes_own_kill_is_not_the_worker_going_quiet()
+    {
+        // The echo, and the reason this guard peeks at the commanded-exit expectation rather
+        // than consuming it: killing an ACP session produces a turn-ended AND an exited, so
+        // the expectation has to survive the first to still be there for the second. Without
+        // the peek the pair requeues one death twice, taking two off the §9 check 7 cap.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = TimeProvider.System;
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var (id, _) = await SeedWorkingTaskWithInstanceAsync(clock, team, "m1");
+        var registry = LiveMachine(clock, "m1", id);
+        Assert.True(await registry.SendKillAsync("m1", id, TimeSpan.FromMinutes(2), CancellationToken.None));
+
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
+        await sink.HandleAsync(new TurnEndedEvent(id, "cancelled", clock.GetUtcNow()));
+
+        Assert.Equal(SessionState.Working, await StateAsync(clock, id));
+        // Peeked, not consumed: the exit that follows still recognises its own echo.
+        Assert.True(registry.ConsumeCommandedExit(id));
+    }
+
+    [SkippableFact]
+    public async Task A_worker_that_cancels_its_own_turn_is_still_a_worker_that_went_quiet()
+    {
+        // Measured 2026-08-16: `grok agent stdio` answers stopReason "cancelled" on turns the
+        // plane never touched. The word names who reported the stop, not who ordered it, so
+        // reading it as an echo would make every wedged grok worker invisible — three real
+        // dispatches sat in working for eight minutes each on exactly this.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = TimeProvider.System;
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var (id, _) = await SeedWorkingTaskWithInstanceAsync(clock, team, "m1");
+        var registry = LiveMachine(clock, "m1", id);
+
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
+        await sink.HandleAsync(new TurnEndedEvent(id, "cancelled", clock.GetUtcNow()));
+
+        await using var v = pg.NewContext();
+        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(SessionState.Failed, row.State);
+        Assert.Equal(LivenessLossReason.TurnEndedWithoutResult, row.LastRequeueReason);
+    }
+
+    // ── Event sink: derived-telemetry persistence (§10/§12, #50) ─────────────────
+
+    [SkippableFact]
+    public async Task Auth_failed_event_is_persisted_as_a_structured_task_event_row()
+    {
+        // §11/§12: an auth failure is no longer log-only — the sink writes the
+        // structured operation/target/code/scope as a task event row (no transition),
+        // and the dashboard's event query (the JSON twin's model) surfaces it.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var sessionId = await SeedWorkingTaskAsync(clock, team, "m1");
+        var registry = LiveMachine(clock, "m1", sessionId);
+
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
+        await sink.HandleAsync(new AuthFailedEvent(
+            sessionId, Operation: "clone", Target: "github.com/acme/repo",
+            ErrorCode: "insufficient_scope", MissingScope: "repo"));
+
+        await using var db = pg.NewContext();
+        var row = await db.SessionEvents.AsNoTracking()
+            .SingleAsync(e => e.SessionId == sessionId.Value && e.Kind == SessionEventRow.AuthFailedKind);
+        Assert.Equal("clone", row.AuthOperation);
+        Assert.Equal("github.com/acme/repo", row.AuthTarget);
+        Assert.Equal("insufficient_scope", row.AuthErrorCode);
+        Assert.Equal("repo", row.AuthMissingScope);
+        Assert.Null(row.FromState);   // not a transition
+        Assert.Null(row.ToState);
+
+        var events = await new DashboardQueries(db, registry).GetEventsAsync();
+        var evt = events.Single(e => e.Kind == SessionEventRow.AuthFailedKind);
+        Assert.Equal("clone", evt.AuthOperation);
+        Assert.Equal("insufficient_scope", evt.AuthErrorCode);
+        Assert.Equal("repo", evt.AuthMissingScope);
+    }
+
+    [SkippableFact]
+    public async Task Subagent_spawned_event_is_persisted_and_still_refreshes_activity()
+    {
+        // §10/§12: a subagent spawn is now a persisted progress row AND still a
+        // liveness signal — it must not lose the activity refresh it had before.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var sessionId = await SeedWorkingTaskAsync(clock, team, "m1");
+
+        var registry = new RunnerConnectionRegistry(clock);
+        registry.Register("m1", Set("default"), (_, _) => Task.CompletedTask);
+        registry.TrackDispatch("m1", sessionId); // stamped at t0
+        clock.Advance(TimeSpan.FromSeconds(30));
+
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
+        await sink.HandleAsync(new SubagentSpawnedEvent(sessionId, AgentId: "sub-1", ParentAgentId: "root", clock.GetUtcNow()));
+
+        await using var db = pg.NewContext();
+        var row = await db.SessionEvents.AsNoTracking()
+            .SingleAsync(e => e.SessionId == sessionId.Value && e.Kind == SessionEventRow.SubagentSpawnedKind);
+        Assert.Equal("sub-1", row.SubagentId);
+        Assert.Equal("root", row.SubagentParentId);
+
+        // Activity advanced to t0+30 (the liveness half is intact).
+        var tracked = Assert.Single(registry.AllTracked());
+        Assert.Equal(clock.GetUtcNow(), tracked.LastActivity);
+
+        var evt = (await new DashboardQueries(db, registry).GetEventsAsync())
+            .Single(e => e.Kind == SessionEventRow.SubagentSpawnedKind);
+        Assert.Equal("sub-1", evt.SubagentId);
+        Assert.Equal("root", evt.SubagentParentId);
+    }
+
+    [SkippableFact]
+    public async Task Request_input_stamps_the_typed_kind_on_the_blocked_event_row()
+    {
+        // §6/§11: the working → blocked_on_input transition carries the typed
+        // request kind onto its event row so the dashboard can render what kind of
+        // attention the task needs. SeedBlockedTaskAsync blocks with Question.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = new FakeTimeProvider();
+        var team = TeamId.New();
+        var (id, _) = await SeedBlockedTaskAsync(clock, team, "m1");
+
+        await using var db = pg.NewContext();
+        var row = await db.SessionEvents.AsNoTracking()
+            .Where(e => e.SessionId == id.Value && e.Kind == nameof(RequestInput))
+            .OrderByDescending(e => e.Seq)
+            .FirstAsync();
+        Assert.Equal(SessionState.Working, row.ToState);
+        Assert.Equal(InputRequestKind.Question, row.InputKind);
+
+        var evt = (await new DashboardQueries(db, new RunnerConnectionRegistry(clock)).GetEventsAsync())
+            .Single(e => e.Kind == nameof(RequestInput));
+        Assert.Equal(InputRequestKind.Question, evt.InputKind);
+    }
+
+    // ── Helpers ─────────────────────────────────────────────────────────────────
+
+    private IServiceScopeFactory ScopeFactory(TimeProvider clock)
+    {
+        var services = new ServiceCollection();
+        services.AddDbContext<LandbridgeDbContext>(o =>
+            o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
+        services.AddLandbridgeStore();
+        services.AddScoped<TokenService>();
+        services.AddSingleton(clock);
+        return services.BuildServiceProvider().GetRequiredService<IServiceScopeFactory>();
+    }
+
+    private async Task<SessionId> SeedSubmittedTaskAsync(TimeProvider clock, TeamId team, string? profile)
+    {
+        await using var db = pg.NewContext();
+        var store = new SessionStore(db, clock);
+        var created = (StoreResult.Applied)await store.CreateAsync(
+            new CreateSession(new LeadClaim(team), team, "completion criteria", CompletionMode.Lead, profile));
+        return created.Session.Id;
+    }
+
+    private async Task<SessionId> SeedWorkingTaskAsync(TimeProvider clock, TeamId team, string machineId)
+    {
+        var (id, _) = await SeedWorkingTaskWithInstanceAsync(clock, team, machineId);
+        return id;
+    }
+
+    /// <summary>Create → dispatch, returning both the task and the dispatched
+    /// worker instance so a caller can act as that worker (e.g. report a result).</summary>
+    private async Task<(SessionId Id, WorkerInstanceId Instance)> SeedWorkingTaskWithInstanceAsync(
+        TimeProvider clock, TeamId team, string machineId)
+    {
+        await using var db = pg.NewContext();
+        var store = new SessionStore(db, clock);
+        await store.CreateAsync(
+            new CreateSession(new LeadClaim(team), team, "completion criteria", CompletionMode.Lead, null));
+        var instance = WorkerInstanceId.New();
+        var applied = (StoreResult.Applied)await store.DispatchNextAsync(
+            new MachineSnapshot(machineId, Ready: true, UnderBackPressure: false, Set("default")), instance);
+        return (applied.Session.Id, instance);
+    }
+
+    /// <summary>Create → dispatch → block, so the task sits in blocked_on_input with
+    /// BlockedAt stamped at the current clock reading — the §11 wait shape.</summary>
+    private async Task<(SessionId Id, WorkerInstanceId Instance)> SeedBlockedTaskAsync(
+        TimeProvider clock, TeamId team, string machineId)
+    {
+        await using var db = pg.NewContext();
+        var store = new SessionStore(db, clock);
+        var created = (StoreResult.Applied)await store.CreateAsync(
+            new CreateSession(new LeadClaim(team), team, "completion criteria", CompletionMode.Lead, null));
+        var id = created.Session.Id;
+        var instance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(
+            new MachineSnapshot(machineId, Ready: true, UnderBackPressure: false, Set("default")), instance);
+        await store.ApplyAsync(id, new RequestInput(new WorkerCaller(team, id, instance), InputRequestKind.Question));
+        return (id, instance);
+    }
+
+    /// <summary>A registry with one ready machine heartbeating now and tracking the
+    /// task — what DispatchService would have set up at dispatch.</summary>
+    private static RunnerConnectionRegistry LiveMachine(TimeProvider clock, string machineId, SessionId task)
+    {
+        var registry = new RunnerConnectionRegistry(clock);
+        registry.Register(machineId, Set("default"), (_, _) => Task.CompletedTask);
+        registry.ApplyHeartbeat(machineId, Heartbeat(machineId, "default"));
+        registry.TrackDispatch(machineId, task);
+        return registry;
+    }
+
+    private WaitTtlSweeper NewSweeper(
+        TimeProvider clock, RunnerConnectionRegistry registry,
+        TimeSpan? waitTtl = null, TimeSpan? machineWindow = null, TimeSpan? sweepInterval = null) =>
+        new(ScopeFactory(clock), registry, clock, NullLogger<WaitTtlSweeper>.Instance,
+            waitTtl, machineWindow, sweepInterval);
+
+    private async Task<SessionState?> StateAsync(TimeProvider clock, SessionId id)
+    {
+        await using var db = pg.NewContext();
+        return await new SessionStore(db, clock).GetStateAsync(id);
+    }
+
+    private static IReadOnlySet<string> Set(params string[] names) =>
+        new HashSet<string>(names, StringComparer.Ordinal);
+
+    private static MachineHeartbeat Heartbeat(string machineId, params string[] profiles) =>
+        new(machineId, Ready: true, UnderBackPressure: false,
+            new SystemLoad(0, 0, 0), RunningSessions: 0, profiles, DateTimeOffset.UtcNow);
+}

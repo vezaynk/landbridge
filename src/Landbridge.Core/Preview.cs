@@ -1,0 +1,24 @@
+namespace Landbridge.Core;
+
+/// <summary>
+/// How a preview mapping admits a browser connection (spec §8.4). Set once at
+/// mint and stored on the mapping; the preview frontend delegates the check to
+/// the control plane on connect. Domain-neutral like every other Core enum — the
+/// control plane never interprets what a preview is <em>for</em>.
+/// </summary>
+public enum PreviewAuthPolicy
+{
+    /// <summary>
+    /// The default. The request is admitted only when it carries a valid §12
+    /// operator session (a Human, or a Lead on the mapping's Team) — the same
+    /// credential the dashboard uses.
+    /// </summary>
+    Gated,
+
+    /// <summary>
+    /// A capability URL: the unguessable label alone admits the request. Always
+    /// carries a short mandatory TTL (§8.4) — public is the time-boxed exception,
+    /// gated is the rule.
+    /// </summary>
+    Public,
+}
