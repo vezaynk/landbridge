@@ -19,19 +19,6 @@ else if (Ready)
             <em>human</em> session; Lead tools require a Lead claim on a Team.</p>
         <ol>
             <li>
-                Point the harness at this plane's MCP URL:
-                <pre class="howto">@McpUrl</pre>
-                Discovery lives at
-                <span class="mono">/.well-known/oauth-protected-resource</span> and
-                <span class="mono">/.well-known/oauth-authorization-server</span>.
-            </li>
-            <li>
-                Authenticate with OAuth 2.1 (authorization code + PKCE S256, Client ID
-                Metadata Document — not Dynamic Client Registration). The consent step
-                is the same operator passphrase as this dashboard. That mints a
-                <span class="mono">lbr_h_…</span> human session, not a Lead.
-            </li>
-            <li>
                 Claim a Team with the form below (operator / human session only). That
                 mints a <span class="mono">lbr_l_…</span> token. One live Lead per Team;
                 a second claimant is refused unless they take over. There is no
@@ -40,9 +27,32 @@ else if (Ready)
                 this credential step.
             </li>
             <li>
-                Give the harness the Lead token as
-                <span class="mono">Authorization: Bearer</span>. Read
-                <span class="mono">landbridge://skills/lead</span> from
+                Point the harness at this plane with that token as a static bearer.
+                The MCP endpoint is <span class="mono">POST @McpUrl</span> (the origin,
+                not <span class="mono">/mcp</span>). Grok (and any client that only
+                speaks Dynamic Client Registration) cannot complete OAuth here —
+                this plane has no <span class="mono">/register</span>; clients are
+                identified by a Client ID Metadata Document. Put the token in the
+                header instead:
+                <pre class="howto">[mcp_servers.landbridge]
+url = "@McpUrl"
+enabled = true
+
+[mcp_servers.landbridge.headers]
+Authorization = "Bearer lbr_l_…"</pre>
+                Then refresh <span class="mono">/mcps</span> (or restart the harness).
+            </li>
+            <li>
+                A CIMD client (Claude Code) can OAuth instead: authorization code +
+                PKCE S256, same operator passphrase as this dashboard. That mints a
+                <span class="mono">lbr_h_…</span> human session, not a Lead — still
+                claim a Team and send the <span class="mono">lbr_l_…</span> token.
+                Discovery is
+                <span class="mono">/.well-known/oauth-protected-resource</span> and
+                <span class="mono">/.well-known/oauth-authorization-server</span>.
+            </li>
+            <li>
+                Read <span class="mono">landbridge://skills/lead</span> from
                 <span class="mono">resources/list</span>. Call
                 <span class="mono">list_profiles</span>, then
                 <span class="mono">create_session</span> with an exact name that came
