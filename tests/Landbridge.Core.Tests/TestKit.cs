@@ -21,7 +21,6 @@ internal static class Given
 
     public static SessionRecord Session(
         SessionState state = SessionState.Submitted,
-        CompletionMode mode = CompletionMode.Lead,
         WorkerInstanceId? instance = null,
         int verificationFailures = 0,
         int retryLimit = 3,
@@ -32,7 +31,6 @@ internal static class Given
         Id = Id,
         Team = Team,
         Namespace = $"team-{Team}/session-{Id}",
-        CompletionMode = mode,
         State = state,
         Profile = profile,
         Attempt = state == SessionState.Submitted ? 0 : 1,

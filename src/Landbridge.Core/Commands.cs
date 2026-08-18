@@ -122,17 +122,17 @@ public sealed record ReportResult(Actor Actor, string? ResultReference, string? 
 }
 
 /// <summary>
-/// verifying → completed. Caller identity is not an agent. Review mode trusts
-/// the Lead; <see cref="HumanConfirmed"/> is accepted but not gated on.
+/// verifying → completed. Caller identity is not an agent. The plane trusts
+/// the Lead; a session's own worker can never complete it.
 /// </summary>
-public sealed record VerdictAccept(Actor Actor, bool HumanConfirmed = false) : SessionCommand(Actor);
+public sealed record VerdictAccept(Actor Actor) : SessionCommand(Actor);
 
 /// <summary>
 /// verifying → rejected. A fail is not a redispatch: if the Lead wants more
 /// from this worker they reply (<see cref="LeadMessage"/>) instead. Same
 /// identity gate as <see cref="VerdictAccept"/>.
 /// </summary>
-public sealed record VerdictFail(Actor Actor, bool HumanConfirmed = false) : SessionCommand(Actor);
+public sealed record VerdictFail(Actor Actor) : SessionCommand(Actor);
 
 /// <summary>
 /// working → blocked_on_input. Requires a typed request kind (§6).

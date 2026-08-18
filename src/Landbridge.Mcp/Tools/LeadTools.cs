@@ -329,16 +329,14 @@ public sealed class LeadTools(
     public async Task<string> SubmitReview(
         [Description("The session id in verifying.")] string sessionId,
         [Description("The verdict: 'accept' or 'fail'. Fail rejects; it does not redispatch.")] string verdict,
-        [Description("Ignored. Kept so older callers still bind.")]
-        bool humanConfirmed = false,
         CancellationToken ct = default)
     {
         var id = ParseSessionId(sessionId);
         var lead = Lead;
         SessionCommand command = verdict.ToLowerInvariant() switch
         {
-            "accept" => new VerdictAccept(lead, humanConfirmed),
-            "fail" => new VerdictFail(lead, humanConfirmed),
+            "accept" => new VerdictAccept(lead),
+            "fail" => new VerdictFail(lead),
             _ => throw new McpException("verdict must be 'accept' or 'fail'."),
         };
         return Describe(await store.ApplyAsync(id, command, ct));

@@ -28,10 +28,7 @@ public sealed record MachineSnapshot(
     string MachineId,
     bool Ready,
     bool UnderBackPressure,
-    IReadOnlySet<string> DeclaredProfiles)
-{
-    public const string DefaultProfile = "default";
-}
+    IReadOnlySet<string> DeclaredProfiles);
 
 /// <summary>
 /// The typed task record, spec §7. Prose fields (description, result_summary,
@@ -54,8 +51,6 @@ public sealed record SessionRecord
 
     /// <summary>Server-assigned team-{id}/session-{id}; uniqueness is structural (§9 check 2).</summary>
     public required string Namespace { get; init; }
-
-    public required CompletionMode CompletionMode { get; init; }
 
     public SessionState State { get; init; } = SessionState.Submitted;
 

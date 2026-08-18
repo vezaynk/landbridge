@@ -87,44 +87,13 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task Submit_review_in_review_mode_trusts_the_lead()
+    public async Task Submit_review_completes_and_records_lead_provenance()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
-        var sessionId = await SeedReviewTaskInVerifying();
+        var sessionId = await SeedTaskInVerifying();
         var tools = LeadFor(new Principal.Lead(Team));
 
-        var ok = await tools.SubmitReview(sessionId.ToString(), "accept", humanConfirmed: false, CancellationToken.None);
-        Assert.Contains("Completed", ok);
-        await using var v = pg.NewContext();
-        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == sessionId.Value);
-        Assert.Equal(SessionState.Completed, row.State);
-        Assert.Equal(VerdictProvenance.LeadSession, row.CompletionProvenance);
-    }
-
-    [SkippableFact]
-    public async Task Create_session_always_stamps_lead_mode()
-    {
-        Skip.IfNot(pg.Available, pg.SkipReason);
-        var tools = LeadFor(new Principal.Lead(Team));
-
-        // create_session does not take a mode; the plane trusts the Lead.
-        var idText = await tools.CreateSession("build the thing", "default", null, CancellationToken.None);
-
-        var id = Guid.Parse(idText);
-        await using var v = pg.NewContext();
-        Assert.Equal(CompletionMode.Lead, (await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id)).CompletionMode);
-    }
-
-    [SkippableFact]
-    public async Task Submit_review_in_lead_mode_completes_without_human_confirmation_and_records_provenance()
-    {
-        Skip.IfNot(pg.Available, pg.SkipReason);
-        var sessionId = await SeedTaskInVerifying(CompletionMode.Lead);
-        var tools = LeadFor(new Principal.Lead(Team));
-
-        // §9 check 4: in lead mode the Lead's own verdict completes the task — no
-        // humanConfirmed — and the completion records lead-session provenance.
-        var ok = await tools.SubmitReview(sessionId.ToString(), "accept", humanConfirmed: false, CancellationToken.None);
+        var ok = await tools.SubmitReview(sessionId.ToString(), "accept", CancellationToken.None);
         Assert.Contains("Completed", ok);
 
         await using var v = pg.NewContext();
@@ -773,21 +742,12 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         return id;
     }
 
-    /// <summary>Drives a review-mode task all the way to verifying via the store.</summary>
-    private Task<SessionId> SeedReviewTaskInVerifying() => SeedTaskInVerifying(CompletionMode.Review);
-
-    private async Task<SessionId> SeedTaskInVerifying(CompletionMode mode)
+    private async Task<SessionId> SeedTaskInVerifying()
     {
         await using var db = pg.NewContext();
         var store = new SessionStore(db, _clock);
         var created = (StoreResult.Applied)await store.CreateAsync(
             new CreateSession(new LeadClaim(Team), Team, "adjudicate this", "default"));
-        if (mode != CompletionMode.Lead)
-        {
-            var row = await db.Sessions.SingleAsync(t => t.Id == created.Session.Id.Value);
-            row.CompletionMode = mode;
-            await db.SaveChangesAsync();
-        }
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(Machine(), instance);
         await store.ApplyAsync(created.Session.Id,

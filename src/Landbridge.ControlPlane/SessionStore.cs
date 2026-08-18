@@ -71,14 +71,10 @@ public sealed class SessionStore(
             Id = id.Value,
             TeamId = task.Team.Value,
             Namespace = task.Namespace,
-            CompletionMode = task.CompletionMode,
             State = task.State,
             Profile = task.Profile,
             VerificationRetryLimit = task.VerificationRetryLimit,
             InfrastructureRequeueLimit = task.InfrastructureRequeueLimit,
-            // Opaque content the engine never interpreted (§7): persisted verbatim.
-            // Completion criteria used to be a sibling field; the description is the brief.
-            CompletionCriteria = "",
             Description = command.Description,
             Workspace = command.Workspace,
             // Opaque transport metadata: the ambient W3C traceparent at creation,
@@ -629,7 +625,6 @@ public sealed class SessionStore(
                 t.Id,
                 t.Namespace,
                 t.State,
-                t.CompletionMode,
                 t.Attempt,
                 Parked = t.ParkMachine != null,
                 t.ContinuesSessionId,
@@ -658,7 +653,7 @@ public sealed class SessionStore(
 
         var summaries = rows
             .Select(t => new TeamSessionSummary(
-                t.Id, t.Namespace, t.State, t.CompletionMode, t.Attempt, t.Parked,
+                t.Id, t.Namespace, t.State, t.Attempt, t.Parked,
                 t.ContinuesSessionId, t.CompletionProvenance, t.HasReport,
                 t.InputKind, t.HasQuestion,
                 t.InfrastructureRequeues, t.LastRequeueReason))

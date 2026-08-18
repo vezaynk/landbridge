@@ -16,7 +16,7 @@ public class ProfileHookLoadTests
                            "after_exit": ["/bin/idle"] } } ] }
             """;
 
-        var hooks = RunnerConfig.Load(json).Default.Hooks;
+        var hooks = RunnerConfig.Load(json).Profiles["default"].Hooks;
         Assert.Equal(["/bin/ensure-mcp", "{mcp_url}"], hooks.BeforeSpawn);
         Assert.Equal(["/bin/idle"], hooks.AfterExit);
     }

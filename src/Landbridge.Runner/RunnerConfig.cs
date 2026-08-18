@@ -20,12 +20,6 @@ public sealed record RunnerConfig(
     public IReadOnlyList<ServiceConfig> DeclaredServices => Services ?? [];
 
     /// <summary>
-    /// Convenience for fixtures that still name a profile <c>default</c>.
-    /// Production dispatch uses <see cref="Resolve"/>.
-    /// </summary>
-    public ProfileConfig Default => Profiles[MachineSnapshotDefaults.DefaultProfile];
-
-    /// <summary>
     /// Exact-string profile resolution (§7, §10). The name is required; there
     /// is no fallback. A requested-but-undeclared profile is not resolvable
     /// here — dispatch against it never reaches the runner because the machine
@@ -440,12 +434,6 @@ public sealed record RunnerConfig(
 
     private static TEnum ParseEnum<TEnum>(string? raw, TEnum fallback) where TEnum : struct, Enum =>
         !string.IsNullOrWhiteSpace(raw) && Enum.TryParse<TEnum>(raw, ignoreCase: true, out var v) ? v : fallback;
-}
-
-/// <summary>Shared constant so the runner and control-plane snapshot agree on the default name.</summary>
-public static class MachineSnapshotDefaults
-{
-    public const string DefaultProfile = "default";
 }
 
 /// <summary>§10: work_root for per-task scratch dirs; heartbeat cadence; back-pressure thresholds.</summary>

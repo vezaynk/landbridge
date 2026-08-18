@@ -122,7 +122,6 @@ public sealed record TeamSessionSummary(
     Guid SessionId,
     string Namespace,
     SessionState State,
-    CompletionMode Mode,
     int Attempt,
     bool Parked,
     Guid? ContinuesSessionId,

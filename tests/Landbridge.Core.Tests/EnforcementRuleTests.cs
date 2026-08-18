@@ -82,62 +82,32 @@ public class EnforcementRuleTests
             SessionState.Working);
     }
 
-    // §9 check 4 (doer/judge split) — a task's own worker can never complete it,
-    // in either mode. This is the invariant that survives cutting the verifier.
-    public static TheoryData<CompletionMode> BothModes() => new()
+    // §9 check 4 (doer/judge split) — a task's own worker can never complete it.
+    [Fact]
+    public void A_task_worker_cannot_complete_its_own_task()
     {
-        CompletionMode.Lead,
-        CompletionMode.Review,
-    };
-
-    [Theory]
-    [MemberData(nameof(BothModes))]
-    public void A_task_worker_cannot_complete_its_own_task(CompletionMode mode)
-    {
-        var task = Given.Session(SessionState.Verifying, mode);
+        var task = Given.Session(SessionState.Verifying);
         var incumbent = new WorkerCaller(task.Team, task.Id, task.CurrentInstance!.Value);
         var result = SessionStateMachine.Apply(task, new VerdictAccept(incumbent));
         Expect.Rejected(result, Rule.CompletionByLeadOrHuman);
     }
 
-    // §9 check 4 — lead mode: the Lead session's verdict completes autonomously,
-    // no human confirmation, and the completion records lead-session provenance.
+    // §9 check 4 — the Lead session's verdict completes, and records lead-session provenance.
     [Fact]
-    public void A_lead_completes_a_lead_mode_task_autonomously()
+    public void A_lead_completes_a_session()
     {
         var result = SessionStateMachine.Apply(
-            Given.Session(SessionState.Verifying, CompletionMode.Lead),
-            new VerdictAccept(Given.Lead, HumanConfirmed: false));
-        var task = Expect.Transitioned(result, SessionState.Completed);
-        Assert.Equal(VerdictProvenance.LeadSession, task.CompletionProvenance);
-    }
-
-    // Review mode trusts the Lead to escalate to a human. The plane does not refuse.
-    [Fact]
-    public void A_lead_claim_completes_a_review_task()
-    {
-        var result = SessionStateMachine.Apply(
-            Given.Session(SessionState.Verifying, CompletionMode.Review),
-            new VerdictAccept(Given.Lead, HumanConfirmed: false));
+            Given.Session(SessionState.Verifying),
+            new VerdictAccept(Given.Lead));
         var task = Expect.Transitioned(result, SessionState.Completed);
         Assert.Equal(VerdictProvenance.LeadSession, task.CompletionProvenance);
     }
 
     [Fact]
-    public void A_human_confirmed_lead_verdict_completes_a_review_task()
+    public void A_human_session_completes_a_session_with_human_provenance()
     {
         var result = SessionStateMachine.Apply(
-            Given.Session(SessionState.Verifying, CompletionMode.Review),
-            new VerdictAccept(Given.Lead, HumanConfirmed: true));
-        var task = Expect.Transitioned(result, SessionState.Completed);
-        Assert.Equal(VerdictProvenance.LeadSession, task.CompletionProvenance);
-    }
-
-    [Fact]
-    public void A_human_session_completes_a_review_task_with_human_provenance()
-    {
-        var result = SessionStateMachine.Apply(
-            Given.Session(SessionState.Verifying, CompletionMode.Review),
+            Given.Session(SessionState.Verifying),
             new VerdictAccept(Given.Human));
         var task = Expect.Transitioned(result, SessionState.Completed);
         Assert.Equal(VerdictProvenance.Human, task.CompletionProvenance);

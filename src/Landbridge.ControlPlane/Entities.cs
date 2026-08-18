@@ -14,7 +14,6 @@ public sealed class SessionRow
     public Guid Id { get; set; }
     public Guid TeamId { get; set; }
     public string Namespace { get; set; } = "";
-    public CompletionMode CompletionMode { get; set; }
     public SessionState State { get; set; }
     public string? Profile { get; set; }
 
@@ -146,9 +145,6 @@ public sealed class SessionRow
     /// </summary>
     public string? PermissionEscalationReason { get; set; }
 
-    // Opaque to the control plane: stored, returned, never dereferenced (§7).
-    public string CompletionCriteria { get; set; } = "";
-
     /// <summary>
     /// The Lead's prose instructions (§7 <c>description</c>). Opaque: the worker
     /// reads it (worker-skill.md), the control plane never parses it. Captured at
@@ -264,8 +260,8 @@ public sealed class SessionRow
     /// <summary>
     /// Who adjudicated this task's completion (§9 check 4): a Lead session or a
     /// human, set on the verifying → completed transition and null otherwise. Typed
-    /// state the engine derives from the verdict actor (mirrors <see cref="CompletionMode"/>),
-    /// carried by <see cref="CopyFrom"/> and rendered on the §12 dashboard task view.
+    /// state the engine derives from the verdict actor, carried by <see cref="CopyFrom"/>
+    /// and rendered on the §12 dashboard task view.
     /// </summary>
     public VerdictProvenance? CompletionProvenance { get; set; }
 
@@ -277,7 +273,6 @@ public sealed class SessionRow
         Id = new SessionId(Id),
         Team = new TeamId(TeamId),
         Namespace = Namespace,
-        CompletionMode = CompletionMode,
         State = State,
         Profile = Profile,
         Attempt = Attempt,

@@ -30,21 +30,6 @@ public static class SessionStateExtensions
 }
 
 /// <summary>
-/// Spec §7: who adjudicates a task's completion. <see cref="Lead"/> (the default)
-/// lets the Lead session's verdict complete the task autonomously — orchestrator
-/// judgment, the Claude Code shape; <see cref="Review"/> is a signal that a person
-/// should own the judgment, but the plane trusts the Lead to escalate rather than
-/// refusing a Lead accept. Either way a task's own worker can never complete it (§9 check 4,
-/// doer/judge split). There is no automated-verifier mode — CI and tests are
-/// evidence the Lead gathers itself, not a verdict-issuing actor.
-/// </summary>
-public enum CompletionMode
-{
-    Lead,
-    Review,
-}
-
-/// <summary>
 /// Spec §9 check 4: who supplied the completing verdict, recorded on the task so
 /// the completion is legible (rendered on the §12 dashboard task view). Null until
 /// a task reaches <see cref="SessionState.Completed"/>.
@@ -54,7 +39,7 @@ public enum VerdictProvenance
     /// <summary>A Lead session adjudicated (lead mode, autonomous).</summary>
     LeadSession,
 
-    /// <summary>A human adjudicated (a human session, or a human-confirmed review verdict).</summary>
+    /// <summary>A human adjudicated (a human session).</summary>
     Human,
 }
 

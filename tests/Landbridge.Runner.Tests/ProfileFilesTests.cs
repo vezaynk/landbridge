@@ -16,7 +16,7 @@ public class ProfileFilesLoadTests
                              "contents": "url = \"{mcp_url}\"", "mode": "0600" } ] } ] }
             """;
 
-        var file = Assert.Single(RunnerConfig.Load(json).Default.Files);
+        var file = Assert.Single(RunnerConfig.Load(json).Profiles["default"].Files);
         Assert.Equal("{work_dir}/.grok/config.toml", file.Path);
         Assert.Contains("{mcp_url}", file.Contents, StringComparison.Ordinal);
         Assert.Equal("0600", file.Mode);

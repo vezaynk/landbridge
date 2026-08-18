@@ -61,7 +61,7 @@ public sealed class SkillResources
         UriTemplate = SkillBundle.LeadUri,
         MimeType = SkillBundle.Markdown)]
     [Description("How to lead a Landbridge Team: claiming and reattaching, decomposing work into " +
-                 "sessions, choosing completion modes, answering worker questions, and cancelling " +
+                 "sessions, answering worker questions, and cancelling " +
                  "or closing work.")]
     public static string Lead() => SkillBundle.Lead;
 

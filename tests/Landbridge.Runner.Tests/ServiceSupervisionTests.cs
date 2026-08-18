@@ -437,7 +437,7 @@ public class ServiceSupervisionTests
             "processes": { "agent_initiated": {{(agentInitiated ? "true" : "false")}},
                           "max": {{cap}} } } ]
         }
-        """).Default;
+        """).Profiles["default"];
 
     private static StartProcessCommand Ask(
         string name, IReadOnlyList<string>? spawn = null, string? cwd = null, bool openStdin = false) =>
