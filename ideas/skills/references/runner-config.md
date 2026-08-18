@@ -38,10 +38,11 @@ one shape and an entry point per harness.
 
 ## Operator-declared services (§10)
 
-A worker that starts `npm run dev` loses it the moment its task ends — the service is
-inside the task's process tree, which is tree-killed, and it carries `LANDBRIDGE_*`, which
-the stray reaper matches. For a service that must outlive the task using it, declare it
-here and `landbridged` supervises it as **its own child**, outside every task's tree:
+A worker that starts `npm run dev` from its own shell loses it the moment its session ends
+— the service is inside the session's process tree, which is tree-killed, and it carries
+`LANDBRIDGE_*`, which the stray reaper matches. For a service that must outlive the session
+using it, declare it here and `landbridged` supervises it as **its own child**, outside
+every session's tree:
 
 ```jsonc
 "services": [
@@ -61,11 +62,11 @@ here and `landbridged` supervises it as **its own child**, outside every task's 
 ```
 
 **Why this is not an escape hatch.** The process is not a descendant of any harness, so
-the task tree-kill does not reach it, and it is tagged with `LANDBRIDGE_MACHINE_ID` but
+the session tree-kill does not reach it, and it is tagged with `LANDBRIDGE_MACHINE_ID` but
 deliberately **not** `LANDBRIDGE_SESSION_ID` — so the restart sweep (keyed on machine id) reaps
-the previous generation when `landbridged` restarts, while per-task exit cleanup (which
-requires a matching task id) steps over it. It escapes the task's lifetime while staying
-inside Landbridge's kill guarantee, on every OS, with no `setsid` and no environment
+the previous generation when `landbridged` restarts, while per-session exit cleanup (which
+requires a matching session id) steps over it. It escapes the session's lifetime while
+staying inside Landbridge's kill guarantee, on every OS, with no `setsid` and no environment
 scrubbing. The worker skill forbids the other route to the same effect for exactly that
 reason.
 
@@ -115,9 +116,12 @@ is the agent's business, and reachability is a separate `register_service` call.
 carry a start-time stdin choice (`open_stdin`, **default off**): without a pipe there is no
 `write_process` and no graceful stop, which suits the fire-and-forget majority.
 
-Worth knowing as the operator: **nothing reclaims a process when its task ends.** Cleanup is
-the Lead's job via a continuation task, and the Machine Group view is where you see what a
-machine is still holding.
+Worth knowing as the operator: **nothing reclaims a process when its session ends.** Cleanup
+is the Lead's job — a message on the session that started it, or a later cleanup session —
+and the Machine Group view is where you see what a machine is still holding. Expect more of
+them than the "keep the dev server up" case suggests: the worker skill tells agents to run
+*all* long work this way, because `start_process` is the only non-blocking route that works
+on every harness, so ordinary builds and test runs land here too.
 
 **Status, not logs, on the dashboard.** Each service's state, port, uptime, restart count
 and last exit code ride the machine heartbeat to the §12 Machine Group view. The log
