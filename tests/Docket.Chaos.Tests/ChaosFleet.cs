@@ -640,6 +640,21 @@ internal sealed record ChaosFleetOptions
     /// The §10 aliveness window, and also the liveness sweep's PERIOD. Kept several
     /// heartbeats wide so a healthy task is never requeued, but short enough that the
     /// sweep runs often.
+    ///
+    /// <para><b>It is pulled in two directions, so it is left tight here and widened
+    /// per scenario.</b> Too tight and it does not cover the COLD START: the clock
+    /// starts on the plane in <c>RunnerConnectionRegistry.TrackDispatch</c>, just before
+    /// the send, so it is already running while the command crosses the socket, docketd
+    /// writes <c>files[]</c>, and <c>Process.Start</c> runs — and no heartbeat can carry
+    /// <c>alive</c> until that process exists. Too wide and it stops being the FAST
+    /// RETRY that a scenario asserting real work inside <c>TransitionBudget</c> leans on:
+    /// a dispatch that stalls on a loaded runner is only rescued by this sweep, and at
+    /// 30s the rescue lands outside a 45s budget.</para>
+    ///
+    /// <para>Both failure modes have been seen in CI, one from each direction. So the
+    /// default stays short, and a scenario that needs cold-start headroom asks for it —
+    /// see the stale-token scenario, which is about token replay and not about this
+    /// clock at all.</para>
     /// </summary>
     public TimeSpan PerTaskLivenessWindow { get; init; } = TimeSpan.FromSeconds(5);
 
