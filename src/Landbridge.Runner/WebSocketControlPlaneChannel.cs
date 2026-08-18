@@ -220,6 +220,10 @@ public sealed class WebSocketControlPlaneChannel : IControlPlaneChannel, IAsyncD
                     _log?.Invoke($"command handler threw: {e.Message}");
                 }
             }
+            else
+            {
+                _log?.Invoke("control plane sent an unrecognized frame; ignoring");
+            }
         }
     }
 

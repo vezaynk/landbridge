@@ -202,6 +202,10 @@ app.MapDefaultEndpoints();
 app.UseWebSockets();
 app.UseAuthentication();
 app.UseAuthorization();
+// Blazor Server needs this between auth and Map*. Sitting it here — not inside
+// MapDashboard after MapRunnerEndpoint — keeps the /runner upgrade on the same
+// pipeline the rest of the host uses.
+app.UseAntiforgery();
 
 // The MCP endpoint requires an authenticated principal; tools resolve their
 // caller from it.

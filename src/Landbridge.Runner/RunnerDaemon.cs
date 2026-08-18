@@ -413,16 +413,28 @@ public sealed class RunnerDaemon
         // §10: stop accepting dispatch under pressure. The heartbeat also shows
         // the machine as saturated, but refusing here is the backstop.
         if (_backPressure.UnderPressure())
+        {
+            _log?.Invoke($"dispatch {dispatch.Session} refused: machine is under back-pressure");
             return new CommandOutcome.Refused(RefuseReason.BackPressure, "machine is under back-pressure");
+        }
 
         var profile = _config.Resolve(dispatch.Profile);
         if (profile is null)
-            return new CommandOutcome.Refused(RefuseReason.UnknownProfile, $"no profile '{dispatch.Profile}' declared");
+        {
+            var unknown = $"no profile '{dispatch.Profile}' declared";
+            _log?.Invoke($"dispatch {dispatch.Session} refused: {unknown}");
+            return new CommandOutcome.Refused(RefuseReason.UnknownProfile, unknown);
+        }
 
         if (profile.MaxConcurrent is { } cap && _supervisor.RunningFor(profile.Name) >= cap)
-            return new CommandOutcome.Refused(RefuseReason.MaxConcurrent, $"profile '{profile.Name}' at max_concurrent {cap}");
+        {
+            var atCap = $"profile '{profile.Name}' at max_concurrent {cap}";
+            _log?.Invoke($"dispatch {dispatch.Session} refused: {atCap}");
+            return new CommandOutcome.Refused(RefuseReason.MaxConcurrent, atCap);
+        }
 
         var task = _supervisor.Spawn(dispatch, profile, _machineId);
+        _log?.Invoke($"dispatch {dispatch.Session} profile={profile.Name}");
         return new CommandOutcome.Accepted(task);
     }
 

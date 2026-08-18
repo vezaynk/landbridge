@@ -187,6 +187,16 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
             throw new TimeoutException(
                 $"landbridged never announced itself within {options.StartupTimeout}:\n" + _landbridged.Tail());
         Note("landbridged: " + up.Trim());
+        // `up` is printed as soon as the dial task is started, not after the
+        // socket is live. Creating work against a machine that has not yet
+        // heartbeated leaves the first dispatch pass with nothing ready; wait
+        // for the channel so the stale-token scenario is not racing the dial.
+        var connected = await _landbridged.WaitForLineAsync(
+            l => l.Contains("control plane connected:", StringComparison.Ordinal),
+            options.StartupTimeout);
+        if (connected is null)
+            throw new TimeoutException(
+                $"landbridged never connected to the plane within {options.StartupTimeout}:\n" + _landbridged.Tail());
         return up;
     }
 
