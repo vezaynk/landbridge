@@ -97,7 +97,7 @@ var landbridgeDb = builder.AddPostgres("postgres")
 // after the seed file has been written, since that write precedes app.Run().
 //
 // ExcludeLaunchProfile drops the launchSettings-derived endpoints (the project's
-// http:5115 / https profile): we want exactly one endpoint on the fixed port,
+// http:5050 / https profile): we want exactly one endpoint on the fixed port,
 // and a leftover https endpoint with no bound port makes DCP fail to reconcile
 // the resource — which would stall it short of healthy and hang WaitFor(mcp).
 // ASPNETCORE_ENVIRONMENT is then set explicitly so the host still maps /health
