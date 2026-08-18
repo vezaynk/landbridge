@@ -43,7 +43,8 @@ Two dashboards:
   collector automatically in this loop).
 - **Landbridge web dashboard** (spec §12) — served by the host at
   `http://127.0.0.1:5050/dashboard`. See [authentication](#authenticating-a-human)
-  below; it needs an operator passphrase you must set yourself.
+  below. The Aspire / Development host uses the passphrase `dev`; production
+  is fail-closed until you set `Landbridge:Operator:PassphraseHash`.
 
 The loop stands up a *standing fleet* and does **not** auto-create a task. Create
 work as a Lead over MCP, exactly as in production. The dispatched worker is
@@ -65,10 +66,13 @@ closes the task lifecycle with `submit_review`.
 
 ## Authenticating a human
 
-Two doors, both gated by an **operator passphrase** you configure. The plane
-stores only the SHA-256 hex of the passphrase, never the plaintext. When it is
-unset, both `/oauth/authorize` and the dashboard login are **fail-closed (503)** —
-so the dev loop ships with dashboard login disabled until you set it.
+Two doors, both gated by an **operator passphrase**. The plane stores only the
+SHA-256 hex of the passphrase, never the plaintext. When it is unset, both
+`/oauth/authorize` and the dashboard login are **fail-closed (503)**.
+
+The Aspire loop and `appsettings.Development.json` set the hash for the
+passphrase `dev`, so local `/dashboard/login` works without extra config.
+Production `appsettings.json` leaves the hash empty.
 
 Generate the hash and set it (illustrative — any way of producing the SHA-256 hex
 works):

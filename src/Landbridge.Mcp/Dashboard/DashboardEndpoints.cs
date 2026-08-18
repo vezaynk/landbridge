@@ -159,7 +159,13 @@ public static class DashboardEndpoints
         // Primary door: the operator passphrase. Fail-closed when unconfigured — the
         // server can verify no one, so it mints nothing (mirrors /oauth/authorize).
         if (!verifier.IsConfigured)
-            return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
+            return RazorPage<LoginResult>(new
+            {
+                Error = "No operator passphrase is configured. Set Landbridge:Operator:PassphraseHash "
+                    + "to the SHA-256 hex of the passphrase (docs/RUNNING.md). "
+                    + "The Aspire / Development host uses the passphrase 'dev'.",
+                Next = next,
+            }, StatusCodes.Status503ServiceUnavailable);
 
         if (!verifier.Verify(passphrase))
         {

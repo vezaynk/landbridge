@@ -120,6 +120,11 @@ var mcp = builder.AddProject<Projects.Landbridge_Mcp>("mcp", options => options.
     // + the dashboard mint read Landbridge:PreviewUrlBase).
     .WithEnvironment("Landbridge__PreviewConnect__Bearer", previewConnectBearer)
     .WithEnvironment("Landbridge__PreviewUrlBase", previewUrlBase)
+    // Dashboard / OAuth login: Development appsettings already hash the passphrase
+    // `dev`. Set it here too so an override of ASPNETCORE_ENVIRONMENT cannot
+    // silently fail-close the only human door in this loop.
+    .WithEnvironment("Landbridge__Operator__PassphraseHash",
+        Convert.ToHexString(SHA256.HashData("dev"u8)))
     .WithHttpHealthCheck("/health");
 
 // landbridge-relay as a dev-loop resource (§8.3). Same fixed, un-proxied endpoint

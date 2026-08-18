@@ -68,8 +68,8 @@ Two dashboards:
   its logs, and the host's OpenTelemetry traces/metrics.
 - The **Landbridge web dashboard** (spec §12) is served by the host at
   `http://127.0.0.1:5050/dashboard` — Machine Group, Team, inbox, and event-log
-  views. It requires an operator passphrase (`Landbridge:Operator:PassphraseHash`);
-  see `docs/RUNNING.md`.
+  views. The Aspire / Development host uses the passphrase `dev`; production
+  needs `Landbridge:Operator:PassphraseHash` (see `docs/RUNNING.md`).
 
 The dev loop stands up a *standing fleet*: it does **not** auto-create a task. A
 human Lead creates work over MCP, exactly as in production. The dispatched
