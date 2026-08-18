@@ -87,11 +87,12 @@ dotnet user-secrets set ANTHROPIC_API_KEY '…' --project tests/Landbridge.Multi
 ```
 
 `ANTHROPIC_KEY`, `OPENAI_KEY` / `OPENAI_API_KEY`, and `XAI_KEY` are accepted
-and stamped as the names the CLIs actually read. A missing key is a warning,
-not a failed start: that box still enrolls, but the harness cannot authenticate
-to the provider. Adapters (`claude-agent-acp`, `codex-acp`) and `grok` must be
-on `PATH` when you launch Aspire; AppHost resolves them to absolute paths so
-landbridged does not depend on Aspire's own `PATH`.
+and stamped as the names the CLIs actually read. A missing key is a failed
+start — a box that enrolled without one would look ready and then die on the
+first turn, which is the quiet failure the enroll skill already warns about.
+Adapters (`claude-agent-acp`, `codex-acp`) and `grok` must be on `PATH` when
+you launch Aspire; AppHost resolves them to absolute paths so landbridged
+does not depend on Aspire's own `PATH`.
 
 ## Authenticating a human
 

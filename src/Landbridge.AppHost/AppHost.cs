@@ -91,6 +91,16 @@ var seedDir = Directory.CreateDirectory(Path.Combine(runDir, "seed")).FullName;
 
 // Keep in lockstep with Landbridge.Mcp Program.cs DevSeed harness list.
 string[] devHarnesses = ["codex", "claude", "grok"];
+var missingKeys = devHarnesses
+    .Where(h => providerKeys.For(h) is null)
+    .Select(h => $"{h}-linux ({DevBoxConfig.CanonicalKeyName(h)})")
+    .ToArray();
+if (missingKeys.Length > 0)
+    throw new InvalidOperationException(
+        "landbridge-apphost: missing provider key(s) for " +
+        string.Join(", ", missingKeys) +
+        ". Set them as user secrets on src/Landbridge.AppHost or " +
+        "tests/Landbridge.MultiMachine.Tests, or in the environment.");
 
 // A managed Postgres container with a persistent data volume, so the schema and
 // data survive across `dotnet run`s. (The ephemeral initdb cluster the tests
@@ -193,10 +203,6 @@ foreach (var harness in devHarnesses)
     var boxState = Directory.CreateDirectory(Path.Combine(runDir, "state", box)).FullName;
     var configPath = DevBoxConfig.Write(runDir, boxWork, harness, profile);
     var seedPath = Path.Combine(seedDir, $"{box}.json");
-    if (providerKeys.For(harness) is null)
-        Console.Error.WriteLine(
-            $"landbridge-apphost: {box} has no {DevBoxConfig.CanonicalKeyName(harness)} " +
-            "(user secrets / env); that box will spawn but cannot authenticate to the provider.");
 
     builder.AddProject<Projects.Landbridge_Runner>($"landbridged-{harness}")
         .WithArgs("--config", configPath, "--state-dir", boxState)
@@ -209,8 +215,8 @@ foreach (var harness in devHarnesses)
             ctx.EnvironmentVariables["LANDBRIDGE_MACHINE_ID"] = seed.MachineId;
             // landbridged does not expand `{env:…}` in profile env. Stamp the
             // canonical name this harness reads so the ACP child inherits it.
-            if (providerKeys.For(harness) is { } key)
-                ctx.EnvironmentVariables[DevBoxConfig.CanonicalKeyName(harness)] = key;
+            ctx.EnvironmentVariables[DevBoxConfig.CanonicalKeyName(harness)] =
+                providerKeys.For(harness)!;
         });
 }
 
