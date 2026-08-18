@@ -7,8 +7,7 @@ public class LifecycleTests
     public void Create_by_lead_produces_submitted()
     {
         var result = SessionStateMachine.Create(
-            new CreateSession(Given.Lead, Given.Team, "pnpm test", CompletionMode.Lead,
-                Profile: null),
+            new CreateSession(Given.Lead, Given.Team, "pnpm test", Profile: "default"),
             Given.Id, "team-x/task-y");
 
         var task = Expect.Transitioned(result, SessionState.Submitted);
@@ -299,8 +298,7 @@ public class LifecycleTests
     public void Full_lifecycle_with_one_failed_verification_lands_completed_with_correct_counters()
     {
         var created = SessionStateMachine.Create(
-            new CreateSession(Given.Lead, Given.Team, "make test", CompletionMode.Lead,
-                Profile: null),
+            new CreateSession(Given.Lead, Given.Team, "make test", Profile: "default"),
             Given.Id, "team-x/task-y");
         var task = ((TransitionResult.Transitioned)created).Session;
 

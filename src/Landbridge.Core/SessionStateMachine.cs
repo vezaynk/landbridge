@@ -18,9 +18,13 @@ public static class SessionStateMachine
             return TransitionResult.Reject(Rule.OnlyLeadCreatesSessions,
                 "task creation requires a lead claim for this Team");
 
-        if (string.IsNullOrWhiteSpace(command.CompletionCriteria))
-            return TransitionResult.Reject(Rule.CompletionCriteriaNonEmpty,
-                "completion.criteria must be non-empty");
+        if (string.IsNullOrWhiteSpace(command.Description))
+            return TransitionResult.Reject(Rule.DescriptionNonEmpty,
+                "description must be non-empty");
+
+        if (string.IsNullOrWhiteSpace(command.Profile))
+            return TransitionResult.Reject(Rule.ProfileRequired,
+                "profile is required; name a profile list_profiles returned");
 
         if (string.IsNullOrWhiteSpace(serverAssignedNamespace))
             return TransitionResult.Reject(Rule.NamespaceServerAssigned,
@@ -43,7 +47,7 @@ public static class SessionStateMachine
             // the continuation could never dispatch to the machine that holds its
             // transcript. When the machine is gone the set is null and the check is
             // skipped (dispatch's own profile routing still applies).
-            var requiredProfile = command.Profile ?? MachineSnapshot.DefaultProfile;
+            var requiredProfile = command.Profile;
             if (cont.PreferredMachineProfiles is { } declared && !declared.Contains(requiredProfile))
                 return TransitionResult.Reject(Rule.ContinuationProfileDeclaredByPreferredMachine,
                     $"preferred machine does not declare profile '{requiredProfile}' the continuation requires");
@@ -54,7 +58,7 @@ public static class SessionStateMachine
             Id = id,
             Team = command.Team,
             Namespace = serverAssignedNamespace,
-            CompletionMode = command.Mode,
+            CompletionMode = CompletionMode.Lead,
             Profile = command.Profile,
         });
     }
@@ -103,8 +107,9 @@ public static class SessionStateMachine
             return TransitionResult.Reject(Rule.MachineIneligibleForDispatch,
                 $"machine {c.Machine.MachineId} is under back-pressure");
 
-        var requiredProfile = task.Profile ?? MachineSnapshot.DefaultProfile;
-        if (!c.Machine.DeclaredProfiles.Contains(requiredProfile))
+        var requiredProfile = task.Profile;
+        if (string.IsNullOrWhiteSpace(requiredProfile)
+            || !c.Machine.DeclaredProfiles.Contains(requiredProfile))
             return TransitionResult.Reject(Rule.MachineIneligibleForDispatch,
                 $"machine {c.Machine.MachineId} does not declare profile '{requiredProfile}'");
 
@@ -267,7 +272,7 @@ public static class SessionStateMachine
             return tooLong;
 
         // §11 permission bridge: the tool awaiting approval must be named. A
-        // non-emptiness check in the same class as CompletionCriteria — the engine does
+        // non-emptiness check in the same class as DescriptionNonEmpty — the engine does
         // not recognize tool names and never will, it only refuses a permission request
         // that gives its answerer nothing to decide about.
         if (c.Kind == InputRequestKind.Permission && string.IsNullOrWhiteSpace(c.PermissionTool))

@@ -39,7 +39,7 @@ public sealed class SessionEventListenerTests(PostgresFixture pg) : IAsyncLifeti
         await using var db = pg.NewContext();
         var store = new SessionStore(db, new FakeTimeProvider());
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateSession(new LeadClaim(Team), Team, "criteria", CompletionMode.Lead, null), cts.Token);
+            new CreateSession(new LeadClaim(Team), Team, "criteria", "default"), cts.Token);
 
         var notified = await received.Task.WaitAsync(cts.Token);
         Assert.Equal(created.Session.Id.Value, notified);

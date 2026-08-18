@@ -256,7 +256,7 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
         await using var db = pg.NewContext();
         var store = new SessionStore(db, clock);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateSession(new LeadClaim(team), team, "completion criteria", CompletionMode.Lead, null));
+            new CreateSession(new LeadClaim(team), team, "completion criteria", "default"));
         var id = created.Session.Id;
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(

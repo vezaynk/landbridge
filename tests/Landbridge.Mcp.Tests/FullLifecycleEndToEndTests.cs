@@ -78,7 +78,6 @@ public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifet
 
         // ── Lead: create an automated task over real MCP ────────────────────
         const string description = "make the suite pass";
-        const string criteria = "the suite is green";
         const string workspace = "git:repo@main#task-branch";
         SessionId sessionId;
         await using (var lead = await ConnectAsync(new Uri(baseUrl + "/"), leadToken, ct))
@@ -86,9 +85,7 @@ public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifet
             var created = await lead.CallToolAsync("create_session", new Dictionary<string, object?>
             {
                 ["description"] = description,
-                ["completionCriteria"] = criteria,
-                ["mode"] = "lead",
-                ["profile"] = null,
+                ["profile"] = "default",
                 ["workspace"] = workspace,
             }, cancellationToken: ct);
             Assert.NotEqual(true, created.IsError);

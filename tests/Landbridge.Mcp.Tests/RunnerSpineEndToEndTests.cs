@@ -63,7 +63,7 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
 
             var store = new SessionStore(db, TimeProvider.System);
             var created = (StoreResult.Applied)await store.CreateAsync(
-                new CreateSession(new LeadClaim(team), team, "the suite is green", CompletionMode.Lead, null), ct);
+                new CreateSession(new LeadClaim(team), team, "the suite is green", "default"), ct);
             sessionId = created.Session.Id;
         }
 
@@ -337,7 +337,7 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
     {
         await using var db = pg.NewContext();
         var created = (StoreResult.Applied)await new SessionStore(db, TimeProvider.System).CreateAsync(
-            new CreateSession(new LeadClaim(team), team, criteria, CompletionMode.Lead, null), ct);
+            new CreateSession(new LeadClaim(team), team, criteria, "default"), ct);
         return created.Session.Id;
     }
 

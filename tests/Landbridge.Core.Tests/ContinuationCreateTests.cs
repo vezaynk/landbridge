@@ -19,23 +19,22 @@ public class ContinuationCreateTests
         IReadOnlySet<string>? declaredProfiles = null) =>
         new(Continued, continuedTeam ?? Given.Team, preferredMachine, sessionRef, policy, declaredProfiles);
 
-    private static TransitionResult Create(string? profile, Continuation continuation) =>
+    private static TransitionResult Create(string profile, Continuation continuation) =>
         SessionStateMachine.Create(
-            new CreateSession(Given.Lead, Given.Team, "criteria", CompletionMode.Lead,
-                Profile: profile, Continues: continuation),
+            new CreateSession(Given.Lead, Given.Team, "criteria", Profile: profile, Continues: continuation),
             Given.Id, "team-x/task-y");
 
     [Fact]
     public void Continuation_in_the_same_team_creates_submitted()
     {
-        Expect.Transitioned(Create(profile: null, Cont()), SessionState.Submitted);
+        Expect.Transitioned(Create(profile: "default", Cont()), SessionState.Submitted);
     }
 
     [Fact]
     public void Continuation_referencing_another_team_is_rejected()
     {
         Expect.Rejected(
-            Create(profile: null, Cont(continuedTeam: Given.OtherTeam)),
+            Create(profile: "default", Cont(continuedTeam: Given.OtherTeam)),
             Rule.ContinuationSameTeamOnly);
     }
 
@@ -56,13 +55,11 @@ public class ContinuationCreateTests
     }
 
     [Fact]
-    public void Continuation_defaulting_to_the_default_profile_needs_the_machine_to_declare_default()
+    public void Continuation_with_empty_profile_is_rejected()
     {
-        // Profile omitted ⇒ the "default" profile is required, so a preferred machine
-        // that declares only a named profile can't honour it — the same gate.
         Expect.Rejected(
-            Create(profile: null, Cont(declaredProfiles: new HashSet<string> { "gpu" })),
-            Rule.ContinuationProfileDeclaredByPreferredMachine);
+            Create(profile: "", Cont(declaredProfiles: new HashSet<string> { "gpu" })),
+            Rule.ProfileRequired);
     }
 
     [Fact]

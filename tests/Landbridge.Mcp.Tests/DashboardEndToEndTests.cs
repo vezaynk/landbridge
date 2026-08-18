@@ -979,7 +979,15 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         await using var db = pg.NewContext();
         var store = new SessionStore(db, TimeProvider.System);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateSession(new LeadClaim(team), team, "criteria", mode, null), ct);
+            new CreateSession(new LeadClaim(team), team, "do the work", "default"), ct);
+        // create_session always stamps Lead; review-mode inbox/adjudication fixtures
+        // write the stored mode directly.
+        if (mode != CompletionMode.Lead)
+        {
+            var row = await db.Sessions.SingleAsync(t => t.Id == created.Session.Id.Value, ct);
+            row.CompletionMode = mode;
+            await db.SaveChangesAsync(ct);
+        }
         var instance = WorkerInstanceId.New();
         // Deterministic: this is the only submitted task at the moment it dispatches.
         await store.DispatchNextAsync(AnyMachine, instance, ct);

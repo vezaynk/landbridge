@@ -37,11 +37,10 @@ public sealed class ContinuationDispatchTests(PostgresFixture pg) : IAsyncLifeti
     /// (same-Team, resolved preferred machine + inherited session ref + policy).</summary>
     private async Task<(SessionId Session, SessionId Continued)> CreateContinuation(
         LandbridgeDbContext db, string preferredMachine, string? sessionRef, MachineGonePolicy policy,
-        string? profile = null)
+        string profile = "default")
     {
         var continued = SessionId.New();
-        var result = await NewStore(db).CreateAsync(new CreateSession(
-            Lead, Team, "criteria", CompletionMode.Lead, profile,
+        var result = await NewStore(db).CreateAsync(new CreateSession(Lead, Team, "criteria", profile,
             Continues: new Continuation(continued, Team, preferredMachine, sessionRef, policy, PreferredMachineProfiles: null)));
         return (((StoreResult.Applied)result).Session.Id, continued);
     }
@@ -158,8 +157,7 @@ public sealed class ContinuationDispatchTests(PostgresFixture pg) : IAsyncLifeti
 
         // The engine gate fires through the store: a continuation whose continued task
         // belongs to another Team is refused before any row is written.
-        var result = await NewStore(db).CreateAsync(new CreateSession(
-            Lead, Team, "criteria", CompletionMode.Lead, null,
+        var result = await NewStore(db).CreateAsync(new CreateSession(Lead, Team, "criteria", "default",
             Continues: new Continuation(SessionId.New(), TeamId.New(), "m1", "sess-1", MachineGonePolicy.Degrade, null)));
 
         var rejected = Assert.IsType<StoreResult.Rejected>(result);
@@ -172,8 +170,7 @@ public sealed class ContinuationDispatchTests(PostgresFixture pg) : IAsyncLifeti
         Skip.IfNot(pg.Available, pg.SkipReason);
         await using var db = pg.NewContext();
 
-        var result = await NewStore(db).CreateAsync(new CreateSession(
-            Lead, Team, "criteria", CompletionMode.Lead, "gpu",
+        var result = await NewStore(db).CreateAsync(new CreateSession(Lead, Team, "criteria", "gpu",
             Continues: new Continuation(
                 SessionId.New(), Team, "m1", "sess-1", MachineGonePolicy.Degrade,
                 PreferredMachineProfiles: new HashSet<string> { "default" })));
@@ -230,13 +227,10 @@ public sealed class ContinuationDispatchTests(PostgresFixture pg) : IAsyncLifeti
         await using var db = pg.NewContext();
 
         // A is an ordinary task; B continues A; C continues B.
-        var a = ((StoreResult.Applied)await NewStore(db).CreateAsync(new CreateSession(
-            Lead, Team, "criteria", CompletionMode.Lead, null))).Session.Id;
-        var b = ((StoreResult.Applied)await NewStore(db).CreateAsync(new CreateSession(
-            Lead, Team, "criteria", CompletionMode.Lead, null,
+        var a = ((StoreResult.Applied)await NewStore(db).CreateAsync(new CreateSession(Lead, Team, "criteria", "default"))).Session.Id;
+        var b = ((StoreResult.Applied)await NewStore(db).CreateAsync(new CreateSession(Lead, Team, "criteria", "default",
             Continues: new Continuation(a, Team, "m1", "sess-1", MachineGonePolicy.Degrade, null)))).Session.Id;
-        var c = ((StoreResult.Applied)await NewStore(db).CreateAsync(new CreateSession(
-            Lead, Team, "criteria", CompletionMode.Lead, null,
+        var c = ((StoreResult.Applied)await NewStore(db).CreateAsync(new CreateSession(Lead, Team, "criteria", "default",
             Continues: new Continuation(b, Team, "m1", "sess-1", MachineGonePolicy.Degrade, null)))).Session.Id;
 
         await using var v = pg.NewContext();
@@ -260,8 +254,7 @@ public sealed class ContinuationDispatchTests(PostgresFixture pg) : IAsyncLifeti
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         await using var db = pg.NewContext();
-        var created = (StoreResult.Applied)await NewStore(db).CreateAsync(new CreateSession(
-            Lead, Team, "criteria", CompletionMode.Lead, null));
+        var created = (StoreResult.Applied)await NewStore(db).CreateAsync(new CreateSession(Lead, Team, "criteria", "default"));
         var task = created.Session.Id;
 
         var first = Assert.IsType<StoreResult.Applied>(

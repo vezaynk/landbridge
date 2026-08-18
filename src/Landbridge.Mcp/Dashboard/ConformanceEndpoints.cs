@@ -10,11 +10,11 @@ namespace Landbridge.Mcp.Dashboard;
 
 /// <summary>
 /// Operator-only stand-in for the unbuilt §11 conformance run: mint dummy sessions
-/// aimed at one profile, then poll their states. POST takes <c>profile</c> (JSON
-/// body or form field); omit is <c>default</c>. The plane still does not judge
-/// the work — a session that reaches <c>verifying</c> is a worker that called
-/// <c>report_result</c>. Human-only, like the Machine Group: a Lead cannot
-/// enumerate profiles and must not mint fleet-wide work.
+/// aimed at one profile, then poll their states. POST takes a required
+/// <c>profile</c> (JSON body or form field). Omit is 400. The plane still
+/// does not judge the work — a session that reaches <c>verifying</c> is a
+/// worker that called <c>report_result</c>. Human-only, like the Machine
+/// Group: a Lead cannot enumerate profiles and must not mint fleet-wide work.
 /// </summary>
 internal static class ConformanceEndpoints
 {
@@ -43,8 +43,7 @@ internal static class ConformanceEndpoints
                 return Task.FromResult<IResult>(Results.Json(new
                 {
                     post = "/dashboard/conformance",
-                    profile = MachineSnapshot.DefaultProfile,
-                    profileField = "optional; omit or empty is default; exact-match name from the runner config",
+                    profileField = "required; exact-match name from the runner config",
                     kinds = ConformanceCatalog.Kinds,
                 }, Json));
             }
@@ -54,9 +53,9 @@ internal static class ConformanceEndpoints
     }
 
     /// <summary>
-    /// POST /dashboard/conformance — create the dummy set for <c>profile</c>
-    /// (JSON or form; omit is <c>default</c>). Same-origin, human-only. The run
-    /// id is a new Team id; progress is <c>GET /dashboard/conformance/{runId}</c>.
+    /// POST /dashboard/conformance — create the dummy set for a required
+    /// <c>profile</c> (JSON or form). Same-origin, human-only. The run id is a
+    /// new Team id; progress is <c>GET /dashboard/conformance/{runId}</c>.
     /// </summary>
     private static async Task<IResult> HandleStartAsync(
         HttpContext http, TokenService tokens, SessionStore store,
@@ -68,6 +67,9 @@ internal static class ConformanceEndpoints
         return await GatedHuman(http, tokens, ct, async _ =>
         {
             var profile = await ReadProfileAsync(http, ct);
+            if (profile is null)
+                return Results.Json(new { error = "profile is required" }, Json,
+                    statusCode: StatusCodes.Status400BadRequest);
 
             var runId = TeamId.New();
             var lead = new LeadClaim(runId);
@@ -77,8 +79,7 @@ internal static class ConformanceEndpoints
             {
                 var result = await store.CreateAsync(
                     new CreateSession(
-                        lead, runId, spec.CompletionCriteria, CompletionMode.Lead, profile,
-                        Description: spec.Description,
+                        lead, runId, spec.Description, profile,
                         Workspace: ConformanceCatalog.WorkspaceOf(spec.Kind)),
                     ct);
                 if (result is not StoreResult.Applied applied)
@@ -130,12 +131,11 @@ internal static class ConformanceEndpoints
     }
 
     /// <summary>
-    /// JSON body <c>{ "profile": "goose" }</c> or form field <c>profile</c>.
-    /// Omit, empty, or whitespace is <see cref="MachineSnapshot.DefaultProfile"/>.
-    /// Exact string — the same match dispatch uses. A name no machine declares
-    /// is accepted and sits in Submitted, which is the quiet failure enroll hunts.
+    /// JSON body <c>{ "profile": "goose-devbox-linux" }</c> or form field
+    /// <c>profile</c>. Required. Exact string — the same match dispatch uses.
+    /// A name no machine declares is accepted and sits in Submitted.
     /// </summary>
-    private static async Task<string> ReadProfileAsync(HttpContext http, CancellationToken ct)
+    private static async Task<string?> ReadProfileAsync(HttpContext http, CancellationToken ct)
     {
         string? raw = null;
         if (http.Request.HasJsonContentType())
@@ -149,7 +149,7 @@ internal static class ConformanceEndpoints
             raw = form["profile"].ToString();
         }
 
-        return string.IsNullOrWhiteSpace(raw) ? MachineSnapshot.DefaultProfile : raw.Trim();
+        return string.IsNullOrWhiteSpace(raw) ? null : raw.Trim();
     }
 
     private static IReadOnlyList<string> MachinesDeclaring(RunnerConnectionRegistry registry, string profile)

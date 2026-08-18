@@ -959,8 +959,7 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
     {
         await using var db = pg.NewContext();
         var team = TeamId.New();
-        var created = (StoreResult.Applied)await new SessionStore(db, clock).CreateAsync(new CreateSession(
-            new LeadClaim(team), team, "completion criteria", CompletionMode.Lead, null));
+        var created = (StoreResult.Applied)await new SessionStore(db, clock).CreateAsync(new CreateSession(new LeadClaim(team), team, "completion criteria", "default"));
         return created.Session.Id;
     }
 
@@ -971,8 +970,7 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         await using var db = pg.NewContext();
         var store = new SessionStore(db, clock);
         var team = TeamId.New();
-        await store.CreateAsync(new CreateSession(
-            new LeadClaim(team), team, "completion criteria", CompletionMode.Lead, null));
+        await store.CreateAsync(new CreateSession(new LeadClaim(team), team, "completion criteria", "default"));
         var instance = WorkerInstanceId.New();
         var applied = (StoreResult.Applied)await store.DispatchNextAsync(
             new MachineSnapshot(machineId, Ready: true, UnderBackPressure: false, Set("default")), instance);

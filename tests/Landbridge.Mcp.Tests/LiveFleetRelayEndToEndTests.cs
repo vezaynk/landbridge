@@ -254,9 +254,7 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
         var created = await lead.CallToolAsync("create_session", new Dictionary<string, object?>
         {
             ["description"] = description,
-            ["completionCriteria"] = "the byte path holds",
-            ["mode"] = "lead",
-            ["profile"] = null,
+            ["profile"] = "default",
             ["workspace"] = "relay-fleet-e2e",
         }, cancellationToken: ct);
         Assert.NotEqual(true, created.IsError);

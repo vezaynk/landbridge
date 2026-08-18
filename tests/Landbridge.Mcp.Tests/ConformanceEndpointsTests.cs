@@ -100,11 +100,11 @@ public sealed class ConformanceEndpointsTests(PostgresFixture pg) : IAsyncLifeti
         await using var app = BuildPlane();
         await app.StartAsync(ct);
 
-        var created = await PostConformanceAsync(app, new { }, ct);
+        var created = await PostConformanceAsync(app, new { profile = "default" }, ct);
         Assert.Equal(HttpStatusCode.Created, created.StatusCode);
         using var createdDoc = JsonDocument.Parse(await created.Content.ReadAsStringAsync(ct));
         var root = createdDoc.RootElement;
-        Assert.Equal(MachineSnapshot.DefaultProfile, root.GetProperty("profile").GetString());
+        Assert.Equal("default", root.GetProperty("profile").GetString());
         Assert.Equal(3, root.GetProperty("total").GetInt32());
         Assert.Equal(3, root.GetProperty("pending").GetInt32());
         Assert.False(root.GetProperty("workerDone").GetBoolean());
@@ -130,6 +130,20 @@ public sealed class ConformanceEndpointsTests(PostgresFixture pg) : IAsyncLifeti
         Assert.Equal(3, progressDoc.RootElement.GetProperty("pending").GetInt32());
         Assert.Equal("Submitted", progressDoc.RootElement.GetProperty("sessions")[0].GetProperty("state").GetString());
 
+        await app.StopAsync(ct);
+    }
+
+    [SkippableFact]
+    public async Task Post_without_a_profile_is_refused()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var ct = cts.Token;
+        await using var app = BuildPlane();
+        await app.StartAsync(ct);
+
+        var created = await PostConformanceAsync(app, new { }, ct);
+        Assert.Equal(HttpStatusCode.BadRequest, created.StatusCode);
         await app.StopAsync(ct);
     }
 

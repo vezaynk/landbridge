@@ -175,7 +175,7 @@ public sealed class TokenServiceTests(PostgresFixture pg) : IAsyncLifetime
         var tokens = new TokenService(db, clock);
 
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateSession(new LeadClaim(Team), Team, "criteria", CompletionMode.Lead, null));
+            new CreateSession(new LeadClaim(Team), Team, "criteria", "default"));
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(
             new MachineSnapshot("m1", true, false, new HashSet<string> { "default" }), instance);

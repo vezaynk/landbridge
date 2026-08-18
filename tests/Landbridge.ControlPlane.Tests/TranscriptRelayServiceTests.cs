@@ -286,8 +286,7 @@ public sealed class TranscriptRelayServiceTests(PostgresFixture pg) : IAsyncLife
         await using var db = pg.NewContext();
         var store = new SessionStore(db, rig.Clock);
 
-        var created = (StoreResult.Applied)await store.CreateAsync(new CreateSession(
-            lead, team, "completion criteria", CompletionMode.Lead, Profile: null));
+        var created = (StoreResult.Applied)await store.CreateAsync(new CreateSession(lead, team, "completion criteria", Profile: "default"));
         var id = created.Session.Id;
         if (state == SessionState.Submitted)
             return id;

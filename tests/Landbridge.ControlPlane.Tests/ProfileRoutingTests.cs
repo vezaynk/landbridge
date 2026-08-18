@@ -130,22 +130,6 @@ public sealed class ProfileRoutingTests
         Assert.Equal(1, view.ConnectedMachines);
     }
 
-    [Fact]
-    public void The_view_names_the_profile_an_omitted_create_session_profile_resolves_to()
-    {
-        // A Lead that omits `profile` still routes on a name — `default` — and the engine
-        // matches it exactly like any other (SessionStateMachine's ApplyDispatch). So a fleet
-        // where nothing declares `default` cannot run plain tasks at all, and this field is
-        // what lets a Lead notice that rather than watch them queue forever.
-        var registry = new RunnerConnectionRegistry(_clock);
-        Connect(registry, "m1", "gpu");
-
-        var view = registry.ProfileRouting();
-
-        Assert.Equal(MachineSnapshot.DefaultProfile, view.DefaultProfile);
-        Assert.DoesNotContain(view.DefaultProfile, view.Profiles.Select(p => p.Profile));
-    }
-
     /// <summary>A machine dialled in and heartbeating its declared profiles on the fake
     /// clock — exactly what the runner endpoint sets up (§10).</summary>
     private RunnerConnectionRegistry.ConnectionToken Connect(

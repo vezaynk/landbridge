@@ -305,7 +305,8 @@ public sealed class DispatchService : IHostedService
             return DispatchOutcome.NothingEligible; // no eligible submitted task for this machine
 
         var task = applied.Session;
-        var profile = task.Profile ?? MachineSnapshot.DefaultProfile;
+        var profile = task.Profile
+            ?? throw new InvalidOperationException($"session {task.Id} has no profile");
 
         // §1 tracing: open the dispatch span, parented on the Lead's create_session
         // trace context stored on the row (opaque transport metadata). This span's

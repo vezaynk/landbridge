@@ -47,7 +47,7 @@ public class RunnerConfigTests
         Assert.Equal(3, config.Default.MaxConcurrent);
         Assert.Equal("Do the task.", config.Default.Prompt);
 
-        Assert.Same(config.Default, config.Resolve(null));               // absent → default (§7)
+        Assert.Same(config.Default, config.Resolve("default"));
         Assert.Equal("restricted", config.Resolve("restricted")!.Name);   // exact-match (§7)
         Assert.Null(config.Resolve("frontend"));                          // requested-but-absent
         Assert.Equal(new HashSet<string> { "default", "restricted" }, config.DeclaredProfiles);
@@ -144,19 +144,19 @@ public class RunnerConfigTests
     }
 
     [Fact]
-    public void Rejects_a_config_with_no_default_profile()
+    public void Accepts_a_config_whose_only_profile_is_not_named_default()
     {
         var json = """
         { "machine": { "work_root": "/w" },
           "profiles": [ { "name": "primary", "prompt": "go", "spawn": ["claude"] } ] }
         """;
 
-        var ex = Assert.Throws<RunnerConfigException>(() => RunnerConfig.Load(json));
-        Assert.Contains(ex.Errors, e => e.Contains("no 'default' profile"));
+        var config = RunnerConfig.Load(json);
+        Assert.Equal("primary", Assert.Single(config.Profiles).Key);
     }
 
     [Fact]
-    public void Rejects_a_config_with_multiple_default_profiles()
+    public void Rejects_a_config_with_duplicate_profile_names()
     {
         var json = """
         { "machine": { "work_root": "/w" },
@@ -167,8 +167,7 @@ public class RunnerConfigTests
         """;
 
         var ex = Assert.Throws<RunnerConfigException>(() => RunnerConfig.Load(json));
-        // Either the duplicate-name or the >1-default check fires; both name §10.
-        Assert.Contains(ex.Errors, e => e.Contains("default") || e.Contains("duplicate"));
+        Assert.Contains(ex.Errors, e => e.Contains("duplicate"));
     }
 
     [Fact]

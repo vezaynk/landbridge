@@ -25,7 +25,7 @@ internal static class Given
         WorkerInstanceId? instance = null,
         int verificationFailures = 0,
         int retryLimit = 3,
-        string? profile = null,
+        string? profile = "default",
         int infrastructureRequeues = 0,
         int requeueLimit = SessionRecord.DefaultInfrastructureRequeueLimit) => new()
     {

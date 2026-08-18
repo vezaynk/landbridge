@@ -70,7 +70,6 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
 
         // ── Lead: create a task WITH a description + workspace over real MCP ──
         const string description = "make the suite pass";
-        const string criteria = "the suite is green";
         const string workspace = "git:repo@main#task-branch";
         SessionId sessionId;
         await using (var lead = await ConnectAsync(new Uri(baseUrl + "/"), leadToken, ct))
@@ -78,9 +77,7 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
             var created = await lead.CallToolAsync("create_session", new Dictionary<string, object?>
             {
                 ["description"] = description,
-                ["completionCriteria"] = criteria,
-                ["mode"] = "lead",
-                ["profile"] = null,
+                ["profile"] = "default",
                 ["workspace"] = workspace,
             }, cancellationToken: ct);
             Assert.NotEqual(true, created.IsError);
@@ -172,7 +169,6 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
             Assert.True(File.Exists(assignmentPath), "the harness never recorded its get_session response");
             var assignmentJson = await File.ReadAllTextAsync(assignmentPath, ct);
             Assert.Contains(description, assignmentJson);
-            Assert.Contains(criteria, assignmentJson);
             Assert.Contains(workspace, assignmentJson);
             Assert.Contains($"team-{team}/session-{sessionId}", assignmentJson); // server-assigned namespace
             Assert.Contains("\"attempt\":1", assignmentJson);

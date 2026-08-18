@@ -80,26 +80,18 @@ public sealed class LeadTools(
             "re-claim the Team from your human session (/landbridge-lead) and try again.");
 
     [McpServerTool(Name = "create_session"),
-     Description("Create a session for this Team. Only a Lead may create sessions. The description (prose " +
-                 "instructions) and completion criteria must both be non-empty; the control plane never " +
-                 "parses either. The worker isolates itself on the machine. Pass 'continues' to " +
-                 "resume a prior session's harness conversation under a new session id. Returns the new session id.")]
+     Description("Create a session for this Team. Only a Lead may create sessions. The description is the " +
+                 "whole brief (what to do and how you will judge it); the plane never parses it. Profile is " +
+                 "required — call list_profiles first and pass an exact name. The worker isolates itself. " +
+                 "Pass 'continues' to resume a prior session's harness conversation under a new session id. " +
+                 "Returns the new session id.")]
     public async Task<string> CreateSession(
-        [Description("Opaque, non-empty prose instructions for the worker: what to accomplish and the " +
-                     "context to meet the criteria. Read by the worker, never parsed by the control plane.")]
+        [Description("Opaque, non-empty prose: what to accomplish and how you will judge it. " +
+                     "Read by the worker, never parsed by the control plane.")]
         string description,
-        [Description("Opaque, non-empty completion criteria. You judge it — gather your own evidence " +
-                     "(run the suite, check CI) before accepting. In review mode a person should own the " +
-                     "judgment; escalate rather than waving it through. Never parsed by the control plane.")]
-        string completionCriteria,
-        [Description("Completion mode: 'lead' (default — you adjudicate) or 'review' (a person should own " +
-                     "the judgment; escalate to them, the plane will not refuse your accept). A session's own " +
-                     "worker can never complete it either way.")]
-        string? mode = null,
-        [Description("Optional runner profile name for exact-match routing. Omit for the default profile. " +
-                     "Call list_profiles first if you are setting this — a name no machine declares makes " +
-                     "a session nothing can ever claim. With 'continues', defaults to the continued session's profile.")]
-        string? profile = null,
+        [Description("Runner profile name for exact-match routing. Required. Call list_profiles first — " +
+                     "a name no machine declares makes a session nothing can ever claim.")]
+        string profile,
         [Description("Optional opaque context for the worker: which repo, package, or base ref. " +
                      "Not isolation — the worker stays in its session directory, uses a worktree, " +
                      "and binds a random port. Omit when the description already has what they need.")]
@@ -116,13 +108,8 @@ public sealed class LeadTools(
     {
         if (string.IsNullOrWhiteSpace(description))
             throw new McpException("description must be non-empty; it is the worker's instructions.");
-
-        // §7: completion mode defaults to `lead` (the Lead session adjudicates) when
-        // the caller omits it.
-        var modeText = string.IsNullOrWhiteSpace(mode) ? nameof(CompletionMode.Lead) : mode;
-        if (!Enum.TryParse<CompletionMode>(modeText, ignoreCase: true, out var parsedMode))
-            throw new McpException(
-                $"unknown completion mode '{mode}'; expected one of: {string.Join(", ", Enum.GetNames<CompletionMode>())}");
+        if (string.IsNullOrWhiteSpace(profile))
+            throw new McpException("profile is required; call list_profiles and pass an exact name.");
 
         var lead = Lead;
 
@@ -133,7 +120,6 @@ public sealed class LeadTools(
         // same-Team and profile gates (defense in depth); everything else is seeded
         // verbatim and never interpreted (§7).
         Continuation? continuation = null;
-        var effectiveProfile = profile;
         if (!string.IsNullOrWhiteSpace(continues))
         {
             var continuedId = ParseSessionId(continues);
@@ -174,7 +160,7 @@ public sealed class LeadTools(
                 policy = parsedPolicy;
             }
 
-            effectiveProfile = string.IsNullOrWhiteSpace(profile) ? source.Profile : profile;
+            // Profile is required on every create, including a continuation.
             // The preferred machine's declared profiles when it is connected, so the
             // engine can refuse a profile it could never honour; null when it is gone.
             var declaredProfiles = registry.SnapshotFor(preferredMachine)?.DeclaredProfiles;
@@ -189,8 +175,8 @@ public sealed class LeadTools(
         // Description/workspace ride the command as opaque content the store persists and the
         // engine never reads (§7).
         var result = await store.CreateAsync(
-            new CreateSession(lead, lead.Team, completionCriteria, parsedMode, effectiveProfile,
-                Description: description, Workspace: workspace, Continues: continuation), ct);
+            new CreateSession(lead, lead.Team, description, profile.Trim(),
+                Workspace: workspace, Continues: continuation), ct);
 
         return result switch
         {
@@ -335,16 +321,15 @@ public sealed class LeadTools(
     }
 
     [McpServerTool(Name = "submit_review"),
-     Description("Adjudicate a session in verifying (§7, §9 check 4). Your verdict completes the session in " +
-                 "either mode — gather your own evidence first (run the suite, check CI, re-verify the " +
-                 "worker's claims); accept carefully. Fail rejects the assignment (no retry loop). If you " +
-                 "want more from this worker, answer_input_request with a note instead of failing. A " +
-                 "session's own worker can never complete it.")]
+     Description("Adjudicate a session in verifying (§7, §9 check 4). Your verdict completes the session — " +
+                 "gather your own evidence first (run the suite, check CI, re-verify the worker's claims); " +
+                 "accept carefully. Fail rejects the assignment (no retry loop). If you want more from this " +
+                 "worker, answer_input_request with a note instead of failing. A session's own worker can " +
+                 "never complete it.")]
     public async Task<string> SubmitReview(
         [Description("The session id in verifying.")] string sessionId,
         [Description("The verdict: 'accept' or 'fail'. Fail rejects; it does not redispatch.")] string verdict,
-        [Description("Ignored. Review mode trusts the Lead to escalate to a human when the evidence is " +
-                     "theirs to own. Kept so older callers still bind.")]
+        [Description("Ignored. Kept so older callers still bind.")]
         bool humanConfirmed = false,
         CancellationToken ct = default)
     {
@@ -390,8 +375,7 @@ public sealed class LeadTools(
                  "A name absent from this list is a name no session should carry. 'dispatchable' false " +
                  "with machines listed means the profile exists but every machine offering it is " +
                  "saturated or not yet ready — that session will queue and then run, so wait rather than " +
-                 "re-route. 'defaultProfile' is what an omitted profile resolves to; if it is missing " +
-                 "here, even profile-less sessions have nowhere to run. Read-only, and NOT the machine " +
+                 "re-route. Profile is required on create_session. Read-only, and NOT the machine " +
                  "group: it carries no sessions, Teams, services or processes — that view is human-only " +
                  "(§12), and your operator reads it on /dashboard/machines.")]
     public ProfileRoutingView ListProfiles()

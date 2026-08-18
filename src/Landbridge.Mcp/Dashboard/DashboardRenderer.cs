@@ -956,9 +956,9 @@ internal static class DashboardRenderer
                   "Any ready machine that declares that name may claim them.</p>");
         sb.Append("<form class=\"card conformance-start\" method=\"post\" action=\"/dashboard/conformance\">");
         sb.Append("<label for=\"profile\">Profile</label>");
-        sb.Append($"<input id=\"profile\" type=\"text\" name=\"profile\" value=\"{E(MachineSnapshot.DefaultProfile)}\" " +
-                  "class=\"mono\" spellcheck=\"false\" autocomplete=\"off\">");
-        sb.Append("<p class=\"nt\">Exact name from the runner config. Empty is <span class=\"mono\">default</span>.</p>");
+        sb.Append("<input id=\"profile\" type=\"text\" name=\"profile\" " +
+                  "class=\"mono\" spellcheck=\"false\" autocomplete=\"off\" required>");
+        sb.Append("<p class=\"nt\">Exact name from the runner config. Required.</p>");
         sb.Append("<button type=\"submit\">Start check</button>");
         sb.Append("</form>");
         return Page("Profile check", "conformance", sb.ToString(), autoRefresh: false);

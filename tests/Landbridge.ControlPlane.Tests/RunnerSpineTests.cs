@@ -619,7 +619,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         await using var db = pg.NewContext();
         var store = new SessionStore(db, clock);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateSession(new LeadClaim(team), team, "completion criteria", CompletionMode.Lead, profile));
+            new CreateSession(new LeadClaim(team), team, "completion criteria", profile ?? "default"));
         return created.Session.Id;
     }
 
@@ -637,7 +637,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         await using var db = pg.NewContext();
         var store = new SessionStore(db, clock);
         await store.CreateAsync(
-            new CreateSession(new LeadClaim(team), team, "completion criteria", CompletionMode.Lead, null));
+            new CreateSession(new LeadClaim(team), team, "completion criteria", "default"));
         var instance = WorkerInstanceId.New();
         var applied = (StoreResult.Applied)await store.DispatchNextAsync(
             new MachineSnapshot(machineId, Ready: true, UnderBackPressure: false, Set("default")), instance);
@@ -652,7 +652,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         await using var db = pg.NewContext();
         var store = new SessionStore(db, clock);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateSession(new LeadClaim(team), team, "completion criteria", CompletionMode.Lead, null));
+            new CreateSession(new LeadClaim(team), team, "completion criteria", "default"));
         var id = created.Session.Id;
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(

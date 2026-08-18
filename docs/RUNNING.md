@@ -179,7 +179,7 @@ The long-lived refresh token is the only durable secret on the box.
 
 `landbridged` contains no harness knowledge — everything specific is data (spec §10).
 `--config <path>` points at a JSON file with a `machine` section, one or more
-`profiles` (exactly one must be named `default`), and an optional `services` array —
+`profiles` (no reserved `default`; `create_session` requires an exact name), and an optional `services` array —
 the operator's own long-lived processes (§8.2), which `landbridged` supervises as its own
 children, keeps up, and verifies at dial. Those are the operator's, not an agent's: a
 worker can see them in `list_processes` but cannot stop them. The full schema and a worked

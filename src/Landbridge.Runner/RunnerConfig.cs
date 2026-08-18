@@ -19,26 +19,29 @@ public sealed record RunnerConfig(
     /// <summary>§10 operator-declared services; empty when the section is absent.</summary>
     public IReadOnlyList<ServiceConfig> DeclaredServices => Services ?? [];
 
-    /// <summary>The required <c>default</c> profile (§10 — exactly one).</summary>
+    /// <summary>
+    /// Convenience for fixtures that still name a profile <c>default</c>.
+    /// Production dispatch uses <see cref="Resolve"/>.
+    /// </summary>
     public ProfileConfig Default => Profiles[MachineSnapshotDefaults.DefaultProfile];
 
     /// <summary>
-    /// Exact-string profile resolution (§7, §10). Absent a request, <c>default</c>.
-    /// A requested-but-undeclared profile is not resolvable here — dispatch
-    /// against it never reaches the runner because the machine does not declare
-    /// the name (§9 check 5).
+    /// Exact-string profile resolution (§7, §10). The name is required; there
+    /// is no fallback. A requested-but-undeclared profile is not resolvable
+    /// here — dispatch against it never reaches the runner because the machine
+    /// does not declare the name (§9 check 5).
     /// </summary>
-    public ProfileConfig? Resolve(string? requested) =>
-        Profiles.TryGetValue(requested ?? MachineSnapshotDefaults.DefaultProfile, out var p) ? p : null;
+    public ProfileConfig? Resolve(string requested) =>
+        Profiles.TryGetValue(requested, out var p) ? p : null;
 
     /// <summary>The profile names this machine declares, for the heartbeat/snapshot (§7, §10).</summary>
     public IReadOnlySet<string> DeclaredProfiles => new HashSet<string>(Profiles.Keys);
 
     /// <summary>
     /// Parses and validates a config document. Throws
-    /// <see cref="RunnerConfigException"/> listing every problem — a config
-    /// with zero or multiple <c>default</c> profiles, an empty spawn argv, a
-    /// missing <c>work_root</c>, and so on (§10 validation).
+    /// <see cref="RunnerConfigException"/> listing every problem — no
+    /// profiles, an empty spawn argv, a missing <c>work_root</c>, and so on
+    /// (§10 validation).
     /// </summary>
     public static RunnerConfig Load(string json)
     {
@@ -262,12 +265,11 @@ public sealed record RunnerConfig(
     {
         if (dtos is null || dtos.Count == 0)
         {
-            problems.Add("at least one profile is required, including a 'default' (§10)");
+            problems.Add("at least one profile is required (§10)");
             return null;
         }
 
         var built = new Dictionary<string, ProfileConfig>(StringComparer.Ordinal);
-        var defaults = 0;
 
         foreach (var dto in dtos)
         {
@@ -277,9 +279,6 @@ public sealed record RunnerConfig(
                 problems.Add("every profile needs a name (§10)");
                 continue;
             }
-
-            if (name == MachineSnapshotDefaults.DefaultProfile)
-                defaults++;
 
             if (built.ContainsKey(name))
             {
@@ -382,12 +381,6 @@ public sealed record RunnerConfig(
 
             built[name] = BuildProfile(dto);
         }
-
-        // §10: exactly one profile is required to be 'default'.
-        if (defaults == 0)
-            problems.Add("no 'default' profile declared — exactly one is required (§10)");
-        else if (defaults > 1)
-            problems.Add("more than one 'default' profile declared — exactly one is required (§10)");
 
         return problems.Count == 0 ? built : null;
     }

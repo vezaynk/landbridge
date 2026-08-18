@@ -7,12 +7,23 @@ public class EnforcementRuleTests
     [Theory]
     [InlineData("")]
     [InlineData("   ")]
-    public void Creation_requires_non_empty_completion_criteria(string criteria)
+    public void Creation_requires_non_empty_description(string description)
     {
         var result = SessionStateMachine.Create(
-            new CreateSession(Given.Lead, Given.Team, criteria, CompletionMode.Lead, null),
+            new CreateSession(Given.Lead, Given.Team, description, "default"),
             Given.Id, "ns");
-        Expect.Rejected(result, Rule.CompletionCriteriaNonEmpty);
+        Expect.Rejected(result, Rule.DescriptionNonEmpty);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Creation_requires_a_profile(string profile)
+    {
+        var result = SessionStateMachine.Create(
+            new CreateSession(Given.Lead, Given.Team, "do the work", profile),
+            Given.Id, "ns");
+        Expect.Rejected(result, Rule.ProfileRequired);
     }
 
     // §9 check 2
@@ -20,7 +31,7 @@ public class EnforcementRuleTests
     public void Creation_requires_a_server_assigned_namespace()
     {
         var result = SessionStateMachine.Create(
-            new CreateSession(Given.Lead, Given.Team, "criteria", CompletionMode.Lead, null),
+            new CreateSession(Given.Lead, Given.Team, "criteria", "default"),
             Given.Id, "");
         Expect.Rejected(result, Rule.NamespaceServerAssigned);
     }
@@ -38,7 +49,7 @@ public class EnforcementRuleTests
     public void Only_a_lead_claim_for_the_team_creates_tasks(Actor actor)
     {
         var result = SessionStateMachine.Create(
-            new CreateSession(actor, Given.Team, "criteria", CompletionMode.Lead, null),
+            new CreateSession(actor, Given.Team, "criteria", "default"),
             Given.Id, "ns");
         Expect.Rejected(result, Rule.OnlyLeadCreatesSessions);
     }

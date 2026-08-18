@@ -76,9 +76,9 @@ public sealed class SessionStore(
             Profile = task.Profile,
             VerificationRetryLimit = task.VerificationRetryLimit,
             InfrastructureRequeueLimit = task.InfrastructureRequeueLimit,
-            // Opaque content the engine never interpreted (§7): persisted verbatim
-            // straight off the command, alongside the criteria.
-            CompletionCriteria = command.CompletionCriteria,
+            // Opaque content the engine never interpreted (§7): persisted verbatim.
+            // Completion criteria used to be a sibling field; the description is the brief.
+            CompletionCriteria = "",
             Description = command.Description,
             Workspace = command.Workspace,
             // Opaque transport metadata: the ambient W3C traceparent at creation,
@@ -341,10 +341,8 @@ public sealed class SessionStore(
     /// the Dispatch transition — which re-checks readiness, back-pressure, and
     /// profile as defense in depth.
     ///
-    /// <para>Profile is matched exactly as the engine matches it, a null profile included:
-    /// both halves resolve it to <see cref="MachineSnapshot.DefaultProfile"/>, so a
-    /// profile-less task is claimable by a machine declaring <c>default</c> and by no other
-    /// — never claimed here only to be refused there (see the clause's own comment).</para>
+    /// <para>Profile is matched exactly as the engine matches it. A session
+    /// without a profile is not claimable.</para>
     ///
     /// <para>Continuation targeting (§6/§11) adds a preferred-machine clause to the
     /// SQL half of check 5. A row with no <c>preferred_machine</c> (an ordinary
@@ -379,15 +377,7 @@ public sealed class SessionStore(
         // entity by id inside the same transaction. Selecting only the id
         // (not SELECT *) keeps the xmin concurrency token out of the raw query;
         // the row lock is held to end of transaction, so concurrent dispatchers
-        // skip it. Profile match is the SQL half of check 5, and it resolves a null
-        // profile to `default` exactly as the engine's half does (§9 check 5,
-        // SessionStateMachine.ApplyDispatch): "absent a request, default" (§15), so a
-        // profile-less task runs where `default` is declared rather than anywhere at all.
-        // The two halves have to agree — this clause used to pass a profile-less row to
-        // ANY machine, which the engine then refused, so on a fleet where nothing declares
-        // `default` such a task was picked, bounced, and picked again on every pass, and it
-        // took each pass's one claim for that machine with it (a bounced claim ends the
-        // machine's turn) instead of waiting quietly for a machine that could run it.
+        // skip it. Profile match is the SQL half of check 5: exact string, no fallback.
         // The preferred-machine clause is the §6/§11 continuation half
         // (see the method summary): NOT (preferred_machine = ANY(connected)) reads as
         // "preferred machine gone" and is true for an empty connected set too.
@@ -398,7 +388,7 @@ public sealed class SessionStore(
                 $"""
                  SELECT id AS "Value" FROM sessions
                  WHERE state = 'Submitted'
-                   AND COALESCE(profile, {MachineSnapshot.DefaultProfile}) = ANY({profiles})
+                   AND profile = ANY({profiles})
                    AND (
                          preferred_machine IS NULL
                       OR preferred_machine = {machine.MachineId}
@@ -604,12 +594,12 @@ public sealed class SessionStore(
 
     /// <summary>
     /// The worker's own assignment (§7, worker-skill.md): the prose description,
-    /// completion criteria, workspace, namespace, and attempt count a dispatched
-    /// worker reads before starting. A pure read gated by the same authority as a
-    /// worker transition — returned <b>only</b> for the caller's own task and
-    /// <b>only</b> while the caller is that task's incumbent instance (the
-    /// RegisterServiceAsync gate, §9 check 14). Anything else returns null, so a
-    /// zombie or a cross-task token learns nothing — never another task's content.
+    /// workspace, namespace, and attempt count a dispatched worker reads before
+    /// starting. A pure read gated by the same authority as a worker transition —
+    /// returned <b>only</b> for the caller's own task and <b>only</b> while the
+    /// caller is that task's incumbent instance (the RegisterServiceAsync gate,
+    /// §9 check 14). Anything else returns null, so a zombie or a cross-task
+    /// token learns nothing — never another task's content.
     /// </summary>
     public async Task<WorkerAssignment?> GetAssignmentAsync(WorkerCaller caller, CancellationToken ct = default)
     {
@@ -620,7 +610,7 @@ public sealed class SessionStore(
             return null;
 
         return new WorkerAssignment(
-            row.Namespace, row.Description, row.CompletionCriteria, row.Workspace, row.Attempt,
+            row.Namespace, row.Description, row.Workspace, row.Attempt,
             row.WorkerReport, row.InputQuestion, row.InputAnswer);
     }
 
