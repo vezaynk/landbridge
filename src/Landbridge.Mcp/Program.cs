@@ -207,6 +207,22 @@ app.UseAuthorization();
 // pipeline the rest of the host uses.
 app.UseAntiforgery();
 
+// A browser opening the plane URL (launchSettings, Aspire, a typed :5050) is a
+// GET / with Accept: text/html. MapMcp owns that path for POST (and SSE GET
+// with Accept: text/event-stream), so a human GET is 405 without this bounce.
+// Agents are unaffected: they POST, or GET with text/event-stream.
+app.Use(async (ctx, next) =>
+{
+    if (HttpMethods.IsGet(ctx.Request.Method)
+        && ctx.Request.Path == "/"
+        && AcceptsHtml(ctx.Request.Headers.Accept.ToString()))
+    {
+        ctx.Response.Redirect("/dashboard");
+        return;
+    }
+    await next();
+});
+
 // The MCP endpoint requires an authenticated principal; tools resolve their
 // caller from it.
 app.MapMcp().RequireAuthorization();
@@ -254,6 +270,9 @@ app.MapOAuthMetadataEndpoints();
 app.MapOAuthEndpoints();
 
 app.Run();
+
+static bool AcceptsHtml(string accept) =>
+    accept.Contains("text/html", StringComparison.OrdinalIgnoreCase);
 
 /// <summary>Exposed so WebApplicationFactory-based tests can host the app.</summary>
 public partial class Program;
