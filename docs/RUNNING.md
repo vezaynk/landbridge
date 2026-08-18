@@ -27,9 +27,9 @@ brings up, in dependency order:
 | Resource | What it is | Endpoint |
 |---|---|---|
 | `postgres` | Managed Postgres 16 with a persistent data volume (survives restarts) | container |
-| `mcp` | The control plane + MCP host (`Landbridge.Mcp`), migrated on startup and dev-seeded | `http://127.0.0.1:5000` (fixed, un-proxied) |
+| `mcp` | The control plane + MCP host (`Landbridge.Mcp`), migrated on startup and dev-seeded | `http://127.0.0.1:5050` (fixed, un-proxied) |
 | `relay` | `landbridge-relay` | `http://127.0.0.1:5100` (fixed, un-proxied) |
-| `landbridged` | A real runner, enrolled via a dev-seeded machine token, dialing `ws://127.0.0.1:5000/runner` | outbound only |
+| `landbridged` | A real runner, enrolled via a dev-seeded machine token, dialing `ws://127.0.0.1:5050/runner` | outbound only |
 
 The endpoints for `mcp` and `relay` are pinned to fixed loopback ports and *not*
 proxied by Aspire's DCP, because the sibling `landbridged`/worker/relay processes
@@ -42,7 +42,7 @@ Two dashboards:
   and logs (`Landbridge.ServiceDefaults` wires OTel; the host exports to the Aspire
   collector automatically in this loop).
 - **Landbridge web dashboard** (spec §12) — served by the host at
-  `http://127.0.0.1:5000/dashboard`. See [authentication](#authenticating-a-human)
+  `http://127.0.0.1:5050/dashboard`. See [authentication](#authenticating-a-human)
   below; it needs an operator passphrase you must set yourself.
 
 The loop stands up a *standing fleet* and does **not** auto-create a task. Create
@@ -491,7 +491,7 @@ this branch.
 | Key | Default | Purpose |
 |---|---|---|
 | `ConnectionStrings:Landbridge` (or env `LANDBRIDGE_DB`) | `Host=localhost;Database=landbridge;Username=landbridge` | Postgres connection string. |
-| `Landbridge:PublicMcpUrl` (or env `LANDBRIDGE_PUBLIC_MCP_URL`) | `http://127.0.0.1:5000` | The plane's public MCP endpoint dialed by workers; also the OAuth 2.1 canonical resource id / issuer. Set to the real public **https** URL in production. |
+| `Landbridge:PublicMcpUrl` (or env `LANDBRIDGE_PUBLIC_MCP_URL`) | `http://127.0.0.1:5050` | The plane's public MCP endpoint dialed by workers; also the OAuth 2.1 canonical resource id / issuer. Set to the real public **https** URL in production. |
 | `Landbridge:Operator:PassphraseHash` | *(empty → fail-closed)* | SHA-256 hex of the operator passphrase gating `/oauth/authorize` and dashboard login. Store the hash, never the plaintext. |
 | `Landbridge:WaitTtl` | infinite | How long a `blocked_on_input` task waits before parking (spec §11). Off by default; a live ACP session is held until a Lead answers or `park_session`. Set a TimeSpan (e.g. `00:30:00`) to restore a timer. |
 | `Landbridge:MachineLivenessTtl` | `00:01:30` | Heartbeat-age window past which a machine is treated as rebooted and its waiting tasks requeue (≈ six missed 15s heartbeats). |

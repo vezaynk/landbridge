@@ -158,7 +158,7 @@ ACP's `mcpServers`, one entry, HTTP transport, bearer header:
 ```
 
 The `url` is the plane's public MCP endpoint (`Landbridge:PublicMcpUrl` / `LANDBRIDGE_PUBLIC_MCP_URL`;
-default `http://127.0.0.1:5000`). This is a worker's **only** channel to Landbridge (§5): it
+default `http://127.0.0.1:5050`). This is a worker's **only** channel to Landbridge (§5): it
 authenticates as the dispatched instance, and its token dies with the instance (§9 check 14).
 
 **Nothing is written to disk.** The stream protocol wrote this config into the work dir 0600

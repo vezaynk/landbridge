@@ -56,7 +56,7 @@ public sealed class DispatchService : IHostedService
     public static readonly TimeSpan DefaultNoProgressCeiling = TimeSpan.FromMinutes(30);
 
     /// <summary>The default plane MCP URL a worker dials when config supplies none (§10).</summary>
-    public const string DefaultPublicMcpUrl = "http://127.0.0.1:5000";
+    public const string DefaultPublicMcpUrl = "http://127.0.0.1:5050";
 
     /// <summary>
     /// How long the plane keeps expecting the <c>exited</c> its own liveness-loss
