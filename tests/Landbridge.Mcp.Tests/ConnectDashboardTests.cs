@@ -70,11 +70,14 @@ public sealed class ConnectDashboardTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Contains("Never put", html, StringComparison.Ordinal);
         Assert.Contains("[mcp_servers.landbridge]", html, StringComparison.Ordinal);
         Assert.Contains("Authorization = \"Bearer", html, StringComparison.Ordinal);
+        Assert.Contains("/dashboard/connect/setup-link", html, StringComparison.Ordinal);
 
         var json = await GetAuthedAsync(app, "/dashboard/connect?format=json", ct);
         using var doc = JsonDocument.Parse(json);
         Assert.Equal("/dashboard/connect/enroll-token",
             doc.RootElement.GetProperty("posts").GetProperty("enrollToken").GetString());
+        Assert.Equal("/dashboard/connect/setup-link",
+            doc.RootElement.GetProperty("posts").GetProperty("setupLink").GetString());
         Assert.Equal("landbridge://skills/lead",
             doc.RootElement.GetProperty("leadSkill").GetString());
         Assert.Equal(15, doc.RootElement.GetProperty("enrollmentTtlMinutes").GetInt32());
@@ -186,6 +189,42 @@ public sealed class ConnectDashboardTests(PostgresFixture pg) : IAsyncLifetime
         using var took = JsonDocument.Parse(await takeover.Content.ReadAsStringAsync(ct));
         Assert.StartsWith("lbr_l_", took.RootElement.GetProperty("token").GetString());
         Assert.Equal(teamId, took.RootElement.GetProperty("teamId").GetGuid());
+
+        await app.StopAsync(ct);
+    }
+
+    [SkippableFact]
+    public async Task Setup_link_redeems_markdown_once_and_then_404s()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var ct = cts.Token;
+        await using var app = BuildPlane();
+        await app.StartAsync(ct);
+
+        var minted = await PostAsync(app, "/dashboard/connect/setup-link", new { }, ct);
+        Assert.Equal(HttpStatusCode.Created, minted.StatusCode);
+        using var doc = JsonDocument.Parse(await minted.Content.ReadAsStringAsync(ct));
+        var url = doc.RootElement.GetProperty("url").GetString();
+        Assert.Contains("/setup/lbr_s_", url, StringComparison.Ordinal);
+        Assert.DoesNotContain("lbr_l_", url, StringComparison.Ordinal);
+
+        using var client = Client(app);
+        var first = await client.GetAsync(new Uri(url!), ct);
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+        Assert.Equal("text/markdown", first.Content.Headers.ContentType!.MediaType);
+        Assert.Contains("no-store", first.Headers.CacheControl?.ToString(), StringComparison.Ordinal);
+        var markdown = await first.Content.ReadAsStringAsync(ct);
+        Assert.Contains("lbr_l_", markdown, StringComparison.Ordinal);
+        Assert.Contains("[mcp_servers.landbridge]", markdown, StringComparison.Ordinal);
+        Assert.Contains("Authorization = \"Bearer lbr_l_", markdown, StringComparison.Ordinal);
+
+        var second = await client.GetAsync(new Uri(url!), ct);
+        Assert.Equal(HttpStatusCode.NotFound, second.StatusCode);
+        Assert.DoesNotContain("lbr_l_", await second.Content.ReadAsStringAsync(ct), StringComparison.Ordinal);
+
+        var unknown = await client.GetAsync("/setup/lbr_s_" + new string('0', 64), ct);
+        Assert.Equal(HttpStatusCode.NotFound, unknown.StatusCode);
 
         await app.StopAsync(ct);
     }

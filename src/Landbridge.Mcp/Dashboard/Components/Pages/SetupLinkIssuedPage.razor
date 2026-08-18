@@ -1,0 +1,20 @@
+<DashboardDocument Title="Setup link" ActiveKey="connect">
+<h1>One-time setup link</h1>
+<p class="sub">Team <span class="mono">@TeamId</span>. The URL is a capability, not the bearer.
+    The first GET returns markdown that contains the token and then 404s.</p>
+<section class="secret">
+    <label for="url">Link</label>
+    <input id="url" type="text" class="mono" readonly value="@Url" />
+    <p class="nt">Expires @ExpiresAt.ToString("u"). Do not open this in a browser
+        if you mean to give it to an agent — a preview or reload burns it. Copy
+        the URL and paste it.</p>
+</section>
+<p><a href="/dashboard/teams/@TeamId">Open this Team</a>
+    · <a href="/dashboard/connect">← back to Connect</a></p>
+</DashboardDocument>
+
+@code {
+    [Parameter, EditorRequired] public string Url { get; set; } = "";
+    [Parameter] public DateTimeOffset ExpiresAt { get; set; }
+    [Parameter] public Guid TeamId { get; set; }
+}

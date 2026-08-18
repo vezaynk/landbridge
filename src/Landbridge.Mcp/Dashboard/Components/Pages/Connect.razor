@@ -76,9 +76,14 @@ Authorization = "Bearer lbr_l_…"</pre>
                     <input type="checkbox" name="takeover" value="true" />
                     Take over if this Team already has a Lead
                 </label>
-                <p class="nt">The Lead token is shown once. Copy it into the harness.
-                    A takeover evicts the incumbent; their next call is told who did it.</p>
+                <p class="nt">Claim Lead shows the token once. One-time setup link
+                    mints a URL whose first GET is markdown that contains the bearer
+                    — paste that URL to an agent; do not open it yourself. A takeover
+                    evicts the incumbent; their next call is told who did it.</p>
                 <button type="submit">Claim Lead</button>
+                <button type="submit" formaction="/dashboard/connect/setup-link">
+                    One-time setup link
+                </button>
             </form>
         }
     </section>

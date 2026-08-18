@@ -123,7 +123,8 @@ secrets or the environment variable `Landbridge__Operator__PassphraseHash` (see 
   dummy-task check aimed at a named profile: `POST` mints the set,
   `GET /dashboard/conformance/{runId}` reports states), and `/dashboard/connect`
   (how to reach the plane as a Lead, and how to enroll a machine — including
-  issuing an enrollment token and claiming a Team). Pages carry a
+  issuing an enrollment token, claiming a Team, and minting a one-time setup
+  link whose first GET is markdown that contains the Lead bearer). Pages carry a
   5-second auto-refresh and each has a JSON twin (`?format=json` or an
   `Accept: application/json` request). A pasted human/Lead token is accepted as a
   secondary door — but a **Lead** token reads only its own Team: `/dashboard/teams`,
