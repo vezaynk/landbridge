@@ -198,7 +198,7 @@ A browser can do the same from `/dashboard/conformance` — the form has a profi
 |---|---|
 | `identity` | Report hostname, cwd, and the first 8 hex of `$LANDBRIDGE_SESSION_ID` |
 | `write` | Write `smoke.txt` in the workspace containing only the hostname |
-| `shell` | `echo` a nonce (`dkt-smoke-` plus the run id prefix) and report that line |
+| `shell` | `echo` a nonce (`lbr-smoke-` plus the run id prefix) and report that line |
 
 Poll progress:
 
