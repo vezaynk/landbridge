@@ -45,7 +45,7 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
     private static readonly TimeSpan Patience = TimeSpan.FromSeconds(20);
 
     private const string Tool = "Bash";
-    private const string ProposedInput = """{"command":"/usr/bin/security find-generic-password -s prod"}""";
+    private const string ProposedInput = """{"command":"git ls-remote origin"}""";
 
     private static IHttpContextAccessor AccessorFor(Principal principal) =>
         new HttpContextAccessor
@@ -122,6 +122,41 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         task is Task<string> t ? await t : "<not a string result>";
 
     private static JsonElement Verdict(string json) => JsonDocument.Parse(json).RootElement;
+
+    [SkippableFact]
+    public async Task Protocol_tools_auto_allow_without_blocking()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var caller = await SeedWorkingTask();
+        var worker = WorkerFor(caller);
+
+        var json = await worker.RequestPermission(
+            "mcp__landbridge__get_session",
+            JsonDocument.Parse("{}").RootElement,
+            "toolu_proto",
+            CancellationToken.None);
+
+        Assert.Contains("\"behavior\":\"allow\"", json, StringComparison.Ordinal);
+        Assert.Equal(SessionState.Working, await StateOf(caller.Session));
+    }
+
+    [SkippableFact]
+    public async Task Credential_tools_auto_deny_without_blocking()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var caller = await SeedWorkingTask();
+        var worker = WorkerFor(caller);
+
+        var json = await worker.RequestPermission(
+            "Bash",
+            JsonDocument.Parse("""{"command":"/usr/bin/security find-generic-password -s prod"}""").RootElement,
+            "toolu_key",
+            CancellationToken.None);
+
+        Assert.Contains("\"behavior\":\"deny\"", json, StringComparison.Ordinal);
+        Assert.Contains("credential", json, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(SessionState.Working, await StateOf(caller.Session));
+    }
 
     // ── The round trip ────────────────────────────────────────────────────────
 
@@ -398,7 +433,7 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         // working, so a second request is refused — and the tool still owes the harness a
         // well-formed verdict rather than an error.
         var second = await WorkerFor(caller).RequestPermission(
-            "Write", JsonDocument.Parse("""{"file_path":"/etc/hosts"}""").RootElement, "toolu_two",
+            "Write", JsonDocument.Parse("""{"file_path":"src/a.cs"}""").RootElement, "toolu_two",
             CancellationToken.None);
 
         var verdict = Verdict(second);

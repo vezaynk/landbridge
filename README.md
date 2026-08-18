@@ -53,7 +53,7 @@ One command brings up the full Lead → plane → runner → worker loop:
 
 - a managed **Postgres** container (persistent volume, so data survives restarts),
 - the **control plane / MCP host** (`Landbridge.Mcp`) at `http://127.0.0.1:5050`, migrated and dev-seeded,
-- three enrolled **`landbridged`** boxes (`codex-linux`, `claude-linux`, `grok-linux`) connected back to `/runner`, declaring `<harness>-apphost-linux` and `any-linux`,
+- three enrolled **`landbridged`** boxes (`<harness>-<hostname>-<os>`) connected back to `/runner`, declaring `<harness>-apphost-<os>` and `any-<os>` on this host's real OS,
 - **`landbridge-relay`** at `http://127.0.0.1:5100`,
 - the **preview frontend** (`Landbridge.Preview`), plaintext in the loop — minting a URL needs `open_preview` or the dashboard, so it idles until you use it.
 

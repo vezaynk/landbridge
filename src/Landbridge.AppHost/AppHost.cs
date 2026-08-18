@@ -8,7 +8,7 @@
 // (the cross-process insight §1 is built around).
 //
 // Three landbridged boxes enroll (via dev-seeded tokens, below), dial /runner,
-// and stand ready: a linux Codex, Claude, and Grok machine. Each box spawns
+// and stand ready: Codex, Claude, and Grok on this host's real OS. Each box spawns
 // the real ACP harness (`codex-acp`, `claude-agent-acp`, `grok agent stdio`).
 // Provider keys come from AppHost user secrets, the MultiMachine secrets id
 // (so the same local store the paid e2e uses also feeds this loop), or the
@@ -19,6 +19,7 @@
 // landbridged is not a Host builder, so it gets no ServiceDefaults traces.
 // The Claude box opts into harness OTLP (`telemetry.otel`) so token/cost
 // metrics can land in the Aspire dashboard. Console logs stream as a resource.
+using Landbridge.ControlPlane;
 using Microsoft.Extensions.Configuration;
 using System.Security.Cryptography;
 using System.Text.Json;
@@ -93,7 +94,7 @@ var seedDir = Directory.CreateDirectory(Path.Combine(runDir, "seed")).FullName;
 string[] devHarnesses = ["codex", "claude", "grok"];
 var missingKeys = devHarnesses
     .Where(h => providerKeys.For(h) is null)
-    .Select(h => $"{h}-linux ({DevBoxConfig.CanonicalKeyName(h)})")
+    .Select(h => $"{DevSeedNaming.Box(h)} ({DevBoxConfig.CanonicalKeyName(h)})")
     .ToArray();
 if (missingKeys.Length > 0)
     throw new InvalidOperationException(
@@ -197,8 +198,8 @@ builder.AddProject<Projects.Landbridge_Preview>("preview", options => options.Ex
 // gates start until the plane has written that box's seed file.
 foreach (var harness in devHarnesses)
 {
-    var box = $"{harness}-linux";
-    var profile = $"{harness}-apphost-linux";
+    var box = DevSeedNaming.Box(harness);
+    var profile = DevSeedNaming.Profile(harness);
     var boxWork = Directory.CreateDirectory(Path.Combine(runDir, "work", box)).FullName;
     var boxState = Directory.CreateDirectory(Path.Combine(runDir, "state", box)).FullName;
     var configPath = DevBoxConfig.Write(runDir, boxWork, harness, profile);

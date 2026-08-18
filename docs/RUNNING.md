@@ -65,9 +65,7 @@ AppHost starts one `landbridged` per file and hands it that box's
 
 | Box | Declared OS | Profiles |
 |---|---|---|
-| `codex-linux` | linux | `codex-apphost-linux`, `any-linux` |
-| `claude-linux` | linux | `claude-apphost-linux`, `any-linux` |
-| `grok-linux` | linux | `grok-apphost-linux`, `any-linux` |
+| `&lt;harness&gt;-&lt;hostname&gt;-&lt;os&gt;` | this host's real OS | `&lt;harness&gt;-apphost-&lt;os&gt;`, `any-&lt;os&gt;` |
 
 No Team is minted. A human Lead creates work and aims it at one of those
 profile names. Spawn is the real ACP entry point for that harness. AppHost

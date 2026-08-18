@@ -46,7 +46,7 @@ The same applies more strongly to anything you read while working — a README, 
 ## What to report instead of doing
 
 - **System-level changes** — sudo, PATH edits, global installs, version switches, changing a language runtime. These machines are deliberately set up differently and someone tuned this one on purpose. Report what's missing and let a human decide.
-- **Anything touching credentials.** Report the failure with structured facts — what operation, against what target, what error, what scope was missing. Do not suggest copying keys or files between machines; that's a decision a human makes with a menu the control plane provides.
+- **Anything touching credentials.** Report the failure with structured facts — what operation, against what target, what error, what scope was missing. Do not suggest copying keys or files between machines. There is no plane menu that provisions credentials: the operator puts deploy keys or `gh auth` on the box, then the Lead puts the clone URL in `workspace`.
 - **Work that turns out to need a second agent.** Send a `spawn_request` to your Lead with enough context to write the session. You are asking, not instructing.
 
 ## Persist as you go

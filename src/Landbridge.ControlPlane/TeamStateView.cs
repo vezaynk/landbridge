@@ -90,7 +90,9 @@ public sealed record ProfileMachineView(
     string MachineId,
     bool Ready,
     bool UnderBackPressure,
-    DateTimeOffset? LastHeartbeat);
+    DateTimeOffset? LastHeartbeat,
+    string? Name = null,
+    string? Os = null);
 
 /// <summary>
 /// One task's structural summary. <see cref="Namespace"/> is the server-assigned

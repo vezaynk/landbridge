@@ -375,22 +375,26 @@ public sealed class LeadTools(
                  "saturated or not yet ready — that session will queue and then run, so wait rather than " +
                  "re-route. Profile is required on create_session. Read-only, and NOT the machine " +
                  "group: it carries no sessions, Teams, services or processes — that view is human-only " +
-                 "(§12), and your operator reads it on /dashboard/machines.")]
-    public ProfileRoutingView ListProfiles()
+                 "(§12), and your operator reads it on /dashboard/machines. Each machine lists its " +
+                 "enrolled name and OS: the same machineId on two profiles is one box.")]
+    public async Task<ProfileRoutingView> ListProfiles(CancellationToken ct)
     {
-        // Lead-only, checked the way every tool in this class checks: the principal is
-        // re-derived from the authenticated token, so a worker credential — or an evicted
-        // claim — is refused at the door with the same reason it gets everywhere else. There
-        // is no caller parameter to disagree with, and nothing downstream to re-check it:
-        // unlike the store transitions below, this read never reaches the engine, so this IS
-        // the enforcement point.
         _ = LeadPrincipal;
 
-        // §7/§10: the routing projection over the live connection registry — the same
-        // MachineSnapshot dispatch matches on, so the Lead is told what routing would
-        // actually do. Deliberately unscoped by Team: a declared profile belongs to a
-        // machine's operator config, not to any Team (see ProfileRoutingView).
-        return registry.ProfileRouting();
+        var view = registry.ProfileRouting();
+        var ids = view.Profiles.SelectMany(p => p.Machines).Select(m => m.MachineId).Distinct();
+        var labels = await store.GetMachineLabelsAsync(ids, ct);
+        if (labels.Count == 0)
+            return view;
+
+        var profiles = view.Profiles.Select(p => p with
+        {
+            Machines = p.Machines.Select(m =>
+                labels.TryGetValue(m.MachineId, out var label)
+                    ? m with { Name = label.Name, Os = label.Os }
+                    : m).ToList(),
+        }).ToList();
+        return view with { Profiles = profiles };
     }
 
     [McpServerTool(Name = "get_session_report"),

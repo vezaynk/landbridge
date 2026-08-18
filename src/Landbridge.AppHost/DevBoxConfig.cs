@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Nodes;
+using Landbridge.ControlPlane;
 using Microsoft.Extensions.Configuration;
 
 /// <summary>
@@ -60,7 +61,7 @@ internal static class DevBoxConfig
             },
             ["profiles"] = new JsonArray(
                 Profile(specificProfile, recipe),
-                Profile("any-linux", recipe)),
+                Profile(DevSeedNaming.Group, recipe)),
         };
 
         var outPath = Path.Combine(runDir, $"landbridged.{specificProfile}.json");
@@ -80,8 +81,7 @@ internal static class DevBoxConfig
     {
         "claude" => new(
             [ResolveBin("claude-agent-acp")],
-            Prompt("mcp__landbridge__get_session", "mcp__landbridge__report_result", "mcp__landbridge__request_input",
-                readSkill: true),
+            Prompt("mcp__landbridge__get_session", "mcp__landbridge__report_result", "mcp__landbridge__request_input"),
             FollowUp("mcp__landbridge__get_session"),
             AuthMethod: null,
             Env: null,
@@ -134,21 +134,43 @@ internal static class DevBoxConfig
             profile["env"] = recipe.Env.DeepClone();
         if (recipe.Telemetry is not null)
             profile["telemetry"] = recipe.Telemetry.DeepClone();
+        profile["files"] = new JsonArray(new JsonObject
+        {
+            ["path"] = "LANDING.md",
+            ["contents"] = LandingMarkdown(recipe.Prompt.Contains("mcp__landbridge__", StringComparison.Ordinal)
+                ? "mcp__landbridge__"
+                : "landbridge__"),
+        });
         return profile;
     }
 
-    private static string Prompt(string getSession, string reportResult, string requestInput, bool readSkill = false)
-    {
-        var skill = readSkill ? " Read the landbridge-worker skill." : "";
-        return
-            $"You are a Landbridge worker on a live session. First call the {getSession} MCP tool " +
-            $"to read your assignment (namespace, description, workspace, attempt).{skill} " +
-            "Do the work in this session's directory; you are not the only agent on the machine. " +
-            $"When you think you are done, call {reportResult} with a reference to where the work " +
-            "lives (a branch/commit/URL) — not the work itself — and stay up; the Lead may reply. " +
-            $"If you are blocked or a decision is above your scope, call {requestInput} instead of " +
-            "guessing. You do not complete the session yourself.";
-    }
+    private static string Prompt(string getSession, string reportResult, string requestInput) =>
+        $"You are a Landbridge worker on a live session. Read LANDING.md in this directory " +
+        $"first — do not search $HOME or ~/.claude for a landbridge skill. Then call the " +
+        $"{getSession} MCP tool to read your assignment (namespace, description, workspace, " +
+        "attempt). Do the work in this session's directory; you are not the only agent on " +
+        "the machine. You must not end a turn until you have called " +
+        $"{reportResult} or {requestInput}. When you think you are done, call {reportResult} " +
+        "with a reference to where the work lives (a branch/commit/URL) — not the work " +
+        "itself — and stay up; the Lead may reply. If you are blocked or a decision is " +
+        $"above your scope, call {requestInput} instead of guessing. You do not complete " +
+        "the session yourself.";
+
+    private static string LandingMarkdown(string toolPrefix) =>
+        $"""
+         # Landbridge worker contract
+
+         You were dispatched. This file is the contract. The skill is not in ~/.claude.
+
+         1. Call `{toolPrefix}get_session` first. Stay up after you report.
+         2. Work only in this directory. Isolate: worktree, random port, unique names.
+         3. Call `{toolPrefix}report_result` with a reference (branch/commit/URL), or `{toolPrefix}request_input` if blocked.
+         4. Do not write `$HOME`, `~/.ssh`, `~/.claude`, or change global git/npm config.
+         5. Do not search the operator's dotfiles for a landbridge skill. This file is it.
+         6. Long work: `{toolPrefix}start_process` when the tool exists.
+
+         Landbridge tools are MCP tools, not a `landbridge` binary.
+         """;
 
     private static string FollowUp(string getSession) =>
         $"There is new input on your assignment. Call {getSession} to read it, then continue.";
