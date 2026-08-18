@@ -52,9 +52,11 @@ destroy-guard list (`git reset --hard`, `git clean -f`, `terraform destroy`,
 …) so a model outage cannot wave those through, then runs Qwen's two-stage
 LLM for everything else. `LANDBRIDGE_CLASSIFIER_API_KEY` (or
 `DASHSCOPE_API_KEY` / `OPENAI_API_KEY`) and `LANDBRIDGE_CLASSIFIER_MODEL` are
-required — Aspire fails the start without both, and the sidecar exits 1.
-`LANDBRIDGE_CLASSIFIER_BASE_URL` is optional (OpenAI-compatible, default
-`https://api.openai.com/v1`). A model error is Ask, never Deny.
+required for the classifier container: it exits 1 without both, and that
+resource fails in Aspire. The rest of the loop still starts; the plane Asks
+until the sidecar is up. `LANDBRIDGE_CLASSIFIER_BASE_URL` is optional
+(OpenAI-compatible, default `https://api.openai.com/v1`). A model error is
+Ask, never Deny.
 
 The loop stands up a *standing fleet* and does **not** auto-create a task. Create
 work as a Lead over MCP, exactly as in production. Each seeded box spawns the
