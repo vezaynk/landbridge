@@ -279,9 +279,17 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
 
         using var cts = new CancellationTokenSource(ScenarioBudget);
         var ct = cts.Token;
+        // Neither §10 clock may reclaim this task: the scenario is about replaying a dead
+        // instance's token, and the only reclaim it wants is the sigkill's. The ceiling
+        // mutes the progress clock. The aliveness clock needs saying too — it is the one
+        // that failed here in CI, requeueing as LivenessTimeout 7.65s after dispatch,
+        // before the wedge worker existed to be alive. The default 5s cannot cover a cold
+        // spawn on a loaded runner; widening it globally is wrong, because other scenarios
+        // rely on that sweep to rescue a stalled dispatch inside TransitionBudget.
         await using var fleet = new ChaosFleet(pg, new ChaosFleetOptions
         {
             NoProgressCeiling = TimeSpan.FromMinutes(10),
+            PerTaskLivenessWindow = TimeSpan.FromSeconds(30),
         });
         await fleet.StartAsync(ct);
 
