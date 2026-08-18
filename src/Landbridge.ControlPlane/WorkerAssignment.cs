@@ -5,10 +5,10 @@ namespace Landbridge.ControlPlane;
 /// <summary>
 /// A dispatched worker's assignment (§7), returned by the <c>get_session</c> worker
 /// tool — the first thing a worker reads (worker-skill.md). It carries the
-/// server-assigned <c>namespace</c>, the Lead's prose <c>description</c>, the
-/// opaque <c>completion_criteria</c> and <c>workspace</c>, and the
-/// server-maintained <c>attempt</c> counter (so a redispatched worker knows it
-/// may be inheriting a dirty workspace, §7/§11).
+/// server-assigned <c>namespace</c>, the Lead's prose <c>description</c> (the
+/// whole brief), optional <c>workspace</c> context, and the server-maintained
+/// <c>attempt</c> counter (so a redispatched worker knows it may be inheriting
+/// a dirty directory, §7/§11).
 ///
 /// <para>It is also the <b>delivery surface for an answered input request</b> (§11): a
 /// worker that asked a question is gone by the time the answer lands, so the answer
@@ -26,7 +26,6 @@ namespace Landbridge.ControlPlane;
 public sealed record WorkerAssignment(
     [property: JsonPropertyName("namespace")] string Namespace,
     [property: JsonPropertyName("description")] string Description,
-    [property: JsonPropertyName("completion_criteria")] string CompletionCriteria,
     [property: JsonPropertyName("workspace")] string? Workspace,
     [property: JsonPropertyName("attempt")] int Attempt,
     // §10 in-band report: the report a prior attempt left, so a redispatched or

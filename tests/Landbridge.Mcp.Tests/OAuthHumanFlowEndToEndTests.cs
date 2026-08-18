@@ -174,9 +174,7 @@ public sealed class OAuthHumanFlowEndToEndTests(PostgresFixture pg) : IAsyncLife
             var created = await lead.CallToolAsync("create_session", new Dictionary<string, object?>
             {
                 ["description"] = "prove the front door opens onto the real system",
-                ["completionCriteria"] = "a task exists",
-                ["mode"] = "lead",
-                ["profile"] = null,
+                ["profile"] = "default",
                 ["workspace"] = null,
             }, cancellationToken: ct);
 

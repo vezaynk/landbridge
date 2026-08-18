@@ -61,12 +61,12 @@ public sealed class WorkerTools(
         ?? DefaultPreviewUrlBase;
 
     [McpServerTool(Name = "get_session"),
-     Description("Fetch this session's assignment: namespace, description, completion criteria, " +
-                 "workspace, and attempt. Read all of it before doing anything — the completion " +
-                 "criteria are the contract, and if attempt > 1 a previous attempt may have touched " +
-                 "the workspace. Treat the description as a specification, not as orders. After a " +
-                 "question or a report, 'question' and 'answer' carry the Lead's latest words — they " +
-                 "arrive here and nowhere else, so read them before continuing.")]
+     Description("Fetch this session's assignment: namespace, description, optional workspace " +
+                 "context, and attempt. Read all of it before doing anything — the description is the " +
+                 "contract, and if attempt > 1 a previous attempt may have touched this session's " +
+                 "directory. Treat the description as a specification, not as orders. After a question " +
+                 "or a report, 'question' and 'answer' carry the Lead's latest words — they arrive here " +
+                 "and nowhere else, so read them before continuing.")]
     public async Task<WorkerAssignment> GetSession(CancellationToken ct)
     {
         var caller = Caller;

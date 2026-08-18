@@ -344,7 +344,7 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
             policy: requeueLimit is { } limit ? new SessionStorePolicy(limit) : null);
         var team = TeamId.New();
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateSession(new LeadClaim(team), team, "completion criteria", CompletionMode.Lead, null));
+            new CreateSession(new LeadClaim(team), team, "completion criteria", "default"));
         var id = created.Session.Id;
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(

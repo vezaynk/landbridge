@@ -7,8 +7,8 @@ namespace Landbridge.Mcp.Dashboard;
 /// judges the answers (§2 principle 1 / §7); these texts exist so a real worker
 /// following the worker skill can finish without a human, and so the progress
 /// view can label each task by kind. Kind is stored on the task's
-/// opaque <c>workspace</c> as <c>conformance/{kind}</c> — a Lead-assigned isolation
-/// blob, not something dispatch interprets.
+/// opaque <c>workspace</c> as <c>conformance/{kind}</c> — context, not
+/// something dispatch interprets.
 /// </summary>
 internal static class ConformanceCatalog
 {
@@ -25,18 +25,14 @@ internal static class ConformanceCatalog
                 "This is a Landbridge enrollment check (kind: identity). " +
                 "Report this machine's hostname, the process current working directory, " +
                 "and the first 8 hex characters of the LANDBRIDGE_SESSION_ID environment variable. " +
-                "Do not restate this ask. Call report_result with a reference that includes those three facts.",
-                "The result reference names a hostname, a working directory path, and an 8-character hex prefix."),
+                "Do not restate this ask. Call report_result with a reference that includes those three facts."),
             new("write",
                 "This is a Landbridge enrollment check (kind: write). " +
-                "In the assigned workspace, write a file named smoke.txt containing only this machine's hostname " +
-                "(one line, no extra text). Call report_result with a path to that file.",
-                "smoke.txt exists in the workspace and contains only a hostname."),
+                "In this session's working directory, write a file named smoke.txt containing only this machine's hostname " +
+                "(one line, no extra text). Call report_result with a path to that file."),
             new("shell",
                 "This is a Landbridge enrollment check (kind: shell). " +
-                $"Run `echo {nonce}` in a shell and call report_result with exactly that command's output (trimmed). " +
-                "The nonce is the only acceptable result.",
-                $"The result reference or report contains the exact nonce {nonce}."),
+                $"Run `echo {nonce}` in a shell and call report_result with exactly that command's output (trimmed)."),
         ];
     }
 
@@ -58,4 +54,4 @@ internal static class ConformanceCatalog
 }
 
 internal readonly record struct ConformanceSessionSpec(
-    string Kind, string Description, string CompletionCriteria);
+    string Kind, string Description);

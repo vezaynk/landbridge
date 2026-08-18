@@ -137,17 +137,14 @@ internal static class PlaneProbe
     public static async Task<SessionId> CreateSessionAsync(
         McpClient lead,
         string description,
-        string completionCriteria,
         string workspace,
         CancellationToken ct,
-        string? profile = null,
+        string profile = "default",
         SessionId? continues = null)
     {
         var created = await lead.CallToolAsync("create_session", new Dictionary<string, object?>
         {
             ["description"] = description,
-            ["completionCriteria"] = completionCriteria,
-            ["mode"] = "lead",
             ["profile"] = profile,
             ["workspace"] = workspace,
             ["continues"] = continues?.Value.ToString(),

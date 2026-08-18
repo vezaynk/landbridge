@@ -13,11 +13,10 @@ public abstract record SessionCommand(Actor Actor);
 /// → submitted. Only a lead claim may create tasks (§9 check 3).
 ///
 /// <see cref="Description"/> (prose instructions, §7) and <see cref="Workspace"/>
-/// (the Lead-assigned opaque isolation blob, §7) ride along as content the
-/// <em>engine never interprets</em> — exactly like <see cref="CompletionCriteria"/>,
-/// which <see cref="SessionStateMachine.Create"/> only checks for non-emptiness and
-/// never lands on the pure-state <see cref="SessionRecord"/>. The store persists all
-/// three verbatim; the state machine stays free of task content (§2 principle 1).
+/// (optional context, §7) ride along as content the engine never interprets.
+/// The store persists them verbatim; the state machine stays free of session
+/// content (§2 principle 1). The description is the whole brief — there is no
+/// separate completion-criteria field.
 ///
 /// <para><see cref="Continues"/> switches the task to <b>continuation targeting</b>
 /// (§6/§11): rather than being dispatched to any profile-matching machine, the new
@@ -29,10 +28,8 @@ public abstract record SessionCommand(Actor Actor);
 public sealed record CreateSession(
     Actor Actor,
     TeamId Team,
-    string CompletionCriteria,
-    CompletionMode Mode,
-    string? Profile,
-    string Description = "",
+    string Description,
+    string Profile,
     string? Workspace = null,
     Continuation? Continues = null) : SessionCommand(Actor);
 
@@ -125,17 +122,17 @@ public sealed record ReportResult(Actor Actor, string? ResultReference, string? 
 }
 
 /// <summary>
-/// verifying → completed. Caller identity is not an agent. Review mode trusts
-/// the Lead; <see cref="HumanConfirmed"/> is accepted but not gated on.
+/// verifying → completed. Caller identity is not an agent. The plane trusts
+/// the Lead; a session's own worker can never complete it.
 /// </summary>
-public sealed record VerdictAccept(Actor Actor, bool HumanConfirmed = false) : SessionCommand(Actor);
+public sealed record VerdictAccept(Actor Actor) : SessionCommand(Actor);
 
 /// <summary>
 /// verifying → rejected. A fail is not a redispatch: if the Lead wants more
 /// from this worker they reply (<see cref="LeadMessage"/>) instead. Same
 /// identity gate as <see cref="VerdictAccept"/>.
 /// </summary>
-public sealed record VerdictFail(Actor Actor, bool HumanConfirmed = false) : SessionCommand(Actor);
+public sealed record VerdictFail(Actor Actor) : SessionCommand(Actor);
 
 /// <summary>
 /// working → blocked_on_input. Requires a typed request kind (§6).

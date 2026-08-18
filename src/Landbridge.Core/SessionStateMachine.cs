@@ -18,9 +18,13 @@ public static class SessionStateMachine
             return TransitionResult.Reject(Rule.OnlyLeadCreatesSessions,
                 "task creation requires a lead claim for this Team");
 
-        if (string.IsNullOrWhiteSpace(command.CompletionCriteria))
-            return TransitionResult.Reject(Rule.CompletionCriteriaNonEmpty,
-                "completion.criteria must be non-empty");
+        if (string.IsNullOrWhiteSpace(command.Description))
+            return TransitionResult.Reject(Rule.DescriptionNonEmpty,
+                "description must be non-empty");
+
+        if (string.IsNullOrWhiteSpace(command.Profile))
+            return TransitionResult.Reject(Rule.ProfileRequired,
+                "profile is required; name a profile list_profiles returned");
 
         if (string.IsNullOrWhiteSpace(serverAssignedNamespace))
             return TransitionResult.Reject(Rule.NamespaceServerAssigned,
@@ -43,7 +47,7 @@ public static class SessionStateMachine
             // the continuation could never dispatch to the machine that holds its
             // transcript. When the machine is gone the set is null and the check is
             // skipped (dispatch's own profile routing still applies).
-            var requiredProfile = command.Profile ?? MachineSnapshot.DefaultProfile;
+            var requiredProfile = command.Profile;
             if (cont.PreferredMachineProfiles is { } declared && !declared.Contains(requiredProfile))
                 return TransitionResult.Reject(Rule.ContinuationProfileDeclaredByPreferredMachine,
                     $"preferred machine does not declare profile '{requiredProfile}' the continuation requires");
@@ -54,7 +58,6 @@ public static class SessionStateMachine
             Id = id,
             Team = command.Team,
             Namespace = serverAssignedNamespace,
-            CompletionMode = command.Mode,
             Profile = command.Profile,
         });
     }
@@ -70,8 +73,8 @@ public static class SessionStateMachine
             Dispatch c => ApplyDispatch(task, c),
             LivenessLost c => ApplyLivenessLost(task, c),
             ReportResult c => ApplyReportResult(task, c),
-            VerdictAccept c => ApplyVerdict(task, c.Actor, c.HumanConfirmed, accepted: true),
-            VerdictFail c => ApplyVerdict(task, c.Actor, c.HumanConfirmed, accepted: false),
+            VerdictAccept c => ApplyVerdict(task, c.Actor, accepted: true),
+            VerdictFail c => ApplyVerdict(task, c.Actor, accepted: false),
             RequestInput c => ApplyRequestInput(task, c),
             AnswerInput c => ApplyAnswerInput(task, c),
             AnswerPermission c => ApplyAnswerPermission(task, c),
@@ -103,8 +106,9 @@ public static class SessionStateMachine
             return TransitionResult.Reject(Rule.MachineIneligibleForDispatch,
                 $"machine {c.Machine.MachineId} is under back-pressure");
 
-        var requiredProfile = task.Profile ?? MachineSnapshot.DefaultProfile;
-        if (!c.Machine.DeclaredProfiles.Contains(requiredProfile))
+        var requiredProfile = task.Profile;
+        if (string.IsNullOrWhiteSpace(requiredProfile)
+            || !c.Machine.DeclaredProfiles.Contains(requiredProfile))
             return TransitionResult.Reject(Rule.MachineIneligibleForDispatch,
                 $"machine {c.Machine.MachineId} does not declare profile '{requiredProfile}'");
 
@@ -190,19 +194,15 @@ public static class SessionStateMachine
         return TransitionResult.Ok(task with { State = SessionState.Verifying });
     }
 
-    private static TransitionResult ApplyVerdict(SessionRecord task, Actor actor, bool humanConfirmed, bool accepted)
+    private static TransitionResult ApplyVerdict(SessionRecord task, Actor actor, bool accepted)
     {
         if (task.State != SessionState.Verifying)
             return WrongState(task, SessionState.Verifying);
 
         // §9 check 4 (doer/judge split): completion comes from a Lead or human
         // credential, NEVER the task's own worker — a WorkerCaller is refused here
-        // structurally, exactly as a subagent never accepts its own work. In `lead`
-        // mode a Lead session adjudicates autonomously (orchestrator judgment); in
-        // `review` mode a Lead verdict additionally carries human confirmation (§7),
-        // while a human session completes either mode outright. The former verifier
-        // credential is gone (§5): CI and tests are evidence the Lead gathers itself,
-        // not a verdict-issuing actor. Provenance is derived from the actor and
+        // structurally, exactly as a subagent never accepts its own work. The
+        // plane trusts the Lead. Provenance is derived from the actor and
         // recorded on the completing transition (§12 dashboard).
         var provenance = actor switch
         {
@@ -210,14 +210,7 @@ public static class SessionStateMachine
             LeadClaim lead when lead.Team == task.Team => VerdictProvenance.LeadSession,
             _ => null,
         };
-        var authorized = provenance switch
-        {
-            VerdictProvenance.Human => true,
-            // Review mode trusts the Lead to escalate to a human when the
-            // evidence is theirs to own. The plane does not refuse a Lead accept.
-            VerdictProvenance.LeadSession => true,
-            _ => false,
-        };
+        var authorized = provenance is VerdictProvenance.Human or VerdictProvenance.LeadSession;
         if (!authorized)
             return TransitionResult.Reject(Rule.CompletionByLeadOrHuman,
                 "completion is a Lead or human verdict, never the task's own worker");
@@ -267,7 +260,7 @@ public static class SessionStateMachine
             return tooLong;
 
         // §11 permission bridge: the tool awaiting approval must be named. A
-        // non-emptiness check in the same class as CompletionCriteria — the engine does
+        // non-emptiness check in the same class as DescriptionNonEmpty — the engine does
         // not recognize tool names and never will, it only refuses a permission request
         // that gives its answerer nothing to decide about.
         if (c.Kind == InputRequestKind.Permission && string.IsNullOrWhiteSpace(c.PermissionTool))

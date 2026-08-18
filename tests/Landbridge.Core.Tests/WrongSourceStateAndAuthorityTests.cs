@@ -31,8 +31,7 @@ public class WrongSourceStateAndAuthorityTests
         // CreateSession belongs to SessionStateMachine.Create, which builds a record; there
         // is no meaning to replaying it over a task that already exists, and treating
         // it as a no-op Ok would report success for a command that did nothing.
-        var create = new CreateSession(
-            Given.Lead, Given.Team, "ship it", CompletionMode.Lead, Profile: null);
+        var create = new CreateSession(Given.Lead, Given.Team, "ship it", Profile: "default");
 
         Expect.Rejected(SessionStateMachine.Apply(Given.Session(), create), Rule.InvalidSourceState);
     }

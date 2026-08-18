@@ -15,7 +15,15 @@ There is no `/landbridge-enroll` command on this build. No slash command or MCP 
 
 A `landbridged` config that tells a generic daemon how to drive *this* machine's harness. The daemon knows nothing about harnesses, toolchains, or session content — everything specific lives in the config you write.
 
-The first profile — and the one omitted-`profile` dispatch lands on — is named `default`. The schema requires exactly one entry with that name. **It is a real harness, not a placeholder:** omitted-profile work uses it, so write the ACP entry point you actually intend to run. Extra profiles are a second harness or a restricted posture; name them for what they are (`claude`, `goose`, `restricted`). Every name this machine declares must be exercised before real work uses it — a badge on the Machine Group is not a passing check.
+Name the first profile as `<harness>-<hostname>-<os>` — exact, lowercase, hyphens. Resolve those three from this machine: the harness you just probed (`goose`, `claude`, `codex`, `grok`, `opencode`), `hostname -s` (or the equivalent), and the OS as `linux` / `macos` / `windows`. Examples: `goose-devbox-linux`, `claude-mbp-macos`, `codex-builder-linux`. That name is unique to this box and this harness, so a Lead can target it without hitting a sibling.
+
+Then **offer** a group profile that shares the same `spawn` / `prompt` / `follow_up` under a broader name. Ask the human; do not add one silently:
+
+- Linux → `any-linux`
+- macOS → `any-macos`
+- Windows → `any-windows`
+
+A Lead that does not care which Linux box runs the work sets `profile: "any-linux"`. A Lead that needs *this* machine or *this* harness uses the specific name. Do not invent a reserved `default` — `create_session` requires an exact name from `list_profiles`. Every name this machine declares must be exercised before real work uses it — a badge on the Machine Group is not a passing check.
 
 The config must cover:
 
@@ -136,7 +144,7 @@ This is a system-level change, which you report rather than perform. Prepare the
 
 **There is no automated gate that judges results.** Spec §11's conformance run would dispatch trivial work *and* decide pass/fail; that judging half is future work. What exists today is a dispatch check you run by hand. A machine that enrolls is otherwise simply a machine that connected — no unclaimable state, no probe. **Whatever you do not dispatch here, nobody checks** — including a second profile that only exists as a badge.
 
-The failure you are hunting is the quiet one — a machine that heartbeats, reads as `ready`, accepts a dispatch, and produces nothing. `spawn`, `PATH`, credentials, and tool spelling are per profile, so a green `default` says nothing about `goose`.
+The failure you are hunting is the quiet one — a machine that heartbeats, reads as `ready`, accepts a dispatch, and produces nothing. `spawn`, `PATH`, credentials, and tool spelling are per profile, so a green `any-linux` says nothing about `goose-devbox-linux`.
 
 **Restart `landbridged`** (or start it, if it is not running yet) after writing the config — editing the file under a running daemon changes nothing, and the plane will not list a badge until the post-restart heartbeat. Confirm every name you wrote appears on `/dashboard/machines` for this machine id. **A profile that is shared is claimed by any ready machine that declares it.** If this is the only ready box, the session lands here. If the Group already has others declaring the same name, drain or pause them first, or the check proves the fleet rather than this enrollment.
 
@@ -162,7 +170,7 @@ The failures worth naming, and what each really looks like:
 - **The worker cannot authenticate to the plane.** Do not wait for an `auth-failed` event. The plane can record one, but `landbridged` never emits one, so none will arrive. A rejected worker token appears as a 401 inside the harness's own output and `report_result` simply never lands — the transcript again.
 - **`Failed` after one attempt.** The plane does not requeue. Handshake flakes, spawn failures, and dead processes land as `Failed` with a plane-authored reason and wait for the Lead. If you see `Attempt` climbing, a Lead is resuming those failures on purpose — read the last reason, not the count.
 
-**Then test the kill path on that same profile, and do not skip it because dispatch worked.** Have the human cancel the session mid-flight (`cancel_session`, disposition `preserve`) and confirm the process is actually gone — that is the assertion that matters, and spawn differs per profile, so a stop that worked on `default` is not evidence for `goose`. A machine that dispatches but cannot be stopped looks fine right up until someone needs to stop a runaway agent — the worst possible moment to find out. When you are done, `park_session` or accept anything still in `verifying` — a report keeps the process.
+**Then test the kill path on that same profile, and do not skip it because dispatch worked.** Have the human cancel the session mid-flight (`cancel_session`, disposition `preserve`) and confirm the process is actually gone — that is the assertion that matters, and spawn differs per profile, so a stop that worked on `any-linux` is not evidence for `goose-devbox-linux`. A machine that dispatches but cannot be stopped looks fine right up until someone needs to stop a runaway agent — the worst possible moment to find out. When you are done, `park_session` or accept anything still in `verifying` — a report keeps the process.
 
 **What to expect from stop.** A stop is `session/cancel` plus the wind-down deadline. The runner reports that the cancel was *sent*, never that the agent obeyed it (cancel is a notification with no reply). Confirm the process is gone after the deadline. There is no `stop.mode` to choose.
 
@@ -174,7 +182,7 @@ Two things you cannot verify by hand, so do not claim them either way: whether t
 
 The control plane will mint a fixed set of dummy sessions aimed at **one profile you name** and expose their states. This is the stand-in for the unbuilt §11 conformance run. It does **not** judge the answers — a session that reaches `verifying` is a worker that called `report_result`. A report keeps the process. One POST is one profile; walk the config and POST once per name.
 
-After `landbridged` is up and the name is on this machine's badges, have the human (operator session, not a Lead token) start a run. `profile` is the exact string from the runner config. Omit it (or send empty) only for `default`:
+After `landbridged` is up and the name is on this machine's badges, have the human (operator session, not a Lead token) start a run. `profile` is required — the exact string from the runner config (`goose-devbox-linux`, or `any-linux` if you added the group name):
 
 ```
 POST /dashboard/conformance

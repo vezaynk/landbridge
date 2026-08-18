@@ -68,9 +68,7 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             var created = await lead.CallToolAsync("create_session", new Dictionary<string, object?>
             {
                 ["description"] = "make the suite pass",
-                ["completionCriteria"] = "the suite is green",
-                ["mode"] = "lead",
-                ["profile"] = null,
+                ["profile"] = "default",
                 ["workspace"] = null,
             }, cancellationToken: ct);
 
@@ -150,8 +148,7 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             var created = await lead.CallToolAsync("create_session", new Dictionary<string, object?>
             {
                 ["description"] = "add the index",
-                ["completionCriteria"] = "the migration applies",
-                ["mode"] = "lead",
+                ["profile"] = "default",
             }, cancellationToken: ct);
             sessionId = new SessionId(Guid.Parse(Assert.Single(created.Content.OfType<TextContentBlock>()).Text));
         }
@@ -255,7 +252,7 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         {
             var store = new SessionStore(db, TimeProvider.System);
             var created = (StoreResult.Applied)await store.CreateAsync(
-                new CreateSession(new LeadClaim(team), team, "seed", CompletionMode.Lead, null), ct);
+                new CreateSession(new LeadClaim(team), team, "seed", "default"), ct);
             var instance = WorkerInstanceId.New();
             await store.DispatchNextAsync(
                 new MachineSnapshot("m1", true, false, new HashSet<string> { "default" }), instance, ct);
@@ -267,9 +264,7 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         var result = await worker.CallToolAsync("create_session", new Dictionary<string, object?>
         {
             ["description"] = "should not happen",
-            ["completionCriteria"] = "should not happen",
-            ["mode"] = "lead",
-            ["profile"] = null,
+            ["profile"] = "default",
             ["workspace"] = null,
         }, cancellationToken: ct);
 
@@ -320,7 +315,7 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             // that simply carries no lead claim.
             var store = new SessionStore(db, TimeProvider.System);
             var created = (StoreResult.Applied)await store.CreateAsync(
-                new CreateSession(new LeadClaim(team), team, "seed", CompletionMode.Lead, null), ct);
+                new CreateSession(new LeadClaim(team), team, "seed", "default"), ct);
             seeded = created.Session.Id;
             var instance = WorkerInstanceId.New();
             await store.DispatchNextAsync(
@@ -340,7 +335,8 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             var root = doc.RootElement;
 
             Assert.Equal(2, root.GetProperty("connectedMachines").GetInt32());
-            Assert.Equal("default", root.GetProperty("defaultProfile").GetString());
+            Assert.False(root.TryGetProperty("defaultProfile", out _),
+                "there is no reserved default profile");
 
             var profiles = root.GetProperty("profiles").EnumerateArray().ToList();
             Assert.Equal(

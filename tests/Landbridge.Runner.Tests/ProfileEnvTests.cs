@@ -25,7 +25,7 @@ public class ProfileEnvTests
               "profiles": [ { "name": "default", "prompt": "go", "spawn": ["grok", "-p"] } ] }
             """;
 
-        Assert.Empty(RunnerConfig.Load(json).Default.Env);
+        Assert.Empty(RunnerConfig.Load(json).Profiles["default"].Env);
     }
 
     [Fact]
@@ -33,8 +33,8 @@ public class ProfileEnvTests
     {
         var config = RunnerConfig.Load(WithEnv("""{ "GROK_HOME": "{work_dir}/.grok", "XAI_API_KEY": "from-profile" }"""));
 
-        Assert.Equal("{work_dir}/.grok", config.Default.Env["GROK_HOME"]);
-        Assert.Equal("from-profile", config.Default.Env["XAI_API_KEY"]);
+        Assert.Equal("{work_dir}/.grok", config.Profiles["default"].Env["GROK_HOME"]);
+        Assert.Equal("from-profile", config.Profiles["default"].Env["XAI_API_KEY"]);
     }
 
     [Theory]

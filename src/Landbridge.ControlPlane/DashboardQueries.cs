@@ -243,7 +243,6 @@ public sealed class DashboardQueries(LandbridgeDbContext db, RunnerConnectionReg
                 t.Id,
                 t.Namespace,
                 t.State,
-                t.CompletionMode,
                 t.Attempt,
                 t.BlockedAt,
                 Parked = t.ParkMachine != null,
@@ -252,7 +251,7 @@ public sealed class DashboardQueries(LandbridgeDbContext db, RunnerConnectionReg
                 t.CompletionProvenance,
                 t.WorkerReport,
                 // §8.1 (#81): the artifact pointer the worker handed over, so a human
-                // adjudicating in review mode sees the same thing the Lead rules on.
+                // on this page sees the same thing the Lead rules on.
                 t.ResultReference,
                 t.InputKind,
                 t.InputQuestion,
@@ -306,7 +305,7 @@ public sealed class DashboardQueries(LandbridgeDbContext db, RunnerConnectionReg
         var taskRows = tasks
             .OrderBy(t => t.Namespace, StringComparer.Ordinal)
             .Select(t => new TeamSessionView(
-                t.Id, t.Namespace, t.State, t.CompletionMode, t.Attempt,
+                t.Id, t.Namespace, t.State, t.Attempt,
                 parksByTask.GetValueOrDefault(t.Id),
                 t.Parked ? t.ParkMachine : null,
                 t.BlockedAt is not null
@@ -387,10 +386,10 @@ public sealed class DashboardQueries(LandbridgeDbContext db, RunnerConnectionReg
     /// <summary>
     /// Everything waiting on a person across every Team (§12): open questions
     /// (blocked_on_input) with the typed kind and the worker's own question text,
-    /// tasks awaiting review (verifying + review mode, §7), parked tasks awaiting
-    /// an answer (§11) with the same question, failed attempts the plane parked
-    /// (infrastructure gave up — resume is a Lead note), the pending permission requests of §11's
-    /// permission bridge, and the auth failures a person could still act on (§11, #50).
+    /// parked tasks awaiting an answer (§11) with the same question, failed
+    /// attempts the plane parked (infrastructure gave up — resume is a Lead note),
+    /// the pending permission requests of §11's permission bridge, and the auth
+    /// failures a person could still act on (§11, #50).
     /// This is where a person answers, so it is the one place the question's prose has to be
     /// legible verbatim — a §12 human surface, not a §10 agent read.
     ///
@@ -443,12 +442,6 @@ public sealed class DashboardQueries(LandbridgeDbContext db, RunnerConnectionReg
                 t.Id, t.Namespace, t.TeamId, t.State, t.BlockedAt, t.PermissionTool,
                 t.InputQuestion, t.PermissionVerdict, t.InputAnswer,
                 t.PermissionEscalatedAt, t.PermissionEscalationReason))
-            .ToListAsync(ct);
-
-        var awaitingReview = await scopedTasks
-            .Where(t => t.State == SessionState.Verifying && t.CompletionMode == CompletionMode.Review)
-            .OrderBy(t => t.Namespace)
-            .Select(t => new ReviewItemView(t.Id, t.Namespace, t.TeamId))
             .ToListAsync(ct);
 
         var parked = await scopedTasks
@@ -514,7 +507,7 @@ public sealed class DashboardQueries(LandbridgeDbContext db, RunnerConnectionReg
                 g.Occurrences))
             .ToList();
 
-        return new InboxView(questions, awaitingReview, parked, failed, authFailures, permissionRequests);
+        return new InboxView(questions, parked, failed, authFailures, permissionRequests);
     }
 
     // ── Event log (§12) ───────────────────────────────────────────────────────
@@ -704,7 +697,7 @@ public sealed record TeamDetail(
 /// for a completed task, who adjudicated it (§9 check 4 provenance).
 /// <see cref="ResultReference"/> is the §8.1 artifact pointer its worker handed over on
 /// working → verifying — where the finished work is said to live — shown here because a
-/// human adjudicating in <c>review</c> mode, or auditing a completed task afterwards,
+/// human auditing a completed task afterwards,
 /// needs the same pointer the Lead rules on (§7, #81); null until the task reaches
 /// verifying. Then this task's input exchange (§11): the typed <see cref="InputKind"/>,
 /// the worker's <see cref="Question"/>, and the <see cref="Answer"/> given. Unlike the
@@ -718,7 +711,6 @@ public sealed record TeamSessionView(
     Guid SessionId,
     string Namespace,
     SessionState State,
-    CompletionMode Mode,
     int Attempt,
     int Parks,
     string? ParkMachine,
@@ -748,9 +740,6 @@ public sealed record InputRequestView(
     DateTimeOffset? BlockedAt,
     InputRequestKind? Kind,
     string? Question);
-
-/// <summary>A verifying task in review mode, awaiting a human verdict (§7, §12).</summary>
-public sealed record ReviewItemView(Guid SessionId, string Namespace, Guid TeamId);
 
 /// <summary>A parked task awaiting an answer (§11, §12), carrying the question it is
 /// still waiting on — a park is a question that outlived its lease, so the inbox
@@ -803,7 +792,6 @@ public sealed record AuthFailureItemView(
 /// <paramref name="Questions"/>.</param>
 public sealed record InboxView(
     IReadOnlyList<InputRequestView> Questions,
-    IReadOnlyList<ReviewItemView> AwaitingReview,
     IReadOnlyList<ParkedItemView> Parked,
     IReadOnlyList<FailedItemView> Failed,
     IReadOnlyList<AuthFailureItemView> AuthFailures,

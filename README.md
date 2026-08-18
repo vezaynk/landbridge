@@ -13,8 +13,8 @@ deliberately thin in *logic* — it validates that fields exist, checks
 identities, counts, and enforces state transitions — while being substantial in
 *role*: `landbridge-relay` carries real service traffic between customer machines.
 
-The task schema is domain-neutral. Landbridge knows a task has a completion mode and
-a workspace, and nothing about what either contains. Coding is the primary use
+The session schema is domain-neutral. Landbridge knows a session has a description and
+an optional workspace, and nothing about what either contains. Coding is the primary use
 case, but repositories, branches, and test suites appear only in the shipped
 skill guidance, never in the data model.
 

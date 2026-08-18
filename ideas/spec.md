@@ -6,7 +6,7 @@ Landbridge coordinates AI agents across multiple machines. A human drives a *Lea
 
 Landbridge is the communication, runner, and relay layer. It does not supply models, resell inference, or hold model provider credentials — customers bring their own keys, which live on their own machines and never touch Landbridge infrastructure.
 
-**Coding is the primary use case, not a built-in assumption.** The schema is domain-neutral: Landbridge knows a task has a completion mode and a workspace, and nothing about what either contains. The shipped skill bundle is code-oriented because that is where most of the demand is, but repositories, branches, and test suites appear only in guidance — never in the data model.
+**Coding is the primary use case, not a built-in assumption.** The schema is domain-neutral: Landbridge knows a session has a description and an optional workspace, and nothing about what either contains. The shipped skill bundle is code-oriented because that is where most of the demand is, but repositories, branches, and test suites appear only in guidance — never in the data model.
 
 Landbridge ships first as a hosted product. Self-hosting comes later.
 
@@ -163,8 +163,8 @@ The control plane is both the OAuth 2.1 authorization server and the resource se
 
 | Identity | Obtained | Lifetime | Authorizes |
 |---|---|---|---|
-| **Human** | auth code / device flow | session | create Teams, approve permissions, confirm review verdicts, dashboard |
-| **Lead** | human session, claimed against a Team | session or until evicted | create tasks, answer questions, **adjudicate completion** (lead mode autonomously; review mode human-confirmed, §7), read Team state, bind its human's machine and open forwards onto it (§8.3) |
+| **Human** | auth code / device flow | session | create Teams, approve permissions, adjudicate completion, dashboard |
+| **Lead** | human session, claimed against a Team | session or until evicted | create tasks, answer questions, **adjudicate completion** (§7), read Team state, bind its human's machine and open forwards onto it (§8.3) |
 | **Machine** (`landbridged`) | enrollment token → client credentials | long, refreshed | runner channel, log stream, relay tunnels |
 | **Worker** | minted at dispatch | task lifetime | MCP tools, scoped to `{team, task, worker, instance}` |
 
@@ -227,7 +227,7 @@ Additional states: `blocked_on_input`, `parked`, `canceled`. A **permission** wa
 | `working` → `submitted` | control plane | ack timeout, per-task liveness loss, or machine reboot; increments the infrastructure counter and records **why** on the task and its event row (which clock fired, or that the process exited, or that the runner rebooted); revokes the worker-instance token. Unless that increment reaches the task's cap — then the row below |
 | `working` \| `blocked_on_input` → `canceled` | control plane | the infrastructure counter reached the task's configured cap (§9 check 7). The task is abandoned rather than dispatched again: the reason that ended it is recorded, services and forwards are released, the predecessor's token is revoked, and **the workspace is preserved** — whatever wedged every attempt is the evidence a human needs. Never `rejected`; see *two counters* below |
 | `working` → `verifying` | working agent | result reference present; caller is the incumbent worker instance |
-| `verifying` → `completed` | Lead or human | **caller is a Lead or human credential, never the task's own worker** (doer/judge split); in `review` mode the verdict carries human confirmation (§7); verdict provenance (`lead-session` \| `human`) is recorded on the completion event |
+| `verifying` → `completed` | Lead or human | **caller is a Lead or human credential, never the task's own worker** (doer/judge split); verdict provenance (`lead-session` \| `human`) is recorded on the completion event |
 | `verifying` → `submitted` | Lead or human | verdict is `fail` and verification retries remain |
 | `verifying` → `rejected` | Lead or human | verdict is `fail` and verification retries exhausted |
 | `working` → `blocked_on_input` | working agent | typed request kind present; caller is the incumbent worker instance |
@@ -248,7 +248,7 @@ Terminal states — `completed`, `rejected`, `canceled` — are final and never 
 
 Leaving `working` clears the task's registered services and releases its relay forwards.
 
-**Two targeting classes.** A task is dispatched one of two ways. *Profile targeting* (the default) routes a `submitted` task to any `ready` machine declaring its `profile` — the `submitted → working` claim above. *Continuation targeting* (`create_session(continues: <task-id>)`) instead resumes a prior task's harness session: the new task is seeded at creation from the continued task — `continues_session_id` (lineage), the machine that last held/ran it (its live lease or park record where either applies, otherwise the machine on its most recent `worker_instances` row, which is the only record that survives the task going terminal), that task's `harness_session_ref`, and an `on_machine_gone` policy — as park-record-style affinity, so its *first* dispatch prefers that machine and hands the runner the session ref to resume the transcript (§11), under a **new task id and a freshly minted worker token** (§5 credential descent is untouched; the addressable noun is the prior *task*, not a worker). Continuation is **same-Team only** — a `continues` referencing another Team's task is rejected at creation. Its `profile` defaults to the continued task's; supplying one the preferred machine does not declare is a creation-time error. If the preferred machine is gone at dispatch, `on_machine_gone` decides: `degrade` (default) cold-starts a fresh session on any profile-matching machine and records that conversational memory was lost, or `pin` waits in `submitted` for that machine to return (like a pinned profile). Forking is legal — several continuations of one task each resume the same transcript, and each stamps its own new session ref after its first turn (the existing session-start stamping handles this). Verification and event-log semantics are unchanged.
+**Two targeting classes.** A task is dispatched one of two ways. *Profile targeting* (the default) routes a `submitted` task to any `ready` machine declaring its `profile` — the `submitted → working` claim above. *Continuation targeting* (`create_session(continues: <task-id>)`) instead resumes a prior task's harness session: the new task is seeded at creation from the continued task — `continues_session_id` (lineage), the machine that last held/ran it (its live lease or park record where either applies, otherwise the machine on its most recent `worker_instances` row, which is the only record that survives the task going terminal), that task's `harness_session_ref`, and an `on_machine_gone` policy — as park-record-style affinity, so its *first* dispatch prefers that machine and hands the runner the session ref to resume the transcript (§11), under a **new task id and a freshly minted worker token** (§5 credential descent is untouched; the addressable noun is the prior *task*, not a worker). Continuation is **same-Team only** — a `continues` referencing another Team's task is rejected at creation. Its `profile` is still required; supplying one the preferred machine does not declare is a creation-time error. If the preferred machine is gone at dispatch, `on_machine_gone` decides: `degrade` (default) cold-starts a fresh session on any profile-matching machine and records that conversational memory was lost, or `pin` waits in `submitted` for that machine to return (like a pinned profile). Forking is legal — several continuations of one task each resume the same transcript, and each stamps its own new session ref after its first turn (the existing session-start stamping handles this). Verification and event-log semantics are unchanged.
 
 ---
 
@@ -258,43 +258,30 @@ Leaving `working` clears the task's registered services and releases its relay f
 
 | Field | Notes |
 |---|---|
-| `completion.mode` | `lead` (default) or `review`. Determines which credential may adjudicate completion, nothing else (§9 check 4). |
-| `completion.criteria` | Opaque, non-empty string. In `lead` mode the Lead judges it against evidence it gathers; in `review` mode a person reads it. The control plane never parses it. |
 | `completion.provenance` | Set on completion: `lead-session` or `human` (§9 check 4). Null until completed. |
 | `namespace` | Server-assigned `team-{id}/session-{id}`. Guaranteed unique. What an agent maps it onto is convention. |
-| `workspace` | Opaque blob assigned by the Lead. Where the work happens, how it is isolated, which ports it may use. Shape defined by the skill. |
+| `workspace` | Optional opaque context the Lead may pass (repo, package, base ref). Shape defined by the skill. Not isolation — the worker stays in `{work_root}/{session_id}`, uses a worktree, and binds a random port. |
 | `team_id`, `parent_task` | Lineage. |
 | `expected_duration` | Lead's guess. Distinguishes stuck-short from long-running. |
-| `profile` | Optional runner profile name. Exact-match routing; the control plane never interprets it. |
+| `profile` | Required runner profile name. Exact-match routing; the control plane never interprets it. There is no reserved `default`. |
 | `attempt` | Server-maintained counter, incremented on every requeue and redispatch. Visible to the worker, so a dispatched agent knows it may be inheriting a dirty workspace and should inspect before trusting or overwriting (§11). |
 | `author_identity` + `is_human` | **Provenance.** Lets the receiving side treat human- and agent-authored instructions differently. |
 
-**Prose:** `description`, `result_summary`, `blocker_note`.
+**Prose:** `description` (the whole brief — what to do and how it will be judged; there is no separate completion-criteria field), `result_summary`, `blocker_note`.
 
-### Completion modes
+### Who completes
 
-Not all work has a mechanical check. What generalizes is not the *check* but the *authority*: the worker does not decide it is done — and a task's own worker can never complete it (§9 check 4, the doer/judge split, the same shape as a subagent that never accepts its own work).
+The worker does not decide it is done — and a session's own worker can never complete it (§9 check 4, the doer/judge split, the same shape as a subagent that never accepts its own work). The plane trusts the Lead. A human session can also complete. Completion records its provenance (`lead-session` \| `human`). There is no completion mode and no human-confirmation gate: if a judgment is a person's to own, the Lead escalates rather than the plane refusing.
 
-| Mode | Verdict from | Typical use |
-|---|---|---|
-| `lead` (default) | the Lead session's verdict, autonomously | anything the Lead can check itself — run the suite, read the diff, inspect CI, re-verify the worker's claims |
-| `review` | human-confirmed verdict via Lead or human session | judgment calls a human must own: written deliverables, research, design, recommendations |
-
-Both land in `verifying` and take the same transitions; which credential may rule is the only difference, and completion records its provenance (`lead-session` \| `human`, §9 check 4). Tasks awaiting review appear in the human inbox (§12), which is what stops `review` from being a black hole.
-
-**`lead` is the default because the orchestrator is the judge.** This is the Claude Code shape: the Lead decomposed the work and holds the plan, so it is the right judge of whether a task met its bar — but it judges *another* worker's output, never its own, and it judges against evidence it gathers itself. Landbridge hands it no verdict: CI and tests are that evidence, not a verdict-issuing actor, and the deterministic-verifier role is deliberately not something Landbridge runs (§15). Reject cheaply, accept carefully.
-
-**`review` verdicts must carry human confirmation.** Some acceptance is a human's to give — and a Lead is a model that the untrusted text §13 warns about can argue into accepting. `submit_review` in `review` mode is therefore not honoured from an unattended Lead turn: the verdict is confirmed by the human through an elicitation prompt where the client supports it, or lands in the inbox for confirmation under the human session credential. A lead claim alone completes a `lead`-mode task but never a `review`-mode one — §9 check 4 applied at the door it would be easiest to forget.
+This is the Claude Code shape: the Lead decomposed the work and holds the plan, so it is the right judge of whether a session met its bar — but it judges *another* worker's output, never its own, and it judges against evidence it gathers itself. Landbridge hands it no verdict: CI and tests are that evidence, not a verdict-issuing actor, and the deterministic-verifier role is deliberately not something Landbridge runs (§15). Reject cheaply, accept carefully.
 
 ### Workspace and isolation
 
-**Isolation is assigned by the Lead at decomposition time, never chosen by the worker.** Workers who each pick their own isolation collide, because they have no channel to coordinate. Since `namespace` is server-assigned and unique, isolation derives from it and collision is structurally impossible.
+**The worker isolates itself.** Several sessions share a machine, including several from the same Team. `landbridged` starts each worker in `{work_root}/{session_id}`. The worker writes only there, uses a git worktree for repo work, and binds a random loopback port. The Lead does not assign ports or working directories. `workspace` on the session, if present, is context — which repo, which package — not a lock and not a path the worker is entitled to mutate.
 
-The general rule: **each concurrent task gets its own mutable copy; anything shared is read-only.** Separate worktrees, directories, containers, or schemas depending on substrate.
+The general rule: **each concurrent session's mutable state lives under its session directory; anything shared is read-only.**
 
-**One deliberate exception: a continuation inherits its predecessor's working directory** (§11), whether or not it resumes that agent's transcript. That is what a continuation is *for* — carrying on the same work, where the workspace is that work — so a cold-started continuation inherits the directory too; it still needs the worktree and artifacts the predecessor left. (Transcript resume additionally requires it, since a harness session is resumable only from the directory that created it, but does not define it.) So two task ids can share one directory, by the Lead's own choice in asking for a continuation. Nothing else about them is shared: each keeps its own identity, credential, liveness, and transcript. The rule above still governs every *concurrent decomposition*, which is what it exists for — sibling tasks a Lead fans out must not collide, and they still cannot.
-
-`workspace` also carries any port assignments, for the same reason — two agents on one machine binding the same port is the Lead's problem to avoid, not the worker's to discover.
+**One deliberate exception: a continuation inherits its predecessor's working directory** (§11), whether or not it resumes that agent's transcript. That is what a continuation is *for* — carrying on the same work, in the same session directory — so a continuation inherits the directory too; it still needs the worktree and artifacts the predecessor left. (Transcript resume additionally requires it, since a harness session is resumable only from the directory that created it, but does not define it.) So two session ids can share one directory, by the Lead's own choice in asking for a continuation. Nothing else about them is shared: each keeps its own identity, credential, liveness, and transcript.
 
 ---
 
@@ -389,10 +376,10 @@ Preview traffic rides the same per-Team accounting as any other forward (§9 che
 
 ## 9. Enforcement checks
 
-1. `completion.criteria` is non-empty at task creation.
+1. `description` is non-empty at session creation. `profile` is required (check 15): an exact name from `list_profiles`.
 2. `namespace` is server-assigned; collision is structurally impossible.
 3. Only a lead claim may create tasks.
-4. Completion comes from a Lead or human credential, **never the task's own worker** (doer/judge split); `review` verdicts carry human confirmation; verdict provenance (`lead-session` | `human`) is recorded on the completion event.
+4. Completion comes from a Lead or human credential, **never the task's own worker** (doer/judge split); verdict provenance (`lead-session` | `human`) is recorded on the completion event.
 5. Single dispatch per task; the dispatched machine is accepting work and declares a matching profile name.
 6. One Lead per Team; takeover is explicit and logged.
 7. Ack timeout and per-task liveness timeout → requeue, **capped per task**: the requeue that reaches the cap abandons the task as `canceled` instead (§6), never `rejected`. Every requeue records which signal fired — undelivered dispatch, aliveness loss, no progress, process exit, machine reboot — on the task and on its event row.
@@ -403,6 +390,7 @@ Preview traffic rides the same per-Team accounting as any other forward (§9 che
 12. Cancellation carries a disposition enum; `TTL=0` means immediate kill.
 13. Token exchange is strictly narrowing.
 14. Worker-triggered transitions are accepted only from the incumbent worker instance; requeue and redispatch revoke the predecessor's token first.
+15. `profile` is required at session creation — an exact name, no reserved `default`.
 
 Nothing else. Any addition that requires knowing what a task is *about* should be rejected outright.
 
@@ -441,7 +429,7 @@ Bytes kept their own table rather than sitting beside the removed check 9 ceilin
 
 ### Agent → control plane (MCP)
 
-**Lead:** `create_session` · `answer_input_request` · `submit_review` (lead-adjudicated; human-confirmed in `review` mode, §7) · `cancel_session` · `park_session` (deliberate release of a live ACP session) · `get_team_state` · `get_session_report` · `get_session_question` · `list_profiles` (the routing read: which profiles exist and where they can run, §7) · `bind_machine` · `unbind_machine` · `open_lead_forward` (§8.3 human path)
+**Lead:** `create_session` · `answer_input_request` · `submit_review` · `cancel_session` · `park_session` (deliberate release of a live ACP session) · `get_team_state` · `get_session_report` · `get_session_question` · `list_profiles` (the routing read: which profiles exist and where they can run, §7) · `bind_machine` · `unbind_machine` · `open_lead_forward` (§8.3 human path)
 **Worker:** `get_session` · `report_result` · `request_input` · `start_process` / `stop_process` / `write_process` (§10) · `register_service` · `open_forward` · `open_preview` (§8.4)
 
 There is no `claim_task`. Workers are dispatched, never claimants (§5, §6) — the first thing a worker does with its minted token is work, and its calls identify it.
@@ -518,7 +506,7 @@ Full schema and a worked Claude Code example: `skills/landbridge-enroll/referenc
 | Section | Covers |
 |---|---|
 | `machine` | `work_root` for per-task scratch directories; back-pressure thresholds |
-| `profiles` | Named configurations, one required to be `default`. Each carries `spawn`, `stdin`, `env`, `files`, `hooks`, `stop`, `resume`, `events`, `telemetry`, `logs`, and an optional `max_concurrent` cap. |
+| `profiles` | Named configurations; at least one required, none reserved as `default`. Enroll convention: `<harness>-<hostname>-<os>`, plus optional group names like `any-linux`. Each carries `spawn`, `prompt`, `follow_up`, `env`, `files`, `hooks`, `stop`, `telemetry`, `logs`, and an optional `max_concurrent` cap. |
 | `profiles[].env` | Per-spawn environment map. Values take the same `{…}` substitutions `spawn` does. Applied after the reserved `LANDBRIDGE_*` stamps and before `telemetry.env`. The four names landbridged owns (`LANDBRIDGE_MACHINE_ID`, `LANDBRIDGE_SESSION_ID`, `LANDBRIDGE_WORKER_TOKEN`, `LANDBRIDGE_TRACEPARENT`) are refused at load. |
 | `profiles[].files` | Files written under `{work_dir}` before spawn. Paths are jailed to the work dir after substitution. Prefer this for additive project-local MCP (Grok merges `{cwd}/.grok/config.toml` with `~/.grok`). |
 | `profiles[].hooks` | Argv hooks, never a shell. `before_spawn` is fail-closed; `after_exit` is best-effort. For a harness whose only MCP surface is a user-global file (Codex). |
@@ -586,7 +574,7 @@ Config-declared services remain, for operator-owned fixtures.
 
 **A daemon can drive several harnesses or postures.** Profiles exist for genuinely different setups on one machine: Claude Code alongside Codex, a restricted permission posture for sensitive work, a pinned version being canaried during an upgrade.
 
-A task may carry an optional `profile` string, matched **by exact string equality** at dispatch. The control plane never learns what a profile name means — only whether a machine declares one. Absent a request, `default`. Requested-but-absent, the task sits visibly undispatchable. This is deliberately not a capability manifest, which §15 still excludes: profiles are identifiers a human chose, not descriptions Landbridge reasons over.
+A session **must** carry a `profile` string, matched **by exact string equality** at dispatch. The control plane never learns what a profile name means — only whether a machine declares one. There is no reserved `default` and no omit-fallback. A name no machine declares sits visibly undispatchable. This is deliberately not a capability manifest, which §15 still excludes: profiles are identifiers a human chose, not descriptions Landbridge reasons over. Enroll names a box-specific profile `<harness>-<hostname>-<os>` and may also declare a group name such as `any-linux`.
 
 **Profiles describe how to run an agent, never what kind of work it does.** `profiles: {frontend, backend}` is task routing disguised as machine config, and it puts the control plane back in the business of meaning.
 
@@ -718,7 +706,7 @@ Landbridge does **not** speak A2A internally. It is exposed at the outer boundar
    - every declared profile passes the above independently, plus one cross-profile concurrency case
 7. Pass → machine joins the Machine Group as `ready`. Fail → registered but unclaimable, with the failing step named.
 
-**As-built reconciliation (2026-08-03).** Steps 4–7 do not exist. There is no `/landbridge-enroll` prompt (no MCP prompt is registered at all) and no conformance run: nothing in the plane dispatches trivial work to a new machine or judges it. Nor are `ready` and `unclaimable` machine *states* — there is no machine state enum; readiness is two per-heartbeat booleans, and an enrolled-but-disconnected machine is absent from the Machine Group view rather than shown as unclaimable. Today enrollment yields credentials, the operator authors the runner config with the `landbridge-enroll` skill, and the operator-only `POST /dashboard/conformance` + `GET /dashboard/conformance/{runId}` mint dummy sessions aimed at a named profile (omit is `default`) and report their states. That is a dispatch check, not the plane judging results — `verifying` means the worker called `report_result`. The config-stamping below is likewise unbuilt.
+**As-built reconciliation (2026-08-03).** Steps 4–7 do not exist. There is no `/landbridge-enroll` prompt (no MCP prompt is registered at all) and no conformance run: nothing in the plane dispatches trivial work to a new machine or judges it. Nor are `ready` and `unclaimable` machine *states* — there is no machine state enum; readiness is two per-heartbeat booleans, and an enrolled-but-disconnected machine is absent from the Machine Group view rather than shown as unclaimable. Today enrollment yields credentials, the operator authors the runner config with the `landbridge-enroll` skill, and the operator-only `POST /dashboard/conformance` + `GET /dashboard/conformance/{runId}` mint dummy sessions aimed at a required named profile and report their states. That is a dispatch check, not the plane judging results — `verifying` means the worker called `report_result`. The config-stamping below is likewise unbuilt.
 
 The wizard *displays* results; the control plane *determines* them.
 
@@ -898,8 +886,8 @@ Three skills ship by default:
 
 | Skill | Audience |
 |---|---|
-| `landbridge-lead` | Humans driving a Lead. Decomposition, isolation assignment, completion modes, cancellation, Team lifecycle — and the integration pattern: **integration is itself a task**, authored by the Lead and sequenced after its inputs complete. Workers never negotiate merges peer-to-peer; they have no channel, and should not. |
-| `landbridge-worker` | Dispatched workers. Working within an assigned workspace, persisting before asking, reporting, blockers, inheriting a workspace on redispatch (`attempt > 1`: inspect before trusting). |
+| `landbridge-lead` | Humans driving a Lead. Decomposition, profile targeting, cancellation, Team lifecycle — and the integration pattern: **integration is itself a session**, authored by the Lead and sequenced after its inputs complete. Workers never negotiate merges peer-to-peer; they have no channel, and should not. |
+| `landbridge-worker` | Dispatched workers. Isolating on a shared machine, persisting before asking, reporting, blockers, inheriting the session directory on redispatch (`attempt > 1`: inspect before trusting). |
 | `landbridge-enroll` | The enrollment flow. Writing the runner config, headless-posture prerequisites, guiding the human, conformance. |
 
 The failure mode for everything in these is bounded and recoverable. That is the test for belonging here rather than in §9.

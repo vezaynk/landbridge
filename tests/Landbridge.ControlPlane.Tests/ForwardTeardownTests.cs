@@ -201,7 +201,7 @@ public sealed class ForwardTeardownTests(PostgresFixture pg) : IAsyncLifetime
     {
         var store = NewStore(db, clock, rig);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateSession(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null));
+            new CreateSession(new LeadClaim(team), team, "criteria", "default"));
         var instance = WorkerInstanceId.New();
         Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(
             new MachineSnapshot(machine, Ready: true, UnderBackPressure: false, new HashSet<string> { "default" }),

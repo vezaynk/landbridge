@@ -248,7 +248,7 @@ internal static class DashboardRenderer
         else
         {
             sb.Append("<table><thead><tr>");
-            sb.Append("<th>Namespace</th><th>State</th><th>Mode</th>");
+            sb.Append("<th>Namespace</th><th>State</th>");
             sb.Append("<th class=\"num\">Attempt</th><th class=\"num\">Parks</th><th>Detail</th>");
             sb.Append("<th>Result</th><th>Report</th><th>Q&amp;A</th><th>Transcript</th>");
             sb.Append("</tr></thead><tbody>");
@@ -257,7 +257,6 @@ internal static class DashboardRenderer
                 sb.Append("<tr>");
                 sb.Append($"<td><code>{E(t.Namespace)}</code></td>");
                 sb.Append($"<td>{StateBadge(t.State)}</td>");
-                sb.Append($"<td>{E(t.Mode.ToString())}</td>");
                 sb.Append($"<td class=\"num\">{t.Attempt}</td>");
                 var parks = t.Parks > 0 ? $"<span class=\"parks-hot\">{t.Parks}</span>" : "0";
                 sb.Append($"<td class=\"num\">{parks}</td>");
@@ -330,18 +329,6 @@ internal static class DashboardRenderer
                 sb.Append($"<tr><td><code>{E(q.Namespace)}</code></td><td>{TeamLink(q.TeamId)}</td>" +
                           $"<td>{KindCell(q.Kind)}</td><td>{E(Age(q.BlockedAt, now))}</td>" +
                           $"<td>{QuestionCell(q.Question)}</td></tr>");
-            sb.Append("</tbody></table>");
-        }
-        sb.Append("</section>");
-
-        sb.Append("<section><h2>Awaiting review</h2>");
-        if (inbox.AwaitingReview.Count == 0)
-            sb.Append(Empty("Nothing awaiting review."));
-        else
-        {
-            sb.Append("<table><thead><tr><th>Namespace</th><th>Team</th></tr></thead><tbody>");
-            foreach (var r in inbox.AwaitingReview)
-                sb.Append($"<tr><td><code>{E(r.Namespace)}</code></td><td>{TeamLink(r.TeamId)}</td></tr>");
             sb.Append("</tbody></table>");
         }
         sb.Append("</section>");
@@ -956,9 +943,9 @@ internal static class DashboardRenderer
                   "Any ready machine that declares that name may claim them.</p>");
         sb.Append("<form class=\"card conformance-start\" method=\"post\" action=\"/dashboard/conformance\">");
         sb.Append("<label for=\"profile\">Profile</label>");
-        sb.Append($"<input id=\"profile\" type=\"text\" name=\"profile\" value=\"{E(MachineSnapshot.DefaultProfile)}\" " +
-                  "class=\"mono\" spellcheck=\"false\" autocomplete=\"off\">");
-        sb.Append("<p class=\"nt\">Exact name from the runner config. Empty is <span class=\"mono\">default</span>.</p>");
+        sb.Append("<input id=\"profile\" type=\"text\" name=\"profile\" " +
+                  "class=\"mono\" spellcheck=\"false\" autocomplete=\"off\" required>");
+        sb.Append("<p class=\"nt\">Exact name from the runner config. Required.</p>");
         sb.Append("<button type=\"submit\">Start check</button>");
         sb.Append("</form>");
         return Page("Profile check", "conformance", sb.ToString(), autoRefresh: false);

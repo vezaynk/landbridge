@@ -28,15 +28,12 @@ public sealed record MachineSnapshot(
     string MachineId,
     bool Ready,
     bool UnderBackPressure,
-    IReadOnlySet<string> DeclaredProfiles)
-{
-    public const string DefaultProfile = "default";
-}
+    IReadOnlySet<string> DeclaredProfiles);
 
 /// <summary>
 /// The typed task record, spec §7. Prose fields (description, result_summary,
-/// blocker_note) and the opaque blobs (workspace, completion.criteria content)
-/// live at the storage layer; nothing here requires interpreting them.
+/// blocker_note) and the opaque workspace blob live at the storage layer;
+/// nothing here requires interpreting them.
 /// </summary>
 public sealed record SessionRecord
 {
@@ -55,11 +52,9 @@ public sealed record SessionRecord
     /// <summary>Server-assigned team-{id}/session-{id}; uniqueness is structural (§9 check 2).</summary>
     public required string Namespace { get; init; }
 
-    public required CompletionMode CompletionMode { get; init; }
-
     public SessionState State { get; init; } = SessionState.Submitted;
 
-    /// <summary>Optional runner profile name; exact-match routing, never interpreted (§7).</summary>
+    /// <summary>Required runner profile name; exact-match routing, never interpreted (§7).</summary>
     public string? Profile { get; init; }
 
     /// <summary>

@@ -31,7 +31,7 @@ public sealed class TaskUsageTests(PostgresFixture pg) : IAsyncLifetime
         await using var db = pg.NewContext();
         var team = TeamId.New();
         var created = (StoreResult.Applied)await new SessionStore(db, _clock).CreateAsync(
-            new CreateSession(new LeadClaim(team), team, "criteria", CompletionMode.Lead, null));
+            new CreateSession(new LeadClaim(team), team, "criteria", "default"));
         return (created.Session.Id, team);
     }
 
@@ -283,9 +283,9 @@ public sealed class TaskUsageTests(PostgresFixture pg) : IAsyncLifetime
         var team = TeamId.New();
         var store = new SessionStore(seed, _clock);
         var a = ((StoreResult.Applied)await store.CreateAsync(
-            new CreateSession(new LeadClaim(team), team, "a", CompletionMode.Lead, null))).Session.Id;
+            new CreateSession(new LeadClaim(team), team, "a", "default"))).Session.Id;
         var b = ((StoreResult.Applied)await store.CreateAsync(
-            new CreateSession(new LeadClaim(team), team, "b", CompletionMode.Lead, null))).Session.Id;
+            new CreateSession(new LeadClaim(team), team, "b", "default"))).Session.Id;
 
         await using (var db = pg.NewContext())
         {

@@ -84,7 +84,7 @@ public sealed class WorkerPermissionEndpointsTests(PostgresFixture pg) : IAsyncL
         await using var db = pg.NewContext();
         var store = new SessionStore(db, TimeProvider.System);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateSession(new LeadClaim(Team), Team, "needs permission", CompletionMode.Lead, null), ct);
+            new CreateSession(new LeadClaim(Team), Team, "needs permission", "default"), ct);
         var instance = WorkerInstanceId.New();
         Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(
             new MachineSnapshot("m1", Ready: true, UnderBackPressure: false, new HashSet<string> { "default" }),

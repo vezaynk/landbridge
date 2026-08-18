@@ -43,11 +43,11 @@ public class RunnerConfigTests
         Assert.Equal(0.85, config.Machine.BackPressure.MaxMemoryLoad);
 
         Assert.Equal(2, config.Profiles.Count);
-        Assert.Equal(TimeSpan.FromSeconds(20), config.Default.Stop.WindDown);
-        Assert.Equal(3, config.Default.MaxConcurrent);
-        Assert.Equal("Do the task.", config.Default.Prompt);
+        Assert.Equal(TimeSpan.FromSeconds(20), config.Profiles["default"].Stop.WindDown);
+        Assert.Equal(3, config.Profiles["default"].MaxConcurrent);
+        Assert.Equal("Do the task.", config.Profiles["default"].Prompt);
 
-        Assert.Same(config.Default, config.Resolve(null));               // absent → default (§7)
+        Assert.Same(config.Profiles["default"], config.Resolve("default"));
         Assert.Equal("restricted", config.Resolve("restricted")!.Name);   // exact-match (§7)
         Assert.Null(config.Resolve("frontend"));                          // requested-but-absent
         Assert.Equal(new HashSet<string> { "default", "restricted" }, config.DeclaredProfiles);
@@ -55,17 +55,17 @@ public class RunnerConfigTests
         // §10 telemetry: the opt-in, the destination, and the harness's own enable flag
         // (data, not landbridged knowledge). A profile with no telemetry section is off with
         // an empty env — never null, so the spawn path needs no guard.
-        Assert.True(config.Default.Telemetry.Otel);
-        Assert.Equal("http://127.0.0.1:4318", config.Default.Telemetry.Endpoint);
-        Assert.Equal("1", config.Default.Telemetry.Env["CLAUDE_CODE_ENABLE_TELEMETRY"]);
+        Assert.True(config.Profiles["default"].Telemetry.Otel);
+        Assert.Equal("http://127.0.0.1:4318", config.Profiles["default"].Telemetry.Endpoint);
+        Assert.Equal("1", config.Profiles["default"].Telemetry.Env["CLAUDE_CODE_ENABLE_TELEMETRY"]);
         Assert.False(config.Resolve("restricted")!.Telemetry.Otel);
         Assert.Null(config.Resolve("restricted")!.Telemetry.Endpoint);
         Assert.Empty(config.Resolve("restricted")!.Telemetry.Env);
 
         // §12 capture keys parse; a profile with no logs section takes the OFF default.
-        Assert.True(config.Default.Logs.Capture);
-        Assert.Equal(1048576, config.Default.Logs.MaxBytes);
-        Assert.Equal(3, config.Default.Logs.PruneAfterDays);
+        Assert.True(config.Profiles["default"].Logs.Capture);
+        Assert.Equal(1048576, config.Profiles["default"].Logs.MaxBytes);
+        Assert.Equal(3, config.Profiles["default"].Logs.PruneAfterDays);
         Assert.False(config.Resolve("restricted")!.Logs.Capture);
         Assert.Equal(TranscriptDefaults.MaxBytes, config.Resolve("restricted")!.Logs.MaxBytes);
         Assert.Equal(TranscriptDefaults.PruneAfterDays, config.Resolve("restricted")!.Logs.PruneAfterDays);
@@ -110,9 +110,9 @@ public class RunnerConfigTests
         // The surviving neighbours in each section still parse, so the removed keys were
         // skipped rather than derailing the object they sat in. Note `protocol: stream`
         // among them: it does not resurrect the mode, it is simply a word nothing reads.
-        Assert.Equal(TimeSpan.FromSeconds(12), config.Default.Stop.WindDown);
-        Assert.True(config.Default.Logs.Capture);
-        Assert.Equal(4096, config.Default.Logs.MaxBytes);
+        Assert.Equal(TimeSpan.FromSeconds(12), config.Profiles["default"].Stop.WindDown);
+        Assert.True(config.Profiles["default"].Logs.Capture);
+        Assert.Equal(4096, config.Profiles["default"].Logs.MaxBytes);
     }
 
     [Fact]
@@ -123,7 +123,7 @@ public class RunnerConfigTests
           "profiles": [ { "name": "default", "prompt": "go", "spawn": ["claude", "-p"] } ] }
         """;
 
-        var logs = RunnerConfig.Load(json).Default.Logs;
+        var logs = RunnerConfig.Load(json).Profiles["default"].Logs;
         Assert.False(logs.Capture);
         Assert.Equal(TranscriptDefaults.MaxBytes, logs.MaxBytes);
         Assert.Equal(TranscriptDefaults.PruneAfterDays, logs.PruneAfterDays);
@@ -144,19 +144,19 @@ public class RunnerConfigTests
     }
 
     [Fact]
-    public void Rejects_a_config_with_no_default_profile()
+    public void Accepts_a_config_whose_only_profile_is_not_named_default()
     {
         var json = """
         { "machine": { "work_root": "/w" },
           "profiles": [ { "name": "primary", "prompt": "go", "spawn": ["claude"] } ] }
         """;
 
-        var ex = Assert.Throws<RunnerConfigException>(() => RunnerConfig.Load(json));
-        Assert.Contains(ex.Errors, e => e.Contains("no 'default' profile"));
+        var config = RunnerConfig.Load(json);
+        Assert.Equal("primary", Assert.Single(config.Profiles).Key);
     }
 
     [Fact]
-    public void Rejects_a_config_with_multiple_default_profiles()
+    public void Rejects_a_config_with_duplicate_profile_names()
     {
         var json = """
         { "machine": { "work_root": "/w" },
@@ -167,8 +167,7 @@ public class RunnerConfigTests
         """;
 
         var ex = Assert.Throws<RunnerConfigException>(() => RunnerConfig.Load(json));
-        // Either the duplicate-name or the >1-default check fires; both name §10.
-        Assert.Contains(ex.Errors, e => e.Contains("default") || e.Contains("duplicate"));
+        Assert.Contains(ex.Errors, e => e.Contains("duplicate"));
     }
 
     [Fact]
@@ -217,12 +216,12 @@ public class RunnerConfigTests
         var config = RunnerConfig.Load(json);
         Assert.Equal(TimeSpan.FromSeconds(15), config.Machine.HeartbeatInterval);
         Assert.Equal(BackPressureThresholds.Default, config.Machine.BackPressure);
-        Assert.Equal(TimeSpan.FromSeconds(30), config.Default.Stop.WindDown);
-        Assert.Null(config.Default.MaxConcurrent);
-        Assert.Empty(config.Default.Env);
-        Assert.Empty(config.Default.Files);
-        Assert.Empty(config.Default.ConfigOptions);
-        Assert.Null(config.Default.SessionMode);
+        Assert.Equal(TimeSpan.FromSeconds(30), config.Profiles["default"].Stop.WindDown);
+        Assert.Null(config.Profiles["default"].MaxConcurrent);
+        Assert.Empty(config.Profiles["default"].Env);
+        Assert.Empty(config.Profiles["default"].Files);
+        Assert.Empty(config.Profiles["default"].ConfigOptions);
+        Assert.Null(config.Profiles["default"].SessionMode);
     }
 
     [Fact]
@@ -232,7 +231,7 @@ public class RunnerConfigTests
             "session_mode": "approve",
             """));
 
-        Assert.Equal("approve", config.Default.SessionMode);
+        Assert.Equal("approve", config.Profiles["default"].SessionMode);
     }
 
     [Fact]
@@ -253,8 +252,8 @@ public class RunnerConfigTests
             "config_options": { "model": "anthropic/claude-haiku-4-5-20251001", "mode": "code" },
             """));
 
-        Assert.Equal("anthropic/claude-haiku-4-5-20251001", config.Default.ConfigOptions["model"]);
-        Assert.Equal("code", config.Default.ConfigOptions["mode"]);
+        Assert.Equal("anthropic/claude-haiku-4-5-20251001", config.Profiles["default"].ConfigOptions["model"]);
+        Assert.Equal("code", config.Profiles["default"].ConfigOptions["mode"]);
     }
 
     [Fact]

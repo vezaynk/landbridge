@@ -20,10 +20,10 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
 
     private SessionStore NewStore(LandbridgeDbContext db) => new(db, new FakeTimeProvider());
 
-    private async Task<SessionId> CreateSubmitted(LandbridgeDbContext db, string? profile = null, CompletionMode mode = CompletionMode.Lead)
+    private async Task<SessionId> CreateSubmitted(LandbridgeDbContext db, string? profile = "default")
     {
         var result = await NewStore(db).CreateAsync(
-            new CreateSession(Lead, Team, "pnpm test", mode, profile));
+            new CreateSession(Lead, Team, "pnpm test", profile ?? "default"));
         return ((StoreResult.Applied)result).Session.Id;
     }
 
@@ -533,7 +533,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         Skip.IfNot(pg.Available, pg.SkipReason);
         await using var db = pg.NewContext();
         var store = NewStore(db);
-        var id = await CreateSubmitted(db, mode: CompletionMode.Lead);
+        var id = await CreateSubmitted(db);
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(Machine(), instance);
         await store.ApplyAsync(id, new ReportResult(new WorkerCaller(Team, id, instance), "ref"));
@@ -1011,7 +1011,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
     private async Task<SessionId> SeedBlocked(SessionStore store)
     {
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateSession(Lead, Team, "needs input", CompletionMode.Lead, null));
+            new CreateSession(Lead, Team, "needs input", "default"));
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(Machine(), instance);
         await store.ApplyAsync(created.Session.Id,
