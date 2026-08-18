@@ -119,7 +119,7 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
             ["ASPNETCORE_ENVIRONMENT"] = "Development",
             ["ConnectionStrings__Landbridge"] = pg.ConnectionString,
             // The URL the plane writes into every worker's injected mcp.json. Without
-            // this the workers would dial the 127.0.0.1:5000 default and never find us.
+            // this the workers would dial the 127.0.0.1:5050 default and never find us.
             ["Landbridge__PublicMcpUrl"] = _planeUrl,
             // The PostgresFixture already migrated; a second migrate would only race.
             ["Landbridge__MigrateOnStartup"] = "false",

@@ -52,7 +52,7 @@ dotnet run --project src/Landbridge.AppHost
 One command brings up the full Lead → plane → runner → worker loop:
 
 - a managed **Postgres** container (persistent volume, so data survives restarts),
-- the **control plane / MCP host** (`Landbridge.Mcp`) at `http://127.0.0.1:5000`, migrated and dev-seeded,
+- the **control plane / MCP host** (`Landbridge.Mcp`) at `http://127.0.0.1:5050`, migrated and dev-seeded,
 - a real **`landbridged`** runner, enrolled via a dev-seeded machine token and connected back to `/runner`,
 - **`landbridge-relay`** at `http://127.0.0.1:5100`,
 - the **preview frontend** (`Landbridge.Preview`), plaintext in the loop — minting a URL needs `open_preview` or the dashboard, so it idles until you use it.
@@ -67,7 +67,7 @@ Two dashboards:
 - The **Aspire dashboard** (URL printed on the console) shows every resource,
   its logs, and the host's OpenTelemetry traces/metrics.
 - The **Landbridge web dashboard** (spec §12) is served by the host at
-  `http://127.0.0.1:5000/dashboard` — Machine Group, Team, inbox, and event-log
+  `http://127.0.0.1:5050/dashboard` — Machine Group, Team, inbox, and event-log
   views. It requires an operator passphrase (`Landbridge:Operator:PassphraseHash`);
   see `docs/RUNNING.md`.
 
