@@ -244,7 +244,7 @@ a `provisioning` row. It then injects:
   on the relay container, so the relay validates grants against the plane.
 - `Landbridge:MigrateOnStartup=true`.
 
-Meta **never** sets the dev-only gates (`Landbridge:DevSeed:TokenFile`,
+Meta **never** sets the dev-only gates (`Landbridge:DevSeed:TokenDir`,
 `Landbridge:Oauth:AllowInsecureClientMetadata`): a production Instance is passphrase-gated with
 real OAuth and no seeded identities. Enroll machines and provision a verifier through the
 Instance's own §5 flows after creation.

@@ -7,10 +7,9 @@
 // Aspire dashboard capturing the host's OpenTelemetry traces, logs, and metrics
 // (the cross-process insight §1 is built around).
 //
-// The runner and its spawned worker are in the loop now: landbridged enrolls (via a
-// dev-seeded machine token, below), dials the plane's /runner endpoint, and
-// stands ready. It does NOT auto-create a task — this is a standing fleet; a
-// human Lead creates work over MCP, exactly as in production.
+// Three landbridged boxes enroll (via dev-seeded tokens, below), dial /runner,
+// and stand ready: a linux Codex, Claude, and Grok machine. No Team is minted
+// — a human Lead creates work over MCP, exactly as in production.
 //
 // Scope note: OTel on landbridged/the worker is out of scope (landbridged is not a Host
 // builder, so it gets no ServiceDefaults); its console logs stream to the
@@ -67,12 +66,14 @@ var previewHealthUrl = $"http://127.0.0.1:{previewHealthPort}";
 var previewListenPort = previewPort.ToString();
 var previewConnectBearer = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
 
-// A per-run scratch area under the temp dir: the machine-token seed file the MCP
-// host writes and landbridged reads, and landbridged's work_root for per-task dirs.
+// A per-run scratch area under the temp dir: one seed file per enrolled box
+// (written by the plane) and per-box work_root / state-dir for landbridged.
 var runDir = Directory.CreateDirectory(
     Path.Combine(Path.GetTempPath(), "landbridge-apphost")).FullName;
-var seedTokenFile = Path.Combine(runDir, "machine-token.json");
-var workRoot = Directory.CreateDirectory(Path.Combine(runDir, "work")).FullName;
+var seedDir = Directory.CreateDirectory(Path.Combine(runDir, "seed")).FullName;
+
+// Keep in lockstep with Landbridge.Mcp Program.cs DevSeed harness list.
+string[] devHarnesses = ["codex", "claude", "grok"];
 
 // A managed Postgres container with a persistent data volume, so the schema and
 // data survive across `dotnet run`s. (The ephemeral initdb cluster the tests
@@ -85,9 +86,9 @@ var landbridgeDb = builder.AddPostgres("postgres")
 
 // The MCP + control-plane host. WithReference injects Postgres as
 // ConnectionStrings__landbridge; WaitFor holds startup until Postgres is healthy;
-// MigrateOnStartup applies the checked-in EF migration; DevSeed:TokenFile tells
-// the host to bootstrap a machine identity and write its token where landbridged
-// picks it up (all three are dev-loop-only signals production never sets).
+// MigrateOnStartup applies the checked-in EF migration; DevSeed:TokenDir tells
+// the host to enroll the Codex/Claude/Grok linux boxes and write each token
+// where that box's landbridged picks it up (dev-loop-only; production never sets it).
 //
 // The endpoint is pinned to a fixed port and NOT proxied by DCP: the sibling
 // landbridged/worker processes dial 127.0.0.1:5050 directly, so an ephemeral proxy
@@ -109,7 +110,7 @@ var mcp = builder.AddProject<Projects.Landbridge_Mcp>("mcp", options => options.
     .WithEnvironment("ASPNETCORE_URLS", mcpUrl)
     .WithEnvironment("ASPNETCORE_ENVIRONMENT", "Development")
     .WithEnvironment("Landbridge__MigrateOnStartup", "true")
-    .WithEnvironment("Landbridge__DevSeed__TokenFile", seedTokenFile)
+    .WithEnvironment("Landbridge__DevSeed__TokenDir", seedDir)
     // §8.3: the shared bearer the plane's /relay/validate endpoint requires (fail-
     // closed 503 without it), and the relay URL WorkerTools hands landbridged per
     // open_forward. Both are read from IConfiguration by Landbridge.Mcp; set as env.
@@ -164,32 +165,29 @@ builder.AddProject<Projects.Landbridge_Preview>("preview", options => options.Ex
     .WithEnvironment("Preview__ControlPlaneBearer", previewConnectBearer)
     .WithHttpHealthCheck("/health");
 
-// landbridged's config: read the committed template, resolve the two AppHost-owned
-// placeholders (work_root + the built worker harness path), and write it out for
-// landbridged to load. {mcp_config} is deliberately left in place — landbridged's
-// ProcessSupervisor substitutes it per task with the generated mcp.json (§13).
-var resolvedConfigPath = WriteResolvedLandbridgedConfig(workRoot);
+// One landbridged per seeded box. Each has its own config, work_root, and
+// --state-dir so credentials and transcripts do not collide. WaitFor(mcp)
+// gates start until the plane has written that box's seed file.
+foreach (var harness in devHarnesses)
+{
+    var box = $"{harness}-linux";
+    var profile = $"{harness}-apphost-linux";
+    var boxWork = Directory.CreateDirectory(Path.Combine(runDir, "work", box)).FullName;
+    var boxState = Directory.CreateDirectory(Path.Combine(runDir, "state", box)).FullName;
+    var configPath = WriteResolvedLandbridgedConfig(boxWork, profile);
+    var seedPath = Path.Combine(seedDir, $"{box}.json");
 
-// landbridged itself, as an Aspire project resource (Projects.Landbridge_Runner comes
-// from the IsAspireProjectResource ProjectReference in the .csproj). It waits
-// for the MCP host to be healthy, then an environment callback reads the seed
-// file and hands landbridged its machine token + id and the control-plane URL. The
-// callback runs at landbridged's start, which WaitFor gates behind mcp being
-// healthy — so the seed file is present by then.
-builder.AddProject<Projects.Landbridge_Runner>("landbridged")
-    .WithArgs("--config", resolvedConfigPath)
-    .WaitFor(mcp)
-    .WithEnvironment(async ctx =>
-    {
-        ctx.EnvironmentVariables["LANDBRIDGE_CONTROL_URL"] = $"ws://{mcpHost}:{mcpPort}/runner";
-
-        // Belt-and-suspenders against a startup race: WaitFor(mcp) should already
-        // guarantee the seed file exists, but poll briefly rather than throw if
-        // the health gate and the write ever interleave.
-        var seed = await ReadSeedWithRetryAsync(seedTokenFile, TimeSpan.FromSeconds(30));
-        ctx.EnvironmentVariables["LANDBRIDGE_MACHINE_TOKEN"] = seed.MachineToken;
-        ctx.EnvironmentVariables["LANDBRIDGE_MACHINE_ID"] = seed.MachineId;
-    });
+    builder.AddProject<Projects.Landbridge_Runner>($"landbridged-{harness}")
+        .WithArgs("--config", configPath, "--state-dir", boxState)
+        .WaitFor(mcp)
+        .WithEnvironment(async ctx =>
+        {
+            ctx.EnvironmentVariables["LANDBRIDGE_CONTROL_URL"] = $"ws://{mcpHost}:{mcpPort}/runner";
+            var seed = await ReadSeedWithRetryAsync(seedPath, TimeSpan.FromSeconds(30));
+            ctx.EnvironmentVariables["LANDBRIDGE_MACHINE_TOKEN"] = seed.MachineToken;
+            ctx.EnvironmentVariables["LANDBRIDGE_MACHINE_ID"] = seed.MachineId;
+        });
+}
 
 // Completion is Lead-adjudicated (§7, §9 check 4): a Lead session's submit_review
 // verdict completes a `lead`-mode task, so there is no separate verifier resource in
@@ -200,19 +198,19 @@ builder.AddProject<Projects.Landbridge_Runner>("landbridged")
 builder.Build().Run();
 
 // Reads src/Landbridge.AppHost/landbridged.dev.json (copied beside the AppHost assembly),
-// substitutes {work_root} and {worker_harness}, and writes the resolved config to
-// a temp file, returning its path. JSON string values are substituted via the
-// serializer so any path characters are escaped correctly; {mcp_config} is left
-// untouched for landbridged to fill per task.
-string WriteResolvedLandbridgedConfig(string resolvedWorkRoot)
+// substitutes {work_root}, {worker_harness}, and {specific_profile}, and writes
+// the resolved config to a temp file. {mcp_config} is left untouched for
+// landbridged to fill per task.
+string WriteResolvedLandbridgedConfig(string resolvedWorkRoot, string specificProfile)
 {
     var templatePath = Path.Combine(AppContext.BaseDirectory, "landbridged.dev.json");
     var template = File.ReadAllText(templatePath);
     var resolved = template
         .Replace("\"{work_root}\"", JsonSerializer.Serialize(resolvedWorkRoot), StringComparison.Ordinal)
-        .Replace("\"{worker_harness}\"", JsonSerializer.Serialize(ResolveWorkerHarnessPath()), StringComparison.Ordinal);
+        .Replace("\"{worker_harness}\"", JsonSerializer.Serialize(ResolveWorkerHarnessPath()), StringComparison.Ordinal)
+        .Replace("\"{specific_profile}\"", JsonSerializer.Serialize(specificProfile), StringComparison.Ordinal);
 
-    var outPath = Path.Combine(runDir, "landbridged.resolved.json");
+    var outPath = Path.Combine(runDir, $"landbridged.{specificProfile}.json");
     File.WriteAllText(outPath, resolved);
     return outPath;
 }

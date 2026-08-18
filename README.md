@@ -53,7 +53,7 @@ One command brings up the full Lead → plane → runner → worker loop:
 
 - a managed **Postgres** container (persistent volume, so data survives restarts),
 - the **control plane / MCP host** (`Landbridge.Mcp`) at `http://127.0.0.1:5050`, migrated and dev-seeded,
-- a real **`landbridged`** runner, enrolled via a dev-seeded machine token and connected back to `/runner`,
+- three enrolled **`landbridged`** boxes (`codex-linux`, `claude-linux`, `grok-linux`) connected back to `/runner`, declaring `<harness>-apphost-linux` and `any-linux`,
 - **`landbridge-relay`** at `http://127.0.0.1:5100`,
 - the **preview frontend** (`Landbridge.Preview`), plaintext in the loop — minting a URL needs `open_preview` or the dashboard, so it idles until you use it.
 
@@ -71,11 +71,11 @@ Two dashboards:
   views. The Aspire / Development host uses the passphrase `dev`; production
   needs `Landbridge:Operator:PassphraseHash` (see `docs/RUNNING.md`).
 
-The dev loop stands up a *standing fleet*: it does **not** auto-create a task. A
-human Lead creates work over MCP, exactly as in production. The dispatched
+The dev loop stands up a *standing fleet*: three linux boxes, no Team, no task.
+A human Lead creates work over MCP, exactly as in production. The dispatched
 worker is a scripted, no-LLM harness (`Landbridge.WorkerHarness`) that exercises the
-full protocol; swapping in a real `claude -p` is a config-only change documented
-in `docs/RUNNING.md`.
+full protocol; swapping in a real Codex / Claude / Grok ACP spawn is a
+config-only change documented in `docs/RUNNING.md`.
 
 Guides: **[docs/RUNNING.md](docs/RUNNING.md)** (operator/developer, config
 reference, running `landbridged` as a service),

@@ -1,4 +1,3 @@
-using System.Runtime.InteropServices;
 using System.Text.Json.Nodes;
 using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
@@ -153,46 +152,50 @@ if (app.Configuration.GetValue<bool>("Landbridge:MigrateOnStartup"))
         .Database.MigrateAsync();
 }
 
-// Dev-loop only (set by the Aspire app host): bootstrap a machine identity and
-// drop its access token where landbridged can pick it up. Runs AFTER migration so
-// the schema exists. This is the dev shortcut around the enrollment handshake a
-// real operator performs out of band (§5, §11) — an enrollment token is minted
-// and immediately exchanged for machine credentials here, then the access token
-// is written to a file the app host hands landbridged via LANDBRIDGE_MACHINE_TOKEN.
-// Minting fresh each startup is fine for a throwaway dev cluster. Production
-// never sets this key, so its startup is unchanged. The write happens before
-// app.Run(), so the file exists by the time the host is serving.
-var devSeedTokenFile = app.Configuration["Landbridge:DevSeed:TokenFile"];
-if (!string.IsNullOrWhiteSpace(devSeedTokenFile))
+// Dev-loop only (set by the Aspire app host): enroll the standing fleet and
+// drop each access token where that box's landbridged can pick it up. Runs
+// AFTER migration so the schema exists. This is the shortcut around the
+// enrollment handshake a real operator performs out of band (§5, §11).
+// Production never sets this key. The writes happen before app.Run(), so the
+// files exist by the time the host is serving. No Team is minted — a human
+// Lead creates work, exactly as in production.
+//
+// Keep the harness list in lockstep with AppHost's DevHarnesses.
+var devSeedTokenDir = app.Configuration["Landbridge:DevSeed:TokenDir"];
+if (!string.IsNullOrWhiteSpace(devSeedTokenDir))
 {
+    Directory.CreateDirectory(devSeedTokenDir);
     using var scope = app.Services.CreateScope();
     var tokens = scope.ServiceProvider.GetRequiredService<TokenService>();
 
-    var enrollment = await tokens.IssueEnrollmentTokenAsync();
-    var credentials = await tokens.ExchangeEnrollmentAsync(
-        enrollment.Token,
-        new MachineDeclaration(
-            Name: "landbridge-apphost-dev",
-            Purpose: "Aspire dev-loop runner",
-            Os: RuntimeInformation.OSDescription,
-            PermissionLevel: "standard"))
-        ?? throw new InvalidOperationException("dev seed: enrollment exchange returned null");
-
-    // Built with the DOM so the token is escaped correctly with no serializer
-    // reflection, mirroring DispatchService.BuildWorkerMcpConfig.
-    var seedJson = new JsonObject
+    foreach (var harness in (string[])["codex", "claude", "grok"])
     {
-        ["machineId"] = credentials.MachineId.ToString(),
-        ["machineToken"] = credentials.Access.Token,
-    }.ToJsonString();
+        var name = $"{harness}-linux";
+        var enrollment = await tokens.IssueEnrollmentTokenAsync();
+        var credentials = await tokens.ExchangeEnrollmentAsync(
+            enrollment.Token,
+            new MachineDeclaration(
+                Name: name,
+                Purpose: $"Aspire dev-loop {harness} box",
+                Os: "linux",
+                PermissionLevel: "standard"))
+            ?? throw new InvalidOperationException($"dev seed: enrollment exchange returned null for {name}");
 
-    await File.WriteAllTextAsync(devSeedTokenFile, seedJson);
-    // Owner-only: this file carries a live machine credential (§5).
-    if (!OperatingSystem.IsWindows())
-        File.SetUnixFileMode(devSeedTokenFile, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+        var seedJson = new JsonObject
+        {
+            ["machineId"] = credentials.MachineId.ToString(),
+            ["machineToken"] = credentials.Access.Token,
+        }.ToJsonString();
 
-    app.Logger.LogInformation(
-        "dev seed: wrote machine {MachineId} token to {File}", credentials.MachineId, devSeedTokenFile);
+        var seedPath = Path.Combine(devSeedTokenDir, $"{name}.json");
+        await File.WriteAllTextAsync(seedPath, seedJson);
+        if (!OperatingSystem.IsWindows())
+            File.SetUnixFileMode(seedPath, UnixFileMode.UserRead | UnixFileMode.UserWrite);
+
+        app.Logger.LogInformation(
+            "dev seed: enrolled {Name} as machine {MachineId} → {File}",
+            name, credentials.MachineId, seedPath);
+    }
 }
 
 // Aspire health endpoints (/health, /alive), mapped in Development only.

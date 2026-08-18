@@ -29,7 +29,7 @@ brings up, in dependency order:
 | `postgres` | Managed Postgres 16 with a persistent data volume (survives restarts) | container |
 | `mcp` | The control plane + MCP host (`Landbridge.Mcp`), migrated on startup and dev-seeded | `http://127.0.0.1:5050` (fixed, un-proxied) |
 | `relay` | `landbridge-relay` | `http://127.0.0.1:5100` (fixed, un-proxied) |
-| `landbridged` | A real runner, enrolled via a dev-seeded machine token, dialing `ws://127.0.0.1:5050/runner` | outbound only |
+| `landbridged-codex` / `-claude` / `-grok` | Three enrolled linux boxes, each dialing `ws://127.0.0.1:5050/runner` | outbound only |
 
 The endpoints for `mcp` and `relay` are pinned to fixed loopback ports and *not*
 proxied by Aspire's DCP, because the sibling `landbridged`/worker/relay processes
@@ -55,14 +55,23 @@ dispatch → `get_session` → `report_result` protocol; see
 
 ### Dev-seed shortcut
 
-In the dev loop the host bootstraps a machine identity out of band (the real
-enrollment handshake an operator performs — below — is skipped) and writes a
-JSON file with `machineId` and `machineToken` to a temp path. The AppHost reads
-it and hands `landbridged` its `LANDBRIDGE_MACHINE_TOKEN` / `LANDBRIDGE_MACHINE_ID`. This is
-gated by `Landbridge:DevSeed:TokenFile` and **production never sets it**. The dev
-machine token is fixed and never refreshed. Completion is Lead-adjudicated
-(§7, §9 check 4), so the loop seeds no verifier credential — a human-driven Lead
-closes the task lifecycle with `submit_review`.
+In the dev loop the host enrolls three linux boxes out of band (the real
+enrollment handshake an operator performs — below — is skipped) and writes one
+JSON file per box (`machineId`, `machineToken`) under a temp directory. The
+AppHost starts one `landbridged` per file and hands it that box's
+`LANDBRIDGE_MACHINE_TOKEN` / `LANDBRIDGE_MACHINE_ID`. This is gated by
+`Landbridge:DevSeed:TokenDir` and **production never sets it**.
+
+| Box | Declared OS | Profiles |
+|---|---|---|
+| `codex-linux` | linux | `codex-apphost-linux`, `any-linux` |
+| `claude-linux` | linux | `claude-apphost-linux`, `any-linux` |
+| `grok-linux` | linux | `grok-apphost-linux`, `any-linux` |
+
+No Team is minted. A human Lead creates work and aims it at one of those
+profile names. Spawn is still the scripted `Landbridge.WorkerHarness`; swapping
+a box to a real ACP harness is a config-only edit of
+[`landbridged.dev.json`](../src/Landbridge.AppHost/landbridged.dev.json).
 
 ## Authenticating a human
 
@@ -218,7 +227,7 @@ into each `spawn` arg at dispatch: `{session_id}`, `{machine_id}`, `{work_dir}`
 writes to `{work_dir}/mcp.json`, mode `0600`). It also stamps `LANDBRIDGE_MACHINE_ID`,
 `LANDBRIDGE_SESSION_ID`, and `LANDBRIDGE_WORKER_TOKEN` on the child.
 
-> Note: `{work_root}` and `{worker_harness}` in `landbridged.dev.json` are
+> Note: `{work_root}`, `{worker_harness}`, and `{specific_profile}` in `landbridged.dev.json` are
 > **AppHost** placeholders resolved *before* the file reaches `landbridged` (the
 > AppHost writes out a resolved copy); they are not `landbridged` substitution tokens.
 > `landbridged`'s tokens are the five listed above.
@@ -510,7 +519,7 @@ this branch.
 | `Landbridge:RelayValidation:Bearer` | *(unset → 503)* | Shared bearer the relay must present to `POST /relay/validate`. Fail-closed when unset. |
 | `Landbridge:Oauth:AllowInsecureClientMetadata` | `false` | DEV/TEST ONLY. Disables the CIMD SSRF address fence (accepts `http` `client_id` URLs and hosts resolving to private, loopback, or link-local addresses). Never enable in production. |
 | `Landbridge:MigrateOnStartup` | `false` | Apply the checked-in EF migration on boot. Set by the dev loop; production migrates out of band. |
-| `Landbridge:DevSeed:TokenFile` | *(unset)* | Dev-loop only: bootstrap a machine identity and write the seed file here. Never set in production. |
+| `Landbridge:DevSeed:TokenDir` | *(unset)* | Dev-loop only: enroll the Codex/Claude/Grok linux boxes and write each seed file here. Never set in production. |
 | env `OTEL_EXPORTER_OTLP_ENDPOINT` | *(unset)* | When set, the host exports OpenTelemetry via OTLP (the Aspire dashboard sets this in the dev loop). |
 
 ### Relay (`Landbridge.Relay`)

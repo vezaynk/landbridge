@@ -4,8 +4,10 @@
   // it out and passing --config to landbridged:
   //   {work_root}      -> a temp scratch root the AppHost creates for this run
   //   {worker_harness} -> the absolute path to the built Landbridge.WorkerHarness
+  // {specific_profile} -> <harness>-apphost-linux for this box
   // {mcp_config} is left untouched on purpose: landbridged's ProcessSupervisor
   // substitutes it per task with the generated mcp.json path (§13).
+  // any-linux is the group name a Lead uses when any of these boxes will do.
   //
   // This is the seam an operator edits to run a REAL agent instead of the no-LLM
   // harness: swap the profile's "spawn" to e.g. ["claude", "-p", ...] — landbridged
@@ -51,7 +53,11 @@
   },
   "profiles": [
     {
-      "name": "default",
+      "name": "{specific_profile}",
+      "spawn": ["{worker_harness}", "--mcp-config", "{mcp_config}"]
+    },
+    {
+      "name": "any-linux",
       "spawn": ["{worker_harness}", "--mcp-config", "{mcp_config}"]
     }
   ]

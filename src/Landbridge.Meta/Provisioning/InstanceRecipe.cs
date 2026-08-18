@@ -14,7 +14,7 @@ namespace Landbridge.Meta.Provisioning;
 /// <c>Landbridge:MigrateOnStartup=true</c> (deviation #4, so a fresh instance self-migrates
 /// and upgrades re-migrate), the passphrase HASH (never a plaintext), the shared
 /// relay bearer on both mcp and relay, and — critically — the dev-only gates
-/// (<c>Landbridge:DevSeed:TokenFile</c>, <c>Landbridge:Oauth:AllowInsecureClientMetadata</c>)
+/// (<c>Landbridge:DevSeed:TokenDir</c>, <c>Landbridge:Oauth:AllowInsecureClientMetadata</c>)
 /// are NEVER set. A production instance is passphrase-gated with real OAuth and no
 /// seeded identities.</para>
 /// </summary>
