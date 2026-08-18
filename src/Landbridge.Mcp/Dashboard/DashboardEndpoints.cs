@@ -8,7 +8,7 @@ using static Landbridge.Mcp.Dashboard.DashboardHosting;
 namespace Landbridge.Mcp.Dashboard;
 
 /// <summary>
-/// The §12 dashboard's HTTP surface: the three views plus the event log, each
+/// The §12 dashboard's HTTP surface: the views plus the event log, each
 /// served as Blazor Server HTML and — from the same query layer — as a JSON twin
 /// (§4/§12: consumable as structured data by a Lead). Routes are gated by
 /// <see cref="DashboardAuth"/>'s own bearer-or-cookie resolution rather than
@@ -90,6 +90,7 @@ public static class DashboardEndpoints
         app.MapPost("/dashboard/machines/revoke", HandleRevokeMachineAsync).DisableAntiforgery().WithOrder(-100);
 
         app.MapConformance();
+        app.MapConnect();
 
         if (app is WebApplication host)
             host.MapDashboardUi();

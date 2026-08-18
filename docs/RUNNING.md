@@ -119,18 +119,22 @@ secrets or the environment variable `Landbridge__Operator__PassphraseHash` (see 
   passphrase. On success you get a `landbridge_session` cookie (12h, HttpOnly,
   `Path=/dashboard`) and can view `/dashboard/machines` (Machine Group),
   `/dashboard/teams` + `/dashboard/teams/{id}` (Team views), `/dashboard/inbox`
-  (human inbox), `/dashboard/events`, and `/dashboard/conformance` (operator
-  dummy-task check aimed at `default`: `POST` mints the set,
-  `GET /dashboard/conformance/{runId}` reports states). Pages carry a
+  (human inbox), `/dashboard/events`, `/dashboard/conformance` (operator
+  dummy-task check aimed at a named profile: `POST` mints the set,
+  `GET /dashboard/conformance/{runId}` reports states), and `/dashboard/connect`
+  (how to reach the plane as a Lead, and how to enroll a machine — including
+  issuing an enrollment token and claiming a Team). Pages carry a
   5-second auto-refresh and each has a JSON twin (`?format=json` or an
   `Accept: application/json` request). A pasted human/Lead token is accepted as a
   secondary door — but a **Lead** token reads only its own Team: `/dashboard/teams`,
   `/dashboard/inbox` and `/dashboard/events` come back filtered to it, another
   Team's `/dashboard/teams/{id}` is a 403, and `/dashboard/machines` plus
   `/dashboard/conformance` are human-only (machine enumeration is a human surface
-  by design, §12). The mutating forms (login, logout, the permission verdict,
-  **Revoke machine**, the profile-check start) are refused unless the request
-  carries this dashboard's own `Origin` — so a scripted POST has to send one.
+  by design, §12). `/dashboard/connect` is readable by a Lead; issuing an
+  enrollment token or claiming a Team is human-only. The mutating forms (login,
+  logout, the permission verdict, **Revoke machine**, the profile-check start,
+  the Connect claims) are refused unless the request carries this dashboard's
+  own `Origin` — so a scripted POST has to send one.
   Revoking is human-only for the same reason the Machine Group view is: a
   machine belongs to no Team.
 - **MCP / harness (OAuth 2.1)** — a harness acting as a Lead authenticates via the
