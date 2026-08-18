@@ -1,0 +1,34 @@
+@foreach (var part in Parts)
+{
+    @((MarkupString)part)
+}
+
+@code {
+    [Parameter, EditorRequired] public TeamSessionView Cell { get; set; } = default!;
+    [Parameter] public DateTimeOffset Now { get; set; }
+
+    private IEnumerable<string> Parts
+    {
+        get
+        {
+            var t = Cell;
+            if (t.ContinuesSessionId is { } prior)
+                yield return $"<span class=\"nt\">continues <span class=\"mono\">{ShortId(prior)}</span></span> ";
+            if (t.State == SessionState.BlockedOnInput
+                || (t.State == SessionState.Working && t.BlockedAt is not null && t.InputKind is not InputRequestKind.Permission))
+                yield return $"<span class=\"nt\">blocked {Age(t.BlockedAt, Now)}</span> ";
+            else if (t.State == SessionState.Parked && t.ParkMachine is not null)
+                yield return $"<span class=\"nt\">parked on <span class=\"mono\">{WebUtility.HtmlEncode(t.ParkMachine)}</span></span> ";
+            else if (t.State == SessionState.Failed)
+                yield return $"<span class=\"nt\">failed{(t.LastRequeueReason is { } why ? $", {why}" : "")}{(t.InfrastructureRequeues > 0 ? $" ({t.InfrastructureRequeues})" : "")}</span> ";
+            else if (t.State == SessionState.Completed && t.CompletionProvenance is { } who)
+                yield return $"<span class=\"nt\">accepted by {ProvenanceLabel(who)}</span> ";
+            else if (t.State == SessionState.Canceled
+                     && t.InfrastructureRequeueLimit > 0
+                     && t.InfrastructureRequeues >= t.InfrastructureRequeueLimit)
+                yield return $"<span class=\"nt\">abandoned after {t.InfrastructureRequeues} requeues, last {t.LastRequeueReason?.ToString() ?? "unknown"}</span> ";
+            else if (t.InfrastructureRequeues > 0)
+                yield return $"<span class=\"nt\">{t.InfrastructureRequeues} requeues{(t.LastRequeueReason is { } why ? $", last {why}" : "")}</span> ";
+        }
+    }
+}

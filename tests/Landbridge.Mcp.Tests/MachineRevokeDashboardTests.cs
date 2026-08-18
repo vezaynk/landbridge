@@ -232,7 +232,7 @@ public sealed class MachineRevokeDashboardTests(PostgresFixture pg) : IAsyncLife
         builder.Services.AddLandbridgeStore();
         builder.Services.AddScoped<TokenService>();
         builder.Services.AddScoped<MachineRevocationService>();
-        builder.Services.AddScoped<DashboardQueries>();
+        builder.Services.AddDashboard();
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<RunnerConnectionRegistry>();
         builder.Services.AddLandbridgeForwarding(); // the sink the revoke requeues through

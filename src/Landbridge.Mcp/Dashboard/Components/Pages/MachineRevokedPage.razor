@@ -1,0 +1,27 @@
+<DashboardDocument Title="Machine revoked" ActiveKey="machines">
+<section class="card">
+    <h1>Machine revoked</h1>
+    <p class="sub mono">@MachineId</p>
+    <ul>
+        @if (Revoked.ChannelClosed)
+        {
+            <li>Its command channel was closed.</li>
+        }
+        else
+        {
+            <li>It held no live command channel.</li>
+        }
+        <li>@Revoked.WorkersRevoked worker token(s) on the box were revoked.</li>
+        <li>@Revoked.SessionsRequeued task(s) it held were requeued for another machine.</li>
+        <li>Its access and refresh tokens no longer authenticate.</li>
+    </ul>
+    <p class="nt">The machine must enroll again to return. If it is still running,
+        it will reconnect and be refused.</p>
+    <p><a href="/dashboard/machines">← back to the Machine Group</a></p>
+</section>
+</DashboardDocument>
+
+@code {
+    [Parameter] public Guid MachineId { get; set; }
+    [Parameter, EditorRequired] public MachineRevocation Revoked { get; set; } = default!;
+}

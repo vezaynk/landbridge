@@ -738,7 +738,7 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
         builder.Services.AddLandbridgeStore();
         builder.Services.AddScoped<TokenService>();
-        builder.Services.AddScoped<DashboardQueries>();
+        builder.Services.AddDashboard();
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<RunnerConnectionRegistry>();
         builder.Services.AddSingleton<IOperatorVerifier>(new ConfiguredOperatorVerifier(operatorPassphraseHash));

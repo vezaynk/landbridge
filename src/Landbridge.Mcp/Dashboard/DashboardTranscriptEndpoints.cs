@@ -49,7 +49,6 @@ public static class DashboardTranscriptEndpoints
 
     public static IEndpointRouteBuilder MapDashboardTranscripts(this IEndpointRouteBuilder app)
     {
-        app.MapGet("/dashboard/sessions/{sessionId}/transcripts", HandleIndexAsync);
         app.MapGet("/dashboard/sessions/{sessionId}/transcript", HandleStreamAsync);
         app.MapGet("/dashboard/tasks/{sessionId}/transcripts",
             (string sessionId) => Results.Redirect($"/dashboard/sessions/{sessionId}/transcripts", permanent: true));
@@ -62,45 +61,9 @@ public static class DashboardTranscriptEndpoints
     }
 
     /// <summary>
-    /// The index: which dispatches this task had, which machine each ran on, and what that
-    /// machine still holds. One inventory request per connected machine (§12).
-    /// </summary>
-    private static async Task<IResult> HandleIndexAsync(
-        string sessionId, HttpContext http, TokenService tokens, DashboardQueries queries,
-        TranscriptRelayService relay, TimeProvider clock, CancellationToken ct)
-    {
-        if (await RequireHumanAsync(http, tokens, ct) is { } refusal)
-            return refusal;
-        if (!Guid.TryParse(sessionId, out var id))
-            return Results.BadRequest(new { error = "invalid session id" });
-
-        var locations = await queries.GetTranscriptLocationsAsync(id, ct);
-        var task = new SessionId(id);
-
-        // Ask each distinct connected machine once, even if it ran several attempts: the
-        // inventory is per task, not per attempt, and the ordinals come back with it.
-        var inventories = new List<TranscriptMachineInventory>();
-        foreach (var machine in locations
-                     .Where(l => l is { Connected: true, Machine: not null })
-                     .Select(l => l.Machine!)
-                     .Distinct(StringComparer.Ordinal))
-        {
-            inventories.Add(await relay.ListAsync(task, machine, ct) switch
-            {
-                TranscriptResult.Inventory inv => new TranscriptMachineInventory(machine, inv.Instances, null),
-                TranscriptResult.Unavailable u => new TranscriptMachineInventory(machine, [], u.Detail),
-                _ => new TranscriptMachineInventory(machine, [], "Unexpected reply."),
-            });
-        }
-
-        return Results.Content(
-            DashboardTranscriptRenderer.Index(task, locations, inventories, clock.GetUtcNow()),
-            "text/html; charset=utf-8");
-    }
-
-    /// <summary>
     /// The raw stream: follow the machine's cursor, writing each range straight to the
     /// response. Nothing is buffered beyond one range and nothing is persisted (§12).
+    /// The HTML index is the Blazor <c>Transcripts</c> page.
     /// </summary>
     private static async Task<IResult> HandleStreamAsync(
         string sessionId, HttpContext http, TokenService tokens, TranscriptRelayService relay,
@@ -203,9 +166,8 @@ public static class DashboardTranscriptEndpoints
         await DashboardAuth.ResolveAsync(http, tokens, ct) switch
         {
             Principal.Human => null,
-            Principal.Lead => Results.Content(
-                DashboardTranscriptRenderer.LeadRefused(), "text/html; charset=utf-8",
-                statusCode: StatusCodes.Status403Forbidden),
+            Principal.Lead => DashboardHosting.RazorPage<Components.Pages.TranscriptLeadRefusedPage>(
+                status: StatusCodes.Status403Forbidden),
             _ => Results.Redirect("/dashboard/login"),
         };
 
@@ -220,9 +182,8 @@ public static class DashboardTranscriptEndpoints
             TranscriptUnavailable.MachineRefused => StatusCodes.Status404NotFound,
             _ => StatusCodes.Status503ServiceUnavailable,
         };
-        return Results.Content(
-            DashboardTranscriptRenderer.Unavailable(unavailable),
-            "text/html; charset=utf-8", statusCode: status);
+        return DashboardHosting.RazorPage<Components.Pages.TranscriptUnavailablePage>(
+            new { Unavailable = unavailable }, status);
     }
 }
 

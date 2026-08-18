@@ -1,0 +1,87 @@
+@page "/dashboard/events"
+@inherits DashboardPageBase
+
+<PageTitle>Event log · Landbridge</PageTitle>
+
+@if (RefuseReason is { } reason)
+{
+    <ScopeCard Reason="@reason" />
+}
+else if (Ready)
+{
+    <h1>Event log</h1>
+    <p class="sub">Recent transitions and Lead events, newest first.
+        Takeovers, reboots, and evictions land here (§12).</p>
+
+    @if (List.Count == 0)
+    {
+        <EmptyState Message="No events yet." />
+    }
+    else
+    {
+        <section>
+            <table>
+                <thead>
+                    <tr>
+                        <th>When</th><th>Source</th><th>Kind</th><th>Transition</th>
+                        <th>Team</th><th>Session / who</th><th>Detail</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var e in List)
+                    {
+                        <tr>
+                            <td>@Age(e.OccurredAt, Now)</td>
+                            <td>
+                                <Badge Text="@e.Source" CssClass="@(e.Source == "lead" ? "state-verifying" : "state-submitted")" />
+                            </td>
+                            <td>@e.Kind</td>
+                            <td>
+                                @if (e.FromState is { } f && e.ToState is { } to)
+                                {
+                                    <StateBadge State="@f" /> <text>→</text> <StateBadge State="@to" />
+                                }
+                                else if (e.ToState is { } only)
+                                {
+                                    <text>→ </text><StateBadge State="@only" />
+                                }
+                                else
+                                {
+                                    <span class="nt">—</span>
+                                }
+                            </td>
+                            <td><TeamLink TeamId="@e.TeamId" /></td>
+                            <td>
+                                @if (e.Source == "lead")
+                                {
+                                    var who = e.HumanId is { } h ? ShortId(h) : "—";
+                                    var prior = e.PriorHumanId is { } p ? $" (was {ShortId(p)})" : "";
+                                    <span class="mono">@who</span><span class="nt">@prior</span>
+                                }
+                                else if (e.Namespace is { } ns)
+                                {
+                                    <code>@ns</code>
+                                }
+                                else
+                                {
+                                    <span class="nt">—</span>
+                                }
+                            </td>
+                            <td><EventDetail Event="@e" /></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </section>
+    }
+}
+
+@code {
+    private IReadOnlyList<DashboardEvent> List { get; set; } = [];
+
+    protected override async Task<string?> LoadAsync()
+    {
+        List = await Queries.GetEventsAsync(200, TeamScope, RequestAborted);
+        return null;
+    }
+}

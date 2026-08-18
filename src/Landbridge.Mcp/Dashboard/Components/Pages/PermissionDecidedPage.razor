@@ -1,0 +1,22 @@
+<DashboardDocument Title="Permission" ActiveKey="inbox">
+<h1>Permission decided</h1>
+<p class="sub mono">@Request.Namespace</p>
+<section>
+    <p>
+        <code>@(Request.Tool ?? "unnamed tool")</code> was
+        <strong>@(Request.Verdict?.ToString().ToLowerInvariant() ?? "not decided")</strong>.
+    </p>
+    @if (Request.Message is { Length: > 0 } m)
+    {
+        <p>The worker was told:</p>
+        <pre class="report">@m</pre>
+    }
+    <p class="nt">The worker was waiting on this and resumes now — it was never
+        requeued, so there is no redispatch to wait for.</p>
+    <p><a href="/dashboard/inbox">Back to the inbox</a></p>
+</section>
+</DashboardDocument>
+
+@code {
+    [Parameter, EditorRequired] public PermissionRequestView Request { get; set; } = default!;
+}

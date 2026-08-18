@@ -62,7 +62,7 @@ builder.Services.AddSingleton<PreviewAuthStore>();
 builder.Services.AddScoped<OAuthAuthorizationCodeService>();
 // §12 dashboard read side: scoped (per-request DbContext) + the in-memory
 // connection registry singleton it injects for live machine state.
-builder.Services.AddScoped<DashboardQueries>();
+builder.Services.AddDashboard();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddHttpContextAccessor();
 
@@ -216,7 +216,7 @@ app.MapWorkerPermissionEndpoint();
 app.MapRunnerEndpoint();
 
 // The §12 web dashboard — the primary human surface (Machine Group, Team view,
-// Human inbox, event log), server-rendered HTML with a JSON twin. Gated by its own
+// Human inbox, event log), Blazor Server with a JSON twin. Gated by its own
 // bearer-or-cookie resolution (DashboardAuth), not RequireAuthorization, so the
 // browser path never trips the MCP challenge.
 app.MapDashboard();

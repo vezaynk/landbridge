@@ -1,0 +1,11 @@
+<DashboardDocument Title="Preview unavailable" HideSignOut="false">
+<div class="login-wrap card">
+    <h1>Preview unavailable</h1>
+    <p class="err">@Message</p>
+    <p><a href="/dashboard/machines">← dashboard</a></p>
+</div>
+</DashboardDocument>
+
+@code {
+    [Parameter] public string Message { get; set; } = "";
+}

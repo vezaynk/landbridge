@@ -1,0 +1,12 @@
+@if (string.IsNullOrEmpty(Question))
+{
+    <span class="nt">none given</span>
+}
+else
+{
+    <pre class="report">@((MarkupString)E(Question))</pre>
+}
+
+@code {
+    [Parameter] public string? Question { get; set; }
+}

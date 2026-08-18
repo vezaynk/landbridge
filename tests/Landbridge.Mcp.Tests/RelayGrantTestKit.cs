@@ -73,7 +73,7 @@ internal static class RelayGrantTestKit
         builder.Services.AddSingleton<PreviewAuthStore>();
         // §12 dashboard: the read side + operator verifier, so the preview-auth confirm
         // and the mint endpoint are exercisable end to end (the gated browser flow, §8.4).
-        builder.Services.AddScoped<DashboardQueries>();
+        builder.Services.AddDashboard();
         builder.Services.AddSingleton<IOperatorVerifier, ConfiguredOperatorVerifier>();
         builder.Services.AddSingleton(TimeProvider.System);
         builder.Services.AddSingleton<RunnerConnectionRegistry>();

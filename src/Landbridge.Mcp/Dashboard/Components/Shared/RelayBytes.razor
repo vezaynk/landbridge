@@ -1,0 +1,20 @@
+<section>
+    <h2>Relay bytes</h2>
+    @if (Team.ForwardUsage is { Measured: true } u)
+    {
+        <p class="nt">Relay bytes forwarded: <strong>@Bytes(u.ForwardedBytes)</strong>,
+            last reported @(u.ReportedAt?.ToString("u", CultureInfo.InvariantCulture) ?? "—").
+            Best-effort: the relay reports periodically, so this trails live traffic and a relay that
+            dies loses its unsent tail. Nothing is enforced on it; an established splice is never cut
+            mid-flight (§8.3, §9 check 10).</p>
+    }
+    else
+    {
+        <p class="nt">Relay bytes forwarded: not reported — no relay has sent a count for this Team.
+            An absence of measurement, not a measurement of zero (§9 check 10).</p>
+    }
+</section>
+
+@code {
+    [Parameter, EditorRequired] public TeamDetail Team { get; set; } = default!;
+}

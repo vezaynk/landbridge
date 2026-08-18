@@ -1,0 +1,83 @@
+@if (Machine.Processes is { Count: > 0 })
+{
+    <div class="machine-services">
+        <h3>Background processes <span class="nt">started by agents on this machine</span></h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Process</th><th>State</th><th>Stdin</th><th>Up for</th>
+                    <th>Exit</th><th>Ended</th><th>Started by session</th>
+                </tr>
+            </thead>
+            <tbody>
+                @foreach (var p in Machine.Processes)
+                {
+                    <tr>
+                        <td><code>@p.Name</code></td>
+                        <td>@ProcessBadge(p.State)</td>
+                        <td>
+                            @if (p.StdinOpen)
+                            {
+                                <text>open</text>
+                            }
+                            else
+                            {
+                                <span class="nt">closed</span>
+                            }
+                        </td>
+                        <td>
+                            @if (p.StartedAt is null)
+                            {
+                                <span class="nt">—</span>
+                            }
+                            else
+                            {
+                                @Age(p.StartedAt, Now)
+                            }
+                        </td>
+                        <td>
+                            @if (p.ExitCode is { } c)
+                            {
+                                @c
+                            }
+                            else
+                            {
+                                <span class="nt">—</span>
+                            }
+                        </td>
+                        <td>
+                            @if (p.ExitedAt is null)
+                            {
+                                <span class="nt">—</span>
+                            }
+                            else
+                            {
+                                @Age(p.ExitedAt, Now)
+                            }
+                        </td>
+                        <td><span class="mono nt">@ShortId(p.DeclaredBySession)</span></td>
+                    </tr>
+                }
+            </tbody>
+        </table>
+        <p class="nt">A process outlives the task that started it and is never
+            restarted. Nothing stops it automatically — a Lead sends a cleanup task,
+            or it runs until this machine's landbridged restarts. Landbridge tracks no port for
+            a process; reachability is a registered service (§8.2). A process with
+            closed stdin has no graceful stop.</p>
+    </div>
+}
+
+@code {
+    [Parameter, EditorRequired] public MachineView Machine { get; set; } = default!;
+    [Parameter] public DateTimeOffset Now { get; set; }
+
+    private static RenderFragment ProcessBadge(ServiceState state) => state switch
+    {
+        ServiceState.Running => @<Badge Text="running" CssClass="ready" />,
+        ServiceState.Starting => @<Badge Text="starting" CssClass="state-submitted" />,
+        ServiceState.Exited => @<Badge Text="exited" CssClass="backpressure" />,
+        ServiceState.Failed => @<Badge Text="failed" CssClass="down" />,
+        _ => @<Badge Text="stopped" CssClass="backpressure" />,
+    };
+}

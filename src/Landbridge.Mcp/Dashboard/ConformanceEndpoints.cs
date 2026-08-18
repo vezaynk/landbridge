@@ -26,30 +26,8 @@ internal static class ConformanceEndpoints
 
     public static IEndpointRouteBuilder MapConformance(this IEndpointRouteBuilder app)
     {
-        app.MapGet("/dashboard/conformance", HandleFormAsync);
-        app.MapPost("/dashboard/conformance", HandleStartAsync);
-        app.MapGet("/dashboard/conformance/{runId}", HandleProgressAsync);
+        app.MapPost("/dashboard/conformance", HandleStartAsync).DisableAntiforgery().WithOrder(-100);
         return app;
-    }
-
-    /// <summary>GET /dashboard/conformance — the start form (HTML) or the schema (JSON).</summary>
-    private static async Task<IResult> HandleFormAsync(
-        HttpContext http, TokenService tokens, CancellationToken ct)
-    {
-        return await GatedHuman(http, tokens, ct, _ =>
-        {
-            if (WantsJson(http))
-            {
-                return Task.FromResult<IResult>(Results.Json(new
-                {
-                    post = "/dashboard/conformance",
-                    profileField = "required; exact-match name from the runner config",
-                    kinds = ConformanceCatalog.Kinds,
-                }, Json));
-            }
-
-            return Task.FromResult<IResult>(Html(DashboardRenderer.ConformanceForm()));
-        });
     }
 
     /// <summary>
@@ -92,41 +70,9 @@ internal static class ConformanceEndpoints
 
             var machines = MachinesDeclaring(registry, profile);
             var model = ConformanceRunView.From(runId.Value, profile, created, machines);
-            return WantsJson(http) || http.Request.HasJsonContentType()
+            return DashboardNegotiate.WantsJson(http) || http.Request.HasJsonContentType()
                 ? Results.Json(model, Json, statusCode: StatusCodes.Status201Created)
                 : Results.Redirect($"/dashboard/conformance/{runId.Value:D}");
-        });
-    }
-
-    /// <summary>GET /dashboard/conformance/{runId} — current states of that run's tasks.</summary>
-    private static async Task<IResult> HandleProgressAsync(
-        string runId, HttpContext http, TokenService tokens, DashboardQueries queries,
-        RunnerConnectionRegistry registry, CancellationToken ct)
-    {
-        if (!Guid.TryParse(runId, out var id))
-            return Results.BadRequest(new { error = "invalid run id" });
-
-        return await GatedHuman(http, tokens, ct, async _ =>
-        {
-            var rows = await queries.GetConformanceTasksAsync(id, ct);
-            if (rows.Count == 0)
-            {
-                return WantsJson(http)
-                    ? Results.Json(new { error = "no such conformance run" }, Json, statusCode: 404)
-                    : Results.Content(
-                        DashboardRenderer.ConformanceMissing(), "text/html; charset=utf-8",
-                        statusCode: StatusCodes.Status404NotFound);
-            }
-
-            var profile = rows[0].Profile ?? "";
-            var tasks = rows.Select(r => new ConformanceSessionView(
-                r.Id,
-                ConformanceCatalog.KindOf(r.Workspace) ?? "unknown",
-                r.State, r.Attempt, r.ResultReference, r.LastRequeueReason?.ToString())).ToList();
-            var model = ConformanceRunView.From(id, profile, tasks, MachinesDeclaring(registry, profile));
-            return WantsJson(http)
-                ? Results.Json(model, Json)
-                : Html(DashboardRenderer.ConformanceRun(model));
         });
     }
 
@@ -169,15 +115,14 @@ internal static class ConformanceEndpoints
         Func<Principal.Human, Task<IResult>> body)
     {
         if (await DashboardAuth.ResolveAsync(http, tokens, ct) is not { } principal)
-            return WantsJson(http)
+            return DashboardNegotiate.WantsJson(http)
                 ? Results.Json(new { error = "unauthorized" }, Json, statusCode: 401)
                 : Results.Redirect("/dashboard/login");
         if (principal is not Principal.Human human)
-            return WantsJson(http)
+            return DashboardNegotiate.WantsJson(http)
                 ? Results.Json(new { error = MachinesAreHumanOnly }, Json, statusCode: StatusCodes.Status403Forbidden)
-                : Results.Content(
-                    DashboardRenderer.ScopeRefused(MachinesAreHumanOnly), "text/html; charset=utf-8",
-                    statusCode: StatusCodes.Status403Forbidden);
+                : DashboardHosting.RazorPage<Components.Pages.ScopeRefusedPage>(
+                    new { Reason = MachinesAreHumanOnly }, StatusCodes.Status403Forbidden);
         return await body(human);
     }
 
@@ -187,24 +132,10 @@ internal static class ConformanceEndpoints
             ?? Environment.GetEnvironmentVariable("LANDBRIDGE_PUBLIC_MCP_URL");
         return OriginGuard.IsSameOrigin(http.Request, origin)
             ? null
-            : WantsJson(http)
+            : DashboardNegotiate.WantsJson(http)
                 ? Results.Json(new { error = CrossOriginReason }, Json, statusCode: StatusCodes.Status403Forbidden)
-                : Results.Content(
-                    DashboardRenderer.ScopeRefused(CrossOriginReason), "text/html; charset=utf-8",
-                    statusCode: StatusCodes.Status403Forbidden);
-    }
-
-    private static IResult Html(string html) =>
-        Results.Content(html, "text/html; charset=utf-8");
-
-    private static bool WantsJson(HttpContext http)
-    {
-        var format = http.Request.Query["format"].ToString();
-        if (string.Equals(format, "json", StringComparison.OrdinalIgnoreCase))
-            return true;
-        var accept = http.Request.Headers.Accept.ToString();
-        return accept.Contains("application/json", StringComparison.OrdinalIgnoreCase)
-            && !accept.Contains("text/html", StringComparison.OrdinalIgnoreCase);
+                : DashboardHosting.RazorPage<Components.Pages.ScopeRefusedPage>(
+                    new { Reason = CrossOriginReason }, StatusCodes.Status403Forbidden);
     }
 
     private const string MachinesAreHumanOnly =

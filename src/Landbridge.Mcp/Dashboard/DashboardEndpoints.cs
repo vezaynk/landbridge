@@ -1,15 +1,15 @@
-using System.Text.Json;
-using System.Text.Json.Serialization;
 using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
+using Landbridge.Mcp.Dashboard.Components.Pages;
 using Landbridge.Web;
 using Microsoft.Extensions.Configuration;
+using static Landbridge.Mcp.Dashboard.DashboardHosting;
 
 namespace Landbridge.Mcp.Dashboard;
 
 /// <summary>
 /// The §12 dashboard's HTTP surface: the three views plus the event log, each
-/// served as server-rendered HTML and — from the same query layer — as a JSON twin
+/// served as Blazor Server HTML and — from the same query layer — as a JSON twin
 /// (§4/§12: consumable as structured data by a Lead). Routes are gated by
 /// <see cref="DashboardAuth"/>'s own bearer-or-cookie resolution rather than
 /// <c>.RequireAuthorization()</c>, so the browser path redirects to a login page
@@ -17,9 +17,8 @@ namespace Landbridge.Mcp.Dashboard;
 /// the login/logout endpoints are deliberately open.
 ///
 /// A thin transport shell, in the house style of <see cref="EnrollmentEndpoints"/>:
-/// all reads live in <see cref="DashboardQueries"/>, all HTML in
-/// <see cref="DashboardRenderer"/>; the handlers only resolve the caller, negotiate
-/// the representation, and map to an <see cref="IResult"/>.
+/// all reads live in <see cref="DashboardQueries"/>, HTML is Blazor Server,
+/// and JSON is <see cref="DashboardJsonReads"/>.
 ///
 /// <para>Two rules run across the whole surface rather than route by route. Reads are scoped to
 /// what the resolved principal may see — a human operator reads the instance, a Lead reads its
@@ -29,11 +28,7 @@ namespace Landbridge.Mcp.Dashboard;
 /// </summary>
 public static class DashboardEndpoints
 {
-    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
-    {
-        Converters = { new JsonStringEnumConverter() },
-        DictionaryKeyPolicy = JsonNamingPolicy.CamelCase,
-    };
+    private static readonly System.Text.Json.JsonSerializerOptions Json = DashboardNegotiate.Json;
 
     /// <summary>Fixed delay added to a wrong-passphrase login, mirroring
     /// <c>/oauth/authorize</c>'s brute-force friction (§5). Kept in lockstep with
@@ -42,14 +37,24 @@ public static class DashboardEndpoints
 
     public static IEndpointRouteBuilder MapDashboard(this IEndpointRouteBuilder app)
     {
+        if (app is WebApplication web)
+        {
+            web.UseAntiforgery();
+            web.Use(async (ctx, next) =>
+            {
+                if (await DashboardJsonReads.TryWriteAsync(ctx))
+                    return;
+                await next();
+            });
+        }
+
         // Open: the single stylesheet, and the login/logout seam.
         app.MapGet("/dashboard/dashboard.css", () =>
             Results.Text(DashboardCss.Content, DashboardCss.ContentType));
 
-        app.MapGet("/dashboard/login", (string? error, string? next) =>
-            Html(DashboardRenderer.Login(error, next)));
-
-        app.MapPost("/dashboard/login", HandleLoginAsync);
+        // Order beats the Blazor @page on the same path so the form POST
+        // stays the cookie/redirect handler rather than a circuit POST.
+        app.MapPost("/dashboard/login", HandleLoginAsync).DisableAntiforgery().WithOrder(-100);
 
         // §8.4 gated-browser-flow confirm: an operator with a landbridge_session confirms
         // access to a preview's Team and the plane mints a one-time code, sent back
@@ -61,83 +66,33 @@ public static class DashboardEndpoints
                 return refusal;
             DashboardAuth.ClearSessionCookie(http);
             return Results.Redirect("/dashboard/login");
-        });
+        }).DisableAntiforgery().WithOrder(-100);
 
         // Gated views. "/dashboard" lands on the Machine Group view.
         app.MapGet("/dashboard", () => Results.Redirect("/dashboard/machines"));
 
-        app.MapGet("/dashboard/machines", async (
-            HttpContext http, TokenService tokens, DashboardQueries queries, TimeProvider clock, CancellationToken ct) =>
-            await Gated(http, tokens, ct, async principal =>
-            {
-                // The one view with no Lead-scoped answer to give: a machine is not Team-scoped,
-                // and machine enumeration is a permanent non-goal for agents (§12 "human operator
-                // session only", §10 as-built). A Lead sees its machines through its own Team.
-                if (principal is not Principal.Human)
-                    return Refused(http, MachinesAreHumanOnly);
-                var machines = await queries.GetMachinesAsync(ct);
-                return Negotiated(http, machines, () => DashboardRenderer.Machines(machines, clock.GetUtcNow()));
-            }));
-
-        app.MapGet("/dashboard/teams", async (
-            HttpContext http, TokenService tokens, DashboardQueries queries, TimeProvider clock, CancellationToken ct) =>
-            await Gated(http, tokens, ct, async principal =>
-            {
-                var teams = await queries.GetTeamsAsync(TeamScope(principal), ct);
-                return Negotiated(http, teams, () => DashboardRenderer.Teams(teams, clock.GetUtcNow()));
-            }));
-
-        app.MapGet("/dashboard/teams/{teamId}", async (
-            string teamId, HttpContext http, TokenService tokens, DashboardQueries queries, TimeProvider clock,
-            CancellationToken ct) =>
-            await Gated(http, tokens, ct, async principal =>
-            {
-                if (!Guid.TryParse(teamId, out var id))
-                    return Results.BadRequest(new { error = "invalid team id" });
-                // The route takes an arbitrary id, so membership is checked here or nowhere:
-                // this page carries the Team's prose — worker reports, questions, answers,
-                // result references — which is exactly what must not cross a Team boundary.
-                if (!OperatorMayAccess(principal, new Landbridge.Core.TeamId(id)))
-                    return Refused(http, NotYourTeam);
-                var team = await queries.GetTeamAsync(id, ct);
-                if (team is null)
-                    return WantsJson(http)
-                        ? Results.Json(new { error = "no such team" }, Json, statusCode: 404)
-                        : Html(DashboardRenderer.Login(null), 404); // unknown team: back to a known surface
-                return Negotiated(http, team, () => DashboardRenderer.TeamDetail(team, clock.GetUtcNow()));
-            }));
-
-        app.MapGet("/dashboard/inbox", async (
-            HttpContext http, TokenService tokens, DashboardQueries queries, TimeProvider clock, CancellationToken ct) =>
-            await Gated(http, tokens, ct, async principal =>
-            {
-                var inbox = await queries.GetInboxAsync(TeamScope(principal), ct);
-                return Negotiated(http, inbox, () => DashboardRenderer.Inbox(inbox, clock.GetUtcNow()));
-            }));
-
-        app.MapGet("/dashboard/events", async (
-            HttpContext http, TokenService tokens, DashboardQueries queries, TimeProvider clock, CancellationToken ct) =>
-            await Gated(http, tokens, ct, async principal =>
-            {
-                var events = await queries.GetEventsAsync(200, TeamScope(principal), ct);
-                return Negotiated(http, events, () => DashboardRenderer.Events(events, clock.GetUtcNow()));
-            }));
+        // HTML GETs are Blazor pages (MapDashboardUi). JSON twins are served by
+        // DashboardJsonReads before the router. These POSTs stay HTTP so cookie
+        // writes, redirects, and same-origin checks stay on the request.
 
         // §12 preview mint: 'Create preview' from the Team's registered-services view.
-        app.MapPost("/dashboard/preview", HandleCreatePreviewAsync);
+        app.MapPost("/dashboard/preview", HandleCreatePreviewAsync).DisableAntiforgery().WithOrder(-100);
 
         // §11 permission bridge: the human's answer to a pending permission request, from
         // the inbox. This one has an MCP twin (the Lead's answer_permission_request) — the
         // point of the bridge is that both answerers reach the same request, with the human
         // able to answer any of them.
-        app.MapPost("/dashboard/permission", HandleDecidePermissionAsync);
+        app.MapPost("/dashboard/permission", HandleDecidePermissionAsync).DisableAntiforgery().WithOrder(-100);
 
         // §5/§13 un-trust a machine, from the Machine Group view. Human-only and with no
         // Lead twin, deliberately: this is the incident-response action, and the §5
         // requirement it serves is that it takes seconds.
-        app.MapPost("/dashboard/machines/revoke", HandleRevokeMachineAsync);
+        app.MapPost("/dashboard/machines/revoke", HandleRevokeMachineAsync).DisableAntiforgery().WithOrder(-100);
 
         app.MapConformance();
+
+        if (app is WebApplication host)
+            host.MapDashboardUi();
 
         return app;
     }
@@ -187,11 +142,11 @@ public static class DashboardEndpoints
         if (string.IsNullOrEmpty(passphrase))
         {
             if (string.IsNullOrEmpty(token))
-                return Html(DashboardRenderer.Login("Enter the operator passphrase.", next), 400);
+                return RazorPage<LoginResult>(new { Error = "Enter the operator passphrase.", Next = next }, 400);
 
             var principal = await tokens.ValidateAsync(token, ct);
             if (principal is not (Principal.Human or Principal.Lead))
-                return Html(DashboardRenderer.Login("That token is not a valid human or Lead session.", next), 401);
+                return RazorPage<LoginResult>(new { Error = "That token is not a valid human or Lead session.", Next = next }, 401);
 
             // A session cookie (no Expires): the pasted token's real lifetime lives
             // server-side and ValidateAsync re-checks it on every request, so the
@@ -209,7 +164,7 @@ public static class DashboardEndpoints
         if (!verifier.Verify(passphrase))
         {
             await Task.Delay(WrongPassphraseDelay, ct); // brute-force friction (§5)
-            return Html(DashboardRenderer.Login("Incorrect operator passphrase.", next), 401);
+            return RazorPage<LoginResult>(new { Error = "Incorrect operator passphrase.", Next = next }, 401);
         }
 
         // Verified operator → mint a fresh human session (§5, the root credential)
@@ -257,7 +212,7 @@ public static class DashboardEndpoints
     {
         var principal = await DashboardAuth.ResolveAsync(http, tokens, ct);
         if (principal is null)
-            return WantsJson(http)
+            return DashboardNegotiate.WantsJson(http)
                 ? Results.Json(new { error = "unauthorized" }, Json, statusCode: 401)
                 : Results.Redirect("/dashboard/login");
 
@@ -282,9 +237,9 @@ public static class DashboardEndpoints
             new Landbridge.Core.TeamId(teamId), new Landbridge.Core.SessionId(sessionId), serviceName, policy, ttl, ct);
         var url = PreviewMint.Url(PreviewUrlBase(config), mint.Label);
 
-        return WantsJson(http)
+        return DashboardNegotiate.WantsJson(http)
             ? Results.Json(new { url, auth = policy.ToString().ToLowerInvariant(), expiresAt = mint.Mapping.ExpiresAt }, Json)
-            : Html(DashboardRenderer.PreviewCreated(url, policy, mint.Mapping.ExpiresAt, teamId));
+            : RazorPage<PreviewCreatedPage>(new { Url = url, Policy = policy, ExpiresAt = mint.Mapping.ExpiresAt, TeamId = teamId });
     }
 
     /// <summary>
@@ -321,18 +276,16 @@ public static class DashboardEndpoints
             case Principal.Human:
                 break;
             case Principal.Lead:
-                return WantsJson(http)
+                return DashboardNegotiate.WantsJson(http)
                     ? Results.Json(
                         new { error = "answering from the dashboard is human-only; a Lead uses answer_permission_request" },
                         Json, statusCode: StatusCodes.Status403Forbidden)
-                    : Results.Content(
-                        DashboardRenderer.PermissionRefused(
-                            "Answering from the dashboard is human-only. A Lead answers with "
-                            + "answer_permission_request, and cannot answer a request it escalated."),
-                        "text/html; charset=utf-8",
-                        statusCode: StatusCodes.Status403Forbidden);
+                    : RazorPage<PermissionRefusedPage>(
+                        new { Reason = "Answering from the dashboard is human-only. A Lead answers with "
+                            + "answer_permission_request, and cannot answer a request it escalated." },
+                        StatusCodes.Status403Forbidden);
             default:
-                return WantsJson(http)
+                return DashboardNegotiate.WantsJson(http)
                     ? Results.Json(new { error = "unauthorized" }, Json, statusCode: 401)
                     : Results.Redirect("/dashboard/login");
         }
@@ -359,18 +312,16 @@ public static class DashboardEndpoints
                 StoreResult.Conflict c => c.Reason,
                 _ => "unknown store result",
             };
-            return WantsJson(http)
+            return DashboardNegotiate.WantsJson(http)
                 ? Results.Json(new { error = reason }, Json, statusCode: StatusCodes.Status409Conflict)
-                : Results.Content(
-                    DashboardRenderer.PermissionRefused(reason), "text/html; charset=utf-8",
-                    statusCode: StatusCodes.Status409Conflict);
+                : RazorPage<PermissionRefusedPage>(new { Reason = reason }, StatusCodes.Status409Conflict);
         }
 
         // Re-read so the confirmation reports what actually landed, not what was posted.
         var decided = await store.GetPermissionRequestAsync(id, ct);
         return decided is null
             ? Results.NotFound(new { error = "task disappeared" })
-            : Negotiated(http, decided, () => DashboardRenderer.PermissionDecided(decided));
+            : Negotiated(http, decided, () => RazorPage<PermissionDecidedPage>(new { Request = decided }));
     }
 
     /// <summary>
@@ -422,7 +373,7 @@ public static class DashboardEndpoints
                 return Results.BadRequest(new { error = "invalid machine id" });
 
             var revoked = await revocations.RevokeAsync(machineId, ct);
-            return WantsJson(http)
+            return DashboardNegotiate.WantsJson(http)
                 ? Results.Json(
                     new
                     {
@@ -431,7 +382,7 @@ public static class DashboardEndpoints
                         tasksRequeued = revoked.SessionsRequeued,
                         workersRevoked = revoked.WorkersRevoked,
                     }, Json)
-                : Html(DashboardRenderer.MachineRevoked(machineId, revoked));
+                : RazorPage<MachineRevokedPage>(new { MachineId = machineId, Revoked = revoked });
         });
     }
 
@@ -459,16 +410,16 @@ public static class DashboardEndpoints
         var label = http.Request.Query["label"].ToString();
         var ret = http.Request.Query["return"].ToString();
         if (string.IsNullOrWhiteSpace(label) || string.IsNullOrWhiteSpace(ret))
-            return Html(DashboardRenderer.PreviewAuthError("This preview link is malformed."), 400);
+            return RazorPage<PreviewAuthErrorPage>(new { Message = "This preview link is malformed." }, 400);
 
         if (await previews.ResolveAsync(label, ct) is not PreviewResolveResult.Found found)
-            return Html(DashboardRenderer.PreviewAuthError("This preview no longer exists."), 404);
+            return RazorPage<PreviewAuthErrorPage>(new { Message = "This preview no longer exists." }, 404);
         if (!OperatorMayAccess(principal, new Landbridge.Core.TeamId(found.Mapping.TeamId)))
-            return Html(DashboardRenderer.PreviewAuthError("Your session cannot access this preview's Team."), 403);
+            return RazorPage<PreviewAuthErrorPage>(new { Message = "Your session cannot access this preview's Team." }, 403);
 
         // Open-redirect guard: the return must be exactly the label's preview origin.
         if (!ReturnIsPreviewOrigin(ret, PreviewUrlBase(config), label))
-            return Html(DashboardRenderer.PreviewAuthError("This preview link points somewhere unexpected."), 400);
+            return RazorPage<PreviewAuthErrorPage>(new { Message = "This preview link points somewhere unexpected." }, 400);
 
         var code = previewAuth.MintCode(label);
         var joiner = ret.Contains('?') ? '&' : '?';
@@ -502,7 +453,7 @@ public static class DashboardEndpoints
         HttpContext http, TokenService tokens, CancellationToken ct, Func<Principal, Task<IResult>> body)
     {
         if (await DashboardAuth.ResolveAsync(http, tokens, ct) is not { } principal)
-            return WantsJson(http)
+            return DashboardNegotiate.WantsJson(http)
                 ? Results.Json(new { error = "unauthorized" }, Json, statusCode: 401)
                 : Results.Redirect("/dashboard/login");
         return await body(principal);
@@ -542,11 +493,9 @@ public static class DashboardEndpoints
     /// an expired token), a browser gets the page that names it.
     /// </summary>
     private static IResult Refused(HttpContext http, string reason) =>
-        WantsJson(http)
+        DashboardNegotiate.WantsJson(http)
             ? Results.Json(new { error = reason }, Json, statusCode: StatusCodes.Status403Forbidden)
-            : Results.Content(
-                DashboardRenderer.ScopeRefused(reason), "text/html; charset=utf-8",
-                statusCode: StatusCodes.Status403Forbidden);
+            : RazorPage<ScopeRefusedPage>(new { Reason = reason }, StatusCodes.Status403Forbidden);
 
     /// <summary>
     /// The origin a mutating dashboard POST must have come from. The dashboard is a same-origin
@@ -578,27 +527,6 @@ public static class DashboardEndpoints
         "this form is same-origin only: the request carried no Origin from the dashboard's own host";
 
     /// <summary>Serve the model as JSON, or the rendered HTML, per content negotiation.</summary>
-    private static IResult Negotiated<T>(HttpContext http, T model, Func<string> html) =>
-        WantsJson(http) ? Results.Json(model, Json) : Html(html());
-
-    /// <summary>
-    /// JSON is requested by <c>?format=json</c> (the primary switch) or by an
-    /// <c>Accept: application/json</c> that does not also accept HTML (a bare API
-    /// client). A browser, which sends <c>text/html</c>, always gets HTML unless it
-    /// explicitly asks with the query string.
-    /// </summary>
-    private static bool WantsJson(HttpContext http)
-    {
-        var format = http.Request.Query["format"].ToString();
-        if (string.Equals(format, "json", StringComparison.OrdinalIgnoreCase))
-            return true;
-        if (string.Equals(format, "html", StringComparison.OrdinalIgnoreCase))
-            return false;
-        var accept = http.Request.Headers.Accept.ToString();
-        return accept.Contains("application/json", StringComparison.OrdinalIgnoreCase)
-            && !accept.Contains("text/html", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static IResult Html(string html, int status = 200) =>
-        Results.Content(html, "text/html; charset=utf-8", statusCode: status);
+    private static IResult Negotiated<T>(HttpContext http, T model, Func<IResult> html) =>
+        DashboardNegotiate.WantsJson(http) ? Results.Json(model, Json) : html();
 }
