@@ -202,7 +202,23 @@ var classifier = builder.AddDockerfile("classifier", Path.Combine(repoRoot, "src
     .WithHttpEndpoint(port: classifierPort, targetPort: classifierPort, isProxied: false)
     .WithEnvironment("PORT", classifierPort.ToString())
     .WithHttpHealthCheck("/health");
+var classifierKey = DevBoxConfig.FirstNonEmpty(
+    builder.Configuration,
+    "LANDBRIDGE_CLASSIFIER_API_KEY",
+    "DASHSCOPE_API_KEY",
+    "OPENAI_API_KEY");
+if (classifierKey is { Length: > 0 })
+    classifier.WithEnvironment("LANDBRIDGE_CLASSIFIER_API_KEY", classifierKey);
+var classifierBase = DevBoxConfig.FirstNonEmpty(
+    builder.Configuration, "LANDBRIDGE_CLASSIFIER_BASE_URL");
+if (classifierBase is { Length: > 0 })
+    classifier.WithEnvironment("LANDBRIDGE_CLASSIFIER_BASE_URL", classifierBase);
+var classifierModel = DevBoxConfig.FirstNonEmpty(
+    builder.Configuration, "LANDBRIDGE_CLASSIFIER_MODEL");
+if (classifierModel is { Length: > 0 })
+    classifier.WithEnvironment("LANDBRIDGE_CLASSIFIER_MODEL", classifierModel);
 mcp.WaitFor(classifier);
+mcp.WithEnvironment("Landbridge__Classifier__TimeoutMs", "45000");
 
 // One landbridged per seeded box. Each has its own config, work_root, and
 // --state-dir so credentials and transcripts do not collide. WaitFor(mcp)

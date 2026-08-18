@@ -29,7 +29,7 @@ brings up, in dependency order:
 | `postgres` | Managed Postgres 16 with a persistent data volume (survives restarts) | container |
 | `mcp` | The control plane + MCP host (`Landbridge.Mcp`), migrated on startup and dev-seeded | `http://127.0.0.1:5050` (fixed, un-proxied) |
 | `relay` | `landbridge-relay` | `http://127.0.0.1:5100` (fixed, un-proxied) |
-| `classifier` | Qwen read-only-shell permission classifier | `http://127.0.0.1:5310` (fixed, un-proxied) |
+| `classifier` | Qwen permission classifier (read-only shell, then optional two-stage LLM) | `http://127.0.0.1:5310` (fixed, un-proxied) |
 | `landbridged-codex` / `-claude` / `-grok` | Three enrolled linux boxes, each dialing `ws://127.0.0.1:5050/runner` | outbound only |
 
 The endpoints for `mcp` and `relay` are pinned to fixed loopback ports and *not*
@@ -46,6 +46,13 @@ Two dashboards:
   `http://127.0.0.1:5050/dashboard`. See [authentication](#authenticating-a-human)
   below. The Aspire / Development host uses the passphrase `dev`; production
   is fail-closed until you set `Landbridge:Operator:PassphraseHash`.
+
+The classifier sidecar auto-allows read-only shell without a model. Set
+`LANDBRIDGE_CLASSIFIER_API_KEY` (or `DASHSCOPE_API_KEY` / `OPENAI_API_KEY`) as
+an AppHost user secret to turn on Qwen's two-stage LLM for everything else.
+`LANDBRIDGE_CLASSIFIER_BASE_URL` and `LANDBRIDGE_CLASSIFIER_MODEL` are optional
+(OpenAI-compatible, default `https://api.openai.com/v1` + `gpt-4o-mini`).
+Missing key: read-only shell only; a model error is Ask, never Deny.
 
 The loop stands up a *standing fleet* and does **not** auto-create a task. Create
 work as a Lead over MCP, exactly as in production. Each seeded box spawns the

@@ -1,8 +1,10 @@
 import http from "node:http";
 import { classify } from "./classify.mjs";
+import { makeLlmClassifier, readLlmConfig } from "./llm.mjs";
 import { isShellCommandReadOnly } from "./vendor/qwen-readonly.mjs";
 
 const PORT = Number.parseInt(process.env.PORT ?? "5310", 10);
+const llm = makeLlmClassifier(readLlmConfig(process.env));
 
 function send(res, status, body) {
   const json = JSON.stringify(body);
@@ -34,7 +36,7 @@ function readBody(req) {
 const server = http.createServer(async (req, res) => {
   const url = new URL(req.url ?? "/", "http://127.0.0.1");
   if (req.method === "GET" && url.pathname === "/health") {
-    send(res, 200, { ok: true });
+    send(res, 200, { ok: true, llm: llm != null });
     return;
   }
   if (req.method !== "POST" || url.pathname !== "/classify") {
@@ -59,7 +61,7 @@ const server = http.createServer(async (req, res) => {
   try {
     const result = await classify(
       { tool: body.tool, input: body.input ?? null },
-      (command) => isShellCommandReadOnly(command),
+      { isReadOnly: isShellCommandReadOnly, llm },
     );
     send(res, 200, result);
   } catch {
@@ -68,5 +70,7 @@ const server = http.createServer(async (req, res) => {
 });
 
 server.listen(PORT, "0.0.0.0", () => {
-  process.stderr.write(`landbridge-classifier listening on :${PORT}\n`);
+  process.stderr.write(
+    `landbridge-classifier listening on :${PORT} llm=${llm != null}\n`,
+  );
 });

@@ -119,9 +119,9 @@ var classifierUrl = builder.Configuration["Landbridge:Classifier:Url"]
 if (!string.IsNullOrWhiteSpace(classifierUrl)
     && Uri.TryCreate(classifierUrl.TrimEnd('/') + "/", UriKind.Absolute, out var classifierUri))
 {
-    var timeoutMs = builder.Configuration.GetValue("Landbridge:Classifier:TimeoutMs", 2000);
+    var timeoutMs = builder.Configuration.GetValue("Landbridge:Classifier:TimeoutMs", 45000);
     if (timeoutMs < 1)
-        timeoutMs = 2000;
+        timeoutMs = 45000;
     builder.Services.AddHttpClient<IPermissionClassifier, PermissionClassifierClient>(c =>
     {
         c.BaseAddress = classifierUri;

@@ -1,6 +1,6 @@
 /**
- * Stateless classification. First cut is the Qwen read-only shell checker
- * only — no model. Unknown / unparsed / non-shell is Ask. Never Deny.
+ * Stateless classification. Read-only shell first; optional two-stage LLM
+ * next. Unknown / error is Ask. Never Deny.
  */
 
 const SHELL_TOOLS = new Set([
@@ -56,21 +56,44 @@ export function extractCommand(input) {
   return null;
 }
 
-export async function classify({ tool, input }, isReadOnly) {
+export async function classify({ tool, input }, hooks = {}) {
+  const isReadOnly = typeof hooks === "function" ? hooks : hooks.isReadOnly;
+  const llm = typeof hooks === "function" ? undefined : hooks.llm;
   const name = lastSegment(tool);
-  if (!SHELL_TOOLS.has(name)) {
-    return { disposition: "ask", via: "not-shell", reason: "" };
-  }
+  const isShell = SHELL_TOOLS.has(name);
   const command = extractCommand(input);
-  if (!command) {
+
+  if (isShell && command && typeof isReadOnly === "function") {
+    let ok = false;
+    try {
+      ok = await isReadOnly(command);
+    } catch {
+      return { disposition: "ask", via: "checker-error", reason: "" };
+    }
+    if (ok) return { disposition: "allow", via: "readonly-shell", reason: "" };
+  } else if (isShell && !command) {
     return { disposition: "ask", via: "no-command", reason: "" };
   }
-  let ok = false;
-  try {
-    ok = await isReadOnly(command);
-  } catch {
-    return { disposition: "ask", via: "checker-error", reason: "" };
+
+  if (typeof llm === "function") {
+    try {
+      const r = await llm({ tool, input, command });
+      if (r && r.disposition === "allow")
+        return {
+          disposition: "allow",
+          via: r.via ?? "classifier",
+          reason: r.reason ?? "",
+        };
+      return {
+        disposition: "ask",
+        via: r?.via ?? "classifier-block",
+        reason: r?.reason ?? "",
+      };
+    } catch {
+      return { disposition: "ask", via: "classifier-unavailable", reason: "" };
+    }
   }
-  if (ok) return { disposition: "allow", via: "readonly-shell", reason: "" };
+
+  if (!isShell) return { disposition: "ask", via: "not-shell", reason: "" };
   return { disposition: "ask", via: "not-readonly", reason: "" };
 }

