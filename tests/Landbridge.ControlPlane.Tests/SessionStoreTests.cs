@@ -81,6 +81,26 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task Classifier_allow_writes_a_plane_audit_event_without_moving_state()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var id = await CreateSubmitted(db);
+        Assert.IsType<StoreResult.Applied>(
+            await NewStore(db).DispatchNextAsync(Machine(), WorkerInstanceId.New()));
+
+        await NewStore(db).RecordClassifierAllowAsync(
+            id, "Bash", """{"command":"git status"}""");
+
+        var row = await db.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(SessionState.Working, row.State);
+        var ev = await db.SessionEvents.AsNoTracking()
+            .SingleAsync(e => e.SessionId == id.Value && e.Kind == "ClassifierAllow");
+        Assert.Equal(PermissionVerdict.Allow, ev.PermissionVerdict);
+        Assert.Equal(PermissionAnswerer.Plane, ev.PermissionAnswerer);
+    }
+
+    [SkippableFact]
     public async Task Dispatch_respects_profile_match()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);

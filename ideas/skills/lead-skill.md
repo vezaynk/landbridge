@@ -116,7 +116,7 @@ A request with no question is a worker that told you nothing. You can't answer i
 
 ### Permission requests
 
-Permissions arrive as ACP `session/request_permission`. There is no bypass / always-approve flag on a Landbridge worker spawn. landbridged posts the request to the plane; **you decide**. Auto-allow is gone. A plane allow maps to the agent's `allow_once` — never `allow_always`. Two things make a live wait unlike every other blocked session:
+Permissions arrive as ACP `session/request_permission`. There is no bypass / always-approve flag on a Landbridge worker spawn. landbridged posts the request to the plane; **you decide**. The plane already auto-allows protocol tools, reads/writes inside this session's directory, and (when the classifier is up) read-only shell such as `git status` / `ls`. A plane allow maps to the agent's `allow_once` — never `allow_always`. Two things make a live wait unlike every other blocked session:
 
 **The worker is still running, blocked inside that tool call.** It hasn't parked and won't be redispatched — your verdict resumes it where it stands. Wait TTL is off by default; use `park_session` if you mean to release the machine.
 

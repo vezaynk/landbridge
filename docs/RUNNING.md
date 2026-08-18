@@ -29,6 +29,7 @@ brings up, in dependency order:
 | `postgres` | Managed Postgres 16 with a persistent data volume (survives restarts) | container |
 | `mcp` | The control plane + MCP host (`Landbridge.Mcp`), migrated on startup and dev-seeded | `http://127.0.0.1:5050` (fixed, un-proxied) |
 | `relay` | `landbridge-relay` | `http://127.0.0.1:5100` (fixed, un-proxied) |
+| `classifier` | Qwen read-only-shell permission classifier | `http://127.0.0.1:5310` (fixed, un-proxied) |
 | `landbridged-codex` / `-claude` / `-grok` | Three enrolled linux boxes, each dialing `ws://127.0.0.1:5050/runner` | outbound only |
 
 The endpoints for `mcp` and `relay` are pinned to fixed loopback ports and *not*

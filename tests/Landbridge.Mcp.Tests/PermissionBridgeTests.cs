@@ -141,21 +141,18 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task Credential_tools_auto_deny_without_blocking()
+    public async Task Credential_tools_still_ask()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var caller = await SeedWorkingTask();
-        var worker = WorkerFor(caller);
 
-        var json = await worker.RequestPermission(
+        var pending = await AskPermissionAsync(
+            caller,
             "Bash",
-            JsonDocument.Parse("""{"command":"/usr/bin/security find-generic-password -s prod"}""").RootElement,
-            "toolu_key",
-            CancellationToken.None);
+            """{"command":"/usr/bin/security find-generic-password -s prod"}""");
 
-        Assert.Contains("\"behavior\":\"deny\"", json, StringComparison.Ordinal);
-        Assert.Contains("credential", json, StringComparison.OrdinalIgnoreCase);
-        Assert.Equal(SessionState.Working, await StateOf(caller.Session));
+        Assert.Equal(SessionState.BlockedOnInput, await StateOf(caller.Session));
+        Assert.False(pending.IsCompleted);
     }
 
     // ── The round trip ────────────────────────────────────────────────────────
@@ -433,7 +430,7 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         // working, so a second request is refused — and the tool still owes the harness a
         // well-formed verdict rather than an error.
         var second = await WorkerFor(caller).RequestPermission(
-            "Write", JsonDocument.Parse("""{"file_path":"src/a.cs"}""").RootElement, "toolu_two",
+            "Bash", JsonDocument.Parse("""{"command":"git status"}""").RootElement, "toolu_two",
             CancellationToken.None);
 
         var verdict = Verdict(second);
@@ -535,7 +532,7 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var caller = await SeedWorkingTask();
-        var pending = await AskPermissionAsync(caller, tool: "Edit", input: """{"file_path":"src/a.cs"}""");
+        var pending = await AskPermissionAsync(caller, tool: "Bash", input: """{"command":"git status"}""");
 
         await LeadFor(new Principal.Lead(Team))
             .AnswerPermissionRequest(caller.Session.ToString(), "allow", "routine, in the workspace", CancellationToken.None);

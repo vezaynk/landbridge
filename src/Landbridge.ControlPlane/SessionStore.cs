@@ -238,6 +238,28 @@ public sealed class SessionStore(
     }
 
     /// <summary>
+    /// Records that the plane classifier allowed a tool call without opening a
+    /// permission wait. State does not move. Failure to write must not block the
+    /// allow itself — callers treat this as best-effort audit.
+    /// </summary>
+    public async Task RecordClassifierAllowAsync(
+        SessionId id, string tool, string proposedInput, CancellationToken ct = default)
+    {
+        var row = await db.Sessions.FirstOrDefaultAsync(t => t.Id == id.Value, ct);
+        if (row is null)
+            return;
+
+        _ = proposedInput;
+        var detail = string.IsNullOrWhiteSpace(tool) ? "classifier allow" : $"classifier allow: {tool}";
+        AppendEvent(
+            row.Id, row.TeamId, "ClassifierAllow", row.State, row.State,
+            detail: detail,
+            permissionVerdict: PermissionVerdict.Allow,
+            permissionAnswerer: PermissionAnswerer.Plane);
+        await db.SaveChangesAsync(ct);
+    }
+
+    /// <summary>
     /// Mark a pending permission request human-only (§11 permission bridge). Not a state
     /// change — the worker is still blocked on the same request — but from here a Lead is
     /// refused and the request waits for a person, with <paramref name="reason"/> rendered

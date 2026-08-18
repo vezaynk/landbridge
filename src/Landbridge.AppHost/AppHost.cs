@@ -79,6 +79,7 @@ var relayValidationBearer = Convert.ToHexString(RandomNumberGenerator.GetBytes(3
 const string previewDomain = "preview.localhost";
 const int previewPort = 5200;
 const int previewHealthPort = 5202;
+const int classifierPort = 5310;
 var previewUrlBase = $"http://{previewDomain}:{previewPort}";
 var previewHealthUrl = $"http://127.0.0.1:{previewHealthPort}";
 var previewListenPort = previewPort.ToString();
@@ -144,6 +145,7 @@ var mcp = builder.AddProject<Projects.Landbridge_Mcp>("mcp", options => options.
     // open_forward. Both are read from IConfiguration by Landbridge.Mcp; set as env.
     .WithEnvironment("Landbridge__RelayValidation__Bearer", relayValidationBearer)
     .WithEnvironment("Landbridge__RelayUrl", relayUrl)
+    .WithEnvironment("Landbridge__Classifier__Url", "http://127.0.0.1:" + classifierPort)
     // §8.4 preview: the shared bearer the plane's /preview/connect + /preview/exchange
     // require, and the wildcard base the plane builds preview URLs onto (open_preview
     // + the dashboard mint read Landbridge:PreviewUrlBase).
@@ -192,6 +194,15 @@ builder.AddProject<Projects.Landbridge_Preview>("preview", options => options.Ex
     .WithEnvironment("Preview__DashboardUrl", mcpUrl)
     .WithEnvironment("Preview__ControlPlaneBearer", previewConnectBearer)
     .WithHttpHealthCheck("/health");
+
+// Qwen read-only-shell classifier. Optional at runtime: if this resource is
+// down the plane Asks. Un-proxied so the plane can dial 127.0.0.1:5310.
+var repoRoot = Path.GetFullPath(Path.Combine(builder.AppHostDirectory, "..", ".."));
+var classifier = builder.AddDockerfile("classifier", Path.Combine(repoRoot, "src/Landbridge.Classifier"), "Dockerfile")
+    .WithHttpEndpoint(port: classifierPort, targetPort: classifierPort, isProxied: false)
+    .WithEnvironment("PORT", classifierPort.ToString())
+    .WithHttpHealthCheck("/health");
+mcp.WaitFor(classifier);
 
 // One landbridged per seeded box. Each has its own config, work_root, and
 // --state-dir so credentials and transcripts do not collide. WaitFor(mcp)

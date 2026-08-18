@@ -2,6 +2,8 @@ namespace Landbridge.Core.Tests;
 
 public sealed class PermissionPolicyTests
 {
+    private static readonly SessionId Session = new(Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"));
+
     [Theory]
     [InlineData("mcp__landbridge__get_session")]
     [InlineData("landbridge__report_result")]
@@ -22,19 +24,23 @@ public sealed class PermissionPolicyTests
     }
 
     [Theory]
-    [InlineData("Bash", """{"command":"sudo rm -rf /"}""")]
-    [InlineData("Bash", """{"command":"cat ~/.ssh/id_rsa"}""")]
-    [InlineData("Read", """{"path":"/Users/me/.claude/skills"}""")]
-    public void Credential_and_home_paths_auto_deny(string tool, string input)
+    [InlineData("Read", """{"path":"src/a.cs"}""")]
+    [InlineData("Write", """{"path":"./notes.md","contents":"x"}""")]
+    [InlineData("Edit", """{"file_path":"/work/aaaaaaaabbbbccccddddeeeeeeeeeeee/src/a.cs"}""")]
+    [InlineData("Read", """{"path":"/work/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee/README.md"}""")]
+    public void Reads_and_writes_in_the_session_directory_auto_allow(string tool, string input)
     {
-        Assert.Equal(PermissionDisposition.AutoDeny, PermissionPolicy.Classify(tool, input));
+        Assert.Equal(PermissionDisposition.AutoAllow, PermissionPolicy.Classify(tool, input, Session));
     }
 
-    [Fact]
-    public void Ordinary_execute_still_asks()
+    [Theory]
+    [InlineData("Read", """{"path":"/Users/me/.claude/skills"}""")]
+    [InlineData("Write", """{"path":"../other/x"}""")]
+    [InlineData("Read", """{"path":"/work/bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb/a.cs"}""")]
+    [InlineData("Bash", """{"command":"cat src/a.cs"}""")]
+    [InlineData("Bash", """{"command":"sudo rm -rf /"}""")]
+    public void Outside_the_session_directory_or_a_shell_still_asks(string tool, string input)
     {
-        Assert.Equal(
-            PermissionDisposition.Ask,
-            PermissionPolicy.Classify("Bash", """{"command":"git ls-remote origin"}"""));
+        Assert.Equal(PermissionDisposition.Ask, PermissionPolicy.Classify(tool, input, Session));
     }
 }

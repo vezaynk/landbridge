@@ -1,0 +1,10 @@
+vendor/qwen-readonly.mjs is a tree-shaken bundle of Qwen Code's
+isShellCommandReadOnly checker (Apache-2.0).
+
+Source: https://github.com/QwenLM/qwen-code
+Commit: b4f5079dc0cc89ce1448785898ab72b358399c95
+Files: packages/core/src/utils/shellReadOnlyChecker.ts
+       packages/core/src/utils/shell-safety-rules.ts
+       packages/core/src/utils/shell-utils.ts
+
+Rebuild: node install-qwen.mjs

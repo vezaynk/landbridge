@@ -96,6 +96,12 @@ public enum PermissionAnswerer
 
     /// <summary>A human answered from the §12 dashboard.</summary>
     Human,
+
+    /// <summary>
+    /// The plane's classifier allowed it before a wait opened. Not a Lead or a
+    /// human — recorded so "who approved this" stays answerable.
+    /// </summary>
+    Plane,
 }
 
 /// <summary>

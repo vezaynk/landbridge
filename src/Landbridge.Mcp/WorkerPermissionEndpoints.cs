@@ -27,6 +27,7 @@ public static class WorkerPermissionEndpoints
         SessionStore store,
         IConfiguration config,
         TimeProvider clock,
+        IPermissionClassifier classifier,
         CancellationToken ct)
     {
         var caller = LandbridgeClaims.AsWorker(http.User);
@@ -42,7 +43,7 @@ public static class WorkerPermissionEndpoints
             poll = TimeSpan.FromMilliseconds(ms);
 
         var result = await PermissionRelay.OpenAndAwaitAsync(
-            store, caller, body.Tool, proposed, poll, clock, ct);
+            store, caller, body.Tool, proposed, poll, clock, ct, classifier);
 
         return Results.Json(new
         {

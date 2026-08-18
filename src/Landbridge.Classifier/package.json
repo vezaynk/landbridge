@@ -1,0 +1,15 @@
+{
+  "name": "landbridge-classifier",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Plane-side permission classifier. First cut: Qwen read-only shell check only.",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test classify.test.mjs",
+    "install-qwen": "node install-qwen.mjs"
+  }
+}

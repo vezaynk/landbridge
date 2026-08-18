@@ -111,6 +111,28 @@ var publicMcpUrl = builder.Configuration["Landbridge:PublicMcpUrl"]
 // URLs all derive from the same public URL, so the RFC 9728 challenge, the
 // well-known metadata documents, and authorize/token validation never disagree.
 builder.Services.AddSingleton(OAuthServerConfig.FromPublicMcpUrl(publicMcpUrl));
+
+// Plane-side permission classifier (Qwen read-only shell, first cut). Unset URL
+// or a down sidecar is Ask — never fail-open, never Deny.
+var classifierUrl = builder.Configuration["Landbridge:Classifier:Url"]
+    ?? Environment.GetEnvironmentVariable("LANDBRIDGE_CLASSIFIER_URL");
+if (!string.IsNullOrWhiteSpace(classifierUrl)
+    && Uri.TryCreate(classifierUrl.TrimEnd('/') + "/", UriKind.Absolute, out var classifierUri))
+{
+    var timeoutMs = builder.Configuration.GetValue("Landbridge:Classifier:TimeoutMs", 2000);
+    if (timeoutMs < 1)
+        timeoutMs = 2000;
+    builder.Services.AddHttpClient<IPermissionClassifier, PermissionClassifierClient>(c =>
+    {
+        c.BaseAddress = classifierUri;
+        c.Timeout = TimeSpan.FromMilliseconds(timeoutMs);
+    });
+}
+else
+{
+    builder.Services.AddSingleton<IPermissionClassifier>(NullPermissionClassifier.Instance);
+}
+
 // §10 per-task liveness runs on two clocks, both configurable: PerTaskLivenessWindow
 // is how long landbridged may go without asserting the harness process is alive (it
 // asserts every heartbeat), and NoProgressCeiling is how long an alive process may

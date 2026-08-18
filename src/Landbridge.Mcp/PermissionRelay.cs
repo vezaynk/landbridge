@@ -19,14 +19,43 @@ public static class PermissionRelay
         string proposedInput,
         TimeSpan pollInterval,
         TimeProvider clock,
-        CancellationToken ct)
+        CancellationToken ct,
+        IPermissionClassifier? classifier = null)
     {
-        switch (PermissionPolicy.Classify(tool, proposedInput))
+        if (PermissionPolicy.Classify(tool, proposedInput, caller.Session) == PermissionDisposition.AutoAllow)
+            return PermissionRelayResult.Allowed();
+
+        if (classifier is not null)
         {
-            case PermissionDisposition.AutoAllow:
+            PermissionDisposition classified;
+            try
+            {
+                classified = await classifier
+                    .ClassifyAsync(caller.Session, tool, proposedInput, ct)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch
+            {
+                classified = PermissionDisposition.Ask;
+            }
+
+            if (classified == PermissionDisposition.AutoAllow)
+            {
+                try
+                {
+                    await store.RecordClassifierAllowAsync(caller.Session, tool, proposedInput, ct)
+                        .ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Audit is best-effort: the call is still allowed.
+                }
                 return PermissionRelayResult.Allowed();
-            case PermissionDisposition.AutoDeny:
-                return PermissionRelayResult.Denied(PermissionPolicy.AutoDenyMessage(tool));
+            }
         }
 
         var opened = await store.ApplyAsync(
