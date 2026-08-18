@@ -36,15 +36,15 @@ public abstract record ProcessOutcome
 /// Supervises the operator's declared long-lived services (§10), as a deliberate
 /// <b>sibling</b> of <see cref="ProcessSupervisor"/> rather than a mode of it.
 ///
-/// <para><b>Why a service is landbridged's own child.</b> A service a worker starts is a
-/// descendant of the harness, so the task tree-kill takes it down when the task ends,
-/// and it carries <c>LANDBRIDGE_*</c>, so the stray reaper takes it down later if it
-/// escaped the group. Both are correct for a build step and wrong for "keep the dev
-/// server up". Handing the process to the machine's service manager solves it on
-/// Linux, but macOS has no clean transient equivalent, a container has no init, and
+/// <para><b>Why a service is landbridged's own child.</b> A service a worker starts from
+/// its own shell is a descendant of the harness, so the session tree-kill takes it down
+/// when that session ends, and it carries <c>LANDBRIDGE_*</c>, so the stray reaper takes
+/// it down later if it escaped the group. Both are correct for a build step and wrong for
+/// "keep the dev server up". Handing the process to the machine's service manager solves
+/// it on Linux, but macOS has no clean transient equivalent, a container has no init, and
 /// Windows has nothing user-level — so the only answer that is the same everywhere is
-/// for landbridged to own the process itself. That places it outside every task's tree by
-/// construction, with no <c>setsid</c> and no environment scrubbing, and keeps the
+/// for landbridged to own the process itself. That places it outside every session's tree
+/// by construction, with no <c>setsid</c> and no environment scrubbing, and keeps the
 /// kill guarantee inside Landbridge.</para>
 ///
 /// <para><b>Restart equals reboot, here too.</b> Every service is tagged with

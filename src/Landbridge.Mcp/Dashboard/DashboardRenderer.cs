@@ -80,8 +80,8 @@ internal static class DashboardRenderer
 
         // §10/§12: agent-started processes, in their own table. A process is a job — never
         // restarted, `exited` is where it rests — and nothing reclaims it when its declaring
-        // task ends, so this view is also the safety net that makes an un-cleaned-up process
-        // visible to the operator.
+        // session ends, so this view is also the safety net that makes an un-cleaned-up
+        // process visible to the operator.
         static void AppendProcesses(StringBuilder sb, MachineView m, DateTimeOffset now)
         {
             if (m.Processes is not { Count: > 0 })
@@ -118,9 +118,9 @@ internal static class DashboardRenderer
             }
 
             sb.Append("</tbody></table>");
-            // Say the leak out loud: nothing reclaims these when a task ends, by design.
-            sb.Append("<p class=\"nt\">A process outlives the task that started it and is never " +
-                      "restarted. Nothing stops it automatically — a Lead sends a cleanup task, " +
+            // Say the leak out loud: nothing reclaims these when a session ends, by design.
+            sb.Append("<p class=\"nt\">A process outlives the session that started it and is never " +
+                      "restarted. Nothing stops it automatically — a Lead sends a cleanup session, " +
                       "or it runs until this machine's landbridged restarts. Landbridge tracks no port for " +
                       "a process; reachability is a registered service (§8.2). A process with " +
                       "closed stdin has no graceful stop.</p>");

@@ -64,11 +64,15 @@ Bind to loopback. Registration plus the relay is how other agents reach you; exp
 
 **A name is an address, and one live registration holds it in your Team.** Registering a name you already hold updates its port — that is how you correct an advertisement when your service restarts somewhere else. Registering a name *another* session in your Team currently holds is refused, because consumers ask for a name and nothing else, so two holders would make which port they reach a coin flip. If you are refused, pick a more specific name (`api-<what-it-is>` rather than `api`) rather than retrying; the name frees up on its own when the session holding it finishes.
 
-## Running a service that must outlive this session
+## Running anything long
 
-A service you start as a child of your own process dies with you: `landbridged` kills each session as a whole process tree, so anything you launched goes down when this session is torn down. That is correct for a build or a test run and wrong for "stand up the dev server and keep it up".
+**Use `start_process` for every long-running thing you run** — a build, a test suite, a dev server, a watcher, a migration, a REPL. Not only for services that must outlive you: for anything that takes long enough that you would rather not sit and wait for it.
 
-**Use `start_process`.** That is the supported way, and it works the same on every machine:
+The first reason is that it does not block. `start_process` returns as soon as the process is up, and the work carries on while you do something else. Your own shell tool is the opposite: depending on the harness you are running under, a command can hold your entire turn until it exits, and some harnesses cannot background a command at all. `start_process` behaves the same regardless — same call, same result, every harness and every OS. You get a log path back, so you read output with ordinary file tools whenever you want, and you check on the process when it suits you instead of when it happens to finish.
+
+The second reason is lifetime. Anything you start as a child of your own process dies with you: `landbridged` kills each session as a whole process tree, so what you launched goes down when this session is torn down — on park, on a crash, when your harness is replaced. A `start_process` child is `landbridged`'s own child instead, outside that tree.
+
+That is why "stand up the dev server and keep it up" needs this call, and it is equally why a forty-minute test run wants it. It works the same on every machine:
 
 ```
 start_process(
@@ -78,13 +82,17 @@ start_process(
   env: { "PORT": "5173" })
 ```
 
-`landbridged` runs it as **its own child**, not yours, so it survives your turn ending, you blocking on a question, and this session finishing. It is running as soon as its process is up.
+It is running as soon as its process is up, and the call comes straight back to you.
+
+**Knowing when it has finished is your job, and `list_processes` is how you find out.** It reports each process's state, and for one that has ended, its exit code and when it ended. So the shape of long work is: start it, do something else or read the log as it grows, then check `list_processes` when you need the verdict. Nothing notifies you and nothing waits on your behalf — that is the trade for not having your turn held hostage by a build. If you have genuinely nothing to do until it finishes, poll with a bounded number of attempts and a gap between them; do not spin.
 
 **Landbridge does not deal with ports here at all.** If your process listens on something, that is yours to manage, exactly as if you had started it from a shell — pass the port in `env` if the program needs telling. If *other sessions* need to reach it, that is a separate, deliberate act: `register_service` with the name and the port it bound. Two processes fighting over a port is your problem to avoid, the same way no-restarts means a crash is yours to interpret.
 
 **It is never restarted.** If it exits, that is recorded — exit code and time — and left for you, or for whoever is resumed later, to interpret. A crash is information, and hiding it behind an automatic retry would throw away the one thing you need to know.
 
 Two things come back. A **log path** on this machine, so you read its output with ordinary file tools. And possibly a **refusal**: your profile may not permit background processes, the machine may be at its cap, or the name may already be taken. A refusal is a fact to report, not something to work around.
+
+**Background processes are a capability your operator grants per profile, and it is off unless they turned it on.** So "use `start_process` for everything long" is the rule when the tool is available to you, not a promise that it always is. If it is refused because the profile does not permit it, run the thing in your shell and accept that it blocks you, and say so in your report — the operator may want to enable it for this profile. What you must never do is reach for `setsid` or strip `LANDBRIDGE_*` to fake the same effect; that defeats the cleanup guarantee and is forbidden below. If the refusal is the cap instead, that means processes are still running: `list_processes` shows what, and finished ones do not count against it, so the fix is usually stopping something that is genuinely done.
 
 **One flag worth knowing: `openStdin`, and it defaults to false.** Most background work is fire-and-forget, so by default nothing is held open and a program that reads stdin sees end-of-input immediately instead of hanging forever on input nobody will send.
 
