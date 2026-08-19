@@ -10,6 +10,10 @@ public sealed class PermissionPolicyTests
     [InlineData("landbridge_request_input")]
     [InlineData("get_session")]
     [InlineData("start_process")]
+    [InlineData("landbridge: get session")]
+    [InlineData("landbridge: get_session")]
+    [InlineData("Landbridge: Open Forward")]
+    [InlineData("landbridge:report_result")]
     public void Protocol_and_runtime_tools_auto_allow(string tool)
     {
         Assert.Equal(PermissionDisposition.AutoAllow, PermissionPolicy.Classify(tool, "{}"));
