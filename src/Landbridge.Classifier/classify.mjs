@@ -14,6 +14,31 @@ const SHELL_TOOLS = new Set([
   "powershell",
   "sh",
   "zsh",
+  "local_shell",
+  "shell_command",
+  "bash_tool",
+  "run_command",
+  "execute_command",
+]);
+
+const BARE_COMMANDS = new Set([
+  "ls",
+  "pwd",
+  "git",
+  "cat",
+  "head",
+  "tail",
+  "wc",
+  "echo",
+  "date",
+  "whoami",
+  "uname",
+  "which",
+  "true",
+  "false",
+  "env",
+  "id",
+  "hostname",
 ]);
 
 export function lastSegment(tool) {
@@ -57,16 +82,45 @@ export function extractCommand(input) {
   return null;
 }
 
+/**
+ * ACP permission titles are often the command itself (`git status`) or
+ * `Execute \`…\``. Those are not tool names like Bash.
+ */
+export function commandFromToolTitle(tool) {
+  if (typeof tool !== "string") return null;
+  let s = tool.trim();
+  if (!s) return null;
+  const wrapped = /^(?:execute|run|shell)\s+`([\s\S]+)`\s*$/i.exec(s);
+  if (wrapped) s = wrapped[1].trim();
+  if (!s) return null;
+  if (SHELL_TOOLS.has(lastSegment(s))) return null;
+  if (/\s/.test(s)) return s;
+  if (BARE_COMMANDS.has(s.toLowerCase())) return s;
+  return null;
+}
+
+export function resolveCommand(tool, input) {
+  return extractCommand(input) ?? commandFromToolTitle(tool);
+}
+
 export async function classify({ tool, input }, hooks = {}) {
   const isReadOnly = typeof hooks === "function" ? hooks : hooks.isReadOnly;
   const matchDestructive =
     typeof hooks === "function" ? undefined : hooks.matchDestructive;
   const llm = typeof hooks === "function" ? undefined : hooks.llm;
   const name = lastSegment(tool);
-  const isShell = SHELL_TOOLS.has(name);
-  const command = extractCommand(input);
+  const isNamedShell = SHELL_TOOLS.has(name);
+  const command = resolveCommand(tool, input);
 
-  if (isShell && command && typeof isReadOnly === "function") {
+  if (!command) {
+    return {
+      disposition: "ask",
+      via: isNamedShell ? "no-command" : "not-shell",
+      reason: "",
+    };
+  }
+
+  if (typeof isReadOnly === "function") {
     let ok = false;
     try {
       ok = await isReadOnly(command);
@@ -74,11 +128,9 @@ export async function classify({ tool, input }, hooks = {}) {
       return { disposition: "ask", via: "checker-error", reason: "" };
     }
     if (ok) return { disposition: "allow", via: "readonly-shell", reason: "" };
-  } else if (isShell && !command) {
-    return { disposition: "ask", via: "no-command", reason: "" };
   }
 
-  if (isShell && command && typeof matchDestructive === "function") {
+  if (typeof matchDestructive === "function") {
     try {
       const hit = matchDestructive(command);
       if (hit?.blocked) {
@@ -112,6 +164,5 @@ export async function classify({ tool, input }, hooks = {}) {
     }
   }
 
-  if (!isShell) return { disposition: "ask", via: "not-shell", reason: "" };
   return { disposition: "ask", via: "not-readonly", reason: "" };
 }

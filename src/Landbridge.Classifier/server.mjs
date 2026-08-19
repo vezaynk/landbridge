@@ -71,8 +71,13 @@ const server = http.createServer(async (req, res) => {
       { tool: body.tool, input: body.input ?? null },
       { isReadOnly: isShellCommandReadOnly, matchDestructive: matchDestructiveCommand, llm },
     );
+    const cmd = JSON.stringify(body.input ?? "").replace(/\s+/g, " ").slice(0, 160);
+    process.stderr.write(
+      `landbridge-classifier: ${result.disposition} via=${result.via} tool=${JSON.stringify(body.tool).slice(0, 120)} input=${cmd}\n`,
+    );
     send(res, 200, result);
-  } catch {
+  } catch (err) {
+    process.stderr.write(`landbridge-classifier: error ${err?.message ?? err}\n`);
     send(res, 200, { disposition: "ask", via: "error", reason: "" });
   }
 });

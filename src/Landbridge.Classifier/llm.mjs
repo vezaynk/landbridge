@@ -59,29 +59,28 @@ export function makeLlmClassifier(config, fetchImpl) {
   const base = buildSystemPrompt();
 
   return async function llmClassify({ tool, input, command }) {
-    const payload = JSON.stringify(
-      { tool, command: command ?? null, input: input ?? null },
-      null,
-      2,
-    );
-    const user = `UNTRUSTED TOOL REQUEST DATA (JSON):\n${payload}`;
-
-    const stage1 = await chatJson({
-      config,
-      system: base + STAGE1_SUFFIX,
-      user,
-      timeoutMs: 10_000,
-      maxTokens: 256,
-      fetchImpl,
-    });
-    if (stage1?.shouldBlock === false)
-      return { disposition: "allow", via: "classifier-fast", reason: "" };
-    if (stage1?.shouldBlock !== true)
-      return { disposition: "ask", via: "classifier-unavailable", reason: "" };
-
-    let stage2;
     try {
-      stage2 = await chatJson({
+      const payload = JSON.stringify(
+        { tool, command: command ?? null, input: input ?? null },
+        null,
+        2,
+      );
+      const user = `UNTRUSTED TOOL REQUEST DATA (JSON):\n${payload}`;
+
+      const stage1 = await chatJson({
+        config,
+        system: base + STAGE1_SUFFIX,
+        user,
+        timeoutMs: 10_000,
+        maxTokens: 256,
+        fetchImpl,
+      });
+      if (stage1?.shouldBlock === false)
+        return { disposition: "allow", via: "classifier-fast", reason: "" };
+      if (stage1?.shouldBlock !== true)
+        return { disposition: "ask", via: "classifier-unavailable", reason: "" };
+
+      const stage2 = await chatJson({
         config,
         system: base + STAGE2_SUFFIX,
         user,
@@ -89,15 +88,16 @@ export function makeLlmClassifier(config, fetchImpl) {
         maxTokens: 4096,
         fetchImpl,
       });
-    } catch {
+      if (stage2?.shouldBlock === false)
+        return { disposition: "allow", via: "classifier-review", reason: "" };
+      return {
+        disposition: "ask",
+        via: "classifier-block",
+        reason: sanitizeReason(stage2?.reason ?? ""),
+      };
+    } catch (err) {
+      process.stderr.write(`landbridge-classifier: llm ${err?.message ?? err}\n`);
       return { disposition: "ask", via: "classifier-unavailable", reason: "" };
     }
-    if (stage2?.shouldBlock === false)
-      return { disposition: "allow", via: "classifier-review", reason: "" };
-    return {
-      disposition: "ask",
-      via: "classifier-block",
-      reason: sanitizeReason(stage2?.reason ?? ""),
-    };
   };
 }

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { classify, extractCommand, lastSegment } from "./classify.mjs";
+import { classify, commandFromToolTitle, extractCommand, lastSegment } from "./classify.mjs";
 
 const allow = async () => true;
 const deny = async () => false;
@@ -26,6 +26,25 @@ test("non-shell tools ask", async () => {
   const r = await classify({ tool: "Read", input: { path: "a.cs" } }, allow);
   assert.equal(r.disposition, "ask");
   assert.equal(r.via, "not-shell");
+});
+
+test("ACP title-as-command is treated as shell", async () => {
+  assert.equal(commandFromToolTitle("git status"), "git status");
+  assert.equal(commandFromToolTitle("ls"), "ls");
+  assert.equal(commandFromToolTitle("Execute `git status`"), "git status");
+  assert.equal(commandFromToolTitle("Bash"), null);
+
+  const titled = await classify({ tool: "git status", input: {} }, allow);
+  assert.equal(titled.disposition, "allow");
+  assert.equal(titled.via, "readonly-shell");
+
+  const grok = await classify({ tool: "Execute `ls -la`", input: {} }, allow);
+  assert.equal(grok.disposition, "allow");
+  assert.equal(grok.via, "readonly-shell");
+
+  const bare = await classify({ tool: "ls", input: {} }, allow);
+  assert.equal(bare.disposition, "allow");
+  assert.equal(bare.via, "readonly-shell");
 });
 
 test("missing command asks", async () => {
