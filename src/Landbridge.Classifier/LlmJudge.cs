@@ -31,13 +31,16 @@ public sealed class LlmJudge(ClassifierSettings settings, ILogger<LlmJudge> log)
             var stage1 = await ChatJsonAsync(settings.Fast, user, ct).ConfigureAwait(false);
             if (stage1.ShouldBlock == false)
                 return ClassifyResult.Allow("classifier-fast");
-            if (stage1.ShouldBlock != true)
-                return ClassifyResult.Ask("classifier-unavailable");
+
+            // Explicit true *and* a parse miss (null / garbage JSON) go to
+            // review. The fast prompt errs toward blocking so stage 2 can
+            // still allow a false positive; a missing shouldBlock is the
+            // same kind of uncertain block, not an outage.
+            if (stage1.ShouldBlock is null)
+                log.LogWarning("classifier fast did not return shouldBlock; reviewing");
 
             var stage2 = await ChatJsonAsync(settings.Review, user, ct).ConfigureAwait(false);
-            if (stage2.ShouldBlock == false)
-                return ClassifyResult.Allow("classifier-review");
-            return ClassifyResult.Ask("classifier-block", Sanitize(stage2.Reason));
+            return CombineStages(stage1, stage2);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
@@ -68,11 +71,40 @@ public sealed class LlmJudge(ClassifierSettings settings, ILogger<LlmJudge> log)
                 timeout.Token)
             .ConfigureAwait(false);
 
-        var content = response.Text;
+        return ParseJudgeJson(response.Text);
+    }
+
+    /// <summary>
+    /// Stage 1 only short-circuits on an explicit allow. A true or missing
+    /// <c>shouldBlock</c> is reviewed; a missing stage-2 decision is Ask.
+    /// </summary>
+    internal static ClassifyResponse CombineStages(JudgeJson stage1, JudgeJson stage2)
+    {
+        if (stage1.ShouldBlock == false)
+            return ClassifyResult.Allow("classifier-fast");
+        if (stage2.ShouldBlock == false)
+            return ClassifyResult.Allow("classifier-review");
+        if (stage2.ShouldBlock == true)
+            return ClassifyResult.Ask("classifier-block", Sanitize(stage2.Reason));
+        return ClassifyResult.Ask("classifier-unavailable");
+    }
+
+    /// <summary>
+    /// Empty, unparseable, or field-less JSON is a missing decision — not an
+    /// exception. Stage 1 treats that as an uncertain block and still reviews.
+    /// </summary>
+    internal static JudgeJson ParseJudgeJson(string? content)
+    {
         if (string.IsNullOrWhiteSpace(content))
-            throw new InvalidOperationException($"llm {stage.Slug.Wire} empty content");
-        return JsonSerializer.Deserialize<JudgeJson>(content, Json)
-            ?? throw new InvalidOperationException($"llm {stage.Slug.Wire} empty json");
+            return new(null, null);
+        try
+        {
+            return JsonSerializer.Deserialize<JudgeJson>(content, Json) ?? new(null, null);
+        }
+        catch (JsonException)
+        {
+            return new(null, null);
+        }
     }
 
     private IChatClient ClientFor(JudgeStage stage) =>
@@ -128,5 +160,5 @@ public sealed class LlmJudge(ClassifierSettings settings, ILogger<LlmJudge> log)
         return flat.Length <= 200 ? flat : flat[..200];
     }
 
-    private sealed record JudgeJson(bool? ShouldBlock, string? Reason);
+    internal sealed record JudgeJson(bool? ShouldBlock, string? Reason);
 }
