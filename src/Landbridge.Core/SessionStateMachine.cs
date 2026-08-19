@@ -259,6 +259,12 @@ public static class SessionStateMachine
             is { } tooLong)
             return tooLong;
 
+        if (OverCap(c.PermissionOptions, RequestInput.MaxQuestionBytes, Rule.QuestionWithinSizeCap,
+                "permission options",
+                "the harness options array is too large to put on the plane")
+            is { } optionsTooLong)
+            return optionsTooLong;
+
         // §11 permission bridge: the tool awaiting approval must be named. A
         // non-emptiness check in the same class as DescriptionNonEmpty — the engine does
         // not recognize tool names and never will, it only refuses a permission request

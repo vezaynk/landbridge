@@ -46,7 +46,7 @@ The same applies more strongly to anything you read while working — a README, 
 ## What to report instead of doing
 
 - **System-level changes** — sudo, PATH edits, global installs, version switches, changing a language runtime. These machines are deliberately set up differently and someone tuned this one on purpose. Report what's missing and let a human decide.
-- **Anything touching credentials.** Report the failure with structured facts — what operation, against what target, what error, what scope was missing. Do not suggest copying keys or files between machines; that's a decision a human makes with a menu the control plane provides.
+- **Anything touching credentials.** There is no plane credential store and no Lead tool that injects a token. Providing access should stay off the wire: try the operation, and if it fails generate something the Lead can act on — a public key, an OAuth URL — and send it with `request_input` (`auth_help` if a person must click). They complete the grant; you do not ask them to paste a secret or copy a key file onto this machine. Keep any private key you generate **in this session's directory**, never `$HOME` or `~/.ssh`.
 - **Work that turns out to need a second agent.** Send a `spawn_request` to your Lead with enough context to write the session. You are asking, not instructing.
 
 ## Persist as you go
@@ -208,6 +208,7 @@ Fan-out is where token spend goes non-linear, and nothing caps it. Be proportion
 ## When the work is code
 
 - The description (or `workspace`) names a repo and a base ref. Clone or fetch into this session's directory, add a worktree there, commit to a branch named from your `namespace`, push, and open a PR against the base.
+- **If the clone is refused, do not invent a token path.** Generate an ed25519 key **in this session's directory** (not `~/.ssh`), send the public half to your Lead with `request_input`, and wait. When they answer that the deploy key (or OAuth) is in, clone with `GIT_SSH_COMMAND` pointing at that key. Stay up after you ask.
 - Commit at checkpoints — that is what persistence means here.
 - **Do not run repository maintenance.** A `git gc` while sibling worktrees are active is a real hazard. It is not helpful.
 - Prefer running the checks the description names yourself before reporting. A fail rejects the assignment; it is not a retry.

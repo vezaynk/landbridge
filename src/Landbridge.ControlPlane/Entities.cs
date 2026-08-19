@@ -116,6 +116,22 @@ public sealed class SessionRow
     public string? PermissionTool { get; set; }
 
     /// <summary>
+    /// The ACP <c>options</c> array JSON for a pending permission request, stored
+    /// verbatim so a Lead or human can pick one of the harness's own buttons.
+    /// Null when the request offered none (legacy MCP prompt-tool). Cleared by
+    /// a new request the same way <see cref="PermissionTool"/> is.
+    /// </summary>
+    public string? PermissionOptions { get; set; }
+
+    /// <summary>
+    /// The <c>optionId</c> a Lead or human selected, or null while the request
+    /// is undecided or when the answer was a legacy allow/deny with no list.
+    /// The relaying worker reads this so landbridged can return that id to the
+    /// agent instead of mapping a binary verdict onto <c>allow_once</c>.
+    /// </summary>
+    public string? PermissionOptionId { get; set; }
+
+    /// <summary>
     /// The verdict a pending permission request was decided with (§11), or null while it is
     /// still undecided. This is the field the relaying worker tool polls: it blocks inside
     /// its own tool call until this lands (or until the wait-TTL sweeper parks the task out

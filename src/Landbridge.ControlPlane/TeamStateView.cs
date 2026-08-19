@@ -90,7 +90,9 @@ public sealed record ProfileMachineView(
     string MachineId,
     bool Ready,
     bool UnderBackPressure,
-    DateTimeOffset? LastHeartbeat);
+    DateTimeOffset? LastHeartbeat,
+    string? Name = null,
+    string? Os = null);
 
 /// <summary>
 /// One task's structural summary. <see cref="Namespace"/> is the server-assigned
@@ -197,7 +199,12 @@ public sealed record SessionQuestionView(
     string? Answer,
     string? PermissionTool = null,
     PermissionVerdict? Verdict = null,
-    string? EscalationReason = null);
+    string? EscalationReason = null,
+    string? OptionsJson = null,
+    string? SelectedOptionId = null)
+{
+    public IReadOnlyList<PermissionOption> Options => PermissionOption.Parse(OptionsJson);
+}
 
 /// <summary>
 /// One permission request as an answerer reads it (§11/§12 permission bridge): everything
@@ -220,7 +227,12 @@ public sealed record PermissionRequestView(
     PermissionVerdict? Verdict,
     string? Message,
     DateTimeOffset? EscalatedAt,
-    string? EscalationReason);
+    string? EscalationReason,
+    string? OptionsJson = null,
+    string? SelectedOptionId = null)
+{
+    public IReadOnlyList<PermissionOption> Options => PermissionOption.Parse(OptionsJson);
+}
 
 /// <summary>
 /// What a decided permission request hands back to the worker tool that has been blocking
@@ -229,7 +241,8 @@ public sealed record PermissionRequestView(
 /// through unchanged, deny carries <see cref="Message"/> so the refusal teaches the agent
 /// something instead of just stopping it.
 /// </summary>
-public sealed record PermissionOutcome(PermissionVerdict Verdict, string? Message);
+public sealed record PermissionOutcome(
+    PermissionVerdict Verdict, string? Message, string? OptionId = null);
 
 /// <summary>
 /// The seed facts a <c>create_session(continues:)</c> reads off the continued task's

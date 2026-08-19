@@ -159,9 +159,15 @@ public sealed record VerdictFail(Actor Actor) : SessionCommand(Actor);
 /// name is the harness's string and the engine neither parses nor recognizes it, exactly
 /// as it never reads <see cref="Question"/> (which on that kind carries the proposed tool
 /// input verbatim).</para>
+///
+/// <para><see cref="PermissionOptions"/> is the ACP options array JSON, also opaque.
+/// The store persists it so a Lead can pick one of the harness's own buttons; the
+/// engine only size-caps it. Null on a permission request that offered none
+/// (the legacy MCP prompt-tool path).</para>
 /// </summary>
 public sealed record RequestInput(
-    Actor Actor, InputRequestKind? Kind, string? Question = null, string? PermissionTool = null)
+    Actor Actor, InputRequestKind? Kind, string? Question = null, string? PermissionTool = null,
+    string? PermissionOptions = null)
     : SessionCommand(Actor)
 {
     /// <summary>The question's hard cap: the same 16 KiB in-band class as the worker's
@@ -244,7 +250,8 @@ public sealed record AnswerPermission(
     InputRequestKind? PendingKind,
     bool EscalatedToHuman,
     PermissionVerdict Verdict,
-    string? Message = null) : SessionCommand(Actor)
+    string? Message = null,
+    string? OptionId = null) : SessionCommand(Actor)
 {
     /// <summary>The verdict message's cap — the same in-band class as the answer it
     /// replaces (§10).</summary>

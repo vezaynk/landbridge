@@ -81,6 +81,93 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task Lead_worker_messages_are_the_description_then_the_latest_follow_up()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await CreateSubmitted(db);
+        Assert.Equal(["pnpm test"], await store.GetLeadWorkerMessagesAsync(id));
+
+        await store.DispatchNextAsync(Machine(), WorkerInstanceId.New());
+        Assert.IsType<StoreResult.Applied>(
+            await store.AnswerOrWakeAsync(Lead, id, leaseMachine: "m1", answer: "also cover the error path", sessionLive: true));
+
+        Assert.Equal(
+            ["pnpm test", "also cover the error path"],
+            await NewStore(db).GetLeadWorkerMessagesAsync(id));
+    }
+
+    [SkippableFact]
+    public async Task Lead_worker_messages_omit_worker_report_and_questions()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var created = (StoreResult.Applied)await store.CreateAsync(
+            new CreateSession(Lead, Team, "ship the login form", "default", Workspace: "not a message"));
+        var id = created.Session.Id;
+        var instance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), instance);
+        var caller = new WorkerCaller(Team, id, instance);
+        Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(
+            id, new RequestInput(caller, InputRequestKind.Question, "which env?")));
+
+        var messages = await store.GetLeadWorkerMessagesAsync(id);
+        Assert.Equal(["ship the login form"], messages);
+        Assert.DoesNotContain("not a message", messages);
+        Assert.DoesNotContain("which env?", messages);
+    }
+
+    [SkippableFact]
+    public async Task A_permission_answer_must_be_one_of_the_harness_options()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await CreateSubmitted(db);
+        var instance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), instance);
+        var caller = new WorkerCaller(Team, id, instance);
+        const string options = """[{"optionId":"allow-once","name":"Allow once","kind":"allow_once"},{"optionId":"allow-always","name":"Always","kind":"allow_always"}]""";
+        Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(
+            id, new RequestInput(caller, InputRequestKind.Permission, """{"command":"ls"}""", "Bash", options)));
+
+        var refused = Assert.IsType<StoreResult.Rejected>(
+            await store.AnswerPermissionAsync(Lead, id, "maybe"));
+        Assert.Equal(Rule.PermissionOptionMustBeOffered, refused.Rule);
+
+        var applied = Assert.IsType<StoreResult.Applied>(
+            await store.AnswerPermissionAsync(Lead, id, "allow-always"));
+        Assert.Equal(SessionState.Working, applied.Session.State);
+
+        var row = await db.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(options, row.PermissionOptions);
+        Assert.Equal("allow-always", row.PermissionOptionId);
+        Assert.Equal(PermissionVerdict.Allow, row.PermissionVerdict);
+    }
+
+    [SkippableFact]
+    public async Task Classifier_allow_writes_a_plane_audit_event_without_moving_state()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var id = await CreateSubmitted(db);
+        Assert.IsType<StoreResult.Applied>(
+            await NewStore(db).DispatchNextAsync(Machine(), WorkerInstanceId.New()));
+
+        await NewStore(db).RecordClassifierAllowAsync(
+            id, "Bash", """{"command":"git status"}""");
+
+        var row = await db.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal(SessionState.Working, row.State);
+        var ev = await db.SessionEvents.AsNoTracking()
+            .SingleAsync(e => e.SessionId == id.Value && e.Kind == "ClassifierAllow");
+        Assert.Equal(PermissionVerdict.Allow, ev.PermissionVerdict);
+        Assert.Equal(PermissionAnswerer.Plane, ev.PermissionAnswerer);
+    }
+
+    [SkippableFact]
     public async Task Dispatch_respects_profile_match()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
@@ -879,6 +966,37 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal("keep going on the tests", row.InputAnswer);
         Assert.Null(row.ParkMachine);
         Assert.Null(row.BlockedAt);
+    }
+
+    [SkippableFact]
+    public async Task A_lead_follow_up_after_a_permission_verdict_on_a_verifying_session_is_not_a_deadlock()
+    {
+        // Trial: leftover InputKind=Permission after the wait was decided, then
+        // the worker reported. get_session_question said "nothing waiting";
+        // answer_input_request refused as a live permission wait;
+        // answer_permission_request refused as not BlockedOnInput.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await CreateSubmitted(db);
+        var instance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), instance);
+        var caller = new WorkerCaller(Team, id, instance);
+        Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(
+            id, new RequestInput(caller, InputRequestKind.Permission, """{"command":"git clone"}""", "Bash")));
+        Assert.IsType<StoreResult.Applied>(await store.AnswerPermissionAsync(
+            Lead, id, PermissionVerdict.Allow, "ok"));
+        Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(
+            id, new ReportResult(caller, "git:ref")));
+
+        var applied = Assert.IsType<StoreResult.Applied>(
+            await store.AnswerOrWakeAsync(Lead, id, leaseMachine: "m1", answer: "the deploy key is in; clone now", sessionLive: true));
+        Assert.Equal(SessionState.Working, applied.Session.State);
+        Assert.Equal(instance, applied.Session.CurrentInstance);
+
+        await using var v = pg.NewContext();
+        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
+        Assert.Equal("the deploy key is in; clone now", row.InputAnswer);
     }
 
     [SkippableFact]

@@ -30,7 +30,8 @@ public sealed class WorkerTools(
     PreviewMappingService previews,
     IHttpContextAccessor http,
     IConfiguration config,
-    ProcessControlRelay processes)
+    ProcessControlRelay processes,
+    IPermissionClassifier? classifier = null)
 {
     /// <summary>The relay a worker dials when config supplies none (§8.3), mirroring <see cref="DispatchService.DefaultPublicMcpUrl"/>.</summary>
     public const string DefaultRelayUrl = "http://127.0.0.1:5100";
@@ -169,7 +170,8 @@ public sealed class WorkerTools(
         var proposed = input.ValueKind == JsonValueKind.Undefined ? "{}" : input.GetRawText();
 
         var result = await PermissionRelay.OpenAndAwaitAsync(
-            store, caller, tool_name, proposed, PermissionPollInterval, TimeProvider.System, ct);
+            store, caller, tool_name, proposed, PermissionPollInterval, TimeProvider.System, ct,
+            classifier);
 
         // v1 passes the proposed input through unchanged. An answerer who wanted a
         // different call would deny and say so, which is legible to the agent; silently

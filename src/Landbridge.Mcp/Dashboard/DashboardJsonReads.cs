@@ -1,6 +1,7 @@
 using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
 using Landbridge.Core;
+using Microsoft.Extensions.Configuration;
 
 namespace Landbridge.Mcp.Dashboard;
 
@@ -21,6 +22,20 @@ internal static class DashboardJsonReads
         var tokens = http.RequestServices.GetRequiredService<TokenService>();
         var queries = http.RequestServices.GetRequiredService<DashboardQueries>();
         var ct = http.RequestAborted;
+
+        if (string.Equals(path, "/dashboard/connect", StringComparison.OrdinalIgnoreCase))
+        {
+            if (await DashboardAuth.ResolveAsync(http, tokens, ct) is null)
+            {
+                await WriteError(http, 401, "unauthorized");
+                return true;
+            }
+            var config = http.RequestServices.GetRequiredService<IConfiguration>();
+            await http.Response.WriteAsJsonAsync(
+                ConnectEndpoints.Guide(ConnectEndpoints.ResolveMcpUrl(config, http)),
+                DashboardNegotiate.Json, ct);
+            return true;
+        }
 
         if (string.Equals(path, "/dashboard/conformance", StringComparison.OrdinalIgnoreCase))
         {

@@ -342,7 +342,7 @@ there is no interactive login step in the enroll path.
       "name": "claude-<hostname>-linux",
       // The adapter, not `claude`. It spawns claude itself.
       "spawn": ["claude-agent-acp"],
-      "prompt": "You are a Landbridge worker on a live session. First call the mcp__landbridge__get_session MCP tool to read your assignment (namespace, description, workspace, attempt). Read the landbridge-worker skill. Do the work in this session's directory; you are not the only agent on the machine. When you think you are done, call mcp__landbridge__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself — and stay up; the Lead may reply. If you are blocked or a decision is above your scope, call mcp__landbridge__request_input instead of guessing. You do not complete the session yourself.",
+      "prompt": "You are a Landbridge worker on a live session. Read the landbridge-worker skill from the landbridge MCP server first (`landbridge://skills/worker`). Then call the mcp__landbridge__get_session MCP tool to read your assignment (namespace, description, workspace, attempt). Do the work in this session's directory; you are not the only agent on the machine. When you think you are done, call mcp__landbridge__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself — and stay up; the Lead may reply. If you are blocked or a decision is above your scope, call mcp__landbridge__request_input instead of guessing. You do not complete the session yourself.",
       "follow_up": "There is new input on your assignment. Call mcp__landbridge__get_session to read it, then continue.",
       // Model and turn caps are the adapter's business, not a landbridged key — it reads the
       // same environment claude does. `--max-turns` has no ACP equivalent, so on this
@@ -644,10 +644,12 @@ A permission request is part of the protocol: an agent that wants to use a tool 
 does not cover sends `session/request_permission`, with its own options attached, and waits.
 
 **landbridged routes it through the plane.** The runner posts the worker bearer at
-`POST /worker/permission`, which is the same `PermissionRelay` as the MCP
-`request_permission` tool. A Lead or human answers with allow or deny. Allow maps
-to the agent's `allow_once` option, never `allow_always`. Deny maps to a reject
-option, or `cancelled` if the agent offered none.
+`POST /worker/permission` together with the harness's `options` array, which is the
+same `PermissionRelay` as the MCP `request_permission` tool. A Lead or human picks
+one of those options (`optionId`); that id is returned to the agent as-is. A
+classifier or legacy allow still maps to the agent's `allow_once` option, never
+`allow_always`. A deny without a selected id maps to a reject option, or
+`cancelled` if the agent offered none.
 
 Do not put bypass / `--always-approve` / `--auto` on `spawn`. That skips a dialog
 Landbridge is now the one answering.

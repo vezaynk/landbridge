@@ -184,12 +184,22 @@ public sealed class SessionStore(
         {
             // A live worker the Lead spoke to without being asked — including a
             // reply to a report still sitting in verifying — is a follow-up on
-            // the same session, not a continue-from-blocked. Permission is
-            // never this path — ContinueSession / LeadMessage both refuse it.
+            // the same session, not a continue-from-blocked. A *live* permission
+            // wait stays on the verdict path. A leftover Permission kind after
+            // the verdict (or after the worker reported) is not a wait: passing
+            // it here made LeadMessage / ContinueSession refuse both tools
+            // while get_session_question said "nothing waiting".
+            var pending = row.InputKind;
+            var livePermissionWait = pending == InputRequestKind.Permission
+                && row.State == SessionState.BlockedOnInput
+                && row.PermissionVerdict is null;
+            if (pending == InputRequestKind.Permission && !livePermissionWait)
+                pending = null;
+
             if (row.State == SessionState.Verifying
-                || (row.State == SessionState.Working && row.InputKind is null))
-                return await RunTransition(row, new LeadMessage(lead, answer, row.InputKind), ct);
-            return await RunTransition(row, new ContinueSession(lead, answer, row.InputKind), ct);
+                || (row.State == SessionState.Working && pending is null))
+                return await RunTransition(row, new LeadMessage(lead, answer, pending), ct);
+            return await RunTransition(row, new ContinueSession(lead, answer, pending), ct);
         }
 
         // §11: the redispatch park record is the machine still holding the lease, preferred
@@ -235,6 +245,73 @@ public sealed class SessionStore(
             new AnswerPermission(
                 actor, row.InputKind, row.PermissionEscalatedAt is not null, verdict, message),
             ct);
+    }
+
+    /// <summary>
+    /// Decide a pending permission request by the harness option the answerer picked
+    /// (<c>optionId</c>, kind, or the <c>allow</c>/<c>deny</c> aliases). When the
+    /// request stored no options (legacy MCP prompt-tool), <paramref name="option"/>
+    /// is parsed as a <see cref="PermissionVerdict"/>.
+    /// </summary>
+    public async Task<StoreResult> AnswerPermissionAsync(
+        Actor actor, SessionId id, string option, string? message = null,
+        CancellationToken ct = default)
+    {
+        var row = await db.Sessions.FirstOrDefaultAsync(t => t.Id == id.Value, ct);
+        if (row is null)
+            return new StoreResult.NotFound($"no task {id}");
+
+        var offered = PermissionOption.Parse(row.PermissionOptions);
+        PermissionVerdict verdict;
+        string? optionId = null;
+        if (offered.Count > 0)
+        {
+            var match = PermissionOption.Resolve(offered, option);
+            if (match is null)
+                return new StoreResult.Rejected(
+                    Rule.PermissionOptionMustBeOffered,
+                    $"option '{option}' is not one of the harness options on this request");
+            verdict = match.Verdict;
+            optionId = match.OptionId;
+        }
+        else if (Enum.TryParse<PermissionVerdict>(option, ignoreCase: true, out var parsed))
+        {
+            verdict = parsed;
+        }
+        else
+        {
+            return new StoreResult.Rejected(
+                Rule.PermissionOptionMustBeOffered,
+                $"unknown option '{option}'; expected 'allow' or 'deny'");
+        }
+
+        return await RunTransition(
+            row,
+            new AnswerPermission(
+                actor, row.InputKind, row.PermissionEscalatedAt is not null, verdict, message, optionId),
+            ct);
+    }
+
+    /// <summary>
+    /// Records that the plane classifier allowed a tool call without opening a
+    /// permission wait. State does not move. Failure to write must not block the
+    /// allow itself — callers treat this as best-effort audit.
+    /// </summary>
+    public async Task RecordClassifierAllowAsync(
+        SessionId id, string tool, string proposedInput, CancellationToken ct = default)
+    {
+        var row = await db.Sessions.FirstOrDefaultAsync(t => t.Id == id.Value, ct);
+        if (row is null)
+            return;
+
+        _ = proposedInput;
+        var detail = string.IsNullOrWhiteSpace(tool) ? "classifier allow" : $"classifier allow: {tool}";
+        AppendEvent(
+            row.Id, row.TeamId, "ClassifierAllow", row.State, row.State,
+            detail: detail,
+            permissionVerdict: PermissionVerdict.Allow,
+            permissionAnswerer: PermissionAnswerer.Plane);
+        await db.SaveChangesAsync(ct);
     }
 
     /// <summary>
@@ -288,6 +365,7 @@ public sealed class SessionStore(
                     t.CurrentInstanceId,
                     t.InputKind,
                     t.PermissionVerdict,
+                    t.PermissionOptionId,
                 })
                 .FirstOrDefaultAsync(ct);
 
@@ -305,7 +383,7 @@ public sealed class SessionStore(
                     .OrderByDescending(e => e.Seq)
                     .Select(e => e.Detail)
                     .FirstOrDefaultAsync(ct);
-                return new PermissionOutcome(verdict, message);
+                return new PermissionOutcome(verdict, message, seen.PermissionOptionId);
             }
 
             // Parked by the sweeper, or moved on for any other reason, with no verdict.
@@ -327,7 +405,8 @@ public sealed class SessionStore(
             .Select(t => new PermissionRequestView(
                 t.Id, t.Namespace, t.TeamId, t.State, t.BlockedAt, t.PermissionTool,
                 t.InputQuestion, t.PermissionVerdict, t.InputAnswer,
-                t.PermissionEscalatedAt, t.PermissionEscalationReason))
+                t.PermissionEscalatedAt, t.PermissionEscalationReason,
+                t.PermissionOptions, t.PermissionOptionId))
             .FirstOrDefaultAsync(ct);
 
     /// <summary>
@@ -611,6 +690,56 @@ public sealed class SessionStore(
     }
 
     /// <summary>
+    /// Lead-authored words this worker has been given, in order: the session
+    /// description (the original brief) then the latest follow-up on
+    /// <see cref="SessionRow.InputAnswer"/> if one has landed. Worker reports,
+    /// questions, and workspace blobs are not included — those are not Lead
+    /// messages. The store keeps only the latest follow-up (same as
+    /// <c>get_session</c>'s <c>answer</c>); earlier ones were overwritten.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> GetLeadWorkerMessagesAsync(
+        SessionId id, CancellationToken ct = default)
+    {
+        var row = await db.Sessions.AsNoTracking()
+            .Where(t => t.Id == id.Value)
+            .Select(t => new { t.Description, t.InputAnswer })
+            .FirstOrDefaultAsync(ct);
+        if (row is null)
+            return [];
+
+        var messages = new List<string>(2);
+        if (!string.IsNullOrWhiteSpace(row.Description))
+            messages.Add(row.Description);
+        if (!string.IsNullOrWhiteSpace(row.InputAnswer)
+            && !string.Equals(row.InputAnswer, row.Description, StringComparison.Ordinal))
+            messages.Add(row.InputAnswer);
+        return messages;
+    }
+
+    /// <summary>
+    /// Enroll-time labels for list_profiles: name and OS, so a Lead can tell
+    /// three profiles on one laptop from three Linux boxes.
+    /// </summary>
+    public async Task<IReadOnlyDictionary<string, (string Name, string Os)>> GetMachineLabelsAsync(
+        IEnumerable<string> machineIds, CancellationToken ct = default)
+    {
+        var ids = machineIds
+            .Select(id => Guid.TryParse(id, out var g) ? g : (Guid?)null)
+            .Where(g => g is not null)
+            .Select(g => g!.Value)
+            .Distinct()
+            .ToArray();
+        if (ids.Length == 0)
+            return new Dictionary<string, (string, string)>(StringComparer.Ordinal);
+
+        var rows = await db.Set<Auth.MachineRow>().AsNoTracking()
+            .Where(m => ids.Contains(m.Id))
+            .Select(m => new { m.Id, m.Name, m.Os })
+            .ToListAsync(ct);
+        return rows.ToDictionary(m => m.Id.ToString(), m => (m.Name, m.Os), StringComparer.Ordinal);
+    }
+
+    /// <summary>
     /// The Team view read (§10, §12): task counts by state plus a per-task
     /// structural summary, scoped to one Team. A pure read — it runs no
     /// transition and returns no prose (§10). The caller's Team comes from its
@@ -637,13 +766,10 @@ public sealed class SessionStore(
                 // §10: the bulk read carries only a flag that a report exists, never
                 // the prose — the Lead fetches the text per task via get_session_report.
                 HasReport = t.WorkerReport != null,
-                // §10/§11 the same way for the worker's question: the KIND is typed
-                // structure and rides along (it tells a Lead who can answer, which is
-                // triage), but the question text does not — get_session_question pulls it.
+                // A live wait of any kind — including Permission. The kind is how
+                // you answer (verdict vs prose); has_question is how you notice.
                 t.InputKind,
-                HasQuestion = t.BlockedAt != null
-                    && t.InputKind != null
-                    && t.InputKind != InputRequestKind.Permission,
+                HasQuestion = t.BlockedAt != null && t.InputKind != null,
             })
             .ToListAsync(ct);
 
@@ -706,7 +832,8 @@ public sealed class SessionStore(
             .Where(t => t.Id == task.Value && t.TeamId == team.Value)
             .Select(t => new SessionQuestionView(
                 t.Id, t.Namespace, t.State, t.InputKind, t.InputQuestion, t.InputAnswer,
-                t.PermissionTool, t.PermissionVerdict, t.PermissionEscalationReason))
+                t.PermissionTool, t.PermissionVerdict, t.PermissionEscalationReason,
+                t.PermissionOptions, t.PermissionOptionId))
             .FirstOrDefaultAsync(ct);
 
     /// <summary>
@@ -786,9 +913,14 @@ public sealed class SessionStore(
         await db.Sessions.AsNoTracking()
             .AnyAsync(t => t.Id == id.Value
                 && t.State == SessionState.Working
-                && t.BlockedAt != null
-                && t.InputKind != null
-                && t.InputKind != InputRequestKind.Permission, ct);
+                && (
+                    (t.BlockedAt != null
+                        && t.InputKind != null
+                        && t.InputKind != InputRequestKind.Permission)
+                    // A deny is guidance. The worker often ends the turn after it
+                    // instead of asking again; that is idle, not TurnEndedWithoutResult.
+                    || (t.InputKind == InputRequestKind.Permission
+                        && t.PermissionVerdict == PermissionVerdict.Deny)), ct);
 
     /// <summary>
     /// The state read of <see cref="GetStateAsync"/> plus the instance currently working the
@@ -1042,6 +1174,8 @@ public sealed class SessionStore(
             // polls for, so leaving one behind would let a second request read the first
             // request's answer and return it as this call's.
             row.PermissionTool = ri.PermissionTool;
+            row.PermissionOptions = ri.Kind == InputRequestKind.Permission ? ri.PermissionOptions : null;
+            row.PermissionOptionId = null;
             row.PermissionVerdict = null;
             row.PermissionEscalatedAt = null;
             row.PermissionEscalationReason = null;
@@ -1062,6 +1196,7 @@ public sealed class SessionStore(
         if (command is AnswerPermission decided)
         {
             row.PermissionVerdict = decided.Verdict;
+            row.PermissionOptionId = decided.OptionId;
             // The permission note is on the event row (Detail), not InputAnswer.
             // InputAnswer is the Lead's prose to the worker (get_session). Mixing
             // them made approve-mode MCP tools overwrite a WakeParked answer.

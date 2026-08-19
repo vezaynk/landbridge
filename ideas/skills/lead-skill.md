@@ -28,6 +28,7 @@ A good session is one a worker can finish without needing to talk to anyone. Tha
 Before creating a session, check that it carries:
 
 - **Enough context to start, and a bar you can judge.** The worker gets your description (and an optional `workspace` blob), nothing else. Put what to do *and* how you will check it in the description. It cannot see the Team's history, other sessions, or your reasoning. It isolates itself — you do not assign ports or worktrees.
+- **What auth this work might need, and how to get it if it is missing.** Preface the brief: which hosts, which orgs, which clone URL. There is no plane credential and you must not paste a token. If the box does not already have access, tell the worker to generate a key in its session directory and send you the public half (or an OAuth URL). You complete the grant — deploy-key add, OAuth approve — then `answer_input_request` so they clone. Do not leave them to discover a 403 and invent a path.
 
 Prefer fewer, larger sessions over many small ones. Each new session pays a fixed cost — dispatch, cold start, reading itself into context. Talking back on a live session is cheap; a session too small to justify a spawn should have been a message on its neighbour.
 
@@ -109,20 +110,20 @@ Request kinds you will see:
 
 - `question` — answer it, or escalate to your human if it's a judgment call above your pay grade
 - `spawn_request` — a worker asking for work to be created. Evaluate it; you are not obliged to agree. If you do, write a proper session, not a paraphrase of the request.
-- `auth_help` — needs a human. Pass it up.
+- `auth_help` — the worker needs access on its box. This is the ordinary private-repo path, not a plane feature. Take the public key or OAuth URL they sent, complete the grant (deploy-key add, OAuth approve), then answer so they can proceed. Never paste a token back. If you cannot finish it yourself, pass the URL or key to your human.
 - `permission` — a tool-approval request. Different tool, different urgency: see below.
 
 A request with no question is a worker that told you nothing. You can't answer it well; prefer cancelling and re-briefing with a clearer session over inventing what it probably meant.
 
 ### Permission requests
 
-Permissions arrive as ACP `session/request_permission`. There is no bypass / always-approve flag on a Landbridge worker spawn. landbridged posts the request to the plane; **you decide**. Auto-allow is gone. A plane allow maps to the agent's `allow_once` — never `allow_always`. Two things make a live wait unlike every other blocked session:
+Permissions arrive as ACP `session/request_permission`. There is no bypass / always-approve flag on a Landbridge worker spawn. landbridged posts the request **and the harness's option list** to the plane; **you pick one of those options**. The plane already auto-allows protocol tools, reads/writes inside this session's directory, and (when the classifier is up) read-only shell such as `git status` / `ls`. A classifier allow still maps to the agent's `allow_once` — never `allow_always`. If you explicitly pick an `allow_always` option the harness offered, that choice is sent through. Two things make a live wait unlike every other blocked session:
 
-**The worker is still running, blocked inside that tool call.** It hasn't parked and won't be redispatched — your verdict resumes it where it stands. Wait TTL is off by default; use `park_session` if you mean to release the machine.
+**The worker is still running, blocked inside that tool call.** It hasn't parked and won't be redispatched — your choice resumes it where it stands. Wait TTL is off by default; use `park_session` if you mean to release the machine.
 
-**You answer with a verdict, not prose.** `get_session_question` shows the tool name and the arguments the harness proposed; then `answer_permission_request(session, 'allow'|'deny', message)`. `answer_input_request` is refused on these — it would treat a live wait as a redispatch.
+**You answer with one of the harness options, not prose.** `get_session_question` shows the tool name, the arguments, and the `<<<OPTIONS` list (`optionId`, `kind`, `name`); then `answer_permission_request(session, option, message)` with that `optionId`. `'allow'`/`'deny'` still pick the matching kind if you have not chosen a specific id. `answer_input_request` is refused on these — it would treat a live wait as a redispatch.
 
-Approve what follows from the session you wrote: reading and editing inside this session's directory, running the project's own build and tests, installing the dependencies the work obviously needs, talking to the hosts the session names. This is the ordinary case and it should be quick.
+**Only deny dangerous requests, or ones that clearly go against the session's intent. Do not micro-manage workers.** Approve the ordinary case — builds, tests, installs the work obviously needs, talking to the hosts the brief names — and do it quickly. A worker waiting on you to rubber-stamp `npm test` is a leak.
 
 **Escalate** — `escalate_permission_request(session, reason)`, and the reason is required — for:
 
@@ -130,7 +131,7 @@ Approve what follows from the session you wrote: reading and editing inside this
 - network egress beyond the hosts this session's own description implies
 - destructive operations outside the workspace: deleting, overwriting, or moving anything the session doesn't own
 - `sudo`, or anything else that changes the machine rather than the work
-- **anything you cannot explain from the session's description.** This is the real rule, and the list above is just its common cases. If you find yourself reasoning toward why a call is *probably* fine, that reasoning is the signal to escalate instead.
+- **anything that clearly contradicts the session you wrote.** Ordinary work you did not enumerate is still ordinary work; escalate danger and intent violations, not taste.
 
 Escalating gives up your authority over that one request: you can't decide it afterwards, and it waits for a person, who sees your reason and nothing else you were thinking. So write the reason for them — what the call would do, and what you couldn't justify. Escalating doesn't buy time; the wait TTL keeps running.
 
@@ -197,5 +198,6 @@ Before closing: no sessions in flight, no open input requests, results recorded 
 The default bundle assumes software. Replace this section for other domains.
 
 - Name the repo and base ref in the description (or `workspace`). The worker makes its own worktree and branch.
+- If the repo is private, say so in the brief and tell them to send a session-local public key (or an OAuth URL) rather than wait for a token. When it arrives, install it as a read-only deploy key and reply on the same session.
 - Prefer test commands and linters as the bar in the description — and run them yourself before accepting
 - Anything load-bearing goes into version control, not an artifact URL

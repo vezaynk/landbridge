@@ -45,7 +45,7 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
     private static readonly TimeSpan Patience = TimeSpan.FromSeconds(20);
 
     private const string Tool = "Bash";
-    private const string ProposedInput = """{"command":"/usr/bin/security find-generic-password -s prod"}""";
+    private const string ProposedInput = """{"command":"git ls-remote origin"}""";
 
     private static IHttpContextAccessor AccessorFor(Principal principal) =>
         new HttpContextAccessor
@@ -122,6 +122,38 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         task is Task<string> t ? await t : "<not a string result>";
 
     private static JsonElement Verdict(string json) => JsonDocument.Parse(json).RootElement;
+
+    [SkippableFact]
+    public async Task Protocol_tools_auto_allow_without_blocking()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var caller = await SeedWorkingTask();
+        var worker = WorkerFor(caller);
+
+        var json = await worker.RequestPermission(
+            "mcp__landbridge__get_session",
+            JsonDocument.Parse("{}").RootElement,
+            "toolu_proto",
+            CancellationToken.None);
+
+        Assert.Contains("\"behavior\":\"allow\"", json, StringComparison.Ordinal);
+        Assert.Equal(SessionState.Working, await StateOf(caller.Session));
+    }
+
+    [SkippableFact]
+    public async Task Credential_tools_still_ask()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var caller = await SeedWorkingTask();
+
+        var pending = await AskPermissionAsync(
+            caller,
+            "Bash",
+            """{"command":"/usr/bin/security find-generic-password -s prod"}""");
+
+        Assert.Equal(SessionState.BlockedOnInput, await StateOf(caller.Session));
+        Assert.False(pending.IsCompleted);
+    }
 
     // ── The round trip ────────────────────────────────────────────────────────
 
@@ -221,7 +253,7 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task An_unknown_verdict_is_refused_before_it_reaches_the_store()
+    public async Task An_unknown_option_is_refused()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var caller = await SeedWorkingTask();
@@ -398,7 +430,7 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         // working, so a second request is refused — and the tool still owes the harness a
         // well-formed verdict rather than an error.
         var second = await WorkerFor(caller).RequestPermission(
-            "Write", JsonDocument.Parse("""{"file_path":"/etc/hosts"}""").RootElement, "toolu_two",
+            "Bash", JsonDocument.Parse("""{"command":"git status"}""").RootElement, "toolu_two",
             CancellationToken.None);
 
         var verdict = Verdict(second);
@@ -437,6 +469,7 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Contains(ProposedInput, text);
         // The rubric's escape hatch is on the page the Lead is reading when it decides.
         Assert.Contains("escalate_permission_request", text);
+        Assert.DoesNotContain("<<<OPTIONS", text);
 
         await lead.EscalatePermissionRequest(caller.Session.ToString(), "credential access", CancellationToken.None);
         var escalated = await lead.GetSessionQuestion(caller.Session.ToString(), CancellationToken.None);
@@ -454,6 +487,35 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         var settled = await lead.GetSessionQuestion(caller.Session.ToString(), CancellationToken.None);
         Assert.Contains("already had its permission request", settled);
         Assert.Contains("allow", settled);
+        Assert.Contains("answer_input_request", settled);
+    }
+
+    [SkippableFact]
+    public async Task Get_session_question_lists_harness_options_and_the_lead_picks_one()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var caller = await SeedWorkingTask();
+        const string options = """[{"optionId":"allow-once","name":"Allow once","kind":"allow_once"},{"optionId":"reject-once","name":"Reject","kind":"reject_once"}]""";
+        await using (var db = pg.NewContext())
+        {
+            Assert.IsType<StoreResult.Applied>(await new SessionStore(db, TimeProvider.System).ApplyAsync(
+                caller.Session,
+                new RequestInput(caller, InputRequestKind.Permission, ProposedInput, Tool, options)));
+        }
+
+        var lead = LeadFor(new Principal.Lead(Team));
+        var text = await lead.GetSessionQuestion(caller.Session.ToString(), CancellationToken.None);
+        Assert.Contains("<<<OPTIONS", text);
+        Assert.Contains("optionId=allow-once", text);
+        Assert.Contains("kind=allow_once", text);
+        Assert.Contains("Allow once", text);
+        Assert.Contains("optionId=reject-once", text);
+
+        await lead.AnswerPermissionRequest(caller.Session.ToString(), "allow-once", null, CancellationToken.None);
+        await using var check = pg.NewContext();
+        var row = await check.Sessions.AsNoTracking().SingleAsync(t => t.Id == caller.Session.Value);
+        Assert.Equal("allow-once", row.PermissionOptionId);
+        Assert.Equal(PermissionVerdict.Allow, row.PermissionVerdict);
     }
 
     // ── The audit trail ───────────────────────────────────────────────────────
@@ -500,7 +562,7 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var caller = await SeedWorkingTask();
-        var pending = await AskPermissionAsync(caller, tool: "Edit", input: """{"file_path":"src/a.cs"}""");
+        var pending = await AskPermissionAsync(caller, tool: "Bash", input: """{"command":"git status"}""");
 
         await LeadFor(new Principal.Lead(Team))
             .AnswerPermissionRequest(caller.Session.ToString(), "allow", "routine, in the workspace", CancellationToken.None);

@@ -113,6 +113,30 @@ public sealed class AcpClient
     private readonly HashSet<string> _reported = new(StringComparer.Ordinal);
 
     /// <summary>
+    /// Last <c>rawInput</c> (and title) seen on a <c>tool_call</c> /
+    /// <c>tool_call_update</c>, keyed by <c>toolCallId</c>. Codex often asks
+    /// <c>session/request_permission</c> with only <c>kind: execute</c> and no
+    /// <c>rawInput</c> — the command already rode the preceding update. Without
+    /// this the Lead sees <c>proposed_input: {}</c> and cannot decide.
+    /// </summary>
+    private readonly Dictionary<string, (string? Title, string InputJson)> _toolInputs
+        = new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// <c>session/request_permission</c> that arrived with no argv. The read loop
+    /// must keep going so a later <c>tool_call_update</c> can fill
+    /// <see cref="_toolInputs"/>; the JSON-RPC response is sent then, or
+    /// cancelled on timeout / stdout EOF.
+    /// </summary>
+    private readonly Dictionary<string, PendingRawInputPermission> _awaitingRawInput
+        = new(StringComparer.Ordinal);
+
+    private readonly object _awaitingRawInputGate = new();
+
+    /// <summary>How long an empty permission waits for a later <c>rawInput</c>.</summary>
+    internal static readonly TimeSpan RawInputGrace = TimeSpan.FromSeconds(2);
+
+    /// <summary>
     /// Agent-request methods already refused and reported, so the operator-facing line is
     /// once per method per task rather than once per call. Touched only by the
     /// single-threaded read loop.
@@ -220,6 +244,7 @@ public sealed class AcpClient
                 {
                     FailPending(new AcpProtocolException(
                         "the agent's stdout ended before this request was answered"));
+                    await CancelDeferredPermissionsAsync().ConfigureAwait(false);
 
                     // The session dies with the stream. Both unblocks below are load-bearing
                     // and for the same reason: when the worker's process ends, DriveAsync is
@@ -861,7 +886,7 @@ public sealed class AcpClient
                 if (method == "_x.ai/session_notification")
                     RecordXaiUsage(root);
                 else
-                    HandleNotification(method, root);
+                    await HandleNotificationAsync(method, root, ct).ConfigureAwait(false);
             }
             else if (hasId)
                 CompletePending(id, root);
@@ -875,7 +900,7 @@ public sealed class AcpClient
     /// which §12 captures verbatim through the transcript tee and which the frozen runner
     /// vocabulary deliberately has no member for.
     /// </summary>
-    private void HandleNotification(string method, JsonElement root)
+    private async Task HandleNotificationAsync(string method, JsonElement root, CancellationToken ct)
     {
         if (method != "session/update")
             return;
@@ -904,14 +929,39 @@ public sealed class AcpClient
         var id = update.TryGetProperty("toolCallId", out var t) && t.ValueKind == JsonValueKind.String
             ? t.GetString()
             : null;
-        if (id is not { Length: > 0 } || !_reported.Add(id))
+        if (id is not { Length: > 0 })
+            return;
+
+        var name = StringOf(update, "title") ?? StringOf(update, "kind") ?? "tool";
+        // Remember before the once-per-id guard: Codex often puts rawInput on
+        // a later tool_call_update, then asks permission with no rawInput.
+        RememberToolInput(id, name, update);
+        await MaybeCompleteDeferredPermissionAsync(id, ct).ConfigureAwait(false);
+        if (!_reported.Add(id))
             return;
 
         // ACP names a call for a human (`title`: "Reading configuration file") and
         // categorises it (`kind`: read/edit/execute/…). The title is what a person reading
         // the §12 event log wants; the kind is the honest fallback when an agent omits one.
-        var name = StringOf(update, "title") ?? StringOf(update, "kind") ?? "tool";
         _ring.Enqueue(new ToolCallEvent(_task, name, _clock.GetUtcNow()));
+    }
+
+    private void RememberToolInput(string toolCallId, string? title, JsonElement update)
+    {
+        var input = update.TryGetProperty("rawInput", out var raw)
+            && raw.ValueKind is not JsonValueKind.Undefined and not JsonValueKind.Null
+            ? raw.GetRawText()
+            : null;
+        if (input is null && title is null)
+            return;
+        if (_toolInputs.TryGetValue(toolCallId, out var prior))
+        {
+            _toolInputs[toolCallId] = (
+                title ?? prior.Title,
+                input is { Length: > 2 } ? input : prior.InputJson);
+            return;
+        }
+        _toolInputs[toolCallId] = (title, input is { Length: > 2 } ? input : "{}");
     }
 
     /// <summary>
@@ -924,6 +974,14 @@ public sealed class AcpClient
     {
         if (method == "session/request_permission")
         {
+            if (root.TryGetProperty("params", out var waitParams)
+                && waitParams.ValueKind == JsonValueKind.Object
+                && ShouldWaitForRawInput(waitParams, out var waitId))
+            {
+                DeferPermissionUntilRawInput(waitId, id, waitParams, ct);
+                return;
+            }
+
             var option = await ResolvePermissionOptionAsync(root, ct).ConfigureAwait(false);
             await SendResponseAsync(
                 id,
@@ -971,11 +1029,12 @@ public sealed class AcpClient
     /// old harness prompt-tool did, waits for a Lead or human verdict, and maps
     /// it onto the agent's own options.
     ///
-    /// <para>Allow picks <c>allow_once</c> only — never <c>allow_always</c>, even
-    /// as a fallback. A standing bypass is not a plane decision. Deny picks a
-    /// reject option when the agent offered one, otherwise <c>cancelled</c>. A
-    /// missing plane callback (tests that did not wire one) is also cancelled
-    /// rather than auto-allowed.</para>
+    /// <para>When the plane returns an <c>optionId</c> the Lead picked, that id
+    /// is sent back as-is (including <c>allow_always</c>, if the Lead chose it).
+    /// A classifier or legacy allow still maps to <c>allow_once</c> only — never
+    /// <c>allow_always</c>. Deny without an optionId picks a reject option, or
+    /// <c>cancelled</c>. A missing plane callback is also cancelled rather than
+    /// auto-allowed.</para>
     /// </summary>
     private async Task<string?> ResolvePermissionOptionAsync(JsonElement root, CancellationToken ct)
     {
@@ -989,7 +1048,19 @@ public sealed class AcpClient
         if (_requestPermission is null)
             return null;
 
-        var ask = new AcpPermissionAsk(ToolOf(p), InputOf(p));
+        var ask = new AcpPermissionAsk(ToolOf(p), InputOf(p), OptionsJsonOf(p));
+        // Codex (and others) sometimes ask permission with only kind: execute
+        // and no argv, even after we waited for a later tool_call_update. That
+        // is a harness miss: there is nothing to gate. Allow once, do not open
+        // a Lead wait, and do not cancel the agent for asking about nothing.
+        if (LooksLikeEmptyExecute(ask))
+        {
+            _warn(
+                $"landbridged: task {_task.Value}: auto-allowed a permission request for '{ask.Tool}' "
+                + "with no proposed command (empty rawInput). The harness asked to approve nothing — "
+                + "a Codex-side miss. landbridged will not gate that.");
+            return FirstOfKind(options, "allow_once");
+        }
         AcpPermissionDecision decision;
         try
         {
@@ -1004,6 +1075,23 @@ public sealed class AcpClient
             _warn(
                 $"landbridged: task {_task.Value}: the plane permission bridge failed ({ex.GetType().Name}: {ex.Message}); " +
                 "answering the agent with cancelled so it is not wedged inside the tool call.");
+            return null;
+        }
+
+        if (decision.OptionId is { Length: > 0 } picked)
+        {
+            foreach (var o in options)
+            {
+                if (o.Id == picked)
+                {
+                    if (!decision.Allow)
+                        WarnPermissionDenied(ask.Tool, decision.Message);
+                    return picked;
+                }
+            }
+            _warn(
+                $"landbridged: task {_task.Value}: the plane picked optionId '{picked}' which this " +
+                "request did not offer; answering cancelled.");
             return null;
         }
 
@@ -1024,15 +1112,217 @@ public sealed class AcpClient
         // unless a profile says otherwise, and for claude-agent-acp that mode prompts before
         // every MCP tool call — so on a fleet with no Lead watching, the first `get_session` is
         // the call that gets refused and the worker never starts.
-        if (_declined.Add("session/request_permission"))
-            _warn(
-                $"landbridged: task {_task.Value}: the plane DENIED this worker's permission request for " +
-                $"'{ask.Tool}'{(decision.Message is { Length: > 0 } why ? $" ({why})" : "")}. A worker whose " +
-                "landbridge tools are denied cannot call get_session or report_result, so it will end its turn " +
-                "having done nothing — check that a Lead is answering permission requests, or set this " +
-                "profile to a permission mode that does not prompt (§10, §11).");
-
+        WarnPermissionDenied(ask.Tool, decision.Message);
         return FirstOfKind(options, "reject_once") ?? FirstOfKind(options, "reject_always");
+    }
+
+    private void WarnPermissionDenied(string tool, string? message)
+    {
+        if (!_declined.Add("session/request_permission"))
+            return;
+        _warn(
+            $"landbridged: task {_task.Value}: the plane DENIED this worker's permission request for " +
+            $"'{tool}'{(message is { Length: > 0 } why ? $" ({why})" : "")}. A worker whose " +
+            "landbridge tools are denied cannot call get_session or report_result, so it will end its turn " +
+            "having done nothing — check that a Lead is answering permission requests, or set this " +
+            "profile to a permission mode that does not prompt (§10, §11).");
+    }
+
+    private static string OptionsJsonOf(JsonElement p)
+    {
+        if (!p.TryGetProperty("options", out var options) || options.ValueKind != JsonValueKind.Array)
+            return "[]";
+        return options.GetRawText();
+    }
+
+    private void DeferPermissionUntilRawInput(
+        string toolCallId, JsonElement rpcId, JsonElement paramsElement, CancellationToken ct)
+    {
+        var pending = new PendingRawInputPermission(
+            toolCallId,
+            rpcId.Clone(),
+            paramsElement.GetRawText(),
+            new CancellationTokenSource());
+        lock (_awaitingRawInputGate)
+            _awaitingRawInput[toolCallId] = pending;
+        _ = WaitForRawInputThenDecideAsync(pending, ct);
+    }
+
+    private async Task WaitForRawInputThenDecideAsync(
+        PendingRawInputPermission pending, CancellationToken ct)
+    {
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, pending.Timeout.Token);
+        try
+        {
+            await Task.Delay(RawInputGrace, _clock, linked.Token).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            return;
+        }
+
+        if (!TryTakeAwaiting(pending.ToolCallId, pending))
+            return;
+        await ReplyDeferredPermissionAsync(pending, ct).ConfigureAwait(false);
+    }
+
+    private async Task MaybeCompleteDeferredPermissionAsync(string toolCallId, CancellationToken ct)
+    {
+        PendingRawInputPermission? pending;
+        lock (_awaitingRawInputGate)
+        {
+            if (!_awaitingRawInput.TryGetValue(toolCallId, out pending))
+                return;
+        }
+
+        using var doc = JsonDocument.Parse(pending.ParamsJson);
+        if (ShouldWaitForRawInput(doc.RootElement, out _))
+            return;
+        if (!TryTakeAwaiting(toolCallId, pending))
+            return;
+        await pending.Timeout.CancelAsync().ConfigureAwait(false);
+        await ReplyDeferredPermissionAsync(pending, ct).ConfigureAwait(false);
+    }
+
+    private async Task ReplyDeferredPermissionAsync(
+        PendingRawInputPermission pending, CancellationToken ct)
+    {
+        string? option = null;
+        try
+        {
+            using var doc = JsonDocument.Parse("{\"params\":" + pending.ParamsJson + "}");
+            option = await ResolvePermissionOptionAsync(doc.RootElement, ct).ConfigureAwait(false);
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            _warn(
+                $"landbridged: task {_task.Value}: deferred permission reply failed ({ex.GetType().Name}: {ex.Message})");
+        }
+
+        try
+        {
+            await SendPermissionOutcomeAsync(pending.RpcId, option, ct).ConfigureAwait(false);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _warn(
+                $"landbridged: task {_task.Value}: could not write the deferred permission outcome ({ex.GetType().Name}: {ex.Message})");
+        }
+    }
+
+    private Task SendPermissionOutcomeAsync(JsonElement rpcId, string? option, CancellationToken ct) =>
+        SendResponseAsync(
+            rpcId,
+            w =>
+            {
+                w.WriteStartObject("outcome");
+                if (option is null)
+                {
+                    w.WriteString("outcome", "cancelled");
+                }
+                else
+                {
+                    w.WriteString("outcome", "selected");
+                    w.WriteString("optionId", option);
+                }
+                w.WriteEndObject();
+            },
+            ct);
+
+    private async Task CancelDeferredPermissionsAsync()
+    {
+        List<PendingRawInputPermission> leftover;
+        lock (_awaitingRawInputGate)
+        {
+            leftover = _awaitingRawInput.Values.ToList();
+            _awaitingRawInput.Clear();
+        }
+
+        foreach (var pending in leftover)
+        {
+            try { pending.Timeout.Cancel(); }
+            catch { /* already disposed */ }
+            try
+            {
+                await ReplyDeferredPermissionAsync(pending, CancellationToken.None)
+                    .ConfigureAwait(false);
+            }
+            catch
+            {
+                // stdin may already be gone with the process
+            }
+        }
+    }
+
+    private bool TryTakeAwaiting(string toolCallId, PendingRawInputPermission expected)
+    {
+        lock (_awaitingRawInputGate)
+        {
+            if (!_awaitingRawInput.TryGetValue(toolCallId, out var have) || !ReferenceEquals(have, expected))
+                return false;
+            _awaitingRawInput.Remove(toolCallId);
+            return true;
+        }
+    }
+
+    private bool ShouldWaitForRawInput(JsonElement p, out string toolCallId)
+    {
+        toolCallId = "";
+        if (!TryToolCallId(p, out toolCallId))
+            return false;
+        var ask = new AcpPermissionAsk(ToolOf(p), InputOf(p));
+        if (!IsBlankInput(ask.InputJson))
+            return false;
+        return !LooksLikeCommandTitle(ask.Tool);
+    }
+
+    private static bool TryToolCallId(JsonElement p, out string id)
+    {
+        id = "";
+        if (p.TryGetProperty("toolCall", out var call) && call.ValueKind == JsonValueKind.Object
+            && StringOf(call, "toolCallId") is { Length: > 0 } found)
+        {
+            id = found;
+            return true;
+        }
+        return false;
+    }
+
+    private static bool IsBlankInput(string input)
+    {
+        var t = input.Trim();
+        return t.Length == 0 || t == "{}";
+    }
+
+    private static readonly HashSet<string> GenericToolNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "execute", "tool", "bash", "shell", "sh", "zsh", "cmd", "powershell",
+        "terminal", "run_shell_command", "local_shell", "shell_command",
+        "bash_tool", "run_command", "execute_command",
+    };
+
+    private static readonly HashSet<string> BareCommandTitles = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "ls", "pwd", "git", "cat", "head", "tail", "wc", "echo", "date",
+        "whoami", "uname", "which", "true", "false", "env", "id", "hostname",
+    };
+
+    private static bool LooksLikeCommandTitle(string tool)
+    {
+        var s = tool.Trim();
+        if (s.Length == 0 || GenericToolNames.Contains(s))
+            return false;
+        if (s.Contains(' ') || s.Contains('\t'))
+            return true;
+        if (s.StartsWith("Execute `", StringComparison.OrdinalIgnoreCase)
+            || s.StartsWith("Run `", StringComparison.OrdinalIgnoreCase)
+            || s.StartsWith("Shell `", StringComparison.OrdinalIgnoreCase))
+            return true;
+        return BareCommandTitles.Contains(s);
     }
 
     /// <summary>
@@ -1124,21 +1414,47 @@ public sealed class AcpClient
         }
     }
 
-    private static string ToolOf(JsonElement p)
+    private string ToolOf(JsonElement p)
     {
         if (p.TryGetProperty("toolCall", out var call) && call.ValueKind == JsonValueKind.Object)
-            return StringOf(call, "title") ?? StringOf(call, "kind") ?? "tool";
+        {
+            var fromCall = StringOf(call, "title") ?? StringOf(call, "kind");
+            if (fromCall is { Length: > 0 } && fromCall != "execute" && fromCall != "tool")
+                return fromCall;
+            if (StringOf(call, "toolCallId") is { Length: > 0 } id
+                && _toolInputs.TryGetValue(id, out var remembered)
+                && remembered.Title is { Length: > 0 })
+                return remembered.Title;
+            return fromCall ?? "tool";
+        }
         return StringOf(p, "title") ?? "tool";
     }
 
-    private static string InputOf(JsonElement p)
+    private string InputOf(JsonElement p)
     {
-        if (p.TryGetProperty("toolCall", out var call) && call.ValueKind == JsonValueKind.Object
-            && call.TryGetProperty("rawInput", out var raw) && raw.ValueKind is not JsonValueKind.Undefined
-            && raw.ValueKind is not JsonValueKind.Null)
-            return raw.GetRawText();
+        if (p.TryGetProperty("toolCall", out var call) && call.ValueKind == JsonValueKind.Object)
+        {
+            if (call.TryGetProperty("rawInput", out var raw) && HasContent(raw))
+                return raw.GetRawText();
+            if (StringOf(call, "toolCallId") is { Length: > 0 } id
+                && _toolInputs.TryGetValue(id, out var remembered)
+                && remembered.InputJson is { Length: > 2 })
+                return remembered.InputJson;
+        }
         return "{}";
     }
+
+    private static bool HasContent(JsonElement raw) => raw.ValueKind switch
+    {
+        JsonValueKind.Undefined or JsonValueKind.Null => false,
+        JsonValueKind.Object => raw.EnumerateObject().Any(),
+        JsonValueKind.Array => raw.GetArrayLength() > 0,
+        JsonValueKind.String => raw.GetString() is { Length: > 0 },
+        _ => true,
+    };
+
+    private static bool LooksLikeEmptyExecute(AcpPermissionAsk ask) =>
+        IsBlankInput(ask.InputJson) && GenericToolNames.Contains(ask.Tool.Trim());
 
     private static List<(string Id, string? Kind)> ReadPermissionOptions(JsonElement p)
     {
@@ -1330,6 +1646,12 @@ public sealed class AcpClient
 
     private static string? StringOf(JsonElement obj, string name) =>
         obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+
+    private sealed record PendingRawInputPermission(
+        string ToolCallId,
+        JsonElement RpcId,
+        string ParamsJson,
+        CancellationTokenSource Timeout);
 }
 
 /// <summary>
@@ -1373,10 +1695,10 @@ public sealed record AcpSessionRequest(
 
 /// <summary>One MCP server as ACP's <c>session/new</c> wants it: HTTP, named, with headers.</summary>
 /// <summary>What the agent is asking the plane to decide.</summary>
-public readonly record struct AcpPermissionAsk(string Tool, string InputJson);
+public readonly record struct AcpPermissionAsk(string Tool, string InputJson, string OptionsJson = "[]");
 
 /// <summary>The plane's verdict, before it is mapped onto the agent's options.</summary>
-public readonly record struct AcpPermissionDecision(bool Allow, string? Message);
+public readonly record struct AcpPermissionDecision(bool Allow, string? Message, string? OptionId = null);
 
 public sealed record AcpMcpServer(
     string Name,

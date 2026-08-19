@@ -267,36 +267,39 @@ public sealed class LeadTools(
     }
 
     [McpServerTool(Name = "answer_permission_request"),
-     Description("Decide a permission request from a worker's harness (§11): allow the tool call or deny " +
-                 "it. Unlike every other blocked session, THE WORKER IS STILL RUNNING and blocked inside " +
-                 "this call — your verdict resumes it in place, so answer promptly. Read it first with " +
-                 "get_session_question. Approve routine workspace operations that follow from the session you " +
-                 "wrote. When you cannot justify a call from that description — credentials or keychain " +
-                 "access, network egress beyond the hosts the session needs, destructive operations outside " +
-                 "the workspace, sudo — escalate_permission_request instead of approving on a hunch. " +
-                 "A denial MUST carry a message: it is guidance the worker reads and adapts to, so say " +
-                 "what to do instead.")]
+     Description("Decide a permission request from a worker's harness (§11) by picking ONE of the " +
+                 "options get_session_question listed (the harness's own optionId). Unlike every other " +
+                 "blocked session, THE WORKER IS STILL RUNNING and blocked inside this call — your " +
+                 "choice resumes it in place, so answer promptly. 'allow'/'deny' still work as aliases " +
+                 "for the matching kind when you have not picked a specific optionId. Approve routine " +
+                 "workspace operations that follow from the session you wrote. When you cannot justify " +
+                 "a call from that description — credentials or keychain access, network egress beyond " +
+                 "the hosts the session needs, destructive operations outside the workspace, sudo — " +
+                 "escalate_permission_request instead of approving on a hunch. A reject-kind option " +
+                 "MUST carry a message: it is guidance the worker reads and adapts to, so say what " +
+                 "to do instead.")]
     public async Task<string> AnswerPermissionRequest(
         [Description("The session id whose permission request is pending.")]
         string sessionId,
-        [Description("'allow' to let the tool call proceed with the arguments the harness proposed, or " +
-                     "'deny' to refuse it.")]
-        string verdict,
-        [Description("What the worker is told. Required on a deny — a refusal it cannot read is one it " +
-                     "will retry, so say why and what to do instead. Optional on an allow. Capped at 16 KB.")]
+        [Description("One optionId from get_session_question, or 'allow'/'deny' as aliases for the " +
+                     "matching harness kind.")]
+        string option,
+        [Description("What the worker is told. Required on a reject-kind option — a refusal it cannot " +
+                     "read is one it will retry, so say why and what to do instead. Optional on an allow. " +
+                     "Capped at 16 KB.")]
         string? message = null,
         CancellationToken ct = default)
     {
         var id = ParseSessionId(sessionId);
-        if (!Enum.TryParse<PermissionVerdict>(verdict, ignoreCase: true, out var parsed))
+        if (string.IsNullOrWhiteSpace(option))
             throw new McpException(
-                $"unknown verdict '{verdict}'; expected 'allow' or 'deny'.");
+                "option is required: pick an optionId from get_session_question, or 'allow'/'deny'.");
 
         // No park record and no lease machine: this path resumes the worker that is still
         // holding its own tool call open, so there is nothing to redispatch and no transcript
         // to resume (§11). Escalation is enforced on the row inside the store, so a Lead
         // answering one it already handed over is refused there rather than here.
-        return Describe(await store.AnswerPermissionAsync(Lead, id, parsed, message, ct));
+        return Describe(await store.AnswerPermissionAsync(Lead, id, option.Trim(), message, ct));
     }
 
     [McpServerTool(Name = "escalate_permission_request"),
@@ -375,22 +378,26 @@ public sealed class LeadTools(
                  "saturated or not yet ready — that session will queue and then run, so wait rather than " +
                  "re-route. Profile is required on create_session. Read-only, and NOT the machine " +
                  "group: it carries no sessions, Teams, services or processes — that view is human-only " +
-                 "(§12), and your operator reads it on /dashboard/machines.")]
-    public ProfileRoutingView ListProfiles()
+                 "(§12), and your operator reads it on /dashboard/machines. Each machine lists its " +
+                 "enrolled name and OS: the same machineId on two profiles is one box.")]
+    public async Task<ProfileRoutingView> ListProfiles(CancellationToken ct)
     {
-        // Lead-only, checked the way every tool in this class checks: the principal is
-        // re-derived from the authenticated token, so a worker credential — or an evicted
-        // claim — is refused at the door with the same reason it gets everywhere else. There
-        // is no caller parameter to disagree with, and nothing downstream to re-check it:
-        // unlike the store transitions below, this read never reaches the engine, so this IS
-        // the enforcement point.
         _ = LeadPrincipal;
 
-        // §7/§10: the routing projection over the live connection registry — the same
-        // MachineSnapshot dispatch matches on, so the Lead is told what routing would
-        // actually do. Deliberately unscoped by Team: a declared profile belongs to a
-        // machine's operator config, not to any Team (see ProfileRoutingView).
-        return registry.ProfileRouting();
+        var view = registry.ProfileRouting();
+        var ids = view.Profiles.SelectMany(p => p.Machines).Select(m => m.MachineId).Distinct();
+        var labels = await store.GetMachineLabelsAsync(ids, ct);
+        if (labels.Count == 0)
+            return view;
+
+        var profiles = view.Profiles.Select(p => p with
+        {
+            Machines = p.Machines.Select(m =>
+                labels.TryGetValue(m.MachineId, out var label)
+                    ? m with { Name = label.Name, Os = label.Os }
+                    : m).ToList(),
+        }).ToList();
+        return view with { Profiles = profiles };
     }
 
     [McpServerTool(Name = "get_session_report"),
@@ -536,7 +543,10 @@ public sealed class LeadTools(
             return $"Session {view.Namespace} already had its permission request for "
                 + $"'{view.PermissionTool ?? "an unnamed tool"}' decided: {settled.ToString().ToLowerInvariant()}"
                 + (view.Answer is { Length: > 0 } said ? $" — \"{said}\"" : ".")
-                + $" State {view.State}; nothing is waiting on you.";
+                + $" State {view.State}. Nothing is waiting on a verdict"
+                + (view.State is SessionState.Working or SessionState.Verifying
+                    ? "; to talk to the worker, use answer_input_request."
+                    : ".");
 
         if (view.State != SessionState.BlockedOnInput)
             return $"Session {view.Namespace} is not waiting on a permission request (state {view.State}).";
@@ -547,9 +557,31 @@ public sealed class LeadTools(
           .Append($"<<<TOOL\n{view.PermissionTool}\nTOOL>>>\n")
           .Append($"<<<PROPOSED_INPUT\n{view.Question}\nPROPOSED_INPUT>>>");
 
+        if (view.Options.Count > 0)
+        {
+            sb.Append("\n<<<OPTIONS\n");
+            foreach (var o in view.Options)
+            {
+                sb.Append($"- optionId={o.OptionId}");
+                if (o.Kind is { Length: > 0 } kind)
+                    sb.Append($" kind={kind}");
+                if (o.Name is { Length: > 0 } name)
+                    sb.Append($" — {name}");
+                sb.Append('\n');
+            }
+            sb.Append("OPTIONS>>>");
+        }
+
         if (view.EscalationReason is { Length: > 0 } reason)
             sb.Append("\nEscalated to a human, so you can no longer decide it. Reason recorded:\n")
               .Append($"<<<ESCALATION\n{reason}\nESCALATION>>>");
+        else if (view.Options.Count > 0)
+            sb.Append("\nDecide it with answer_permission_request(session, option, message) using one of ")
+              .Append("those optionIds. 'allow'/'deny' still pick the matching kind. A reject-kind option ")
+              .Append("MUST carry a message. If you cannot justify it from this session's own description — ")
+              .Append("credentials, network egress beyond the hosts this session needs, destructive writes ")
+              .Append("outside the workspace, sudo — hand it to a person with escalate_permission_request")
+              .Append("(session, reason) instead of guessing.");
         else
             sb.Append("\nDecide it with answer_permission_request(session, 'allow'|'deny', message). If you ")
               .Append("cannot justify it from this session's own description — credentials, network egress ")

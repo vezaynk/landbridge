@@ -14,31 +14,15 @@
 
   <ItemGroup>
     <!-- Marked as Aspire project resources so the SDK generates the
-         Projects.Landbridge_Mcp / Projects.Landbridge_Runner metadata the app host
-         references. Landbridge.Runner is landbridged, brought into the dev loop here. -->
+         Projects.Landbridge_Mcp metadata the app host references. landbridged
+         is a Linux container (docker/Landbridge.Landbridged.Dockerfile), not
+         an Aspire project resource. -->
     <ProjectReference Include="..\Landbridge.Mcp\Landbridge.Mcp.csproj" IsAspireProjectResource="true" />
-    <ProjectReference Include="..\Landbridge.Runner\Landbridge.Runner.csproj" IsAspireProjectResource="true" />
     <!-- landbridge-relay, brought into the dev loop as its own host (§8.3). -->
     <ProjectReference Include="..\Landbridge.Relay\Landbridge.Relay.csproj" IsAspireProjectResource="true" />
     <ProjectReference Include="..\Landbridge.Preview\Landbridge.Preview.csproj" IsAspireProjectResource="true" />
-
-    <!-- Build-only edge to the no-LLM worker harness: the app host resolves the
-         built harness's path at startup (for landbridged's spawn), but never links
-         its assembly. ReferenceOutputAssembly=false keeps it off our closure;
-         PrivateAssets=all keeps it from flowing to anything referencing us. It
-         only guarantees the harness is compiled before us so its bin exists.
-         This is a deliberate src->tests build dependency for the dev loop;
-         promoting the harness to a shipped sample project is a possible
-         follow-up if we want to drop the tests-directory reference. -->
-    <ProjectReference Include="..\..\tests\Landbridge.WorkerHarness\Landbridge.WorkerHarness.csproj"
-                      ReferenceOutputAssembly="false" PrivateAssets="all" />
-  </ItemGroup>
-
-  <ItemGroup>
-    <!-- landbridged's config template, read at app-host startup (placeholders
-         resolved into a temp file). Copied beside the assembly so it is found
-         via AppContext.BaseDirectory. -->
-    <Content Include="landbridged.dev.json" CopyToOutputDirectory="PreserveNewest" />
+    <ProjectReference Include="..\Landbridge.Classifier\Landbridge.Classifier.csproj" IsAspireProjectResource="true" />
+    <ProjectReference Include="..\Landbridge.ControlPlane\Landbridge.ControlPlane.csproj" IsAspireProjectResource="false" />
   </ItemGroup>
 
 </Project>

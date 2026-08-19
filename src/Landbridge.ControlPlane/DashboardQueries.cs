@@ -441,7 +441,8 @@ public sealed class DashboardQueries(LandbridgeDbContext db, RunnerConnectionReg
             .Select(t => new PermissionRequestView(
                 t.Id, t.Namespace, t.TeamId, t.State, t.BlockedAt, t.PermissionTool,
                 t.InputQuestion, t.PermissionVerdict, t.InputAnswer,
-                t.PermissionEscalatedAt, t.PermissionEscalationReason))
+                t.PermissionEscalatedAt, t.PermissionEscalationReason,
+                t.PermissionOptions, t.PermissionOptionId))
             .ToListAsync(ct);
 
         var parked = await scopedTasks

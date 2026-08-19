@@ -76,8 +76,10 @@ else if (Ready && View is { } inbox)
         }
         else
         {
-            <p class="nt">The plane parked these. They do not requeue. Resume is a Lead note
-                (<code>answer_input_request</code>) if the reason looks flaky.</p>
+            <p class="nt">The plane parked these. They do not requeue.
+                <code>TurnEndedWithoutResult</code> means the harness ended a turn without
+                <code>report_result</code> — resume will not invent a worker. Read the
+                machine transcript, then resume with a note or cancel.</p>
             <table>
                 <thead>
                     <tr><th>Namespace</th><th>Team</th><th>Reason</th><th class="num">Losses</th></tr>
@@ -176,10 +178,24 @@ else if (Ready && View is { } inbox)
                                     <input type="hidden" name="sessionId" value="@p.SessionId" />
                                     <input type="text" name="message" placeholder="message to the worker"
                                            aria-label="message to the worker" />
-                                    <button type="submit" name="verdict" value="allow">Allow</button>
-                                    <button type="submit" name="verdict" value="deny">Deny</button>
-                                    <div class="nt">A denial needs a message — the worker reads it and adapts,
-                                        so say what to do instead.</div>
+                                    @if (p.Options.Count > 0)
+                                    {
+                                        @foreach (var o in p.Options)
+                                        {
+                                            <button type="submit" name="option" value="@o.OptionId">
+                                                @(string.IsNullOrWhiteSpace(o.Name) ? o.OptionId : o.Name)
+                                            </button>
+                                        }
+                                        <div class="nt">Pick one of the harness options. A reject needs a
+                                            message — the worker reads it and adapts, so say what to do instead.</div>
+                                    }
+                                    else
+                                    {
+                                        <button type="submit" name="verdict" value="allow">Allow</button>
+                                        <button type="submit" name="verdict" value="deny">Deny</button>
+                                        <div class="nt">A denial needs a message — the worker reads it and adapts,
+                                            so say what to do instead.</div>
+                                    }
                                 </form>
                             </td>
                         </tr>

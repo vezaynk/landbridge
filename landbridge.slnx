@@ -4,6 +4,7 @@
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/Landbridge.AppHost/Landbridge.AppHost.csproj" />
+    <Project Path="src/Landbridge.Classifier/Landbridge.Classifier.csproj" />
     <Project Path="src/Landbridge.Contracts/Landbridge.Contracts.csproj" />
     <Project Path="src/Landbridge.ControlPlane/Landbridge.ControlPlane.csproj" />
     <Project Path="src/Landbridge.Core/Landbridge.Core.csproj" />
@@ -19,6 +20,7 @@
     <Project Path="tools/Landbridge.HarnessBump/Landbridge.HarnessBump.csproj" />
   </Folder>
   <Folder Name="/tests/">
+    <Project Path="tests/Landbridge.Classifier.Tests/Landbridge.Classifier.Tests.csproj" />
     <Project Path="tests/Landbridge.ControlPlane.Tests/Landbridge.ControlPlane.Tests.csproj" />
     <Project Path="tests/Landbridge.HarnessBump.Tests/Landbridge.HarnessBump.Tests.csproj" />
     <Project Path="tests/Landbridge.Contracts.Tests/Landbridge.Contracts.Tests.csproj" />

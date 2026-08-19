@@ -19,11 +19,62 @@ public static class PermissionRelay
         string proposedInput,
         TimeSpan pollInterval,
         TimeProvider clock,
-        CancellationToken ct)
+        CancellationToken ct,
+        IPermissionClassifier? classifier = null,
+        string? optionsJson = null)
     {
+        if (PermissionPolicy.Classify(tool, proposedInput, caller.Session) == PermissionDisposition.AutoAllow)
+            return PermissionRelayResult.Allowed();
+
+        if (classifier is not null)
+        {
+            IReadOnlyList<string> leadMessages = [];
+            try
+            {
+                leadMessages = await store
+                    .GetLeadWorkerMessagesAsync(caller.Session, ct)
+                    .ConfigureAwait(false);
+            }
+            catch
+            {
+                // Context is best-effort: a read miss still classifies, just
+                // without the brief. Fail-closed on the classify call itself.
+            }
+
+            PermissionDisposition classified;
+            try
+            {
+                classified = await classifier
+                    .ClassifyAsync(caller.Session, tool, proposedInput, leadMessages, ct)
+                    .ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch
+            {
+                classified = PermissionDisposition.Ask;
+            }
+
+            if (classified == PermissionDisposition.AutoAllow)
+            {
+                try
+                {
+                    await store.RecordClassifierAllowAsync(caller.Session, tool, proposedInput, ct)
+                        .ConfigureAwait(false);
+                }
+                catch
+                {
+                    // Audit is best-effort: the call is still allowed.
+                }
+                return PermissionRelayResult.Allowed();
+            }
+        }
+
         var opened = await store.ApplyAsync(
             caller.Session,
-            new RequestInput(caller, InputRequestKind.Permission, proposedInput, tool),
+            new RequestInput(caller, InputRequestKind.Permission, proposedInput, tool, optionsJson),
             ct);
 
         if (opened is not StoreResult.Applied)
@@ -41,8 +92,9 @@ public static class PermissionRelay
                 + "and do not work around it.");
 
         return outcome.Verdict == PermissionVerdict.Allow
-            ? PermissionRelayResult.Allowed()
-            : PermissionRelayResult.Denied(outcome.Message ?? "Denied, with no reason recorded.");
+            ? PermissionRelayResult.Allowed(outcome.OptionId)
+            : PermissionRelayResult.Denied(
+                outcome.Message ?? "Denied, with no reason recorded.", outcome.OptionId);
     }
 
     public static string Reason(StoreResult result) => result switch
@@ -55,8 +107,9 @@ public static class PermissionRelay
 }
 
 /// <summary>A plane permission verdict, transport-neutral.</summary>
-public sealed record PermissionRelayResult(bool Allow, string Message)
+public sealed record PermissionRelayResult(bool Allow, string Message, string? OptionId = null)
 {
-    public static PermissionRelayResult Allowed() => new(true, "");
-    public static PermissionRelayResult Denied(string message) => new(false, message);
+    public static PermissionRelayResult Allowed(string? optionId = null) => new(true, "", optionId);
+    public static PermissionRelayResult Denied(string message, string? optionId = null) =>
+        new(false, message, optionId);
 }

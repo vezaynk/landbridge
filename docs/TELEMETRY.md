@@ -122,8 +122,9 @@ and a worker that finishes a small task in 20s may exit before its first export
 window. If a dashboard shows a worker's spans but no `claude_code.*` metrics,
 suspect the interval and the API-key header, in that order.
 
-Swap the dev profile's `spawn` for a real `claude -p` (see the comments in
-`src/Landbridge.AppHost/landbridged.dev.json`) and the metrics are real too.
+The Aspire Claude box already opts into this (`telemetry.otel` plus
+`CLAUDE_CODE_ENABLE_TELEMETRY`); its `claude_code.*` metrics land in the Aspire
+dashboard when a task spends.
 
 ## Production: point it at your own collector
 

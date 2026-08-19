@@ -61,6 +61,7 @@ internal static class MultiMachineKit
         builder.Services.AddSingleton<RunnerEventSink>();
         builder.Services.AddLandbridgeForwarding();
         builder.Services.AddHttpContextAccessor();
+        builder.Services.AddSingleton<IPermissionClassifier>(NullPermissionClassifier.Instance);
 
         builder.Services.AddAuthentication(LandbridgeAuthenticationHandler.SchemeName)
             .AddScheme<AuthenticationSchemeOptions, LandbridgeAuthenticationHandler>(

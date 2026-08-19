@@ -141,5 +141,33 @@ internal static class DashboardCss
     .login-wrap .or { display: block; color: var(--muted); font-size: 12px; margin: 12px 0 4px; }
     .login-wrap .err { color: var(--bad); margin: 8px 0; }
     .login-wrap .seam { color: var(--muted); font-size: 12px; margin-top: 14px; }
+    /* Connect / how-to */
+    .howto ol { padding-left: 1.3em; margin: 8px 0; }
+    .howto li { margin: 8px 0; }
+    .howto pre, pre.howto, pre.report {
+      background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+      padding: 10px 12px; overflow-x: auto; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+      white-space: pre-wrap;
+    }
+    .secret {
+      background: var(--warn-bg); border: 1px solid var(--warn);
+      border-radius: 8px; padding: 12px; margin: 10px 0;
+    }
+    .secret label { display: block; font-weight: 600; margin-bottom: 6px; }
+    .secret input[type=text] {
+      width: 100%; padding: 8px 10px; border: 1px solid var(--line);
+      border-radius: 6px; background: var(--bg); color: var(--ink);
+      font: 12px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .connect-claim label, .connect-enroll label { display: block; font-weight: 600; margin: 10px 0 6px; }
+    .connect-claim input[type=text] {
+      width: 100%; max-width: 360px; padding: 8px 10px; border: 1px solid var(--line);
+      border-radius: 6px; background: var(--bg); color: var(--ink); font: inherit;
+    }
+    .connect-claim button, .connect-enroll button {
+      margin-top: 12px; padding: 6px 12px; border: none; border-radius: 6px;
+      background: var(--accent); color: var(--accent-ink); font: inherit; font-weight: 600; cursor: pointer;
+    }
+    .connect-claim .check { font-weight: 400; display: flex; align-items: center; gap: 8px; }
     """;
 }

@@ -66,8 +66,8 @@ public enum InputRequestKind
 
 /// <summary>
 /// The answer to an <see cref="InputRequestKind.Permission"/> request (§11): whether the
-/// harness may make the tool call it asked about. Maps 1:1 onto the two arms of the
-/// harness's own permission result, so the bridge translates rather than interprets.
+/// chosen ACP option is an allow-kind or a reject-kind. Derived from the option the
+/// Lead or human picked; a classifier or legacy allow still maps to this binary.
 /// </summary>
 public enum PermissionVerdict
 {
@@ -96,6 +96,12 @@ public enum PermissionAnswerer
 
     /// <summary>A human answered from the §12 dashboard.</summary>
     Human,
+
+    /// <summary>
+    /// The plane's classifier allowed it before a wait opened. Not a Lead or a
+    /// human — recorded so "who approved this" stays answerable.
+    /// </summary>
+    Plane,
 }
 
 /// <summary>

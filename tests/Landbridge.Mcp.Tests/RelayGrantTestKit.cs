@@ -6,6 +6,7 @@ using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
 using Landbridge.ControlPlane.Tests;
 using Landbridge.Core;
+using Landbridge.Mcp;
 using Landbridge.Mcp.Auth;
 using Landbridge.Mcp.Dashboard;
 using Landbridge.Mcp.Tools;
@@ -76,6 +77,7 @@ internal static class RelayGrantTestKit
         builder.Services.AddDashboard();
         builder.Services.AddSingleton<IOperatorVerifier, ConfiguredOperatorVerifier>();
         builder.Services.AddSingleton(TimeProvider.System);
+        builder.Services.AddSingleton<IPermissionClassifier>(NullPermissionClassifier.Instance);
         builder.Services.AddSingleton<RunnerConnectionRegistry>();
         // §8.3: the forward orchestrator + waiter, and the event sink that completes
         // the waiter when the consumer end reports its bound port.

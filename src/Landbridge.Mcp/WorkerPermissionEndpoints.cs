@@ -1,6 +1,7 @@
 using Landbridge.ControlPlane;
 using Landbridge.Mcp.Auth;
 using Landbridge.Mcp.Tools;
+using Microsoft.Extensions.DependencyInjection;
 
 namespace Landbridge.Mcp;
 
@@ -19,7 +20,7 @@ public static class WorkerPermissionEndpoints
         return app;
     }
 
-    public sealed record Ask(string? Tool, string? Input);
+    public sealed record Ask(string? Tool, string? Input, System.Text.Json.Nodes.JsonNode? Options = null);
 
     private static async Task<IResult> HandleAsync(
         HttpContext http,
@@ -37,17 +38,26 @@ public static class WorkerPermissionEndpoints
             return Results.BadRequest(new { error = "tool is required" });
 
         var proposed = string.IsNullOrWhiteSpace(body.Input) ? "{}" : body.Input;
+        var optionsJson = body.Options is System.Text.Json.Nodes.JsonArray
+            ? body.Options.ToJsonString()
+            : null;
         var poll = WorkerTools.DefaultPermissionPollInterval;
         if (int.TryParse(config["Landbridge:PermissionPollIntervalMs"], out var ms) && ms > 0)
             poll = TimeSpan.FromMilliseconds(ms);
 
+        // Isolated test hosts map this endpoint without the full Program.cs
+        // container. Missing classifier is Ask, same as an unset URL.
+        var classifier = http.RequestServices.GetService<IPermissionClassifier>()
+            ?? NullPermissionClassifier.Instance;
+
         var result = await PermissionRelay.OpenAndAwaitAsync(
-            store, caller, body.Tool, proposed, poll, clock, ct);
+            store, caller, body.Tool, proposed, poll, clock, ct, classifier, optionsJson);
 
         return Results.Json(new
         {
             verdict = result.Allow ? "allow" : "deny",
             message = result.Message,
+            optionId = result.OptionId,
         });
     }
 }
