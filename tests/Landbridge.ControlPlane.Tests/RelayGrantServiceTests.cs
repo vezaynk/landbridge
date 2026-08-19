@@ -115,6 +115,28 @@ public sealed class RelayGrantServiceTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task Issue_mints_while_the_producer_is_blocked_on_a_permission()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var clock = new FakeTimeProvider();
+        var store = new SessionStore(db, clock);
+        var created = (StoreResult.Applied)await store.CreateAsync(
+            new CreateSession(LeadFor(Team), Team, "criteria", "default"));
+        var instance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), instance);
+        var producer = new WorkerCaller(Team, created.Session.Id, instance);
+        Assert.IsType<StoreResult.Applied>(await store.RegisterServiceAsync(producer, "db", 5432));
+        Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(
+            created.Session.Id,
+            new RequestInput(producer, InputRequestKind.Permission, "{}", "Bash")));
+
+        var consumer = new WorkerCaller(Team, SessionId.New(), WorkerInstanceId.New());
+        Assert.IsType<RelayGrantResult.Issued>(
+            await new RelayGrantService(db, clock).IssueAsync(consumer, "db"));
+    }
+
+    [SkippableFact]
     public async Task Issue_from_another_team_reads_as_not_registered_and_leaks_no_name()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);

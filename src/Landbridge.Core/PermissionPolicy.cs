@@ -147,16 +147,22 @@ public static class PermissionPolicy
     private static string LastSegment(string tool)
     {
         var s = tool.Trim();
+        // Goose ACP titles the MCP tools "landbridge: get session". Strip that
+        // server prefix before the usual __ / / / landbridge_ cuts, so the
+        // remaining words still match the protocol list.
+        if (s.StartsWith("landbridge:", StringComparison.OrdinalIgnoreCase))
+            s = s["landbridge:".Length..].Trim();
+
         var dunder = s.LastIndexOf("__", StringComparison.Ordinal);
         if (dunder >= 0)
-            s = s[(dunder + 2)..];
+            s = s[(dunder + 2)..].Trim();
         else
         {
             var slash = s.LastIndexOf('/');
             if (slash >= 0)
-                s = s[(slash + 1)..];
+                s = s[(slash + 1)..].Trim();
             else if (s.StartsWith("landbridge_", StringComparison.OrdinalIgnoreCase))
-                s = s["landbridge_".Length..];
+                s = s["landbridge_".Length..].Trim();
         }
         return s.Replace('-', '_').Replace(' ', '_').ToLowerInvariant();
     }

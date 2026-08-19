@@ -424,16 +424,18 @@ internal sealed class FleetRig(
     /// it in place.
     /// </summary>
     public async Task AnswerPermissionAsync(
-        SessionId task, string verdict, string? message, CancellationToken ct)
+        SessionId task, string option, string? message, CancellationToken ct)
     {
         await using var lead = await PlaneProbe.ConnectMcpAsync(new Uri(_baseUrl + "/"), _leadToken, ct);
         var answered = await lead.CallToolAsync("answer_permission_request", new Dictionary<string, object?>
         {
             ["sessionId"] = task.Value.ToString(),
-            ["verdict"] = verdict,
+            ["option"] = option,
             ["message"] = message,
         }, cancellationToken: ct);
-        Assert.NotEqual(true, answered.IsError);
+        Assert.False(answered.IsError,
+            "answer_permission_request failed: "
+            + string.Concat(answered.Content.OfType<TextContentBlock>().Select(b => b.Text)));
     }
 
     /// <summary>The opaque harness session ref stamped from the worker's own

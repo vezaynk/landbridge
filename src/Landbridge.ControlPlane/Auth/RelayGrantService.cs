@@ -168,9 +168,12 @@ public sealed class RelayGrantService(
             return new RelayGrantResult.Refused(Rule.ForwardsRequireRegistration,
                 $"no service '{serviceName}' is registered in your Team");
 
-        // Owned by a task that is still working? (§9 check 11.) A registered row
-        // normally implies a working owner — ClearServicesAndForwards deletes them
-        // on the way out — but check explicitly rather than trust the invariant.
+        // Owned by a live producer? (§9 check 11.) Working, or blocked on a
+        // permission request: that worker is still inside its tool call, still
+        // the incumbent, and ClearServicesAndForwards does not fire (§11). A
+        // registered row for a submitted/parked/failed task is the defensive
+        // case this check exists for — the store refuses to register there, so
+        // we only see one if a test (or a future bug) wrote it directly.
         // Grab the producer task id AND the service's loopback port in one read:
         // both ride the Issued result so the plane can send the producer end its
         // dial target without re-querying (§8.3).
@@ -187,7 +190,8 @@ public sealed class RelayGrantService(
                 where s.TeamId == team.Value
                       && s.Name == serviceName
                       && (producer == null || s.SessionId == producer)
-                      && t.State == SessionState.Working
+                      && (t.State == SessionState.Working
+                          || t.State == SessionState.BlockedOnInput)
                 orderby s.Seq
                 select new { t.Id, s.Port })
             .FirstOrDefaultAsync(ct);
