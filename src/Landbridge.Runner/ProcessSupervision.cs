@@ -571,7 +571,10 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             supervised.Acp = client;
             supervised.EventReaderTask = Task
                 .Run(
-                    () => client.RunAsync(process.StandardOutput, process.StandardInput, cts.Token),
+                    () => client.RunAsync(
+                        process.StandardOutput.BaseStream,
+                        process.StandardInput.BaseStream,
+                        cts.Token),
                     CancellationToken.None)
                 .ContinueWith(
                     static (_, state) => ((CancellationTokenSource)state!).Dispose(),

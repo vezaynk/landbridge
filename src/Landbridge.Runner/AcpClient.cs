@@ -1,9 +1,14 @@
 using System.Buffers;
-using System.Collections.Concurrent;
+using System.Text;
 using System.Text.Json;
 using System.Threading.Channels;
+using AcpKit;
+using AcpKit.Protocol.V1;
 using Landbridge.Contracts;
 using Landbridge.Core;
+using SessionId = Landbridge.Core.SessionId;
+using AgentSessionId = AcpKit.Protocol.V1.SessionId;
+using AcpPermissionOption = AcpKit.Protocol.V1.PermissionOption;
 
 namespace Landbridge.Runner;
 
@@ -11,6 +16,10 @@ namespace Landbridge.Runner;
 /// §10: the Agent Client Protocol client that <b>drives</b> a worker. JSON-RPC 2.0,
 /// newline-delimited, over the worker's stdin/stdout — landbridged sends <c>initialize</c>,
 /// opens or loads a session, and sends the profile's <c>prompt</c> as the opening turn.
+///
+/// <para>Framing and the typed v1 surface come from AcpKit. This type is the Landbridge
+/// session policy on top: lazy authenticate, advertised config/mode pins, the permission
+/// bridge, usage accumulation, follow-up turns, and the event ring.</para>
 ///
 /// <para><b>The only way landbridged talks to a worker.</b> It previously also read whatever
 /// NDJSON a harness happened to print, with an <c>events.mapping</c> per vendor describing
@@ -37,7 +46,8 @@ namespace Landbridge.Runner;
 /// and nothing lost by that, since <c>session/cancel</c> is a notification the agent is
 /// specified to honour, ending its turn with a <c>cancelled</c> stop reason.
 /// <see cref="ProcessSupervisor.StopAsync"/> sends it before the deadline kill backstops
-/// it.</para>
+/// it. The prompt call's token is deliberately not cancelled: that would send
+/// <c>$/cancel_request</c>, which is not the ACP stop.</para>
 ///
 /// <para><b>Resume without a respawn (§11).</b> A dispatch carrying a resume ref takes
 /// <c>session/load</c> instead of <c>session/new</c> — same process, same handshake, no
@@ -50,9 +60,9 @@ namespace Landbridge.Runner;
 /// this client stays, taking follow-up turns on the same session, so a worker that asks a
 /// question can be answered without a redispatch.</para>
 ///
-/// <para><b>AOT (§10).</b> Reads go through <see cref="JsonDocument"/> and writes through
-/// <see cref="Utf8JsonWriter"/> — both reflection-free — so no <c>JsonSerializerContext</c>
-/// entry is needed and the runner stays clean under <c>IsAotCompatible</c>.</para>
+/// <para><b>AOT (§10).</b> AcpKit's converters are generated for concrete types. There is
+/// no <c>JsonSerializer</c> call that resolves a contract by <c>Type</c> at runtime, so
+/// the runner stays clean under <c>IsAotCompatible</c>.</para>
 /// </summary>
 public sealed class AcpClient
 {
@@ -80,7 +90,7 @@ public sealed class AcpClient
     /// message, which is the agent's own prose (<c>codex-acp</c> says "Authentication
     /// required").
     /// </summary>
-    public const int AuthRequiredCode = -32000;
+    public const int AuthRequiredCode = AcpErrorCode.AuthRequired;
 
     /// <summary>
     /// What landbridged calls itself in <c>clientInfo</c>. Read from the assembly rather than
@@ -98,17 +108,14 @@ public sealed class AcpClient
     private readonly Action<string>? _rawLineSink;
     private readonly Action<string> _warn;
     private readonly Func<AcpPermissionAsk, CancellationToken, Task<AcpPermissionDecision>>? _requestPermission;
-    private AcpResult? _lastSessionResult;
-
-    private readonly ConcurrentDictionary<long, TaskCompletionSource<AcpResult>> _pending = new();
-    private readonly SemaphoreSlim _writeLock = new(1, 1);
+    private readonly InboundHandler _inbound;
 
     /// <summary>
     /// Tool calls already reported, keyed by <c>toolCallId</c>. ACP sends one
     /// <c>tool_call</c> and then any number of <c>tool_call_update</c>s as the call moves
     /// through its status values, so without this one call would move the progress clock
     /// several times — the same mistake as mapping Codex's <c>item.updated</c> alongside
-    /// <c>item.started</c>. Touched only by the single-threaded read loop.
+    /// <c>item.started</c>.
     /// </summary>
     private readonly HashSet<string> _reported = new(StringComparer.Ordinal);
 
@@ -123,23 +130,22 @@ public sealed class AcpClient
         = new(StringComparer.Ordinal);
 
     /// <summary>
-    /// <c>session/request_permission</c> that arrived with no argv. The read loop
-    /// must keep going so a later <c>tool_call_update</c> can fill
-    /// <see cref="_toolInputs"/>; the JSON-RPC response is sent then, or
-    /// cancelled on timeout / stdout EOF.
+    /// Permission handlers waiting for a later <c>tool_call_update</c> to fill
+    /// <see cref="_toolInputs"/>. AcpKit holds the JSON-RPC response until the
+    /// handler returns, so the waiter is a completion source rather than a
+    /// deferred write.
     /// </summary>
-    private readonly Dictionary<string, PendingRawInputPermission> _awaitingRawInput
+    private readonly Dictionary<string, TaskCompletionSource> _rawInputWaiters
         = new(StringComparer.Ordinal);
 
-    private readonly object _awaitingRawInputGate = new();
+    private readonly object _stateGate = new();
 
     /// <summary>How long an empty permission waits for a later <c>rawInput</c>.</summary>
     internal static readonly TimeSpan RawInputGrace = TimeSpan.FromSeconds(2);
 
     /// <summary>
     /// Agent-request methods already refused and reported, so the operator-facing line is
-    /// once per method per task rather than once per call. Touched only by the
-    /// single-threaded read loop.
+    /// once per method per task rather than once per call.
     /// </summary>
     private readonly HashSet<string> _declined = new(StringComparer.Ordinal);
 
@@ -158,7 +164,7 @@ public sealed class AcpClient
     /// high-water mark per bucket, so a client that reported each turn separately would
     /// leave the row holding the <em>largest</em> turn instead of the session's spend.
     /// Feeding it a monotonically rising total makes the max a no-op and the last report the
-    /// truth. Touched only by the single-threaded read loop and the turn it drives.
+    /// truth.
     /// </summary>
     private long _inputTokens, _outputTokens, _cacheReadTokens, _cacheWriteTokens;
 
@@ -172,8 +178,9 @@ public sealed class AcpClient
     /// <summary>Method ids the agent declared at <c>initialize</c>, in its own order.</summary>
     private readonly List<string> _authMethods = [];
 
-    private TextWriter? _stdin;
-    private long _nextId;
+    private AgentConnection? _connection;
+    private SessionConfigOption[]? _configOptions;
+    private SessionModeState? _modes;
     private string? _sessionId;
     private bool _cancelSent;
 
@@ -198,6 +205,7 @@ public sealed class AcpClient
         _rawLineSink = rawLineSink;
         _warn = warn ?? Console.Error.WriteLine;
         _requestPermission = requestPermission;
+        _inbound = new InboundHandler(this);
     }
 
     /// <summary>The protocol version the agent agreed to, or null before the handshake.</summary>
@@ -219,45 +227,27 @@ public sealed class AcpClient
     /// Runs one worker's whole ACP conversation: starts the read loop, drives the
     /// handshake and the prompt turn, and returns when the turn ends or the stream does.
     ///
-    /// <para>The read loop is also the drain that keeps the worker's stdout pipe from
+    /// <para>The pump is also the drain that keeps the worker's stdout pipe from
     /// filling, so it must run for the process's whole lifetime and must never throw into
     /// its host — a torn-down pipe or a cancelled token ends it quietly.</para>
     /// </summary>
-    public async Task RunAsync(TextReader stdout, TextWriter stdin, CancellationToken ct)
+    public async Task RunAsync(Stream stdout, Stream stdin, CancellationToken ct)
     {
-        _stdin = stdin;
+        await using var connection = AgentConnection.Create(
+            stdout,
+            stdin,
+            _inbound,
+            onUnknownNotification: OnUnknownNotificationAsync,
+            onFrame: OnFrame);
+        _connection = connection;
 
-        // The pending-request failure belongs to the read loop's own completion, NOT to the
-        // sequence below it: a worker that dies mid-handshake closes its stdout while
-        // `DriveAsync` is still awaiting a response, and nothing else will ever arrive to
-        // complete it. Failing the pending requests anywhere downstream of the await would
-        // deadlock — the drain would be finished, the driver would wait forever, and the
-        // task would hang with no event and no diagnosis.
-        var reading = Task.Run(
-            async () =>
-            {
-                try
-                {
-                    await ReadLoopAsync(stdout, ct).ConfigureAwait(false);
-                }
-                finally
-                {
-                    FailPending(new AcpProtocolException(
-                        "the agent's stdout ended before this request was answered"));
-                    await CancelDeferredPermissionsAsync().ConfigureAwait(false);
-
-                    // The session dies with the stream. Both unblocks below are load-bearing
-                    // and for the same reason: when the worker's process ends, DriveAsync is
-                    // waiting on something that will never arrive — either a response to a
-                    // turn in flight, or the next follow-up on an idle session. Neither wait
-                    // can be broken from anywhere downstream of DriveAsync, because RunAsync
-                    // awaits DriveAsync first, so it has to happen here, on the read loop's
-                    // own completion. Getting this wrong hangs the drive loop for the life of
-                    // the daemon, with no event and no diagnosis.
-                    _followUps.Writer.TryComplete();
-                }
-            },
-            CancellationToken.None);
+        var pump = connection.RunAsync(ct);
+        _ = pump.ContinueWith(
+            static (_, state) => ((AcpClient)state!).OnPumpEnded(),
+            this,
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
 
         try
         {
@@ -268,7 +258,7 @@ public sealed class AcpClient
             // Teardown, or the worker died mid-conversation. Its exit code is the louder
             // signal and the supervisor already reports it; nothing to add here.
         }
-        catch (AcpProtocolException e)
+        catch (Exception e) when (e is AcpException or AcpProtocolException)
         {
             // Only a failed initialize / session/new is a handshake. A later
             // stdout-end (dispose killing connect while session/prompt is still
@@ -285,7 +275,15 @@ public sealed class AcpClient
 
         // Whatever happened above, the stream still has to be drained to EOF: the worker
         // may keep writing, and an undrained pipe wedges it.
-        await reading.ConfigureAwait(false);
+        try
+        {
+            await pump.ConfigureAwait(false);
+        }
+        catch (Exception e) when (e is OperationCanceledException or IOException or ObjectDisposedException or AcpException)
+        {
+            // The pump ending is how a dead worker is observed, not a failure of this method.
+        }
+
         ReportSilentStream();
     }
 
@@ -312,14 +310,14 @@ public sealed class AcpClient
 
         try
         {
-            await SendAsync(
-                id: null,
-                "session/cancel",
-                w => w.WriteString("sessionId", session),
+            if (_connection is not { } connection)
+                return false;
+            await connection.SessionCancelAsync(
+                new CancelNotification { SessionId = new AgentSessionId(session) },
                 ct).ConfigureAwait(false);
             return true;
         }
-        catch (Exception e) when (e is IOException or ObjectDisposedException or OperationCanceledException)
+        catch (Exception e) when (e is IOException or ObjectDisposedException or OperationCanceledException or AcpException)
         {
             // stdin is gone — the worker exited or is being torn down. The deadline kill
             // covers it, and reporting a failed cancel as a failed stop would be wrong.
@@ -334,18 +332,36 @@ public sealed class AcpClient
     /// </summary>
     private async Task DriveAsync(CancellationToken ct)
     {
-        var init = await RequestAsync("initialize", WriteInitializeParams, ct).ConfigureAwait(false);
+        var connection = _connection ?? throw new InvalidOperationException("the ACP client is not connected");
+
+        var init = await connection.InitializeAsync(
+            new InitializeRequest
+            {
+                ProtocolVersion = new ProtocolVersion((ushort)LatestProtocolVersion),
+                ClientCapabilities = new ClientCapabilities
+                {
+                    Fs = new FileSystemCapabilities { ReadTextFile = false, WriteTextFile = false },
+                    Terminal = false,
+                },
+                ClientInfo = new Implementation
+                {
+                    Name = "landbridged",
+                    Title = "Landbridge runner",
+                    Version = ClientVersion,
+                },
+            },
+            ct).ConfigureAwait(false);
         ReadAgentCapabilities(init);
 
-        var session = await OpenSessionAsync(ct).ConfigureAwait(false);
+        var session = await OpenSessionAsync(connection, ct).ConfigureAwait(false);
 
         if (session is not { Length: > 0 })
             throw new AcpProtocolException("the agent returned no sessionId");
 
         _sessionId = session;
         _onSessionId?.Invoke(session);
-        await MaybeApplyConfigOptionsAsync(session, ct).ConfigureAwait(false);
-        await MaybeSetSessionModeAsync(session, ct).ConfigureAwait(false);
+        await MaybeApplyConfigOptionsAsync(connection, session, ct).ConfigureAwait(false);
+        await MaybeSetSessionModeAsync(connection, session, ct).ConfigureAwait(false);
 
         // A cancel that arrived between the spawn and here has nothing to cancel yet; now
         // that a session exists, honour it instead of prompting into a stop already asked for.
@@ -357,23 +373,18 @@ public sealed class AcpClient
         // follow-up says "read your assignment" (and, on the park bar, "report the
         // remembered value"). Sending the opening prompt again after load told the
         // worker to re-ask the question it had already asked.
-        //
-        // This loop is the whole shape change. Under the task model there was nothing to
-        // loop over: a worker that finished a turn had also exited, so "the turn ended" and
-        // "the conversation ended" were one observation. Here they are two, and only the
-        // second ends this method.
         var resumed = _request.ResumeSessionRef is { Length: > 0 } && AgentSupportsLoadSession;
         var opening = resumed && _request.FollowUp is { Length: > 0 }
             ? _request.FollowUp
             : _request.Prompt;
-        await PromptAsync(opening, ct).ConfigureAwait(false);
+        await PromptAsync(connection, opening, ct).ConfigureAwait(false);
 
         try
         {
             while (!_cancelSent)
             {
                 var next = await _followUps.Reader.ReadAsync(ct).ConfigureAwait(false);
-                await PromptAsync(next, ct).ConfigureAwait(false);
+                await PromptAsync(connection, next, ct).ConfigureAwait(false);
             }
         }
         catch (ChannelClosedException)
@@ -392,27 +403,27 @@ public sealed class AcpClient
     /// queued prompts on agents that declare it, but a second concurrent
     /// <c>session/prompt</c> against an agent that does not is undefined, and the queue
     /// costs nothing.</para>
+    ///
+    /// <para>Sent raw on purpose: <c>PromptResponse.usage</c> is how claude-agent-acp and
+    /// opencode report token buckets, and the generated v1.20 model does not carry that
+    /// field. A typed deserialize would drop the spend.</para>
     /// </summary>
-    private async Task PromptAsync(string text, CancellationToken ct)
+    private async Task PromptAsync(AgentConnection connection, string text, CancellationToken ct)
     {
         var session = _sessionId!;
-        var result = await RequestAsync(
-            "session/prompt",
-            w =>
-            {
-                w.WriteString("sessionId", session);
-                w.WriteStartArray("prompt");
-                w.WriteStartObject();
-                w.WriteString("type", "text");
-                w.WriteString("text", text);
-                w.WriteEndObject();
-                w.WriteEndArray();
-            },
-            ct).ConfigureAwait(false);
+        var request = new PromptRequest
+        {
+            SessionId = new AgentSessionId(session),
+            Prompt = [new ContentBlockText { Value = new TextContent { Text = text } }],
+        };
+        var payload = AcpPayload.Serialize(request, AcpJsonContext.Default.PromptRequest);
+        using var result = await connection.Peer.SendRawRequestAsync(AcpMethods.SessionPrompt, payload, ct)
+            .ConfigureAwait(false);
 
-        StopReason = result.Value.TryGetProperty("stopReason", out var sr) && sr.ValueKind == JsonValueKind.String
-            ? sr.GetString()
-            : null;
+        StopReason = result.RootElement.TryGetProperty("stopReason", out var sr)
+            && sr.ValueKind == JsonValueKind.String
+                ? sr.GetString()
+                : null;
         Turns++;
 
         // §10 telemetry ingest, before the turn-ended event rather than after: turn-ended is
@@ -422,7 +433,7 @@ public sealed class AcpClient
         // No model name. Nothing in ACP attributes usage to a model — not the usage buckets,
         // not `usage_update` — so the report is deliberately unattributed rather than guessing
         // from the profile's argv, which names a CLI and not the model it happened to route to.
-        var reportedTokens = AddTurnUsage(result.Value);
+        var reportedTokens = AddTurnUsage(result.RootElement);
         if (reportedTokens || _costUsd is not null || HasAccumulatedUsage)
         {
             _ring.Enqueue(new UsageReportedEvent(
@@ -463,7 +474,7 @@ public sealed class AcpClient
         return _followUps.Writer.TryWrite(_request.FollowUp);
     }
 
-    private async Task<string?> NewSessionAsync(CancellationToken ct)
+    private async Task<string?> NewSessionAsync(AgentConnection connection, CancellationToken ct)
     {
         if (_request.ResumeSessionRef is { Length: > 0 } && !AgentSupportsLoadSession)
             _warn(
@@ -471,44 +482,39 @@ public sealed class AcpClient
                 "declare the ACP 'loadSession' capability, so the transcript cannot be reloaded and this " +
                 "dispatch is a COLD START. Every redispatch of this task will be one (§11).");
 
-        var result = await RequestAsync(
-            "session/new",
-            w =>
+        var result = await connection.SessionNewAsync(
+            new NewSessionRequest
             {
-                w.WriteString("cwd", _request.WorkDir);
-                WriteMcpServers(w);
+                Cwd = _request.WorkDir,
+                McpServers = McpServers(),
             },
             ct).ConfigureAwait(false);
-        _lastSessionResult = result;
-
-        return SessionIdOf(result);
+        _configOptions = result.ConfigOptions;
+        _modes = result.Modes;
+        return result.SessionId.Value;
     }
 
     /// <summary>
     /// §11 resume in-process. <c>session/load</c> takes the same <c>cwd</c> and
     /// <c>mcpServers</c> as <c>session/new</c> — the spec requires them to match — and the
     /// agent replays the whole conversation as <c>session/update</c> notifications before
-    /// answering. Those replayed updates flow through the same read loop as live ones,
+    /// answering. Those replayed updates flow through the same handler as live ones,
     /// which is why tool-call reporting is keyed on <c>toolCallId</c>: a replayed call must
     /// not move the progress clock a second time.
     /// </summary>
-    private async Task<string?> LoadSessionAsync(string sessionRef, CancellationToken ct)
+    private async Task<string?> LoadSessionAsync(AgentConnection connection, string sessionRef, CancellationToken ct)
     {
-        var result = await RequestAsync(
-            "session/load",
-            w =>
+        var result = await connection.SessionLoadAsync(
+            new LoadSessionRequest
             {
-                w.WriteString("sessionId", sessionRef);
-                w.WriteString("cwd", _request.WorkDir);
-                WriteMcpServers(w);
+                SessionId = new AgentSessionId(sessionRef),
+                Cwd = _request.WorkDir,
+                McpServers = McpServers(),
             },
             ct).ConfigureAwait(false);
-        _lastSessionResult = result;
-
-        // session/load's result carries no sessionId of its own — the ref we asked for IS
-        // the session — so an agent that echoes one is honoured and one that does not is
-        // not an error.
-        return SessionIdOf(result) ?? sessionRef;
+        _configOptions = result.ConfigOptions;
+        _modes = result.Modes;
+        return sessionRef;
     }
 
     /// <summary>
@@ -521,7 +527,7 @@ public sealed class AcpClient
     /// pin can change the remaining options, so each call refreshes the
     /// advertisement used by the next.
     /// </summary>
-    private async Task MaybeApplyConfigOptionsAsync(string sessionId, CancellationToken ct)
+    private async Task MaybeApplyConfigOptionsAsync(AgentConnection connection, string sessionId, CancellationToken ct)
     {
         if (_request.ConfigOptions is not { Count: > 0 } wanted)
             return;
@@ -530,19 +536,38 @@ public sealed class AcpClient
         {
             if (string.IsNullOrWhiteSpace(configId) || string.IsNullOrWhiteSpace(value))
                 continue;
-            if (_lastSessionResult is not { } result || !AdvertisesSelectValue(result.Value, configId, value))
+            if (!AdvertisesSelectValue(_configOptions, configId, value))
                 continue;
 
-            _lastSessionResult = await RequestAsync(
-                "session/set_config_option",
-                w =>
+            // Sent as the untyped {sessionId, configId, value} shape measured on OpenCode,
+            // not the schema's later `type: boolean` arm — a string pin is not a boolean.
+            using var doc = BuildConfigOptionParams(sessionId, configId, value);
+            var updated = await connection.SessionSetConfigOptionAsync(
+                new SetSessionConfigOptionRequestUnknown
                 {
-                    w.WriteString("sessionId", sessionId);
-                    w.WriteString("configId", configId);
-                    w.WriteString("value", value);
+                    SessionId = new AgentSessionId(sessionId),
+                    ConfigId = new SessionConfigId(configId),
+                    Kind = "",
+                    Raw = doc.RootElement.Clone(),
                 },
                 ct).ConfigureAwait(false);
+            _configOptions = updated.ConfigOptions;
         }
+    }
+
+    private static JsonDocument BuildConfigOptionParams(string sessionId, string configId, string value)
+    {
+        var buffer = new ArrayBufferWriter<byte>(128);
+        using (var w = new Utf8JsonWriter(buffer))
+        {
+            w.WriteStartObject();
+            w.WriteString("sessionId", sessionId);
+            w.WriteString("configId", configId);
+            w.WriteString("value", value);
+            w.WriteEndObject();
+        }
+
+        return JsonDocument.Parse(buffer.WrittenMemory);
     }
 
     /// <summary>
@@ -551,100 +576,55 @@ public sealed class AcpClient
     /// <c>approve</c> is how a Landbridge profile keeps permissions on the protocol.
     /// Unadvertised is skipped, same as <see cref="MaybeApplyConfigOptionsAsync"/>.
     /// </summary>
-    private async Task MaybeSetSessionModeAsync(string sessionId, CancellationToken ct)
+    private async Task MaybeSetSessionModeAsync(AgentConnection connection, string sessionId, CancellationToken ct)
     {
         if (_request.SessionMode is not { Length: > 0 } mode)
             return;
-        if (_lastSessionResult is not { } result || !AdvertisesMode(result.Value, mode))
+        if (!AdvertisesMode(_modes, mode))
             return;
 
-        _lastSessionResult = await RequestAsync(
-            "session/set_mode",
-            w =>
+        await connection.SessionSetModeAsync(
+            new SetSessionModeRequest
             {
-                w.WriteString("sessionId", sessionId);
-                w.WriteString("modeId", mode);
+                SessionId = new AgentSessionId(sessionId),
+                ModeId = new SessionModeId(mode),
             },
             ct).ConfigureAwait(false);
     }
 
-    private static bool AdvertisesMode(JsonElement session, string modeId)
+    private static bool AdvertisesMode(SessionModeState? modes, string modeId)
     {
-        if (!session.TryGetProperty("modes", out var modes) || modes.ValueKind != JsonValueKind.Object)
+        if (modes is null)
             return false;
-        if (!modes.TryGetProperty("availableModes", out var available) || available.ValueKind != JsonValueKind.Array)
-            return false;
-        foreach (var mode in available.EnumerateArray())
+        foreach (var mode in modes.AvailableModes)
         {
-            if (mode.ValueKind == JsonValueKind.Object
-                && mode.TryGetProperty("id", out var id)
-                && id.GetString() == modeId)
+            if (mode.Id.Value == modeId)
                 return true;
         }
 
         return false;
     }
 
-    private static bool AdvertisesSelectValue(JsonElement session, string configId, string value)
+    private static bool AdvertisesSelectValue(SessionConfigOption[]? options, string configId, string value)
     {
-        if (!session.TryGetProperty("configOptions", out var options)
-            || options.ValueKind != JsonValueKind.Array)
+        if (options is null)
             return false;
-        foreach (var opt in options.EnumerateArray())
+        foreach (var opt in options)
         {
-            if (opt.ValueKind != JsonValueKind.Object)
+            if (opt is not SessionConfigOptionSelect select || select.Id.Value != configId)
                 continue;
-            if (!opt.TryGetProperty("id", out var id) || id.GetString() != configId)
-                continue;
-            if (!opt.TryGetProperty("options", out var choices) || choices.ValueKind != JsonValueKind.Array)
+            if (!select.Value.Options.TryGetSessionConfigSelectOptionArray(out var choices))
                 return false;
-            foreach (var choice in choices.EnumerateArray())
+            foreach (var choice in choices)
             {
-                if (choice.ValueKind == JsonValueKind.Object
-                    && choice.TryGetProperty("value", out var v)
-                    && v.GetString() == value)
+                if (choice.Value.Value == value)
                     return true;
             }
+
+            return false;
         }
+
         return false;
-    }
-
-    private static string? SessionIdOf(AcpResult result) =>
-        result.Value.TryGetProperty("sessionId", out var id) && id.ValueKind == JsonValueKind.String
-            ? id.GetString()
-            : null;
-
-    private void WriteInitializeParams(Utf8JsonWriter w)
-    {
-        w.WriteNumber("protocolVersion", LatestProtocolVersion);
-
-        // Declared honestly, which for landbridged means declaring almost nothing. These
-        // capabilities exist for an EDITOR: they let an agent see a file as it sits in an
-        // unsaved buffer, and run a command in the user's terminal panel. A Landbridge worker
-        // has neither — it has its own work dir and its own shell — so the agent doing its
-        // own file and process I/O is not a degradation, it is the arrangement.
-        //
-        // The risk this takes, stated plainly because it is the one that could make an ACP
-        // worker useless: an agent that routes ALL its shell and file access through the
-        // client rather than performing it itself would, under this declaration, be unable
-        // to do anything at all — and the symptom would read as a lazy model rather than a
-        // wiring fault. That is why an incoming request for a declined capability is
-        // reported (see AnswerAgentRequestAsync) instead of only being refused on the wire.
-        // The three agents measured on 2026-08-15 all carry their own tools, so none of
-        // them needs this; a fourth might.
-        w.WriteStartObject("clientCapabilities");
-        w.WriteStartObject("fs");
-        w.WriteBoolean("readTextFile", false);
-        w.WriteBoolean("writeTextFile", false);
-        w.WriteEndObject();
-        w.WriteBoolean("terminal", false);
-        w.WriteEndObject();
-
-        w.WriteStartObject("clientInfo");
-        w.WriteString("name", "landbridged");
-        w.WriteString("title", "Landbridge runner");
-        w.WriteString("version", ClientVersion);
-        w.WriteEndObject();
     }
 
     /// <summary>
@@ -657,32 +637,25 @@ public sealed class AcpClient
     /// would be a round trip that can only fail. So the session request goes first and
     /// <see cref="AuthRequiredCode"/> is the agent asking; nothing else triggers this.</para>
     ///
-    /// <para>Measured 2026-08-16: <c>codex-acp</c> 1.3.0 declares <c>api-key</c> and
-    /// <c>chat-gpt</c> and refuses <c>session/new</c> with
-    /// <c>-32000 "Authentication required"</c> until one is chosen;
-    /// <c>claude-agent-acp</c> declares none and needs none. Before this the codex tier
-    /// could not open a session at all — two transcript lines, initialize then the refusal.
-    /// </para>
-    ///
     /// <para>Retries exactly once. A second refusal is the credential being wrong rather
     /// than missing, and re-authenticating in a loop would turn a bad key into a spin.</para>
     /// </summary>
-    private async Task<string?> OpenSessionAsync(CancellationToken ct)
+    private async Task<string?> OpenSessionAsync(AgentConnection connection, CancellationToken ct)
     {
         try
         {
             return await RequestSessionAsync(ct).ConfigureAwait(false);
         }
-        catch (AcpProtocolException e) when (e.Code == AuthRequiredCode)
+        catch (AcpException e) when (e.IsAuthRequired)
         {
-            await AuthenticateAsync(e, ct).ConfigureAwait(false);
+            await AuthenticateAsync(connection, e, ct).ConfigureAwait(false);
             return await RequestSessionAsync(ct).ConfigureAwait(false);
         }
 
         Task<string?> RequestSessionAsync(CancellationToken token) =>
             _request.ResumeSessionRef is { Length: > 0 } resume && AgentSupportsLoadSession
-                ? LoadSessionAsync(resume, token)
-                : NewSessionAsync(token);
+                ? LoadSessionAsync(connection, resume, token)
+                : NewSessionAsync(connection, token);
     }
 
     /// <summary>
@@ -701,7 +674,7 @@ public sealed class AcpClient
     /// The credential itself stays the agent's — this request carries only the
     /// id.</para>
     /// </summary>
-    private async Task AuthenticateAsync(AcpProtocolException refusal, CancellationToken ct)
+    private async Task AuthenticateAsync(AgentConnection connection, AcpException refusal, CancellationToken ct)
     {
         if (_request.AuthMethod is not { Length: > 0 } method)
         {
@@ -717,13 +690,12 @@ public sealed class AcpClient
 
         try
         {
-            await RequestAsync("authenticate", w => w.WriteString("methodId", method), ct)
-                .ConfigureAwait(false);
+            await connection.AuthenticateAsync(
+                new AuthenticateRequest { MethodId = new AuthMethodId(method) },
+                ct).ConfigureAwait(false);
         }
-        catch (AcpProtocolException e)
+        catch (AcpException e)
         {
-            // Named, because the operator's next move depends on which method was tried:
-            // a wrong key is a different fix from a method that wanted a browser.
             _ring.Enqueue(new AuthFailedEvent(
                 _task, "authenticate", method, e.Message, null));
             throw new AcpProtocolException(
@@ -733,48 +705,41 @@ public sealed class AcpClient
                 + "its credential in the profile's `env` (§10).",
                 e.Code);
         }
+
+        _ = refusal;
     }
 
-    private void ReadAgentCapabilities(AcpResult init)
+    private void ReadAgentCapabilities(InitializeResponse init)
     {
-        if (init.Value.TryGetProperty("protocolVersion", out var v) && v.ValueKind == JsonValueKind.Number
-            && v.TryGetInt32(out var version))
-        {
-            NegotiatedProtocolVersion = version;
+        var version = (int)init.ProtocolVersion.Value;
+        NegotiatedProtocolVersion = version;
 
-            // Deliberately NOT "anything but the latest is a warning". Every agent in the
-            // wild answers 1, so that rule would put a line on every task of every ACP
-            // profile — and a warning that fires always is a warning an operator learns to
-            // scroll past, which costs more than it can ever report. Only a version outside
-            // the range this client can actually hold a session over is worth saying.
-            if (version < OldestProtocolVersion || version > LatestProtocolVersion)
-                _warn(
-                    $"landbridged: task {_task.Value}: the agent negotiated ACP protocol version {version}, which " +
-                    $"is outside the {OldestProtocolVersion}–{LatestProtocolVersion} range this client speaks. " +
-                    "Continuing on the assumption that the session methods are unchanged, but if this task " +
-                    "reads oddly — no session ref, no tool calls — that assumption is the first thing to " +
-                    "doubt (§10).");
-        }
+        // Deliberately NOT "anything but the latest is a warning". Every agent in the
+        // wild answers 1, so that rule would put a line on every task of every ACP
+        // profile — and a warning that fires always is a warning an operator learns to
+        // scroll past, which costs more than it can ever report. Only a version outside
+        // the range this client can actually hold a session over is worth saying.
+        if (version < OldestProtocolVersion || version > LatestProtocolVersion)
+            _warn(
+                $"landbridged: task {_task.Value}: the agent negotiated ACP protocol version {version}, which " +
+                $"is outside the {OldestProtocolVersion}–{LatestProtocolVersion} range this client speaks. " +
+                "Continuing on the assumption that the session methods are unchanged, but if this task " +
+                "reads oddly — no session ref, no tool calls — that assumption is the first thing to " +
+                "doubt (§10).");
 
-        // Every method the agent will accept at `authenticate`, in the order it listed them.
-        // Order is the only preference signal ACP offers — nothing marks a method as
-        // non-interactive — so it is preserved verbatim and the first is the default pick.
-        if (init.Value.TryGetProperty("authMethods", out var methods) && methods.ValueKind == JsonValueKind.Array)
+        _authMethods.Clear();
+        if (init.AuthMethods is { Length: > 0 } methods)
         {
-            _authMethods.Clear();
-            foreach (var m in methods.EnumerateArray())
-                if (m.ValueKind == JsonValueKind.Object && StringOf(m, "id") is { Length: > 0 } id)
+            foreach (var method in methods)
+            {
+                if (method is AuthMethodAuthMethodAgent agent && agent.Value.Id.Value is { Length: > 0 } id)
                     _authMethods.Add(id);
+            }
         }
 
-        if (!init.Value.TryGetProperty("agentCapabilities", out var caps) || caps.ValueKind != JsonValueKind.Object)
-            return;
-
-        AgentSupportsLoadSession = caps.TryGetProperty("loadSession", out var load)
-            && load.ValueKind == JsonValueKind.True;
-
-        if (caps.TryGetProperty("mcpCapabilities", out var mcp) && mcp.ValueKind == JsonValueKind.Object)
-            AgentSupportsHttpMcp = mcp.TryGetProperty("http", out var http) && http.ValueKind == JsonValueKind.True;
+        var caps = init.AgentCapabilities;
+        AgentSupportsLoadSession = caps?.LoadSession == true;
+        AgentSupportsHttpMcp = caps?.McpCapabilities?.Http == true;
 
         if (!AgentSupportsHttpMcp && _request.McpServers.Count > 0)
             _warn(
@@ -784,81 +749,59 @@ public sealed class AcpClient
                 "get_session or report_result, so it will do nothing useful (§10).");
     }
 
-    /// <summary>
-    /// §13: the plane's generated MCP config, translated into ACP's <c>mcpServers</c> array
-    /// and handed over on <c>session/new</c>.
-    ///
-    /// <para>In stream mode the generated config is a file whose path substitutes into the
-    /// argv, which works for claude and not for Codex, OpenCode or Grok — none of which has
-    /// a <c>--mcp-config</c> equivalent. <c>profiles[].files</c> and <c>profiles[].env</c>
-    /// (#112 G2/G3) closed that gap: such a profile can now write its own
-    /// <c>config.toml</c> into the work dir with a real <c>{worker_token}</c> in it. So the
-    /// gain here is narrower than it would have been, and still worth having — the server
-    /// is a <em>parameter of the session</em>, so there is no file to write, no mode to get
-    /// right, and no live bearer token resident on disk for the length of the task.</para>
-    /// </summary>
-    private void WriteMcpServers(Utf8JsonWriter w)
+    private McpServer[] McpServers()
     {
-        w.WriteStartArray("mcpServers");
-        foreach (var server in _request.McpServers)
+        if (_request.McpServers.Count == 0)
+            return [];
+
+        var servers = new McpServer[_request.McpServers.Count];
+        for (var i = 0; i < _request.McpServers.Count; i++)
         {
-            w.WriteStartObject();
-            w.WriteString("type", "http");
-            w.WriteString("name", server.Name);
-            w.WriteString("url", server.Url);
-            w.WriteStartArray("headers");
-            foreach (var (name, value) in server.Headers)
+            var server = _request.McpServers[i];
+            var headers = new HttpHeader[server.Headers.Count];
+            for (var h = 0; h < server.Headers.Count; h++)
             {
-                w.WriteStartObject();
-                w.WriteString("name", name);
-                w.WriteString("value", value);
-                w.WriteEndObject();
+                var header = server.Headers[h];
+                headers[h] = new HttpHeader { Name = header.Key, Value = header.Value };
             }
-            w.WriteEndArray();
-            w.WriteEndObject();
+
+            servers[i] = new McpServerHttp
+            {
+                Name = server.Name,
+                Url = server.Url,
+                Headers = headers,
+            };
         }
-        w.WriteEndArray();
+
+        return servers;
     }
 
-    private async Task ReadLoopAsync(TextReader stdout, CancellationToken ct)
+    private void OnFrame(ReadOnlyMemory<byte> frame)
     {
-        try
+        if (_rawLineSink is not null)
         {
-            string? line;
-            while ((line = await stdout.ReadLineAsync(ct).ConfigureAwait(false)) is not null)
-            {
-                // §12 capture tee, before parsing and never allowed to affect the worker —
-                // the same contract the terminal reader's sink has.
-                if (_rawLineSink is not null)
-                {
-                    try { _rawLineSink(line); }
-                    catch { /* capture is never allowed to affect the worker */ }
-                }
+            try { _rawLineSink(Encoding.UTF8.GetString(frame.Span)); }
+            catch { /* capture is never allowed to affect the worker */ }
+        }
 
-                await DispatchLineAsync(line, ct).ConfigureAwait(false);
-            }
-        }
-        catch (Exception e) when (e is OperationCanceledException or IOException or ObjectDisposedException)
-        {
-            // Cancelled on teardown, or the pipe was torn down by a kill mid-read. Either
-            // way the conversation is over; end the drain quietly.
-        }
+        if (frame.Length > 0 && frame.Span[0] == (byte)'{')
+            Interlocked.Increment(ref _messages);
+
+        // Typed session/update drops a tool_call with no title (required on the generated
+        // model). Agents omit it; the kind is the fallback the event log needs. Reading
+        // the frame directly is what keeps that progress signal.
+        TryIngestToolCallFrame(frame);
     }
 
-    private async Task DispatchLineAsync(string line, CancellationToken ct)
+    private void TryIngestToolCallFrame(ReadOnlyMemory<byte> frame)
     {
-        if (string.IsNullOrWhiteSpace(line))
-            return;
-
         JsonDocument doc;
         try
         {
-            doc = JsonDocument.Parse(line);
+            doc = JsonDocument.Parse(frame);
         }
         catch (JsonException)
         {
-            // The transport forbids non-ACP bytes on stdout, but a harness banner or a
-            // panic trace still happens in the real world and must not kill the drain.
             return;
         }
 
@@ -867,159 +810,177 @@ public sealed class AcpClient
             var root = doc.RootElement;
             if (root.ValueKind != JsonValueKind.Object)
                 return;
+            if (!root.TryGetProperty("method", out var method) || method.GetString() != "session/update")
+                return;
+            if (!root.TryGetProperty("params", out var p) || p.ValueKind != JsonValueKind.Object)
+                return;
+            if (!p.TryGetProperty("update", out var update) || update.ValueKind != JsonValueKind.Object)
+                return;
+            var kindOf = update.TryGetProperty("sessionUpdate", out var su) ? su.GetString() : null;
+            if (kindOf is not ("tool_call" or "tool_call_update"))
+                return;
 
-            _messages++;
-            var hasId = root.TryGetProperty("id", out var id) && id.ValueKind is not JsonValueKind.Null;
-            var method = root.TryGetProperty("method", out var m) && m.ValueKind == JsonValueKind.String
-                ? m.GetString()
+            var id = update.TryGetProperty("toolCallId", out var t) && t.ValueKind == JsonValueKind.String
+                ? t.GetString()
                 : null;
+            if (id is not { Length: > 0 })
+                return;
 
-            // A method with an id is the agent asking US something; a method without one is
-            // a notification; no method at all is an answer to something we asked.
-            if (method is not null && hasId)
-                await AnswerAgentRequestAsync(method, id, root, ct).ConfigureAwait(false);
-            else if (method is not null)
-            {
-                // Grok reports spend on a vendor notification, not PromptResponse.usage
-                // or session/update usage_update. Measured 2026-08-16: tokens land on
-                // `_x.ai/session_notification` / `response_completed`, no dollar figure.
-                if (method == "_x.ai/session_notification")
-                    RecordXaiUsage(root);
-                else
-                    await HandleNotificationAsync(method, root, ct).ConfigureAwait(false);
-            }
-            else if (hasId)
-                CompletePending(id, root);
+            var title = update.TryGetProperty("title", out var titleEl) && titleEl.ValueKind == JsonValueKind.String
+                ? titleEl.GetString()
+                : null;
+            var kind = update.TryGetProperty("kind", out var kindEl) && kindEl.ValueKind == JsonValueKind.String
+                ? kindEl.GetString()
+                : null;
+            JsonElement? raw = update.TryGetProperty("rawInput", out var rawEl) ? rawEl : null;
+            IngestToolCall(id, title, kind, raw);
         }
     }
 
-    /// <summary>
-    /// The two notifications that carry something landbridged's event vocabulary has a place for:
-    /// tool calls (progress) and <c>usage_update</c> (§12 accounting). Everything else ACP
-    /// streams — message chunks, thoughts, plans, mode changes — is conversation content,
-    /// which §12 captures verbatim through the transcript tee and which the frozen runner
-    /// vocabulary deliberately has no member for.
-    /// </summary>
-    private async Task HandleNotificationAsync(string method, JsonElement root, CancellationToken ct)
+    private ValueTask OnUnknownNotificationAsync(string method, JsonElement parameters, CancellationToken cancellationToken)
     {
-        if (method != "session/update")
-            return;
-        if (!root.TryGetProperty("params", out var p) || p.ValueKind != JsonValueKind.Object)
-            return;
-        if (!p.TryGetProperty("update", out var update) || update.ValueKind != JsonValueKind.Object)
-            return;
+        if (method == "_x.ai/session_notification")
+            RecordXaiUsage(parameters);
+        return ValueTask.CompletedTask;
+    }
 
-        var kind = update.TryGetProperty("sessionUpdate", out var k) && k.ValueKind == JsonValueKind.String
-            ? k.GetString()
-            : null;
-
-        if (kind == "usage_update")
+    private void OnPumpEnded()
+    {
+        _followUps.Writer.TryComplete();
+        List<TaskCompletionSource> waiters;
+        lock (_stateGate)
         {
-            RecordUsageUpdate(update);
-            return;
+            waiters = _rawInputWaiters.Values.ToList();
+            _rawInputWaiters.Clear();
         }
 
-        // `tool_call` announces a call; `tool_call_update` reports its progress through
-        // pending → in_progress → completed. Both are accepted because an agent may skip
-        // straight to an update for a call it never announced, and the toolCallId guard
-        // below is what keeps either shape to one event per call.
-        if (kind is not ("tool_call" or "tool_call_update"))
+        foreach (var waiter in waiters)
+            waiter.TrySetCanceled();
+    }
+
+    private Task HandleSessionUpdateAsync(SessionNotification notification, CancellationToken ct)
+    {
+        switch (notification.Update)
+        {
+            case SessionUpdateUsageUpdate usage:
+                RecordUsageUpdate(usage.Value);
+                break;
+            case SessionUpdateToolCall call:
+                IngestToolCall(
+                    call.Value.ToolCallId.Value,
+                    call.Value.Title,
+                    call.Value.Kind?.Value,
+                    call.Value.RawInput);
+                break;
+            case SessionUpdateToolCallUpdate update:
+                IngestToolCall(
+                    update.Value.ToolCallId.Value,
+                    update.Value.Title,
+                    update.Value.Kind?.Value,
+                    update.Value.RawInput);
+                break;
+        }
+
+        _ = ct;
+        return Task.CompletedTask;
+    }
+
+    private void IngestToolCall(string id, string? title, string? kind, JsonElement? rawInput)
+    {
+        if (id.Length == 0)
             return;
 
-        var id = update.TryGetProperty("toolCallId", out var t) && t.ValueKind == JsonValueKind.String
-            ? t.GetString()
-            : null;
-        if (id is not { Length: > 0 })
+        var name = title is { Length: > 0 } ? title : kind ?? "tool";
+        RememberToolInput(id, name, rawInput);
+
+        TaskCompletionSource? waiter = null;
+        var first = false;
+        lock (_stateGate)
+        {
+            if (_rawInputWaiters.TryGetValue(id, out var pending) && !ShouldWaitForRawInput(id, name))
+            {
+                _rawInputWaiters.Remove(id);
+                waiter = pending;
+            }
+
+            first = _reported.Add(id);
+        }
+
+        if (waiter is not null)
+            waiter.TrySetResult();
+
+        if (!first)
             return;
 
-        var name = StringOf(update, "title") ?? StringOf(update, "kind") ?? "tool";
-        // Remember before the once-per-id guard: Codex often puts rawInput on
-        // a later tool_call_update, then asks permission with no rawInput.
-        RememberToolInput(id, name, update);
-        await MaybeCompleteDeferredPermissionAsync(id, ct).ConfigureAwait(false);
-        if (!_reported.Add(id))
-            return;
-
-        // ACP names a call for a human (`title`: "Reading configuration file") and
-        // categorises it (`kind`: read/edit/execute/…). The title is what a person reading
-        // the §12 event log wants; the kind is the honest fallback when an agent omits one.
         _ring.Enqueue(new ToolCallEvent(_task, name, _clock.GetUtcNow()));
     }
 
-    private void RememberToolInput(string toolCallId, string? title, JsonElement update)
+    private void RememberToolInput(string toolCallId, string? title, JsonElement? rawInput)
     {
-        var input = update.TryGetProperty("rawInput", out var raw)
+        var input = rawInput is { } raw
             && raw.ValueKind is not JsonValueKind.Undefined and not JsonValueKind.Null
-            ? raw.GetRawText()
-            : null;
+                ? raw.GetRawText()
+                : null;
         if (input is null && title is null)
             return;
-        if (_toolInputs.TryGetValue(toolCallId, out var prior))
-        {
-            _toolInputs[toolCallId] = (
-                title ?? prior.Title,
-                input is { Length: > 2 } ? input : prior.InputJson);
-            return;
-        }
-        _toolInputs[toolCallId] = (title, input is { Length: > 2 } ? input : "{}");
-    }
 
-    /// <summary>
-    /// The agent asking the client for something. Only <c>session/request_permission</c> is
-    /// answered; anything else is refused with a JSON-RPC "method not found", which is the
-    /// correct answer for a capability this client declared UNSUPPORTED at initialize and
-    /// is far better than leaving the agent blocked on a request nobody will ever answer.
-    /// </summary>
-    private async Task AnswerAgentRequestAsync(string method, JsonElement id, JsonElement root, CancellationToken ct)
-    {
-        if (method == "session/request_permission")
+        lock (_stateGate)
         {
-            if (root.TryGetProperty("params", out var waitParams)
-                && waitParams.ValueKind == JsonValueKind.Object
-                && ShouldWaitForRawInput(waitParams, out var waitId))
+            if (_toolInputs.TryGetValue(toolCallId, out var prior))
             {
-                DeferPermissionUntilRawInput(waitId, id, waitParams, ct);
+                _toolInputs[toolCallId] = (
+                    title ?? prior.Title,
+                    input is { Length: > 2 } ? input : prior.InputJson);
                 return;
             }
 
-            var option = await ResolvePermissionOptionAsync(root, ct).ConfigureAwait(false);
-            await SendResponseAsync(
-                id,
-                w =>
-                {
-                    w.WriteStartObject("outcome");
-                    if (option is null)
-                    {
-                        // No option we can choose. `cancelled` is the spec's own answer for
-                        // "the client is not going to decide this", and it lets the agent
-                        // move on rather than hang.
-                        w.WriteString("outcome", "cancelled");
-                    }
-                    else
-                    {
-                        w.WriteString("outcome", "selected");
-                        w.WriteString("optionId", option);
-                    }
-                    w.WriteEndObject();
-                },
-                ct).ConfigureAwait(false);
-            return;
+            _toolInputs[toolCallId] = (title, input is { Length: > 2 } ? input : "{}");
+        }
+    }
+
+    private async Task<RequestPermissionResponse> HandlePermissionAsync(
+        RequestPermissionRequest request, CancellationToken ct)
+    {
+        var toolCallId = request.ToolCall.ToolCallId.Value;
+        var title = ToolOf(request);
+        if (ShouldWaitForRawInput(toolCallId, title))
+        {
+            var waiter = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            lock (_stateGate)
+                _rawInputWaiters[toolCallId] = waiter;
+
+            using var grace = new CancellationTokenSource();
+            // Wall clock, not the injected TimeProvider: the test clock is frozen, and a
+            // real Codex fill arrives as a later tool_call_update, not as time passing.
+            var delay = Task.Delay(RawInputGrace, TimeProvider.System, grace.Token);
+            try
+            {
+                var completed = await Task.WhenAny(waiter.Task, delay).ConfigureAwait(false);
+                if (completed == waiter.Task)
+                    await waiter.Task.ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                throw;
+            }
+            finally
+            {
+                await grace.CancelAsync().ConfigureAwait(false);
+                lock (_stateGate)
+                    _rawInputWaiters.Remove(toolCallId);
+            }
         }
 
-        await SendErrorAsync(id, -32601, $"landbridged does not implement '{method}'", ct).ConfigureAwait(false);
-
-        // Once per method per task. A refusal the agent swallows is the quietest way for a
-        // worker to end up unable to touch the filesystem or run a command, and the
-        // resulting task — started, no tool calls, nothing reported — looks exactly like a
-        // model that could not be bothered. Naming the method turns that into a five-second
-        // diagnosis.
-        if (_declined.Add(method))
-            _warn(
-                $"landbridged: task {_task.Value}: the agent asked landbridged to perform '{method}' and was refused — " +
-                "this client declares the ACP fs and terminal capabilities UNSUPPORTED, because a Landbridge " +
-                "worker is expected to use its own work dir and its own shell. An agent that delegates all " +
-                "of its file or command access to the client cannot work under that declaration, and this " +
-                "line is the only sign of it: check whether this harness needs a client-side terminal (§10).");
+        var option = await ResolvePermissionOptionAsync(request, ct).ConfigureAwait(false);
+        return new RequestPermissionResponse
+        {
+            Outcome = option is null
+                ? new RequestPermissionOutcomeCancelled()
+                : new RequestPermissionOutcomeSelected
+                {
+                    Value = new SelectedPermissionOutcome { OptionId = new PermissionOptionId(option) },
+                },
+        };
     }
 
     /// <summary>
@@ -1036,31 +997,25 @@ public sealed class AcpClient
     /// <c>cancelled</c>. A missing plane callback is also cancelled rather than
     /// auto-allowed.</para>
     /// </summary>
-    private async Task<string?> ResolvePermissionOptionAsync(JsonElement root, CancellationToken ct)
+    private async Task<string?> ResolvePermissionOptionAsync(RequestPermissionRequest request, CancellationToken ct)
     {
-        if (!root.TryGetProperty("params", out var p) || p.ValueKind != JsonValueKind.Object)
-            return null;
-
-        var options = ReadPermissionOptions(p);
-        if (options.Count == 0)
+        var options = request.Options;
+        if (options.Length == 0)
             return null;
 
         if (_requestPermission is null)
             return null;
 
-        var ask = new AcpPermissionAsk(ToolOf(p), InputOf(p), OptionsJsonOf(p));
-        // Codex (and others) sometimes ask permission with only kind: execute
-        // and no argv, even after we waited for a later tool_call_update. That
-        // is a harness miss: there is nothing to gate. Allow once, do not open
-        // a Lead wait, and do not cancel the agent for asking about nothing.
+        var ask = new AcpPermissionAsk(ToolOf(request), InputOf(request), OptionsJsonOf(options));
         if (LooksLikeEmptyExecute(ask))
         {
             _warn(
                 $"landbridged: task {_task.Value}: auto-allowed a permission request for '{ask.Tool}' "
                 + "with no proposed command (empty rawInput). The harness asked to approve nothing — "
                 + "a Codex-side miss. landbridged will not gate that.");
-            return FirstOfKind(options, "allow_once");
+            return FirstOfKind(options, PermissionOptionKind.AllowOnce);
         }
+
         AcpPermissionDecision decision;
         try
         {
@@ -1082,13 +1037,14 @@ public sealed class AcpClient
         {
             foreach (var o in options)
             {
-                if (o.Id == picked)
+                if (o.OptionId.Value == picked)
                 {
                     if (!decision.Allow)
                         WarnPermissionDenied(ask.Tool, decision.Message);
                     return picked;
                 }
             }
+
             _warn(
                 $"landbridged: task {_task.Value}: the plane picked optionId '{picked}' which this " +
                 "request did not offer; answering cancelled.");
@@ -1100,25 +1056,17 @@ public sealed class AcpClient
             // Never allow_always: that is a standing bypass in the agent, not a
             // one-shot plane decision. If the agent offered no allow_once, cancel
             // rather than promote the allow into a lasting grant.
-            return FirstOfKind(options, "allow_once");
+            return FirstOfKind(options, PermissionOptionKind.AllowOnce);
         }
 
-        // Once per task, and it earns its place. A refused tool call is invisible from
-        // everywhere else: the agent absorbs the refusal, writes a paragraph about why it
-        // could not proceed, and ends its turn — which on the plane looks exactly like a
-        // model that ignored its instructions. Measured 2026-08-16: seven real claude
-        // dispatches ended that way, ~400-800 output tokens each, no tool calls, and nothing
-        // anywhere said "denied". A session runs in the agent's DEFAULT permission mode
-        // unless a profile says otherwise, and for claude-agent-acp that mode prompts before
-        // every MCP tool call — so on a fleet with no Lead watching, the first `get_session` is
-        // the call that gets refused and the worker never starts.
         WarnPermissionDenied(ask.Tool, decision.Message);
-        return FirstOfKind(options, "reject_once") ?? FirstOfKind(options, "reject_always");
+        return FirstOfKind(options, PermissionOptionKind.RejectOnce)
+            ?? FirstOfKind(options, PermissionOptionKind.RejectAlways);
     }
 
     private void WarnPermissionDenied(string tool, string? message)
     {
-        if (!_declined.Add("session/request_permission"))
+        if (!TryMarkDeclined("session/request_permission"))
             return;
         _warn(
             $"landbridged: task {_task.Value}: the plane DENIED this worker's permission request for " +
@@ -1128,169 +1076,83 @@ public sealed class AcpClient
             "profile to a permission mode that does not prompt (§10, §11).");
     }
 
-    private static string OptionsJsonOf(JsonElement p)
+    private static string OptionsJsonOf(AcpPermissionOption[] options)
     {
-        if (!p.TryGetProperty("options", out var options) || options.ValueKind != JsonValueKind.Array)
-            return "[]";
-        return options.GetRawText();
-    }
-
-    private void DeferPermissionUntilRawInput(
-        string toolCallId, JsonElement rpcId, JsonElement paramsElement, CancellationToken ct)
-    {
-        var pending = new PendingRawInputPermission(
-            toolCallId,
-            rpcId.Clone(),
-            paramsElement.GetRawText(),
-            new CancellationTokenSource());
-        lock (_awaitingRawInputGate)
-            _awaitingRawInput[toolCallId] = pending;
-        _ = WaitForRawInputThenDecideAsync(pending, ct);
-    }
-
-    private async Task WaitForRawInputThenDecideAsync(
-        PendingRawInputPermission pending, CancellationToken ct)
-    {
-        using var linked = CancellationTokenSource.CreateLinkedTokenSource(ct, pending.Timeout.Token);
-        try
+        var buffer = new ArrayBufferWriter<byte>(256);
+        using (var w = new Utf8JsonWriter(buffer))
         {
-            await Task.Delay(RawInputGrace, _clock, linked.Token).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            return;
-        }
-
-        if (!TryTakeAwaiting(pending.ToolCallId, pending))
-            return;
-        await ReplyDeferredPermissionAsync(pending, ct).ConfigureAwait(false);
-    }
-
-    private async Task MaybeCompleteDeferredPermissionAsync(string toolCallId, CancellationToken ct)
-    {
-        PendingRawInputPermission? pending;
-        lock (_awaitingRawInputGate)
-        {
-            if (!_awaitingRawInput.TryGetValue(toolCallId, out pending))
-                return;
-        }
-
-        using var doc = JsonDocument.Parse(pending.ParamsJson);
-        if (ShouldWaitForRawInput(doc.RootElement, out _))
-            return;
-        if (!TryTakeAwaiting(toolCallId, pending))
-            return;
-        await pending.Timeout.CancelAsync().ConfigureAwait(false);
-        await ReplyDeferredPermissionAsync(pending, ct).ConfigureAwait(false);
-    }
-
-    private async Task ReplyDeferredPermissionAsync(
-        PendingRawInputPermission pending, CancellationToken ct)
-    {
-        string? option = null;
-        try
-        {
-            using var doc = JsonDocument.Parse("{\"params\":" + pending.ParamsJson + "}");
-            option = await ResolvePermissionOptionAsync(doc.RootElement, ct).ConfigureAwait(false);
-        }
-        catch (OperationCanceledException)
-        {
-            throw;
-        }
-        catch (Exception ex)
-        {
-            _warn(
-                $"landbridged: task {_task.Value}: deferred permission reply failed ({ex.GetType().Name}: {ex.Message})");
-        }
-
-        try
-        {
-            await SendPermissionOutcomeAsync(pending.RpcId, option, ct).ConfigureAwait(false);
-        }
-        catch (Exception ex) when (ex is not OperationCanceledException)
-        {
-            _warn(
-                $"landbridged: task {_task.Value}: could not write the deferred permission outcome ({ex.GetType().Name}: {ex.Message})");
-        }
-    }
-
-    private Task SendPermissionOutcomeAsync(JsonElement rpcId, string? option, CancellationToken ct) =>
-        SendResponseAsync(
-            rpcId,
-            w =>
+            w.WriteStartArray();
+            foreach (var option in options)
             {
-                w.WriteStartObject("outcome");
-                if (option is null)
-                {
-                    w.WriteString("outcome", "cancelled");
-                }
-                else
-                {
-                    w.WriteString("outcome", "selected");
-                    w.WriteString("optionId", option);
-                }
+                w.WriteStartObject();
+                w.WriteString("optionId", option.OptionId.Value);
+                w.WriteString("name", option.Name);
+                w.WriteString("kind", option.Kind.Value);
                 w.WriteEndObject();
-            },
-            ct);
-
-    private async Task CancelDeferredPermissionsAsync()
-    {
-        List<PendingRawInputPermission> leftover;
-        lock (_awaitingRawInputGate)
-        {
-            leftover = _awaitingRawInput.Values.ToList();
-            _awaitingRawInput.Clear();
-        }
-
-        foreach (var pending in leftover)
-        {
-            try { pending.Timeout.Cancel(); }
-            catch { /* already disposed */ }
-            try
-            {
-                await ReplyDeferredPermissionAsync(pending, CancellationToken.None)
-                    .ConfigureAwait(false);
             }
-            catch
-            {
-                // stdin may already be gone with the process
-            }
+
+            w.WriteEndArray();
         }
+
+        return Encoding.UTF8.GetString(buffer.WrittenSpan);
     }
 
-    private bool TryTakeAwaiting(string toolCallId, PendingRawInputPermission expected)
+    private bool ShouldWaitForRawInput(string toolCallId, string tool)
     {
-        lock (_awaitingRawInputGate)
-        {
-            if (!_awaitingRawInput.TryGetValue(toolCallId, out var have) || !ReferenceEquals(have, expected))
-                return false;
-            _awaitingRawInput.Remove(toolCallId);
-            return true;
-        }
-    }
-
-    private bool ShouldWaitForRawInput(JsonElement p, out string toolCallId)
-    {
-        toolCallId = "";
-        if (!TryToolCallId(p, out toolCallId))
+        if (toolCallId.Length == 0)
             return false;
-        var ask = new AcpPermissionAsk(ToolOf(p), InputOf(p));
-        if (!IsBlankInput(ask.InputJson))
+        var input = InputOf(toolCallId, rawInput: null);
+        if (!IsBlankInput(input))
             return false;
-        return !LooksLikeCommandTitle(ask.Tool);
+        return !LooksLikeCommandTitle(tool);
     }
 
-    private static bool TryToolCallId(JsonElement p, out string id)
+    private string ToolOf(RequestPermissionRequest request)
     {
-        id = "";
-        if (p.TryGetProperty("toolCall", out var call) && call.ValueKind == JsonValueKind.Object
-            && StringOf(call, "toolCallId") is { Length: > 0 } found)
+        var call = request.ToolCall;
+        var fromCall = call.Title ?? call.Kind?.Value;
+        if (fromCall is { Length: > 0 } && fromCall != "execute" && fromCall != "tool")
+            return fromCall;
+
+        lock (_stateGate)
         {
-            id = found;
-            return true;
+            if (_toolInputs.TryGetValue(call.ToolCallId.Value, out var remembered)
+                && remembered.Title is { Length: > 0 })
+                return remembered.Title;
         }
-        return false;
+
+        return fromCall ?? "tool";
     }
+
+    private string InputOf(RequestPermissionRequest request) =>
+        InputOf(request.ToolCall.ToolCallId.Value, request.ToolCall.RawInput);
+
+    private string InputOf(string toolCallId, JsonElement? rawInput)
+    {
+        if (rawInput is { } raw && HasContent(raw))
+            return raw.GetRawText();
+
+        lock (_stateGate)
+        {
+            if (_toolInputs.TryGetValue(toolCallId, out var remembered)
+                && remembered.InputJson is { Length: > 2 })
+                return remembered.InputJson;
+        }
+
+        return "{}";
+    }
+
+    private static bool HasContent(JsonElement raw) => raw.ValueKind switch
+    {
+        JsonValueKind.Undefined or JsonValueKind.Null => false,
+        JsonValueKind.Object => raw.EnumerateObject().Any(),
+        JsonValueKind.Array => raw.GetArrayLength() > 0,
+        JsonValueKind.String => raw.GetString() is { Length: > 0 },
+        _ => true,
+    };
+
+    private static bool LooksLikeEmptyExecute(AcpPermissionAsk ask) =>
+        IsBlankInput(ask.InputJson) && GenericToolNames.Contains(ask.Tool.Trim());
 
     private static bool IsBlankInput(string input)
     {
@@ -1325,6 +1187,17 @@ public sealed class AcpClient
         return BareCommandTitles.Contains(s);
     }
 
+    private static string? FirstOfKind(AcpPermissionOption[] options, PermissionOptionKind kind)
+    {
+        foreach (var option in options)
+        {
+            if (option.Kind == kind)
+                return option.OptionId.Value;
+        }
+
+        return null;
+    }
+
     /// <summary>
     /// Takes the dollar figure off a <c>usage_update</c>. The rest of that notification —
     /// <c>used</c> and <c>size</c> — is a context-window gauge, not spend, and §12's measured
@@ -1335,32 +1208,15 @@ public sealed class AcpClient
     /// Measured on 2026-08-16: <c>claude-agent-acp</c> priced a turn at $0.0949, and
     /// <c>opencode acp</c> reported <c>{"amount":0}</c> for a turn that plainly burned 14,321
     /// tokens — so a zero here means "this adapter does not compute cost", and recording
-    /// $0.00 would assert the dispatch was free. That is the same mislabelling §2 principle 2
-    /// forbids, and the reason the real-harness bar refuses to derive a cost for Codex.</para>
+    /// $0.00 would assert the dispatch was free.</para>
     /// </summary>
-    private void RecordUsageUpdate(JsonElement update)
+    private void RecordUsageUpdate(UsageUpdate update)
     {
-        if (!update.TryGetProperty("cost", out var cost) || cost.ValueKind != JsonValueKind.Object)
+        if (update.Cost is not { } cost || cost.Amount <= 0)
             return;
-        if (!cost.TryGetProperty("amount", out var amount) || amount.ValueKind != JsonValueKind.Number)
-            return;
-        if (!amount.TryGetDecimal(out var value) || value <= 0m)
-            return;
-        _costUsd = value;
+        _costUsd = Convert.ToDecimal(cost.Amount);
     }
 
-    /// <summary>
-    /// Adds a finished turn's token buckets to the session totals, and answers whether the
-    /// agent reported any.
-    ///
-    /// <para>ACP's <c>PromptResponse.usage</c> buckets are <b>disjoint</b>, which is what lets
-    /// them map onto §12's four columns without a subset correction — the per-harness
-    /// <c>usage_cached_is_subset</c> knob the stream mapping needed has no ACP equivalent
-    /// because there is nothing to correct. Both agents measured on 2026-08-16 reconcile
-    /// exactly: claude reported 6 + 866 + 61,019 + 6,701 = 68,592 = <c>totalTokens</c>, and
-    /// opencode 99 + 14 + 14,208 = 14,321 = <c>totalTokens</c>. <c>totalTokens</c> is therefore
-    /// derivable and is deliberately not stored.</para>
-    /// </summary>
     private bool HasAccumulatedUsage =>
         _inputTokens + _outputTokens + _cacheReadTokens + _cacheWriteTokens > 0;
 
@@ -1369,10 +1225,8 @@ public sealed class AcpClient
     /// Added into the same session totals <see cref="AddTurnUsage"/> feeds, so the
     /// high-water-mark store still sees one rising report.
     /// </summary>
-    private void RecordXaiUsage(JsonElement root)
+    private void RecordXaiUsage(JsonElement p)
     {
-        if (!root.TryGetProperty("params", out var p) || p.ValueKind != JsonValueKind.Object)
-            return;
         if (!p.TryGetProperty("update", out var update) || update.ValueKind != JsonValueKind.Object)
             return;
         if (!update.TryGetProperty("usage", out var usage) || usage.ValueKind != JsonValueKind.Object)
@@ -1388,7 +1242,7 @@ public sealed class AcpClient
             if (!o.TryGetProperty(key, out var v) || v.ValueKind != JsonValueKind.Number
                 || !v.TryGetInt64(out var n) || n < 0)
                 return;
-            total += n;
+            Interlocked.Add(ref total, n);
         }
     }
 
@@ -1409,208 +1263,9 @@ public sealed class AcpClient
             if (!o.TryGetProperty(key, out var v) || v.ValueKind != JsonValueKind.Number
                 || !v.TryGetInt64(out var n) || n < 0)
                 return false;
-            total += n;
+            Interlocked.Add(ref total, n);
             return true;
         }
-    }
-
-    private string ToolOf(JsonElement p)
-    {
-        if (p.TryGetProperty("toolCall", out var call) && call.ValueKind == JsonValueKind.Object)
-        {
-            var fromCall = StringOf(call, "title") ?? StringOf(call, "kind");
-            if (fromCall is { Length: > 0 } && fromCall != "execute" && fromCall != "tool")
-                return fromCall;
-            if (StringOf(call, "toolCallId") is { Length: > 0 } id
-                && _toolInputs.TryGetValue(id, out var remembered)
-                && remembered.Title is { Length: > 0 })
-                return remembered.Title;
-            return fromCall ?? "tool";
-        }
-        return StringOf(p, "title") ?? "tool";
-    }
-
-    private string InputOf(JsonElement p)
-    {
-        if (p.TryGetProperty("toolCall", out var call) && call.ValueKind == JsonValueKind.Object)
-        {
-            if (call.TryGetProperty("rawInput", out var raw) && HasContent(raw))
-                return raw.GetRawText();
-            if (StringOf(call, "toolCallId") is { Length: > 0 } id
-                && _toolInputs.TryGetValue(id, out var remembered)
-                && remembered.InputJson is { Length: > 2 })
-                return remembered.InputJson;
-        }
-        return "{}";
-    }
-
-    private static bool HasContent(JsonElement raw) => raw.ValueKind switch
-    {
-        JsonValueKind.Undefined or JsonValueKind.Null => false,
-        JsonValueKind.Object => raw.EnumerateObject().Any(),
-        JsonValueKind.Array => raw.GetArrayLength() > 0,
-        JsonValueKind.String => raw.GetString() is { Length: > 0 },
-        _ => true,
-    };
-
-    private static bool LooksLikeEmptyExecute(AcpPermissionAsk ask) =>
-        IsBlankInput(ask.InputJson) && GenericToolNames.Contains(ask.Tool.Trim());
-
-    private static List<(string Id, string? Kind)> ReadPermissionOptions(JsonElement p)
-    {
-        var list = new List<(string, string?)>();
-        if (!p.TryGetProperty("options", out var options) || options.ValueKind != JsonValueKind.Array)
-            return list;
-        foreach (var option in options.EnumerateArray())
-        {
-            if (option.ValueKind != JsonValueKind.Object)
-                continue;
-            if (StringOf(option, "optionId") is not { Length: > 0 } id)
-                continue;
-            list.Add((id, StringOf(option, "kind")));
-        }
-        return list;
-    }
-
-    private static string? FirstOfKind(List<(string Id, string? Kind)> options, string kind)
-    {
-        foreach (var option in options)
-            if (option.Kind == kind)
-                return option.Id;
-        return null;
-    }
-
-    private void CompletePending(JsonElement id, JsonElement root)
-    {
-        if (!TryReadId(id, out var key) || !_pending.TryRemove(key, out var pending))
-            return;
-
-        if (root.TryGetProperty("error", out var error) && error.ValueKind == JsonValueKind.Object)
-        {
-            var message = StringOf(error, "message") ?? "the agent returned an error";
-            var code = error.TryGetProperty("code", out var c) && c.ValueKind == JsonValueKind.Number
-                ? c.GetInt32()
-                : 0;
-            pending.TrySetException(new AcpProtocolException($"{message} (JSON-RPC {code})", code));
-            return;
-        }
-
-        // Cloned because the owning JsonDocument is disposed the moment this line's `using`
-        // block ends, and the awaiting caller reads the result well after that.
-        var result = root.TryGetProperty("result", out var r) ? r.Clone() : default;
-        pending.TrySetResult(new AcpResult(result));
-    }
-
-    private async Task<AcpResult> RequestAsync(string method, Action<Utf8JsonWriter> writeParams, CancellationToken ct)
-    {
-        var id = Interlocked.Increment(ref _nextId);
-        var pending = new TaskCompletionSource<AcpResult>(TaskCreationOptions.RunContinuationsAsynchronously);
-        _pending[id] = pending;
-
-        try
-        {
-            await SendAsync(id, method, writeParams, ct).ConfigureAwait(false);
-        }
-        catch
-        {
-            _pending.TryRemove(id, out _);
-            throw;
-        }
-
-        // No timeout here on purpose. A prompt turn legitimately runs for hours, and the
-        // clocks that decide whether a worker is stuck already exist and are better
-        // informed than a fixed number here would be: the plane's per-task liveness moves
-        // on the tool-call events this client emits, the no-progress ceiling bounds a
-        // silent one, and the stop deadline bounds a cancelled one. A second timeout here
-        // would only be able to disagree with them.
-        using (ct.Register(static s => ((TaskCompletionSource<AcpResult>)s!).TrySetCanceled(), pending))
-            return await pending.Task.ConfigureAwait(false);
-    }
-
-    /// <summary>A request or a notification: <paramref name="id"/> null makes it the latter.</summary>
-    private Task SendAsync(long? id, string method, Action<Utf8JsonWriter>? writeParams, CancellationToken ct) =>
-        WriteMessageAsync(
-            w =>
-            {
-                if (id is { } numeric)
-                    w.WriteNumber("id", numeric);
-                w.WriteString("method", method);
-                if (writeParams is not null)
-                {
-                    w.WriteStartObject("params");
-                    writeParams(w);
-                    w.WriteEndObject();
-                }
-            },
-            ct);
-
-    /// <summary>A successful response to an agent-initiated request, echoing its id verbatim.</summary>
-    private Task SendResponseAsync(JsonElement id, Action<Utf8JsonWriter> writeResult, CancellationToken ct) =>
-        WriteMessageAsync(
-            w =>
-            {
-                w.WritePropertyName("id");
-                id.WriteTo(w);
-                w.WriteStartObject("result");
-                writeResult(w);
-                w.WriteEndObject();
-            },
-            ct);
-
-    private Task SendErrorAsync(JsonElement id, int code, string message, CancellationToken ct) =>
-        WriteMessageAsync(
-            w =>
-            {
-                w.WritePropertyName("id");
-                id.WriteTo(w);
-                w.WriteStartObject("error");
-                w.WriteNumber("code", code);
-                w.WriteString("message", message);
-                w.WriteEndObject();
-            },
-            ct);
-
-    /// <summary>
-    /// Writes one JSON-RPC message as one line. Serialized on <see cref="_writeLock"/>
-    /// because the transport is newline-delimited and messages MUST NOT contain embedded
-    /// newlines: two concurrent writers — the driver mid-handshake and a
-    /// <see cref="CancelAsync"/> arriving from the supervisor's stop path — would otherwise
-    /// interleave into a line that parses as neither.
-    /// </summary>
-    private async Task WriteMessageAsync(Action<Utf8JsonWriter> writeBody, CancellationToken ct)
-    {
-        var stdin = _stdin ?? throw new InvalidOperationException("the ACP client is not connected");
-
-        var buffer = new ArrayBufferWriter<byte>(512);
-        using (var w = new Utf8JsonWriter(buffer))
-        {
-            w.WriteStartObject();
-            w.WriteString("jsonrpc", "2.0");
-            writeBody(w);
-            w.WriteEndObject();
-        }
-
-        // Utf8JsonWriter never emits a raw newline inside a value (it escapes them), so the
-        // one appended here is unambiguously the frame delimiter the transport requires.
-        var line = System.Text.Encoding.UTF8.GetString(buffer.WrittenSpan) + "\n";
-
-        await _writeLock.WaitAsync(ct).ConfigureAwait(false);
-        try
-        {
-            await stdin.WriteAsync(line.AsMemory(), ct).ConfigureAwait(false);
-            await stdin.FlushAsync(ct).ConfigureAwait(false);
-        }
-        finally
-        {
-            _writeLock.Release();
-        }
-    }
-
-    private void FailPending(Exception e)
-    {
-        foreach (var key in _pending.Keys)
-            if (_pending.TryRemove(key, out var pending))
-                pending.TrySetException(e);
     }
 
     /// <summary>
@@ -1621,7 +1276,7 @@ public sealed class AcpClient
     /// </summary>
     private void ReportSilentStream()
     {
-        if (_sessionId is not null || _messages > 0)
+        if (_sessionId is not null || Volatile.Read(ref _messages) > 0)
             return;
 
         _warn(
@@ -1631,27 +1286,62 @@ public sealed class AcpClient
             "The task did no work (§10).");
     }
 
-    private static bool TryReadId(JsonElement id, out long key)
+    private bool TryMarkDeclined(string method)
     {
-        if (id.ValueKind == JsonValueKind.Number && id.TryGetInt64(out key))
-            return true;
-
-        // A string id is legal JSON-RPC and some agents echo ours back as one.
-        if (id.ValueKind == JsonValueKind.String && long.TryParse(id.GetString(), out key))
-            return true;
-
-        key = 0;
-        return false;
+        lock (_stateGate)
+            return _declined.Add(method);
     }
 
-    private static string? StringOf(JsonElement obj, string name) =>
-        obj.TryGetProperty(name, out var v) && v.ValueKind == JsonValueKind.String ? v.GetString() : null;
+    private void WarnDeclined(string method)
+    {
+        if (!TryMarkDeclined(method))
+            return;
+        _warn(
+            $"landbridged: task {_task.Value}: the agent asked landbridged to perform '{method}' and was refused — " +
+            "this client declares the ACP fs and terminal capabilities UNSUPPORTED, because a Landbridge " +
+            "worker is expected to use its own work dir and its own shell. An agent that delegates all " +
+            "of its file or command access to the client cannot work under that declaration, and this " +
+            "line is the only sign of it: check whether this harness needs a client-side terminal (§10).");
+    }
 
-    private sealed record PendingRawInputPermission(
-        string ToolCallId,
-        JsonElement RpcId,
-        string ParamsJson,
-        CancellationTokenSource Timeout);
+    private Task<T> Refuse<T>(string method)
+    {
+        WarnDeclined(method);
+        return Task.FromException<T>(
+            new AcpException(AcpErrorCode.MethodNotFound, $"landbridged does not implement '{method}'"));
+    }
+
+    /// <summary>The methods the agent may call on landbridged. Permission is answered; fs and terminal are not.</summary>
+    private sealed class InboundHandler(AcpClient owner) : IAcpClient
+    {
+        public Task<RequestPermissionResponse> SessionRequestPermissionAsync(
+            RequestPermissionRequest request, CancellationToken cancellationToken) =>
+            owner.HandlePermissionAsync(request, cancellationToken);
+
+        public Task SessionUpdateAsync(SessionNotification request, CancellationToken cancellationToken) =>
+            owner.HandleSessionUpdateAsync(request, cancellationToken);
+
+        public Task<WriteTextFileResponse> FsWriteTextFileAsync(WriteTextFileRequest request, CancellationToken cancellationToken) =>
+            owner.Refuse<WriteTextFileResponse>("fs/write_text_file");
+
+        public Task<ReadTextFileResponse> FsReadTextFileAsync(ReadTextFileRequest request, CancellationToken cancellationToken) =>
+            owner.Refuse<ReadTextFileResponse>("fs/read_text_file");
+
+        public Task<CreateTerminalResponse> TerminalCreateAsync(CreateTerminalRequest request, CancellationToken cancellationToken) =>
+            owner.Refuse<CreateTerminalResponse>("terminal/create");
+
+        public Task<TerminalOutputResponse> TerminalOutputAsync(TerminalOutputRequest request, CancellationToken cancellationToken) =>
+            owner.Refuse<TerminalOutputResponse>("terminal/output");
+
+        public Task<ReleaseTerminalResponse> TerminalReleaseAsync(ReleaseTerminalRequest request, CancellationToken cancellationToken) =>
+            owner.Refuse<ReleaseTerminalResponse>("terminal/release");
+
+        public Task<WaitForTerminalExitResponse> TerminalWaitForExitAsync(WaitForTerminalExitRequest request, CancellationToken cancellationToken) =>
+            owner.Refuse<WaitForTerminalExitResponse>("terminal/wait_for_exit");
+
+        public Task<KillTerminalResponse> TerminalKillAsync(KillTerminalRequest request, CancellationToken cancellationToken) =>
+            owner.Refuse<KillTerminalResponse>("terminal/kill");
+    }
 }
 
 /// <summary>
@@ -1693,13 +1383,13 @@ public sealed record AcpSessionRequest(
     IReadOnlyDictionary<string, string>? ConfigOptions = null,
     string? SessionMode = null);
 
-/// <summary>One MCP server as ACP's <c>session/new</c> wants it: HTTP, named, with headers.</summary>
 /// <summary>What the agent is asking the plane to decide.</summary>
 public readonly record struct AcpPermissionAsk(string Tool, string InputJson, string OptionsJson = "[]");
 
 /// <summary>The plane's verdict, before it is mapped onto the agent's options.</summary>
 public readonly record struct AcpPermissionDecision(bool Allow, string? Message, string? OptionId = null);
 
+/// <summary>One MCP server as ACP's <c>session/new</c> wants it: HTTP, named, with headers.</summary>
 public sealed record AcpMcpServer(
     string Name,
     string Url,
@@ -1771,9 +1461,6 @@ public static class AcpMcpServers
         }
     }
 }
-
-/// <summary>A JSON-RPC <c>result</c>, cloned off the line's document so it outlives the read.</summary>
-public readonly record struct AcpResult(JsonElement Value);
 
 /// <summary>
 /// A failure of the conversation itself — a JSON-RPC error, a missing sessionId, or a
