@@ -1,7 +1,10 @@
 /**
- * Stateless classification. Read-only shell first, Qwen destroy-guard next,
- * two-stage LLM last. Unknown / error is Ask. Never Deny. The HTTP server
- * refuses to start without a model and API key; tests may omit the LLM.
+ * Stateless classification. If a command can be parsed and the Qwen
+ * read-only checker allows it, that is the answer. Destroy-guard is Ask
+ * with no model override. Everything else — including a title/rawInput we
+ * could not parse as a command — goes to the two-stage LLM. Vacuous
+ * execute (named shell, empty input, no command) is Ask, not a model call.
+ * Unknown / error is Ask. Never Deny.
  */
 
 const SHELL_TOOLS = new Set([
@@ -103,6 +106,46 @@ export function resolveCommand(tool, input) {
   return extractCommand(input) ?? commandFromToolTitle(tool);
 }
 
+export function isEmptyInput(input) {
+  if (input == null) return true;
+  if (typeof input === "string") {
+    const t = input.trim();
+    return t === "" || t === "{}" || t === "null";
+  }
+  if (typeof input === "object") {
+    if (Array.isArray(input)) return input.length === 0;
+    return Object.keys(input).length === 0;
+  }
+  return false;
+}
+
+function noCommandResult(isNamedShell) {
+  return {
+    disposition: "ask",
+    via: isNamedShell ? "no-command" : "not-shell",
+    reason: "",
+  };
+}
+
+async function runLlm(llm, { tool, input, command }) {
+  try {
+    const r = await llm({ tool, input, command });
+    if (r && r.disposition === "allow")
+      return {
+        disposition: "allow",
+        via: r.via ?? "classifier",
+        reason: r.reason ?? "",
+      };
+    return {
+      disposition: "ask",
+      via: r?.via ?? "classifier-block",
+      reason: r?.reason ?? "",
+    };
+  } catch {
+    return { disposition: "ask", via: "classifier-unavailable", reason: "" };
+  }
+}
+
 export async function classify({ tool, input }, hooks = {}) {
   const isReadOnly = typeof hooks === "function" ? hooks : hooks.isReadOnly;
   const matchDestructive =
@@ -112,15 +155,7 @@ export async function classify({ tool, input }, hooks = {}) {
   const isNamedShell = SHELL_TOOLS.has(name);
   const command = resolveCommand(tool, input);
 
-  if (!command) {
-    return {
-      disposition: "ask",
-      via: isNamedShell ? "no-command" : "not-shell",
-      reason: "",
-    };
-  }
-
-  if (typeof isReadOnly === "function") {
+  if (command && typeof isReadOnly === "function") {
     let ok = false;
     try {
       ok = await isReadOnly(command);
@@ -130,7 +165,7 @@ export async function classify({ tool, input }, hooks = {}) {
     if (ok) return { disposition: "allow", via: "readonly-shell", reason: "" };
   }
 
-  if (typeof matchDestructive === "function") {
+  if (command && typeof matchDestructive === "function") {
     try {
       const hit = matchDestructive(command);
       if (hit?.blocked) {
@@ -146,23 +181,10 @@ export async function classify({ tool, input }, hooks = {}) {
   }
 
   if (typeof llm === "function") {
-    try {
-      const r = await llm({ tool, input, command });
-      if (r && r.disposition === "allow")
-        return {
-          disposition: "allow",
-          via: r.via ?? "classifier",
-          reason: r.reason ?? "",
-        };
-      return {
-        disposition: "ask",
-        via: r?.via ?? "classifier-block",
-        reason: r?.reason ?? "",
-      };
-    } catch {
-      return { disposition: "ask", via: "classifier-unavailable", reason: "" };
-    }
+    if (!command && isEmptyInput(input)) return noCommandResult(isNamedShell);
+    return runLlm(llm, { tool, input, command: command ?? null });
   }
 
+  if (!command) return noCommandResult(isNamedShell);
   return { disposition: "ask", via: "not-readonly", reason: "" };
 }

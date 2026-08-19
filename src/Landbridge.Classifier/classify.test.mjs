@@ -22,10 +22,46 @@ test("extractCommand accepts string, object, and argv", () => {
   assert.equal(extractCommand({}), null);
 });
 
-test("non-shell tools ask", async () => {
+test("non-shell tools ask when there is no LLM", async () => {
   const r = await classify({ tool: "Read", input: { path: "a.cs" } }, allow);
   assert.equal(r.disposition, "ask");
   assert.equal(r.via, "not-shell");
+});
+
+test("unparsed title and rawInput get an LLM second chance", async () => {
+  let seen;
+  const r = await classify(
+    { tool: "Read", input: { path: "a.cs" } },
+    {
+      isReadOnly: allow,
+      llm: async (payload) => {
+        seen = payload;
+        return { disposition: "allow", via: "classifier-fast" };
+      },
+    },
+  );
+  assert.equal(r.disposition, "allow");
+  assert.equal(r.via, "classifier-fast");
+  assert.equal(seen.command, null);
+  assert.equal(seen.tool, "Read");
+  assert.equal(seen.input.path, "a.cs");
+});
+
+test("empty execute does not call the LLM", async () => {
+  let called = false;
+  const r = await classify(
+    { tool: "Bash", input: {} },
+    {
+      isReadOnly: allow,
+      llm: async () => {
+        called = true;
+        return { disposition: "allow", via: "should-not-run" };
+      },
+    },
+  );
+  assert.equal(r.disposition, "ask");
+  assert.equal(r.via, "no-command");
+  assert.equal(called, false);
 });
 
 test("ACP title-as-command is treated as shell", async () => {
