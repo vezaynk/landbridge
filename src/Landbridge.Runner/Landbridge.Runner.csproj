@@ -23,6 +23,12 @@
     <ProjectReference Include="..\Landbridge.Contracts\Landbridge.Contracts.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <!-- AOT-safe ACP v1 client. Owns JSON-RPC framing and the typed protocol
+         surface; AcpClient keeps Landbridge session policy on top. -->
+    <PackageReference Include="AcpKit.Client.V1" Version="0.0.4" />
+  </ItemGroup>
+
   <!-- §1 tracing: landbridged exports traces/metrics to the Aspire dashboard when
        OTEL_EXPORTER_OTLP_ENDPOINT is set. Versions match Landbridge.ServiceDefaults.
        The OTLP setup is isolated behind RunnerTelemetry.TryStartOtelExport (with a

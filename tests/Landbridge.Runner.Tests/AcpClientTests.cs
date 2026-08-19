@@ -1224,6 +1224,7 @@ public sealed class AcpClientTests
         private readonly TaskCompletionSource _promptHeld = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly Lock _gate = new();
         private readonly Channel<int> _turnsSeen = Channel.CreateUnbounded<int>();
+        private readonly TaskCompletionSource _permissionAnswered = new(TaskCreationOptions.RunContinuationsAsynchronously);
         private int _turns;
 
         public bool LoadSession { get; init; }
@@ -1286,7 +1287,7 @@ public sealed class AcpClientTests
             {
                 var current = PinnedOptions.GetValueOrDefault(id, advertised);
                 parts.Add(
-                    $$"""{"id":"{{id}}","type":"select","currentValue":"{{current}}","options":[{"value":"{{advertised}}","name":"{{id}}"}]}""");
+                    $$"""{"id":"{{id}}","name":"{{id}}","type":"select","currentValue":"{{current}}","options":[{"value":"{{advertised}}","name":"{{id}}"}]}""");
             }
 
             return "[" + string.Join(",", parts) + "]";
@@ -1307,7 +1308,7 @@ public sealed class AcpClientTests
         /// <c>options</c>. Default is the title-only shape; Codex sends a
         /// <c>toolCall</c> that often omits <c>rawInput</c>.</summary>
         public string PermissionParams { get; init; } =
-            """{"sessionId":"sess_1","title":"Approve?","options":%options%}""";
+            """{"sessionId":"sess_1","toolCall":{"toolCallId":"perm_1","title":"Approve?"},"options":%options%}""";
         public string? RequestDuringPrompt { get; init; }
         public string? NoiseBeforeResponses { get; init; }
         public IReadOnlyList<string> DuringPrompt { get; init; } = [];
@@ -1315,8 +1316,8 @@ public sealed class AcpClientTests
         /// client can keep reading while an empty permission waits for <c>rawInput</c>.</summary>
         public IReadOnlyList<string> AfterPermission { get; init; } = [];
 
-        public TextReader AgentToClient { get; }
-        public TextWriter ClientToAgent { get; }
+        public Stream AgentToClient { get; }
+        public Stream ClientToAgent { get; }
 
         public JsonElement? PermissionResponse { get; private set; }
 
@@ -1337,8 +1338,8 @@ public sealed class AcpClientTests
 
         public FakeAgent()
         {
-            AgentToClient = new ChannelLineReader(_toClient);
-            ClientToAgent = new LineWriter(OnClientLine);
+            AgentToClient = new ChannelOutputStream(_toClient);
+            ClientToAgent = new LineInputStream(OnClientLine);
         }
 
         public List<string> MethodsReceived
@@ -1395,6 +1396,7 @@ public sealed class AcpClientTests
                     UnsupportedResponse = message;
                 else
                     PermissionResponse = message;
+                _permissionAnswered.TrySetResult();
                 return;
             }
 
@@ -1502,17 +1504,26 @@ public sealed class AcpClientTests
             foreach (var update in DuringPrompt)
                 Send(update);
 
+            // Give the client's notification pump a chance to ingest updates that arrived
+            // before the prompt result — AcpKit handles responses immediately and
+            // notifications on a side pump, unlike the old single-threaded read loop.
+            await Task.Delay(20);
+
             if (AskPermissionDuringPrompt)
+            {
                 Send(
                     """{"jsonrpc":"2.0","id":9001,"method":"session/request_permission","params":%params%}"""
                         .Replace("%params%", PermissionParams.Replace("%options%", PermissionOptions)));
 
-            foreach (var update in AfterPermission)
-                Send(update);
+                foreach (var update in AfterPermission)
+                    Send(update);
+
+                await _permissionAnswered.Task.WaitAsync(TimeSpan.FromSeconds(20));
+            }
 
             if (RequestDuringPrompt is { } unsupported)
                 Send(
-                    """{"jsonrpc":"2.0","id":9002,"method":"%method%","params":{"path":"/etc/hosts"}}"""
+                    """{"jsonrpc":"2.0","id":9002,"method":"%method%","params":{"sessionId":"sess_1","path":"/etc/hosts","command":"true"}}"""
                         .Replace("%method%", unsupported));
 
             if (HoldPromptOpen)
@@ -1560,19 +1571,48 @@ public sealed class AcpClientTests
     }
 
     /// <summary>The agent's stdout as the client sees it: one JSON-RPC message per line.</summary>
-    private sealed class ChannelLineReader(Channel<string> lines) : TextReader
+    private sealed class ChannelOutputStream(Channel<string> lines) : Stream
     {
-        public override async ValueTask<string?> ReadLineAsync(CancellationToken ct)
+        private byte[] _remainder = [];
+
+        public override bool CanRead => true;
+        public override bool CanSeek => false;
+        public override bool CanWrite => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
         {
-            try
-            {
-                return await lines.Reader.ReadAsync(ct);
-            }
-            catch (ChannelClosedException)
-            {
-                return null;
-            }
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
         }
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            if (_remainder.Length == 0)
+            {
+                try
+                {
+                    var line = await lines.Reader.ReadAsync(cancellationToken);
+                    _remainder = Encoding.UTF8.GetBytes(line + "\n");
+                }
+                catch (ChannelClosedException)
+                {
+                    return 0;
+                }
+            }
+
+            var take = Math.Min(buffer.Length, _remainder.Length);
+            _remainder.AsSpan(0, take).CopyTo(buffer.Span);
+            _remainder = _remainder[take..];
+            return take;
+        }
+
+        public override int Read(byte[] buffer, int offset, int count) =>
+            ReadAsync(buffer.AsMemory(offset, count)).AsTask().GetAwaiter().GetResult();
+
+        public override void Flush() { }
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
     }
 
     /// <summary>
@@ -1580,32 +1620,44 @@ public sealed class AcpClientTests
     /// as its frame delimiter — which is a real assertion in itself, since a client that
     /// embedded a newline in a message would show up here as two unparseable halves.
     /// </summary>
-    private sealed class LineWriter(Action<string> onLine) : TextWriter
+    private sealed class LineInputStream(Action<string> onLine) : Stream
     {
-        private readonly StringBuilder _buffer = new();
+        private readonly List<byte> _buffer = [];
 
-        public override Encoding Encoding => Encoding.UTF8;
-
-        public override void Write(char value)
+        public override bool CanRead => false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
         {
-            if (value == '\n')
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            foreach (var b in buffer.Span)
             {
-                var line = _buffer.ToString();
-                _buffer.Clear();
-                onLine(line);
-                return;
+                if (b == (byte)'\n')
+                {
+                    var line = Encoding.UTF8.GetString(_buffer.ToArray());
+                    _buffer.Clear();
+                    onLine(line);
+                    continue;
+                }
+
+                _buffer.Add(b);
             }
 
-            _buffer.Append(value);
+            return ValueTask.CompletedTask;
         }
 
-        public override Task WriteAsync(ReadOnlyMemory<char> buffer, CancellationToken ct = default)
-        {
-            foreach (var c in buffer.Span)
-                Write(c);
-            return System.Threading.Tasks.Task.CompletedTask;
-        }
-
-        public override Task FlushAsync(CancellationToken ct) => System.Threading.Tasks.Task.CompletedTask;
+        public override Task FlushAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public override void Flush() { }
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) =>
+            WriteAsync(buffer.AsMemory(offset, count)).AsTask().GetAwaiter().GetResult();
     }
 }
