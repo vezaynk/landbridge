@@ -282,7 +282,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
-    public void List_profiles_shows_a_lead_the_declared_profiles_the_machines_offering_them_and_liveness()
+    public async Task List_profiles_shows_a_lead_the_declared_profiles_the_machines_offering_them_and_liveness()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         // §7/§10: the routing read. A Lead about to set create_session(profile:) needs the
@@ -295,7 +295,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         registry.ApplyHeartbeat("m2", Heartbeat("m2", "default"));
         var tools = LeadFor(new Principal.Lead(Team), registry);
 
-        var view = tools.ListProfiles();
+        var view = await tools.ListProfiles(CancellationToken.None);
 
         Assert.Equal(new[] { "default", "gpu" }, view.Profiles.Select(p => p.Profile));
         Assert.Equal(2, view.ConnectedMachines);
@@ -317,7 +317,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
-    public void List_profiles_refuses_a_worker_and_tells_it_nothing_about_the_fleet()
+    public async Task List_profiles_refuses_a_worker_and_tells_it_nothing_about_the_fleet()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         // Lead-only through the real authority path: the principal is rebuilt from the
@@ -328,7 +328,8 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         registry.ApplyHeartbeat("secret-machine", Heartbeat("secret-machine", "restricted"));
         var worker = new Principal.Worker(new WorkerCaller(Team, SessionId.New(), WorkerInstanceId.New()));
 
-        var refused = Assert.Throws<McpException>(() => LeadFor(worker, registry).ListProfiles());
+        var refused = await Assert.ThrowsAsync<McpException>(
+            () => LeadFor(worker, registry).ListProfiles(CancellationToken.None));
 
         // The refusal must not leak the answer it withheld — this read is fleet-wide, so a
         // message naming a machine or a profile would hand a worker exactly the enumeration
@@ -341,7 +342,8 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         var evicted = new Principal.EvictedLead(Team, Guid.NewGuid(), DateTimeOffset.UtcNow);
         Assert.Contains(
             "taken over",
-            Assert.Throws<McpException>(() => LeadFor(evicted, registry).ListProfiles()).Message,
+            (await Assert.ThrowsAsync<McpException>(
+                () => LeadFor(evicted, registry).ListProfiles(CancellationToken.None))).Message,
             StringComparison.Ordinal);
     }
 

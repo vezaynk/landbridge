@@ -1,0 +1,13 @@
+<DashboardDocument Title="Lead claim refused" ActiveKey="connect">
+<h1>Lead claim refused</h1>
+<p class="sub">@Reason</p>
+<section>
+    <p>This Team already has a live Lead. Check the box to take over only if you
+        mean to evict them — their next call is told who did it.</p>
+    <p><a href="/dashboard/connect">← back to Connect</a></p>
+</section>
+</DashboardDocument>
+
+@code {
+    [Parameter] public string Reason { get; set; } = "";
+}

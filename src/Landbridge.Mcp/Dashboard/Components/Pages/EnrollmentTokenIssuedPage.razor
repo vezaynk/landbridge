@@ -1,0 +1,22 @@
+<DashboardDocument Title="Enrollment token" ActiveKey="connect">
+<h1>Enrollment token issued</h1>
+<p class="sub">Shown once. 15 minutes, single-use. Never put it on argv.</p>
+<section class="secret">
+    <label for="token">Token</label>
+    <input id="token" type="text" class="mono" readonly value="@Token" />
+    <p class="nt">Expires @ExpiresAt.ToString("u"). Write it to a 0600 file, then:</p>
+    <pre class="howto">landbridged --enroll \
+  --control-url @ControlUrl \
+  --enroll-token-file ./enroll.token \
+  --name &lt;harness&gt;-&lt;hostname&gt;-&lt;os&gt; \
+  --purpose "worker" \
+  --permission-level standard</pre>
+</section>
+<p><a href="/dashboard/connect">← back to Connect</a></p>
+</DashboardDocument>
+
+@code {
+    [Parameter, EditorRequired] public string Token { get; set; } = "";
+    [Parameter] public DateTimeOffset ExpiresAt { get; set; }
+    [Parameter, EditorRequired] public string ControlUrl { get; set; } = "";
+}

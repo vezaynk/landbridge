@@ -21,6 +21,14 @@ public static class PermissionRelay
         TimeProvider clock,
         CancellationToken ct)
     {
+        switch (PermissionPolicy.Classify(tool, proposedInput))
+        {
+            case PermissionDisposition.AutoAllow:
+                return PermissionRelayResult.Allowed();
+            case PermissionDisposition.AutoDeny:
+                return PermissionRelayResult.Denied(PermissionPolicy.AutoDenyMessage(tool));
+        }
+
         var opened = await store.ApplyAsync(
             caller.Session,
             new RequestInput(caller, InputRequestKind.Permission, proposedInput, tool),

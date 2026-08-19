@@ -170,14 +170,14 @@ if (!string.IsNullOrWhiteSpace(devSeedTokenDir))
 
     foreach (var harness in (string[])["codex", "claude", "grok"])
     {
-        var name = $"{harness}-linux";
+        var name = DevSeedNaming.Box(harness);
         var enrollment = await tokens.IssueEnrollmentTokenAsync();
         var credentials = await tokens.ExchangeEnrollmentAsync(
             enrollment.Token,
             new MachineDeclaration(
                 Name: name,
-                Purpose: $"Aspire dev-loop {harness} box",
-                Os: "linux",
+                Purpose: $"Aspire dev-loop {harness} box on {DevSeedNaming.Host}",
+                Os: DevSeedNaming.Os,
                 PermissionLevel: "standard"))
             ?? throw new InvalidOperationException($"dev seed: enrollment exchange returned null for {name}");
 

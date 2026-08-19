@@ -1,0 +1,177 @@
+@page "/dashboard/connect"
+@inherits DashboardPageBase
+
+<PageTitle>Connect · Landbridge</PageTitle>
+
+@if (RefuseReason is { } reason)
+{
+    <ScopeCard Reason="@reason" />
+}
+else if (Ready)
+{
+    <h1>Connect</h1>
+    <p class="sub">How a Lead reaches this plane, and how a new machine joins the fleet.</p>
+
+    <section class="howto">
+        <h2>Connect as a Lead</h2>
+        <p>A Lead is a harness the operator drives. It talks to this plane over MCP
+            with a <span class="mono">lbr_l_…</span> token. The dashboard login is a
+            <em>human</em> session; Lead tools require a Lead claim on a Team.</p>
+        <ol>
+            <li>
+                Claim a Team with the form below (operator / human session only). That
+                mints a <span class="mono">lbr_l_…</span> token. One live Lead per Team;
+                a second claimant is refused unless they take over. There is no
+                <span class="mono">claim_lead</span> MCP tool and no
+                <span class="mono">/landbridge-lead</span> slash command — claiming is
+                this credential step.
+            </li>
+            <li>
+                Point the harness at this plane with that token as a static bearer.
+                The MCP endpoint is <span class="mono">POST @McpUrl</span> (the origin,
+                not <span class="mono">/mcp</span>). Grok (and any client that only
+                speaks Dynamic Client Registration) cannot complete OAuth here —
+                this plane has no <span class="mono">/register</span>; clients are
+                identified by a Client ID Metadata Document. Put the token in the
+                header instead:
+                <pre class="howto">[mcp_servers.landbridge]
+url = "@McpUrl"
+enabled = true
+
+[mcp_servers.landbridge.headers]
+Authorization = "Bearer lbr_l_…"</pre>
+                Then refresh <span class="mono">/mcps</span> (or restart the harness).
+            </li>
+            <li>
+                A CIMD client (Claude Code) can OAuth instead: authorization code +
+                PKCE S256, same operator passphrase as this dashboard. That mints a
+                <span class="mono">lbr_h_…</span> human session, not a Lead — still
+                claim a Team and send the <span class="mono">lbr_l_…</span> token.
+                Discovery is
+                <span class="mono">/.well-known/oauth-protected-resource</span> and
+                <span class="mono">/.well-known/oauth-authorization-server</span>.
+            </li>
+            <li>
+                Read <span class="mono">landbridge://skills/lead</span> from
+                <span class="mono">resources/list</span>. Call
+                <span class="mono">list_profiles</span>, then
+                <span class="mono">create_session</span> with an exact name that came
+                back. There is no reserved <span class="mono">default</span>.
+            </li>
+        </ol>
+        @if (Principal is Principal.Lead lead)
+        {
+            <p>This session is already the Lead of Team
+                <TeamLink TeamId="@lead.Team.Value" />. Paste that same token into a
+                harness, or stay here and drive from the Team view.</p>
+        }
+        else if (Principal is Principal.Human)
+        {
+            <form class="card connect-claim" method="post" action="/dashboard/connect/claim">
+                <label for="teamId">Team id</label>
+                <input id="teamId" type="text" name="teamId" class="mono"
+                       spellcheck="false" autocomplete="off"
+                       placeholder="leave blank to start a new Team" />
+                <label class="check">
+                    <input type="checkbox" name="takeover" value="true" />
+                    Take over if this Team already has a Lead
+                </label>
+                <p class="nt">Claim Lead shows the token once. One-time setup link
+                    mints a URL whose first GET is markdown that contains the bearer
+                    — paste that URL to an agent; do not open it yourself. A takeover
+                    evicts the incumbent; their next call is told who did it.</p>
+                <button type="submit">Claim Lead</button>
+                <button type="submit" formaction="/dashboard/connect/setup-link">
+                    One-time setup link
+                </button>
+            </form>
+        }
+    </section>
+
+    <section class="howto">
+        <h2>Enroll a machine</h2>
+        <p><span class="mono">landbridged</span> dials out. Enrollment exchanges a
+            single-use, 15-minute token for persistent machine credentials. Never put
+            the token on argv — it would land in shell history and
+            <span class="mono">/proc/…/cmdline</span>.</p>
+        <ol>
+            <li>Issue a token with the form below (operator only).</li>
+            <li>
+                On the box, write it to a <span class="mono">0600</span> file and exchange it:
+                <pre class="howto">landbridged --enroll \
+  --control-url @McpUrl \
+  --enroll-token-file ./enroll.token \
+  --name &lt;harness&gt;-&lt;hostname&gt;-&lt;os&gt; \
+  --purpose "worker" \
+  --permission-level standard
+
+# or pipe, no file:
+landbridged --enroll --control-url @McpUrl &lt; enroll.token</pre>
+                That POSTs <span class="mono">/enroll</span> and writes
+                <span class="mono">credentials.json</span> under the state dir
+                (<span class="mono">0600</span> in a <span class="mono">0700</span> directory).
+                Treat that file as the machine: a copy is a working identity on any host.
+            </li>
+            <li>
+                Write a runner config. Spawn is the ACP entry point
+                (<span class="mono">claude-agent-acp</span>,
+                <span class="mono">codex-acp</span>,
+                <span class="mono">grok agent stdio</span>,
+                <span class="mono">opencode acp</span>,
+                <span class="mono">goose acp</span>).
+                Name the first profile <span class="mono">&lt;harness&gt;-&lt;hostname&gt;-&lt;os&gt;</span>
+                and offer a group name (<span class="mono">any-linux</span> /
+                <span class="mono">any-macos</span> /
+                <span class="mono">any-windows</span>).
+                <span class="mono">prompt</span> and <span class="mono">follow_up</span>
+                must spell landbridge tools the way <em>this</em> harness does.
+                Do not put bypass / always-approve on <span class="mono">spawn</span>.
+                Read <span class="mono">landbridge://skills/enroll</span> and
+                <span class="mono">landbridge://skills/runner-config</span> —
+                there is no <span class="mono">/landbridge-enroll</span> slash command.
+            </li>
+            <li>
+                Start the daemon (same <span class="mono">--state-dir</span> you enrolled with):
+                <pre class="howto">landbridged --config /etc/landbridged/config.json --state-dir /var/lib/landbridged</pre>
+                <span class="mono">landbridged</span> reads the config once, at start.
+                A rewrite is invisible until you restart; a restart kills every agent
+                on the box and their sessions go <span class="mono">Failed</span>.
+            </li>
+            <li>
+                Confirm the machine and its profile badges on
+                <a href="/dashboard/machines">Machines</a>, then run a
+                <a href="/dashboard/conformance">profile check</a> against each name.
+                A badge is not a passing check. When you are done, park or accept the
+                dummies — a report keeps the process.
+            </li>
+        </ol>
+        @if (Principal is Principal.Human)
+        {
+            <form class="card connect-enroll" method="post" action="/dashboard/connect/enroll-token">
+                <p class="nt">The token is shown once. 15 minutes, single-use.
+                    The Aspire loop already enrolled its three seed boxes; this is
+                    for a machine that is not in that set.</p>
+                <button type="submit">Issue enrollment token</button>
+            </form>
+        }
+        else
+        {
+            <p class="nt">Issuing an enrollment token is a human-operator action.
+                Ask your operator; a Lead token cannot mint one.</p>
+        }
+    </section>
+}
+
+@code {
+    [Inject] private IConfiguration Config { get; set; } = default!;
+
+    protected override bool AutoRefresh => false;
+
+    private string McpUrl { get; set; } = DispatchService.DefaultPublicMcpUrl;
+
+    protected override Task<string?> LoadAsync()
+    {
+        McpUrl = ConnectEndpoints.ResolveMcpUrl(Config, Http.HttpContext);
+        return Task.FromResult<string?>(null);
+    }
+}

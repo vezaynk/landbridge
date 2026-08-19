@@ -611,6 +611,29 @@ public sealed class SessionStore(
     }
 
     /// <summary>
+    /// Enroll-time labels for list_profiles: name and OS, so a Lead can tell
+    /// three profiles on one laptop from three Linux boxes.
+    /// </summary>
+    public async Task<IReadOnlyDictionary<string, (string Name, string Os)>> GetMachineLabelsAsync(
+        IEnumerable<string> machineIds, CancellationToken ct = default)
+    {
+        var ids = machineIds
+            .Select(id => Guid.TryParse(id, out var g) ? g : (Guid?)null)
+            .Where(g => g is not null)
+            .Select(g => g!.Value)
+            .Distinct()
+            .ToArray();
+        if (ids.Length == 0)
+            return new Dictionary<string, (string, string)>(StringComparer.Ordinal);
+
+        var rows = await db.Set<Auth.MachineRow>().AsNoTracking()
+            .Where(m => ids.Contains(m.Id))
+            .Select(m => new { m.Id, m.Name, m.Os })
+            .ToListAsync(ct);
+        return rows.ToDictionary(m => m.Id.ToString(), m => (m.Name, m.Os), StringComparer.Ordinal);
+    }
+
+    /// <summary>
     /// The Team view read (§10, §12): task counts by state plus a per-task
     /// structural summary, scoped to one Team. A pure read — it runs no
     /// transition and returns no prose (§10). The caller's Team comes from its
@@ -637,13 +660,10 @@ public sealed class SessionStore(
                 // §10: the bulk read carries only a flag that a report exists, never
                 // the prose — the Lead fetches the text per task via get_session_report.
                 HasReport = t.WorkerReport != null,
-                // §10/§11 the same way for the worker's question: the KIND is typed
-                // structure and rides along (it tells a Lead who can answer, which is
-                // triage), but the question text does not — get_session_question pulls it.
+                // A live wait of any kind — including Permission. The kind is how
+                // you answer (verdict vs prose); has_question is how you notice.
                 t.InputKind,
-                HasQuestion = t.BlockedAt != null
-                    && t.InputKind != null
-                    && t.InputKind != InputRequestKind.Permission,
+                HasQuestion = t.BlockedAt != null && t.InputKind != null,
             })
             .ToListAsync(ct);
 

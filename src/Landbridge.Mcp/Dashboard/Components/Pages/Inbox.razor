@@ -76,8 +76,10 @@ else if (Ready && View is { } inbox)
         }
         else
         {
-            <p class="nt">The plane parked these. They do not requeue. Resume is a Lead note
-                (<code>answer_input_request</code>) if the reason looks flaky.</p>
+            <p class="nt">The plane parked these. They do not requeue.
+                <code>TurnEndedWithoutResult</code> means the harness ended a turn without
+                <code>report_result</code> — resume will not invent a worker. Read the
+                machine transcript, then resume with a note or cancel.</p>
             <table>
                 <thead>
                     <tr><th>Namespace</th><th>Team</th><th>Reason</th><th class="num">Losses</th></tr>
