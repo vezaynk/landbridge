@@ -9,7 +9,7 @@
 # The Postgres-backed suites (ControlPlane, Mcp) stay in ci.yml on ubuntu:
 # GitHub-hosted service containers are Linux-only, and those suites are not
 # platform-sensitive. This matrix runs the pure suites: Core, Contracts,
-# Runner (the per-OS one), Relay.
+# Classifier, Runner (the per-OS one), Relay, Preview.
 name: OS Matrix
 
 on:
@@ -54,6 +54,9 @@ jobs:
 
       - name: Test - Landbridge.Contracts (wire vocabulary)
         run: dotnet test tests/Landbridge.Contracts.Tests --no-build -c Release
+
+      - name: Test - Landbridge.Classifier (argv allowlist + destroy-guard)
+        run: dotnet test tests/Landbridge.Classifier.Tests --no-build -c Release
 
       - name: Test - Landbridge.Runner (per-OS supervision, discovery, reap E2E)
         run: dotnet test tests/Landbridge.Runner.Tests --no-build -c Release

@@ -5,12 +5,22 @@ using Microsoft.Extensions.Configuration;
 
 /// <summary>
 /// Per-box landbridged config for the Aspire loop. Spawn is the real ACP
-/// harness; provider keys stay out of this file and ride landbridged's env.
+/// harness on PATH inside the Linux container; provider keys stay out of this
+/// file and ride landbridged's env.
 /// </summary>
 internal static class DevBoxConfig
 {
     // Same id as tests/Landbridge.MultiMachine.Tests — the paid e2e store.
     public const string MultiMachineSecretsId = "a7e4c8b2-1f93-4d6a-9e20-6c8f1b0d4e7a";
+
+    /// <summary>Container-side work_root. Bind-mounted from the host scratch dir.</summary>
+    public const string ContainerWorkRoot = "/work";
+
+    /// <summary>Container-side state dir. Bind-mounted from the host scratch dir.</summary>
+    public const string ContainerStateDir = "/state";
+
+    /// <summary>Container-side path of the generated runner config.</summary>
+    public const string ContainerConfigPath = "/config/landbridged.json";
 
     public sealed record ProviderKeys(string? Anthropic, string? Codex, string? Xai)
     {
@@ -31,6 +41,25 @@ internal static class DevBoxConfig
         _ => throw new ArgumentOutOfRangeException(nameof(harness), harness, "unknown Aspire-seeded harness"),
     };
 
+    /// <summary>
+    /// Same default as the paid Codex e2e. The adapter's advertised default
+    /// (<c>gpt-5.6-sol</c>) is not on this project's API-key catalog; pinning
+    /// via <c>CODEX_HOME/config.toml</c> is what actually changes the model,
+    /// because ACP <c>config_options</c> only accepts advertised slugs.
+    /// </summary>
+    public static string CodexModel(IConfiguration config) =>
+        FirstNonEmpty(config, "LANDBRIDGE_CODEX_MODEL") ?? "gpt-5.3-codex";
+
+    /// <summary>Container-side <c>CODEX_HOME</c>. Lives under the bind-mounted state dir.</summary>
+    public const string ContainerCodexHome = "/state/codex-home";
+
+    public static void WriteCodexHome(string boxState, string model)
+    {
+        var dir = Path.Combine(boxState, "codex-home");
+        Directory.CreateDirectory(dir);
+        File.WriteAllText(Path.Combine(dir, "config.toml"), $"model = \"{model}\"\n");
+    }
+
     public static string? FirstNonEmpty(IConfiguration config, params string[] names)
     {
         foreach (var name in names)
@@ -49,14 +78,14 @@ internal static class DevBoxConfig
         return null;
     }
 
-    public static string Write(string runDir, string workRoot, string harness, string specificProfile)
+    public static string Write(string runDir, string harness, string specificProfile)
     {
         var recipe = ForHarness(harness);
         var doc = new JsonObject
         {
             ["machine"] = new JsonObject
             {
-                ["work_root"] = workRoot,
+                ["work_root"] = ContainerWorkRoot,
                 ["heartbeat_seconds"] = 2,
             },
             ["profiles"] = new JsonArray(
@@ -80,7 +109,7 @@ internal static class DevBoxConfig
     private static Recipe ForHarness(string harness) => harness switch
     {
         "claude" => new(
-            [ResolveBin("claude-agent-acp")],
+            ["claude-agent-acp"],
             Prompt("mcp__landbridge__get_session", "mcp__landbridge__report_result", "mcp__landbridge__request_input"),
             FollowUp("mcp__landbridge__get_session"),
             AuthMethod: null,
@@ -96,14 +125,14 @@ internal static class DevBoxConfig
                 },
             }),
         "codex" => new(
-            [ResolveBin("codex-acp")],
+            ["codex-acp"],
             Prompt("mcp__landbridge__get_session", "mcp__landbridge__report_result", "mcp__landbridge__request_input"),
             FollowUp("mcp__landbridge__get_session"),
             AuthMethod: "api-key",
-            Env: null,
+            Env: new JsonObject { ["CODEX_HOME"] = ContainerCodexHome },
             Telemetry: null),
         "grok" => new(
-            [ResolveBin("grok"), "agent", "stdio"],
+            ["grok", "agent", "stdio"],
             Prompt("landbridge__get_session", "landbridge__report_result", "landbridge__request_input"),
             FollowUp("landbridge__get_session"),
             AuthMethod: null,
@@ -134,74 +163,21 @@ internal static class DevBoxConfig
             profile["env"] = recipe.Env.DeepClone();
         if (recipe.Telemetry is not null)
             profile["telemetry"] = recipe.Telemetry.DeepClone();
-        profile["files"] = new JsonArray(new JsonObject
-        {
-            ["path"] = "LANDING.md",
-            ["contents"] = LandingMarkdown(recipe.Prompt.Contains("mcp__landbridge__", StringComparison.Ordinal)
-                ? "mcp__landbridge__"
-                : "landbridge__"),
-        });
         return profile;
     }
 
     private static string Prompt(string getSession, string reportResult, string requestInput) =>
-        $"You are a Landbridge worker on a live session. Read LANDING.md in this directory " +
-        $"first — do not search $HOME or ~/.claude for a landbridge skill. Then call the " +
-        $"{getSession} MCP tool to read your assignment (namespace, description, workspace, " +
-        "attempt). Do the work in this session's directory; you are not the only agent on " +
-        "the machine. You must not end a turn until you have called " +
-        $"{reportResult} or {requestInput}. When you think you are done, call {reportResult} " +
-        "with a reference to where the work lives (a branch/commit/URL) — not the work " +
-        "itself — and stay up; the Lead may reply. If you are blocked or a decision is " +
-        $"above your scope, call {requestInput} instead of guessing. You do not complete " +
-        "the session yourself.";
-
-    private static string LandingMarkdown(string toolPrefix) =>
-        $"""
-         # Landbridge worker contract
-
-         You were dispatched. This file is the contract. The skill is not in ~/.claude.
-
-         1. Call `{toolPrefix}get_session` first. Stay up after you report.
-         2. Work only in this directory. Isolate: worktree, random port, unique names.
-         3. Call `{toolPrefix}report_result` with a reference (branch/commit/URL), or `{toolPrefix}request_input` if blocked.
-         4. Do not write `$HOME`, `~/.ssh`, `~/.claude`, or change global git/npm config.
-         5. Do not search the operator's dotfiles for a landbridge skill. This file is it.
-         6. Long work: `{toolPrefix}start_process` when the tool exists.
-
-         Landbridge tools are MCP tools, not a `landbridge` binary.
-         """;
+        $"You are a Landbridge worker on a live session. Read the landbridge-worker skill " +
+        $"from the landbridge MCP server first (`landbridge://skills/worker`). Do not search " +
+        $"$HOME or ~/.claude for a skill. Then call the {getSession} MCP tool to read your " +
+        "assignment (namespace, description, workspace, attempt). Do the work in this " +
+        "session's directory; you are not the only agent on the machine. You must not end " +
+        $"a turn until you have called {reportResult} or {requestInput}. When you think you " +
+        $"are done, call {reportResult} with a reference to where the work lives (a " +
+        "branch/commit/URL) — not the work itself — and stay up; the Lead may reply. If " +
+        $"you are blocked or a decision is above your scope, call {requestInput} instead " +
+        "of guessing. You do not complete the session yourself.";
 
     private static string FollowUp(string getSession) =>
         $"There is new input on your assignment. Call {getSession} to read it, then continue.";
-
-    // Prefer an absolute path so landbridged does not depend on Aspire's PATH
-    // matching the operator's shell. Fall back to the bare name if nothing is
-    // found — landbridged will then search its own PATH and fail loudly.
-    internal static string ResolveBin(string name)
-    {
-        var exe = OperatingSystem.IsWindows() ? name + ".exe" : name;
-        foreach (var dir in (Environment.GetEnvironmentVariable("PATH") ?? "").Split(Path.PathSeparator))
-        {
-            if (string.IsNullOrEmpty(dir)) continue;
-            var candidate = Path.Combine(dir, exe);
-            if (File.Exists(candidate)) return candidate;
-        }
-
-        var home = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        foreach (var fallback in new[]
-                 {
-                     Path.Combine("/usr/local/bin", exe),
-                     Path.Combine("/opt/homebrew/bin", exe),
-                     Path.Combine(home, ".grok", "bin", exe),
-                     Path.Combine(home, ".local", "bin", exe),
-                 })
-        {
-            if (File.Exists(fallback)) return fallback;
-        }
-
-        Console.Error.WriteLine(
-            $"landbridge-apphost: {name} not found on PATH; spawn uses the bare name.");
-        return name;
-    }
 }

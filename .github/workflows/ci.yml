@@ -82,6 +82,9 @@ jobs:
       - name: Test - Landbridge.Contracts (wire vocabulary)
         run: dotnet test tests/Landbridge.Contracts.Tests --no-build -c Release
 
+      - name: Test - Landbridge.Classifier (argv allowlist + destroy-guard)
+        run: dotnet test tests/Landbridge.Classifier.Tests --no-build -c Release
+
       # The bump bot's own logic (tools/Landbridge.HarnessBump): the semver compare, the
       # dist-tags.latest read, the pin rewrite below, and the one-open-PR rule that decides
       # whether to spend a real-harness dispatch at all. Pure and fast — it runs here, on every

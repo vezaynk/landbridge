@@ -2,19 +2,20 @@
 // NOT a production deployment path. In production landbridged runs standalone on
 // each machine (§10, restart=reboot); nothing here couples the runtime to
 // Aspire. What one `dotnet run` here buys you: a managed Postgres, the
-// MCP/control-plane host wired to it, and a real landbridged runner enrolled and
-// connected back — the full Lead → plane → runner → worker loop, with the
-// Aspire dashboard capturing the host's OpenTelemetry traces, logs, and metrics
+// MCP/control-plane host wired to it, and three Linux landbridged containers
+// enrolled and connected back — the full Lead → plane → runner → worker loop,
+// with the Aspire dashboard capturing OpenTelemetry traces, logs, and metrics
 // (the cross-process insight §1 is built around).
 //
 // Three landbridged boxes enroll (via dev-seeded tokens, below), dial /runner,
-// and stand ready: Codex, Claude, and Grok on this host's real OS. Each box spawns
-// the real ACP harness (`codex-acp`, `claude-agent-acp`, `grok agent stdio`).
-// Provider keys come from AppHost user secrets, the MultiMachine secrets id
-// (so the same local store the paid e2e uses also feeds this loop), or the
-// process environment — stamped on that box's landbridged so the child inherits
-// them. They never go in the runner config. No Team is minted — a human Lead
-// creates work over MCP, exactly as in production.
+// and stand ready: Codex, Claude, and Grok inside Linux containers. Each box
+// spawns the real ACP harness (`codex-acp`, `claude-agent-acp`,
+// `grok agent stdio`) from the image. Provider keys come from AppHost user
+// secrets, the MultiMachine secrets id (so the same local store the paid e2e
+// uses also feeds this loop), or the process environment — stamped on that
+// box's landbridged so the child inherits them. They never go in the runner
+// config. No Team is minted — a human Lead creates work over MCP, exactly as
+// in production.
 //
 // landbridged is not a Host builder, so it gets no ServiceDefaults traces.
 // The Claude box opts into harness OTLP (`telemetry.otel`) so token/cost
@@ -38,28 +39,29 @@ var providerKeys = new DevBoxConfig.ProviderKeys(
     Codex: DevBoxConfig.FirstNonEmpty(builder.Configuration, "CODEX_API_KEY", "OPENAI_API_KEY", "OPENAI_KEY"),
     Xai: DevBoxConfig.FirstNonEmpty(builder.Configuration, "XAI_API_KEY", "XAI_KEY"));
 
-// The plane's fixed dev URL. Sibling processes reach it directly at this known
-// address: landbridged dials ws://127.0.0.1:5050/runner, and the spawned worker
-// dials http://127.0.0.1:5050/ (DispatchService.DefaultPublicMcpUrl). Keeping it
-// fixed and un-proxied (below) means those siblings need no Aspire awareness.
+// The plane's host-facing URL. Humans, the dashboard, OAuth, and the host-side
+// relay/preview processes use loopback. landbridged runs in Linux containers
+// and reaches the same listeners via host.docker.internal (Kestrel binds all
+// interfaces below).
 const string mcpHost = "127.0.0.1";
+const string dockerHost = "host.docker.internal";
 // NOT 5000, and not 7000 either: macOS ControlCenter binds both for AirPlay
-// Receiver, on *every* interface. Kestrel here binds 127.0.0.1 only, so the two
-// coexist -- but Aspire's WithHttpHealthCheck resolves via localhost, gets ::1
-// first, reaches AirPlay instead of the plane, and reads its 403 as unhealthy.
-// WaitFor(mcp) then never releases and relay, preview and landbridged never
-// start, with nothing in any log to say why.
+// Receiver, on *every* interface. Aspire's WithHttpHealthCheck used to resolve
+// via localhost, get ::1 first, reach AirPlay instead of the plane, and read
+// its 403 as unhealthy. WaitFor(mcp) then never released. Binding `+` on 5050
+// (not an AirPlay port) lets both 127.0.0.1 and host.docker.internal work.
 const int mcpPort = 5050;
 var mcpUrl = $"http://{mcpHost}:{mcpPort}";
+var mcpListenUrl = $"http://+:{mcpPort}";
+var workerMcpUrl = $"http://{dockerHost}:{mcpPort}";
 
-// The relay's fixed dev URL (spec §8.3). Pinned and UN-proxied like the plane:
-// landbridged's two data planes dial ws://127.0.0.1:5100/tunnel directly at this
-// known loopback address, so an ephemeral DCP proxy port would be invisible to
-// them. The worker never learns it — the plane injects it per open_forward
-// (WorkerTools reads Landbridge:RelayUrl, set on the mcp resource below).
+// The relay's fixed dev URL (spec §8.3). Host processes keep loopback; the
+// plane hands landbridged the docker-host form so a container can dial it.
 const string relayHost = "127.0.0.1";
 const int relayPort = 5100;
 var relayUrl = $"http://{relayHost}:{relayPort}";
+var relayListenUrl = $"http://+:{relayPort}";
+var workerRelayUrl = $"http://{dockerHost}:{relayPort}";
 
 // One shared bearer per AppHost run authenticates the relay to the plane's
 // /relay/validate endpoint (§8.3). Minted fresh here and handed to exactly the
@@ -79,13 +81,16 @@ var relayValidationBearer = Convert.ToHexString(RandomNumberGenerator.GetBytes(3
 const string previewDomain = "preview.localhost";
 const int previewPort = 5200;
 const int previewHealthPort = 5202;
+const int classifierPort = 5310;
+const int litellmPort = 4000;
 var previewUrlBase = $"http://{previewDomain}:{previewPort}";
 var previewHealthUrl = $"http://127.0.0.1:{previewHealthPort}";
 var previewListenPort = previewPort.ToString();
 var previewConnectBearer = Convert.ToHexString(RandomNumberGenerator.GetBytes(32));
 
 // A per-run scratch area under the temp dir: one seed file per enrolled box
-// (written by the plane) and per-box work_root / state-dir for landbridged.
+// (written by the plane) and per-box work_root / state-dir bind-mounted into
+// that box's container.
 var runDir = Directory.CreateDirectory(
     Path.Combine(Path.GetTempPath(), "landbridge-apphost")).FullName;
 var seedDir = Directory.CreateDirectory(Path.Combine(runDir, "seed")).FullName;
@@ -112,6 +117,8 @@ var landbridgeDb = builder.AddPostgres("postgres")
     .WithDataVolume()
     .AddDatabase("landbridge");
 
+var repoRoot = Path.GetFullPath(Path.Combine(builder.AppHostDirectory, "..", ".."));
+
 // The MCP + control-plane host. WithReference injects Postgres as
 // ConnectionStrings__landbridge; WaitFor holds startup until Postgres is healthy;
 // MigrateOnStartup applies the checked-in EF migration; DevSeed:TokenDir tells
@@ -119,11 +126,12 @@ var landbridgeDb = builder.AddPostgres("postgres")
 // where that box's landbridged picks it up (dev-loop-only; production never sets it).
 //
 // The endpoint is pinned to a fixed port and NOT proxied by DCP: the sibling
-// landbridged/worker processes dial 127.0.0.1:5050 directly, so an ephemeral proxy
-// port in front of Kestrel would be invisible to them. ASPNETCORE_URLS binds
-// Kestrel to exactly that loopback address. WithHttpHealthCheck makes WaitFor
-// (below) gate landbridged's start on the host actually serving — which is strictly
-// after the seed file has been written, since that write precedes app.Run().
+// landbridged/worker processes dial it directly (loopback from the host,
+// host.docker.internal from a container), so an ephemeral proxy port in front
+// of Kestrel would be invisible to them. ASPNETCORE_URLS binds Kestrel on all
+// interfaces at that port. WithHttpHealthCheck makes WaitFor (below) gate
+// landbridged's start on the host actually serving — which is strictly after
+// the seed file has been written, since that write precedes app.Run().
 //
 // ExcludeLaunchProfile drops the launchSettings-derived endpoints (the project's
 // http:5050 / https profile): we want exactly one endpoint on the fixed port,
@@ -135,7 +143,7 @@ var mcp = builder.AddProject<Projects.Landbridge_Mcp>("mcp", options => options.
     .WithReference(landbridgeDb)
     .WaitFor(landbridgeDb)
     .WithHttpEndpoint(port: mcpPort, targetPort: mcpPort, isProxied: false)
-    .WithEnvironment("ASPNETCORE_URLS", mcpUrl)
+    .WithEnvironment("ASPNETCORE_URLS", mcpListenUrl)
     .WithEnvironment("ASPNETCORE_ENVIRONMENT", "Development")
     .WithEnvironment("Landbridge__MigrateOnStartup", "true")
     .WithEnvironment("Landbridge__DevSeed__TokenDir", seedDir)
@@ -143,7 +151,13 @@ var mcp = builder.AddProject<Projects.Landbridge_Mcp>("mcp", options => options.
     // closed 503 without it), and the relay URL WorkerTools hands landbridged per
     // open_forward. Both are read from IConfiguration by Landbridge.Mcp; set as env.
     .WithEnvironment("Landbridge__RelayValidation__Bearer", relayValidationBearer)
-    .WithEnvironment("Landbridge__RelayUrl", relayUrl)
+    .WithEnvironment("Landbridge__RelayUrl", workerRelayUrl)
+    // Workers in the Linux containers cannot reach 127.0.0.1 on the host.
+    // OAuth / dashboard stay on PublicMcpUrl (loopback) so a human browser is
+    // unchanged; dispatch injects WorkerMcpUrl into mcpServers / {mcp_url}.
+    .WithEnvironment("Landbridge__PublicMcpUrl", mcpUrl)
+    .WithEnvironment("Landbridge__WorkerMcpUrl", workerMcpUrl)
+    .WithEnvironment("Landbridge__Classifier__Url", "http://127.0.0.1:" + classifierPort)
     // §8.4 preview: the shared bearer the plane's /preview/connect + /preview/exchange
     // require, and the wildcard base the plane builds preview URLs onto (open_preview
     // + the dashboard mint read Landbridge:PreviewUrlBase).
@@ -157,18 +171,18 @@ var mcp = builder.AddProject<Projects.Landbridge_Mcp>("mcp", options => options.
     .WithHttpHealthCheck("/health");
 
 // landbridge-relay as a dev-loop resource (§8.3). Same fixed, un-proxied endpoint
-// treatment as the plane: landbridged dials 127.0.0.1:5100 directly, so an ephemeral
-// DCP proxy port would be invisible. ExcludeLaunchProfile drops the launchSettings
-// endpoints for the one fixed port; ASPNETCORE_URLS binds Kestrel there and
-// ASPNETCORE_ENVIRONMENT=Development makes ServiceDefaults map /health (the
-// WithHttpHealthCheck gate). Relay:ControlPlane:Url points the validator at the
-// plane — so ControlPlaneGrantValidator, not the static stub, is active — and it
-// presents the shared bearer on /relay/validate. WaitFor(mcp): the validator
-// calls the plane, so the plane must be serving first.
+// treatment as the plane: landbridged dials host.docker.internal:5100, so an
+// ephemeral DCP proxy port would be invisible. ExcludeLaunchProfile drops the
+// launchSettings endpoints for the one fixed port; ASPNETCORE_URLS binds
+// Kestrel there and ASPNETCORE_ENVIRONMENT=Development makes ServiceDefaults
+// map /health (the WithHttpHealthCheck gate). Relay:ControlPlane:Url points the
+// validator at the plane — so ControlPlaneGrantValidator, not the static stub,
+// is active — and it presents the shared bearer on /relay/validate. WaitFor(mcp):
+// the validator calls the plane, so the plane must be serving first.
 builder.AddProject<Projects.Landbridge_Relay>("relay", options => options.ExcludeLaunchProfile = true)
     .WaitFor(mcp)
     .WithHttpEndpoint(port: relayPort, targetPort: relayPort, isProxied: false)
-    .WithEnvironment("ASPNETCORE_URLS", relayUrl)
+    .WithEnvironment("ASPNETCORE_URLS", relayListenUrl)
     .WithEnvironment("ASPNETCORE_ENVIRONMENT", "Development")
     .WithEnvironment("Relay__ControlPlane__Url", mcpUrl)
     .WithEnvironment("Relay__ControlPlane__Bearer", relayValidationBearer)
@@ -193,24 +207,84 @@ builder.AddProject<Projects.Landbridge_Preview>("preview", options => options.Ex
     .WithEnvironment("Preview__ControlPlaneBearer", previewConnectBearer)
     .WithHttpHealthCheck("/health");
 
-// One landbridged per seeded box. Each has its own config, work_root, and
-// --state-dir so credentials and transcripts do not collide. WaitFor(mcp)
-// gates start until the plane has written that box's seed file.
+// LiteLLM gateway. Un-proxied so the classifier can dial 127.0.0.1:4000.
+// Provider keys stay on this container; the classifier only sees a master key
+// and provider/model slugs. A down gateway fails the classifier resource, not
+// the rest of the loop — the plane Asks.
+var litellmKey = "sk-" + Convert.ToHexString(RandomNumberGenerator.GetBytes(16)).ToLowerInvariant();
+var litellmConfig = Path.Combine(builder.AppHostDirectory, "litellm.yaml");
+var litellm = builder.AddContainer("litellm", "ghcr.io/berriai/litellm", "v1.74.9-stable")
+    .WithHttpEndpoint(port: litellmPort, targetPort: 4000, isProxied: false)
+    .WithBindMount(litellmConfig, "/app/config.yaml", isReadOnly: true)
+    .WithArgs("--config", "/app/config.yaml", "--port", "4000")
+    .WithEnvironment("LITELLM_MASTER_KEY", litellmKey)
+    .WithHttpHealthCheck("/health/liveliness");
+var openaiKey = DevBoxConfig.FirstNonEmpty(builder.Configuration, "OPENAI_API_KEY", "OPENAI_KEY");
+if (openaiKey is { Length: > 0 })
+    litellm.WithEnvironment("OPENAI_API_KEY", openaiKey);
+if (providerKeys.Anthropic is { Length: > 0 })
+    litellm.WithEnvironment("ANTHROPIC_API_KEY", providerKeys.Anthropic);
+if (providerKeys.Xai is { Length: > 0 })
+    litellm.WithEnvironment("XAI_API_KEY", providerKeys.Xai);
+
+// Permission classifier. Un-proxied so the plane can dial 127.0.0.1:5310.
+// Each judge stage names a provider/model slug plus a prompt. LiteLLM URL +
+// master key are required for *this* resource: it throws without them and
+// Aspire marks it failed. Do not throw here and do not WaitFor it from mcp —
+// the rest of the loop still starts, and a down classifier is Ask on the plane.
+var classifier = builder.AddProject<Projects.Landbridge_Classifier>("classifier", options => options.ExcludeLaunchProfile = true)
+    .WaitFor(litellm)
+    .WithHttpEndpoint(port: classifierPort, targetPort: classifierPort, isProxied: false)
+    .WithEnvironment("ASPNETCORE_URLS", "http://127.0.0.1:" + classifierPort)
+    .WithEnvironment("ASPNETCORE_ENVIRONMENT", "Development")
+    .WithEnvironment("Classifier__LiteLlm__Url", "http://127.0.0.1:" + litellmPort + "/v1")
+    .WithEnvironment("Classifier__LiteLlm__ApiKey", litellmKey)
+    .WithHttpHealthCheck("/health");
+var classifierModel = DevBoxConfig.FirstNonEmpty(
+    builder.Configuration, "LANDBRIDGE_CLASSIFIER_MODEL");
+if (classifierModel is { Length: > 0 })
+    classifier.WithEnvironment("LANDBRIDGE_CLASSIFIER_MODEL", classifierModel);
+var classifierFast = DevBoxConfig.FirstNonEmpty(
+    builder.Configuration, "LANDBRIDGE_CLASSIFIER_FAST_MODEL", "Classifier:Fast:Model");
+if (classifierFast is { Length: > 0 })
+    classifier.WithEnvironment("Classifier__Fast__Model", classifierFast);
+var classifierReview = DevBoxConfig.FirstNonEmpty(
+    builder.Configuration, "LANDBRIDGE_CLASSIFIER_REVIEW_MODEL", "Classifier:Review:Model");
+if (classifierReview is { Length: > 0 })
+    classifier.WithEnvironment("Classifier__Review__Model", classifierReview);
+mcp.WithEnvironment("Landbridge__Classifier__TimeoutMs", "45000");
+
+
+// One landbridged container per seeded box. Each has its own config, work_root,
+// and --state-dir so credentials and transcripts do not collide. WaitFor(mcp)
+// gates start until the plane has written that box's seed file. Each box
+// AddDockerfile's the same file: Aspire tags the image with a content hash,
+// so a sibling cannot pull `landbridged-codex:latest`. Docker's layer cache
+// makes the second and third builds a no-op after the first.
 foreach (var harness in devHarnesses)
 {
     var box = DevSeedNaming.Box(harness);
     var profile = DevSeedNaming.Profile(harness);
     var boxWork = Directory.CreateDirectory(Path.Combine(runDir, "work", box)).FullName;
     var boxState = Directory.CreateDirectory(Path.Combine(runDir, "state", box)).FullName;
-    var configPath = DevBoxConfig.Write(runDir, boxWork, harness, profile);
+    if (harness == "codex")
+        DevBoxConfig.WriteCodexHome(boxState, DevBoxConfig.CodexModel(builder.Configuration));
+    var configPath = DevBoxConfig.Write(runDir, harness, profile);
     var seedPath = Path.Combine(seedDir, $"{box}.json");
 
-    builder.AddProject<Projects.Landbridge_Runner>($"landbridged-{harness}")
-        .WithArgs("--config", configPath, "--state-dir", boxState)
+    builder.AddDockerfile($"landbridged-{harness}", repoRoot, "docker/Landbridge.Landbridged.Dockerfile")
         .WaitFor(mcp)
+        .WithArgs("--config", DevBoxConfig.ContainerConfigPath, "--state-dir", DevBoxConfig.ContainerStateDir)
+        .WithBindMount(configPath, DevBoxConfig.ContainerConfigPath, isReadOnly: true)
+        .WithBindMount(boxWork, DevBoxConfig.ContainerWorkRoot)
+        .WithBindMount(boxState, DevBoxConfig.ContainerStateDir)
+        .WithContainerRuntimeArgs(
+            "--add-host=host.docker.internal:host-gateway",
+            $"--hostname={box}")
+        .WithOtlpExporter()
         .WithEnvironment(async ctx =>
         {
-            ctx.EnvironmentVariables["LANDBRIDGE_CONTROL_URL"] = $"ws://{mcpHost}:{mcpPort}/runner";
+            ctx.EnvironmentVariables["LANDBRIDGE_CONTROL_URL"] = $"ws://{dockerHost}:{mcpPort}/runner";
             var seed = await ReadSeedWithRetryAsync(seedPath, TimeSpan.FromSeconds(30));
             ctx.EnvironmentVariables["LANDBRIDGE_MACHINE_TOKEN"] = seed.MachineToken;
             ctx.EnvironmentVariables["LANDBRIDGE_MACHINE_ID"] = seed.MachineId;
@@ -259,4 +333,3 @@ static async Task<(string MachineId, string MachineToken)> ReadSeedWithRetryAsyn
         await Task.Delay(200);
     }
 }
-

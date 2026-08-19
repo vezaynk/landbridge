@@ -62,6 +62,52 @@ public sealed class WorkerPermissionEndpointsTests(PostgresFixture pg) : IAsyncL
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
         Assert.Equal("allow", doc.RootElement.GetProperty("verdict").GetString());
+        Assert.True(
+            !doc.RootElement.TryGetProperty("optionId", out var none) || none.ValueKind is JsonValueKind.Null);
+
+        await app.StopAsync(ct);
+    }
+
+    [SkippableFact]
+    public async Task A_worker_bearer_receives_the_option_id_the_lead_picked()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(Patience);
+        var ct = cts.Token;
+
+        var (caller, token) = await SeedWorkingWorkerAsync(ct);
+
+        await using var app = BuildServer();
+        await app.StartAsync(ct);
+        using var client = new HttpClient { BaseAddress = new Uri(app.Urls.First(u => u.StartsWith("http://"))) };
+        client.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", token);
+
+        var pending = client.PostAsJsonAsync("/worker/permission", new
+        {
+            tool = "Bash",
+            input = """{"cmd":"ls"}""",
+            options = new object[]
+            {
+                new { optionId = "allow-once", name = "Allow once", kind = "allow_once" },
+                new { optionId = "allow-always", name = "Always allow", kind = "allow_always" },
+            },
+        }, ct);
+
+        await WaitUntilBlockedAsync(caller.Session, pending, ct);
+
+        await using (var db = pg.NewContext())
+        {
+            var applied = await new SessionStore(db, TimeProvider.System).AnswerPermissionAsync(
+                new LeadClaim(Team), caller.Session, "allow-always", ct: ct);
+            Assert.IsType<StoreResult.Applied>(applied);
+        }
+
+        using var resp = await pending.WaitAsync(ct);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+        using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
+        Assert.Equal("allow", doc.RootElement.GetProperty("verdict").GetString());
+        Assert.Equal("allow-always", doc.RootElement.GetProperty("optionId").GetString());
 
         await app.StopAsync(ct);
     }
@@ -123,6 +169,7 @@ public sealed class WorkerPermissionEndpointsTests(PostgresFixture pg) : IAsyncL
         builder.Services.AddLandbridgeStore();
         builder.Services.AddScoped<TokenService>();
         builder.Services.AddSingleton(TimeProvider.System);
+        builder.Services.AddSingleton<IPermissionClassifier>(NullPermissionClassifier.Instance);
         builder.Services.AddHttpContextAccessor();
 
         builder.Services.AddAuthentication(LandbridgeAuthenticationHandler.SchemeName)

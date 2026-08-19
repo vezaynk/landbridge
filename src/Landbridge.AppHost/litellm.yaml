@@ -1,0 +1,19 @@
+# Dev-loop LiteLLM proxy. Provider keys come from the container env
+# (OPENAI_API_KEY / ANTHROPIC_API_KEY / XAI_API_KEY). The classifier
+# sends provider/model slugs; wildcards route them.
+litellm_settings:
+  drop_params: true
+
+model_list:
+  - model_name: "openai/*"
+    litellm_params:
+      model: "openai/*"
+      api_key: os.environ/OPENAI_API_KEY
+  - model_name: "anthropic/*"
+    litellm_params:
+      model: "anthropic/*"
+      api_key: os.environ/ANTHROPIC_API_KEY
+  - model_name: "xai/*"
+    litellm_params:
+      model: "xai/*"
+      api_key: os.environ/XAI_API_KEY

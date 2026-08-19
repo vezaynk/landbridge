@@ -101,16 +101,42 @@ builder.Services.AddSingleton(new SessionEventListener(connectionString));
 // event sink completes the waiter when the consumer reports its bound port.
 builder.Services.AddLandbridgeForwarding();
 
-// §13: the public MCP URL a worker dials the plane with. landbridged wraps it plus
-// the minted worker token into the harness's --mcp-config at dispatch.
+// §13: the public MCP URL. OAuth issuer / dashboard / a human Lead stay on
+// PublicMcpUrl. Workers may need a different reachability (Aspire boxes in
+// Linux containers dial host.docker.internal); WorkerMcpUrl overrides only
+// the URL stamped onto dispatch / {mcp_url}. Unset, they are the same.
 var publicMcpUrl = builder.Configuration["Landbridge:PublicMcpUrl"]
     ?? Environment.GetEnvironmentVariable("LANDBRIDGE_PUBLIC_MCP_URL")
     ?? DispatchService.DefaultPublicMcpUrl;
+var workerMcpUrl = builder.Configuration["Landbridge:WorkerMcpUrl"]
+    ?? Environment.GetEnvironmentVariable("LANDBRIDGE_WORKER_MCP_URL")
+    ?? publicMcpUrl;
 
 // The canonical OAuth identity (§5): resource id, issuer, and the two endpoint
 // URLs all derive from the same public URL, so the RFC 9728 challenge, the
 // well-known metadata documents, and authorize/token validation never disagree.
 builder.Services.AddSingleton(OAuthServerConfig.FromPublicMcpUrl(publicMcpUrl));
+
+// Plane-side permission classifier (argv allowlist, then destroy-guard, then
+// LLM). Unset URL or a down sidecar is Ask — never fail-open, never Deny.
+var classifierUrl = builder.Configuration["Landbridge:Classifier:Url"]
+    ?? Environment.GetEnvironmentVariable("LANDBRIDGE_CLASSIFIER_URL");
+if (!string.IsNullOrWhiteSpace(classifierUrl)
+    && Uri.TryCreate(classifierUrl.TrimEnd('/') + "/", UriKind.Absolute, out var classifierUri))
+{
+    var timeoutMs = builder.Configuration.GetValue("Landbridge:Classifier:TimeoutMs", 2000);
+    if (timeoutMs < 1)
+        timeoutMs = 2000;
+    builder.Services.AddHttpClient<IPermissionClassifier, PermissionClassifierClient>(c =>
+    {
+        c.BaseAddress = classifierUri;
+        c.Timeout = TimeSpan.FromMilliseconds(timeoutMs);
+    });
+}
+else
+{
+    builder.Services.AddSingleton<IPermissionClassifier>(NullPermissionClassifier.Instance);
+}
 // §10 per-task liveness runs on two clocks, both configurable: PerTaskLivenessWindow
 // is how long landbridged may go without asserting the harness process is alive (it
 // asserts every heartbeat), and NoProgressCeiling is how long an alive process may
@@ -123,7 +149,7 @@ builder.Services.AddSingleton(sp => new DispatchService(
     sp.GetRequiredService<ILogger<DispatchService>>(),
     sp.GetRequiredService<SessionEventListener>(),
     livenessWindow: builder.Configuration.GetValue<TimeSpan?>("Landbridge:PerTaskLivenessWindow"),
-    publicMcpUrl: publicMcpUrl,
+    publicMcpUrl: workerMcpUrl,
     noProgressCeiling: builder.Configuration.GetValue<TimeSpan?>("Landbridge:NoProgressCeiling")));
 builder.Services.AddHostedService(sp => sp.GetRequiredService<DispatchService>());
 
@@ -176,7 +202,7 @@ if (!string.IsNullOrWhiteSpace(devSeedTokenDir))
             enrollment.Token,
             new MachineDeclaration(
                 Name: name,
-                Purpose: $"Aspire dev-loop {harness} box on {DevSeedNaming.Host}",
+                Purpose: $"Aspire dev-loop {harness} Linux container",
                 Os: DevSeedNaming.Os,
                 PermissionLevel: "standard"))
             ?? throw new InvalidOperationException($"dev seed: enrollment exchange returned null for {name}");

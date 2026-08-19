@@ -29,7 +29,9 @@ brings up, in dependency order:
 | `postgres` | Managed Postgres 16 with a persistent data volume (survives restarts) | container |
 | `mcp` | The control plane + MCP host (`Landbridge.Mcp`), migrated on startup and dev-seeded | `http://127.0.0.1:5050` (fixed, un-proxied) |
 | `relay` | `landbridge-relay` | `http://127.0.0.1:5100` (fixed, un-proxied) |
-| `landbridged-codex` / `-claude` / `-grok` | Three enrolled linux boxes, each dialing `ws://127.0.0.1:5050/runner` | outbound only |
+| `litellm` | Local LiteLLM gateway the classifier dials (`provider/model` slugs) | `http://127.0.0.1:4000` (fixed, un-proxied) |
+| `classifier` | Permission classifier (simple argv allowlist, destroy-guard, two-stage LLM) | `http://127.0.0.1:5310` (fixed, un-proxied) |
+| `landbridged-codex` / `-claude` / `-grok` | Three enrolled Linux containers, each dialing `ws://host.docker.internal:5050/runner` | outbound only |
 
 The endpoints for `mcp` and `relay` are pinned to fixed loopback ports and *not*
 proxied by Aspire's DCP, because the sibling `landbridged`/worker/relay processes
@@ -46,6 +48,23 @@ Two dashboards:
   below. The Aspire / Development host uses the passphrase `dev`; production
   is fail-closed until you set `Landbridge:Operator:PassphraseHash`.
 
+The classifier is a .NET API. It auto-allows a simple argv of an allowlisted
+read-only program (`ls`, `git status`, `git --version`, …). Any shell
+metacharacter (`|`, `&`, `;`, `$`, quotes, …) skips that gate. A small
+destroy-guard list (`git reset --hard`, `git clean -f`, `terraform destroy`,
+…) Asks without calling the model, so a model outage cannot wave those
+through. Everything else is a two-stage LLM. Fail-closed is Ask / Lead, so
+the allowlist stays small.
+
+Each stage names a `provider/model` slug and a prompt template, in
+`src/Landbridge.Classifier/appsettings.json` (or env). `anthropic/haiku` is a
+valid Fast or Review model; a bare `gpt-5-nano` still means `openai/gpt-5-nano`.
+The classifier sends those slugs to a local LiteLLM gateway (`litellm` on
+`:4000`); provider keys stay on that container (`OPENAI_API_KEY` /
+`ANTHROPIC_API_KEY` / `XAI_API_KEY`). A down gateway or a model error is Ask,
+never Deny. Missing LiteLLM URL/key fails only the classifier resource; the
+rest of the loop still starts.
+
 The loop stands up a *standing fleet* and does **not** auto-create a task. Create
 work as a Lead over MCP, exactly as in production. Each seeded box spawns the
 real ACP harness (`codex-acp`, `claude-agent-acp`, `grok agent stdio`). Put the
@@ -59,25 +78,33 @@ drive — not this loop.
 In the dev loop the host enrolls three linux boxes out of band (the real
 enrollment handshake an operator performs — below — is skipped) and writes one
 JSON file per box (`machineId`, `machineToken`) under a temp directory. The
-AppHost starts one `landbridged` per file and hands it that box's
-`LANDBRIDGE_MACHINE_TOKEN` / `LANDBRIDGE_MACHINE_ID`. This is gated by
-`Landbridge:DevSeed:TokenDir` and **production never sets it**.
+AppHost starts one Linux `landbridged` container per file
+(`docker/Landbridge.Landbridged.Dockerfile`, with the ACP harnesses on `PATH`)
+and hands it that box's `LANDBRIDGE_MACHINE_TOKEN` / `LANDBRIDGE_MACHINE_ID`.
+This is gated by `Landbridge:DevSeed:TokenDir` and **production never sets it**.
 
 | Box | Declared OS | Profiles |
 |---|---|---|
-| `&lt;harness&gt;-&lt;hostname&gt;-&lt;os&gt;` | this host's real OS | `&lt;harness&gt;-apphost-&lt;os&gt;`, `any-&lt;os&gt;` |
+| `codex-apphost-linux` | linux | `codex-apphost-linux`, `any-linux` |
+| `claude-apphost-linux` | linux | `claude-apphost-linux`, `any-linux` |
+| `grok-apphost-linux` | linux | `grok-apphost-linux`, `any-linux` |
 
 No Team is minted. A human Lead creates work and aims it at one of those
 profile names. Spawn is the real ACP entry point for that harness. AppHost
 generates each box's runner config at startup (prompt, `follow_up`,
-`auth_method` for Codex, `GROK_FOLDER_TRUST=0` for Grok). The same keys the
+`auth_method` for Codex, a sealed `CODEX_HOME` pinning `gpt-5.3-codex`,
+`GROK_FOLDER_TRUST=0` for Grok). Override the Codex slug with
+`LANDBRIDGE_CODEX_MODEL` if that catalog changes. The same keys the
 paid MultiMachine e2e uses also feed this loop:
 
 ```bash
 # Either store works. Process env wins if both are set.
 dotnet user-secrets set ANTHROPIC_API_KEY '…' --project src/Landbridge.AppHost
 dotnet user-secrets set CODEX_API_KEY     '…' --project src/Landbridge.AppHost
+dotnet user-secrets set OPENAI_API_KEY    '…' --project src/Landbridge.AppHost
 dotnet user-secrets set XAI_API_KEY       '…' --project src/Landbridge.AppHost
+dotnet user-secrets set LANDBRIDGE_CLASSIFIER_FAST_MODEL   'openai/gpt-5-nano' --project src/Landbridge.AppHost
+dotnet user-secrets set LANDBRIDGE_CLASSIFIER_REVIEW_MODEL 'anthropic/haiku' --project src/Landbridge.AppHost
 
 # Already stored for the paid e2e? Leave them there — AppHost loads that
 # secrets id too.
@@ -88,9 +115,9 @@ dotnet user-secrets set ANTHROPIC_API_KEY '…' --project tests/Landbridge.Multi
 and stamped as the names the CLIs actually read. A missing key is a failed
 start — a box that enrolled without one would look ready and then die on the
 first turn, which is the quiet failure the enroll skill already warns about.
-Adapters (`claude-agent-acp`, `codex-acp`) and `grok` must be on `PATH` when
-you launch Aspire; AppHost resolves them to absolute paths so landbridged
-does not depend on Aspire's own `PATH`.
+The harness CLIs live in the Linux image; they do not need to be on the
+host `PATH`. First `dotnet run` builds that image (SDK publish + npm + the
+Grok installer) and later runs reuse the Docker layer cache.
 
 ## Authenticating a human
 
@@ -516,7 +543,10 @@ this branch.
 | Key | Default | Purpose |
 |---|---|---|
 | `ConnectionStrings:Landbridge` (or env `LANDBRIDGE_DB`) | `Host=localhost;Database=landbridge;Username=landbridge` | Postgres connection string. |
-| `Landbridge:PublicMcpUrl` (or env `LANDBRIDGE_PUBLIC_MCP_URL`) | `http://127.0.0.1:5050` | The plane's public MCP endpoint dialed by workers; also the OAuth 2.1 canonical resource id / issuer. Set to the real public **https** URL in production. |
+| `Landbridge:PublicMcpUrl` (or env `LANDBRIDGE_PUBLIC_MCP_URL`) | `http://127.0.0.1:5050` | The plane's public MCP endpoint for humans / OAuth 2.1 (canonical resource id / issuer). Set to the real public **https** URL in production. |
+| `Landbridge:WorkerMcpUrl` (or env `LANDBRIDGE_WORKER_MCP_URL`) | *(same as PublicMcpUrl)* | URL stamped onto a worker at dispatch (`mcpServers` / `{mcp_url}`). The Aspire loop sets `http://host.docker.internal:5050` so Linux containers can reach the host plane. Unset in production. |
+| `Landbridge:Classifier:Url` (or env `LANDBRIDGE_CLASSIFIER_URL`) | *(unset → Ask)* | Plane-side classifier sidecar (`POST /classify`). Unset or unreachable is Ask, never fail-open. Aspire sets `http://127.0.0.1:5310`. |
+| `Landbridge:Classifier:TimeoutMs` | `45000` | How long the plane waits for one classify call (covers both LLM stages). Timeout is Ask. |
 | `Landbridge:Operator:PassphraseHash` | *(empty → fail-closed)* | SHA-256 hex of the operator passphrase gating `/oauth/authorize` and dashboard login. Store the hash, never the plaintext. |
 | `Landbridge:WaitTtl` | infinite | How long a `blocked_on_input` task waits before parking (spec §11). Off by default; a live ACP session is held until a Lead answers or `park_session`. Set a TimeSpan (e.g. `00:30:00`) to restore a timer. |
 | `Landbridge:MachineLivenessTtl` | `00:01:30` | Heartbeat-age window past which a machine is treated as rebooted and its waiting tasks requeue (≈ six missed 15s heartbeats). |
@@ -533,6 +563,19 @@ this branch.
 | `Landbridge:MigrateOnStartup` | `false` | Apply the checked-in EF migration on boot. Set by the dev loop; production migrates out of band. |
 | `Landbridge:DevSeed:TokenDir` | *(unset)* | Dev-loop only: enroll the Codex/Claude/Grok linux boxes and write each seed file here. Never set in production. |
 | env `OTEL_EXPORTER_OTLP_ENDPOINT` | *(unset)* | When set, the host exports OpenTelemetry via OTLP (the Aspire dashboard sets this in the dev loop). |
+
+### Permission classifier (`Landbridge.Classifier`)
+
+| Key | Default | Purpose |
+|---|---|---|
+| `Classifier:Fast:Model` (env `LANDBRIDGE_CLASSIFIER_FAST_MODEL` or `Classifier__Fast__Model`) | `openai/gpt-5-nano` | Stage-1 slug, `provider/model` (`anthropic/haiku`, `openai/gpt-5-nano`, `xai/grok-4`). A bare name is OpenAI. |
+| `Classifier:Review:Model` (env `LANDBRIDGE_CLASSIFIER_REVIEW_MODEL`) | `openai/gpt-5-nano` | Stage-2 slug, same syntax. |
+| `LANDBRIDGE_CLASSIFIER_MODEL` | *(unset)* | Fallback slug for both stages when Fast/Review are unset. |
+| `Classifier:Fast:Prompt` / `Classifier:Review:Prompt` | *(file / compiled fallback)* | Full system prompt for that stage. Env `LANDBRIDGE_CLASSIFIER_FAST_PROMPT` / `_REVIEW_PROMPT`. |
+| `Classifier:Fast:PromptFile` / `Classifier:Review:PromptFile` | `prompts/fast.txt` / `prompts/review.txt` | Path to a prompt template, relative to the classifier content root. Ignored when Prompt is set. |
+| `Classifier:LiteLlm:Url` (env `LANDBRIDGE_CLASSIFIER_LITELLM_URL`) | *(required)* | OpenAI-compatible LiteLLM base (`http://127.0.0.1:4000/v1` in Aspire). |
+| `Classifier:LiteLlm:ApiKey` (env `LANDBRIDGE_CLASSIFIER_LITELLM_KEY`) | *(required)* | LiteLLM master key. Aspire mints one per run. |
+| `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` / `XAI_API_KEY` | *(on the `litellm` resource)* | Provider keys LiteLLM uses to fulfill `openai/*` / `anthropic/*` / `xai/*` slugs. |
 
 ### Relay (`Landbridge.Relay`)
 

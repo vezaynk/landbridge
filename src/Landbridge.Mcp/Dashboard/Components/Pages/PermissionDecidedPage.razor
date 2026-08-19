@@ -4,7 +4,7 @@
 <section>
     <p>
         <code>@(Request.Tool ?? "unnamed tool")</code> was
-        <strong>@(Request.Verdict?.ToString().ToLowerInvariant() ?? "not decided")</strong>.
+        <strong>@(Request.SelectedOptionId ?? Request.Verdict?.ToString().ToLowerInvariant() ?? "not decided")</strong>.
     </p>
     @if (Request.Message is { Length: > 0 } m)
     {

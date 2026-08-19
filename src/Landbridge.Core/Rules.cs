@@ -69,6 +69,12 @@ public enum Rule
     PermissionEscalationCarriesReason = 114,
     EscalatedPermissionIsHumanOnly = 115,
     PermissionWaiterStillIncumbent = 116,
+    /// <summary>
+    /// A permission answer must be one of the options the harness offered, or
+    /// <c>allow</c>/<c>deny</c> when that request carried no options (legacy MCP
+    /// prompt-tool). The store enforces this: the engine still only sees a verdict.
+    /// </summary>
+    PermissionOptionMustBeOffered = 118,
 
     /// <summary>
     /// §8.2: a service name is the Team-scoped <em>address</em> of an endpoint, so at most one

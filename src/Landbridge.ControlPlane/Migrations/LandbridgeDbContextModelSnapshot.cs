@@ -618,6 +618,14 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasColumnType("text")
                         .HasColumnName("permission_escalation_reason");
 
+                    b.Property<string>("PermissionOptionId")
+                        .HasColumnType("text")
+                        .HasColumnName("permission_option_id");
+
+                    b.Property<string>("PermissionOptions")
+                        .HasColumnType("text")
+                        .HasColumnName("permission_options");
+
                     b.Property<string>("PermissionTool")
                         .HasColumnType("text")
                         .HasColumnName("permission_tool");

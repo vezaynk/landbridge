@@ -287,6 +287,34 @@ public sealed class AcpClientTests
     }
 
     [Fact]
+    public async Task Forwards_the_harness_options_on_the_plane_ask()
+    {
+        AcpPermissionAsk? seen = null;
+        var agent = new FakeAgent { AskPermissionDuringPrompt = true };
+        await RunAsync(agent, Request("go"), (ask, _) =>
+        {
+            seen = ask;
+            return Task.FromResult(new AcpPermissionDecision(true, null));
+        });
+
+        Assert.NotNull(seen);
+        Assert.Contains("allow-once", seen.Value.OptionsJson, StringComparison.Ordinal);
+        Assert.Contains("allow_always", seen.Value.OptionsJson, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Returns_the_option_id_the_plane_picked_including_allow_always()
+    {
+        var agent = new FakeAgent { AskPermissionDuringPrompt = true };
+        await RunAsync(agent, Request("go"), (_, _) =>
+            Task.FromResult(new AcpPermissionDecision(true, null, "allow-always")));
+
+        var outcome = agent.PermissionResponse!.Value.GetProperty("result").GetProperty("outcome");
+        Assert.Equal("selected", outcome.GetProperty("outcome").GetString());
+        Assert.Equal("allow-always", outcome.GetProperty("optionId").GetString());
+    }
+
+    [Fact]
     public async Task Answers_a_denied_permission_request_with_the_agents_reject_option()
     {
         var agent = new FakeAgent
@@ -332,6 +360,107 @@ public sealed class AcpClientTests
     /// tool call forever. <c>cancelled</c> is the spec's own word for "the client is not
     /// deciding this", which lets the agent move on.
     /// </summary>
+    [Fact]
+    public async Task Fills_codex_permission_raw_input_from_the_preceding_tool_call()
+    {
+        AcpPermissionAsk? seen = null;
+        var agent = new FakeAgent
+        {
+            DuringPrompt =
+            [
+                """{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess_1","update":{"sessionUpdate":"tool_call","toolCallId":"call_1","kind":"execute","title":"git clone","rawInput":{"command":"git clone git@github.com:org/repo.git","cwd":"/work/abc"}}}}""",
+            ],
+            AskPermissionDuringPrompt = true,
+            PermissionParams =
+                """{"sessionId":"sess_1","toolCall":{"toolCallId":"call_1","kind":"execute","status":"pending"},"options":%options%}""",
+        };
+        await RunAsync(agent, Request("go"), (ask, _) =>
+        {
+            seen = ask;
+            return Task.FromResult(new AcpPermissionDecision(true, null));
+        });
+
+        Assert.NotNull(seen);
+        Assert.Contains("git clone", seen.Value.InputJson, StringComparison.Ordinal);
+        Assert.Equal("git clone", seen.Value.Tool);
+    }
+
+    [Fact]
+    public async Task Fills_permission_title_from_a_title_only_tool_call()
+    {
+        AcpPermissionAsk? seen = null;
+        var agent = new FakeAgent
+        {
+            DuringPrompt =
+            [
+                """{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess_1","update":{"sessionUpdate":"tool_call","toolCallId":"call_1","kind":"execute","title":"git clone"}}}""",
+            ],
+            AskPermissionDuringPrompt = true,
+            PermissionParams =
+                """{"sessionId":"sess_1","toolCall":{"toolCallId":"call_1","kind":"execute","status":"pending"},"options":%options%}""",
+        };
+        await RunAsync(agent, Request("go"), (ask, _) =>
+        {
+            seen = ask;
+            return Task.FromResult(new AcpPermissionDecision(true, null));
+        });
+
+        Assert.NotNull(seen);
+        Assert.Equal("git clone", seen.Value.Tool);
+        Assert.Equal("{}", seen.Value.InputJson);
+        var outcome = agent.PermissionResponse!.Value.GetProperty("result").GetProperty("outcome");
+        Assert.Equal("selected", outcome.GetProperty("outcome").GetString());
+    }
+
+    [Fact]
+    public async Task Fills_permission_raw_input_from_a_later_tool_call_update()
+    {
+        AcpPermissionAsk? seen = null;
+        var agent = new FakeAgent
+        {
+            AskPermissionDuringPrompt = true,
+            PermissionParams =
+                """{"sessionId":"sess_1","toolCall":{"toolCallId":"call_1","kind":"execute","status":"pending"},"options":%options%}""",
+            AfterPermission =
+            [
+                """{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess_1","update":{"sessionUpdate":"tool_call_update","toolCallId":"call_1","kind":"execute","rawInput":{"command":"git status"}}}}""",
+            ],
+        };
+        await RunAsync(agent, Request("go"), (ask, _) =>
+        {
+            seen = ask;
+            return Task.FromResult(new AcpPermissionDecision(true, null));
+        });
+
+        Assert.NotNull(seen);
+        Assert.Contains("git status", seen.Value.InputJson, StringComparison.Ordinal);
+        var outcome = agent.PermissionResponse!.Value.GetProperty("result").GetProperty("outcome");
+        Assert.Equal("selected", outcome.GetProperty("outcome").GetString());
+    }
+
+    [Fact]
+    public async Task Auto_allows_an_execute_permission_request_with_no_command()
+    {
+        var asked = false;
+        var agent = new FakeAgent
+        {
+            AskPermissionDuringPrompt = true,
+            PermissionParams =
+                """{"sessionId":"sess_1","toolCall":{"toolCallId":"call_x","kind":"execute","status":"pending"},"options":%options%}""",
+        };
+        var run = await RunAsync(agent, Request("go"), (_, _) =>
+        {
+            asked = true;
+            return Task.FromResult(new AcpPermissionDecision(true, null));
+        });
+
+        Assert.False(asked);
+        var outcome = agent.PermissionResponse!.Value.GetProperty("result").GetProperty("outcome");
+        Assert.Equal("selected", outcome.GetProperty("outcome").GetString());
+        Assert.Equal("allow-once", outcome.GetProperty("optionId").GetString());
+        Assert.Contains(run.Warnings, w => w.Contains("asked to approve nothing", StringComparison.Ordinal));
+    }
+
     [Fact]
     public async Task Answers_an_optionless_permission_request_with_cancelled()
     {
@@ -1174,9 +1303,17 @@ public sealed class AcpClientTests
         public bool AskPermissionDuringPrompt { get; init; }
         public string PermissionOptions { get; init; } =
             """[{"optionId":"allow-once","name":"Allow once","kind":"allow_once"},{"optionId":"allow-always","name":"Always allow","kind":"allow_always"}]""";
+        /// <summary>Inner <c>params</c> JSON for the permission request, minus
+        /// <c>options</c>. Default is the title-only shape; Codex sends a
+        /// <c>toolCall</c> that often omits <c>rawInput</c>.</summary>
+        public string PermissionParams { get; init; } =
+            """{"sessionId":"sess_1","title":"Approve?","options":%options%}""";
         public string? RequestDuringPrompt { get; init; }
         public string? NoiseBeforeResponses { get; init; }
         public IReadOnlyList<string> DuringPrompt { get; init; } = [];
+        /// <summary>Updates sent after <c>session/request_permission</c>, so the
+        /// client can keep reading while an empty permission waits for <c>rawInput</c>.</summary>
+        public IReadOnlyList<string> AfterPermission { get; init; } = [];
 
         public TextReader AgentToClient { get; }
         public TextWriter ClientToAgent { get; }
@@ -1367,8 +1504,11 @@ public sealed class AcpClientTests
 
             if (AskPermissionDuringPrompt)
                 Send(
-                    """{"jsonrpc":"2.0","id":9001,"method":"session/request_permission","params":{"sessionId":"sess_1","title":"Approve?","options":%options%}}"""
-                        .Replace("%options%", PermissionOptions));
+                    """{"jsonrpc":"2.0","id":9001,"method":"session/request_permission","params":%params%}"""
+                        .Replace("%params%", PermissionParams.Replace("%options%", PermissionOptions)));
+
+            foreach (var update in AfterPermission)
+                Send(update);
 
             if (RequestDuringPrompt is { } unsupported)
                 Send(

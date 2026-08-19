@@ -37,6 +37,18 @@ public static class PlanePermissionClient
             ["tool"] = ask.Tool,
             ["input"] = ask.InputJson,
         };
+        if (!string.IsNullOrWhiteSpace(ask.OptionsJson) && ask.OptionsJson is not "[]")
+        {
+            try
+            {
+                body["options"] = JsonNode.Parse(ask.OptionsJson);
+            }
+            catch (JsonException)
+            {
+                // Malformed options stay off the wire; the plane treats a missing
+                // list as the legacy allow/deny path.
+            }
+        }
         req.Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json");
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
 
@@ -49,9 +61,11 @@ public static class PlanePermissionClient
         var root = doc.RootElement;
         var verdict = root.TryGetProperty("verdict", out var v) ? v.GetString() : null;
         var message = root.TryGetProperty("message", out var m) ? m.GetString() : null;
+        var optionId = root.TryGetProperty("optionId", out var o) ? o.GetString() : null;
         return new AcpPermissionDecision(
             string.Equals(verdict, "allow", StringComparison.OrdinalIgnoreCase),
-            message);
+            message,
+            string.IsNullOrWhiteSpace(optionId) ? null : optionId);
     }
 
     private static HttpClient CreateClient()

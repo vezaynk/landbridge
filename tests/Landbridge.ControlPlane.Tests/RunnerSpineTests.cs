@@ -416,6 +416,32 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task Turn_ended_after_a_permission_deny_is_idle_not_a_silent_death()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = TimeProvider.System;
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var (id, instance) = await SeedWorkingTaskWithInstanceAsync(clock, team, "m1");
+        await using (var db = pg.NewContext())
+        {
+            var store = new SessionStore(db, clock);
+            var caller = new WorkerCaller(team, id, instance);
+            Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(
+                id, new RequestInput(caller, InputRequestKind.Permission, """{"command":"git clone"}""", "Bash")));
+            Assert.IsType<StoreResult.Applied>(await store.AnswerPermissionAsync(
+                new LeadClaim(team), id, PermissionVerdict.Deny, "send the public key first"));
+        }
+
+        var registry = LiveMachine(clock, "m1", id);
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
+        await sink.HandleAsync(new TurnEndedEvent(id, "end_turn", clock.GetUtcNow()));
+
+        Assert.Equal(SessionState.Working, await StateAsync(clock, id));
+        Assert.Equal("m1", registry.MachineFor(id));
+    }
+
+    [SkippableFact]
     public async Task Turn_ended_after_the_worker_reported_is_moot()
     {
         // The overwhelmingly common path, and the one that must never requeue: a worker

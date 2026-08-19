@@ -1,22 +1,34 @@
+_Sub-agents, but make it multi-harness, multi-machine_
+
 # Landbridge
 
-Landbridge coordinates AI coding agents across multiple machines. A human drives a
-*Lead* agent that decomposes work into tasks; *worker* agents on other machines
-are dispatched those tasks and execute them. The control plane keeps the record
-and enforces procedure — it never reads the work.
+Landbridge is an unopinionated control plane featuring:
 
-Landbridge is the **communication, runner, and relay** layer, not a model provider.
-It ships no models, resells no inference, and holds no provider credentials:
-customers bring their own harness (Claude Code or any MCP-capable agent CLI) and
-their own keys, which live on their own machines. The control plane is
-deliberately thin in *logic* — it validates that fields exist, checks
-identities, counts, and enforces state transitions — while being substantial in
-*role*: `landbridge-relay` carries real service traffic between customer machines.
+- task brokering
+- built-in observability
+- communication channel between Lead and Worker machines
+- secure port-forwarding between machines
+- auto-mode permission classifier (for workers)
+- shareable HTTP preview URLs
 
-The session schema is domain-neutral. Landbridge knows a session has a description and
-an optional workspace, and nothing about what either contains. Coding is the primary use
-case, but repositories, branches, and test suites appear only in the shipped
-skill guidance, never in the data model.
+It does **not** feature the following, but will play nicely with anything you bring:
+
+- **Harnesses** (Bring Your Own Harness): Landbridge can mount and connect to any harness implementing [Agent Client Protocol](https://agentclientprotocol.com/). Most Harnesses have either a built-in ACP mode (Grok Build) or have community-made wrappers (Claude, Codex). Additionally, Landbridge can talk to remote ACP clients via [ACP Bridge](https://github.com/vezaynk/acp-bridge).
+- **Models** (Bring Your Own Models)
+- **Secrets management** (Bring Your Own Secrets)
+- **Memory management** (Bring Your Own Memory)
+
+A human drives a _Lead_ agent that decomposes work into sessions; _worker_
+agents on other machines execute them. The control plane is deliberately thin
+in _logic_ — it validates that fields exist, checks identities, counts, and
+enforces state transitions — while being substantial in _role_:
+`landbridge-relay` carries real service traffic between machines, and the
+preview frontend publishes a worker's HTTP port as a shareable URL.
+
+The session schema is domain-neutral. Landbridge knows a session has a
+description and an optional workspace, and nothing about what either contains.
+Coding is the primary use case, but repositories, branches, and test suites
+appear only in the shipped skill guidance, never in the data model.
 
 > **Status: pre-alpha.** The spec (`ideas/spec.md`) is the source of truth and is
 > ahead of the code in places. This README and the docs under `docs/` describe
@@ -27,18 +39,19 @@ skill guidance, never in the data model.
 
 `landbridge.slnx` groups the code under `src/` (shipping), `tests/`, and `spikes/`.
 
-| Project | Role |
-|---|---|
-| `Landbridge.Core` | The pure task **state machine** and enforcement rules (spec §6, §9). No clock, no I/O, no Postgres, no ASP.NET — transitions are a function of a task record plus a command, returning a new record plus effects-as-data. |
-| `Landbridge.Contracts` | The **frozen** control-plane ↔ runner wire vocabulary (spec §10): the closed set of commands and events, and the `RunnerWire` JSON codec. The one interface that must never break. |
-| `Landbridge.ControlPlane` | The control-plane library: EF Core/Postgres store and dispatch (`SKIP LOCKED` + `LISTEN/NOTIFY`), opaque-token auth (`TokenService`), OAuth 2.1 authorization-server services, relay grants, the `DispatchService` and `WaitTtlSweeper` background loops, and the dashboard read models (`DashboardQueries`). |
-| `Landbridge.Mcp` | The ASP.NET **host** (`landbridge` + `landbridge-mcp`): the MCP tool surface agents connect to, the `/runner` WebSocket, OAuth/enrollment/relay-validate HTTP endpoints, and the §12 web dashboard. One process, one Postgres, one Instance. |
-| `Landbridge.Runner` | `landbridged`, the per-machine **runner daemon**: process supervision, machine-credential enroll/refresh, heartbeat and event relay, stray-process cleanup, and the relay data planes. Config-driven; contains no harness knowledge. Outbound connections only. |
-| `Landbridge.Relay` | `landbridge-relay`, a standalone authenticated **byte-splice relay** (spec §8.3). Pairs two tunnels by forward id and moves opaque bytes; validates grants against the control plane. Separately deployable. |
-| `Landbridge.Preview` | The §8.4 **HTTP preview frontend**: wildcard TLS, Host-header routing to an opaque label, and a byte-splice through the *unchanged* relay so cookies and absolute paths are never rewritten. A separate module on top of the TCP primitive, not a change to it. |
-| `Landbridge.Meta` | `landbridge-meta`, the human-only **provisioning control panel** (spec §3): a resumable saga that stands up an Instance — network, Postgres, `landbridge-mcp`, `landbridge-relay` — across a pool of Docker hosts, over its own Postgres. Structurally not an MCP server; no agent access. |
-| `Landbridge.AppHost` | .NET Aspire orchestrator for the **local dev loop** — brings the whole system up with one command. Dev-time only; not a production path. |
-| `Landbridge.ServiceDefaults` | Shared Aspire wiring: OpenTelemetry (traces/metrics/logs), health checks, service discovery, HTTP resilience. |
+| Project                      | Role                                                                                                                                                                                                                                                                                                          |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Landbridge.Core`            | The pure task **state machine** and enforcement rules (spec §6, §9). No clock, no I/O, no Postgres, no ASP.NET — transitions are a function of a task record plus a command, returning a new record plus effects-as-data.                                                                                     |
+| `Landbridge.Contracts`       | The **frozen** control-plane ↔ runner wire vocabulary (spec §10): the closed set of commands and events, and the `RunnerWire` JSON codec. The one interface that must never break.                                                                                                                            |
+| `Landbridge.ControlPlane`    | The control-plane library: EF Core/Postgres store and dispatch (`SKIP LOCKED` + `LISTEN/NOTIFY`), opaque-token auth (`TokenService`), OAuth 2.1 authorization-server services, relay grants, the `DispatchService` and `WaitTtlSweeper` background loops, and the dashboard read models (`DashboardQueries`). |
+| `Landbridge.Mcp`             | The ASP.NET **host** (`landbridge` + `landbridge-mcp`): the MCP tool surface agents connect to, the `/runner` WebSocket, OAuth/enrollment/relay-validate HTTP endpoints, and the §12 web dashboard. One process, one Postgres, one Instance.                                                                  |
+| `Landbridge.Runner`          | `landbridged`, the per-machine **runner daemon**: process supervision, machine-credential enroll/refresh, heartbeat and event relay, stray-process cleanup, and the relay data planes. Config-driven; contains no harness knowledge. Outbound connections only.                                               |
+| `Landbridge.Relay`           | `landbridge-relay`, a standalone authenticated **byte-splice relay** (spec §8.3). Pairs two tunnels by forward id and moves opaque bytes; validates grants against the control plane. Separately deployable.                                                                                                  |
+| `Landbridge.Preview`         | The §8.4 **HTTP preview frontend**: wildcard TLS, Host-header routing to an opaque label, and a byte-splice through the _unchanged_ relay so cookies and absolute paths are never rewritten. A separate module on top of the TCP primitive, not a change to it.                                               |
+| `Landbridge.Classifier`      | Optional plane-side **permission classifier** (simple argv allowlist, destroy-guard, two-stage LLM). `POST /classify` → allow or ask; never deny. Down or unset is Ask.                                                                                                                                       |
+| `Landbridge.Meta`            | `landbridge-meta`, the human-only **provisioning control panel** (spec §3): a resumable saga that stands up an Instance — network, Postgres, `landbridge-mcp`, `landbridge-relay` — across a pool of Docker hosts, over its own Postgres. Structurally not an MCP server; no agent access.                    |
+| `Landbridge.AppHost`         | .NET Aspire orchestrator for the **local dev loop** — brings the whole system up with one command. Dev-time only; not a production path.                                                                                                                                                                      |
+| `Landbridge.ServiceDefaults` | Shared Aspire wiring: OpenTelemetry (traces/metrics/logs), health checks, service discovery, HTTP resilience.                                                                                                                                                                                                 |
 
 ## Quickstart
 
@@ -53,8 +66,10 @@ One command brings up the full Lead → plane → runner → worker loop:
 
 - a managed **Postgres** container (persistent volume, so data survives restarts),
 - the **control plane / MCP host** (`Landbridge.Mcp`) at `http://127.0.0.1:5050`, migrated and dev-seeded,
-- three enrolled **`landbridged`** boxes (`<harness>-<hostname>-<os>`) connected back to `/runner`, declaring `<harness>-apphost-<os>` and `any-<os>` on this host's real OS,
+- three enrolled Linux **`landbridged`** containers (`codex-apphost-linux`, `claude-apphost-linux`, `grok-apphost-linux`) connected back to `/runner`, declaring that name plus `any-linux`,
 - **`landbridge-relay`** at `http://127.0.0.1:5100`,
+- **LiteLLM** at `http://127.0.0.1:4000` (local `provider/model` gateway the classifier dials),
+- the **classifier** at `http://127.0.0.1:5310` (simple argv allowlist, then LLM via LiteLLM; a down sidecar is Ask),
 - the **preview frontend** (`Landbridge.Preview`), plaintext in the loop — minting a URL needs `open_preview` or the dashboard, so it idles until you use it.
 
 `landbridge-meta` is **not** in the dev loop: it provisions whole Instances and runs
@@ -71,7 +86,7 @@ Two dashboards:
   views. The Aspire / Development host uses the passphrase `dev`; production
   needs `Landbridge:Operator:PassphraseHash` (see `docs/RUNNING.md`).
 
-The dev loop stands up a *standing fleet*: three linux boxes, no Team, no task.
+The dev loop stands up a _standing fleet_: three Linux containers, no Team, no task.
 A human Lead creates work over MCP, exactly as in production. Each box spawns
 the real ACP harness (`codex-acp`, `claude-agent-acp`, `grok agent stdio`).
 Provider keys come from user secrets (AppHost or the MultiMachine test store)
@@ -141,7 +156,7 @@ CI runs in **four workflows** because they have different needs:
 All three BYO-harness CLIs — `@anthropic-ai/claude-code`, `@openai/codex`, `opencode-ai` — are
 installed at **exact versions** in ci.yml. This supersedes the earlier rule that they were
 deliberately left unpinned so an upstream change would surface as a failing characterization fact.
-That reasoning was sound and the mechanism was not: on 2026-08-13 `latest` moved *mid-day*, one run
+That reasoning was sound and the mechanism was not: on 2026-08-13 `latest` moved _mid-day_, one run
 installed claude 2.1.229 and went 9/9 while another installed 2.1.231 and went 7/2 **on identical
 test code**, and since npm prints no version the two had to be reconstructed from registry publish
 times against step timestamps. Unpinned installs report drift by reddening whatever unrelated PR
@@ -171,7 +186,7 @@ as a newer one arrives.
 Two details that are load-bearing rather than incidental. It reads **`dist-tags.latest`, never the
 newest version by publish time**: codex publishes `0.148.0-alpha.12` above its own `latest`, and
 opencode publishes `0.0.0-dev-<stamp>` snapshots that are the newest thing on the registry and rank
-*below* `1.18.18`. And **a green real-harness job is not accepted as evidence on its own** — those
+_below_ `1.18.18`. And **a green real-harness job is not accepted as evidence on its own** — those
 facts skip when their API key is absent and the job still goes green, so the bot reads the logs and
 requires that facts actually passed.
 
@@ -180,7 +195,7 @@ can still break `master` **together** — a DI registration or shared fixture ad
 one PR can be required by another — so after merging a batch that touches shared
 composition, build and test `master` itself; GitHub's mergeability check is textual
 only. And a matrix leg can wedge (a runner that hangs for its full timeout) — check
-whether a *fresh* run on a *new* runner reproduces before treating it as a defect.
+whether a _fresh_ run on a _new_ runner reproduces before treating it as a defect.
 
 ## Status
 
@@ -241,13 +256,14 @@ Deliberately deferred — do not assume these work:
   enroll skill carries a manual smoke test instead. Per-task OS isolation is
   deferred (§13): co-tenant tasks on a machine can reach each other's loopback.
 
-Settled, and deliberately *not* on that list: **SIGTERM does not wind workers down
+Settled, and deliberately _not_ on that list: **SIGTERM does not wind workers down
 (#71).** A killed `landbridged` is the same event as a dead machine, and the plane keeps
 exactly one reconciliation for both: disconnect → requeue → redispatch. Only a `stop`
-*from the plane* is graceful — so **drain a machine before restarting its service**,
+_from the plane_ is graceful — so **drain a machine before restarting its service**,
 especially since each undrained restart spends one of a task's capped requeues.
 
 Open decisions live in `ideas/spec.md` §16 and in the issue tracker.
 `ideas/spec.md` remains authoritative for design; where it and the code disagree,
 the code is what runs today — and the spec's "as-built reconciliation" notes record
 where a claim was corrected rather than quietly left standing.
+

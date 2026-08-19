@@ -300,14 +300,16 @@ public static class DashboardEndpoints
         var form = await http.Request.ReadFormAsync(ct);
         if (!Guid.TryParse(form["sessionId"].ToString(), out var sessionId))
             return Results.BadRequest(new { error = "invalid task id" });
-        if (!Enum.TryParse<Landbridge.Core.PermissionVerdict>(
-                form["verdict"].ToString(), ignoreCase: true, out var verdict))
-            return Results.BadRequest(new { error = "verdict must be 'allow' or 'deny'" });
+        var option = form["option"].ToString();
+        if (string.IsNullOrWhiteSpace(option))
+            option = form["verdict"].ToString();
+        if (string.IsNullOrWhiteSpace(option))
+            return Results.BadRequest(new { error = "option or verdict is required" });
 
         var message = form["message"].ToString();
         var id = new Landbridge.Core.SessionId(sessionId);
         var result = await store.AnswerPermissionAsync(
-            new Landbridge.Core.HumanSession(), id, verdict,
+            new Landbridge.Core.HumanSession(), id, option.Trim(),
             string.IsNullOrWhiteSpace(message) ? null : message, ct);
 
         if (result is not StoreResult.Applied)
