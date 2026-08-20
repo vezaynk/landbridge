@@ -167,7 +167,7 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
         var rejected = Assert.IsType<StoreResult.Rejected>(
             await store.ApplyAsync(id, new WaitTtlExpired(park)));
         Assert.Equal(Rule.InvalidSourceState, rejected.Rule);
-        Assert.Equal(SessionState.Submitted, await StateAsync(clock, id));
+        Assert.Equal(SessionState.Working, await StateAsync(clock, id));
     }
 
     [SkippableFact]
@@ -191,7 +191,7 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
         clock.Advance(TimeSpan.FromMinutes(31)); // past what would have been the TTL
         await sweeper.SweepAsync(CancellationToken.None);
 
-        Assert.Equal(SessionState.Submitted, await StateAsync(clock, id));
+        Assert.Equal(SessionState.Working, await StateAsync(clock, id));
     }
 
     [SkippableFact]

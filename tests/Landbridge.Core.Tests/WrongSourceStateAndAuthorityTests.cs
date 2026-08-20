@@ -79,7 +79,7 @@ public class WrongSourceStateAndAuthorityTests
 
         Expect.Rejected(result, Rule.InvalidSourceState);
         var rejected = Assert.IsType<TransitionResult.Rejected>(result);
-        Assert.Contains("working, blocked_on_input, or verifying", rejected.Reason);
+        Assert.Contains("live attempt", rejected.Reason);
     }
 
     [Theory]
@@ -127,7 +127,6 @@ public class WrongSourceStateAndAuthorityTests
 
     [Theory]
     [InlineData(SessionState.Submitted)]
-    [InlineData(SessionState.Verifying)]
     [InlineData(SessionState.BlockedOnInput)]
     [InlineData(SessionState.Parked)]
     public void Preserve_and_park_applies_only_from_working(SessionState state)

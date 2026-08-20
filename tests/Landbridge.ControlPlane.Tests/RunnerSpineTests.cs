@@ -113,7 +113,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
 
         var command = Assert.IsType<DispatchCommand>(Assert.Single(captured));
         Assert.Equal(sessionId, command.Session);
-        Assert.Equal("sess-prior", command.ResumeSessionRef);
+        Assert.Null(command.ResumeSessionRef);
     }
 
     // ── Lease liveness ──────────────────────────────────────────────────────────
@@ -306,10 +306,10 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
         await sink.HandleAsync(new ExitedEvent(id, ExitCode: 0, clock.GetUtcNow()));
 
-        // Still blocked, still tracked: the machine keeps the lease so the sweeper
-        // can find it (before the fix the exit untracked it here and the sweeper
-        // skipped it — MachineFor was null).
-        Assert.Equal(SessionState.Working, await StateAsync(clock, id));
+        // Process gone, occupancy released (desired=on_disk → Parked), still tracked
+        // so the sweeper's MachineFor look-up works. A live permission wait would
+        // fail instead; this seed is a prose question.
+        Assert.Equal(SessionState.Parked, await StateAsync(clock, id));
         Assert.Equal("m1", registry.MachineFor(id));
         Assert.False(registry.HasLiveProcess(id));
 
@@ -343,8 +343,11 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
         await sink.HandleAsync(new ExitedEvent(id, ExitCode: 0, clock.GetUtcNow()));
         Assert.Equal("m1", registry.MachineFor(id));
+        Assert.Equal(SessionState.Parked, await StateAsync(clock, id));
 
-        // Heartbeat goes stale before the wait TTL; the sweep requeues.
+        // Heartbeat goes stale. The wait is already occupancy-released (desired=on_disk);
+        // LivenessLost needs a live attempt, so the sweeper no-ops. Pin keeps the load
+        // on this machine when the Lead answers.
         var sweeper = NewSweeper(clock, registry,
             waitTtl: TimeSpan.FromMinutes(30), machineWindow: TimeSpan.FromSeconds(90));
         clock.Advance(TimeSpan.FromMinutes(2));
@@ -352,11 +355,10 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
 
         await using var v = pg.NewContext();
         var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
-        Assert.Equal(SessionState.Failed, row.State);
-        Assert.Equal(1, row.InfrastructureRequeues); // infra counter, never verification (§6)
-        Assert.Equal("m1", row.ParkMachine);          // pin session/load; gone means wait
+        Assert.Equal(SessionState.Parked, row.State);
+        Assert.Equal(0, row.InfrastructureRequeues);
+        Assert.Equal("m1", row.ParkMachine);
         Assert.True((await v.WorkerInstances.AsNoTracking().SingleAsync(w => w.Id == instance.Value)).Revoked);
-        Assert.Empty(registry.SessionsOn("m1"));
     }
 
     [SkippableFact]

@@ -388,7 +388,7 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
         await using var db = pg.NewContext();
         var store = new SessionStore(db, clock);
         if (await store.GetStateAsync(id) == SessionState.Failed)
-            Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(id, new WakeParked("retry")));
+            Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(id, new WakeParked()));
         Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(
             new MachineSnapshot(machineId, Ready: true, UnderBackPressure: false, Set("default")),
             WorkerInstanceId.New()));

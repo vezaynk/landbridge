@@ -332,7 +332,9 @@ public sealed class DispatchService : IHostedService
                 // was worked before and parked/requeued) so landbridged continues the
                 // transcript. Opaque metadata surfaced by the store; landbridged resumes
                 // only if the resolved profile declares resume.args, else cold-starts.
-                ResumeSessionRef: applied.HarnessSessionRef,
+                ResumeSessionRef: applied.Session.PendingSpawn == PendingSpawn.Load
+                    ? applied.HarnessSessionRef
+                    : null,
                 // §7/§11 directory inheritance: whose work dir this dispatch runs in. A property
                 // of continuation itself, NOT of transcript resume (#122) — a continuation works
                 // where its predecessor worked whether or not it inherits the session, so this

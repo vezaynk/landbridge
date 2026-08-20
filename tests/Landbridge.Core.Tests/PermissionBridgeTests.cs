@@ -166,14 +166,14 @@ public class PermissionBridgeTests
         // all (every pre-existing one) is unaffected.
         Expect.Transitioned(
             SessionStateMachine.Apply(
-                Given.Session(SessionState.BlockedOnInput),
+                Given.Session(SessionState.Working, message: MessageState.AwaitingLead),
                 new AnswerInput(Given.Lead, Given.Park, "postgres", InputRequestKind.Question)),
-            SessionState.Submitted);
+            SessionState.Working);
         Expect.Transitioned(
             SessionStateMachine.Apply(
-                Given.Session(SessionState.BlockedOnInput),
+                Given.Session(SessionState.Working, message: MessageState.AwaitingLead),
                 new AnswerInput(Given.Lead, Given.Park, "postgres")),
-            SessionState.Submitted);
+            SessionState.Working);
     }
 
     [Fact]
@@ -307,10 +307,8 @@ public class PermissionBridgeTests
         // permission request exempts a request nobody answered.
         var blocked = Given.Session(SessionState.BlockedOnInput);
 
-        var after = Expect.Transitioned(
-            SessionStateMachine.Apply(blocked, new WaitTtlExpired(Given.Park)), SessionState.Parked);
-
-        Assert.Null(after.CurrentInstance);
-        Assert.Equal(Given.Park, after.Park);
+        Expect.Rejected(
+            SessionStateMachine.Apply(blocked, new WaitTtlExpired(Given.Park)),
+            Rule.InvalidSourceState);
     }
 }

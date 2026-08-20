@@ -54,6 +54,15 @@ public sealed record SessionRecord
 
     public SessionState State { get; init; } = SessionState.Submitted;
 
+    public Occupancy OccupancyDesired { get; init; } = Occupancy.Running;
+    public Occupancy OccupancyObserved { get; init; } = Occupancy.None;
+    public SessionHealth Health { get; init; } = SessionHealth.Ok;
+    public bool Hidden { get; init; }
+    public MessageState MessageState { get; init; } = MessageState.Idle;
+    public MessageVerdict? MessageVerdict { get; init; }
+    public PendingSpawn? PendingSpawn { get; init; } = Landbridge.Core.PendingSpawn.New;
+    public bool PullRedelivered { get; init; }
+
     /// <summary>Required runner profile name; exact-match routing, never interpreted (§7).</summary>
     public string? Profile { get; init; }
 
@@ -67,15 +76,9 @@ public sealed record SessionRecord
     public int InfrastructureRequeues { get; init; }
 
     /// <summary>
-    /// The ceiling on <see cref="InfrastructureRequeues"/> (§6, §9 check 7). Reaching it
-    /// abandons the task — <c>canceled</c>, never <c>rejected</c>: the two counters stay
-    /// separate, so a flaky machine still cannot make a task fail its criteria (§6).
-    /// Fixed at creation from control-plane config, exactly like
-    /// <see cref="VerificationRetryLimit"/>, so a task's terms never change under it.
-    ///
-    /// <para><b>Non-positive means uncapped</b> — the behaviour before the cap existed,
-    /// and the deliberate opt-out for an operator who would rather a task retry forever
-    /// than go terminal.</para>
+    /// Observability ceiling on <see cref="InfrastructureRequeues"/>. The cap does
+    /// not auto-requeue and does not cancel; every <c>LivenessLost</c> lands
+    /// <c>health=failed</c> and stops. Non-positive means uncapped as a counter.
     /// </summary>
     public int InfrastructureRequeueLimit { get; init; } = DefaultInfrastructureRequeueLimit;
 
@@ -108,13 +111,37 @@ public sealed record SessionRecord
     public VerdictProvenance? CompletionProvenance { get; init; }
 
     /// <summary>
-    /// Whether infrastructure requeues have reached this task's cap (§9 check 7) — true
-    /// only on a task the cap abandoned, since a requeue that reaches the cap is the one
-    /// that ends the task, so a live task's count can never exceed the limit. Always
-    /// false when <see cref="InfrastructureRequeueLimit"/> is non-positive (uncapped).
-    /// What distinguishes a cap abandonment from any other <c>canceled</c> task on the
-    /// read side.
+    /// Whether the observability counter has reached its ceiling. Does not change
+    /// occupancy or health by itself.
     /// </summary>
     public bool InfrastructureRequeuesExhausted =>
         InfrastructureRequeueLimit > 0 && InfrastructureRequeues >= InfrastructureRequeueLimit;
+
+    /// <summary>
+    /// Derived <see cref="SessionState"/> for unconverted readers. Hidden/verdict
+    /// before health so a fail-during-stop cannot clobber accept/discard.
+    /// </summary>
+    public static SessionState DeriveState(SessionRecord t)
+    {
+        if (t.Hidden && t.MessageVerdict == Landbridge.Core.MessageVerdict.Accepted)
+            return SessionState.Completed;
+        if (t.Hidden && t.MessageVerdict == Landbridge.Core.MessageVerdict.Discarded)
+            return SessionState.Rejected;
+        if (t.Hidden)
+            return SessionState.Canceled;
+        if (t.Health == SessionHealth.Failed)
+            return SessionState.Failed;
+        if (t.OccupancyDesired == Occupancy.OnDisk)
+            return SessionState.Parked;
+        if (t.MessageState == MessageState.AwaitingPermission)
+            return SessionState.BlockedOnInput;
+        if (t.MessageState == MessageState.AwaitingReport)
+            return SessionState.Verifying;
+        if (t.OccupancyDesired == Occupancy.Running
+            && t.OccupancyObserved == Occupancy.None
+            && t.CurrentInstance is null
+            && t.Health == SessionHealth.Ok)
+            return SessionState.Submitted;
+        return SessionState.Working;
+    }
 }

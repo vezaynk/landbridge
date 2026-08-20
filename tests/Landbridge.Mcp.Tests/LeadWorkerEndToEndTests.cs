@@ -201,7 +201,7 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
                 ["answer"] = answer,
             }, cancellationToken: ct);
             Assert.NotEqual(true, answered.IsError);
-            Assert.Contains("Submitted", Assert.Single(answered.Content.OfType<TextContentBlock>()).Text);
+            Assert.Contains("Working", Assert.Single(answered.Content.OfType<TextContentBlock>()).Text);
         }
 
         // ── The successor worker: get_session carries the answer ────────────────

@@ -79,7 +79,7 @@ public class RequeueCapTests
 
         var woken = Expect.Transitioned(
             SessionStateMachine.Apply(failed, new WakeParked("try again — handshake flake")),
-            SessionState.Submitted);
+            SessionState.Working);
         Assert.Equal(LivenessLossReason.ProcessExited, woken.LastRequeueReason);
     }
 

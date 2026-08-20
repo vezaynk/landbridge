@@ -569,9 +569,18 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasColumnType("text")
                         .HasColumnName("description");
 
+                    b.Property<string>("Health")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("health");
+
                     b.Property<string>("HarnessSessionRef")
                         .HasColumnType("text")
                         .HasColumnName("harness_session_ref");
+
+                    b.Property<bool>("Hidden")
+                        .HasColumnType("boolean")
+                        .HasColumnName("hidden");
 
                     b.Property<int>("InfrastructureRequeueLimit")
                         .HasColumnType("integer")
@@ -597,14 +606,41 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasColumnType("text")
                         .HasColumnName("last_requeue_reason");
 
+                    b.Property<DateTimeOffset?>("MessagePulledAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("message_pulled_at");
+
+                    b.Property<string>("MessageState")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("message_state");
+
+                    b.Property<string>("MessageVerdict")
+                        .HasColumnType("text")
+                        .HasColumnName("message_verdict");
+
                     b.Property<string>("Namespace")
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("namespace");
 
+                    b.Property<string>("OccupancyDesired")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("occupancy_desired");
+
+                    b.Property<string>("OccupancyObserved")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("occupancy_observed");
+
                     b.Property<string>("OnMachineGone")
                         .HasColumnType("text")
                         .HasColumnName("on_machine_gone");
+
+                    b.Property<string>("PendingSpawn")
+                        .HasColumnType("text")
+                        .HasColumnName("pending_spawn");
 
                     b.Property<string>("ParkMachine")
                         .HasColumnType("text")
@@ -641,6 +677,10 @@ namespace Landbridge.ControlPlane.Migrations
                     b.Property<string>("Profile")
                         .HasColumnType("text")
                         .HasColumnName("profile");
+
+                    b.Property<bool>("PullRedelivered")
+                        .HasColumnType("boolean")
+                        .HasColumnName("pull_redelivered");
 
                     b.Property<string>("ResultReference")
                         .HasColumnType("text")
@@ -695,6 +735,10 @@ namespace Landbridge.ControlPlane.Migrations
                     b.HasIndex("State", "Profile")
                         .HasDatabaseName("ix_sessions_state_profile")
                         .HasFilter("state = 'Submitted'");
+
+                    b.HasIndex("Profile", "OccupancyDesired", "OccupancyObserved", "Health")
+                        .HasDatabaseName("ix_sessions_profile_occupancy_desired_occupancy_observed_health")
+                        .HasFilter("occupancy_desired = 'Running' AND health = 'Ok' AND hidden = false AND occupancy_observed IN ('None','OnDisk') AND current_instance_id IS NULL AND pending_spawn IN ('New','Load')");
 
                     b.ToTable("sessions", (string)null);
                 });

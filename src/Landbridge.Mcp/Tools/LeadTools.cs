@@ -127,6 +127,9 @@ public sealed class LeadTools(
                 ?? throw new McpException($"cannot continue session {continues}: no such session.");
             if (source.Team != lead.Team)
                 throw new McpException($"cannot continue session {continues}: it belongs to another Team.");
+            if (source.Health == SessionHealth.Failed)
+                throw new McpException(
+                    $"cannot continue session {continues}: it failed mechanically; retry that session instead of continues:.");
 
             // The machine that last held/ran the continued task, most authoritative first:
             // the live registry for a currently-tracked task, the park record for a parked
@@ -204,10 +207,10 @@ public sealed class LeadTools(
     }
 
     [McpServerTool(Name = "park_session"),
-     Description("Release a live ACP session on purpose. The worker is cancelled and the session " +
-                 "parks; it is not a timer. Use this to free the machine when the work is done " +
-                 "waiting, including after a report you are not ready to accept. Answering a " +
-                 "still-live wait is answer_input_request, not this. Wake later is session/load.")]
+     Description("Release occupancy on purpose (desired=on_disk) without hiding the row. The worker " +
+                 "is cancelled; it is not a timer. Refused while a permission wait is live. Use this to " +
+                 "free the machine when you are done waiting. Answering a still-live wait is " +
+                 "answer_input_request, not this. Wake later is answer_input_request (session/load).")]
     public async Task<string> ParkTask(
         [Description("The working, blocked, or verifying session to park.")] string sessionId,
         CancellationToken ct)
@@ -342,7 +345,20 @@ public sealed class LeadTools(
             "fail" => new VerdictFail(lead),
             _ => throw new McpException("verdict must be 'accept' or 'fail'."),
         };
-        return Describe(await store.ApplyAsync(id, command, ct));
+        var applied = await store.ApplyAsync(id, command, ct);
+        if (applied is StoreResult.Applied ok
+            && (ok.Session.OccupancyObserved == Occupancy.Running || ok.Session.CurrentInstance is not null))
+        {
+            var machine = registry.MachineFor(id) ?? "unknown";
+            if (machine != "unknown")
+            {
+                await registry.SendAsync(
+                    machine,
+                    new StopCommand(id, TimeSpan.FromSeconds(30), StopDisposition.Preserve, "review"),
+                    ct);
+            }
+        }
+        return Describe(applied);
     }
 
     [McpServerTool(Name = "get_team_state"),
