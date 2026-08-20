@@ -75,7 +75,7 @@ One command brings up the full Lead → plane → runner → worker loop:
 `landbridge-meta` is **not** in the dev loop: it provisions whole Instances and runs
 standalone with its own Postgres. See **[docs/META.md](docs/META.md)**.
 
-Completion is Lead-adjudicated (spec §7, §9 check 4): a task reaches `verifying`, and a Lead completes it with `submit_review` — there is no verifier process in the loop.
+A worker mails `report_result`; the session stays occupied. The Lead closes it with `submit_review` when they are done with that worker (spec §7, §9 check 4). There is no verifier process in the loop.
 
 Two dashboards:
 
@@ -133,7 +133,8 @@ CI runs in **four workflows** because they have different needs:
   `Category=RealGrok` / `Category=RealGoose`), and skips cleanly when its key is absent.
   Codex and OpenCode also install claude (one shared pin, `if:`-gated) because the
   mixed-fleet facts need two binaries. The Grok cell maps `XAI_KEY` → `XAI_API_KEY`.
-  The Goose cell sets `LANDBRIDGE_REAL_GOOSE=1` and runs both the direct `goose acp` bar
+  Goose opts in on `ANTHROPIC_API_KEY` (it defaults to that provider) or
+  `LANDBRIDGE_REAL_GOOSE=1`; the cell runs both the direct `goose acp` bar
   and the ACP-bridge facts. Grok and Goose have no npm package, so the bump bot never
   rewrites those install pins, but a dispatch still runs those cells and the merge gate
   waits for them.
@@ -208,8 +209,8 @@ on: **a claude worker and a codex worker handing a token to each other across on
 fleet**, with no code below the spawn seam knowing the difference — a profile, not
 a code change. Both tiers are `workflow_dispatch`-only because they spend tokens.
 
-Implemented: the task state machine and the §9 checks (check 4 is the doer/judge
-split — a Lead or human adjudicates, never the task's own worker); Postgres store
+Implemented: occupancy plus the message machine and the §9 checks (check 4 is the doer/judge
+split — a Lead or human closes a session, never the session's own worker); Postgres store
 with `SKIP LOCKED` dispatch and `LISTEN/NOTIFY` push; opaque-token auth across the
 four credential classes; OAuth 2.1 authorization-code + PKCE (S256) + Client ID
 Metadata Documents; machine enrollment and refresh; `landbridged` supervision,
@@ -230,7 +231,7 @@ the **§11 permission bridge** — ACP `session/request_permission` becomes an
 approval request the Lead answers with a verdict, or hands to a human on the dashboard;
 **in-band worker reports** and the
 **question/answer exchange** that makes blocking on a human actually carry words;
-Lead-adjudicated completion (`lead`/`review` modes); an enforced per-Team
+Lead-closed sessions (`submit_review`); an enforced per-Team
 forward rate limit; the relay
 TCP splice with fail-closed grant validation; **`open_forward`, the Lead-facing
 forward** for reaching a service from your own machine, and the **§8.4 preview
@@ -242,8 +243,8 @@ Deliberately deferred — do not assume these work:
 
 - **Transcript redaction** (spec §16 open question 8). Transcripts are served
   **verbatim**, which is why serving is narrowed instead: human operator sessions
-  only, and only for terminal tasks. This gates live tailing, reading a `verifying`
-  task's transcript, and any agent-facing read.
+  only, and only for hidden (closed) sessions. This gates live tailing, reading a
+  live session's transcript (whose worker token is still live), and any agent-facing read.
 - **Spend limits.** There are none. The dollar budget ceiling was removed
   2026-08-12 (spec §9's note keeps the design); what bounds a runaway now is time
   (the no-progress ceiling), attempts (the requeue cap), and an operator watching.

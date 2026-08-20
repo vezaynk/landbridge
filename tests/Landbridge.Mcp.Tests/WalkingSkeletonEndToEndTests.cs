@@ -28,7 +28,7 @@ namespace Landbridge.Mcp.Tests;
 /// <c>{work_dir}/mcp.json</c> (0600) and substituting its path into the argv; the
 /// harness authenticates back to the real <c>/mcp</c> endpoint with the
 /// dispatched token, calls <c>get_session</c> to read its assignment, then
-/// <c>report_result</c> — driving the task working → verifying.
+/// <c>report_result</c>.
 ///
 /// This closes the loop the design leans on: a dispatched task reaches a worker
 /// that learns what to do and reports back, over real MCP, with the actual auth
@@ -130,16 +130,16 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
                 publicMcpUrl: baseUrl);
             await dispatch.RunDispatchPassAsync(ct);
 
-            // ── The harness authenticated and reported: working → verifying ──
+            // ── The harness authenticated and mailed a report ──
             var workDir = Path.Combine(workRoot, sessionId.ToString());
             var reached = await WaitUntilAsync(
-                async () => await StateAsync(sessionId, ct) == SessionState.Verifying,
+                async () => await HasReportAsync(sessionId, ct),
                 TimeSpan.FromSeconds(60));
             if (!reached)
             {
                 var errPath = Path.Combine(workDir, "harness_error.txt");
                 var detail = File.Exists(errPath) ? await File.ReadAllTextAsync(errPath, ct) : "(no harness_error.txt)";
-                Assert.Fail($"worker harness never drove the task to verifying. Harness diagnostic:\n{detail}");
+                Assert.Fail($"worker harness never mailed a report. Harness diagnostic:\n{detail}");
             }
 
             Assert.NotNull(seen);
@@ -179,8 +179,11 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
             // asserts it — but the skeleton's proof is that the transition committed,
             // not its content.)
             await using (var v = pg.NewContext())
-                Assert.Equal(SessionState.Verifying,
-                    (await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == sessionId.Value, ct)).State);
+            {
+                var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == sessionId.Value, ct);
+                Assert.Equal(SessionState.Working, row.State);
+                Assert.Equal(MessageState.AwaitingReport, row.MessageState);
+            }
         }
         finally
         {
@@ -194,6 +197,13 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
     {
         await using var db = pg.NewContext();
         return await new SessionStore(db, TimeProvider.System).GetStateAsync(id, ct);
+    }
+
+    private async Task<bool> HasReportAsync(SessionId id, CancellationToken ct)
+    {
+        await using var db = pg.NewContext();
+        var row = await db.Sessions.AsNoTracking().SingleOrDefaultAsync(t => t.Id == id.Value, ct);
+        return row?.MessageState == MessageState.AwaitingReport;
     }
 
     private WebApplication BuildServer()

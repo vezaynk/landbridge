@@ -151,11 +151,11 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
             await dispatch.RunDispatchPassAsync(ct);
 
             // ── The consumer worker opened the forward, round-tripped bytes through
-            //    the real relay, and reported — driving working → verifying.
+            //    the real relay, and mailed a report.
             var reached = await WaitUntilAsync(
-                async () => await StateAsync(taskB, ct) == SessionState.Verifying, TimeSpan.FromSeconds(60));
+                async () => await HasReportAsync(taskB, ct), TimeSpan.FromSeconds(60));
             if (!reached)
-                Assert.Fail("consumer worker never drove its task to verifying. " + await DiagnoseAsync(workRoot, taskB, ct));
+                Assert.Fail("consumer worker never mailed a report. " + await DiagnoseAsync(workRoot, taskB, ct));
 
             // The result reference is the worker's own proof the bytes round-tripped.
             string? reference;
@@ -202,7 +202,7 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
             Assert.True(probe.AsSpan().SequenceEqual(echoed), "the held forward never round-tripped bytes");
 
             // A report keeps the process and the service — the Lead can still reach
-            // it while adjudicating. Teardown is the verdict.
+            // it. Teardown is close.
             var instanceA = await IncumbentInstanceAsync(taskA, ct);
             await using (var scope = plane.Services.CreateAsyncScope())
             {
@@ -213,7 +213,7 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
                 Assert.True(await ServiceExistsAsync(team, ServiceName, ct),
                     "a report must keep the registered service so the Lead can still reach it");
                 Assert.False(await ConnectionIsDeadAsync(heldStream, ct),
-                    "the splice must survive a report; verifying is not a teardown");
+                    "the splice must survive a report; a report is not a teardown");
                 Assert.IsType<StoreResult.Applied>(
                     await store.ApplyAsync(taskA, new VerdictAccept(new LeadClaim(team)), ct));
             }
@@ -272,6 +272,13 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
     {
         await using var db = pg.NewContext();
         return await new SessionStore(db, TimeProvider.System).GetStateAsync(id, ct);
+    }
+
+    private async Task<bool> HasReportAsync(SessionId id, CancellationToken ct)
+    {
+        await using var db = pg.NewContext();
+        var row = await db.Sessions.AsNoTracking().SingleOrDefaultAsync(t => t.Id == id.Value, ct);
+        return row?.MessageState == MessageState.AwaitingReport;
     }
 
     /// <summary>

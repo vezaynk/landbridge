@@ -302,7 +302,7 @@ internal sealed class FleetRig(
     public string McpUrl => _baseUrl;
 
     /// <summary>
-    /// Accept a verifying task over the real Lead MCP surface, driving it to <c>completed</c>
+    /// Accept a reported session over the real Lead MCP surface, driving it to <c>completed</c>
     /// — the terminal state a transcript is readable in (§12).
     /// </summary>
     public async Task AcceptAsync(SessionId task, CancellationToken ct)
@@ -475,8 +475,30 @@ internal sealed class FleetRig(
                 if (extract(line) is not { Length: > 0 } id)
                     continue;
                 ids.Add(id);
-                break; // the init line is the first one that carries it; the id is stable per run
+                break;
             }
+        }
+        return ids;
+    }
+
+    /// <summary>
+    /// ACP transcript proof: prefer <c>session/new</c> <c>result.sessionId</c> over an
+    /// earlier <c>session/update</c> id on the same instance file.
+    /// </summary>
+    public IReadOnlyList<string> InstanceSessionIdsOn(
+        string machineId, SessionId task, RealHarnessProfile profile)
+    {
+        var dir = System.IO.Path.Combine(
+            _machines[machineId].WorkRoot, TranscriptDefaults.DirName, task.ToString());
+        if (!System.IO.Directory.Exists(dir))
+            return [];
+
+        var ids = new List<string>();
+        foreach (var file in System.IO.Directory.EnumerateFiles(dir, "*.ndjson")
+                     .OrderBy(f => f, StringComparer.Ordinal))
+        {
+            if (profile.SessionIdFromTranscript(ReadLinesOrEmpty(file)) is { Length: > 0 } id)
+                ids.Add(id);
         }
         return ids;
     }
@@ -654,19 +676,51 @@ internal sealed class FleetRig(
     public string? MachineRanOn(SessionId task) => _ranOn.TryGetValue(task, out var m) ? m : null;
 
     /// <summary>
-    /// Drive a task to <see cref="SessionState.Verifying"/> on <paramref name="machineId"/>,
+    /// True when the worker has mailed a report (<c>awaiting_report</c>). Occupancy
+    /// stays working; this is mail, not a session phase.
+    /// </summary>
+    public async Task<bool> HasReportAsync(SessionId task, CancellationToken ct)
+    {
+        await using var db = pg.NewContext();
+        var row = await db.Sessions.AsNoTracking().SingleOrDefaultAsync(t => t.Id == task.Value, ct);
+        return row is { MessageState: MessageState.AwaitingReport };
+    }
+
+    /// <summary>
+    /// Same claim predicate as <see cref="SessionStore.DispatchNextAsync"/>: desired
+    /// running, observed none or on_disk, no instance, pending spawn new or load.
+    /// Derived <see cref="SessionState.Submitted"/> is only the first-spawn pair
+    /// (observed none); a wake from park is claimable while still derived Working.
+    /// </summary>
+    public async Task<bool> IsClaimableAsync(SessionId task, CancellationToken ct)
+    {
+        await using var db = pg.NewContext();
+        var row = await db.Sessions.AsNoTracking().SingleOrDefaultAsync(t => t.Id == task.Value, ct);
+        return row is
+        {
+            OccupancyDesired: Occupancy.Running,
+            OccupancyObserved: Occupancy.None or Occupancy.OnDisk,
+            Health: SessionHealth.Ok,
+            Hidden: false,
+            CurrentInstanceId: null,
+            PendingSpawn: PendingSpawn.New or PendingSpawn.Load,
+        };
+    }
+
+    /// <summary>
+    /// Drive a task until the worker reports on <paramref name="machineId"/>,
     /// tolerant of a worker that ends its turn without reporting. Each time the task is
     /// claimable (the initial submit, and every requeue-on-exit surfaced by the drained
     /// ring), a fresh worker is spawned — up to <paramref name="maxAttempts"/> — within
-    /// <paramref name="budget"/>. Returns true once verifying, false at the budget
+    /// <paramref name="budget"/>. Returns true once a report is mailed, false at the budget
     /// deadline. This is the harness standing in for production's background dispatch
     /// loop, which would redispatch a requeued task on its own; a real haiku worker that
     /// flakes one turn no longer reds the whole opt-in job.
     /// </summary>
-    public Task<bool> DispatchUntilVerifyingAsync(
+    public Task<bool> DispatchUntilReportedAsync(
         SessionId task, string machineId, int maxAttempts, TimeSpan budget, CancellationToken ct) =>
         DispatchUntilAsync(
-            task, machineId, async () => await StateAsync(task, ct) == SessionState.Verifying,
+            task, machineId, async () => await HasReportAsync(task, ct),
             maxAttempts, budget, ct);
 
     /// <summary>
@@ -678,7 +732,7 @@ internal sealed class FleetRig(
     /// <para>Every scenario needs this rather than a plain poll, because "the worker ended its
     /// turn without doing the thing" is a real (if uncommon) haiku outcome, and the requeue that
     /// follows is only useful if something redispatches — which in production is the background
-    /// dispatch loop and here is this method. A scenario whose goal is not <c>verifying</c> —
+    /// dispatch loop and here is this method. A scenario whose goal is not a report —
     /// blocking on a question, registering a service — needs the same tolerance, so the
     /// completion test is a predicate rather than a fixed state.</para>
     /// </summary>
@@ -699,9 +753,8 @@ internal sealed class FleetRig(
                 await using var db = pg.NewContext();
                 var store = new SessionStore(db, TimeProvider.System);
                 await store.ApplyAsync(task, new WakeParked("e2e: resume after fail"), ct);
-                state = await StateAsync(task, ct);
             }
-            if (state == SessionState.Submitted && attempts < maxAttempts)
+            if (await IsClaimableAsync(task, ct) && attempts < maxAttempts)
             {
                 await DispatchToAsync(machineId, ct);
                 attempts++;
@@ -719,7 +772,7 @@ internal sealed class FleetRig(
     /// ring-observed spawn/exit tallies with the last exit code. Distinguishes "never
     /// dispatched" (no spawn, still submitted) from "spawned but never reported" (a
     /// started+exited pair with the task requeued) from "reported something rejected"
-    /// (verifying with an unexpected result ref) — so the NEXT CI failure needs no guesswork.
+    /// (a report with an unexpected result ref) — so the NEXT CI failure needs no guesswork.
     /// </summary>
     public async Task<string> RealWorkerDiagnosticsAsync(SessionId task, CancellationToken ct)
     {
@@ -885,7 +938,7 @@ internal sealed class FleetRig(
     ///
     /// <para>Empty is a legitimate answer and callers must poll rather than assert immediately:
     /// claude prints its <c>result</c> line as the run ENDS, which is after the
-    /// <c>report_result</c> that moved the task to <c>verifying</c> — so a row that is not there
+    /// <c>report_result</c> that mailed a report — so a row that is not there
     /// yet may simply be a second away.</para>
     ///
     /// <para><b>Returns the view, not the row, and that is load-bearing.</b> Storage spells the

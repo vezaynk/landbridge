@@ -13,6 +13,7 @@ public class LifecycleTests
         var task = Expect.Transitioned(result, SessionState.Submitted);
         Assert.Equal(0, task.Attempt);
         Assert.Null(task.CurrentInstance);
+        Assert.Equal(PendingSpawn.New, task.PendingSpawn);
     }
 
     [Fact]
@@ -50,20 +51,20 @@ public class LifecycleTests
     }
 
     [Fact]
-    public void Report_result_moves_working_to_verifying_and_keeps_the_process()
+    public void Report_result_mails_the_lead_and_keeps_the_process()
     {
         var task = Given.Session(SessionState.Working);
         var result = SessionStateMachine.Apply(task,
             new ReportResult(Given.IncumbentOf(task), "git:refs/agents/run-1/fix"));
 
-        Expect.Transitioned(result, SessionState.Verifying);
+        Expect.Reported(result);
         Assert.Empty(Expect.Effects(result));
     }
 
     [Fact]
-    public void Lead_acceptance_completes_a_lead_task_and_revokes_the_instance()
+    public void Lead_close_hides_the_session_and_revokes_the_instance()
     {
-        var task = Given.Session(SessionState.Verifying);
+        var task = Given.Reported();
         var incumbent = task.CurrentInstance!.Value;
 
         var result = SessionStateMachine.Apply(task, new VerdictAccept(Given.Lead));
@@ -78,7 +79,7 @@ public class LifecycleTests
     public void Failed_verification_rejects_without_redispatch()
     {
         var result = SessionStateMachine.Apply(
-            Given.Session(SessionState.Verifying, verificationFailures: 0, retryLimit: 3),
+            Given.Reported(verificationFailures: 0, retryLimit: 3),
             new VerdictFail(Given.Lead));
 
         var next = Expect.Transitioned(result, SessionState.Rejected);
@@ -87,9 +88,9 @@ public class LifecycleTests
     }
 
     [Fact]
-    public void Liveness_loss_fails_a_verifying_task_and_releases_services()
+    public void Liveness_loss_fails_a_reported_task_and_releases_services()
     {
-        var task = Given.Session(SessionState.Verifying);
+        var task = Given.Reported();
         var incumbent = task.CurrentInstance!.Value;
 
         var result = SessionStateMachine.Apply(
@@ -103,9 +104,9 @@ public class LifecycleTests
     }
 
     [Fact]
-    public void Park_from_verifying_releases_the_session()
+    public void Park_from_a_report_releases_the_session()
     {
-        var task = Given.Session(SessionState.Verifying);
+        var task = Given.Reported();
         var incumbent = task.CurrentInstance!.Value;
 
         var result = SessionStateMachine.Apply(task, new Park(Given.Lead, Given.Park));
@@ -118,12 +119,30 @@ public class LifecycleTests
     }
 
     [Fact]
-    public void A_lead_reply_to_a_report_returns_the_live_worker_to_working()
+    public void A_lead_reply_to_a_report_keeps_the_live_worker()
     {
-        var task = Given.Session(SessionState.Verifying);
+        var task = Given.Reported();
         var result = SessionStateMachine.Apply(task, new LeadMessage(Given.Lead, "needs a test"));
         var next = Expect.Transitioned(result, SessionState.Working);
         Assert.Equal(task.CurrentInstance, next.CurrentInstance);
+    }
+
+    [Fact]
+    public void Submit_review_closes_an_idle_working_session()
+    {
+        var task = Given.Session(SessionState.Working);
+        var next = Expect.Transitioned(
+            SessionStateMachine.Apply(task, new VerdictAccept(Given.Lead)),
+            SessionState.Completed);
+        Assert.Equal(MessageVerdict.Accepted, next.MessageVerdict);
+    }
+
+    [Fact]
+    public void Submit_review_refuses_an_unanswered_question()
+    {
+        Expect.Rejected(
+            SessionStateMachine.Apply(Given.Asking(), new VerdictAccept(Given.Lead)),
+            Rule.InvalidSourceState);
     }
 
     [Fact]
@@ -306,11 +325,11 @@ public class LifecycleTests
         task = Expect.Transitioned(SessionStateMachine.Apply(task, new Dispatch(Given.Machine(), first)), SessionState.Working);
         task = Expect.Transitioned(
             SessionStateMachine.Apply(task, new ObserveOccupancy(Occupancy.Running)), SessionState.Working);
-        task = Expect.Transitioned(SessionStateMachine.Apply(task, new ReportResult(new WorkerCaller(task.Team, task.Id, first), "ref-1")), SessionState.Verifying);
+        task = Expect.Reported(SessionStateMachine.Apply(task, new ReportResult(new WorkerCaller(task.Team, task.Id, first), "ref-1")));
         task = Expect.Transitioned(SessionStateMachine.Apply(task, new LeadMessage(Given.Lead, "add a test")), SessionState.Working);
         task = Expect.Transitioned(
             SessionStateMachine.Apply(task, new PullReceipt(new WorkerCaller(task.Team, task.Id, first))), SessionState.Working);
-        task = Expect.Transitioned(SessionStateMachine.Apply(task, new ReportResult(new WorkerCaller(task.Team, task.Id, first), "ref-2")), SessionState.Verifying);
+        task = Expect.Reported(SessionStateMachine.Apply(task, new ReportResult(new WorkerCaller(task.Team, task.Id, first), "ref-2")));
         task = Expect.Transitioned(SessionStateMachine.Apply(task, new VerdictAccept(Given.Lead)), SessionState.Completed);
 
         Assert.Equal(1, task.Attempt);

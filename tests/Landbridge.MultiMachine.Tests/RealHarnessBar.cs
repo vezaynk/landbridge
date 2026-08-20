@@ -30,11 +30,11 @@ internal static class RealHarnessBar
 
     /// <summary>
     /// A real worker reads <c>get_session</c>, reports the live-description token,
-    /// and drives the task to <see cref="SessionState.Verifying"/> on a two-machine
+    /// and waits until the worker mails a report on a two-machine
     /// fleet. The same run asserts the §11 session ref landed — without it every
     /// later resume would silently cold-start.
     /// </summary>
-    public static async Task DriveToVerifyingAsync(PostgresFixture pg, RealHarnessProfile profile)
+    public static async Task DriveToReportAsync(PostgresFixture pg, RealHarnessProfile profile)
     {
         using var cts = new CancellationTokenSource(EchoTimeout);
         var ct = cts.Token;
@@ -49,8 +49,8 @@ internal static class RealHarnessBar
         var task = await rig.CreateSessionAsync(RealHarnessProfiles.EchoDescription("A", token), ct);
 
         Assert.True(
-            await rig.DispatchUntilVerifyingAsync(task, "A", MaxAttempts, PerLegBudget, ct),
-            $"the real {profile.Name} worker never drove its task to verifying.\n"
+            await rig.DispatchUntilReportedAsync(task, "A", MaxAttempts, PerLegBudget, ct),
+            $"the real {profile.Name} worker never mailed a report.\n"
             + profile.FailureHypotheses + await rig.RealWorkerDiagnosticsAsync(task, ct));
 
         Assert.Contains(token, await rig.ResultReferenceAsync(task, ct));
@@ -85,8 +85,8 @@ internal static class RealHarnessBar
         var task = await rig.CreateSessionAsync(RealHarnessProfiles.EchoDescription("A", token), ct);
 
         Assert.True(
-            await rig.DispatchUntilVerifyingAsync(task, "A", MaxAttempts, PerLegBudget, ct),
-            $"no verifying task, so no usage to assert on ({profile.Name}).\n"
+            await rig.DispatchUntilReportedAsync(task, "A", MaxAttempts, PerLegBudget, ct),
+            $"no reported session, so no usage to assert on ({profile.Name}).\n"
             + profile.FailureHypotheses + await rig.RealWorkerDiagnosticsAsync(task, ct));
 
         if (profile.Usage == UsageExpectation.Cost)
@@ -155,8 +155,10 @@ internal static class RealHarnessBar
                 task, "A",
                 async () =>
                 {
+                    if (await rig.HasReportAsync(task, ct))
+                        return true;
                     var state = await rig.StateAsync(task, ct);
-                    if (state is SessionState.Verifying or SessionState.Completed)
+                    if (state is SessionState.Completed)
                         return true;
                     return await rig.HasPendingQuestionAsync(task, ct);
                 },
@@ -195,8 +197,8 @@ internal static class RealHarnessBar
         await rig.AnswerAsync(task, "Yes — report the remembered value now.", ct);
 
         Assert.True(
-            await rig.DispatchUntilVerifyingAsync(task, "A", MaxAttempts, PerLegBudget, ct),
-            $"the resumed {profile.Name} worker never drove its task to verifying.\n"
+            await rig.DispatchUntilReportedAsync(task, "A", MaxAttempts, PerLegBudget, ct),
+            $"the resumed {profile.Name} worker never mailed a report.\n"
             + profile.FailureHypotheses + await rig.RealWorkerDiagnosticsAsync(task, ct));
 
         Assert.Contains(remembered, await rig.ResultReferenceAsync(task, ct));
@@ -204,12 +206,12 @@ internal static class RealHarnessBar
         Assert.True(
             await FleetRig.WaitUntilAsync(
                 () => Task.FromResult(
-                    rig.InstanceSessionIdsOn("A", task, profile.SessionIdFromLine).Count >= 2),
+                    rig.InstanceSessionIdsOn("A", task, profile).Count >= 2),
                 TimeSpan.FromSeconds(15)),
             $"resume of {profile.Name} did not produce a second captured instance — the successor "
             + "may have cold-started without a transcript file, or SessionIdFromLine missed the stream.\n"
             + profile.FailureHypotheses + await rig.RealWorkerDiagnosticsAsync(task, ct));
-        var instanceSessions = rig.InstanceSessionIdsOn("A", task, profile.SessionIdFromLine);
+        var instanceSessions = rig.InstanceSessionIdsOn("A", task, profile);
         Assert.All(instanceSessions, id => Assert.Equal(sessionRef, id));
         Assert.Equal("A", rig.MachineRanOn(task));
         Assert.Equal(sessionRef, await rig.HarnessSessionRefAsync(task, ct));

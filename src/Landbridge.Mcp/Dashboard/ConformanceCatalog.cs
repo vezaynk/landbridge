@@ -44,13 +44,14 @@ internal static class ConformanceCatalog
             ? workspace[WorkspacePrefix.Length..]
             : null;
 
-    public static string Bucket(SessionState state) => state switch
-    {
-        SessionState.Verifying => "verifying",
-        SessionState.Completed => "completed",
-        SessionState.Rejected or SessionState.Canceled or SessionState.Failed => "failed",
-        _ => "pending",
-    };
+    public static string Bucket(SessionState state, MessageState message = MessageState.Idle) =>
+        state switch
+        {
+            SessionState.Completed => "completed",
+            SessionState.Rejected or SessionState.Canceled or SessionState.Failed => "failed",
+            _ when message == MessageState.AwaitingReport => "reported",
+            _ => "pending",
+        };
 }
 
 internal readonly record struct ConformanceSessionSpec(

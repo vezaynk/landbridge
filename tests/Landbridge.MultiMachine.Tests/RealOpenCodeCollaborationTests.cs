@@ -9,7 +9,7 @@ namespace Landbridge.MultiMachine.Tests;
 /// §10 BYO-harness, <b>third</b> harness: the same fleet driven by OpenCode
 /// (<c>opencode acp</c>) instead of <c>claude-agent-acp</c> or <c>codex-acp</c>.
 /// Opt-in and token-spending, gated exactly like the other two real tiers. The portable
-/// bar (verifying + session ref, usage/cost, park → resume via <c>--session</c>) is
+/// bar (report + session ref, usage/cost, park → resume via <c>--session</c>) is
 /// <see cref="RealHarnessBar"/>, wrapped below so <c>Category=RealOpenCode</c> still
 /// isolates the job.
 ///
@@ -88,8 +88,8 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
     public Task DisposeAsync() => Task.CompletedTask;
 
     [SkippableFact(Timeout = RealHarnessBar.EchoTimeoutMs)]
-    public Task Real_worker_drives_a_task_to_verifying_on_the_fleet() =>
-        RealHarnessBar.DriveToVerifyingAsync(pg, RealHarnessProfiles.OpenCode(RequireRealOpenCode()));
+    public Task Real_worker_reports_on_the_fleet() =>
+        RealHarnessBar.DriveToReportAsync(pg, RealHarnessProfiles.OpenCode(RequireRealOpenCode()));
 
     [SkippableFact(Timeout = RealHarnessBar.EchoTimeoutMs)]
     public Task Real_worker_reports_usage_the_harness_emits() =>
@@ -205,8 +205,8 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
         var token = NewToken();
         var stepA = await rig.CreateSessionAsync(EchoDescription("A", token), ct);
         Assert.True(
-            await rig.DispatchUntilVerifyingAsync(stepA, "A", MaxAttempts, PerLegBudget, ct),
-            "the real claude worker never drove step A to verifying.\n"
+            await rig.DispatchUntilReportedAsync(stepA, "A", MaxAttempts, PerLegBudget, ct),
+            "the real claude worker never mailed a report on step A.\n"
             + await rig.RealWorkerDiagnosticsAsync(stepA, ct));
 
         // The handoff: read what A actually committed to the plane, not the test's constant.
@@ -216,7 +216,7 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
         // Step B, on the opencode machine: report the token the claude worker produced.
         var stepB = await rig.CreateSessionAsync(EchoDescription("B", token), ct);
         Assert.True(
-            await rig.DispatchUntilVerifyingAsync(stepB, "B", MaxAttempts, PerLegBudget, ct),
+            await rig.DispatchUntilReportedAsync(stepB, "B", MaxAttempts, PerLegBudget, ct),
             "the real opencode worker never confirmed the cross-harness handoff.\n"
             + OpenCodeFailureHypotheses() + await rig.RealWorkerDiagnosticsAsync(stepB, ct));
 

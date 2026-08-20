@@ -31,7 +31,7 @@ Three facts hid behind one column:
 |---|---|---|
 | Should a harness be up? | `Submitted` / `Working` / `Parked` / `Failed` / terminals | occupancy desired vs observed |
 | Is the process actually up? | inferred from `CurrentInstanceId`, `RunnerConnectionRegistry.HasLiveProcess`, and `state` | occupancy observed, written by runner events |
-| Who owes whom a move? | `BlockedOnInput`, `Verifying`, `Working`+`BlockedAt`, `Working` with a leftover `InputKind` | the message machine |
+| Who owes whom a move? | `BlockedOnInput`, `Working`+`BlockedAt`, leftover `InputKind`, `awaiting_report` | the message machine |
 
 Concrete knots this produces:
 
@@ -273,7 +273,7 @@ At most **one** outstanding exchange per session. This is the state machine `Ses
 | `idle` | No outstanding envelope. If occupancy is `running/running`, the worker is doing the work. |
 | `awaiting_lead` | Worker asked a prose question (or `spawn_request` / `auth_help` / `endpoint_wait` / `unreachable`). Lead answers in words. |
 | `awaiting_permission` | Live ACP `session/request_permission`. Verdict in place. `observed` must be `running`. |
-| `awaiting_report` | Worker claimed done, or cannot do the work, via `report_result`. Lead accepts, discards, or replies. Process stays. |
+| `awaiting_report` | Worker mailed `report_result`. Lead replies, parks, or closes with `submit_review`. Process stays. |
 | `awaiting_pull` | Lead spoke. Worker must `get_session`. That call is the receipt. |
 
 Envelope payload stays on the row, as today: `InputKind`, `InputQuestion`, `InputAnswer`, `PermissionTool` / `Options` / `OptionId` / `Verdict` / escalation fields, `WorkerReport`, `ResultReference`. Add:
@@ -281,7 +281,7 @@ Envelope payload stays on the row, as today: `InputKind`, `InputQuestion`, `Inpu
 ```
 message_state          idle | awaiting_lead | awaiting_permission | awaiting_report | awaiting_pull
 message_authorship     worker | lead_or_human     // who opened the outstanding envelope
-message_verdict        accepted | discarded | null  // last report adjudication; not a session phase
+message_verdict        accepted | discarded | null  // last close; not a session phase
 message_pulled_at      timestamptz | null           // receipt; set on get_session from awaiting_pull
 ```
 
@@ -425,7 +425,7 @@ If `health=failed`, this path is retry, not load: `pending_spawn=new`, no `Resum
 
 A subsequent `LeadMessage` while already `awaiting_pull` and `observed=running` **and** `HasLiveProcess` re-sends `PromptCommand` (nudge). Persist the text even if a receipt wins first (§2). If `!HasLiveProcess`, same on-disk path as above.
 
-**Services and forwards.** Register iff `observed=running` **and** the caller is the incumbent. **Message state does not gate register.** That is a behavior change: today `RegisterServiceAsync` refuses `state != Working`, so a worker in `Verifying` (`awaiting_report`) cannot register. Under this spec it may — the process is up, a report is not a yield, and check 11 consumers still need a live endpoint while the Lead adjudicates. Same for `awaiting_lead` / `awaiting_permission` / `idle`+running. Tests: a verifying worker may `register_service`; accept still `ClearServicesAndForwards`. Spec §8.2 / check 11 language “owned by a `working` task” is amended to **`observed=running`**.
+**Services and forwards.** Register iff `observed=running` **and** the caller is the incumbent. **Message state does not gate register.** A report is not a yield; check 11 consumers still need a live endpoint while the Lead reads mail. Same for `awaiting_lead` / `awaiting_permission` / `idle`+running. `submit_review` still `ClearServicesAndForwards`. Spec §8.2 / check 11 language is **`observed=running`**.
 
 `ClearServicesAndForwards` fires when leaving `running` because of deactivate / accept / discard / cancel / mechanical fail — not on report, not on permission, not on question. The old “exception compounds” note in `Effects.cs` (permission-blocked then parked still holding services) is fixed by refusing deactivate while `awaiting_permission`, and by clearing on the fail that actually leaves `running`.
 
@@ -541,7 +541,7 @@ Rehydrate (`HeldDispatchesOnAsync`) is **both** arms, not only `observed=running
 1. `observed=running` and the live incumbent instance was minted for this machine (permission waits, in-flight reports, steady work).
 2. `desired=running` **and** `CurrentInstanceId` live on this machine (spawn-in-flight: `observed=none`, instance set — #86 for the claim-before-send window).
 
-Do **not** rehydrate `health=failed` with a nulled instance. Tests: rehydrate verifying/`awaiting_report`; rehydrate claimed-but-not-started; do not rehydrate a failed nulled row. As-built `HeldDispatchesOnAsync` omits `Verifying`; that gap is in scope here.
+Do **not** rehydrate `health=failed` with a nulled instance. Tests: rehydrate `awaiting_report`; rehydrate claimed-but-not-started; do not rehydrate a failed nulled row.
 
 ### 6. Liveness, wait TTL, instance fencing
 
@@ -691,7 +691,6 @@ hidden                                                               → Cancele
 health=failed                                                        → Failed
 desired=on_disk && !hidden                                           → Parked
 message=awaiting_permission                                          → BlockedOnInput
-message=awaiting_report                                              → Verifying
 desired=running && observed=none && instance IS NULL && health=ok    → Submitted
 else                                                                 → Working   // includes spawn-in-flight (instance set, observed=none)
 ```
@@ -729,7 +728,7 @@ Indexes:
 | `WorkerTools` | `get_session` receipt CAS. `report_result` / `request_input` move the message machine. |
 | `TeamStateView` / `DashboardQueries` | Add occupancy/message/health/hidden; **keep derived `state` until PR 8**. Inbox = lead-busy + `health=failed`. |
 | Runner (`AcpClient` / `RunnerDaemon`) | **Unchanged.** Doorbell A: auto-prompt after new/load stays. No runner PR. |
-| Tests | Occupancy+message+hidden, not `Parked`/`Rejected`/`IsTerminal`. Also: Chaos `ResumeFailedAsync` (`session/new`); `ContinuationEndToEndTests` health gate (refuse failed even if hidden; allow hidden completed + transcript); rehydrate verifying and claimed-but-not-started; register while `awaiting_report`; pull vs nudge; **retry-before-exit keeps `pending_spawn=new`**; **two `awaiting_pull` deaths → fail**; **claim then die before `started` → fault inbox, not a second claim**; **pull-redelivery spawn dies before `started` → fail, not a third load**; **question-exit then answer loads on the pinned machine**; PromptCommand not sent when `!HasLiveProcess`; **`MarkProcessGone` + Lead answer + then `ObserveOccupancy(exited)` → `pending_spawn=load`, `health=ok`, not failed**. |
+| Tests | Occupancy+message+hidden, not `Parked`/`Rejected`/`IsTerminal`. Also: Chaos `ResumeFailedAsync` (`session/new`); `ContinuationEndToEndTests` health gate (refuse failed even if hidden; allow hidden completed + transcript); rehydrate `awaiting_report` and claimed-but-not-started; register while `awaiting_report`; pull vs nudge; **retry-before-exit keeps `pending_spawn=new`**; **two `awaiting_pull` deaths → fail**; **claim then die before `started` → fault inbox, not a second claim**; **pull-redelivery spawn dies before `started` → fail, not a third load**; **question-exit then answer loads on the pinned machine**; PromptCommand not sent when `!HasLiveProcess`; **`MarkProcessGone` + Lead answer + then `ObserveOccupancy(exited)` → `pending_spawn=load`, `health=ok`, not failed**. |
 
 ---
 

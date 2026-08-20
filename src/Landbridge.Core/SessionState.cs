@@ -28,7 +28,7 @@ public enum MessageState
     AwaitingPull,
 }
 
-/// <summary>Last report adjudication, stored on the message, not a session phase.</summary>
+/// <summary>How the Lead closed the row (hide), stored on the message, not a session phase.</summary>
 public enum MessageVerdict
 {
     Accepted,
@@ -60,7 +60,6 @@ public enum SessionState
 {
     Submitted,
     Working,
-    Verifying,
     Completed,
     Rejected,
     BlockedOnInput,
@@ -94,10 +93,10 @@ public static class SessionStateExtensions
 /// </summary>
 public enum VerdictProvenance
 {
-    /// <summary>A Lead session adjudicated (lead mode, autonomous).</summary>
+    /// <summary>A Lead session closed the row.</summary>
     LeadSession,
 
-    /// <summary>A human adjudicated (a human session).</summary>
+    /// <summary>A human closed the row.</summary>
     Human,
 }
 

@@ -114,8 +114,8 @@ public sealed record SessionRecord
     public ParkRecord? Park { get; init; }
 
     /// <summary>
-    /// Who adjudicated this task's completion (§9 check 4), set on the
-    /// verifying → completed transition and null in every other state. Typed state,
+    /// Who closed this session (§9 check 4), set on submit_review and null
+    /// until then. Typed state,
     /// not opaque content — the engine derives it from the verdict's actor — so it
     /// lands on the record and the store persists it for the §12 dashboard.
     /// </summary>
@@ -146,8 +146,6 @@ public sealed record SessionRecord
             return SessionState.Parked;
         if (t.MessageState == MessageState.AwaitingPermission)
             return SessionState.BlockedOnInput;
-        if (t.MessageState == MessageState.AwaitingReport)
-            return SessionState.Verifying;
         if (t.OccupancyDesired == Occupancy.Running
             && t.OccupancyObserved == Occupancy.None
             && t.CurrentInstance is null

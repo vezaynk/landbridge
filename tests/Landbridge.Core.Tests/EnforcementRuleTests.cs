@@ -86,7 +86,7 @@ public class EnforcementRuleTests
     [Fact]
     public void A_task_worker_cannot_complete_its_own_task()
     {
-        var task = Given.Session(SessionState.Verifying);
+        var task = Given.Reported();
         var incumbent = new WorkerCaller(task.Team, task.Id, task.CurrentInstance!.Value);
         var result = SessionStateMachine.Apply(task, new VerdictAccept(incumbent));
         Expect.Rejected(result, Rule.CompletionByLeadOrHuman);
@@ -97,7 +97,7 @@ public class EnforcementRuleTests
     public void A_lead_completes_a_session()
     {
         var result = SessionStateMachine.Apply(
-            Given.Session(SessionState.Verifying),
+            Given.Reported(),
             new VerdictAccept(Given.Lead));
         var task = Expect.Transitioned(result, SessionState.Completed);
         Assert.Equal(VerdictProvenance.LeadSession, task.CompletionProvenance);
@@ -107,7 +107,7 @@ public class EnforcementRuleTests
     public void A_human_session_completes_a_session_with_human_provenance()
     {
         var result = SessionStateMachine.Apply(
-            Given.Session(SessionState.Verifying),
+            Given.Reported(),
             new VerdictAccept(Given.Human));
         var task = Expect.Transitioned(result, SessionState.Completed);
         Assert.Equal(VerdictProvenance.Human, task.CompletionProvenance);
@@ -147,12 +147,12 @@ public class EnforcementRuleTests
             Rule.ActorLacksAuthority);
     }
 
-    // §11 — discard is deferred while verifying
+    // §11 — discard is deferred while a report is outstanding
     [Fact]
-    public void Discard_during_verifying_defers_workspace_removal_until_the_verdict()
+    public void Discard_during_a_report_defers_workspace_removal_until_close()
     {
         var result = SessionStateMachine.Apply(
-            Given.Session(SessionState.Verifying),
+            Given.Reported(),
             new Cancel(Given.Lead, CancelDisposition.Discard));
 
         Expect.Transitioned(result, SessionState.Canceled);
@@ -162,7 +162,7 @@ public class EnforcementRuleTests
     }
 
     [Fact]
-    public void Discard_outside_verifying_removes_the_workspace()
+    public void Discard_outside_a_report_removes_the_workspace()
     {
         var result = SessionStateMachine.Apply(
             Given.Session(SessionState.Working),

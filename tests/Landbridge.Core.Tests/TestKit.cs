@@ -29,11 +29,10 @@ internal static class Given
         int requeueLimit = SessionRecord.DefaultInfrastructureRequeueLimit,
         MessageState? message = null)
     {
-        var seated = state is SessionState.Working or SessionState.BlockedOnInput or SessionState.Verifying;
+        var seated = state is SessionState.Working or SessionState.BlockedOnInput;
         var current = instance ?? (seated ? WorkerInstanceId.New() : null);
         var msgState = message ?? state switch
         {
-            SessionState.Verifying => MessageState.AwaitingReport,
             SessionState.BlockedOnInput => MessageState.AwaitingPermission,
             _ => MessageState.Idle,
         };
@@ -93,6 +92,18 @@ internal static class Given
 
     public static WorkerCaller IncumbentOf(SessionRecord task) =>
         new(task.Team, task.Id, task.CurrentInstance!.Value);
+
+    /// <summary>A seated worker that has mailed a report. Derived state is Working.</summary>
+    public static SessionRecord Reported(
+        WorkerInstanceId? instance = null,
+        int verificationFailures = 0,
+        int retryLimit = 3) =>
+        Session(SessionState.Working, instance, verificationFailures, retryLimit,
+            message: MessageState.AwaitingReport);
+
+    /// <summary>A seated worker waiting on a prose question. Derived state is Working.</summary>
+    public static SessionRecord Asking(WorkerInstanceId? instance = null) =>
+        Session(SessionState.Working, instance, message: MessageState.AwaitingLead);
 }
 
 internal static class Expect
@@ -102,6 +113,13 @@ internal static class Expect
         var ok = Assert.IsType<TransitionResult.Transitioned>(result);
         Assert.Equal(state, ok.Session.State);
         return ok.Session;
+    }
+
+    public static SessionRecord Reported(TransitionResult result)
+    {
+        var task = Transitioned(result, SessionState.Working);
+        Assert.Equal(MessageState.AwaitingReport, task.MessageState);
+        return task;
     }
 
     public static IReadOnlyList<Effect> Effects(TransitionResult result)

@@ -12,7 +12,7 @@ namespace Landbridge.Mcp.Dashboard;
 /// Operator-only stand-in for the unbuilt §11 conformance run: mint dummy sessions
 /// aimed at one profile, then poll their states. POST takes a required
 /// <c>profile</c> (JSON body or form field). Omit is 400. The plane still
-/// does not judge the work — a session that reaches <c>verifying</c> is a
+/// does not judge the work — a session that is <c>awaiting_report</c> is a
 /// worker that called <c>report_result</c>. Human-only, like the Machine
 /// Group: a Lead cannot enumerate profiles and must not mint fleet-wide work.
 /// </summary>
@@ -154,7 +154,8 @@ internal sealed record ConformanceSessionView(
     SessionState State,
     int Attempt,
     string? ResultReference,
-    string? LastRequeueReason);
+    string? LastRequeueReason,
+    MessageState MessageState = MessageState.Idle);
 
 internal sealed record ConformanceRunView(
     Guid RunId,
@@ -162,7 +163,7 @@ internal sealed record ConformanceRunView(
     string ProgressUrl,
     int Total,
     int Pending,
-    int Verifying,
+    int Reported,
     int Completed,
     int Failed,
     bool WorkerDone,
@@ -174,14 +175,14 @@ internal sealed record ConformanceRunView(
         IReadOnlyList<string> machines)
     {
         var pending = 0;
-        var verifying = 0;
+        var reported = 0;
         var completed = 0;
         var failed = 0;
         foreach (var t in tasks)
         {
-            switch (ConformanceCatalog.Bucket(t.State))
+            switch (ConformanceCatalog.Bucket(t.State, t.MessageState))
             {
-                case "verifying": verifying++; break;
+                case "reported": reported++; break;
                 case "completed": completed++; break;
                 case "failed": failed++; break;
                 default: pending++; break;
@@ -190,7 +191,7 @@ internal sealed record ConformanceRunView(
 
         return new(
             runId, profile, $"/dashboard/conformance/{runId:D}",
-            tasks.Count, pending, verifying, completed, failed,
+            tasks.Count, pending, reported, completed, failed,
             pending == 0 && failed == 0 && tasks.Count > 0,
             machines, tasks);
     }

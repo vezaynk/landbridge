@@ -134,50 +134,79 @@ internal sealed class RealHarnessProfile
     public IDisposable? AttachTo(FleetRig rig) => Attach?.Invoke(rig);
 
     /// <summary>
-    /// Pull a session id off one captured stdout line. The bar uses this as the
-    /// <em>harness-side</em> proof of a resume: two instances reporting the same id cannot
-    /// be a cold start, independently of what the plane recorded.
-    ///
-    /// <para>A worker's stdout is the agent's half of a JSON-RPC conversation. The id
-    /// arrives on <c>session/new</c> as <c>result.sessionId</c>. <c>session/load</c>
-    /// often echoes none — the ref we asked for <em>is</em> the session — so the
-    /// successor's proof is the <c>sessionId</c> on later <c>session/update</c>
-    /// notifications, not a second <c>session/new</c>.</para>
+    /// Harness-side proof of resume: the id <c>session/new</c> returned, else the
+    /// first <c>session/update</c> id (for <c>session/load</c>, which often echoes none).
+    /// Skip initialize (<c>protocolVersion</c>); a later result with a sessionId is
+    /// not the handshake — AcpClient stamps the first <c>session/new</c> result.
     /// </summary>
-    public string? SessionIdFromLine(string line)
+    public string? SessionIdFromTranscript(IEnumerable<string> lines)
     {
-        if (string.IsNullOrWhiteSpace(line)) return null;
+        string? fromNew = null;
+        string? fromUpdate = null;
+        foreach (var line in lines)
+        {
+            if (fromNew is null && JsonRpcSessionNewResultId(line) is { Length: > 0 } id)
+                fromNew = id;
+            fromUpdate ??= JsonRpcUpdateSessionId(line);
+        }
+        return fromNew ?? fromUpdate;
+    }
+
+    public string? SessionIdFromLine(string line) =>
+        JsonRpcSessionNewResultId(line) ?? JsonRpcUpdateSessionId(line);
+
+    /// <summary>
+    /// <c>session/new</c> (and a load that echoes an id). Skip initialize, which
+    /// is the only result that carries <c>protocolVersion</c>.
+    /// </summary>
+    private static string? JsonRpcSessionNewResultId(string line)
+    {
+        if (!TryParseRpc(line, out var root))
+            return null;
+        if (!root.TryGetProperty("result", out var result)
+            || result.ValueKind != System.Text.Json.JsonValueKind.Object)
+            return null;
+        if (result.TryGetProperty("protocolVersion", out _))
+            return null;
+        if (result.TryGetProperty("sessionId", out var acpId)
+            && acpId.ValueKind == System.Text.Json.JsonValueKind.String)
+            return acpId.GetString();
+        return null;
+    }
+
+    private static string? JsonRpcUpdateSessionId(string line)
+    {
+        if (!TryParseRpc(line, out var root))
+            return null;
+        if (root.TryGetProperty("method", out var method)
+            && method.ValueKind == System.Text.Json.JsonValueKind.String
+            && method.GetString() == "session/update"
+            && root.TryGetProperty("params", out var p)
+            && p.ValueKind == System.Text.Json.JsonValueKind.Object
+            && p.TryGetProperty("sessionId", out var updateId)
+            && updateId.ValueKind == System.Text.Json.JsonValueKind.String)
+            return updateId.GetString();
+        return null;
+    }
+
+    private static bool TryParseRpc(string line, out System.Text.Json.JsonElement root)
+    {
+        root = default;
+        if (string.IsNullOrWhiteSpace(line))
+            return false;
         try
         {
             using var doc = System.Text.Json.JsonDocument.Parse(line);
-            var root = doc.RootElement;
-            if (root.ValueKind != System.Text.Json.JsonValueKind.Object) return null;
-            if (!root.TryGetProperty("jsonrpc", out _))
-                return null;
-
-            // session/new (and any agent that echoes an id from session/load).
-            if (root.TryGetProperty("result", out var result)
-                && result.ValueKind == System.Text.Json.JsonValueKind.Object
-                && result.TryGetProperty("sessionId", out var acpId)
-                && acpId.ValueKind == System.Text.Json.JsonValueKind.String)
-                return acpId.GetString();
-
-            // session/load typically has no result.sessionId. The replayed
-            // conversation still names the session on every session/update.
-            if (root.TryGetProperty("method", out var method)
-                && method.ValueKind == System.Text.Json.JsonValueKind.String
-                && method.GetString() == "session/update"
-                && root.TryGetProperty("params", out var p)
-                && p.ValueKind == System.Text.Json.JsonValueKind.Object
-                && p.TryGetProperty("sessionId", out var updateId)
-                && updateId.ValueKind == System.Text.Json.JsonValueKind.String)
-                return updateId.GetString();
-
-            return null;
+            if (doc.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object)
+                return false;
+            if (!doc.RootElement.TryGetProperty("jsonrpc", out _))
+                return false;
+            root = doc.RootElement.Clone();
+            return true;
         }
         catch (System.Text.Json.JsonException)
         {
-            return null;
+            return false;
         }
     }
 }

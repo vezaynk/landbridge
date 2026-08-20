@@ -5,7 +5,8 @@ namespace Landbridge.MultiMachine.Tests;
 /// <summary>
 /// Paid e2e of the ACP bridge against a real Goose: listen wraps
 /// <c>goose acp</c>, landbridged's profile spawn is <c>landbridge-acp-bridge connect</c>.
-/// Same opt-in as <see cref="RealGooseCollaborationTests"/> — not a CI cell.
+/// Same opt-in as <see cref="RealGooseCollaborationTests"/> (key or
+/// <c>LANDBRIDGE_REAL_GOOSE</c>) — Category=RealGoose, same dispatch cell.
 /// </summary>
 [Trait("Category", RealGooseCollaborationTests.RealGoose)]
 [Collection(PostgresCollection.Name)]
@@ -19,10 +20,10 @@ public sealed class RealGooseAcpBridgeTests(PostgresFixture pg) : IAsyncLifetime
     public Task DisposeAsync() => Task.CompletedTask;
 
     [SkippableFact(Timeout = RealHarnessBar.EchoTimeoutMs)]
-    public async Task Real_goose_reaches_verifying_through_the_acp_bridge()
+    public async Task Real_goose_reports_through_the_acp_bridge()
     {
         using var opened = OpenBridgedGoose();
-        await RealHarnessBar.DriveToVerifyingAsync(pg, opened.Profile);
+        await RealHarnessBar.DriveToReportAsync(pg, opened.Profile);
     }
 
     [SkippableFact(Timeout = RealHarnessBar.EchoTimeoutMs)]
@@ -57,11 +58,12 @@ public sealed class RealGooseAcpBridgeTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
 
-        var optedIn = Environment.GetEnvironmentVariable("LANDBRIDGE_REAL_GOOSE") is { Length: > 0 } o
-                      && !o.Equals("0", StringComparison.Ordinal)
-                      && !o.Equals("false", StringComparison.OrdinalIgnoreCase);
-
-        Skip.If(!optedIn, "no LANDBRIDGE_REAL_GOOSE — the real goose E2E is opt-in");
+        var key = RealHarnessProfiles.FirstNonEmpty("ANTHROPIC_API_KEY", "ANTHROPIC_KEY");
+        var optedIn = RealHarnessProfiles.EnvFlag("LANDBRIDGE_REAL_GOOSE");
+        Skip.If(string.IsNullOrWhiteSpace(key) && !optedIn,
+            "no ANTHROPIC_API_KEY/ANTHROPIC_KEY and no LANDBRIDGE_REAL_GOOSE — the real goose E2E is opt-in");
+        if (!string.IsNullOrWhiteSpace(key))
+            Environment.SetEnvironmentVariable("ANTHROPIC_API_KEY", key);
 
         var bin = RealHarnessProfiles.ResolveBin("goose", "LANDBRIDGE_GOOSE_BIN");
         Skip.If(bin is null, "goose CLI not found (set LANDBRIDGE_GOOSE_BIN or put goose on PATH)");

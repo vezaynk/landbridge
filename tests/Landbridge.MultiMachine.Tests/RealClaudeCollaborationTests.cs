@@ -26,7 +26,7 @@ namespace Landbridge.MultiMachine.Tests;
 /// tiny and tolerant of a single flaked worker turn (bounded redispatch) so a full
 /// run costs a few cents and a lone haiku hiccup doesn't red the job.</para>
 ///
-/// <para>The portable minimum bar — verifying + session ref, usage/cost, park → resume —
+/// <para>The portable minimum bar — report + session ref, usage/cost, park → resume —
 /// lives in <see cref="RealHarnessBar"/> and is wrapped below so this class's
 /// <c>Category=RealClaude</c> trait still isolates the job. Characterization that is
 /// Claude's own (handoff, continuation, stop-as-unread-turn, permission, service)
@@ -110,8 +110,8 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     public Task DisposeAsync() => Task.CompletedTask;
 
     [SkippableFact(Timeout = RealHarnessBar.EchoTimeoutMs)]
-    public Task Real_worker_drives_a_task_to_verifying_on_the_fleet() =>
-        RealHarnessBar.DriveToVerifyingAsync(pg, RealHarnessProfiles.Claude(RequireRealClaude()));
+    public Task Real_worker_reports_on_the_fleet() =>
+        RealHarnessBar.DriveToReportAsync(pg, RealHarnessProfiles.Claude(RequireRealClaude()));
 
     [SkippableFact(Timeout = RealHarnessBar.EchoTimeoutMs)]
     public Task Real_worker_reports_usage_the_harness_emits() =>
@@ -123,9 +123,9 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
 
     /// <summary>
     /// The two-machine handoff: a real claude worker on machine A produces a token and
-    /// drives its task to verifying; the test then reads A's <em>committed</em> result off
+    /// drives its task a report; the test then reads A's <em>committed</em> result off
     /// the control plane and threads it into a follow-up task a real claude worker on
-    /// machine B must report. B reaching verifying with A's token is proof the value
+    /// machine B must report. B mailing a report with A's token is proof the value
     /// flowed A → plane → B across two distinct machines, each driven by a real agent.
     /// (B's description uses the same proven echo template as A — the handoff lives in the
     /// test threading A's committed token into B, not in extra prose for the worker to reason about.)
@@ -147,8 +147,8 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         var token = NewToken();
         var stepA = await rig.CreateSessionAsync(EchoDescription("A", token), ct);
         Assert.True(
-            await rig.DispatchUntilVerifyingAsync(stepA, "A", MaxAttempts, PerLegBudget, ct),
-            "machine A's real claude worker never drove step A to verifying.\n" + await rig.RealWorkerDiagnosticsAsync(stepA, ct));
+            await rig.DispatchUntilReportedAsync(stepA, "A", MaxAttempts, PerLegBudget, ct),
+            "machine A's real claude worker never mailed a report on step A.\n" + await rig.RealWorkerDiagnosticsAsync(stepA, ct));
 
         // The handoff: read what A actually committed, not the test's own constant.
         var referenceA = await rig.ResultReferenceAsync(stepA, ct);
@@ -157,8 +157,8 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         // Step B on machine B: report the token A produced.
         var stepB = await rig.CreateSessionAsync(EchoDescription("B", token), ct);
         Assert.True(
-            await rig.DispatchUntilVerifyingAsync(stepB, "B", MaxAttempts, PerLegBudget, ct),
-            "machine B's real claude worker never confirmed the handoff to verifying.\n" + await rig.RealWorkerDiagnosticsAsync(stepB, ct));
+            await rig.DispatchUntilReportedAsync(stepB, "B", MaxAttempts, PerLegBudget, ct),
+            "machine B's real claude worker never confirmed the handoff with a report.\n" + await rig.RealWorkerDiagnosticsAsync(stepB, ct));
 
         var referenceB = await rig.ResultReferenceAsync(stepB, ct);
         Assert.Contains(token, referenceB); // B reported A's token: the value crossed the fleet
@@ -170,7 +170,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// <summary>
     /// Guards the timeout diagnostic itself — <b>no key, no tokens</b>. A scripted serve
     /// worker registers its service and stays <c>working</c> forever (never reporting),
-    /// which is exactly the shape of a real worker that never reaches verifying. We assert
+    /// which is exactly the shape of a real worker that never mails a report. We assert
     /// the diagnostic dump renders the committed plane state — task state, the sticky
     /// machine binding, and the control-plane event log — so a real timeout in CI is
     /// self-explanatory rather than the old bare "(no harness_error.txt)". Runs on every
@@ -189,7 +189,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         await rig.AddMachineAsync("A");
 
         // A serve role registers its service then stays working — a task that, like a
-        // failed real worker, never reaches verifying.
+        // failed real worker, never mails a report.
         var task = await rig.CreateSessionAsync("compute-serve", ct);
         await rig.DispatchToAsync("A", ct);
         Assert.True(
@@ -223,7 +223,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// <para>The nonce is the proof, and it is airtight for the same reason as above: it appears
     /// only in the FIRST task's spawn prompt. The continuation's row is new — its description
     /// never carries it, so <c>get_session</c> cannot supply it — and the resume argv is static
-    /// profile config. A cold-started continuation reaches verifying too; only a resumed one
+    /// profile config. A cold-started continuation mails a report too; only a resumed one
     /// reaches it with this value.</para>
     /// </summary>
     [SkippableFact(Timeout = RealHarnessBar.TwoLegTimeoutMs)]
@@ -259,8 +259,8 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         // Task one: an ordinary task that finishes. Its worker holds the nonce in conversation.
         var first = await rig.CreateSessionAsync(EchoDescription("A", "first-done"), ct);
         Assert.True(
-            await rig.DispatchUntilVerifyingAsync(first, "A", MaxAttempts, PerLegBudget, ct),
-            "the first real claude worker never drove its task to verifying.\n"
+            await rig.DispatchUntilReportedAsync(first, "A", MaxAttempts, PerLegBudget, ct),
+            "the first real claude worker never mailed a report.\n"
             + await rig.RealWorkerDiagnosticsAsync(first, ct));
         var firstSession = await rig.HarnessSessionRefAsync(first, ct);
         Assert.False(
@@ -280,32 +280,38 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         Assert.Equal(firstSession, await rig.HarnessSessionRefAsync(second, ct));
 
         Assert.True(
-            await rig.DispatchUntilVerifyingAsync(second, "A", MaxAttempts, PerLegBudget, ct),
-            "the continuation worker never drove its task to verifying.\n"
+            await rig.DispatchUntilReportedAsync(second, "A", MaxAttempts, PerLegBudget, ct),
+            "the continuation worker never mailed a report.\n"
             + await rig.RealWorkerDiagnosticsAsync(second, ct));
 
         // The value only the inherited conversation held — the hex, not the prefixed string
         // (see where `remembered` is minted).
         Assert.Contains(remembered, await rig.ResultReferenceAsync(second, ct));
 
-        // Harness-side proof, independent of anything the agent said: two DIFFERENT tasks'
-        // captured instances report the SAME session id on their own system/init. A cold start
-        // mints a new one, so only a real resume produces this — and the resume could only have
-        // happened from the first task's directory, since that is the only one holding a
-        // session. Transcripts stay keyed by the dispatched task even though the work dir is
-        // shared, which is what keeps the two legible apart here.
+        // Harness-side proof, independent of anything the agent said: the continuation's
+        // captured instances report the SAME session id the plane inherited. A cold start
+        // mints a new one, so only a real resume produces this — and the resume could only
+        // have happened from the first task's directory. Transcripts stay keyed by the
+        // dispatched task even though the work dir is shared.
         //
-        // Counted as "every instance, whichever leg it belonged to", not as one apiece: either
-        // leg is allowed its bounded retry (a haiku that ends a turn without the tool call), and
-        // a retry resumes rather than re-briefs, so an extra instance carries the same id and is
-        // not a different outcome. Zero instances would be, hence the non-empty check.
-        var sessionIdOf = RealHarnessProfiles.Claude(claudeBin).SessionIdFromLine;
-        var firstInstances = rig.InstanceSessionIdsOn("A", first, sessionIdOf);
-        var continuationInstances = rig.InstanceSessionIdsOn("A", second, sessionIdOf);
+        // The first task is allowed a bounded retry. Turn-ended-without-result fails the
+        // attempt and the same-id retry is session/new, so an abandoned first-leg file may
+        // carry a different id. The inherited ref is the last stamp; it must appear on
+        // the first task, and every continuation instance must use it.
+        var profile = RealHarnessProfiles.Claude(claudeBin);
+        var firstInstances = rig.InstanceSessionIdsOn("A", first, profile);
+        var continuationInstances = rig.InstanceSessionIdsOn("A", second, profile);
+        var idDump =
+            $"plane={firstSession}; first=[{string.Join(",", firstInstances)}]; " +
+            $"continuation=[{string.Join(",", continuationInstances)}]";
         Assert.NotEmpty(firstInstances);
         Assert.NotEmpty(continuationInstances);
-        Assert.All(firstInstances, id => Assert.Equal(firstSession, id));
-        Assert.All(continuationInstances, id => Assert.Equal(firstSession, id));
+        Assert.True(
+            firstInstances.Contains(firstSession),
+            "the first task never captured the session id the plane stamped.\n" + idDump);
+        Assert.True(
+            continuationInstances.All(id => id == firstSession),
+            "a continuation instance cold-started instead of loading the inherited session.\n" + idDump);
         Assert.Equal("A", rig.MachineRanOn(second));
     }
 
@@ -354,7 +360,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         // Step 1: a real worker starts the process and completes its own task.
         var starter = await rig.CreateSessionAsync(StartProcessDescription(processName, port, body), ct);
         Assert.True(
-            await rig.DispatchUntilVerifyingAsync(starter, "A", MaxAttempts, PerLegBudget, ct),
+            await rig.DispatchUntilReportedAsync(starter, "A", MaxAttempts, PerLegBudget, ct),
             "the real claude worker never started its process and reported.\n"
             + await rig.RealWorkerDiagnosticsAsync(starter, ct));
         Assert.Contains(processName, await rig.ResultReferenceAsync(starter, ct));
@@ -378,7 +384,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         // Step 2: the cleanup worker — a different task, told no names — finds it and stops it.
         var cleaner = await rig.CreateSessionAsync(CleanupDescription, ct);
         Assert.True(
-            await rig.DispatchUntilVerifyingAsync(cleaner, "A", MaxAttempts, PerLegBudget, ct),
+            await rig.DispatchUntilReportedAsync(cleaner, "A", MaxAttempts, PerLegBudget, ct),
             "the real claude cleanup worker never reported.\n"
             + await rig.RealWorkerDiagnosticsAsync(cleaner, ct));
 
@@ -451,7 +457,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         // Consumer on B: a different machine, a different agent, told only the service name.
         var consumer = await rig.CreateSessionAsync(FetchDescription(serviceName), ct);
         Assert.True(
-            await rig.DispatchUntilVerifyingAsync(consumer, "B", MaxAttempts, PerLegBudget, ct),
+            await rig.DispatchUntilReportedAsync(consumer, "B", MaxAttempts, PerLegBudget, ct),
             "the real claude consumer never fetched through the forward and reported.\n"
             + await rig.RealWorkerDiagnosticsAsync(consumer, ct)
             + await rig.RealWorkerDiagnosticsAsync(producer, ct));
@@ -597,7 +603,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
          1. Call open_forward with serviceName {serviceName}. It returns a host and a port.
 
          2. Run this shell command, substituting the host and port it returned:
-              curl -sS --max-time 20 http://HOST:PORT/
+              curl -sS --max-time 20 --retry 5 --retry-delay 1 --retry-connrefused http://HOST:PORT/
 
          Then call report_result exactly once with resultReference set to exactly the text that
          command printed, and nothing else. Do not create or edit files.

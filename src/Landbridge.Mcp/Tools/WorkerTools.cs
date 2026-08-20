@@ -78,13 +78,13 @@ public sealed class WorkerTools(
     }
 
     [McpServerTool(Name = "report_result"),
-     Description("Report the session's result reference and hand it to verification. " +
-                 "The reference points at where the work actually is (the workspace substrate), " +
-                 "not the work itself. Reporting is 'I think I am done', not a yield — you stay up " +
-                 "so the Lead can reply on this session. It is not a claim that verification passed. " +
-                 "Optionally include a short 'report': a summary of what you did and verified, " +
-                 "evidence pointers, and any proposals — it flows to your Lead as-is (capped at 16 KB; " +
-                 "over-cap is refused — put detail in the workspace behind the reference, not here).")]
+     Description("Send the Lead a result reference for this session. The reference points at where " +
+                 "the work actually is (the workspace substrate), not the work itself. A report is mail, " +
+                 "not a yield — you stay up so the Lead can reply. It does not close the session and is " +
+                 "not a claim that anyone accepted the work. Optionally include a short 'report': a " +
+                 "summary of what you did, evidence pointers, and any proposals — it flows to your Lead " +
+                 "as-is (capped at 16 KB; over-cap is refused — put detail in the workspace behind the " +
+                 "reference, not here).")]
     public async Task<string> ReportResult(
         [Description("A reference to where the completed work lives, e.g. a branch or commit.")]
         string resultReference,

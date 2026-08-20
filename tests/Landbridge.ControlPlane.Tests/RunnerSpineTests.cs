@@ -86,20 +86,16 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task Dispatch_of_a_task_with_a_stored_session_ref_sets_resume_session_ref_on_the_command()
+    public async Task Dispatch_of_a_task_with_a_stored_session_ref_does_not_infer_load()
     {
-        // §11 resume: a task worked before and requeued/parked carries a harness
-        // session ref on its row; (re)dispatch surfaces it (opaque, via the store)
-        // and DispatchService rides it back on the DispatchCommand so landbridged can
-        // continue the transcript.
+        // Occupancy: pending_spawn=new is a cold start even if HarnessSessionRef
+        // still holds a leftover stamp. Do not infer load from the column.
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = TimeProvider.System;
         var scopes = ScopeFactory(clock);
         var team = TeamId.New();
         var sessionId = await SeedSubmittedTaskAsync(clock, team, profile: null);
 
-        // Stamp the prior work session's ref exactly as the SessionStartedEvent sink
-        // would have, before this dispatch.
         await using (var db = pg.NewContext())
             await new SessionStore(db, clock).StampHarnessSessionRefAsync(sessionId, "sess-prior");
 
@@ -114,6 +110,38 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         var command = Assert.IsType<DispatchCommand>(Assert.Single(captured));
         Assert.Equal(sessionId, command.Session);
         Assert.Null(command.ResumeSessionRef);
+    }
+
+    [SkippableFact]
+    public async Task Dispatch_of_a_continuation_rides_the_inherited_session_ref_as_resume()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = TimeProvider.System;
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        SessionId sessionId;
+        await using (var db = pg.NewContext())
+        {
+            var created = (StoreResult.Applied)await new SessionStore(db, clock).CreateAsync(
+                new CreateSession(new LeadClaim(team), team, "completion criteria", "default",
+                    Continues: new Continuation(
+                        SessionId.New(), team, "m1", "sess-inherited",
+                        MachineGonePolicy.Degrade, PreferredMachineProfiles: null)));
+            sessionId = created.Session.Id;
+            Assert.Equal(PendingSpawn.Load, created.Session.PendingSpawn);
+        }
+
+        var registry = new RunnerConnectionRegistry(clock);
+        var captured = new List<RunnerCommand>();
+        registry.Register("m1", Set("default"), (cmd, _) => { captured.Add(cmd); return Task.CompletedTask; });
+        registry.ApplyHeartbeat("m1", Heartbeat("m1", "default"));
+
+        var dispatch = new DispatchService(scopes, registry, clock, NullLogger<DispatchService>.Instance);
+        await dispatch.RunDispatchPassAsync(CancellationToken.None);
+
+        var command = Assert.IsType<DispatchCommand>(Assert.Single(captured));
+        Assert.Equal(sessionId, command.Session);
+        Assert.Equal("sess-inherited", command.ResumeSessionRef);
     }
 
     // ── Lease liveness ──────────────────────────────────────────────────────────
@@ -362,7 +390,7 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task Exited_while_verifying_fails_the_attempt()
+    public async Task Exited_while_a_report_is_outstanding_fails_the_attempt()
     {
         // A report keeps the process so the Lead can reply. If that process then
         // dies, the attempt fails — the Lead cannot doorbell a corpse.
@@ -444,10 +472,37 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task Turn_ended_while_a_registered_service_is_up_is_moot()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = TimeProvider.System;
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var (id, instance) = await SeedWorkingTaskWithInstanceAsync(clock, team, "m1");
+        await using (var db = pg.NewContext())
+        {
+            db.RegisteredServices.Add(new RegisteredServiceRow
+            {
+                SessionId = id.Value, TeamId = team.Value, Name = "web", Port = 3000,
+                CreatedAt = DateTimeOffset.UtcNow,
+            });
+            await db.SaveChangesAsync();
+        }
+
+        var registry = LiveMachine(clock, "m1", id);
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
+        await sink.HandleAsync(new TurnEndedEvent(id, "end_turn", clock.GetUtcNow()));
+
+        Assert.Equal(SessionState.Working, await StateAsync(clock, id));
+        await using var v = pg.NewContext();
+        Assert.Equal(0, (await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value)).InfrastructureRequeues);
+    }
+
+    [SkippableFact]
     public async Task Turn_ended_after_the_worker_reported_is_moot()
     {
         // The overwhelmingly common path, and the one that must never requeue: a worker
-        // waits for report_result to return before ending its turn, so working → verifying
+        // waits for report_result to return before ending its turn, so awaiting_report
         // is committed by the time this arrives.
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = TimeProvider.System;
@@ -464,7 +519,8 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
 
         await using var v = pg.NewContext();
         var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
-        Assert.Equal(SessionState.Verifying, row.State);
+        Assert.Equal(SessionState.Working, row.State);
+        Assert.Equal(MessageState.AwaitingReport, row.MessageState);
         Assert.Equal(0, row.InfrastructureRequeues);
     }
 

@@ -164,7 +164,7 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task Aliveness_does_not_revive_a_blocked_or_verifying_task()
+    public async Task Aliveness_does_not_revive_a_blocked_or_reported_task()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();

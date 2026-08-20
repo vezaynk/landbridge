@@ -90,7 +90,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     public async Task Submit_review_completes_and_records_lead_provenance()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
-        var sessionId = await SeedTaskInVerifying();
+        var sessionId = await SeedTaskWithReport();
         var tools = LeadFor(new Principal.Lead(Team));
 
         var ok = await tools.SubmitReview(sessionId.ToString(), "accept", CancellationToken.None);
@@ -451,7 +451,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Contains(report, text, StringComparison.Ordinal);       // the report itself
         Assert.Contains("Untrusted", text, StringComparison.Ordinal);  // §13 delimiting
         // #81: the §8.1 artifact pointer rides the same fetch — this is the read surface the
-        // column had none of, and it is what §7 has the Lead adjudicating against.
+        // column had none of, and it is what the Lead reads on get_session_report.
         Assert.Contains("git:ref", text, StringComparison.Ordinal);
         Assert.Contains("RESULT_REFERENCE", text, StringComparison.Ordinal); // delimited, like the prose
     }
@@ -460,9 +460,9 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     public async Task Get_task_report_surfaces_the_result_reference_when_there_is_no_report()
     {
         // #81, the case that makes the reference load-bearing rather than redundant: §6
-        // requires it to reach verifying while the report is optional, so a worker that
+        // requires it to mail a report while the report is optional, so a worker that
         // left no prose still handed over an artifact — and a Lead told only "no report"
-        // would be adjudicating (§7) with nothing at all.
+        // would be reading a report with nothing at all.
         Skip.IfNot(pg.Available, pg.SkipReason);
         var sessionId = await SeedReportedTask(Team, report: null);
         var tools = LeadFor(new Principal.Lead(Team));
@@ -474,7 +474,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task Get_task_report_says_no_reference_before_the_task_reaches_verifying()
+    public async Task Get_task_report_says_no_reference_before_a_report()
     {
         // A task nobody has reported on has no artifact to point at. Saying that is the
         // honest answer; an empty delimited block would read as "the worker reported ''".
@@ -719,7 +719,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         return created.Session.Id;
     }
 
-    /// <summary>Drives a task to verifying with an optional in-band report, in the
+    /// <summary>Drives a task a report with an optional in-band report, in the
     /// given Team (used for both same-Team and cross-Team cases).</summary>
     private async Task<SessionId> SeedReportedTask(TeamId team, string? report)
     {
@@ -783,12 +783,12 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         return id;
     }
 
-    private async Task<SessionId> SeedTaskInVerifying()
+    private async Task<SessionId> SeedTaskWithReport()
     {
         await using var db = pg.NewContext();
         var store = new SessionStore(db, _clock);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateSession(new LeadClaim(Team), Team, "adjudicate this", "default"));
+            new CreateSession(new LeadClaim(Team), Team, "close this", "default"));
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(Machine(), instance);
         await store.ApplyAsync(created.Session.Id,

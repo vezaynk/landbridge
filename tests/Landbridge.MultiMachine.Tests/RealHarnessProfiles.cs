@@ -164,6 +164,15 @@ internal static class RealHarnessProfiles
         return null;
     }
 
+    /// <summary>
+    /// Opt-in flags like <c>LANDBRIDGE_REAL_CLAUDE</c> / <c>LANDBRIDGE_REAL_GOOSE</c>.
+    /// Empty, <c>0</c>, and <c>false</c> are off.
+    /// </summary>
+    public static bool EnvFlag(string name) =>
+        Environment.GetEnvironmentVariable(name) is { Length: > 0 } o
+        && !o.Equals("0", StringComparison.Ordinal)
+        && !o.Equals("false", StringComparison.OrdinalIgnoreCase);
+
     public static string? ResolveBin(string name, string overrideVar)
     {
         var explicitBin = Environment.GetEnvironmentVariable(overrideVar);

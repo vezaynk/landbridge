@@ -46,19 +46,13 @@ public sealed class TranscriptRelayServiceTests(PostgresFixture pg) : IAsyncLife
     [SkippableTheory]
     [InlineData(SessionState.Submitted)]
     [InlineData(SessionState.Working)]
-    [InlineData(SessionState.Verifying)]
     public async Task A_task_that_can_still_run_is_refused(SessionState state)
     {
         // The compensating control for verbatim serving is scope: only a task that can never
         // run again is readable (§12/§13, redaction unresolved — §16 open question 8).
         //
-        // `verifying` is the load-bearing case and is deliberately EXCLUDED. Unlike every
-        // other transition out of working, report_result does NOT emit
-        // RevokeWorkerInstanceToken (SessionStateMachine.ApplyReportResult) — the revoke waits
-        // for the verdict — so a verifying task's transcript can still carry a LIVE lbr_w_
-        // token that would be replayable by anyone who read it. Do not widen this to
-        // verifying without changing that, however tempting it is to let a reviewer read the
-        // transcript of the thing they are reviewing.
+        // A report does NOT revoke the worker token — close does — so a session that
+        // has mailed a report still carries a LIVE lbr_w_ token in its transcript.
         Skip.IfNot(pg.Available, pg.SkipReason);
         var rig = Rig();
         var task = await SeedTaskInStateAsync(rig, state);
@@ -296,10 +290,6 @@ public sealed class TranscriptRelayServiceTests(PostgresFixture pg) : IAsyncLife
             new MachineSnapshot(Machine, Ready: true, UnderBackPressure: false, new HashSet<string> { "default" }),
             instance);
         if (state == SessionState.Working)
-            return id;
-
-        await store.ApplyAsync(id, new ReportResult(new WorkerCaller(team, id, instance), "result-ref"));
-        if (state == SessionState.Verifying)
             return id;
 
         await store.ApplyAsync(id, state switch

@@ -419,7 +419,7 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             await store.ApplyAsync(parkedId, new WaitTtlExpired(new ParkRecord("box-1")), ct);
         });
 
-        // A completed lead-mode task, adjudicated by the Lead (§9 check 4 provenance),
+        // A closed session, closed by the Lead (§9 check 4 provenance),
         // carrying an in-band worker report (§10).
         const string workerReport = "ran the suite (green); proposes profile gpu for follow-ups";
         var (completedId, completedNs, completedCaller) = await SeedWorkingTaskWithCallerAsync(team, ct);

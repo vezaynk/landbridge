@@ -25,7 +25,7 @@ Your dispatch carries a session with a `description` and an optional `workspace`
 
 If isolation is genuinely impossible — the work needs a machine fixture, a privileged port, a global install — that is a blocker, not a reason to share.
 
-**The description is the contract.** What to do and how it will be judged live in that one field. When you think you're done, that is what gets checked — by your Lead or a human, never by you.
+**The description is the contract.** What to do and how it will be judged live in that one field. When you think you're done, mail a report — your Lead reads it; you do not close the session.
 
 **Check `attempt` before you touch anything.** If it is greater than 1, a previous attempt on this session died or was parked — and its last action has unknown outcome. Inspect what exists in this session's directory before trusting or overwriting it, and verify rather than repeat anything with external side effects.
 
@@ -191,13 +191,13 @@ The answer is your Lead's decision on your session, and it is the one input you 
 
 ## Reporting a result
 
-`report_result` needs a reference to where the work actually is — in the workspace substrate, not pasted into the report. Your Lead reads that reference when it adjudicates, and it is the one thing you are required to hand over, so make it something that actually resolves: a pushed branch, a commit sha, a PR URL. A reference to work you never committed is worse than useless — it reads as done and isn't.
+`report_result` needs a reference to where the work actually is — in the workspace substrate, not pasted into the report. That is the one thing you are required to hand over, so make it something that actually resolves: a pushed branch, a commit sha, a PR URL. A reference to work you never committed is worse than useless — it reads as done and isn't.
 
-It also takes an optional `report`: a short in-band summary that flows straight to your Lead. Use it for what you did and verified, pointers to the evidence (which tests you ran and their outcome, a CI link, the files you touched), and any proposals — e.g. "this follow-up should run on profile Y", or "session Z is now unblocked". Keep it a summary: it is capped (16 KB) and **not a substitute for the artifact** — real detail belongs in the workspace behind the reference, and if you go over the cap the report is refused so you move detail there. The report is how your Lead decides whether to accept, so make the verification evidence easy to check.
+It also takes an optional `report`: a short in-band summary that flows straight to your Lead. Use it for what you did, pointers to the evidence (which tests you ran and their outcome, a CI link, the files you touched), and any proposals — e.g. "this follow-up should run on profile Y", or "session Z is now unblocked". Keep it a summary: it is capped (16 KB) and **not a substitute for the artifact** — real detail belongs in the workspace behind the reference, and if you go over the cap the report is refused so you move detail there.
 
 Say what you *didn't* do. Scope you deliberately left, tests you couldn't run, assumptions you made. That is the most useful part of a report and the part most often omitted.
 
-After `report_result` the message is `awaiting_report`. **You stay up.** A report is not a yield of the machine — your process and anything you started stay running so the Lead can reply on this same session. You do not mark it complete, and reporting is not a claim that it passed. If the Lead wants more, you will get another turn: pull `get_session` — their note is the `answer`. If they accept, the assignment ends.
+After `report_result` the message is `awaiting_report`. **You stay up.** A report is mail, not a yield of the machine — your process and anything you started stay running so the Lead can reply on this same session. You do not close the session. If the Lead wants more, you will get another turn: pull `get_session` — their note is the `answer`. If they close, the assignment ends.
 
 ## Subagents
 

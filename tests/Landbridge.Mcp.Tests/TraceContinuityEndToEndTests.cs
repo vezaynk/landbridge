@@ -139,13 +139,13 @@ public sealed class TraceContinuityEndToEndTests(PostgresFixture pg, ITestOutput
 
             var workDir = Path.Combine(workRoot, sessionId.ToString());
             var reached = await WaitUntilAsync(
-                async () => await StateAsync(sessionId, ct) == SessionState.Verifying,
+                async () => await HasReportAsync(sessionId, ct),
                 TimeSpan.FromSeconds(60));
             if (!reached)
             {
                 var errPath = Path.Combine(workDir, "harness_error.txt");
                 var detail = File.Exists(errPath) ? await File.ReadAllTextAsync(errPath, ct) : "(no harness_error.txt)";
-                Assert.Fail($"worker harness never drove the task to verifying. Harness diagnostic:\n{detail}");
+                Assert.Fail($"worker harness never mailed a report. Harness diagnostic:\n{detail}");
             }
 
             // ── The stored create_session trace context (opaque metadata on the row) ──
@@ -195,6 +195,13 @@ public sealed class TraceContinuityEndToEndTests(PostgresFixture pg, ITestOutput
     {
         await using var db = pg.NewContext();
         return await new SessionStore(db, TimeProvider.System).GetStateAsync(id, ct);
+    }
+
+    private async Task<bool> HasReportAsync(SessionId id, CancellationToken ct)
+    {
+        await using var db = pg.NewContext();
+        var row = await db.Sessions.AsNoTracking().SingleOrDefaultAsync(t => t.Id == id.Value, ct);
+        return row?.MessageState == MessageState.AwaitingReport;
     }
 
     private WebApplication BuildServer()

@@ -27,7 +27,16 @@ public class ContinuationCreateTests
     [Fact]
     public void Continuation_in_the_same_team_creates_submitted()
     {
-        Expect.Transitioned(Create(profile: "default", Cont()), SessionState.Submitted);
+        var task = Expect.Transitioned(Create(profile: "default", Cont()), SessionState.Submitted);
+        Assert.Equal(PendingSpawn.Load, task.PendingSpawn);
+    }
+
+    [Fact]
+    public void Continuation_without_an_inherited_ref_is_a_cold_start()
+    {
+        var task = Expect.Transitioned(
+            Create(profile: "default", Cont(sessionRef: null)), SessionState.Submitted);
+        Assert.Equal(PendingSpawn.New, task.PendingSpawn);
     }
 
     [Fact]

@@ -67,8 +67,8 @@ public sealed class MultiMachineCollaborationTests(PostgresFixture pg) : IAsyncL
         var consume = await rig.CreateSessionAsync("handshake-consume", ct);
         await rig.DispatchToAsync("B", ct);
         Assert.True(
-            await FleetRig.WaitUntilAsync(async () => await rig.StateAsync(consume, ct) == SessionState.Verifying, Bound),
-            "machine B never drove its consume task to verifying. " + await rig.DiagnoseAsync(consume, ct));
+            await FleetRig.WaitUntilAsync(async () => await rig.HasReportAsync(consume, ct), Bound),
+            "machine B never mailed a report on consume. " + await rig.DiagnoseAsync(consume, ct));
 
         Assert.Equal($"handshake:{nonce}", await rig.ResultReferenceAsync(consume, ct));
         // The two ends really were different machines.
@@ -102,8 +102,8 @@ public sealed class MultiMachineCollaborationTests(PostgresFixture pg) : IAsyncL
         var test = await rig.CreateSessionAsync("compute-test", ct);
         await rig.DispatchToAsync("B", ct);
         Assert.True(
-            await FleetRig.WaitUntilAsync(async () => await rig.StateAsync(test, ct) == SessionState.Verifying, Bound),
-            "machine B never drove its compute-test task to verifying. " + await rig.DiagnoseAsync(test, ct));
+            await FleetRig.WaitUntilAsync(async () => await rig.HasReportAsync(test, ct), Bound),
+            "machine B never mailed a report on compute-test. " + await rig.DiagnoseAsync(test, ct));
 
         // The worker only reports pass after every input round-tripped incremented; a
         // relay that dropped or corrupted bytes would have thrown, reporting nothing.
@@ -140,8 +140,8 @@ public sealed class MultiMachineCollaborationTests(PostgresFixture pg) : IAsyncL
             await rig.DispatchToAsync(targets[i], ct);
             var seed = seeds[i];
             Assert.True(
-                await FleetRig.WaitUntilAsync(async () => await rig.StateAsync(task, ct) == SessionState.Verifying, Bound),
-                $"map:{seed} never reached verifying. " + await rig.DiagnoseAsync(task, ct));
+                await FleetRig.WaitUntilAsync(async () => await rig.HasReportAsync(task, ct), Bound),
+                $"map:{seed} never mailed a report. " + await rig.DiagnoseAsync(task, ct));
             tasks.Add(task);
         }
 
@@ -180,8 +180,8 @@ public sealed class MultiMachineCollaborationTests(PostgresFixture pg) : IAsyncL
         var query = await rig.CreateSessionAsync("db-query", ct);
         await rig.DispatchToAsync("B", ct);
         Assert.True(
-            await FleetRig.WaitUntilAsync(async () => await rig.StateAsync(query, ct) == SessionState.Verifying, Bound),
-            "machine B never drove its db-query task to verifying. " + await rig.DiagnoseAsync(query, ct));
+            await FleetRig.WaitUntilAsync(async () => await rig.HasReportAsync(query, ct), Bound),
+            "machine B never mailed a report on db-query. " + await rig.DiagnoseAsync(query, ct));
 
         Assert.Equal($"row:{CollabProgram.DatastoreSeedValue}", await rig.ResultReferenceAsync(query, ct));
         Assert.Equal("A", rig.MachineOf(serve));
@@ -216,8 +216,8 @@ public sealed class MultiMachineCollaborationTests(PostgresFixture pg) : IAsyncL
         var first = await rig.CreateSessionAsync("echo:predecessor-was-here", ct);
         await rig.DispatchToAsync("A", ct);
         Assert.True(
-            await FleetRig.WaitUntilAsync(async () => await rig.StateAsync(first, ct) == SessionState.Verifying, Bound),
-            "the predecessor never reached verifying. " + await rig.DiagnoseAsync(first, ct));
+            await FleetRig.WaitUntilAsync(async () => await rig.HasReportAsync(first, ct), Bound),
+            "the predecessor never mailed a report. " + await rig.DiagnoseAsync(first, ct));
         Assert.Equal("echo:predecessor-was-here", await rig.ResultReferenceAsync(first, ct));
 
         // Nothing to inherit: this tier stamps no harness session ref, so the continuation
@@ -227,8 +227,8 @@ public sealed class MultiMachineCollaborationTests(PostgresFixture pg) : IAsyncL
         var second = await rig.CreateSessionAsync("echo:successor-ran", ct, continues: first);
         await rig.DispatchToAsync("A", ct);
         Assert.True(
-            await FleetRig.WaitUntilAsync(async () => await rig.StateAsync(second, ct) == SessionState.Verifying, Bound),
-            "the continuation never reached verifying. " + await rig.DiagnoseAsync(second, ct));
+            await FleetRig.WaitUntilAsync(async () => await rig.HasReportAsync(second, ct), Bound),
+            "the continuation never mailed a report. " + await rig.DiagnoseAsync(second, ct));
 
         // The continuation's OWN assignment, sitting in the PREDECESSOR's directory.
         var inherited = await rig.ReadMarkerAsync("A", first, "get_session.json", ct);
