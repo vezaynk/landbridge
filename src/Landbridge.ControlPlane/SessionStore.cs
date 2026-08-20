@@ -920,13 +920,16 @@ public sealed class SessionStore(
             .FirstOrDefaultAsync(ct);
 
     /// <summary>
-    /// True when a <c>working</c> task has a pending question (not a permission
-    /// wait). A turn ending then is idle-correct, not a silent death.
+    /// True when the Lead (or a live permission wait) is the bottleneck, so
+    /// no-progress must not treat the worker as wedged. <c>awaiting_pull</c> is
+    /// the worker's move and is not skipped.
     /// </summary>
     public async Task<bool> IsAwaitingLeadAsync(SessionId id, CancellationToken ct = default) =>
         await db.Sessions.AsNoTracking()
             .AnyAsync(t => t.Id == id.Value
-                && (t.MessageState != MessageState.Idle
+                && ((t.MessageState == MessageState.AwaitingLead
+                        || t.MessageState == MessageState.AwaitingReport
+                        || t.MessageState == MessageState.AwaitingPermission)
                     || (t.InputKind == InputRequestKind.Permission
                         && t.PermissionVerdict == PermissionVerdict.Deny)), ct);
 
