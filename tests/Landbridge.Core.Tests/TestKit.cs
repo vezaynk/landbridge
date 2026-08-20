@@ -31,6 +31,12 @@ internal static class Given
     {
         var seated = state is SessionState.Working or SessionState.BlockedOnInput or SessionState.Verifying;
         var current = instance ?? (seated ? WorkerInstanceId.New() : null);
+        var msgState = message ?? state switch
+        {
+            SessionState.Verifying => MessageState.AwaitingReport,
+            SessionState.BlockedOnInput => MessageState.AwaitingPermission,
+            _ => MessageState.Idle,
+        };
         var task = new SessionRecord
         {
             Id = Id,
@@ -59,16 +65,23 @@ internal static class Given
             },
             Health = state == SessionState.Failed ? SessionHealth.Failed : SessionHealth.Ok,
             Hidden = state is SessionState.Completed or SessionState.Rejected or SessionState.Canceled,
-            MessageState = message ?? state switch
-            {
-                SessionState.Verifying => MessageState.AwaitingReport,
-                SessionState.BlockedOnInput => MessageState.AwaitingPermission,
-                _ => MessageState.Idle,
-            },
+            MessageState = msgState,
             MessageVerdict = state switch
             {
                 SessionState.Completed => MessageVerdict.Accepted,
                 SessionState.Rejected => MessageVerdict.Discarded,
+                _ => null,
+            },
+            MessageId = msgState == MessageState.Idle
+                ? null
+                : Guid.Parse("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),
+            LastMessageId = state is SessionState.Completed or SessionState.Rejected or SessionState.Canceled
+                ? Guid.Parse("bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb")
+                : null,
+            LastMessageTerminal = state switch
+            {
+                SessionState.Canceled => MessageTerminal.Cancelled,
+                SessionState.Completed or SessionState.Rejected => MessageTerminal.Completed,
                 _ => null,
             },
             PendingSpawn = state == SessionState.Submitted ? PendingSpawn.New : null,

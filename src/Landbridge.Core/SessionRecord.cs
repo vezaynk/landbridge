@@ -60,6 +60,17 @@ public sealed record SessionRecord
     public bool Hidden { get; init; }
     public MessageState MessageState { get; init; } = MessageState.Idle;
     public MessageVerdict? MessageVerdict { get; init; }
+
+    /// <summary>
+    /// Id of the outstanding envelope, null iff <see cref="MessageState"/> is
+    /// <see cref="MessageState.Idle"/>. MCP Tasks use this as <c>taskId</c>.
+    /// </summary>
+    public Guid? MessageId { get; init; }
+
+    /// <summary>Most recently closed envelope, for <c>tasks/get</c> after idle.</summary>
+    public Guid? LastMessageId { get; init; }
+
+    public MessageTerminal? LastMessageTerminal { get; init; }
     public PendingSpawn? PendingSpawn { get; init; } = Landbridge.Core.PendingSpawn.New;
     public bool PullRedelivered { get; init; }
 

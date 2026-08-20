@@ -71,7 +71,7 @@ public static class SessionStateMachine
     public static TransitionResult Apply(SessionRecord task, SessionCommand command)
     {
         if (command is ObserveOccupancy observe)
-            return ApplyObserveOccupancy(task, observe);
+            return Finalize(task, ApplyObserveOccupancy(task, observe));
 
         // Hidden healthy rows refuse same-id work (derived Completed/Rejected/Canceled).
         // Failed is not terminal. ObserveOccupancy is already handled.
@@ -79,7 +79,7 @@ public static class SessionStateMachine
             return TransitionResult.Reject(Rule.TerminalStatesAreFinal,
                 $"{task.State} is terminal and never resumed");
 
-        return command switch
+        return Finalize(task, command switch
         {
             Dispatch c => ApplyDispatch(task, c),
             LivenessLost c => ApplyLivenessLost(task, c),
@@ -102,11 +102,71 @@ public static class SessionStateMachine
                 "CreateSession applies to no existing record; use Create"),
             _ => TransitionResult.Reject(Rule.InvalidSourceState,
                 $"unrecognized command {command.GetType().Name}"),
-        };
+        });
     }
 
     private static TransitionResult Done(SessionRecord task, params Effect[] effects) =>
         TransitionResult.Ok(task with { State = SessionRecord.DeriveState(task) }, effects);
+
+    private static TransitionResult Finalize(SessionRecord before, TransitionResult result)
+    {
+        if (result is not TransitionResult.Transitioned t)
+            return result;
+        var after = CarryEnvelope(before, t.Session);
+        return TransitionResult.Ok(after with { State = SessionRecord.DeriveState(after) }, [.. t.Effects]);
+    }
+
+    /// <summary>
+    /// One outstanding envelope per session. Leaving <see cref="MessageState.Idle"/>
+    /// mints <see cref="SessionRecord.MessageId"/> (the MCP task id). Returning to
+    /// idle closes it onto <see cref="SessionRecord.LastMessageId"/>. Retry of
+    /// <c>health=failed</c> with a note is a new envelope, not a resurrection.
+    /// </summary>
+    private static SessionRecord CarryEnvelope(SessionRecord before, SessionRecord after)
+    {
+        var wasOpen = before.MessageState != MessageState.Idle;
+        var nowOpen = after.MessageState != MessageState.Idle;
+        var retry = before.Health == SessionHealth.Failed && after.Health == SessionHealth.Ok;
+
+        if (retry && wasOpen)
+        {
+            var closed = after with
+            {
+                LastMessageId = before.MessageId,
+                LastMessageTerminal = MessageTerminal.Cancelled,
+                MessageId = nowOpen ? Guid.NewGuid() : null,
+            };
+            return closed;
+        }
+
+        if (!wasOpen && nowOpen)
+            return after with { MessageId = Guid.NewGuid() };
+
+        if (wasOpen && nowOpen)
+            return after with { MessageId = before.MessageId ?? Guid.NewGuid() };
+
+        if (wasOpen && !nowOpen)
+        {
+            return after with
+            {
+                LastMessageId = before.MessageId,
+                LastMessageTerminal = CloseTerminal(before, after),
+                MessageId = null,
+            };
+        }
+
+        return after with { MessageId = null };
+    }
+
+    private static MessageTerminal CloseTerminal(SessionRecord before, SessionRecord after)
+    {
+        if (after.MessageVerdict is MessageVerdict.Accepted or MessageVerdict.Discarded
+            && after.MessageVerdict != before.MessageVerdict)
+            return MessageTerminal.Completed;
+        if (after.Hidden && !before.Hidden)
+            return MessageTerminal.Cancelled;
+        return MessageTerminal.Completed;
+    }
 
     private static TransitionResult ApplyDispatch(SessionRecord task, Dispatch c)
     {
@@ -703,6 +763,7 @@ public static class SessionStateMachine
                 OccupancyDesired = desired,
                 CurrentInstance = null,
                 PendingSpawn = null,
+                MessageState = MessageState.Idle,
                 // health=failed stays failed; healthy cancel is hidden+on_disk/none
             },
             effects.ToArray());

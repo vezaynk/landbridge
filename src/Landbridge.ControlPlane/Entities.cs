@@ -21,6 +21,11 @@ public sealed class SessionRow
     public bool Hidden { get; set; }
     public MessageState MessageState { get; set; } = MessageState.Idle;
     public MessageVerdict? MessageVerdict { get; set; }
+    public Guid? MessageId { get; set; }
+    public Guid? LastMessageId { get; set; }
+    public MessageTerminal? LastMessageTerminal { get; set; }
+    public DateTimeOffset? MessageOpenedAt { get; set; }
+    public DateTimeOffset? LastMessageClosedAt { get; set; }
     public PendingSpawn? PendingSpawn { get; set; } = Landbridge.Core.PendingSpawn.New;
     public bool PullRedelivered { get; set; }
     public DateTimeOffset? MessagePulledAt { get; set; }
@@ -305,6 +310,9 @@ public sealed class SessionRow
         Hidden = Hidden,
         MessageState = MessageState,
         MessageVerdict = MessageVerdict,
+        MessageId = MessageId,
+        LastMessageId = LastMessageId,
+        LastMessageTerminal = LastMessageTerminal,
         PendingSpawn = PendingSpawn,
         PullRedelivered = PullRedelivered,
         Profile = Profile,
@@ -328,6 +336,9 @@ public sealed class SessionRow
         Hidden = task.Hidden;
         MessageState = task.MessageState;
         MessageVerdict = task.MessageVerdict;
+        MessageId = task.MessageId;
+        LastMessageId = task.LastMessageId;
+        LastMessageTerminal = task.LastMessageTerminal;
         PendingSpawn = task.PendingSpawn;
         PullRedelivered = task.PullRedelivered;
         Attempt = task.Attempt;

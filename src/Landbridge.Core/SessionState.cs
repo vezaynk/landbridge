@@ -35,6 +35,16 @@ public enum MessageVerdict
     Discarded,
 }
 
+/// <summary>
+/// How the outstanding envelope closed. MCP Tasks project this as a terminal
+/// status; the session itself is not terminal.
+/// </summary>
+public enum MessageTerminal
+{
+    Completed,
+    Cancelled,
+}
+
 /// <summary>How the next spawn should reach ACP. Null is not claimable.</summary>
 public enum PendingSpawn
 {

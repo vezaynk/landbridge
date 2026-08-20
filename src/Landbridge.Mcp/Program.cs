@@ -86,7 +86,8 @@ builder.Services.AddMcpServer()
     .WithTools<LeadTools>()
     // §10/§14: the skill bundle ships as MCP resources so it reaches every agent
     // on connect. Stable landbridge:// URIs; scoping is advisory (see SkillResources).
-    .WithResources<SkillResources>();
+    .WithResources<SkillResources>()
+    .WithSessionTaskProjection();
 
 // The runner spine (spec §10): the connection registry and event sink are
 // singletons; the dispatch loop is a hosted service, exposed as a singleton too

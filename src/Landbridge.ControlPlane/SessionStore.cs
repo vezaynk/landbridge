@@ -936,11 +936,104 @@ public sealed class SessionStore(
     public sealed record OccupancyLookaside(
         string? HarnessSessionRef, string? PreferredMachine, string? ParkMachine);
 
+    /// <summary>One MCP Tasks projection of a message envelope.</summary>
+    public sealed record SessionTaskSnapshot(
+        Guid TaskId,
+        SessionId SessionId,
+        SessionTaskStatus Status,
+        string? StatusMessage,
+        DateTimeOffset CreatedAt,
+        DateTimeOffset LastUpdatedAt);
+
     public async Task<OccupancyLookaside?> GetOccupancyAsync(SessionId id, CancellationToken ct = default) =>
         await db.Sessions.AsNoTracking()
             .Where(t => t.Id == id.Value)
             .Select(t => new OccupancyLookaside(t.HarnessSessionRef, t.PreferredMachine, t.ParkMachine))
             .FirstOrDefaultAsync(ct);
+
+    /// <summary>
+    /// Live envelope or last-closed envelope, Team-scoped. Task id is
+    /// <see cref="SessionRow.MessageId"/> / <see cref="SessionRow.LastMessageId"/>.
+    /// </summary>
+    public async Task<SessionTaskSnapshot?> GetTaskSnapshotAsync(
+        TeamId team, Guid taskId, CancellationToken ct = default)
+    {
+        var row = await db.Sessions.AsNoTracking()
+            .FirstOrDefaultAsync(t => t.TeamId == team.Value
+                && (t.MessageId == taskId || t.LastMessageId == taskId), ct);
+        if (row is null)
+            return null;
+        return EnvelopeSnapshot(row, taskId);
+    }
+
+    /// <summary>
+    /// Outstanding envelopes plus the last closed envelope per session.
+    /// Cursor is the last task id from the previous page.
+    /// </summary>
+    public async Task<(IReadOnlyList<SessionTaskSnapshot> Tasks, string? NextCursor)> ListTaskSnapshotsAsync(
+        TeamId team, string? cursor, int take, CancellationToken ct = default)
+    {
+        if (take < 1)
+            take = 50;
+
+        var rows = await db.Sessions.AsNoTracking()
+            .Where(t => t.TeamId == team.Value
+                && (t.MessageId != null || t.LastMessageId != null))
+            .ToListAsync(ct);
+
+        var tasks = rows
+            .SelectMany(EnvelopeSnapshots)
+            .OrderBy(t => t.TaskId)
+            .ToList();
+
+        if (cursor is { Length: > 0 })
+        {
+            if (!Guid.TryParse(cursor, out var after))
+                throw new ArgumentException("invalid cursor", nameof(cursor));
+            tasks = tasks.Where(t => t.TaskId.CompareTo(after) > 0).ToList();
+        }
+
+        string? next = null;
+        if (tasks.Count > take)
+        {
+            next = tasks[take - 1].TaskId.ToString();
+            tasks = tasks.Take(take).ToList();
+        }
+
+        return (tasks, next);
+    }
+
+    private IEnumerable<SessionTaskSnapshot> EnvelopeSnapshots(SessionRow row)
+    {
+        if (row.MessageId is { } live)
+            yield return EnvelopeSnapshot(row, live);
+        if (row.LastMessageId is { } last && last != row.MessageId)
+            yield return EnvelopeSnapshot(row, last);
+    }
+
+    private SessionTaskSnapshot EnvelopeSnapshot(SessionRow row, Guid taskId)
+    {
+        var now = clock.GetUtcNow();
+        var live = row.MessageId == taskId;
+        var status = live
+            ? SessionTaskProjection.LiveStatus(row.MessageState)
+            : SessionTaskProjection.ClosedStatus(row.LastMessageTerminal);
+        var created = live
+            ? row.MessageOpenedAt ?? now
+            : row.LastMessageClosedAt ?? now;
+        var updated = live
+            ? row.MessageOpenedAt ?? now
+            : row.LastMessageClosedAt ?? created;
+        return new SessionTaskSnapshot(
+            taskId,
+            new SessionId(row.Id),
+            status,
+            live
+                ? SessionTaskProjection.LiveStatusMessage(row.MessageState)
+                : SessionTaskProjection.ClosedStatusMessage(row.LastMessageTerminal, row.MessageVerdict),
+            created,
+            updated);
+    }
 
     /// <summary>
     /// The state read of <see cref="GetStateAsync"/> plus the instance currently working the
@@ -1145,7 +1238,13 @@ public sealed class SessionStore(
             return new StoreResult.Rejected(r.Rule, r.Reason);
 
         var ok = (TransitionResult.Transitioned)result;
+        var prevMessageId = row.MessageId;
+        var prevLastMessageId = row.LastMessageId;
         row.CopyFrom(ok.Session);
+        if (row.MessageId != prevMessageId)
+            row.MessageOpenedAt = row.MessageId is null ? null : clock.GetUtcNow();
+        if (row.LastMessageId != prevLastMessageId && row.LastMessageId is not null)
+            row.LastMessageClosedAt = clock.GetUtcNow();
         // #23, §7: the reported result reference is opaque content the store
         // captures on the working → verifying transition. The engine and
         // SessionRecord stay content-free (the reference never lands on the pure
