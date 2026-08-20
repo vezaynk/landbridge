@@ -119,6 +119,45 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task Get_lead_inbox_lists_outstanding_items_and_can_filter_a_session()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var tools = LeadFor(new Principal.Lead(Team));
+        var id = await SeedBlockedOnInputTask();
+
+        var inbox = await tools.GetLeadInbox(ct: CancellationToken.None);
+        var item = Assert.Single(inbox.Items);
+        Assert.Equal(id.Value, item.SessionId);
+        Assert.Equal(LeadInboxKind.Question, item.Kind);
+
+        Assert.Empty((await tools.GetLeadInbox(Guid.NewGuid().ToString(), CancellationToken.None)).Items);
+        Assert.Single((await tools.GetLeadInbox(id.Value.ToString(), CancellationToken.None)).Items);
+    }
+
+    [SkippableFact]
+    public async Task Watch_lead_inbox_returns_when_a_question_lands()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(20));
+        await using var fanout = new SessionEventFanout(pg.ConnectionString);
+        await fanout.StartAsync(cts.Token);
+        await fanout.WhenListening.WaitAsync(cts.Token);
+
+        var tools = RelayGrantTestKit.LeadToolsFor(
+            pg.NewContext(), _clock, new RunnerConnectionRegistry(_clock),
+            AccessorFor(new Principal.Lead(Team)), fanout);
+
+        var pending = tools.WatchLeadInbox(ct: cts.Token);
+        await Task.Delay(50, cts.Token);
+        var id = await SeedBlockedOnInputTask();
+
+        var inbox = await pending;
+        Assert.Equal(id.Value, Assert.Single(inbox.Items).SessionId);
+
+        await fanout.StopAsync(CancellationToken.None);
+    }
+
+    [SkippableFact]
     public async Task Cancel_task_via_the_tool_moves_it_to_canceled()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);

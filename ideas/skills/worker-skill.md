@@ -181,7 +181,7 @@ You have one channel: `request_input` to your Lead. Use it when you are genuinel
 
 **On every follow-up, read `get_session` first.** The answer arrives there and nowhere else — not in the wake-up turn, which is fixed text. `get_session` hands you back the `question` you asked and the `answer`. If `answer` is empty, you were woken without a note — do not treat silence as consent for the option you preferred.
 
-Asking costs a round trip. Guessing costs a failed verification, and a fail is terminal — more from you is a reply on this session, not a fail-and-retry. Neither is free; judge which is cheaper for the specific ambiguity.
+Asking costs a round trip. Guessing costs a discarded report. More from you is a reply on this session, not a fail-and-retry. Neither is free; judge which is cheaper for the specific ambiguity.
 
 Do not ask for permission to do things you're allowed to do. Do not ask which of two equivalent approaches to take — pick one and say which in your result.
 
@@ -197,7 +197,7 @@ It also takes an optional `report`: a short in-band summary that flows straight 
 
 Say what you *didn't* do. Scope you deliberately left, tests you couldn't run, assumptions you made. That is the most useful part of a report and the part most often omitted.
 
-Your session then goes to verification. **You stay up.** A report is not a yield of the machine — your process and anything you started stay running so the Lead can reply on this same session. You do not mark it complete, and reporting is not a claim that it passed. If the Lead wants more, you will get another turn: pull `get_session` — their note is the `answer`. If they accept, the assignment ends.
+After `report_result` the message is `awaiting_report`. **You stay up.** A report is not a yield of the machine — your process and anything you started stay running so the Lead can reply on this same session. You do not mark it complete, and reporting is not a claim that it passed. If the Lead wants more, you will get another turn: pull `get_session` — their note is the `answer`. If they accept, the assignment ends.
 
 ## Subagents
 
@@ -211,4 +211,4 @@ Fan-out is where token spend goes non-linear, and nothing caps it. Be proportion
 - **If the clone is refused, do not invent a token path.** Generate an ed25519 key **in this session's directory** (not `~/.ssh`), send the public half to your Lead with `request_input`, and wait. When they answer that the deploy key (or OAuth) is in, clone with `GIT_SSH_COMMAND` pointing at that key. Stay up after you ask.
 - Commit at checkpoints — that is what persistence means here.
 - **Do not run repository maintenance.** A `git gc` while sibling worktrees are active is a real hazard. It is not helpful.
-- Prefer running the checks the description names yourself before reporting. A fail rejects the assignment; it is not a retry.
+- Prefer running the checks the description names yourself before reporting. A discarded report ends this assignment; more work is a reply, not a retry.

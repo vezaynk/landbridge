@@ -33,8 +33,7 @@ public sealed class SessionEventListenerTests(PostgresFixture pg) : IAsyncLifeti
             }
         });
 
-        // Give LISTEN a moment to register before we NOTIFY.
-        await Task.Delay(500, cts.Token);
+        await listener.Listening.WaitAsync(cts.Token);
 
         await using var db = pg.NewContext();
         var store = new SessionStore(db, new FakeTimeProvider());

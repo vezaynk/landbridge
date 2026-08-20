@@ -93,9 +93,13 @@ builder.Services.AddMcpServer()
 // singletons; the dispatch loop is a hosted service, exposed as a singleton too
 // so the runner endpoint can nudge it when a machine becomes ready. The task-
 // event listener owns its own session-mode Postgres connection (§3.1 LISTEN).
+// The inbox fan-out is a second LISTEN so Lead SSE cannot stall dispatch.
 builder.Services.AddSingleton<RunnerConnectionRegistry>();
 builder.Services.AddSingleton<RunnerEventSink>();
 builder.Services.AddSingleton(new SessionEventListener(connectionString));
+builder.Services.AddSingleton(sp => new SessionEventFanout(
+    connectionString, sp.GetRequiredService<ILogger<SessionEventFanout>>()));
+builder.Services.AddHostedService(sp => sp.GetRequiredService<SessionEventFanout>());
 
 // §8.3: open_forward drives both landbridged ends of a forward. The orchestrator +
 // forward-opened waiter are singletons sharing the connection registry above; the
@@ -261,6 +265,10 @@ app.MapMcp().RequireAuthorization();
 // POST /worker/permission is the same PermissionRelay the MCP request_permission
 // tool runs, authenticated with the worker bearer.
 app.MapWorkerPermissionEndpoint();
+
+// Lead inbox: JSON snapshot plus SSE of the same snapshot. Lead bearer only.
+// Separate from MapMcp's SSE-on-/ and from the human dashboard's 5s poll.
+app.MapLeadInbox();
 
 // The control plane ↔ runner WebSocket (machine-only, §10).
 app.MapRunnerEndpoint();

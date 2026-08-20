@@ -45,7 +45,8 @@ public sealed class LeadTools(
     RelayGrantService grants,
     ForwardOrchestrator forwards,
     IHttpContextAccessor http,
-    IConfiguration config)
+    IConfiguration config,
+    SessionEventFanout? inbox = null)
 {
     /// <summary>
     /// The live lead principal behind this call — Team and the claiming human (§4).
@@ -361,15 +362,48 @@ public sealed class LeadTools(
         return Describe(applied);
     }
 
+    [McpServerTool(Name = "get_lead_inbox"),
+     Description("Read this Team's outstanding inbox items right now: failed, permission, report, " +
+                 "question / spawn_request / auth_help, and pull (worker-owed). Identifiers only, never " +
+                 "prose — fetch text with get_session_question / get_session_report. Hidden rows are " +
+                 "omitted. A failed session still lists a leftover envelope as a second item. Pass " +
+                 "sessionId to see one session. For a wake when the inbox is empty, watch_lead_inbox.")]
+    public Task<LeadInboxView> GetLeadInbox(
+        [Description("Optional: only this session's outstanding items.")] string? sessionId = null,
+        CancellationToken ct = default) =>
+        store.GetLeadInboxAsync(Lead.Team, OptionalSession(sessionId), ct);
+
+    [McpServerTool(Name = "watch_lead_inbox"),
+     Description("The Lead inbox feed. Returns all outstanding items as soon as any exist " +
+                 "(failed, permission, report, question / spawn_request / auth_help, pull). If the " +
+                 "inbox is empty it waits until something is outstanding, then returns that snapshot. " +
+                 "Pass sessionId to watch one session. Identifiers only; fetch prose with " +
+                 "get_session_question / get_session_report. Call again after you act. HTTP twin: " +
+                 "GET /lead/inbox/events.")]
+    public async Task<LeadInboxView> WatchLeadInbox(
+        [Description("Optional: only this session's outstanding items.")] string? sessionId = null,
+        CancellationToken ct = default)
+    {
+        if (inbox is null)
+            throw new McpException("the inbox feed is not available in this process.");
+        var filter = OptionalSession(sessionId);
+        await foreach (var snapshot in LeadInboxWatch.Snapshots(store, inbox, Lead.Team, filter, ct))
+        {
+            if (snapshot.Items.Count > 0)
+                return snapshot;
+        }
+        return new LeadInboxView([]);
+    }
+
     [McpServerTool(Name = "get_team_state"),
-     Description("Read this Team's state: session counts by state and a per-session structural summary. " +
-                 "Counts and states only, never prose — each session shows has_report and has_question " +
-                 "(flags) plus input_kind (the typed kind of request it is waiting on), and you fetch " +
-                 "the text deliberately with get_session_report / get_session_question, one item at a time. " +
-                 "This is the reattachment surface after a session ends or a takeover, and the poll " +
-                 "that tells you which sessions are blocked, verifying, or failed waiting on you. Also reports which " +
-                 "machine you have bound as your human's own (bound_machine, null if none) — the " +
-                 "consumer end open_lead_forward needs.")]
+     Description("Read this Team's occupancy (desired/observed), health, hidden, and message state, " +
+                 "plus a per-session structural summary. Counts and flags only, never prose — each " +
+                 "session shows has_report and has_question plus input_kind (the typed kind of request " +
+                 "it is waiting on), and you fetch the text with get_session_report / " +
+                 "get_session_question, one item at a time. For outstanding items that need you, " +
+                 "prefer get_lead_inbox / watch_lead_inbox. Also reports which machine you have bound " +
+                 "as your human's own (bound_machine, null if none) — the consumer end " +
+                 "open_lead_forward needs.")]
     public async Task<TeamStateView> GetTeamState(CancellationToken ct)
     {
         var lead = LeadPrincipal;
@@ -703,6 +737,9 @@ public sealed class LeadTools(
         Guid.TryParse(sessionId, out var g)
             ? new SessionId(g)
             : throw new McpException($"'{sessionId}' is not a valid session id.");
+
+    private static Guid? OptionalSession(string? sessionId) =>
+        string.IsNullOrWhiteSpace(sessionId) ? null : ParseSessionId(sessionId).Value;
 
     private static McpException Unauthorized() =>
         new("this tool requires a live lead claim; claim the Team first.");

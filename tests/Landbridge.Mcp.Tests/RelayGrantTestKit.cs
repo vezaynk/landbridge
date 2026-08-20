@@ -156,14 +156,16 @@ internal static class RelayGrantTestKit
     /// <see cref="WorkerTools.DefaultRelayUrl"/>.
     /// </summary>
     public static LeadTools LeadToolsFor(
-        LandbridgeDbContext db, TimeProvider clock, RunnerConnectionRegistry registry, IHttpContextAccessor http) =>
+        LandbridgeDbContext db, TimeProvider clock, RunnerConnectionRegistry registry, IHttpContextAccessor http,
+        SessionEventFanout? inbox = null) =>
         new(new SessionStore(db, clock),
             registry,
             new LeadMachineBindingService(db, clock),
             new RelayGrantService(db, clock),
             new ForwardOrchestrator(registry, new ForwardWaiters(), NullLogger<ForwardOrchestrator>.Instance),
             http,
-            new ConfigurationBuilder().Build());
+            new ConfigurationBuilder().Build(),
+            inbox);
 
     /// <summary>
     /// <see cref="WorkerTools"/> wired for the direct-call tests, over the same store shape
