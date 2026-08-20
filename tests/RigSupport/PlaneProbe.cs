@@ -137,7 +137,6 @@ internal static class PlaneProbe
     public static async Task<SessionId> CreateSessionAsync(
         McpClient lead,
         string description,
-        string workspace,
         CancellationToken ct,
         string profile = "default",
         SessionId? continues = null)
@@ -146,7 +145,6 @@ internal static class PlaneProbe
         {
             ["description"] = description,
             ["profile"] = profile,
-            ["workspace"] = workspace,
             ["continues"] = continues?.Value.ToString(),
         }, cancellationToken: ct);
 
@@ -157,19 +155,18 @@ internal static class PlaneProbe
     }
 
     /// <summary>
-    /// Close a session as the Lead via <c>submit_review accept</c> — hide + occupancy
+    /// Close a session as the Lead via <c>stop_session</c> — hide + occupancy
     /// release. Transcripts become readable once the row is hidden (§12).
     /// </summary>
     public static async Task AcceptAsync(McpClient lead, SessionId task, CancellationToken ct)
     {
-        var verdict = await lead.CallToolAsync("submit_review", new Dictionary<string, object?>
+        var stopped = await lead.CallToolAsync("stop_session", new Dictionary<string, object?>
         {
             ["sessionId"] = task.Value.ToString(),
-            ["verdict"] = "accept",
         }, cancellationToken: ct);
 
-        if (verdict.IsError == true)
-            throw new InvalidOperationException($"submit_review was refused: {TextOf(verdict)}");
+        if (stopped.IsError == true)
+            throw new InvalidOperationException($"stop_session was refused: {TextOf(stopped)}");
     }
 
     /// <summary>Every text block of a tool result, concatenated — the payload and, on a

@@ -76,15 +76,17 @@ public class LifecycleTests
     }
 
     [Fact]
-    public void Failed_verification_rejects_without_redispatch()
+    public void Fail_and_accept_are_the_same_stop()
     {
         var result = SessionStateMachine.Apply(
             Given.Reported(verificationFailures: 0, retryLimit: 3),
             new VerdictFail(Given.Lead));
 
-        var next = Expect.Transitioned(result, SessionState.Rejected);
-        Assert.Equal(1, next.VerificationFailures);
+        var next = Expect.Transitioned(result, SessionState.Completed);
+        Assert.Equal(0, next.VerificationFailures);
         Assert.Equal(0, next.InfrastructureRequeues);
+        Assert.True(next.Hidden);
+        Assert.Equal(Occupancy.OnDisk, next.OccupancyDesired);
     }
 
     [Fact]
@@ -128,21 +130,22 @@ public class LifecycleTests
     }
 
     [Fact]
-    public void Submit_review_closes_an_idle_working_session()
+    public void Stop_closes_an_idle_working_session()
     {
         var task = Given.Session(SessionState.Working);
         var next = Expect.Transitioned(
-            SessionStateMachine.Apply(task, new VerdictAccept(Given.Lead)),
+            SessionStateMachine.Apply(task, new StopSession(Given.Lead)),
             SessionState.Completed);
-        Assert.Equal(MessageVerdict.Accepted, next.MessageVerdict);
+        Assert.Null(next.MessageVerdict);
+        Assert.True(next.Hidden);
     }
 
     [Fact]
-    public void Submit_review_refuses_an_unanswered_question()
+    public void Stop_closes_an_unanswered_question()
     {
-        Expect.Rejected(
-            SessionStateMachine.Apply(Given.Asking(), new VerdictAccept(Given.Lead)),
-            Rule.InvalidSourceState);
+        Expect.Transitioned(
+            SessionStateMachine.Apply(Given.Asking(), new StopSession(Given.Lead)),
+            SessionState.Completed);
     }
 
     [Fact]

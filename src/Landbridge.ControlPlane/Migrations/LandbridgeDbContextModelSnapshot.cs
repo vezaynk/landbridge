@@ -741,10 +741,6 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasColumnType("text")
                         .HasColumnName("worker_report");
 
-                    b.Property<string>("Workspace")
-                        .HasColumnType("text")
-                        .HasColumnName("workspace");
-
                     b.HasKey("Id")
                         .HasName("pk_sessions");
 

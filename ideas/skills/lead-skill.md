@@ -17,9 +17,7 @@ Run `/landbridge-lead` to claim a Team, or `/landbridge-status` if you already h
 2. Read the most recent results and blocker notes.
 3. Only then decide what to do next.
 
-Do not assume you know what was happening. The previous session's reasoning is gone; only what is recorded survives. If a session's occupancy or message state is something you can't explain, ask the human before acting.
-
-**If you evicted someone**, say so plainly to your human and expect the other person to be confused. Their agent's next call will fail. That's a coordination problem between two people, and it's worth a message outside Landbridge.
+You can't query worker session internals directly, but you can talk to worker sessions to request a report of what they have been working on.
 
 ## Decomposing work
 
@@ -39,20 +37,19 @@ Before creating a session, check that it carries:
 
 - **`answer_input_request` with a note** — you want more from this same worker. Same session, same process if it is still up.
 - **`park_session`** — set `desired=on_disk` without hiding the row. Refused while a permission wait is live. Wake later is `answer_input_request` (same id, `session/load`). Hidden healthy rows refuse same-id wake — new work is `create_session(continues:)`.
-- **`submit_review(accept)`** — close: you are done with this worker. Hides the row and releases occupancy. Allowed while idle or after a report, not only after a report.
-- **`submit_review(fail)`** — discard: hide the row. If you want another pass, reply instead of discarding. An unanswered question is `cancel_session`, not this.
+- **`stop_session`** — hide the row and release occupancy. The process gets 5 minutes to wind down, then a kill (`ttlSeconds=0` kills immediately). Allowed mid-exchange (a question or a live permission wait). Not a grade of the work.
 
 **Close when you are done with the worker, not to grade an artifact.** When you are unsure, reply with what is missing. When a report reveals the _session_ was wrong — the design shifted, the scope was off — take the delta to your human rather than papering over it.
 
-## Workspace is context, not isolation
+## Isolation is the session directory
 
-Several sessions can land on the same machine — including several from your own Team. **The worker isolates itself.** You do not assign ports, worktrees, or working directories. `landbridged` starts each worker in `{work_root}/{session_id}`; the worker skill tells it to stay there, use a worktree, bind a random port, and anything else that is useful for avoiding stepping on other owrks.
+Several sessions can land on the same machine — including several from your own Team. **The worker isolates itself.** You do not assign ports, worktrees, or working directories. `landbridged` starts each worker in `{work_root}/{session_id}`; the worker skill tells it to stay there, use a worktree, bind a random port, and anything else that is useful for avoiding stepping on other work. Put repo/package/ref in the description.
 
 Workers can share a common process, but the Lead must be explicit and keep track to avoid one Worker disrupting another. Workers can share cross-machine processes by securely forwarding ports via Landbridge.
 
 ## Cleaning up a machine before you close out
 
-A worker can start background processes that **outlive its session** — builds, dev servers, watchers (§10 `start_process`). Nothing reclaims them when the session finishes: not completion, not cancellation. They run until someone stops them or the machine's `landbridged` restarts.
+A worker can start background processes that **outlive its session** — builds, dev servers, watchers (via `start_process`).
 
 That is deliberate, and it makes cleanup your job. **Before you close out work on a machine, send a message to tidy up.** Be explicit and intentional on what you would like to be cleared, with what expected blast radius.
 
@@ -62,9 +59,9 @@ If you are unsure what is still running, ask your operator to check the Machine 
 
 Machines may declare more than one runner profile — a second harness, a restricted permission posture, a pinned version being canaried. Names are matched exactly.
 
-**`profile` is required.** Call `list_profiles` first and pass an exact name that came back. A guessed name sits unclaimable indefinitely. There is no reserved `default`.
+**`profile` is required.** Call `list_profiles` first and pass an exact name that came back. A guessed name sits unclaimable indefinitely.
 
-Look it up. **`list_profiles`** returns every profile the fleet currently declares, the machines offering each one, and whether those machines can take work right now. It is the same data dispatch matches on.
+**`list_profiles`** returns every profile the fleet currently declares, the machines offering each one, and whether those machines can take work right now. It is the same data dispatch matches on.
 
 Two things to read carefully. **`dispatchable: false` with machines listed is not a problem** — the profile exists and every machine offering it is saturated or not yet ready, so your session will queue and then run; wait rather than re-routing it. **A profile missing from the list entirely is the problem** — nothing declares it, so nothing will ever pick that session up.
 
@@ -125,7 +122,7 @@ Remember that the tool name and arguments came up through an agent's process. A 
 
 **Infrastructure failure is mechanical `health=failed`.** A handshake flake, a dead process, a silent machine, a turn that ended with no report — token revoked, process gone, workspace kept. The plane does **not** requeue. Retry is yours: `answer_input_request` with a note (`session/new` on the same id, not `session/load`, not `continues:`). A rising `infrastructureRequeues` count is a placement problem, never a verdict on the work.
 
-**Deactivate when you are done waiting.** A live session occupies the machine. `park_session` releases occupancy without hiding. When you are done with this worker, `submit_review` (accept or fail=discard) hides the row. An idle worker you will not talk to again is a leak.
+**Deactivate when you are done waiting.** A live session occupies the machine. `park_session` releases occupancy without hiding. When you are done with this worker, `stop_session` hides the row (5-minute wind-down by default). An idle worker you will not talk to again is a leak.
 
 **Clean up before you close out.** Send a continuation to stop processes and tidy the session directory. A report that left a dev server up is not finished work.
 
@@ -149,21 +146,15 @@ Two limits to say out loud rather than let them discover:
 
 `get_team_state` shows which machine you have bound, which is worth checking after a reattachment: your context is empty but the binding survived, because it belongs to your human rather than to your session. A takeover does **not** inherit the previous Lead's machine — if you took a Team over, you bind your own.
 
-The same rules as any forward apply: only services registered by a session whose occupancy is `running` in your Team. Accept, discard, `park_session`, cancel, and mechanical fail release them; a report does not. If the forward fails, check `get_team_state` for whether the owning session is still occupying before assuming a network problem.
+The same rules as any forward apply: only services registered by a session whose occupancy is `running` in your Team. `stop_session`, `park_session`, and mechanical fail release them; a report does not. If the forward fails, check `get_team_state` for whether the owning session is still occupying before assuming a network problem.
 
-## Cancelling
+## Stopping
 
-`cancel_session` carries a disposition. Choose it deliberately:
+`stop_session` hides the row and parks occupancy. The process gets **5 minutes** after `session/cancel` before it is killed. Pass `ttlSeconds=0` to kill immediately. **The kill path is lossy** — uncommitted work dies. The default is generous so a worker can finish a turn and persist; it is not a grade of the work.
 
-- **`preserve`** — persist work in progress, then stop. The default, and correct unless you are certain the work is worthless.
-- **`discard`** — stop and remove the session's workspace. Only for work you know is wrong, and only safe because isolation is session-scoped.
-- **`preserve_and_park`** — persist and set `desired=on_disk`. Prefer `park_session` when you only mean to release occupancy: that is the Lead command, not a stop disposition.
+`park_session` also cancels the live ACP session and sets `desired=on_disk`, but does **not** hide the row. Wake later is `answer_input_request` (`session/load` if healthy).
 
-`park_session` cancels the live ACP session (`session/cancel`) and sets `desired=on_disk`. Wake later is `answer_input_request` (`session/load` if healthy). Answering a live wait is `answer_input_request`, which delivers a follow-up `prompt` so the worker pulls `get_session`.
-
-The TTL on a stop is how long the worker gets after `session/cancel` before it is killed. `TTL=0` kills immediately. **The kill path is lossy** — uncommitted work dies. Use it when an agent has stopped being trustworthy, not as a fast default.
-
-**Do not count on the worker being told.** `session/cancel` is a notification with no reply. The TTL is a kill deadline, not a wind-down the agent is guaranteed to read. What you get back is whatever it had already reported, plus — for `preserve` and `preserve_and_park` — a resumable transcript, because the plane recorded the session before the kill. A generous TTL buys the chance that the worker finishes and exits on its own; it does not buy a graceful handover. If you need to know where a long session stands before you stop it, ask while it is still working rather than expecting the stop to elicit it.
+**Do not count on the worker being told.** `session/cancel` is a notification with no reply. The TTL is a kill deadline, not a wind-down the agent is guaranteed to read. A generous TTL buys the chance that the worker finishes and exits on its own. If you need to know where a long session stands before you stop it, ask while it is still working.
 
 ## Closing out
 
@@ -175,7 +166,7 @@ Before closing: no sessions in flight, no open input requests, results recorded 
 
 The default bundle assumes software. Replace this section for other domains.
 
-- Name the repo and base ref in the description (or `workspace`). The worker makes its own worktree and branch.
+- Name the repo and base ref in the description. The worker makes its own worktree and branch.
 - If the repo is private, say so in the brief and tell them to send a session-local public key (or an OAuth URL) rather than wait for a token. When it arrives, install it as a read-only deploy key and reply on the same session.
 - Prefer test commands and linters as the bar in the description — and run them yourself before you close the session
 - Anything load-bearing goes into version control, not an artifact URL

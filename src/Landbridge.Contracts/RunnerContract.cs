@@ -204,7 +204,7 @@ public sealed record OpenForwardCommand(
 /// handle anywhere in the system, so it survived until one of its peers happened to
 /// drop. Where the worker was killed (a liveness loss tree-kills it, #84) its sockets
 /// died by RST and the splice ended by accident; where nothing was killed —
-/// <c>report_result</c>, <c>cancel_session</c> — the tunnel stayed up past the task that
+/// <c>report_result</c>, <c>stop_session</c> — the tunnel stayed up past the task that
 /// authorized it, and so did the consumer end's idle loopback listener.
 ///
 /// <para><b>This is not the severing §8.3 forbids.</b> That prohibition is about

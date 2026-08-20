@@ -170,7 +170,7 @@ internal static class DevBoxConfig
         $"You are a Landbridge worker on a live session. Read the landbridge-worker skill " +
         $"from the landbridge MCP server first (`landbridge://skills/worker`). Do not search " +
         $"$HOME or ~/.claude for a skill. Then call the {getSession} MCP tool to read your " +
-        "assignment (namespace, description, workspace, attempt). Do the work in this " +
+        "assignment (namespace, description, attempt). Do the work in this " +
         "session's directory; you are not the only agent on the machine. You must not end " +
         $"a turn until you have called {reportResult} or {requestInput}. When you think you " +
         $"are done, call {reportResult} with a reference to where the work lives (a " +

@@ -80,9 +80,9 @@ public static class SessionStateMachine
         if (command is ObserveOccupancy observe)
             return Finalize(task, ApplyObserveOccupancy(task, observe));
 
-        // Hidden healthy rows refuse same-id work (derived Completed/Rejected/Canceled).
-        // Failed is not terminal. ObserveOccupancy is already handled.
-        if (task.Hidden && task.Health == SessionHealth.Ok && command is not Cancel)
+        // Hidden healthy rows refuse same-id work (derived Completed). Failed is
+        // not terminal. ObserveOccupancy is already handled.
+        if (task.Hidden && task.Health == SessionHealth.Ok)
             return TransitionResult.Reject(Rule.TerminalStatesAreFinal,
                 $"{task.State} is terminal and never resumed");
 
@@ -91,8 +91,9 @@ public static class SessionStateMachine
             Dispatch c => ApplyDispatch(task, c),
             LivenessLost c => ApplyLivenessLost(task, c),
             ReportResult c => ApplyReportResult(task, c),
-            VerdictAccept c => ApplyVerdict(task, c.Actor, accepted: true),
-            VerdictFail c => ApplyVerdict(task, c.Actor, accepted: false),
+            StopSession c => ApplyStopSession(task, c.Actor),
+            VerdictAccept c => ApplyStopSession(task, c.Actor),
+            VerdictFail c => ApplyStopSession(task, c.Actor),
             RequestInput c => ApplyRequestInput(task, c),
             AnswerInput c => ApplyAnswerInput(task, c),
             AnswerPermission c => ApplyAnswerPermission(task, c),
@@ -103,7 +104,7 @@ public static class SessionStateMachine
             LeadMessage c => ApplyLeadMessage(task, c),
             WakeParked c => ApplyWakeParked(task, c),
             StopPreserveAndPark c => ApplyStopPreserveAndPark(task, c),
-            Cancel c => ApplyCancel(task, c),
+            Cancel c => ApplyStopSession(task, c.Actor),
             PullReceipt c => ApplyPullReceipt(task, c),
             CreateSession => TransitionResult.Reject(Rule.InvalidSourceState,
                 "CreateSession applies to no existing record; use Create"),
@@ -167,11 +168,11 @@ public static class SessionStateMachine
 
     private static MessageTerminal CloseTerminal(SessionRecord before, SessionRecord after)
     {
+        if (after.Hidden && !before.Hidden)
+            return MessageTerminal.Completed;
         if (after.MessageVerdict is MessageVerdict.Accepted or MessageVerdict.Discarded
             && after.MessageVerdict != before.MessageVerdict)
             return MessageTerminal.Completed;
-        if (after.Hidden && !before.Hidden)
-            return MessageTerminal.Cancelled;
         return MessageTerminal.Completed;
     }
 
@@ -276,71 +277,34 @@ public static class SessionStateMachine
         });
     }
 
-    private static TransitionResult ApplyVerdict(SessionRecord task, Actor actor, bool accepted)
+    private static TransitionResult ApplyStopSession(SessionRecord task, Actor actor)
     {
         if (task.Hidden)
             return TransitionResult.Reject(Rule.TerminalStatesAreFinal,
-                "a hidden session is already closed");
+                "a hidden session is already stopped");
 
-        if (task.Health == SessionHealth.Failed)
-            return TransitionResult.Reject(Rule.InvalidSourceState,
-                "a failed attempt is retried with answer_input_request, not closed with submit_review");
-
-        if (task.MessageState == MessageState.AwaitingPermission)
-            return TransitionResult.Reject(Rule.InvalidSourceState,
-                "a live permission wait cannot be closed; answer_permission_request");
-
-        if (task.MessageState == MessageState.AwaitingLead)
-            return TransitionResult.Reject(Rule.InvalidSourceState,
-                "an unanswered question is cancel_session, not submit_review");
-
-        if (task.MessageState is not (MessageState.Idle or MessageState.AwaitingReport))
-            return TransitionResult.Reject(Rule.InvalidSourceState,
-                "submit_review closes a session that is idle or has a report; cancel_session to stop mid-exchange");
-
-        // §9 check 4 (doer/judge split): closing the row comes from a Lead or human
-        // credential, NEVER the task's own worker — a WorkerCaller is refused here
-        // structurally, exactly as a subagent never accepts its own work. The
-        // plane trusts the Lead. Provenance is derived from the actor and
-        // recorded on the close.
+        // §9 check 4: a session's own worker never stops it.
         var provenance = actor switch
         {
             HumanSession => (VerdictProvenance?)VerdictProvenance.Human,
             LeadClaim lead when lead.Team == task.Team => VerdictProvenance.LeadSession,
             _ => null,
         };
-        var authorized = provenance is VerdictProvenance.Human or VerdictProvenance.LeadSession;
-        if (!authorized)
+        if (provenance is null)
             return TransitionResult.Reject(Rule.CompletionByLeadOrHuman,
-                "completion is a Lead or human verdict, never the task's own worker");
+                "stop is a Lead or human close, never the task's own worker");
 
         var effects = new List<Effect> { new ClearServicesAndForwards() };
         if (task.CurrentInstance is { } instance)
             effects.Add(new RevokeWorkerInstanceToken(instance));
 
-        if (accepted)
-            return Done(
-                task with
-                {
-                    Hidden = true,
-                    OccupancyDesired = Occupancy.OnDisk,
-                    MessageState = MessageState.Idle,
-                    MessageVerdict = MessageVerdict.Accepted,
-                    CurrentInstance = null,
-                    PendingSpawn = null,
-                    CompletionProvenance = provenance,
-                },
-                effects.ToArray());
-
-        // Discard is hide, not a Rejected phase. MCP still sends fail.
         return Done(
             task with
             {
                 Hidden = true,
                 OccupancyDesired = Occupancy.OnDisk,
                 MessageState = MessageState.Idle,
-                MessageVerdict = MessageVerdict.Discarded,
-                VerificationFailures = task.VerificationFailures + 1,
+                MessageVerdict = null,
                 CurrentInstance = null,
                 PendingSpawn = null,
                 CompletionProvenance = provenance,
@@ -741,56 +705,6 @@ public static class SessionStateMachine
                 "preserve_and_park is a Lead stop disposition");
 
         return Deactivate(task, c.Park, actorChecked: true);
-    }
-
-    private static TransitionResult ApplyCancel(SessionRecord task, Cancel c)
-    {
-        if (c.Disposition is null)
-            return TransitionResult.Reject(Rule.CancellationCarriesDisposition,
-                "cancellation carries a disposition enum");
-
-        var authorized = c.Actor switch
-        {
-            // §6: cancelling is a judgement that the work should not continue, which is the
-            // Lead's or a human's alone. The plane holds no such opinion — infrastructure
-            // giving up lands as Failed (a park the Lead did not ask for), never as a
-            // Cancel command.
-            HumanSession => true,
-            LeadClaim lead => lead.Team == task.Team,
-            _ => false,
-        };
-        if (!authorized)
-            return TransitionResult.Reject(Rule.ActorLacksAuthority,
-                "cancellation is for the Lead of this Team or a human");
-
-        if (task.Hidden && task.Health == SessionHealth.Ok)
-            return TransitionResult.Reject(Rule.TerminalStatesAreFinal,
-                "cancel is refused on a hidden healthy row");
-
-        var effects = new List<Effect>();
-        if (task.CurrentInstance is { } instance)
-            effects.Add(new RevokeWorkerInstanceToken(instance));
-        if (task.OccupancyObserved == Occupancy.Running
-            || task.CurrentInstance is not null
-            || task.MessageState is MessageState.AwaitingReport)
-            effects.Add(new ClearServicesAndForwards());
-        if (c.Disposition == CancelDisposition.Discard)
-            effects.Add(task.MessageState == MessageState.AwaitingReport
-                ? new DeferWorkspaceDiscardUntilVerdict()
-                : new DiscardWorkspace());
-
-        var desired = c.Disposition == CancelDisposition.Discard ? Occupancy.None : Occupancy.OnDisk;
-        return Done(
-            task with
-            {
-                Hidden = true,
-                OccupancyDesired = desired,
-                CurrentInstance = null,
-                PendingSpawn = null,
-                MessageState = MessageState.Idle,
-                // health=failed stays failed; healthy cancel is hidden+on_disk/none
-            },
-            effects.ToArray());
     }
 
     private static TransitionResult ApplyPullReceipt(SessionRecord task, PullReceipt c)

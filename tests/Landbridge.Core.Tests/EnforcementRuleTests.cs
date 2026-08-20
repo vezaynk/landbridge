@@ -113,63 +113,32 @@ public class EnforcementRuleTests
         Assert.Equal(VerdictProvenance.Human, task.CompletionProvenance);
     }
 
-    // §9 check 12
     [Fact]
-    public void Cancellation_carries_a_disposition()
-    {
-        var result = SessionStateMachine.Apply(
-            Given.Session(SessionState.Working),
-            new Cancel(Given.Lead, Disposition: null));
-        Expect.Rejected(result, Rule.CancellationCarriesDisposition);
-    }
-
-    // §6 — the control plane cannot cancel, on any disposition. It had exactly one
-    // disposition it was allowed (budget exhaustion) and that went with the budget
-    // subsystem; the plane's own giving-up path is Failed inside LivenessLost, not a
-    // Cancel command.
-    [Theory]
-    [InlineData(CancelDisposition.Preserve)]
-    [InlineData(CancelDisposition.Discard)]
-    public void The_control_plane_cannot_cancel(CancelDisposition disposition)
+    public void The_control_plane_cannot_stop_a_session()
     {
         Expect.Rejected(
             SessionStateMachine.Apply(Given.Session(SessionState.Working),
-                new Cancel(ControlPlaneActor.Instance, disposition)),
-            Rule.ActorLacksAuthority);
+                new StopSession(ControlPlaneActor.Instance)),
+            Rule.CompletionByLeadOrHuman);
     }
 
     [Fact]
-    public void A_foreign_team_lead_cannot_cancel()
+    public void A_foreign_team_lead_cannot_stop_a_session()
     {
         Expect.Rejected(
             SessionStateMachine.Apply(Given.Session(SessionState.Working),
-                new Cancel(Given.ForeignLead, CancelDisposition.Preserve)),
-            Rule.ActorLacksAuthority);
-    }
-
-    // §11 — discard is deferred while a report is outstanding
-    [Fact]
-    public void Discard_during_a_report_defers_workspace_removal_until_close()
-    {
-        var result = SessionStateMachine.Apply(
-            Given.Reported(),
-            new Cancel(Given.Lead, CancelDisposition.Discard));
-
-        Expect.Transitioned(result, SessionState.Canceled);
-        var effects = Expect.Effects(result);
-        Assert.Contains(new DeferWorkspaceDiscardUntilVerdict(), effects);
-        Assert.DoesNotContain(new DiscardWorkspace(), effects);
+                new StopSession(Given.ForeignLead)),
+            Rule.CompletionByLeadOrHuman);
     }
 
     [Fact]
-    public void Discard_outside_a_report_removes_the_workspace()
+    public void Stop_from_a_report_hides_and_parks()
     {
-        var result = SessionStateMachine.Apply(
-            Given.Session(SessionState.Working),
-            new Cancel(Given.Lead, CancelDisposition.Discard));
-
-        Expect.Transitioned(result, SessionState.Canceled);
-        Assert.Contains(new DiscardWorkspace(), Expect.Effects(result));
+        var result = SessionStateMachine.Apply(Given.Reported(), new StopSession(Given.Lead));
+        var next = Expect.Transitioned(result, SessionState.Completed);
+        Assert.True(next.Hidden);
+        Assert.Equal(Occupancy.OnDisk, next.OccupancyDesired);
+        Assert.DoesNotContain(new DiscardWorkspace(), Expect.Effects(result));
     }
 
     // §6 — terminal states are final
@@ -183,7 +152,7 @@ public class EnforcementRuleTests
     }
 
     private static readonly string[] CommandNames =
-        ["dispatch", "liveness", "report", "accept", "fail", "request", "answer", "continue", "message", "ttl", "wake", "stop-park", "park", "cancel"];
+        ["dispatch", "liveness", "report", "accept", "fail", "request", "answer", "continue", "message", "ttl", "wake", "stop-park", "park", "cancel", "stop"];
 
     private static SessionCommand CommandByName(string name, SessionRecord task) => name switch
     {
@@ -201,6 +170,7 @@ public class EnforcementRuleTests
         "stop-park" => new StopPreserveAndPark(Given.Lead, Given.Park),
         "park" => new Park(Given.Lead, Given.Park),
         "cancel" => new Cancel(Given.Lead, CancelDisposition.Preserve),
+        "stop" => new StopSession(Given.Lead),
         _ => throw new ArgumentOutOfRangeException(nameof(name)),
     };
 

@@ -94,19 +94,19 @@ public class WrongSourceStateAndAuthorityTests
     }
 
     [Fact]
-    public void Submit_review_refuses_a_live_permission_wait()
+    public void Stop_reaches_a_live_permission_wait()
     {
         var task = Given.Session(SessionState.BlockedOnInput);
-        Expect.Rejected(SessionStateMachine.Apply(task, new VerdictAccept(Given.Lead)), Rule.InvalidSourceState);
-        Expect.Rejected(SessionStateMachine.Apply(task, new VerdictFail(Given.Lead)), Rule.InvalidSourceState);
+        Expect.Transitioned(SessionStateMachine.Apply(task, new StopSession(Given.Lead)), SessionState.Completed);
     }
 
     [Fact]
-    public void Submit_review_refuses_a_failed_attempt()
+    public void Stop_hides_a_failed_attempt()
     {
         var task = Given.Session(SessionState.Failed);
-        Expect.Rejected(SessionStateMachine.Apply(task, new VerdictAccept(Given.Lead)), Rule.InvalidSourceState);
-        Expect.Rejected(SessionStateMachine.Apply(task, new VerdictFail(Given.Lead)), Rule.InvalidSourceState);
+        var next = Expect.Transitioned(SessionStateMachine.Apply(task, new StopSession(Given.Lead)), SessionState.Completed);
+        Assert.True(next.Hidden);
+        Assert.Equal(SessionHealth.Failed, next.Health);
     }
 
     [Theory]
@@ -205,7 +205,7 @@ public class WrongSourceStateAndAuthorityTests
         {
             Expect.Rejected(
                 SessionStateMachine.Apply(task, new Cancel(incumbent, disposition)),
-                Rule.ActorLacksAuthority);
+                Rule.CompletionByLeadOrHuman);
         }
     }
 
@@ -235,9 +235,9 @@ public class WrongSourceStateAndAuthorityTests
         var task = Given.Session(SessionState.Working);
 
         Expect.Transitioned(
-            SessionStateMachine.Apply(task, new Cancel(Given.Lead, CancelDisposition.Preserve)), SessionState.Canceled);
+            SessionStateMachine.Apply(task, new Cancel(Given.Lead, CancelDisposition.Preserve)), SessionState.Completed);
         Expect.Transitioned(
-            SessionStateMachine.Apply(task, new Cancel(Given.Human, CancelDisposition.Discard)), SessionState.Canceled);
+            SessionStateMachine.Apply(task, new Cancel(Given.Human, CancelDisposition.Discard)), SessionState.Completed);
     }
 
     [Fact]
@@ -249,6 +249,6 @@ public class WrongSourceStateAndAuthorityTests
 
         Expect.Rejected(
             SessionStateMachine.Apply(task, new Cancel(Given.ForeignLead, CancelDisposition.Preserve)),
-            Rule.ActorLacksAuthority);
+            Rule.CompletionByLeadOrHuman);
     }
 }

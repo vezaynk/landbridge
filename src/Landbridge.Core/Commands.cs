@@ -12,11 +12,10 @@ public abstract record SessionCommand(Actor Actor);
 /// <summary>
 /// → submitted. Only a lead claim may create tasks (§9 check 3).
 ///
-/// <see cref="Description"/> (prose instructions, §7) and <see cref="Workspace"/>
-/// (optional context, §7) ride along as content the engine never interprets.
-/// The store persists them verbatim; the state machine stays free of session
-/// content (§2 principle 1). The description is the whole brief — there is no
-/// separate completion-criteria field.
+/// <see cref="Description"/> (prose instructions, §7) rides along as content
+/// the engine never interprets. The store persists it verbatim; the state
+/// machine stays free of session content (§2 principle 1). The description is
+/// the whole brief.
 ///
 /// <para><see cref="Continues"/> switches the task to <b>continuation targeting</b>
 /// (§6/§11): rather than being dispatched to any profile-matching machine, the new
@@ -30,7 +29,6 @@ public sealed record CreateSession(
     TeamId Team,
     string Description,
     string Profile,
-    string? Workspace = null,
     Continuation? Continues = null) : SessionCommand(Actor);
 
 /// <summary>
@@ -123,17 +121,18 @@ public sealed record ReportResult(Actor Actor, string? ResultReference, string? 
 }
 
 /// <summary>
-/// Close the session (hide, desired=on_disk). Caller identity is not an agent.
-/// The plane trusts the Lead; a session's own worker can never close it.
-/// Allowed while idle or after a report; not a grade of an artifact.
+/// Hide the row and release occupancy (<c>desired=on_disk</c>). The Lead or a
+/// human is done with this worker — not a grade of the work. The plane then
+/// winds the process down (default 5 minutes). A session's own worker can
+/// never stop it. Mid-exchange (a question, a live permission wait) is
+/// allowed; that is the former cancel path.
 /// </summary>
+public sealed record StopSession(Actor Actor) : SessionCommand(Actor);
+
+/// <summary>Historical accept close; same transition as <see cref="StopSession"/>.</summary>
 public sealed record VerdictAccept(Actor Actor) : SessionCommand(Actor);
 
-/// <summary>
-/// Close and discard. A fail is not a redispatch: if the Lead wants more
-/// from this worker they reply (<see cref="LeadMessage"/>) instead. Same
-/// identity gate as <see cref="VerdictAccept"/>.
-/// </summary>
+/// <summary>Historical fail/discard close; same transition as <see cref="StopSession"/>.</summary>
 public sealed record VerdictFail(Actor Actor) : SessionCommand(Actor);
 
 /// <summary>
@@ -330,10 +329,8 @@ public sealed record WakeParked(string? Answer = null) : SessionCommand(ControlP
 public sealed record StopPreserveAndPark(Actor Actor, ParkRecord Park) : SessionCommand(Actor);
 
 /// <summary>
-/// any → canceled. Disposition required (§9 check 12), and the actor is a Lead or a
-/// human: cancelling is a judgement about the work, which the plane does not make. The
-/// one thing it gives up on is <em>placing</em> the work, and that path is the §9 check 7
-/// requeue cap inside <c>LivenessLost</c> — not a command anyone sends (§6).
+/// Historical cancel. Same transition as <see cref="StopSession"/>; disposition is
+/// ignored (stop always parks, never discards a directory).
 /// </summary>
 public sealed record Cancel(Actor Actor, CancelDisposition? Disposition) : SessionCommand(Actor);
 

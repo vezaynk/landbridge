@@ -182,8 +182,6 @@ public sealed class SessionRow
     /// </summary>
     public string Description { get; set; } = "";
 
-    public string? Workspace { get; set; }
-
     /// <summary>
     /// The §8.1 pointer the worker handed over on <c>report_result</c> — a commit,
     /// branch, or URL saying where the work lives. Opaque: stored verbatim, never
@@ -286,7 +284,7 @@ public sealed class SessionRow
 
     /// <summary>
     /// Who closed this session (§9 check 4): a Lead session or a human, set on
-    /// <c>submit_review</c> and null otherwise. Typed state the engine derives from
+    /// <c>stop_session</c> and null otherwise. Typed state the engine derives from
     /// the actor, carried by <see cref="CopyFrom"/> and rendered on the §12 dashboard.
     /// </summary>
     public VerdictProvenance? CompletionProvenance { get; set; }

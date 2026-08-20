@@ -82,7 +82,6 @@ public sealed class SessionStore(
             VerificationRetryLimit = task.VerificationRetryLimit,
             InfrastructureRequeueLimit = task.InfrastructureRequeueLimit,
             Description = command.Description,
-            Workspace = command.Workspace,
             // Opaque transport metadata: the ambient W3C traceparent at creation,
             // captured so dispatch can continue the Lead's trace over the wire.
             // Read straight off the ambient Activity here, never through a command
@@ -681,8 +680,8 @@ public sealed class SessionStore(
 
     /// <summary>
     /// The worker's own assignment (§7, worker-skill.md): the prose description,
-    /// workspace, namespace, and attempt count a dispatched worker reads before
-    /// starting. A pure read gated by the same authority as a worker transition —
+    /// namespace, and attempt count a dispatched worker reads before starting.
+    /// A pure read gated by the same authority as a worker transition —
     /// returned <b>only</b> for the caller's own task and <b>only</b> while the
     /// caller is that task's incumbent instance (the RegisterServiceAsync gate,
     /// §9 check 14). Anything else returns null, so a zombie or a cross-task
@@ -695,7 +694,7 @@ public sealed class SessionStore(
         {
             var r = await db.Sessions.AsNoTracking().FirstAsync(t => t.Id == caller.Session.Value, ct);
             return new WorkerAssignment(
-                r.Namespace, r.Description, r.Workspace, r.Attempt,
+                r.Namespace, r.Description, r.Attempt,
                 r.WorkerReport, r.InputQuestion, r.InputAnswer);
         }
 
@@ -706,7 +705,7 @@ public sealed class SessionStore(
             return null;
 
         return new WorkerAssignment(
-            row.Namespace, row.Description, row.Workspace, row.Attempt,
+            row.Namespace, row.Description, row.Attempt,
             row.WorkerReport, row.InputQuestion, row.InputAnswer);
     }
 

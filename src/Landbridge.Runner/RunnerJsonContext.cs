@@ -9,7 +9,7 @@ namespace Landbridge.Runner;
 /// vocabulary (commands, events, heartbeat) moved to
 /// <see cref="Landbridge.Contracts.RunnerWire"/> with its own context; config stays
 /// runner-local because landbridged is the only thing that reads it. Snake_case
-/// matches the config's documented shape (<c>work_root</c>, <c>max_concurrent</c>, …).
+/// matches the config's documented shape (<c>work_root</c>, <c>heartbeat_seconds</c>, …).
 /// </summary>
 [JsonSourceGenerationOptions(
     PropertyNamingPolicy = JsonKnownNamingPolicy.SnakeCaseLower,

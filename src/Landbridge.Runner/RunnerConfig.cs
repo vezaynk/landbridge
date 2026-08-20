@@ -283,9 +283,6 @@ public sealed record RunnerConfig(
             if (dto.Spawn is null || dto.Spawn.Count == 0)
                 problems.Add($"profile '{name}' has an empty spawn argv — landbridged needs a command to run (§10)");
 
-            if (dto.MaxConcurrent is { } mc && mc < 1)
-                problems.Add($"profile '{name}' max_concurrent must be >= 1 when set (§10)");
-
             // §12 capture knobs, when present, must be sane: a non-positive cap would
             // truncate every transcript to just the marker, and a negative prune window
             // is meaningless (0 is the documented "disable pruning").
@@ -401,7 +398,6 @@ public sealed record RunnerConfig(
             stop,
             telemetry,
             logs,
-            dto.MaxConcurrent,
             dto.Processes is null
                 ? null
                 : new ProfileProcessesConfig(
@@ -474,7 +470,6 @@ public sealed record ProfileConfig(
     StopConfig Stop,
     TelemetryConfig Telemetry,
     LogsConfig Logs,
-    int? MaxConcurrent,
     ProfileProcessesConfig? Processes = null,
     IReadOnlyDictionary<string, string>? Env = null,
     IReadOnlyList<ProfileFile>? Files = null,

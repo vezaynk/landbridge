@@ -140,7 +140,6 @@ internal sealed class FleetRig(
             // end. Pruning disabled (0) — a rig lives seconds and a sweep would only add
             // nondeterminism.
             new LogsConfig(Capture: true, PruneAfterDays: 0),
-            MaxConcurrent: null,
             // §10: the machine owner's decision, enforced machine-side. Off unless a
             // scenario is about agent-started processes.
             Processes: agentProcesses ? new ProfileProcessesConfig(AgentInitiated: true) : null,
@@ -321,9 +320,7 @@ internal sealed class FleetRig(
     {
         await using var lead = await PlaneProbe.ConnectMcpAsync(new Uri(_baseUrl + "/"), _leadToken, ct);
         return await PlaneProbe.CreateSessionAsync(
-            lead, description,
-            workspace: $"multimachine-{Guid.NewGuid():N}",
-            ct, continues: continues);
+            lead, description, ct, continues: continues);
     }
 
     /// <summary>

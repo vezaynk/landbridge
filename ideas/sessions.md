@@ -168,7 +168,7 @@ rename, recorded here so the rename does not reopen them:
   Lead decides whether the reason was flaky.
 - **A report keeps the process.** `report_result` does not revoke the token or
   clear services. The Lead replies (`LeadMessage`), parks, or closes with
-  `submit_review` (hide; fail is discard, not a retry loop).
+  `stop_session` (hide + park; not a grade of the work).
 - **Review mode trusts the Lead.** The plane will not refuse a Lead accept. Escalate
   when the evidence is a person's to own.
 - **New work is a new session.** A rejected assignment is done. More from the same

@@ -121,7 +121,6 @@ internal static class TestKit
             telemetry ?? new TelemetryConfig(Otel: false, Endpoint: null),
             new LogsConfig(Capture: capture,
                 MaxBytes: maxBytes ?? TranscriptDefaults.MaxBytes, PruneAfterDays: pruneAfterDays),
-            MaxConcurrent: null,
             Processes: null,
             Env: env,
             Files: files,

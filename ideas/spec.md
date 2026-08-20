@@ -6,7 +6,7 @@ Landbridge coordinates AI agents across multiple machines. A human drives a *Lea
 
 Landbridge is the communication, runner, and relay layer. It does not supply models, resell inference, or hold model provider credentials — customers bring their own keys, which live on their own machines and never touch Landbridge infrastructure.
 
-**Coding is the primary use case, not a built-in assumption.** The schema is domain-neutral: Landbridge knows a session has a description and an optional workspace, and nothing about what either contains. The shipped skill bundle is code-oriented because that is where most of the demand is, but repositories, branches, and test suites appear only in guidance — never in the data model.
+**Coding is the primary use case, not a built-in assumption.** The schema is domain-neutral: Landbridge knows a session has a description, and nothing about what it contains. The shipped skill bundle is code-oriented because that is where most of the demand is, but repositories, branches, and test suites appear only in guidance — never in the data model.
 
 Landbridge ships first as a hosted product. Self-hosting comes later.
 
@@ -164,7 +164,7 @@ The control plane is both the OAuth 2.1 authorization server and the resource se
 | Identity | Obtained | Lifetime | Authorizes |
 |---|---|---|---|
 | **Human** | auth code / device flow | session | create Teams, approve permissions, close sessions, dashboard |
-| **Lead** | human session, claimed against a Team | session or until evicted | create tasks, answer questions, **close sessions** (`submit_review`, §7), read Team state, bind its human's machine and open forwards onto it (§8.3) |
+| **Lead** | human session, claimed against a Team | session or until evicted | create tasks, answer questions, **close sessions** (`stop_session`, §7), read Team state, bind its human's machine and open forwards onto it (§8.3) |
 | **Machine** (`landbridged`) | enrollment token → client credentials | long, refreshed | runner channel, log stream, relay tunnels |
 | **Worker** | minted at dispatch | task lifetime | MCP tools, scoped to `{team, task, worker, instance}` |
 
@@ -226,7 +226,7 @@ A session is a durable object. It has no terminal state. Two facts live on the s
 | `idle` | No outstanding envelope. Worker may be cranking (`running`/`running`). |
 | `awaiting_lead` | Prose question, spawn request, auth help. Process may have ended the turn. |
 | `awaiting_permission` | Live ACP wait inside `session/request_permission`. Occupancy stays `running`. `park_session` is refused. Process exit here is a failure. |
-| `awaiting_report` | Worker mailed `report_result`. Process stays. Lead replies, parks, or closes with `submit_review`. |
+| `awaiting_report` | Worker mailed `report_result`. Process stays. Lead replies, parks, or closes with `stop_session`. |
 | `awaiting_pull` | Lead spoke; worker has not pulled `get_session`. |
 
 `hidden=true` is accept, discard, or cancel on a healthy row. Same-id wake of a hidden healthy row is refused. New work is `create_session(continues:)` against a healthy transcript. `hidden` plus `health=failed` still allows same-id retry.
@@ -241,7 +241,7 @@ No row requires reading a task description or interpreting its criteria.
 
 **Two counters, not one.** Verification failures and infrastructure losses are different things. A machine rebooting three times is not a verdict on the work. Infrastructure losses increment `InfrastructureRequeues` and record **why** (`LivenessLossReason`). The plane does not auto-requeue and does not cancel on the cap; `health=failed` waits for the Lead. The cap is per-task, fixed at creation from control-plane config, and is observability. Non-positive means uncapped as a counter.
 
-`submit_review` closes the row (hide + `desired=on_disk`). Accept and discard are Lead or human closes (**never** the session's own worker — doer/judge). Provenance (`lead-session` \| `human`) is recorded. A report is mail, not a gate. More work on the same worker is `answer_input_request`. An unanswered question is `cancel_session`, not `submit_review`.
+`stop_session` closes the row (hide + `desired=on_disk`). It is a Lead or human close (**never** the session's own worker — doer/judge), not a grade of the work. Provenance (`lead-session` \| `human`) is recorded. Default wind-down is 5 minutes, then a kill. A report is mail, not a gate. More work on the same worker is `answer_input_request`. Mid-exchange (a question or a live permission wait) is allowed.
 
 **Two targeting classes.** *Profile targeting* (the default) routes a claimable session to any `ready` machine declaring its `profile`. *Continuation targeting* (`create_session(continues: <session-id>)`) resumes a prior session's harness conversation: the new session is seeded at creation — `continues_session_id` (lineage), the machine that last held/ran it (live lease, preferred machine, or the most recent `worker_instances` row), that session's `harness_session_ref`, and an `on_machine_gone` policy — as affinity, so its *first* dispatch prefers that machine and hands the runner the session ref to resume the transcript (§11), under a **new session id and a freshly minted worker token** (§5). Continuation is **same-Team only**. `profile` is required; a name the preferred machine does not declare is a creation-time error. Continuation from `health=failed` is refused (retry is the same id). If the preferred machine is gone at dispatch, `on_machine_gone` decides: `degrade` (default) cold-starts on any profile-matching machine and records that conversational memory was lost, or `pin` waits for that machine to return. Forking is legal — several continuations of one session each resume the same transcript, and each stamps its own new session ref after its first turn.
 
@@ -253,9 +253,9 @@ No row requires reading a task description or interpreting its criteria.
 
 | Field | Notes |
 |---|---|
-| `completion.provenance` | Set on close: `lead-session` or `human` (§9 check 4). Null until `submit_review`. |
+| `completion.provenance` | Set on close: `lead-session` or `human` (§9 check 4). Null until `stop_session`. |
 | `namespace` | Server-assigned `team-{id}/session-{id}`. Guaranteed unique. What an agent maps it onto is convention. |
-| `workspace` | Optional opaque context the Lead may pass (repo, package, base ref). Shape defined by the skill. Not isolation — the worker stays in `{work_root}/{session_id}`, uses a worktree, and binds a random port. |
+
 | `team_id`, `parent_task` | Lineage. |
 | `expected_duration` | Lead's guess. Distinguishes stuck-short from long-running. |
 | `profile` | Required runner profile name. Exact-match routing; the control plane never interprets it. There is no reserved `default`. |
@@ -266,13 +266,13 @@ No row requires reading a task description or interpreting its criteria.
 
 ### Who closes
 
-The worker does not close the session — and a session's own worker can never `submit_review` (§9 check 4, the doer/judge split, the same shape as a subagent that never accepts its own work). A report is mail, not a close. The plane trusts the Lead. A human session can also close. Close records its provenance (`lead-session` \| `human`). There is no completion mode and no human-confirmation gate: if a judgment is a person's to own, the Lead escalates rather than the plane refusing.
+The worker does not close the session — and a session's own worker can never `stop_session` (§9 check 4, the doer/judge split, the same shape as a subagent that never accepts its own work). A report is mail, not a close. The plane trusts the Lead. A human session can also close. Close records its provenance (`lead-session` \| `human`). There is no completion mode and no human-confirmation gate: if a judgment is a person's to own, the Lead escalates rather than the plane refusing.
 
 The Lead decomposed the work and holds the plan. CI and tests are evidence the Lead gathers itself, not a verdict-issuing actor, and the deterministic-verifier role is deliberately not something Landbridge runs (§15). Reply when you want more; close when you are done with the worker.
 
 ### Workspace and isolation
 
-**The worker isolates itself.** Several sessions share a machine, including several from the same Team. `landbridged` starts each worker in `{work_root}/{session_id}`. The worker writes only there, uses a git worktree for repo work, and binds a random loopback port. The Lead does not assign ports or working directories. `workspace` on the session, if present, is context — which repo, which package — not a lock and not a path the worker is entitled to mutate.
+**The worker isolates itself.** Several sessions share a machine, including several from the same Team. `landbridged` starts each worker in `{work_root}/{session_id}`. The worker writes only there, uses a git worktree for repo work, and binds a random loopback port. The Lead does not assign ports or working directories. Repo, package, and base ref belong in the description.
 
 The general rule: **each concurrent session's mutable state lives under its session directory; anything shared is read-only.**
 
@@ -345,7 +345,7 @@ Two gaps close for that to work:
 
 **A grant is a connection-establishment credential.** It is checked when a tunnel opens; an established splice persists until the owning task leaves `working`. A database session or websocket is never severed mid-flight by grant expiry, and no renewal path needs to exist.
 
-**"Until the owning task leaves `working`" is a bound something has to enforce, and revoking the grant is not it** — a grant gates only the *next* open, so a splice already running has no handle in it. That is what `close-forward{task, forward_id}` is for: the same effect that clears the task's registered services and revokes its grants sends it to both ends' machines, and each cancels that forward — ending an established splice through the ordinary teardown, and closing a consumer listener that never accepted. Without it the bound held only by accident, where the plane happened to kill the worker and the producer's sockets died with it; on `report_result` or `cancel_session`, where nothing is killed, the tunnel simply outlived the task that authorized it. This is the one addition to §10's frozen outbound vocabulary that the section needed, and it is skew-safe in the usual way: a `landbridged` that predates it rejects the envelope and behaves exactly as it does today.
+**"Until the owning task leaves `working`" is a bound something has to enforce, and revoking the grant is not it** — a grant gates only the *next* open, so a splice already running has no handle in it. That is what `close-forward{task, forward_id}` is for: the same effect that clears the task's registered services and revokes its grants sends it to both ends' machines, and each cancels that forward — ending an established splice through the ordinary teardown, and closing a consumer listener that never accepted. Without it the bound held only by accident, where the plane happened to kill the worker and the producer's sockets died with it; on `report_result` the tunnel outlived the task that authorized it until `stop_session` cleared it. This is the one addition to §10's frozen outbound vocabulary that the section needed, and it is skew-safe in the usual way: a `landbridged` that predates it rejects the envelope and behaves exactly as it does today.
 
 Per-Team accounting (§9 check 10): the forward rate limit is enforced at grant mint, and the relay counts the bytes it splices and reports them to the plane over the plane-facing HTTP contract. The counting gates nothing — an established splice is never severed, so there is no byte allowance to breach; §9's as-built note records why.
 
@@ -424,7 +424,7 @@ Bytes kept their own table rather than sitting beside the removed check 9 ceilin
 
 ### Agent → control plane (MCP)
 
-**Lead:** `create_session` · `answer_input_request` · `submit_review` · `cancel_session` · `park_session` (deliberate release of a live ACP session) · `get_team_state` · `get_session_report` · `get_session_question` · `list_profiles` (the routing read: which profiles exist and where they can run, §7) · `bind_machine` · `unbind_machine` · `open_lead_forward` (§8.3 human path)
+**Lead:** `create_session` · `answer_input_request` · `stop_session` · `park_session` (deliberate release of a live ACP session) · `get_team_state` · `get_session_report` · `get_session_question` · `list_profiles` (the routing read: which profiles exist and where they can run, §7) · `bind_machine` · `unbind_machine` · `open_lead_forward` (§8.3 human path)
 **Worker:** `get_session` · `report_result` · `request_input` · `start_process` / `stop_process` / `write_process` (§10) · `register_service` · `open_forward` · `open_preview` (§8.4)
 
 There is no `claim_task`. Workers are dispatched, never claimants (§5, §6) — the first thing a worker does with its minted token is work, and its calls identify it.
@@ -501,7 +501,7 @@ Full schema and a worked Claude Code example: `skills/landbridge-enroll/referenc
 | Section | Covers |
 |---|---|
 | `machine` | `work_root` for per-task scratch directories; back-pressure thresholds |
-| `profiles` | Named configurations; at least one required, none reserved as `default`. Enroll convention: `<harness>-<hostname>-<os>`, plus optional group names like `any-linux`. Each carries `spawn`, `prompt`, `follow_up`, `env`, `files`, `hooks`, `stop`, `telemetry`, `logs`, and an optional `max_concurrent` cap. |
+| `profiles` | Named configurations; at least one required, none reserved as `default`. Enroll convention: `<harness>-<hostname>-<os>`, plus optional group names like `any-linux`. Each carries `spawn`, `prompt`, `follow_up`, `env`, `files`, `hooks`, `stop`, `telemetry`, `logs`. |
 | `profiles[].env` | Per-spawn environment map. Values take the same `{…}` substitutions `spawn` does. Applied after the reserved `LANDBRIDGE_*` stamps and before `telemetry.env`. The four names landbridged owns (`LANDBRIDGE_MACHINE_ID`, `LANDBRIDGE_SESSION_ID`, `LANDBRIDGE_WORKER_TOKEN`, `LANDBRIDGE_TRACEPARENT`) are refused at load. |
 | `profiles[].files` | Files written under `{work_dir}` before spawn. Paths are jailed to the work dir after substitution. Prefer this for additive project-local MCP (Grok merges `{cwd}/.grok/config.toml` with `~/.grok`). |
 | `profiles[].hooks` | Argv hooks, never a shell. `before_spawn` is fail-closed; `after_exit` is best-effort. For a harness whose only MCP surface is a user-global file (Codex). |
@@ -514,7 +514,7 @@ Full schema and a worked Claude Code example: `skills/landbridge-enroll/referenc
 
 **Restart equals reboot here too.** A service is tagged with `LANDBRIDGE_MACHINE_ID` and deliberately **not** `LANDBRIDGE_SESSION_ID`. Both halves are load-bearing: the restart sweep is keyed on machine id, so a restarting `landbridged` reaps the previous generation's services before starting them again — a `SIGKILL`ed daemon cannot leave a port-holding orphan for its successor to collide with — while per-task exit cleanup requires a matching task id, so an ordinary task ending steps over them. No PID registry and no re-adoption: services are restartable, so restarting them is cheaper and more predictable than reasoning about which survivors are still healthy.
 
-**Services are not tasks.** They have no per-task liveness clocks, they do not count toward a profile's `max_concurrent` (that gates task admission), and the load they consume is already observed directly by back-pressure. Their status rides the machine heartbeat (§12); the control plane stores what a machine reports and interprets none of it.
+**Services are not tasks.** They have no per-task liveness clocks, and the load they consume is already observed directly by back-pressure. Their status rides the machine heartbeat (§12); the control plane stores what a machine reports and interprets none of it.
 
 **Declared ports must be unique on a machine, and names are identifiers.** A forward dial is resolved to a service *by port*, so two services claiming one port would make that lookup answer for whichever was found first — and a dial refused on that basis is unexplainable from outside. Both are rejected at config load, naming both offenders. (The port that must be unique is the one a forward could dial: `port` when declared, else the readiness port. A readiness-only port nothing dials is not part of the rule.)
 
@@ -589,7 +589,7 @@ Two smaller as-built notes on the same seam: `subagent-spawned` is in the wire v
 
 **As-built amendment (2026-08-11).** `mapping` also describes one alternative *shape*, not only renamed properties: `tool_event_type` (the `type` value that itself is a tool call) plus `tool_name_path` (a dotted path to the string naming it, comma-separated alternatives tried in order) let a harness that emits one flat event object per tool call — `codex exec`'s `{"type":"item.started","item":{…}}` — produce `tool-call` at all. Before it, the rename-only keys could not reach that shape, and such a worker ran with the no-progress ceiling as its only governor. The frozen vocabulary is untouched: the emitted event is still `tool-call`. Unlike the rename keys, this pair *is* validated at load — a half-declared pair, an unwalkable path, or a `tool_event_type` colliding with the effective `system_type`/`assistant_type` is rejected rather than accepted and left inert. The resolver stays deliberately small (property names split on `.`, must land on a JSON string; no wildcards, indexes, or filters), so a stream that hides its tool calls anywhere else is a code change, not a config one.
 
-`work_root` deserves a note: `landbridged` spawns each task in `{work_root}/{session_id}`. This is *not* the task's workspace — the runner never interprets the opaque `workspace` blob. It is a unique machine-local scratch directory to start in; the agent constructs its real workspace from what the Lead assigned.
+`work_root` deserves a note: `landbridged` spawns each task in `{work_root}/{session_id}`. This is a unique machine-local scratch directory to start in; the agent constructs its real work from the description.
 
 ### Concurrency and back-pressure
 
@@ -598,8 +598,6 @@ Machines do not declare a concurrency limit. A declared number is a guess that i
 Instead `landbridged` observes its own load, memory, and disk, and **stops accepting dispatch when it is under pressure** — resuming when it clears. Derived, not asked for, consistent with principle 2. A saturated machine keeps running what it holds and appears as `back-pressure` in the Machine Group view. (As-built, 2026-08-03: the view renders `ready` / `not ready` / `back-pressure` from two heartbeat booleans; there is no `saturated` label and no machine state enum.)
 
 This exists to break a feedback loop rather than to ration capacity. Without it, a thrashing machine misses heartbeats on every task it holds at once, all of them requeue, and nothing prevents the same machine from immediately being redispatched them. Back-pressure makes overload self-correcting instead of self-reinforcing.
-
-A profile may declare `max_concurrent` for reasons unrelated to load — a licence limit, a rate-limited provider, a restricted posture kept to one at a time.
 
 Liveness splits accordingly:
 
@@ -672,7 +670,7 @@ Both findings are recorded here rather than in a commit message because a future
 
 ### Sessions close; reports do not
 
-There is no verifier webhook and no verifying phase. A worker mails `report_result`; the session stays occupied. The Lead replies, parks, or closes with `submit_review` over MCP (§7, §9 check 4). Closing is hide + occupancy release, not a grade of an artifact. A close against an already-hidden row is refused with the state machine's "gone" rejection, never a silent success. External automated close, where wanted, is a client holding a Lead-class credential posting `submit_review`, not a role Landbridge runs.
+There is no verifier webhook and no verifying phase. A worker mails `report_result`; the session stays occupied. The Lead replies, parks, or closes with `stop_session` over MCP (§7, §9 check 4). Closing is hide + occupancy release, not a grade of an artifact. Default wind-down is 5 minutes. A close against an already-hidden row is refused with the state machine's "gone" rejection, never a silent success. External automated close, where wanted, is a client holding a Lead-class credential posting `stop_session`, not a role Landbridge runs.
 
 ### A2A (external boundary only)
 
@@ -806,7 +804,7 @@ Support access to transcripts is a data access problem.
 
 **Service logs are captured to a separate root.** A supervised service's stdout and stderr go to `<state>/services/<name>/<NNNN>`, outside the transcripts root — not for tidiness, but because the transcript prune sweep deletes any top-level directory whose newest write is older than the retention window. That is safe for a task, which never writes again once terminal, and unsafe for a service: one idle longer than the window would have its **live** log directory unlinked from under an open handle. The write path is otherwise identical, byte cap and truncation marker included, and the service name is validated at config load precisely because it occupies the path slot a task's Guid fills.
 
-**Readable only for terminal tasks, and only by a human.** A transcript is served verbatim (§13), so v1 narrows *when* and *to whom* rather than filtering *what*. When: only `completed`, `rejected`, or `canceled` — a task that can never run again, and whose worker instance token is already revoked. A session with an outstanding report is deliberately excluded: `report_result` does not revoke the reporting instance's token (`submit_review` does), so its transcript can still carry a live, replayable worker credential. To whom: a human operator session (§5) — not a Lead over MCP, and not a Lead token presented to the dashboard's structured-data twin, which is the one route that refuses one. Live tailing of a running task stays a machine-local operation for whoever administers that machine; exposing it, and any agent-facing read, is gated on resolving redaction (§13, §16).
+**Readable only for terminal tasks, and only by a human.** A transcript is served verbatim (§13), so v1 narrows *when* and *to whom* rather than filtering *what*. When: only `completed`, `rejected`, or `canceled` — a task that can never run again, and whose worker instance token is already revoked. A session with an outstanding report is deliberately excluded: `report_result` does not revoke the reporting instance's token (`stop_session` does), so its transcript can still carry a live, replayable worker credential. To whom: a human operator session (§5) — not a Lead over MCP, and not a Lead token presented to the dashboard's structured-data twin, which is the one route that refuses one. Live tailing of a running task stays a machine-local operation for whoever administers that machine; exposing it, and any agent-facing read, is gated on resolving redaction (§13, §16).
 
 Relay traffic is never persisted. Connection metadata is an event; payload is spliced and forgotten.
 
@@ -909,7 +907,7 @@ The failure mode for everything in these is bounded and recoverable. That is the
 - **Client-direct database access or RLS as authorization** — the control plane is the only path to the state machine, and a transition guard is not a row filter
 - **Any domain-specific field in the task schema**
 - **Any version control integration** — Landbridge stores opaque references and never dereferences them
-- **Any built-in verifier or completion gate** — completion is a Lead or human verdict (§7, §9 check 4); an external automated gate holds a Lead-class credential and posts `submit_review`, and Landbridge runs nothing itself
+- **Any built-in verifier or completion gate** — completion is a Lead or human verdict (§7, §9 check 4); an external automated gate holds a Lead-class credential and posts `stop_session`, and Landbridge runs nothing itself
 - Cross-Instance coordination in `landbridge-meta`
 - Agent-facing anything on `landbridge-meta`
 

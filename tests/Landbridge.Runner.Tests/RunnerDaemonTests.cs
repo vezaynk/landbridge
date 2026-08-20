@@ -6,22 +6,19 @@ namespace Landbridge.Runner.Tests;
 
 /// <summary>
 /// Daemon orchestration, spec §10: reboot announcement + stray reaping on
-/// start, back-pressure / max_concurrent gating, heartbeat cadence, and the
+/// start, back-pressure gating, heartbeat cadence, and the
 /// closed-vocabulary command dispatch. Uses fakes so the logic is exercised
 /// without real processes (those are covered by ProcessSupervisorTests).
 /// </summary>
 public class RunnerDaemonTests
 {
-    private static RunnerConfig Config(int? maxConcurrent = null, double heartbeatSeconds = 5)
-    {
-        var cap = maxConcurrent is { } m ? $", \"max_concurrent\": {m}" : "";
-        return RunnerConfig.Load($$"""
+    private static RunnerConfig Config(double heartbeatSeconds = 5) =>
+        RunnerConfig.Load($$"""
         {
           "machine": { "work_root": "/tmp/landbridged-fake", "heartbeat_seconds": {{heartbeatSeconds}} },
-          "profiles": [ { "name": "default", "prompt": "go", "spawn": ["noop"]{{cap}} } ]
+          "profiles": [ { "name": "default", "prompt": "go", "spawn": ["noop"] } ]
         }
         """);
-    }
 
     private sealed class Harness
     {
@@ -229,22 +226,6 @@ public class RunnerDaemonTests
         var refused = Assert.IsType<CommandOutcome.Refused>(outcome);
         Assert.Equal(RefuseReason.BackPressure, refused.Reason);
         Assert.Empty(h.Supervisor.Spawned);
-
-        await h.Daemon.ShutdownAsync();
-    }
-
-    [Fact]
-    public async Task It_enforces_a_profile_max_concurrent_cap()
-    {
-        var h = Build(Config(maxConcurrent: 1));
-
-        var first = await h.Daemon.HandleAsync(TestKit.Dispatch(SessionId.New()));
-        var second = await h.Daemon.HandleAsync(TestKit.Dispatch(SessionId.New()));
-
-        Assert.IsType<CommandOutcome.Accepted>(first);
-        var refused = Assert.IsType<CommandOutcome.Refused>(second);
-        Assert.Equal(RefuseReason.MaxConcurrent, refused.Reason);
-        Assert.Single(h.Supervisor.Spawned);
 
         await h.Daemon.ShutdownAsync();
     }

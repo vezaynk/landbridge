@@ -142,7 +142,7 @@ public static class Program
         using var setupCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
         setupCts.CancelAfter(TimeSpan.FromSeconds(60));
 
-        // ── Learn the assignment (§7): namespace, description, criteria, workspace, attempt.
+        // ── Learn the assignment (§7): namespace, description, attempt.
         var assignment = await client.CallToolAsync(
             "get_session", new Dictionary<string, object?>(), cancellationToken: setupCts.Token);
         if (assignment.IsError == true)

@@ -14,7 +14,7 @@ public sealed class PermissionPolicyTests
     [InlineData("landbridge: get_session")]
     [InlineData("Landbridge: Open Forward")]
     [InlineData("landbridge:report_result")]
-    [InlineData("landbridge__submit_review")]
+    [InlineData("landbridge__stop_session")]
     [InlineData("landbridge__get_team_state")]
     [InlineData("mcp__landbridge__open_forward")]
     public void Protocol_and_runtime_tools_auto_allow(string tool)

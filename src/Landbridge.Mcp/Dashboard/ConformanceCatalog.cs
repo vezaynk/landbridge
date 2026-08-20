@@ -6,14 +6,11 @@ namespace Landbridge.Mcp.Dashboard;
 /// The fixed dummy-task set a new profile is asked to complete. The plane never
 /// judges the answers (§2 principle 1 / §7); these texts exist so a real worker
 /// following the worker skill can finish without a human, and so the progress
-/// view can label each task by kind. Kind is stored on the task's
-/// opaque <c>workspace</c> as <c>conformance/{kind}</c> — context, not
-/// something dispatch interprets.
+/// view can label each task by kind. Kind is named in the description
+/// as <c>(kind: identity)</c> — context, not something dispatch interprets.
 /// </summary>
 internal static class ConformanceCatalog
 {
-    public const string WorkspacePrefix = "conformance/";
-
     public static readonly IReadOnlyList<string> Kinds = ["identity", "write", "shell"];
 
     public static IReadOnlyList<ConformanceSessionSpec> For(Guid runId)
@@ -36,13 +33,21 @@ internal static class ConformanceCatalog
         ];
     }
 
-    public static string WorkspaceOf(string kind) => WorkspacePrefix + kind;
-
-    public static string? KindOf(string? workspace) =>
-        workspace is not null
-        && workspace.StartsWith(WorkspacePrefix, StringComparison.Ordinal)
-            ? workspace[WorkspacePrefix.Length..]
-            : null;
+    public static string? KindOf(string? description)
+    {
+        if (description is null)
+            return null;
+        const string marker = "(kind: ";
+        var start = description.IndexOf(marker, StringComparison.Ordinal);
+        if (start < 0)
+            return null;
+        start += marker.Length;
+        var end = description.IndexOf(')', start);
+        if (end < 0)
+            return null;
+        var kind = description[start..end].Trim();
+        return kind.Length == 0 ? null : kind;
+    }
 
     public static string Bucket(SessionState state, MessageState message = MessageState.Idle) =>
         state switch

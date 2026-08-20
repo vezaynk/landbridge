@@ -32,7 +32,6 @@ one shape and an entry point per harness.
 | `profiles[]` | `hooks` | Argv hooks, **never a shell** (§10). `before_spawn` runs after `files[]` and before `Process.Start`; non-zero or timeout (10s) is fail-closed (`spawn_failed`). `after_exit` is best-effort after the worker's `exited` and stray reap, skipped for superseded instances. Hook processes get `LANDBRIDGE_MACHINE_ID`, `LANDBRIDGE_HOOK`, and the same `profiles[].env` map the worker does (minus reserved `LANDBRIDGE_*`), not `LANDBRIDGE_SESSION_ID` / `LANDBRIDGE_WORKER_TOKEN`. Use only when the harness will not read a project-local file (Codex / `CODEX_HOME`). |
 | `profiles[]` | `telemetry` | `otel` bool (opt-in, default **false**), `endpoint` (OTLP destination; falls back to the one landbridged inherited), and `env` (a string map of harness-specific variables, applied verbatim). When on, landbridged sets the vendor-neutral `OTEL_*` exporter variables and appends `landbridge.session_id`/`landbridge.machine_id` to `OTEL_RESOURCE_ATTRIBUTES`, so the harness's own token/cost telemetry is attributable per task (§10). `otel: true` with **no endpoint configured and none inherited sets nothing at all** and warns once — telemetry is never enabled without a destination. Claude Code additionally needs `"env": { "CLAUDE_CODE_ENABLE_TELEMETRY": "1" }` (its own flag is data, since landbridged holds no harness knowledge). **Visibility only**: Landbridge ingests none of it and enforces no ceiling — see [docs/TELEMETRY.md](../../../docs/TELEMETRY.md). |
 | `profiles[]` | `logs` | §12 machine-local transcript capture: `capture` (bool, default **false**), `max_bytes` (per-stream cap, default 50 MiB), `prune_after_days` (local hygiene, default 7, `0` disables). There is no `format` or `path`: both were read by nothing and have been removed, and a config still carrying either is accepted unchanged — see [Transcript capture](#transcript-capture-12) below. |
-| `profiles[]` | `max_concurrent` | Optional hard cap for a licence/rate/posture reason, unrelated to load (§10). |
 | `profiles[]` | `processes` | §10 agent-started **processes**: `agent_initiated` (bool, default **false**) and `max` (default 8). Named `processes`, not `services` — they are different things (§10). Whether a task on this profile may call `start_process`, and how many the machine may hold. |
 | `services[]` | — | Optional: long-lived processes `landbridged` supervises as its own children. See [Operator-declared services](#operator-declared-services-10) below. |
 
@@ -128,7 +127,7 @@ and last exit code ride the machine heartbeat to the §12 Machine Group view. Th
 *contents* stay on the machine — serving them would be live tailing, which §16 open
 question 8 defers. Read them on the box, under the state dir.
 
-Services are not tasks: they never count toward `max_concurrent`, and the load they
+Services are not tasks: they do not occupy a session seat, and the load they
 consume is already visible to back-pressure. And they need a profile permissive enough to
 be useful alongside — see the archetypes below.
 

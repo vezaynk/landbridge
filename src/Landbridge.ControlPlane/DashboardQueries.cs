@@ -625,7 +625,7 @@ public sealed class DashboardQueries(LandbridgeDbContext db, RunnerConnectionReg
             .Where(t => t.TeamId == runId)
             .OrderBy(t => t.Id)
             .Select(t => new ConformanceSessionRow(
-                t.Id, t.State, t.MessageState, t.Attempt, t.Workspace, t.Profile,
+                t.Id, t.State, t.MessageState, t.Attempt, t.Description, t.Profile,
                 t.ResultReference, t.LastRequeueReason))
             .ToListAsync(ct);
     }
@@ -662,7 +662,7 @@ public sealed record MachineSessionView(Guid SessionId, Guid TeamId, string Name
 
 /// <summary>One dummy task in an operator profile-check run.</summary>
 public sealed record ConformanceSessionRow(
-    Guid Id, SessionState State, MessageState MessageState, int Attempt, string? Workspace, string? Profile,
+    Guid Id, SessionState State, MessageState MessageState, int Attempt, string Description, string? Profile,
     string? ResultReference, LivenessLossReason? LastRequeueReason);
 
 /// <summary>One Team's one-line overview for the sorted Team list (§12).</summary>

@@ -120,7 +120,7 @@ There is no slot count. A declared limit is a guess that is wrong in both direct
 
 One caveat to pass on: where `landbridged` cannot observe CPU on the platform, `max_cpu_load` is inert and memory and disk carry the whole signal alone. It says so on its startup line, so read that rather than assuming all three are live.
 
-If a profile needs a hard cap for reasons unrelated to load — a licence limit, a rate-limited provider, a restricted posture you want singular — that is `max_concurrent` on the profile, not a machine setting.
+There is no `max_concurrent`. Seat count is load, not a declared slot.
 
 ## Progress comes from the protocol
 
@@ -170,11 +170,11 @@ The failures worth naming, and what each really looks like:
 - **The worker cannot authenticate to the plane.** Do not wait for an `auth-failed` event. The plane can record one, but `landbridged` never emits one, so none will arrive. A rejected worker token appears as a 401 inside the harness's own output and `report_result` simply never lands — the transcript again.
 - **`health=failed` after one attempt.** The plane does not requeue. Handshake flakes, spawn failures, and dead processes land as `health=failed` with a plane-authored reason and wait for the Lead. If you see `Attempt` climbing, a Lead is retrying those failures on purpose — read the last reason, not the count.
 
-**Then test the kill path on that same profile, and do not skip it because dispatch worked.** Have the human cancel the session mid-flight (`cancel_session`, disposition `preserve`) and confirm the process is actually gone — that is the assertion that matters, and spawn differs per profile, so a stop that worked on `any-linux` is not evidence for `goose-devbox-linux`. A machine that dispatches but cannot be stopped looks fine right up until someone needs to stop a runaway agent — the worst possible moment to find out. When you are done, `park_session` or accept anything still `awaiting_report` — a report keeps the process.
+**Then test the kill path on that same profile, and do not skip it because dispatch worked.** Have the human stop the session mid-flight (`stop_session`) and confirm the process is actually gone — that is the assertion that matters, and spawn differs per profile, so a stop that worked on `any-linux` is not evidence for `goose-devbox-linux`. A machine that dispatches but cannot be stopped looks fine right up until someone needs to stop a runaway agent — the worst possible moment to find out. When you are done, `park_session` or `stop_session` anything still `awaiting_report` — a report keeps the process until you stop it.
 
 **What to expect from stop.** A stop is `session/cancel` plus the wind-down deadline. The runner reports that the cancel was *sent*, never that the agent obeyed it (cancel is a notification with no reply). Confirm the process is gone after the deadline. There is no `stop.mode` to choose.
 
-Two things you cannot verify by hand, so do not claim them either way: whether the runner refused a dispatch (it computes `BackPressure` / `UnknownProfile` / `MaxConcurrent` refusals and then discards them — never sent upstream, never logged), and whether events were dropped under load (the outbound ring counts the gap, but the wire has no field to carry it).
+Two things you cannot verify by hand, so do not claim them either way: whether the runner refused a dispatch (it computes `BackPressure` / `UnknownProfile` refusals and then discards them — never sent upstream, never logged), and whether events were dropped under load (the outbound ring counts the gap, but the wire has no field to carry it).
 
 **Failures here are configuration bugs, and they are worth fixing carefully rather than working around.** Fix the config, restart `landbridged`, and run the check again — remembering that a restart kills every agent on this machine, and that the file is not re-read in place.
 
