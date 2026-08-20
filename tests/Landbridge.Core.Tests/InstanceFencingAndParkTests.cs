@@ -281,7 +281,7 @@ public class InstanceFencingAndParkTests
             var result = SessionStateMachine.Apply(
                 Given.Session(state),
                 new Cancel(Given.Lead, CancelDisposition.Preserve));
-            Expect.Transitioned(result, SessionState.Canceled);
+            Expect.Transitioned(result, SessionState.Completed);
         }
     }
 }

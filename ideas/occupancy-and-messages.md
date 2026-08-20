@@ -74,7 +74,7 @@ What it did not do is stop calling those facts a single enum.
 **Non-goals**
 
 - MCP Tasks as a session or message machine.
-- Renaming `report_result` or `submit_review`.
+- Renaming `report_result`.
 - Changing pull-is-receipt (answers still never ride spawn argv or `PromptCommand`).
 - Auto-requeue, auto-merge (`--merge` / `--rebase`; squash only, N/A except PR plan).
 - ACP protocol 2, generated ACP clients, ACP-shaped MCP tools.
@@ -106,7 +106,7 @@ Do not violate. Restated here because several are easy to break while splitting 
 - Spend is observability plus the operator's provider key limits.
 - ACP client stays hand-rolled; protocol 1 only.
 - No ACP-shaped MCP tools.
-- Do not rename `report_result` / `submit_review`.
+- Do not rename `report_result`. Close is `stop_session` (was `submit_review` / `cancel_session`).
 - Do not change pull-is-receipt.
 
 ---

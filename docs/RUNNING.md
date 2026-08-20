@@ -253,7 +253,7 @@ The Aspire loop generates the same shape per box (see
 [`src/Landbridge.AppHost/DevBoxConfig.cs`](../src/Landbridge.AppHost/DevBoxConfig.cs)).
 
 `machine`: `work_root` (per-task scratch dirs — `landbridged` spawns each task in
-`{work_root}/{session_id}`, which is *not* the workspace), `heartbeat_seconds`
+`{work_root}/{session_id}`), `heartbeat_seconds`
 (default 15s), and `back_pressure` thresholds (`max_cpu_load` / `max_memory_load`
 / `max_disk_usage` in `[0,1]`).
 
@@ -262,7 +262,7 @@ opening `session/prompt`), optional `follow_up`, `auth_method` (required if the 
 demands ACP authenticate; unset is a fail, not a guess),
 optional `config_options` (ACP `session/set_config_option` pins; skipped unless
 the agent advertised that `configId` and value), `stop.wind_down_seconds`,
-`telemetry`, `logs`, an optional `max_concurrent`, and an optional `processes`
+`telemetry`, `logs`, and an optional `processes`
 block. There is no `stdin`, `resume`, `events`, or `protocol` key.
 
 - **stdin** is the JSON-RPC pipe. `landbridged` holds the write end for the task's
@@ -610,9 +610,9 @@ Flags: `--config <path>` (required for a normal run), `--machine-id <id>`,
 ### Closing a session
 
 There is no verifier process. A worker mails `report_result`; the session stays
-occupied. A Lead (or a human) closes it with `submit_review` over MCP (§7, §9
-check 4) when they are done with that worker. A session's own worker can never
-close it.
+occupied. A Lead (or a human) closes it with `stop_session` over MCP (§7, §9
+check 4) when they are done with that worker. Default wind-down is 5 minutes,
+then a kill. A session's own worker can never close it.
 
 ## Running the tests
 

@@ -21,8 +21,7 @@ public class RunnerConfigTests
             "endpoint": "http://127.0.0.1:4318",
             "env": { "CLAUDE_CODE_ENABLE_TELEMETRY": "1" }
           },
-          "logs": { "format": "stream-json", "capture": true, "max_bytes": 1048576, "prune_after_days": 3 },
-          "max_concurrent": 3
+          "logs": { "format": "stream-json", "capture": true, "max_bytes": 1048576, "prune_after_days": 3 }
         },
         {
           "name": "restricted",
@@ -44,7 +43,6 @@ public class RunnerConfigTests
 
         Assert.Equal(2, config.Profiles.Count);
         Assert.Equal(TimeSpan.FromSeconds(20), config.Profiles["default"].Stop.WindDown);
-        Assert.Equal(3, config.Profiles["default"].MaxConcurrent);
         Assert.Equal("Do the task.", config.Profiles["default"].Prompt);
 
         Assert.Same(config.Profiles["default"], config.Resolve("default"));
@@ -217,7 +215,6 @@ public class RunnerConfigTests
         Assert.Equal(TimeSpan.FromSeconds(15), config.Machine.HeartbeatInterval);
         Assert.Equal(BackPressureThresholds.Default, config.Machine.BackPressure);
         Assert.Equal(TimeSpan.FromSeconds(30), config.Profiles["default"].Stop.WindDown);
-        Assert.Null(config.Profiles["default"].MaxConcurrent);
         Assert.Empty(config.Profiles["default"].Env);
         Assert.Empty(config.Profiles["default"].Files);
         Assert.Empty(config.Profiles["default"].ConfigOptions);

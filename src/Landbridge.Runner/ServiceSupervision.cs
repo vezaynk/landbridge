@@ -59,8 +59,7 @@ public abstract record ProcessOutcome
 /// and more predictable than reasoning about which survivors are still healthy.</para>
 ///
 /// <para>Services are not tasks. They have no per-task liveness clocks, they do not
-/// count toward <see cref="ProcessSupervisor.RunningTotal"/> or a profile's
-/// <c>max_concurrent</c> (those gate task admission), and they consume load that
+/// count toward <see cref="ProcessSupervisor.RunningTotal"/>, and they consume load that
 /// back-pressure already observes directly.</para>
 /// </summary>
 public sealed class ServiceSupervisor : IAsyncDisposable

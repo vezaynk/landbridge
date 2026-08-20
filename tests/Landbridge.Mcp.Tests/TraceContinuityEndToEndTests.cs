@@ -93,7 +93,6 @@ public sealed class TraceContinuityEndToEndTests(PostgresFixture pg, ITestOutput
             {
                 ["description"] = "trace me end to end",
                 ["profile"] = "default",
-                ["workspace"] = "git:repo@main#trace",
             }, cancellationToken: ct);
             Assert.NotEqual(true, created.IsError);
             sessionId = new SessionId(Guid.Parse(Assert.Single(created.Content.OfType<TextContentBlock>()).Text));
@@ -111,7 +110,6 @@ public sealed class TraceContinuityEndToEndTests(PostgresFixture pg, ITestOutput
             new StopConfig(WindDown: TimeSpan.FromSeconds(30)),
             new TelemetryConfig(Otel: false, Endpoint: null),
             new LogsConfig(),
-            MaxConcurrent: null,
             Prompt: "Do the task.",
             FollowUp: "There is new input on your assignment. Read it, then continue.");
 

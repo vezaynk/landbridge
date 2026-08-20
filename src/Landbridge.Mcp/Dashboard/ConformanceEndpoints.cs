@@ -57,8 +57,7 @@ internal static class ConformanceEndpoints
             {
                 var result = await store.CreateAsync(
                     new CreateSession(
-                        lead, runId, spec.Description, profile,
-                        Workspace: ConformanceCatalog.WorkspaceOf(spec.Kind)),
+                        lead, runId, spec.Description, profile),
                     ct);
                 if (result is not StoreResult.Applied applied)
                     return Results.Json(new { error = "failed to create a dummy session", detail = result.ToString() },

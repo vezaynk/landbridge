@@ -50,16 +50,14 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         Skip.IfNot(pg.Available, pg.SkipReason);
         var tools = LeadFor(new Principal.Lead(Team));
 
-        var idText = await tools.CreateSession("build the thing", "default", "ws:main", CancellationToken.None);
+        var idText = await tools.CreateSession("build the thing", "default", CancellationToken.None);
 
         var id = Guid.Parse(idText);
         await using var v = pg.NewContext();
         var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id);
         Assert.Equal(SessionState.Submitted, row.State);
         Assert.Equal(Team.Value, row.TeamId);
-        // Description/workspace are persisted verbatim as opaque content (§7).
         Assert.Equal("build the thing", row.Description);
-        Assert.Equal("ws:main", row.Workspace);
     }
 
     [SkippableFact]
@@ -71,7 +69,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         // The description is the worker's instructions; the tool refuses an empty
         // one before the command ever reaches the store.
         var ex = await Assert.ThrowsAsync<McpException>(
-            () => tools.CreateSession("   ", "default", null, CancellationToken.None));
+            () => tools.CreateSession("   ", "default", CancellationToken.None));
         Assert.Contains("description", ex.Message);
     }
 
@@ -82,18 +80,18 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         var tools = LeadFor(new Principal.Lead(Team));
 
         var ex = await Assert.ThrowsAsync<McpException>(
-            () => tools.CreateSession("build the thing", "   ", null, CancellationToken.None));
+            () => tools.CreateSession("build the thing", "   ", CancellationToken.None));
         Assert.Contains("profile", ex.Message);
     }
 
     [SkippableFact]
-    public async Task Submit_review_completes_and_records_lead_provenance()
+    public async Task Stop_session_completes_and_records_lead_provenance()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var sessionId = await SeedTaskWithReport();
         var tools = LeadFor(new Principal.Lead(Team));
 
-        var ok = await tools.SubmitReview(sessionId.ToString(), "accept", CancellationToken.None);
+        var ok = await tools.StopSession(sessionId.ToString(), CancellationToken.None);
         Assert.Contains("Completed", ok);
 
         await using var v = pg.NewContext();
@@ -107,8 +105,8 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var tools = LeadFor(new Principal.Lead(Team));
-        await tools.CreateSession("first", "default", null, CancellationToken.None);
-        await tools.CreateSession("second", "default", null, CancellationToken.None);
+        await tools.CreateSession("first", "default", CancellationToken.None);
+        await tools.CreateSession("second", "default", CancellationToken.None);
 
         var view = await tools.GetTeamState(CancellationToken.None);
 
@@ -158,15 +156,15 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task Cancel_task_via_the_tool_moves_it_to_canceled()
+    public async Task Stop_session_via_the_tool_hides_the_row()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var tools = LeadFor(new Principal.Lead(Team));
-        var idText = await tools.CreateSession("build the thing", "default", null, CancellationToken.None);
+        var idText = await tools.CreateSession("build the thing", "default", CancellationToken.None);
 
-        var msg = await tools.CancelTask(idText, "preserve", CancellationToken.None);
+        var msg = await tools.StopSession(idText, CancellationToken.None);
 
-        Assert.Contains("Canceled", msg);
+        Assert.Contains("Completed", msg);
     }
 
     [SkippableFact]
@@ -301,7 +299,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
 
         // §4: not a bare authorization error — the reason names who and when.
         var ex = await Assert.ThrowsAsync<McpException>(
-            () => tools.CreateSession("build the thing", "default", null, CancellationToken.None));
+            () => tools.CreateSession("build the thing", "default", CancellationToken.None));
         Assert.Contains("taken over", ex.Message);
         Assert.Contains(evictedBy.ToString("N"), ex.Message);
 
@@ -317,7 +315,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         var tools = LeadFor(worker);
 
         await Assert.ThrowsAsync<McpException>(
-            () => tools.CreateSession("build the thing", "default", null, CancellationToken.None));
+            () => tools.CreateSession("build the thing", "default", CancellationToken.None));
     }
 
     [SkippableFact]

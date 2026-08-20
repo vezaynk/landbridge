@@ -71,7 +71,7 @@ internal static class DashboardJsonReads
             }
             var profile = rows[0].Profile ?? "";
             var tasks = rows.Select(r => new ConformanceSessionView(
-                r.Id, ConformanceCatalog.KindOf(r.Workspace) ?? "unknown",
+                r.Id, ConformanceCatalog.KindOf(r.Description) ?? "unknown",
                 r.State, r.Attempt, r.ResultReference, r.LastRequeueReason?.ToString(),
                 r.MessageState)).ToList();
             var machines = new List<string>();

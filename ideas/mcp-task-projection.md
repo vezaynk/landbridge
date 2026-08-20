@@ -20,15 +20,15 @@ This is not a `tools/call` wrapper and not the C# SDK `IMcpTaskStore`.
 | `awaiting_lead` / `awaiting_permission` / `awaiting_report` | `input_required` |
 | `awaiting_pull` | `working` |
 | closed by pull receipt, permission verdict, or accept/discard | `completed` |
-| closed by `cancel_session` or a `health=failed` retry that drops the wait | `cancelled` |
+| closed by `stop_session` or a `health=failed` retry that drops the wait | `cancelled` |
 
 Idle with no `last_message_id` means there is no task to get. Mechanical `health=failed` does not close the envelope.
 
 ## Methods
 
 - `tasks/get` / `tasks/list` — Lead only, Team-scoped. Live `message_id` plus the last closed envelope per session.
-- `tasks/cancel` is refused: closing an envelope is answering, reviewing, or `cancel_session`.
-- `tasks/update` and `tasks/result` are not implemented. Answers stay `answer_input_request` / `answer_permission_request` / `submit_review`.
+- `tasks/cancel` is refused: closing an envelope is answering or `stop_session`.
+- `tasks/update` and `tasks/result` are not implemented. Answers stay `answer_input_request` / `answer_permission_request` / `stop_session`.
 - Polling is the MCP Tasks subscription. `notifications/tasks/status` is not wired. Lead wake is `watch_lead_inbox` / HTTP SSE at `/lead/inbox/events` (`ideas/lead-inbox-sse.md`), not this projection.
 
 `ttl` is null. `pollInterval` is 5000.

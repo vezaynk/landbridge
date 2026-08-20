@@ -26,17 +26,14 @@ public enum RefuseReason
     /// <summary>Under load/mem/disk pressure — stop accepting dispatch (§10).</summary>
     BackPressure,
 
-    /// <summary>The profile's optional <c>max_concurrent</c> cap is reached (§10).</summary>
-    MaxConcurrent,
-
     /// <summary>No such profile is declared — the task is not routable here (§7, §9 check 5).</summary>
     UnknownProfile,
 }
 
 /// <summary>
 /// Ties the runner together, spec §10. On start it reaps strays and announces
-/// <c>rebooted</c>; while running it gates dispatch on back-pressure and any
-/// <c>max_concurrent</c> cap, drains the outbound ring to the control-plane
+/// <c>rebooted</c>; while running it gates dispatch on back-pressure,
+/// drains the outbound ring to the control-plane
 /// channel, and beats a machine heartbeat on its own <see cref="TimeProvider"/>
 /// timer. On shutdown it kills everything it started. It holds no persistent
 /// state — a restart is a reboot (§10 runner restart).
@@ -424,13 +421,6 @@ public sealed class RunnerDaemon
             var unknown = $"no profile '{dispatch.Profile}' declared";
             _log?.Invoke($"dispatch {dispatch.Session} refused: {unknown}");
             return new CommandOutcome.Refused(RefuseReason.UnknownProfile, unknown);
-        }
-
-        if (profile.MaxConcurrent is { } cap && _supervisor.RunningFor(profile.Name) >= cap)
-        {
-            var atCap = $"profile '{profile.Name}' at max_concurrent {cap}";
-            _log?.Invoke($"dispatch {dispatch.Session} refused: {atCap}");
-            return new CommandOutcome.Refused(RefuseReason.MaxConcurrent, atCap);
         }
 
         var task = _supervisor.Spawn(dispatch, profile, _machineId);

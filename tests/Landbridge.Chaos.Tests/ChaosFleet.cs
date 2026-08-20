@@ -300,9 +300,7 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     {
         await using var lead = await ConnectLeadAsync(ct);
         var task = await PlaneProbe.CreateSessionAsync(
-            lead, description,
-            workspace: $"chaos-{Guid.NewGuid():N}",
-            ct, profile: profile ?? "default");
+            lead, description, ct, profile: profile ?? "default");
         Note($"created task {task} profile={profile ?? "default"}");
         return task;
     }

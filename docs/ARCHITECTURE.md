@@ -12,7 +12,7 @@ One control plane per Instance, many machines, an optional relay, and a
 dashboard. Everything an agent touches goes through the control plane's MCP
 surface; everything a machine does goes through `landbridged`. `landbridged` only ever
 dials *out*, so it works behind NAT with no inbound firewall rule. A worker mails
-`report_result`; the Lead closes the session with `submit_review` when they are done
+`report_result`; the Lead closes the session with `stop_session` when they are done
 with that worker (§7, §9 check 4) — there is no verifier process.
 
 ```
@@ -104,7 +104,7 @@ instantly — `TokenService` stores only a SHA-256 hash and validates by lookup:
 | Identity | Token prefix | Obtained | Authorizes |
 |---|---|---|---|
 | Human | `lbr_h_` | OAuth code flow / operator passphrase | create Teams, confirm verdicts, dashboard |
-| Lead | `lbr_l_` | claimed against a Team under a human session | create tasks, answer, close sessions (`submit_review`), read Team state |
+| Lead | `lbr_l_` | claimed against a Team under a human session | create tasks, answer, close sessions (`stop_session`), read Team state |
 | Machine (`landbridged`) | `lbr_m_` / `lbr_r_` | enrollment token → client credentials | runner channel |
 | Worker | `lbr_w_` | **minted at dispatch** | MCP worker tools, scoped to `{team, task, worker, instance}` |
 
@@ -162,7 +162,7 @@ to a host-sealed secret (TPM, keychain) is a tracked follow-up, not built.
 
 A session is a durable row. Occupancy is `desired`/`observed` (`none | on_disk | running`).
 The outstanding envelope is `idle | awaiting_lead | awaiting_permission | awaiting_report | awaiting_pull`.
-`report_result` is mail (`awaiting_report`); occupancy stays running. `submit_review` closes the row
+`report_result` is mail (`awaiting_report`); occupancy stays running. `stop_session` closes the row
 (hide + `desired=on_disk`). Derived `SessionState` is a compatibility view, not the source of truth.
 
 Two counters, not one (`SessionRecord.InfrastructureRequeues` vs

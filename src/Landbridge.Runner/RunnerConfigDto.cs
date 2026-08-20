@@ -98,7 +98,6 @@ internal sealed class ProfileDto
     public StopDto? Stop { get; set; }
     public TelemetryDto? Telemetry { get; set; }
     public LogsDto? Logs { get; set; }
-    public int? MaxConcurrent { get; set; }
 
     // §10 agent-started processes: whether a task on this profile may call start_process, and
     // how many the machine may hold. Off by default — enabling it is the machine owner's

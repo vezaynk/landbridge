@@ -99,7 +99,6 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
             new StopConfig(WindDown: TimeSpan.FromSeconds(30)),
             new TelemetryConfig(Otel: false, Endpoint: null),
             new LogsConfig(),
-            MaxConcurrent: null,
             Prompt: "Do the task.",
             FollowUp: "There is new input on your assignment. Read it, then continue.");
 
@@ -255,7 +254,6 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
         {
             ["description"] = description,
             ["profile"] = "default",
-            ["workspace"] = "relay-fleet-e2e",
         }, cancellationToken: ct);
         Assert.NotEqual(true, created.IsError);
         return new SessionId(Guid.Parse(Assert.Single(created.Content.OfType<TextContentBlock>()).Text));

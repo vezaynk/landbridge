@@ -35,7 +35,7 @@ public readonly record struct ForwardTeardown(SessionId Producer, string Forward
 /// else — revoking it stops the next tunnel and says nothing to a splice already running.
 /// Where the plane killed the worker the splice ended by accident (the tree-kill takes the
 /// producer's sockets with it, so the tunnels die by RST); where nothing was killed —
-/// <c>report_result</c>, <c>cancel_session</c> — the splice and the consumer end's idle
+/// <c>report_result</c>, <c>stop_session</c> — the splice and the consumer end's idle
 /// loopback listener outlived the task that authorized them. This is the command that
 /// makes the spec's bound true rather than incidental.</para>
 ///

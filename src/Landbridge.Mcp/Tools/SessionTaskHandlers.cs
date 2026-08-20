@@ -13,8 +13,7 @@ namespace Landbridge.Mcp.Tools;
 
 /// <summary>
 /// MCP Tasks methods projected off the message envelope. Lead-only.
-/// Closing an envelope is answering, reviewing, or <c>cancel_session</c> —
-/// not <c>tasks/cancel</c>.
+/// Closing an envelope is answering or <c>stop_session</c> — not <c>tasks/cancel</c>.
 /// </summary>
 public sealed class SessionTaskHandlers(SessionStore store, IHttpContextAccessor http)
 {
@@ -55,7 +54,7 @@ public sealed class SessionTaskHandlers(SessionStore store, IHttpContextAccessor
         _ = ct;
         RequireLead();
         throw new McpProtocolException(
-            "tasks/cancel does not close a session; answer, submit_review, or cancel_session",
+            "tasks/cancel does not close a session; answer or stop_session",
             McpErrorCode.InvalidParams);
     }
 

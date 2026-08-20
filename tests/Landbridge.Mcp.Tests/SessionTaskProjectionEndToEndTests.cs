@@ -65,7 +65,7 @@ public sealed class SessionTaskProjectionEndToEndTests(PostgresFixture pg) : IAs
 
         var cancel = await Assert.ThrowsAsync<McpProtocolException>(() => CancelTaskAsync(lead, sessionId, ct));
         Assert.Equal(McpErrorCode.InvalidParams, cancel.ErrorCode);
-        Assert.Contains("cancel_session", cancel.Message, StringComparison.Ordinal);
+        Assert.Contains("stop_session", cancel.Message, StringComparison.Ordinal);
 
         await app.StopAsync(ct);
     }

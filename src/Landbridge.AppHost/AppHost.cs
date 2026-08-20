@@ -295,7 +295,7 @@ foreach (var harness in devHarnesses)
         });
 }
 
-// A worker mails report_result; a Lead's submit_review closes the session (§7, §9
+// A worker mails report_result; a Lead's stop_session closes the session (§7, §9
 // check 4). There is no separate verifier resource in the loop. CI and tests are
 // evidence a Lead gathers itself, not a verdict actor.
 

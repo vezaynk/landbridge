@@ -105,7 +105,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         await using var db = pg.NewContext();
         var store = NewStore(db);
         var created = (StoreResult.Applied)await store.CreateAsync(
-            new CreateSession(Lead, Team, "ship the login form", "default", Workspace: "not a message"));
+            new CreateSession(Lead, Team, "ship the login form", "default"));
         var id = created.Session.Id;
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(Machine(), instance);

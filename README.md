@@ -26,7 +26,7 @@ enforces state transitions — while being substantial in _role_:
 preview frontend publishes a worker's HTTP port as a shareable URL.
 
 The session schema is domain-neutral. Landbridge knows a session has a
-description and an optional workspace, and nothing about what either contains.
+description, and nothing about what it contains.
 Coding is the primary use case, but repositories, branches, and test suites
 appear only in the shipped skill guidance, never in the data model.
 
@@ -75,7 +75,7 @@ One command brings up the full Lead → plane → runner → worker loop:
 `landbridge-meta` is **not** in the dev loop: it provisions whole Instances and runs
 standalone with its own Postgres. See **[docs/META.md](docs/META.md)**.
 
-A worker mails `report_result`; the session stays occupied. The Lead closes it with `submit_review` when they are done with that worker (spec §7, §9 check 4). There is no verifier process in the loop.
+A worker mails `report_result`; the session stays occupied. The Lead closes it with `stop_session` when they are done with that worker (spec §7, §9 check 4). There is no verifier process in the loop.
 
 Two dashboards:
 
@@ -231,7 +231,7 @@ the **§11 permission bridge** — ACP `session/request_permission` becomes an
 approval request the Lead answers with a verdict, or hands to a human on the dashboard;
 **in-band worker reports** and the
 **question/answer exchange** that makes blocking on a human actually carry words;
-Lead-closed sessions (`submit_review`); an enforced per-Team
+Lead-closed sessions (`stop_session`); an enforced per-Team
 forward rate limit; the relay
 TCP splice with fail-closed grant validation; **`open_forward`, the Lead-facing
 forward** for reaching a service from your own machine, and the **§8.4 preview

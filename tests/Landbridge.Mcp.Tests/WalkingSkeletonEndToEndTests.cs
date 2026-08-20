@@ -68,9 +68,8 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
             leadToken = claim.Token.Token;
         }
 
-        // ── Lead: create a task WITH a description + workspace over real MCP ──
+        // ── Lead: create a task WITH a description over real MCP ──
         const string description = "make the suite pass";
-        const string workspace = "git:repo@main#task-branch";
         SessionId sessionId;
         await using (var lead = await ConnectAsync(new Uri(baseUrl + "/"), leadToken, ct))
         {
@@ -78,7 +77,6 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
             {
                 ["description"] = description,
                 ["profile"] = "default",
-                ["workspace"] = workspace,
             }, cancellationToken: ct);
             Assert.NotEqual(true, created.IsError);
             sessionId = new SessionId(Guid.Parse(Assert.Single(created.Content.OfType<TextContentBlock>()).Text));
@@ -98,7 +96,6 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
             new StopConfig(WindDown: TimeSpan.FromSeconds(30)),
             new TelemetryConfig(Otel: false, Endpoint: null),
             new LogsConfig(),
-            MaxConcurrent: null,
             Prompt: "Do the task.",
             FollowUp: "There is new input on your assignment. Read it, then continue.");
 
@@ -169,7 +166,6 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
             Assert.True(File.Exists(assignmentPath), "the harness never recorded its get_session response");
             var assignmentJson = await File.ReadAllTextAsync(assignmentPath, ct);
             Assert.Contains(description, assignmentJson);
-            Assert.Contains(workspace, assignmentJson);
             Assert.Contains($"team-{team}/session-{sessionId}", assignmentJson); // server-assigned namespace
             Assert.Contains("\"attempt\":1", assignmentJson);
 

@@ -114,7 +114,7 @@ public sealed record SessionRecord
     public ParkRecord? Park { get; init; }
 
     /// <summary>
-    /// Who closed this session (§9 check 4), set on submit_review and null
+    /// Who closed this session (§9 check 4), set on stop_session and null
     /// until then. Typed state,
     /// not opaque content — the engine derives it from the verdict's actor — so it
     /// lands on the record and the store persists it for the §12 dashboard.
@@ -134,12 +134,8 @@ public sealed record SessionRecord
     /// </summary>
     public static SessionState DeriveState(SessionRecord t)
     {
-        if (t.Hidden && t.MessageVerdict == Landbridge.Core.MessageVerdict.Accepted)
-            return SessionState.Completed;
-        if (t.Hidden && t.MessageVerdict == Landbridge.Core.MessageVerdict.Discarded)
-            return SessionState.Rejected;
         if (t.Hidden)
-            return SessionState.Canceled;
+            return SessionState.Completed;
         if (t.Health == SessionHealth.Failed)
             return SessionState.Failed;
         if (t.OccupancyDesired == Occupancy.OnDisk)

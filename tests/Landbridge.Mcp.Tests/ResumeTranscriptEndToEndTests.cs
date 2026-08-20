@@ -279,7 +279,6 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
             new StopConfig(WindDown: TimeSpan.FromSeconds(30)),
             new TelemetryConfig(Otel: false, Endpoint: null),
             new LogsConfig(),
-            MaxConcurrent: null,
             Prompt: "Do the task.",
             FollowUp: "There is new input on your assignment. Read it, then continue.");
 

@@ -35,7 +35,7 @@ namespace Landbridge.Mcp.Tests;
 ///   <see cref="Landbridge.WorkerHarness"/>, which authenticates back to <c>/mcp</c>,
 ///   calls <c>get_session</c>, then <c>report_result(ref)</c>.</item>
 /// <item>The Lead reads the reported reference (proving #23 persistence end to end),
-///   then calls <c>submit_review accept</c> over MCP — close, with
+///   then calls <c>stop_session</c> over MCP — close, with
 ///   lead-session provenance (the doer/judge split: the Lead closes, never the
 ///   session's own worker).</item>
 /// </list>
@@ -78,7 +78,6 @@ public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifet
 
         // ── Lead: create an automated task over real MCP ────────────────────
         const string description = "make the suite pass";
-        const string workspace = "git:repo@main#task-branch";
         SessionId sessionId;
         await using (var lead = await ConnectAsync(new Uri(baseUrl + "/"), leadToken, ct))
         {
@@ -86,7 +85,6 @@ public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifet
             {
                 ["description"] = description,
                 ["profile"] = "default",
-                ["workspace"] = workspace,
             }, cancellationToken: ct);
             Assert.NotEqual(true, created.IsError);
             sessionId = new SessionId(Guid.Parse(Assert.Single(created.Content.OfType<TextContentBlock>()).Text));
@@ -105,7 +103,6 @@ public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifet
             new StopConfig(WindDown: TimeSpan.FromSeconds(30)),
             new TelemetryConfig(Otel: false, Endpoint: null),
             new LogsConfig(),
-            MaxConcurrent: null,
             Prompt: "Do the task.",
             FollowUp: "There is new input on your assignment. Read it, then continue.");
 
@@ -147,7 +144,7 @@ public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifet
                 Assert.Equal(reportedRef,
                     (await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == sessionId.Value, ct)).ResultReference);
 
-            // ── Lead closes over real MCP: submit_review accept → completed ──
+            // ── Lead closes over real MCP: stop_session → completed ──
             // (§7, §9 check 4): the Lead session closes the row — never the
             // session's own worker.
             await using (var lead = await ConnectAsync(new Uri(baseUrl + "/"), leadToken, ct))
@@ -163,13 +160,12 @@ public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifet
                 Assert.Contains(reportedRef,
                     Assert.Single(reportRead.Content.OfType<TextContentBlock>()).Text, StringComparison.Ordinal);
 
-                var verdict = await lead.CallToolAsync("submit_review", new Dictionary<string, object?>
+                var stopped = await lead.CallToolAsync("stop_session", new Dictionary<string, object?>
                 {
                     ["sessionId"] = sessionId.ToString(),
-                    ["verdict"] = "accept",
                 }, cancellationToken: ct);
-                Assert.NotEqual(true, verdict.IsError);
-                Assert.Contains("Completed", Assert.Single(verdict.Content.OfType<TextContentBlock>()).Text);
+                Assert.NotEqual(true, stopped.IsError);
+                Assert.Contains("Completed", Assert.Single(stopped.Content.OfType<TextContentBlock>()).Text);
             }
 
             // ── The record reached completed, with lead-session provenance (§9.4) ──
