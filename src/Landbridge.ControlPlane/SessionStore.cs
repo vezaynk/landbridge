@@ -1277,6 +1277,8 @@ public sealed class SessionStore(
         {
             AnswerPermission decision => decision.Message,
             EscalatePermission escalation => $"escalated to human: {escalation.Reason}",
+            RequestInput ask when ask.Kind == InputRequestKind.Permission
+                => PermissionWaitDetail(ask),
             _ => DescribeEffects(ok.Effects),
         };
         AppendEvent(row.Id, row.TeamId, command.GetType().Name, before, row.State,
@@ -1460,4 +1462,23 @@ public sealed class SessionStore(
 
     private static string DescribeEffects(IReadOnlyList<Effect> effects) =>
         effects.Count == 0 ? "" : string.Join(",", effects.Select(e => e.GetType().Name));
+
+    /// <summary>
+    /// A permission wait has no effects, so the event's Detail would be empty
+    /// and the trail would only remember the last wait (on the session row).
+    /// Same shape as <see cref="RecordClassifierAllowAsync"/>: the tool, plus
+    /// a truncated argv so a later SELECT can list every wait.
+    /// </summary>
+    internal const int PermissionWaitDetailCap = 512;
+
+    private static string PermissionWaitDetail(RequestInput ri)
+    {
+        var tool = string.IsNullOrWhiteSpace(ri.PermissionTool) ? "tool" : ri.PermissionTool.Trim();
+        var input = ri.Question?.Trim();
+        if (string.IsNullOrEmpty(input) || input == "{}")
+            return "permission: " + tool;
+        if (input.Length > PermissionWaitDetailCap)
+            input = input[..PermissionWaitDetailCap];
+        return "permission: " + tool + " " + input;
+    }
 }

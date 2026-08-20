@@ -542,6 +542,7 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
 
         var asked = Assert.Single(events, e => e.Kind == nameof(RequestInput));
         Assert.Equal(InputRequestKind.Permission, asked.InputKind);
+        Assert.Equal($"permission: {Tool} {ProposedInput}", asked.Detail);
 
         var escalation = Assert.Single(events, e => e.Kind == nameof(EscalatePermission));
         Assert.Equal(SessionState.BlockedOnInput, escalation.FromState);

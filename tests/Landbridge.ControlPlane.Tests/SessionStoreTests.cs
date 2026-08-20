@@ -165,6 +165,26 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
             .SingleAsync(e => e.SessionId == id.Value && e.Kind == "ClassifierAllow");
         Assert.Equal(PermissionVerdict.Allow, ev.PermissionVerdict);
         Assert.Equal(PermissionAnswerer.Plane, ev.PermissionAnswerer);
+        Assert.Equal("classifier allow: Bash", ev.Detail);
+    }
+
+    [SkippableFact]
+    public async Task A_permission_wait_event_names_the_tool_and_the_proposed_input()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await CreateSubmitted(db);
+        var instance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), instance);
+        var caller = new WorkerCaller(Team, id, instance);
+        Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(
+            id, new RequestInput(caller, InputRequestKind.Permission, """{"command":"git clone"}""", "Bash")));
+
+        var asked = await db.SessionEvents.AsNoTracking()
+            .SingleAsync(e => e.SessionId == id.Value && e.Kind == nameof(RequestInput));
+        Assert.Equal(InputRequestKind.Permission, asked.InputKind);
+        Assert.Equal("""permission: Bash {"command":"git clone"}""", asked.Detail);
     }
 
     [SkippableFact]

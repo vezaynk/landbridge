@@ -14,9 +14,21 @@ public sealed class PermissionPolicyTests
     [InlineData("landbridge: get_session")]
     [InlineData("Landbridge: Open Forward")]
     [InlineData("landbridge:report_result")]
+    [InlineData("landbridge__submit_review")]
+    [InlineData("landbridge__get_team_state")]
+    [InlineData("mcp__landbridge__open_forward")]
     public void Protocol_and_runtime_tools_auto_allow(string tool)
     {
         Assert.Equal(PermissionDisposition.AutoAllow, PermissionPolicy.Classify(tool, "{}"));
+    }
+
+    [Theory]
+    [InlineData("Execute `echo landbridge`")]
+    [InlineData("Execute `cat landbridge-notes.md`")]
+    [InlineData("Bash")]
+    public void A_shell_title_that_merely_mentions_landbridge_still_asks(string tool)
+    {
+        Assert.Equal(PermissionDisposition.Ask, PermissionPolicy.Classify(tool, "{}"));
     }
 
     [Fact]
