@@ -12,10 +12,9 @@ using ModelContextProtocol.Protocol;
 namespace Landbridge.Mcp.Tools;
 
 /// <summary>
-/// MCP Tasks methods projected off the session row. Lead-only.
-/// <c>tasks/update</c> is not implemented: answers stay
-/// <c>answer_input_request</c> / <c>answer_permission_request</c> /
-/// <c>submit_review</c>.
+/// MCP Tasks methods projected off the message envelope. Lead-only.
+/// Closing an envelope is answering, reviewing, or <c>cancel_session</c> —
+/// not <c>tasks/cancel</c>.
 /// </summary>
 public sealed class SessionTaskHandlers(SessionStore store, IHttpContextAccessor http)
 {
@@ -26,7 +25,7 @@ public sealed class SessionTaskHandlers(SessionStore store, IHttpContextAccessor
         var lead = RequireLead();
         var id = ParseTaskId(Params(request));
         var snap = await store.GetTaskSnapshotAsync(lead.Team, id, ct)
-            ?? throw NotFound(id);
+            ?? throw NotFound();
         return JsonSerializer.SerializeToNode(ToJson(snap));
     }
 
@@ -50,30 +49,14 @@ public sealed class SessionTaskHandlers(SessionStore store, IHttpContextAccessor
         }
     }
 
-    public async ValueTask<JsonNode?> CancelAsync(JsonRpcRequest request, CancellationToken ct)
+    public ValueTask<JsonNode?> CancelAsync(JsonRpcRequest request, CancellationToken ct)
     {
-        var lead = RequireLead();
-        var id = ParseTaskId(Params(request));
-        var snap = await store.GetTaskSnapshotAsync(lead.Team, id, ct)
-            ?? throw NotFound(id);
-        if (SessionTaskProjection.Status(snap.Session) is SessionTaskStatus.Completed
-            or SessionTaskStatus.Cancelled)
-        {
-            throw new McpProtocolException(
-                $"Cannot cancel task: already in terminal status '{SessionTaskProjection.WireStatus(SessionTaskProjection.Status(snap.Session))}'",
-                McpErrorCode.InvalidParams);
-        }
-
-        var applied = await store.ApplyAsync(id, new Cancel(new LeadClaim(lead.Team), CancelDisposition.Preserve), ct);
-        return applied switch
-        {
-            StoreResult.Applied ok => JsonSerializer.SerializeToNode(
-                ToJson(new SessionStore.SessionTaskSnapshot(ok.Session, snap.CreatedAt, DateTimeOffset.UtcNow))),
-            StoreResult.Rejected r => throw new McpProtocolException(r.Reason, McpErrorCode.InvalidParams),
-            StoreResult.NotFound => throw NotFound(id),
-            StoreResult.Conflict c => throw new McpProtocolException(c.Reason, McpErrorCode.InternalError),
-            _ => throw new McpProtocolException("cancel failed", McpErrorCode.InternalError),
-        };
+        _ = request;
+        _ = ct;
+        RequireLead();
+        throw new McpProtocolException(
+            "tasks/cancel does not close a session; answer, submit_review, or cancel_session",
+            McpErrorCode.InvalidParams);
     }
 
     private Principal.Lead RequireLead()
@@ -100,33 +83,29 @@ public sealed class SessionTaskHandlers(SessionStore store, IHttpContextAccessor
             ?? throw new McpProtocolException("invalid params", McpErrorCode.InvalidParams);
     }
 
-    private static SessionId ParseTaskId(JsonObject? p)
+    private static Guid ParseTaskId(JsonObject? p)
     {
         var raw = p?["taskId"]?.GetValue<string>();
         if (string.IsNullOrWhiteSpace(raw))
             throw new McpProtocolException("taskId is required", McpErrorCode.InvalidParams);
         if (!Guid.TryParse(raw, out var id))
             throw new McpProtocolException("invalid taskId", McpErrorCode.InvalidParams);
-        return new SessionId(id);
+        return id;
     }
 
-    private static McpProtocolException NotFound(SessionId id) =>
-        new($"Failed to retrieve task: Task not found", McpErrorCode.InvalidParams);
+    private static McpProtocolException NotFound() =>
+        new("Failed to retrieve task: Task not found", McpErrorCode.InvalidParams);
 
-    private static TaskJson ToJson(SessionStore.SessionTaskSnapshot snap)
+    private static TaskJson ToJson(SessionStore.SessionTaskSnapshot snap) => new()
     {
-        var status = SessionTaskProjection.Status(snap.Session);
-        return new TaskJson
-        {
-            TaskId = snap.Session.Id.ToString(),
-            Status = SessionTaskProjection.WireStatus(status),
-            StatusMessage = SessionTaskProjection.StatusMessage(snap.Session),
-            CreatedAt = snap.CreatedAt.ToString("O"),
-            LastUpdatedAt = snap.LastUpdatedAt.ToString("O"),
-            Ttl = null,
-            PollInterval = SessionTaskProjection.DefaultPollIntervalMs,
-        };
-    }
+        TaskId = snap.TaskId.ToString(),
+        Status = SessionTaskProjection.WireStatus(snap.Status),
+        StatusMessage = snap.StatusMessage,
+        CreatedAt = snap.CreatedAt.ToString("O"),
+        LastUpdatedAt = snap.LastUpdatedAt.ToString("O"),
+        Ttl = null,
+        PollInterval = SessionTaskProjection.DefaultPollIntervalMs,
+    };
 
     private sealed class TaskJson
     {

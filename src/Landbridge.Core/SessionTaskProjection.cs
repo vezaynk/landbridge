@@ -1,10 +1,10 @@
 namespace Landbridge.Core;
 
 /// <summary>
-/// MCP Tasks statuses as a <em>projection</em> of occupancy + the message machine.
-/// The session row stays the source of truth. MCP terminal statuses are only
-/// emitted for <c>hidden</c> rows so a retryable <c>health=failed</c> session is
-/// never a terminal MCP task.
+/// MCP Tasks statuses as a projection of one message envelope, not the session.
+/// Sessions have no terminal state. The envelope does: returning to
+/// <see cref="MessageState.Idle"/> completes or cancels that MCP task, and the
+/// next exchange mints a new <see cref="SessionRecord.MessageId"/>.
 /// </summary>
 public enum SessionTaskStatus
 {
@@ -15,33 +15,37 @@ public enum SessionTaskStatus
 }
 
 /// <summary>
-/// Maps a Landbridge session onto the MCP Tasks lifecycle
-/// (<c>io.modelcontextprotocol/tasks</c>). Polling is <c>tasks/get</c>; writes
-/// stay the existing Lead tools. Health-failed is <see cref="SessionTaskStatus.Working"/>
-/// with a status message, not MCP <c>failed</c>, because same-id retry is legal.
+/// Maps the outstanding (or last) Lead↔worker envelope onto MCP Tasks
+/// (<c>io.modelcontextprotocol/tasks</c>). Task id is the envelope id, never
+/// the session id.
 /// </summary>
 public static class SessionTaskProjection
 {
     public const string ExtensionId = "io.modelcontextprotocol/tasks";
     public const int DefaultPollIntervalMs = 5_000;
 
-    public static SessionTaskStatus Status(SessionRecord session)
+    public static SessionTaskStatus? Status(SessionRecord session, Guid taskId)
     {
-        if (session.Hidden)
-        {
-            return session.MessageVerdict is MessageVerdict.Accepted or MessageVerdict.Discarded
-                ? SessionTaskStatus.Completed
-                : SessionTaskStatus.Cancelled;
-        }
-
-        return session.MessageState switch
-        {
-            MessageState.AwaitingLead
-                or MessageState.AwaitingPermission
-                or MessageState.AwaitingReport => SessionTaskStatus.InputRequired,
-            _ => SessionTaskStatus.Working,
-        };
+        if (session.MessageId == taskId)
+            return LiveStatus(session.MessageState);
+        if (session.LastMessageId == taskId)
+            return ClosedStatus(session.LastMessageTerminal);
+        return null;
     }
+
+    public static SessionTaskStatus LiveStatus(MessageState state) => state switch
+    {
+        MessageState.AwaitingLead
+            or MessageState.AwaitingPermission
+            or MessageState.AwaitingReport => SessionTaskStatus.InputRequired,
+        MessageState.AwaitingPull => SessionTaskStatus.Working,
+        _ => SessionTaskStatus.Working,
+    };
+
+    public static SessionTaskStatus ClosedStatus(MessageTerminal? terminal) =>
+        terminal == MessageTerminal.Cancelled
+            ? SessionTaskStatus.Cancelled
+            : SessionTaskStatus.Completed;
 
     public static string WireStatus(SessionTaskStatus status) => status switch
     {
@@ -52,34 +56,27 @@ public static class SessionTaskProjection
         _ => "working",
     };
 
-    public static string? StatusMessage(SessionRecord session)
+    public static string? LiveStatusMessage(MessageState state) => state switch
     {
-        if (session.Hidden)
+        MessageState.AwaitingPermission =>
+            "permission wait; answer_permission_request",
+        MessageState.AwaitingLead =>
+            "waiting on the Lead; get_session_question then answer_input_request",
+        MessageState.AwaitingReport =>
+            "report ready; get_session_report then submit_review",
+        MessageState.AwaitingPull =>
+            "worker pulling get_session",
+        _ => null,
+    };
+
+    public static string? ClosedStatusMessage(MessageTerminal? terminal, MessageVerdict? verdict)
+    {
+        if (terminal == MessageTerminal.Cancelled)
+            return "cancelled";
+        return verdict switch
         {
-            return session.MessageVerdict switch
-            {
-                MessageVerdict.Accepted => "accepted",
-                MessageVerdict.Discarded => "discarded",
-                _ => "cancelled",
-            };
-        }
-
-        if (session.Health == SessionHealth.Failed)
-            return "mechanical failure; retry with answer_input_request on this session id";
-
-        if (session.OccupancyDesired == Occupancy.OnDisk)
-            return "occupancy released (desired=on_disk)";
-
-        return session.MessageState switch
-        {
-            MessageState.AwaitingPermission =>
-                "permission wait; answer_permission_request",
-            MessageState.AwaitingLead =>
-                "waiting on the Lead; get_session_question then answer_input_request",
-            MessageState.AwaitingReport =>
-                "report ready; get_session_report then submit_review",
-            MessageState.AwaitingPull =>
-                "worker pulling get_session",
+            MessageVerdict.Accepted => "accepted",
+            MessageVerdict.Discarded => "discarded",
             _ => null,
         };
     }

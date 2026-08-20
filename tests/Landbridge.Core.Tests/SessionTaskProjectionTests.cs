@@ -3,60 +3,101 @@ namespace Landbridge.Core.Tests;
 public sealed class SessionTaskProjectionTests
 {
     [Fact]
-    public void Submitted_and_working_project_as_working()
+    public void Idle_session_has_no_live_task()
     {
-        Assert.Equal(SessionTaskStatus.Working, SessionTaskProjection.Status(Given.Session()));
+        var session = Given.Session();
+        Assert.Null(session.MessageId);
+        Assert.Null(SessionTaskProjection.Status(session, Guid.NewGuid()));
+    }
+
+    [Fact]
+    public void Lead_owed_envelope_is_input_required()
+    {
+        Assert.Equal(SessionTaskStatus.InputRequired,
+            SessionTaskProjection.LiveStatus(MessageState.AwaitingLead));
+        Assert.Equal(SessionTaskStatus.InputRequired,
+            SessionTaskProjection.LiveStatus(MessageState.AwaitingPermission));
+        Assert.Equal(SessionTaskStatus.InputRequired,
+            SessionTaskProjection.LiveStatus(MessageState.AwaitingReport));
+    }
+
+    [Fact]
+    public void Awaiting_pull_is_working()
+    {
         Assert.Equal(SessionTaskStatus.Working,
-            SessionTaskProjection.Status(Given.Session(SessionState.Working)));
+            SessionTaskProjection.LiveStatus(MessageState.AwaitingPull));
     }
 
     [Fact]
-    public void Lead_owes_a_move_projects_as_input_required()
-    {
-        Assert.Equal(SessionTaskStatus.InputRequired,
-            SessionTaskProjection.Status(Given.Session(SessionState.BlockedOnInput)));
-        Assert.Equal(SessionTaskStatus.InputRequired,
-            SessionTaskProjection.Status(Given.Session(SessionState.Verifying)));
-        Assert.Equal(SessionTaskStatus.InputRequired,
-            SessionTaskProjection.Status(Given.Session(SessionState.Working, message: MessageState.AwaitingLead)));
-    }
-
-    [Fact]
-    public void Accept_and_discard_are_completed_not_failed()
+    public void Accept_and_discard_close_the_envelope_as_completed()
     {
         Assert.Equal(SessionTaskStatus.Completed,
-            SessionTaskProjection.Status(Given.Session(SessionState.Completed)));
-        Assert.Equal(SessionTaskStatus.Completed,
-            SessionTaskProjection.Status(Given.Session(SessionState.Rejected)));
+            SessionTaskProjection.ClosedStatus(MessageTerminal.Completed));
         Assert.Equal("accepted",
-            SessionTaskProjection.StatusMessage(Given.Session(SessionState.Completed)));
+            SessionTaskProjection.ClosedStatusMessage(MessageTerminal.Completed, MessageVerdict.Accepted));
         Assert.Equal("discarded",
-            SessionTaskProjection.StatusMessage(Given.Session(SessionState.Rejected)));
+            SessionTaskProjection.ClosedStatusMessage(MessageTerminal.Completed, MessageVerdict.Discarded));
     }
 
     [Fact]
-    public void Cancel_projects_as_cancelled()
+    public void Session_cancel_closes_the_envelope_as_cancelled()
     {
         Assert.Equal(SessionTaskStatus.Cancelled,
-            SessionTaskProjection.Status(Given.Session(SessionState.Canceled)));
+            SessionTaskProjection.ClosedStatus(MessageTerminal.Cancelled));
     }
 
     [Fact]
-    public void Mechanical_failure_stays_working_so_same_id_retry_is_not_a_terminal_task()
+    public void Opening_an_envelope_mints_a_task_id_distinct_from_the_session()
     {
-        var failed = Given.Session(SessionState.Failed);
-        Assert.Equal(SessionTaskStatus.Working, SessionTaskProjection.Status(failed));
-        Assert.Contains("mechanical failure", SessionTaskProjection.StatusMessage(failed),
-            StringComparison.Ordinal);
-        Assert.Equal("working", SessionTaskProjection.WireStatus(SessionTaskStatus.Working));
+        var idle = Given.Session(SessionState.Working, message: MessageState.Idle);
+        Assert.Null(idle.MessageId);
+
+        var asked = Expect.Transitioned(
+            SessionStateMachine.Apply(
+                idle,
+                new RequestInput(Given.IncumbentOf(idle), InputRequestKind.Question, "which DB?")),
+            SessionState.Working);
+        Assert.NotNull(asked.MessageId);
+        Assert.NotEqual(asked.Id.Value, asked.MessageId);
+        Assert.Equal(MessageState.AwaitingLead, asked.MessageState);
+        Assert.Equal(SessionTaskStatus.InputRequired,
+            SessionTaskProjection.Status(asked, asked.MessageId!.Value));
     }
 
     [Fact]
-    public void Deactivated_occupancy_stays_working()
+    public void Closing_moves_the_id_to_last_message_and_the_next_open_is_a_new_id()
     {
-        var parked = Given.Session(SessionState.Parked);
-        Assert.Equal(SessionTaskStatus.Working, SessionTaskProjection.Status(parked));
-        Assert.Contains("on_disk", SessionTaskProjection.StatusMessage(parked),
-            StringComparison.Ordinal);
+        var asked = Given.Session(SessionState.Working, message: MessageState.AwaitingLead);
+        var openId = asked.MessageId;
+
+        var pulled = Expect.Transitioned(
+            SessionStateMachine.Apply(
+                asked with { MessageState = MessageState.AwaitingPull },
+                new PullReceipt(Given.IncumbentOf(asked))),
+            SessionState.Working);
+        Assert.Null(pulled.MessageId);
+        Assert.Equal(openId, pulled.LastMessageId);
+        Assert.Equal(MessageTerminal.Completed, pulled.LastMessageTerminal);
+        Assert.Equal(SessionTaskStatus.Completed,
+            SessionTaskProjection.Status(pulled, openId!.Value));
+
+        var askedAgain = Expect.Transitioned(
+            SessionStateMachine.Apply(
+                pulled,
+                new RequestInput(Given.IncumbentOf(pulled), InputRequestKind.Question, "again?")),
+            SessionState.Working);
+        Assert.NotNull(askedAgain.MessageId);
+        Assert.NotEqual(openId, askedAgain.MessageId);
+        Assert.Equal(openId, askedAgain.LastMessageId);
+    }
+
+    [Fact]
+    public void Hidden_session_is_not_itself_a_task_status()
+    {
+        var completed = Given.Session(SessionState.Completed);
+        Assert.Null(completed.MessageId);
+        Assert.Equal(MessageTerminal.Completed, completed.LastMessageTerminal);
+        Assert.Equal(SessionTaskStatus.Completed,
+            SessionTaskProjection.Status(completed, completed.LastMessageId!.Value));
     }
 }

@@ -936,11 +936,14 @@ public sealed class SessionStore(
     public sealed record OccupancyLookaside(
         string? HarnessSessionRef, string? PreferredMachine, string? ParkMachine);
 
-    /// <summary>
-    /// Occupancy + message as MCP Tasks reads them, with event-log timestamps.
-    /// </summary>
+    /// <summary>One MCP Tasks projection of a message envelope.</summary>
     public sealed record SessionTaskSnapshot(
-        SessionRecord Session, DateTimeOffset CreatedAt, DateTimeOffset LastUpdatedAt);
+        Guid TaskId,
+        SessionId SessionId,
+        SessionTaskStatus Status,
+        string? StatusMessage,
+        DateTimeOffset CreatedAt,
+        DateTimeOffset LastUpdatedAt);
 
     public async Task<OccupancyLookaside?> GetOccupancyAsync(SessionId id, CancellationToken ct = default) =>
         await db.Sessions.AsNoTracking()
@@ -949,25 +952,23 @@ public sealed class SessionStore(
             .FirstOrDefaultAsync(ct);
 
     /// <summary>
-    /// One session as the MCP Tasks projection reads it: occupancy + message,
-    /// scoped to the Lead's Team, plus event-log timestamps for
-    /// <c>createdAt</c> / <c>lastUpdatedAt</c>.
+    /// Live envelope or last-closed envelope, Team-scoped. Task id is
+    /// <see cref="SessionRow.MessageId"/> / <see cref="SessionRow.LastMessageId"/>.
     /// </summary>
     public async Task<SessionTaskSnapshot?> GetTaskSnapshotAsync(
-        TeamId team, SessionId id, CancellationToken ct = default)
+        TeamId team, Guid taskId, CancellationToken ct = default)
     {
         var row = await db.Sessions.AsNoTracking()
-            .FirstOrDefaultAsync(t => t.Id == id.Value && t.TeamId == team.Value, ct);
+            .FirstOrDefaultAsync(t => t.TeamId == team.Value
+                && (t.MessageId == taskId || t.LastMessageId == taskId), ct);
         if (row is null)
             return null;
-        var bounds = await EventBoundsAsync([id.Value], ct);
-        return SnapshotOf(row, bounds.GetValueOrDefault(id.Value));
+        return EnvelopeSnapshot(row, taskId);
     }
 
     /// <summary>
-    /// Team-scoped MCP <c>tasks/list</c>. Includes hidden rows (MCP: if
-    /// <c>tasks/get</c> can retrieve it, <c>tasks/list</c> must). Cursor is the
-    /// last session id from the previous page.
+    /// Outstanding envelopes plus the last closed envelope per session.
+    /// Cursor is the last task id from the previous page.
     /// </summary>
     public async Task<(IReadOnlyList<SessionTaskSnapshot> Tasks, string? NextCursor)> ListTaskSnapshotsAsync(
         TeamId team, string? cursor, int take, CancellationToken ct = default)
@@ -975,52 +976,63 @@ public sealed class SessionStore(
         if (take < 1)
             take = 50;
 
-        var q = db.Sessions.AsNoTracking()
-            .Where(t => t.TeamId == team.Value);
+        var rows = await db.Sessions.AsNoTracking()
+            .Where(t => t.TeamId == team.Value
+                && (t.MessageId != null || t.LastMessageId != null))
+            .ToListAsync(ct);
+
+        var tasks = rows
+            .SelectMany(EnvelopeSnapshots)
+            .OrderBy(t => t.TaskId)
+            .ToList();
+
         if (cursor is { Length: > 0 })
         {
             if (!Guid.TryParse(cursor, out var after))
                 throw new ArgumentException("invalid cursor", nameof(cursor));
-            q = q.Where(t => t.Id > after);
+            tasks = tasks.Where(t => t.TaskId.CompareTo(after) > 0).ToList();
         }
 
-        var rows = await q.OrderBy(t => t.Id).Take(take + 1).ToListAsync(ct);
         string? next = null;
-        if (rows.Count > take)
+        if (tasks.Count > take)
         {
-            rows.RemoveAt(take);
-            next = rows[^1].Id.ToString();
+            next = tasks[take - 1].TaskId.ToString();
+            tasks = tasks.Take(take).ToList();
         }
 
-        var bounds = await EventBoundsAsync(rows.Select(r => r.Id).ToArray(), ct);
-        var tasks = rows.Select(r => SnapshotOf(r, bounds.GetValueOrDefault(r.Id))).ToArray();
         return (tasks, next);
     }
 
-    private async Task<Dictionary<Guid, (DateTimeOffset Created, DateTimeOffset Updated)>> EventBoundsAsync(
-        IReadOnlyList<Guid> ids, CancellationToken ct)
+    private IEnumerable<SessionTaskSnapshot> EnvelopeSnapshots(SessionRow row)
     {
-        if (ids.Count == 0)
-            return [];
-        return await db.SessionEvents.AsNoTracking()
-            .Where(e => ids.Contains(e.SessionId))
-            .GroupBy(e => e.SessionId)
-            .Select(g => new
-            {
-                g.Key,
-                Created = g.Min(e => e.OccurredAt),
-                Updated = g.Max(e => e.OccurredAt),
-            })
-            .ToDictionaryAsync(x => x.Key, x => (x.Created, x.Updated), ct);
+        if (row.MessageId is { } live)
+            yield return EnvelopeSnapshot(row, live);
+        if (row.LastMessageId is { } last && last != row.MessageId)
+            yield return EnvelopeSnapshot(row, last);
     }
 
-    private SessionTaskSnapshot SnapshotOf(
-        SessionRow row, (DateTimeOffset Created, DateTimeOffset Updated) bounds)
+    private SessionTaskSnapshot EnvelopeSnapshot(SessionRow row, Guid taskId)
     {
         var now = clock.GetUtcNow();
-        var created = bounds.Created == default ? now : bounds.Created;
-        var updated = bounds.Updated == default ? created : bounds.Updated;
-        return new SessionTaskSnapshot(row.ToDomain(), created, updated);
+        var live = row.MessageId == taskId;
+        var status = live
+            ? SessionTaskProjection.LiveStatus(row.MessageState)
+            : SessionTaskProjection.ClosedStatus(row.LastMessageTerminal);
+        var created = live
+            ? row.MessageOpenedAt ?? now
+            : row.LastMessageClosedAt ?? now;
+        var updated = live
+            ? row.MessageOpenedAt ?? now
+            : row.LastMessageClosedAt ?? created;
+        return new SessionTaskSnapshot(
+            taskId,
+            new SessionId(row.Id),
+            status,
+            live
+                ? SessionTaskProjection.LiveStatusMessage(row.MessageState)
+                : SessionTaskProjection.ClosedStatusMessage(row.LastMessageTerminal, row.MessageVerdict),
+            created,
+            updated);
     }
 
     /// <summary>
@@ -1226,7 +1238,13 @@ public sealed class SessionStore(
             return new StoreResult.Rejected(r.Rule, r.Reason);
 
         var ok = (TransitionResult.Transitioned)result;
+        var prevMessageId = row.MessageId;
+        var prevLastMessageId = row.LastMessageId;
         row.CopyFrom(ok.Session);
+        if (row.MessageId != prevMessageId)
+            row.MessageOpenedAt = row.MessageId is null ? null : clock.GetUtcNow();
+        if (row.LastMessageId != prevLastMessageId && row.LastMessageId is not null)
+            row.LastMessageClosedAt = clock.GetUtcNow();
         // #23, §7: the reported result reference is opaque content the store
         // captures on the working → verifying transition. The engine and
         // SessionRecord stay content-free (the reference never lands on the pure

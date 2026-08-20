@@ -6,27 +6,30 @@
 **Depends on:** [`occupancy-and-messages.md`](occupancy-and-messages.md)
 **Does not replace:** occupancy, the message machine, `get_team_state`, or Lead write tools.
 
-Landbridge sessions are durable occupancy objects plus a message machine. MCP Tasks (`io.modelcontextprotocol/tasks`) wrap a request with `working | input_required | completed | failed | cancelled`. This file is the projection of the former onto the latter so a Lead client can poll `tasks/get` instead of only `get_team_state`.
+Landbridge sessions are durable occupancy objects; they have no terminal state. MCP Tasks (`io.modelcontextprotocol/tasks`) wrap one request with `working | input_required | completed | failed | cancelled`, and those terminals must not move. The honest projection is therefore the **message envelope**, not the session.
 
-The session row stays the source of truth. Task id = session id. `create_session` still returns that id as a string. This is not a `tools/call` wrapper and not the C# SDK `IMcpTaskStore`.
+At most one outstanding envelope per session. Leaving `idle` mints `message_id` (the MCP `taskId`). Returning to `idle` closes that task onto `last_message_id`. The next exchange is a new id on the same session. Occupancy, `health=failed`, and `hidden` stay session facts; `get_team_state` still polls those.
+
+`create_session` still returns the session id. It does not open an envelope, so it is not a task.
+
+This is not a `tools/call` wrapper and not the C# SDK `IMcpTaskStore`.
 
 ## Mapping
 
-| Session | MCP `status` |
+| Envelope | MCP `status` |
 |---|---|
-| `hidden` + accept or discard | `completed` |
-| `hidden` otherwise (cancel) | `cancelled` |
 | `awaiting_lead` / `awaiting_permission` / `awaiting_report` | `input_required` |
-| everything else, including `health=failed` and `desired=on_disk` | `working` |
+| `awaiting_pull` | `working` |
+| closed by pull receipt, permission verdict, or accept/discard | `completed` |
+| closed by `cancel_session` or a failed-session retry that drops the wait | `cancelled` |
 
-`health=failed` is **not** MCP `failed`. Same-id retry is legal; MCP terminal statuses must not move. The status message says to retry with `answer_input_request`.
+Idle with no `last_message_id` means there is no task to get. Mechanical `health=failed` does not close the envelope.
 
 ## Methods
 
-- `tasks/get` / `tasks/list` / `tasks/cancel` — Lead only, Team-scoped.
-- `tasks/list` includes hidden rows (MCP: if gettable, listable). Cursor is the last session id.
-- `tasks/cancel` is `Cancel(preserve)`. Already-terminal → `-32602`.
-- `tasks/update` and `tasks/result` are not implemented. Answers stay `answer_input_request` / `answer_permission_request` / `submit_review`. Reports stay `get_session_report`.
-- Polling is the subscription. `notifications/tasks/status` is not wired; `SessionEventListener` already NOTIFYs for dispatch/dashboard.
+- `tasks/get` / `tasks/list` — Lead only, Team-scoped. Live `message_id` plus the last closed envelope per session.
+- `tasks/cancel` is refused: closing an envelope is answering, reviewing, or `cancel_session`.
+- `tasks/update` and `tasks/result` are not implemented. Answers stay `answer_input_request` / `answer_permission_request` / `submit_review`.
+- Polling is the subscription. `notifications/tasks/status` is not wired.
 
-`ttl` is null (sessions are durable). `pollInterval` is 5000.
+`ttl` is null. `pollInterval` is 5000.

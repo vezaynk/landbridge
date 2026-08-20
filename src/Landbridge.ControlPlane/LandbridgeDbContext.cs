@@ -63,6 +63,9 @@ public sealed class LandbridgeDbContext(DbContextOptions<LandbridgeDbContext> op
             e.Property(t => t.Health).HasConversion<string>();
             e.Property(t => t.MessageState).HasConversion<string>();
             e.Property(t => t.MessageVerdict).HasConversion<string>();
+            e.Property(t => t.LastMessageTerminal).HasConversion<string>();
+            e.HasIndex(t => new { t.TeamId, t.MessageId });
+            e.HasIndex(t => new { t.TeamId, t.LastMessageId });
             e.Property(t => t.PendingSpawn).HasConversion<string>();
             // §9 check 4 completion provenance stores as its enum name, like the
             // other enum columns; null until the task reaches completed.

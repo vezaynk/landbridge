@@ -20,7 +20,7 @@ using ModelContextProtocol.Protocol;
 namespace Landbridge.Mcp.Tests;
 
 /// <summary>
-/// MCP Tasks methods project occupancy + the message machine. Session id is task id.
+/// MCP Tasks methods project the message envelope. Session id is not task id.
 /// </summary>
 [Collection(PostgresCollection.Name)]
 public sealed class SessionTaskProjectionEndToEndTests(PostgresFixture pg) : IAsyncLifetime
@@ -33,7 +33,7 @@ public sealed class SessionTaskProjectionEndToEndTests(PostgresFixture pg) : IAs
     public Task DisposeAsync() => Task.CompletedTask;
 
     [SkippableFact]
-    public async Task Create_session_is_a_working_task_the_Lead_can_get_list_and_cancel()
+    public async Task Create_session_opens_no_task_until_an_envelope_exists()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(1));
@@ -57,66 +57,21 @@ public sealed class SessionTaskProjectionEndToEndTests(PostgresFixture pg) : IAs
         }, cancellationToken: ct);
         var sessionId = Assert.Single(created.Content.OfType<TextContentBlock>()).Text;
 
-        var got = await GetTaskAsync(lead, sessionId, ct);
-        Assert.Equal(sessionId, got["taskId"]?.GetValue<string>());
-        Assert.Equal("working", got["status"]?.GetValue<string>());
-        Assert.Equal(5000, got["pollInterval"]?.GetValue<int>());
+        var missing = await Assert.ThrowsAsync<McpProtocolException>(() => GetTaskAsync(lead, sessionId, ct));
+        Assert.Equal(McpErrorCode.InvalidParams, missing.ErrorCode);
 
         var listed = await ListTasksAsync(lead, ct);
-        var listedId = listed["tasks"]!.AsArray()
-            .Select(t => t?["taskId"]?.GetValue<string>())
-            .Single();
-        Assert.Equal(sessionId, listedId);
+        Assert.Empty(listed["tasks"]!.AsArray());
 
-        var cancelled = await CancelTaskAsync(lead, sessionId, ct);
-        Assert.Equal("cancelled", cancelled["status"]?.GetValue<string>());
-
-        var after = await GetTaskAsync(lead, sessionId, ct);
-        Assert.Equal("cancelled", after["status"]?.GetValue<string>());
-
-        var ex = await Assert.ThrowsAsync<McpProtocolException>(() => CancelTaskAsync(lead, sessionId, ct));
-        Assert.Equal(McpErrorCode.InvalidParams, ex.ErrorCode);
+        var cancel = await Assert.ThrowsAsync<McpProtocolException>(() => CancelTaskAsync(lead, sessionId, ct));
+        Assert.Equal(McpErrorCode.InvalidParams, cancel.ErrorCode);
+        Assert.Contains("cancel_session", cancel.Message, StringComparison.Ordinal);
 
         await app.StopAsync(ct);
     }
 
     [SkippableFact]
-    public async Task Tasks_get_does_not_leak_another_Teams_session()
-    {
-        Skip.IfNot(pg.Available, pg.SkipReason);
-        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(1));
-        var ct = cts.Token;
-
-        await using var app = BuildServer();
-        await app.StartAsync(ct);
-        var baseUrl = app.Urls.First(u => u.StartsWith("http://"));
-        var a = await ClaimLeadAsync(TeamId.New(), ct);
-        var b = await ClaimLeadAsync(TeamId.New(), ct);
-
-        string sessionId;
-        await using (var leadA = await ConnectAsync(new Uri(baseUrl + "/"), a, ct))
-        {
-            var created = await leadA.CallToolAsync("create_session", new Dictionary<string, object?>
-            {
-                ["description"] = "private",
-                ["profile"] = "default",
-            }, cancellationToken: ct);
-            sessionId = Assert.Single(created.Content.OfType<TextContentBlock>()).Text;
-        }
-
-        await using (var leadB = await ConnectAsync(new Uri(baseUrl + "/"), b, ct))
-        {
-            var ex = await Assert.ThrowsAsync<McpProtocolException>(() => GetTaskAsync(leadB, sessionId, ct));
-            Assert.Equal(McpErrorCode.InvalidParams, ex.ErrorCode);
-            var listed = await ListTasksAsync(leadB, ct);
-            Assert.Empty(listed["tasks"]!.AsArray());
-        }
-
-        await app.StopAsync(ct);
-    }
-
-    [SkippableFact]
-    public async Task A_question_projects_as_input_required()
+    public async Task A_question_is_a_task_id_distinct_from_the_session()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(1));
@@ -139,24 +94,84 @@ public sealed class SessionTaskProjectionEndToEndTests(PostgresFixture pg) : IAs
             sessionId = new SessionId(Guid.Parse(Assert.Single(created.Content.OfType<TextContentBlock>()).Text));
         }
 
+        Guid messageId;
         await using (var db = pg.NewContext())
         {
             var store = new SessionStore(db, TimeProvider.System);
             var instance = WorkerInstanceId.New();
             Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(
                 new MachineSnapshot("m1", true, false, new HashSet<string> { "default" }), instance));
-            Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(
+            var asked = Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(
                 sessionId,
                 new RequestInput(new WorkerCaller(team, sessionId, instance),
                     InputRequestKind.Question, "which DB?")));
+            messageId = asked.Session.MessageId!.Value;
+            Assert.NotEqual(sessionId.Value, messageId);
         }
 
         await using (var lead = await ConnectAsync(new Uri(baseUrl + "/"), leadToken, ct))
         {
-            var got = await GetTaskAsync(lead, sessionId.ToString(), ct);
+            var got = await GetTaskAsync(lead, messageId.ToString(), ct);
+            Assert.Equal(messageId.ToString(), got["taskId"]?.GetValue<string>());
             Assert.Equal("input_required", got["status"]?.GetValue<string>());
             Assert.Contains("answer_input_request", got["statusMessage"]?.GetValue<string>(),
                 StringComparison.Ordinal);
+
+            var listed = await ListTasksAsync(lead, ct);
+            Assert.Equal(messageId.ToString(),
+                Assert.Single(listed["tasks"]!.AsArray(), t => t?["status"]?.GetValue<string>() == "input_required")
+                    ?["taskId"]?.GetValue<string>());
+        }
+
+        await app.StopAsync(ct);
+    }
+
+    [SkippableFact]
+    public async Task Tasks_get_does_not_leak_another_Teams_envelope()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(1));
+        var ct = cts.Token;
+
+        await using var app = BuildServer();
+        await app.StartAsync(ct);
+        var baseUrl = app.Urls.First(u => u.StartsWith("http://"));
+        var teamA = TeamId.New();
+        var a = await ClaimLeadAsync(teamA, ct);
+        var b = await ClaimLeadAsync(TeamId.New(), ct);
+
+        SessionId sessionId;
+        await using (var leadA = await ConnectAsync(new Uri(baseUrl + "/"), a, ct))
+        {
+            var created = await leadA.CallToolAsync("create_session", new Dictionary<string, object?>
+            {
+                ["description"] = "private",
+                ["profile"] = "default",
+            }, cancellationToken: ct);
+            sessionId = new SessionId(Guid.Parse(Assert.Single(created.Content.OfType<TextContentBlock>()).Text));
+        }
+
+        Guid messageId;
+        await using (var db = pg.NewContext())
+        {
+            var store = new SessionStore(db, TimeProvider.System);
+            var instance = WorkerInstanceId.New();
+            Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(
+                new MachineSnapshot("m1", true, false, new HashSet<string> { "default" }), instance));
+            var asked = Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(
+                sessionId,
+                new RequestInput(new WorkerCaller(teamA, sessionId, instance),
+                    InputRequestKind.Question, "secret?")));
+            messageId = asked.Session.MessageId!.Value;
+        }
+
+        await using (var leadB = await ConnectAsync(new Uri(baseUrl + "/"), b, ct))
+        {
+            var ex = await Assert.ThrowsAsync<McpProtocolException>(
+                () => GetTaskAsync(leadB, messageId.ToString(), ct));
+            Assert.Equal(McpErrorCode.InvalidParams, ex.ErrorCode);
+            var listed = await ListTasksAsync(leadB, ct);
+            Assert.Empty(listed["tasks"]!.AsArray());
         }
 
         await app.StopAsync(ct);
