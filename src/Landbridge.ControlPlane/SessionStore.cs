@@ -804,6 +804,53 @@ public sealed class SessionStore(
     }
 
     /// <summary>
+    /// The Lead inbox snapshot: every outstanding fact in this Team, optionally
+    /// one session. Occupancy columns, not derived <see cref="SessionState"/>.
+    /// Hidden rows are omitted. A failed row still lists a leftover envelope.
+    /// <see cref="MessageState.AwaitingPull"/> is included. Structure only.
+    /// </summary>
+    public async Task<LeadInboxView> GetLeadInboxAsync(
+        TeamId team, Guid? sessionId = null, CancellationToken ct = default)
+    {
+        var query = db.Sessions.AsNoTracking()
+            .Where(t => t.TeamId == team.Value && !t.Hidden);
+        if (sessionId is { } only)
+            query = query.Where(t => t.Id == only);
+
+        var rows = await query
+            .Where(t => t.Health == SessionHealth.Failed
+                || t.MessageState == MessageState.AwaitingLead
+                || t.MessageState == MessageState.AwaitingPermission
+                || t.MessageState == MessageState.AwaitingReport
+                || t.MessageState == MessageState.AwaitingPull)
+            .Select(t => new
+            {
+                t.Id,
+                t.Namespace,
+                t.Health,
+                t.MessageState,
+                t.InputKind,
+                t.MessageId,
+                t.MessageOpenedAt,
+                t.BlockedAt,
+            })
+            .ToListAsync(ct);
+
+        var items = rows
+            .SelectMany(t => LeadInboxKindMapping.ItemsFor(
+                    t.Id, t.Namespace, t.Health, t.MessageState, t.InputKind, t.MessageId)
+                .Select(item => new { Item = item, Opened = t.MessageOpenedAt ?? t.BlockedAt }))
+            .OrderBy(t => LeadInboxKindMapping.Rank(t.Item.Kind))
+            .ThenBy(t => t.Opened ?? DateTimeOffset.MaxValue)
+            .ThenBy(t => t.Item.SessionId)
+            .ThenBy(t => LeadInboxKindMapping.Rank(t.Item.Kind))
+            .Select(t => t.Item)
+            .ToList();
+
+        return new LeadInboxView(items);
+    }
+
+    /// <summary>
     /// The Lead's deliberate per-task report fetch (§10, §13): the worker's opaque
     /// in-band report for one task, pulled one item at a time rather than riding the
     /// bulk <see cref="GetTeamStateAsync"/> read (which carries only a flag). Scoped

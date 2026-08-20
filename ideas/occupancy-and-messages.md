@@ -2,35 +2,30 @@
 
 **Author:** Landbridge
 **Date:** 2026-08-20
-**Status:** Draft
-**Amends:** [`spec.md`](spec.md) §6 (session state machine). Intended to replace that section in a later edit of the spec; this file is the implementable original.
-**Supersedes:** occupancy, wait, park, fail, and terminal-state material in [`sessions.md`](sessions.md). Continuation targeting, pull-is-receipt, doer/judge, and `session/load` locality in that note still stand; this file restates only what those sections got wrong by fusing them into `SessionState`.
-**Does not rewrite:** spec §7 schema prose (except the fields this change adds), §10 MCP names, §11 permission bridge / continuation targeting, §13.
-
-**Data.** Landbridge is not in production. Existing session rows may be dropped; there is no preserve-in-flight backfill, no dual-write ladder for live data, and no canceled-row archaeology. Schema changes are additive-or-replace. Derived `state` remains only so MCP/dashboard/tests can cut over.
-
-This is not a rename of `SessionState`. It is a split. The current enum is doing three jobs, and two of them are not state machines.
+**Status:** Implemented. Condensed in [`spec.md`](spec.md) §6.
+**Detail:** occupancy, health, hidden, and the message machine. Continuation targeting, pull-is-receipt, doer/judge, and `session/load` locality are in [`sessions.md`](sessions.md) and spec §11.
+**Does not rewrite:** spec §7 schema prose (except occupancy/message fields), §10 MCP names, §11 permission bridge / continuation targeting, §13.
 
 ---
 
 ## Overview
 
-`SessionState` (`Submitted`, `Working`, `Verifying`, `Completed`, `Rejected`, `BlockedOnInput`, `Parked`, `Canceled`, `Failed`) fuses assignment lifecycle, process occupancy, and the in-flight Lead↔worker exchange. That is why park looks like a phase, fail looks like a park, completed looks like death, a question looks like `working` or `blocked_on_input` depending on kind, and dispatch has to pretend `Submitted` means "please spawn."
-
-Replace it with two models on the same durable row:
+Two models on the same durable row:
 
 1. **A session is a durable object plus an occupancy reconciler.** There is no terminal state. Desired occupancy and observed occupancy share one vocabulary (`none | on_disk | running`). Intermediary names (`spawning`, `parking`, `retrying`) are not states: mismatch *is* the in-flight window. `health` is mechanical only. `hidden` is a filter, not a phase.
-2. **The real state machine is the message exchange.** At most one outstanding envelope per session. Busy is derived from it, never stored on the session.
+2. **The state machine is the message exchange.** At most one outstanding envelope per session. Busy is derived from it, never stored on the session.
 
-Engineers implement this file. `spec.md` §6 is then replaced by a condensed form of it. Skills (`lead-skill.md`, `worker-skill.md`, `enroll-skill.md`) change in a later PR; tool *names* do not change here.
+Detail and command matrix for occupancy and the message machine. Spec §6 is the condensed form. Tool *names* are unchanged.
 
 ---
 
 ## Background & Motivation
 
-### What the enum is actually tracking
+Spec §6 is the present model. This section is why occupancy and the message machine exist.
 
-As of this writing the plane's source of truth is `SessionState` on `SessionRow` (`src/Landbridge.ControlPlane/Entities.cs`), applied by `SessionStateMachine` (`src/Landbridge.Core/SessionStateMachine.cs`) through `SessionStore.ApplyAsync`. Three facts hide behind one column:
+### What a fused session enum mixed
+
+Three facts hid behind one column:
 
 | Fact | Today's encoding | What it really is |
 |---|---|---|

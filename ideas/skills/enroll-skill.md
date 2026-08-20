@@ -44,9 +44,9 @@ The plane's MCP server is handed over on `session/new` — do not write a bearer
 and nothing the plane can push. Adding, renaming, editing, or deleting a
 profile is invisible until you restart the daemon. The next heartbeat is what
 publishes the new names to the Machine Group — the only channel the plane uses
-for routing. Until that beat lands, a session aimed at a new name sits in
-`Submitted` with `Attempt` at 0, the same quiet failure as a typo. A restart
-kills every agent on this machine and their sessions fail (`Failed`, waiting
+for routing. Until that beat lands, a session aimed at a new name sits with
+`desired=running` and `observed=none`, `Attempt` at 0, the same quiet failure as a typo. A restart
+kills every agent on this machine and their sessions go `health=failed` (waiting
 on the Lead); that is the cost of a profile change, not a bug. Say so to the
 human before they edit a live box.
 
@@ -92,7 +92,7 @@ Two bars, neither negotiable, neither degrading gracefully. Confirm both by runn
 
 **2. Is it an ACP agent?** `landbridged` speaks Agent Client Protocol over stdio. Native: `grok agent stdio`, `opencode acp`, `goose acp`. Adapters: `claude-agent-acp`, `codex-acp`. A CLI that only has `-p` / `exec` / `run` is not enough. `goose serve` is a remote HTTP/WebSocket server, not this client's transport.
 
-**3. Do not put bypass / always-approve / yolo in `spawn`.** Permissions are `session/request_permission`. landbridged posts the worker bearer at `POST /worker/permission` and a Lead or human decides. A bypass flag on argv skips a dialog Landbridge is now the one answering.
+**3. Do not put bypass / always-approve / yolo in `spawn`.** Permissions are `session/request_permission`. landbridged posts the worker bearer at `POST /worker/permission` and a Lead or human decides. A bypass flag on argv skips that dialog.
 
 Then test **park**: `park_session` a live session and confirm the process is gone. Wait TTL is off by default — a forgotten question holds the lease until you answer or deactivate. Permission waits cannot be parked.
 
@@ -157,20 +157,20 @@ The failure you are hunting is the quiet one — a machine that heartbeats, read
 | The machine is present at all | `/dashboard/machines` | a section for this machine id, `heartbeat Ns ago` inside your `heartbeat_seconds` |
 | It declares this profile | same page, profile badges | the name is listed; `no profiles declared` means no heartbeat has landed yet |
 | It will accept work | same page, badge | `ready` — `not ready` or `back-pressure` means nothing will dispatch |
-| The session moves | `/dashboard/teams/{team}`, or the Lead's `get_team_state` | `Submitted` → `Working` → `Verifying`, with `Attempt` reaching 1 and staying there |
+| The session moves | `/dashboard/teams/{team}`, or the Lead's `get_team_state` | occupancy `running`/`running`, then `awaiting_report` after `report_result`, with `Attempt` reaching 1 and staying there |
 | The work actually happened | the session's report | the value it was asked for, not a restatement of the ask |
 
 Both views take `?format=json` if you would rather read them structured — the Team view with a Lead bearer token, the Machine Group view with an operator session only (machine enumeration is human-only by design, so a Lead token gets a 403 there). There is no MCP tool that lists machines and none that reads events — for those two the dashboard is the only surface.
 
 The failures worth naming, and what each really looks like:
 
-- **Nothing dispatches: the session sits in `Submitted` with `Attempt` at 0.** No reason is surfaced anywhere — this is the quietest failure in the system. It is a profile-name mismatch (exact string equality; check the spelling against the badges the machine actually published), or the machine is not `ready`, or it never connected. A machine that is not connected does not show as offline; it is absent from `/dashboard/machines` entirely.
-- **Wrong `spawn` argv, or the harness binary is not on `landbridged`'s `PATH`.** `landbridged` prints `command handler threw: …` on its own stdout and nothing else happens — no event, no row, no change on any page. The session stays `Working` until the per-session liveness window (60s) expires and fails it (`Failed`, last reason `LivenessTimeout`), and that record says nothing about the spawn. An unwritable `work_root` surfaces identically, since `landbridged` creates the work dir (and writes `mcp.json` when the profile names `{mcp_config}`). **If a session fails with no explanation, read `landbridged`'s stdout before anything else.**
-- **The harness starts and exits immediately** — a rejected flag, a permission mode managed settings forbid, a missing credential. The exit code rides the `exited` event but is stored and displayed nowhere, so a fast crash is indistinguishable from a hang: same liveness timeout, same `Failed`. The transcript is the only place the reason exists.
+- **Nothing dispatches: occupancy stays `desired=running` / `observed=none` with `Attempt` at 0.** No reason is surfaced anywhere — this is the quietest failure in the system. It is a profile-name mismatch (exact string equality; check the spelling against the badges the machine actually published), or the machine is not `ready`, or it never connected. A machine that is not connected does not show as offline; it is absent from `/dashboard/machines` entirely.
+- **Wrong `spawn` argv, or the harness binary is not on `landbridged`'s `PATH`.** `landbridged` prints `command handler threw: …` on its own stdout and nothing else happens — no event, no row, no change on any page. The session sits occupying until the per-session liveness window (60s) expires and `health=failed` (`LivenessTimeout`), and that record says nothing about the spawn. An unwritable `work_root` surfaces identically, since `landbridged` creates the work dir (and writes `mcp.json` when the profile names `{mcp_config}`). **If a session fails with no explanation, read `landbridged`'s stdout before anything else.**
+- **The harness starts and exits immediately** — a rejected flag, a permission mode managed settings forbid, a missing credential. The exit code rides the `exited` event but is stored and displayed nowhere, so a fast crash is indistinguishable from a hang: same liveness timeout, same `health=failed`. The transcript is the only place the reason exists.
 - **The worker cannot authenticate to the plane.** Do not wait for an `auth-failed` event. The plane can record one, but `landbridged` never emits one, so none will arrive. A rejected worker token appears as a 401 inside the harness's own output and `report_result` simply never lands — the transcript again.
-- **`Failed` after one attempt.** The plane does not requeue. Handshake flakes, spawn failures, and dead processes land as `Failed` with a plane-authored reason and wait for the Lead. If you see `Attempt` climbing, a Lead is resuming those failures on purpose — read the last reason, not the count.
+- **`health=failed` after one attempt.** The plane does not requeue. Handshake flakes, spawn failures, and dead processes land as `health=failed` with a plane-authored reason and wait for the Lead. If you see `Attempt` climbing, a Lead is retrying those failures on purpose — read the last reason, not the count.
 
-**Then test the kill path on that same profile, and do not skip it because dispatch worked.** Have the human cancel the session mid-flight (`cancel_session`, disposition `preserve`) and confirm the process is actually gone — that is the assertion that matters, and spawn differs per profile, so a stop that worked on `any-linux` is not evidence for `goose-devbox-linux`. A machine that dispatches but cannot be stopped looks fine right up until someone needs to stop a runaway agent — the worst possible moment to find out. When you are done, `park_session` or accept anything still in `verifying` — a report keeps the process.
+**Then test the kill path on that same profile, and do not skip it because dispatch worked.** Have the human cancel the session mid-flight (`cancel_session`, disposition `preserve`) and confirm the process is actually gone — that is the assertion that matters, and spawn differs per profile, so a stop that worked on `any-linux` is not evidence for `goose-devbox-linux`. A machine that dispatches but cannot be stopped looks fine right up until someone needs to stop a runaway agent — the worst possible moment to find out. When you are done, `park_session` or accept anything still `awaiting_report` — a report keeps the process.
 
 **What to expect from stop.** A stop is `session/cancel` plus the wind-down deadline. The runner reports that the cancel was *sent*, never that the agent obeyed it (cancel is a notification with no reply). Confirm the process is gone after the deadline. There is no `stop.mode` to choose.
 
@@ -180,7 +180,7 @@ Two things you cannot verify by hand, so do not claim them either way: whether t
 
 ## Profile check — dummy sessions from the plane
 
-The control plane will mint a fixed set of dummy sessions aimed at **one profile you name** and expose their states. This is the stand-in for the unbuilt §11 conformance run. It does **not** judge the answers — a session that reaches `verifying` is a worker that called `report_result`. A report keeps the process. One POST is one profile; walk the config and POST once per name.
+The control plane will mint a fixed set of dummy sessions aimed at **one profile you name** and expose their occupancy and message state. This is the stand-in for the unbuilt §11 conformance run. It does **not** judge the answers — a session that is `awaiting_report` is a worker that called `report_result`. A report keeps the process. One POST is one profile; walk the config and POST once per name.
 
 After `landbridged` is up and the name is on this machine's badges, have the human (operator session, not a Lead token) start a run. `profile` is required — the exact string from the runner config (`goose-devbox-linux`, or `any-linux` if you added the group name):
 
@@ -206,9 +206,9 @@ Poll progress:
 GET /dashboard/conformance/{runId}?format=json
 ```
 
-`workerDone` is true when every session is `verifying` or `completed` and none failed. `pending` includes `submitted` (no machine claimed it — usually the profile name is not on a heartbeat yet) and `working`. `failed` is `canceled`, `rejected`, or `Failed` (infrastructure gave up). A `machinesDeclaring` of `[]` with sessions stuck in `submitted` is the restart-the-daemon miss from above.
+`workerDone` is true when every session is `awaiting_report` or hidden (accepted) and none is `health=failed`. `pending` includes unclaimed occupancy (`desired=running`, `observed=none` — usually the profile name is not on a heartbeat yet) and live work. `failed` is `health=failed` (infrastructure gave up) or a hidden cancel/discard. A `machinesDeclaring` of `[]` with sessions stuck unclaimed is the restart-the-daemon miss from above.
 
-Do not skip the kill-path check above because the dummy set reached `verifying`. Dummy sessions never exercise `stop`. When you are done, `park_session` or accept each dummy — or those workers keep the machine. Then POST again with the next name in the config.
+Do not skip the kill-path check above because the dummy set reached `awaiting_report`. Dummy sessions never exercise `stop`. When you are done, `park_session` or accept each dummy — or those workers keep the machine. Then POST again with the next name in the config.
 
 > **Future work (spec §11).** The conformance run automates the above and goes past it: per declared profile, the control plane would judge event attribution by session id, heartbeat cadence against the config, two concurrent sessions tracked independently, `stop` acknowledgement (and message delivery demonstrably reaching the agent as a turn), `TTL=0` killing one process while its sibling survives, a relay forward round-tripping and its listener closing on release, an approval-prone session completing without hanging, and a parked session resuming from its recorded directory with context intact — admitting the machine as `ready` on a pass, or leaving it registered-but-unclaimable with the failing step named. None of that exists yet. The manual per-profile pass above is its stand-in, not a preview of it.
 
@@ -218,7 +218,7 @@ Nothing about this setup is meant to be hand-maintained. Re-running this flow �
 
 Spec §11 also wants the config stamped with the version of this skill, so the control plane can flag stale machines for a re-run. **That does not exist**: nothing writes a version, nothing serves one, and a `skill_version` key added by hand is silently dropped when the config parses. Until it lands, a machine's config is only as current as whoever last re-ran this — so when you notice a config written against older guidance, say so to the human rather than assuming the plane will catch it.
 
-Note that `landbridged` keeps no state a restart would try to reconcile: no session ledger, no process re-adoption. If it restarts, every agent on this machine is killed and their sessions fail (`Failed`) — that is deliberate, not a fault. On start it also kills any stray harness processes it finds, which is what makes the guarantee survive an unclean shutdown. The state dir is the exception, and a narrow one: it holds the machine credentials and, where capture is on, the transcripts, which must outlive both a session teardown and a restart.
+Note that `landbridged` keeps no state a restart would try to reconcile: no session ledger, no process re-adoption. If it restarts, every agent on this machine is killed and their sessions go `health=failed` — that is deliberate, not a fault. On start it also kills any stray harness processes it finds, which is what makes the guarantee survive an unclean shutdown. The state dir is the exception, and a narrow one: it holds the machine credentials and, where capture is on, the transcripts, which must outlive both a session teardown and a restart.
 
 ## A note on what this machine is
 
