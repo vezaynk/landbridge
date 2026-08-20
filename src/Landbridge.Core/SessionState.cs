@@ -1,6 +1,61 @@
 namespace Landbridge.Core;
 
-/// <summary>Task states, spec §6.</summary>
+/// <summary>
+/// Occupancy vocabulary, identical on desired and observed
+/// (<c>ideas/occupancy-and-messages.md</c>). Not a lifecycle enum.
+/// </summary>
+public enum Occupancy
+{
+    None,
+    OnDisk,
+    Running,
+}
+
+/// <summary>Mechanical health only. Failed is not a terminal session state.</summary>
+public enum SessionHealth
+{
+    Ok,
+    Failed,
+}
+
+/// <summary>The one outstanding Lead↔worker envelope. The real state machine.</summary>
+public enum MessageState
+{
+    Idle,
+    AwaitingLead,
+    AwaitingPermission,
+    AwaitingReport,
+    AwaitingPull,
+}
+
+/// <summary>Last report adjudication, stored on the message, not a session phase.</summary>
+public enum MessageVerdict
+{
+    Accepted,
+    Discarded,
+}
+
+/// <summary>
+/// How the outstanding envelope closed. MCP Tasks project this as a terminal
+/// status; the session itself is not terminal.
+/// </summary>
+public enum MessageTerminal
+{
+    Completed,
+    Cancelled,
+}
+
+/// <summary>How the next spawn should reach ACP. Null is not claimable.</summary>
+public enum PendingSpawn
+{
+    New,
+    Load,
+}
+
+/// <summary>
+/// Derived view of occupancy + health + hidden + message for unconverted readers.
+/// Not the source of truth. Hidden/verdict rank before health.
+/// </summary>
 public enum SessionState
 {
     Submitted,
@@ -24,7 +79,10 @@ public enum SessionState
 
 public static class SessionStateExtensions
 {
-    /// <summary>Spec §6: terminal states are final and never resumed.</summary>
+    /// <summary>
+    /// Derived filter: hidden healthy rows (accept/discard/cancel). Failed is
+    /// not terminal — same-id retry is legal. ObserveOccupancy is always allowed.
+    /// </summary>
     public static bool IsTerminal(this SessionState state) =>
         state is SessionState.Completed or SessionState.Rejected or SessionState.Canceled;
 }

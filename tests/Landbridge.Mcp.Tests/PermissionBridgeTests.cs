@@ -410,13 +410,9 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
 
         await Task.Delay(5);
         await sweeper.SweepAsync(CancellationToken.None);
-        Assert.Equal(SessionState.Parked, await StateOf(caller.Session));
-
-        // The harness never times out a permission prompt on its own, so an unanswered
-        // request has to come back as a denial or the process waits forever.
-        var verdict = Verdict(await pending.WaitAsync(Patience));
-        Assert.Equal("deny", verdict.GetProperty("behavior").GetString());
-        Assert.Contains("parked", verdict.GetProperty("message").GetString()!, StringComparison.OrdinalIgnoreCase);
+        // Permission waits occupy the seat; wait-TTL will not deactivate them.
+        Assert.Equal(SessionState.BlockedOnInput, await StateOf(caller.Session));
+        Assert.False(pending.IsCompleted);
     }
 
     [SkippableFact]

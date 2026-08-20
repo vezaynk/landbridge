@@ -462,7 +462,12 @@ public sealed class SessionStore(
             .SqlQuery<Guid>(
                 $"""
                  SELECT id AS "Value" FROM sessions
-                 WHERE state = 'Submitted'
+                 WHERE occupancy_desired = 'Running'
+                   AND occupancy_observed IN ('None', 'OnDisk')
+                   AND health = 'Ok'
+                   AND hidden = false
+                   AND current_instance_id IS NULL
+                   AND pending_spawn IN ('New', 'Load')
                    AND profile = ANY({profiles})
                    AND (
                          preferred_machine IS NULL
@@ -578,7 +583,8 @@ public sealed class SessionStore(
                     .OrderByDescending(w => w.CreatedAt)
                     .ThenByDescending(w => w.Id)
                     .Select(w => w.MachineId)
-                    .FirstOrDefault()))
+                    .FirstOrDefault(),
+                t.Health))
             .FirstOrDefaultAsync(ct);
 
     /// <summary>
@@ -617,9 +623,9 @@ public sealed class SessionStore(
         var row = await db.Sessions.AsNoTracking().FirstOrDefaultAsync(t => t.Id == caller.Session.Value, ct);
         if (row is null)
             return new StoreResult.NotFound($"no task {caller.Session}");
-        if (row.State != SessionState.Working)
+        if (row.OccupancyObserved != Occupancy.Running && row.CurrentInstanceId is null)
             return new StoreResult.Rejected(Rule.InvalidSourceState,
-                $"services register only while working, not {row.State}");
+                $"services register only while a live attempt is seated, not {row.OccupancyObserved}");
         if (row.TeamId != caller.Team.Value || row.CurrentInstanceId != caller.Instance.Value)
             return new StoreResult.Rejected(Rule.IncumbentInstanceOnly,
                 "only the incumbent worker of this task may register a service");
@@ -678,6 +684,15 @@ public sealed class SessionStore(
     /// </summary>
     public async Task<WorkerAssignment?> GetAssignmentAsync(WorkerCaller caller, CancellationToken ct = default)
     {
+        var receipt = await ApplyAsync(caller.Session, new PullReceipt(caller), ct);
+        if (receipt is StoreResult.Applied applied)
+        {
+            var r = await db.Sessions.AsNoTracking().FirstAsync(t => t.Id == caller.Session.Value, ct);
+            return new WorkerAssignment(
+                r.Namespace, r.Description, r.Workspace, r.Attempt,
+                r.WorkerReport, r.InputQuestion, r.InputAnswer);
+        }
+
         var row = await db.Sessions.AsNoTracking().FirstOrDefaultAsync(t => t.Id == caller.Session.Value, ct);
         if (row is null)
             return null;
@@ -848,10 +863,7 @@ public sealed class SessionStore(
     /// </summary>
     public async Task<IReadOnlyList<BlockedSessionView>> ListBlockedAsync(CancellationToken ct = default) =>
         await db.Sessions.AsNoTracking()
-            .Where(t => t.BlockedAt != null
-                && (t.State == SessionState.BlockedOnInput
-                    || (t.State == SessionState.Working && t.InputKind != null
-                        && t.InputKind != InputRequestKind.Permission)))
+            .Where(t => t.MessageState == MessageState.AwaitingLead)
             .OrderBy(t => t.BlockedAt)
             .Select(t => new BlockedSessionView(t.Id, t.BlockedAt, t.Attempt, t.HarnessSessionRef))
             .ToListAsync(ct);
@@ -884,7 +896,9 @@ public sealed class SessionStore(
         string machineId, CancellationToken ct = default)
     {
         var ids = await db.Sessions.AsNoTracking()
-            .Where(t => (t.State == SessionState.Working || t.State == SessionState.BlockedOnInput)
+            .Where(t => t.OccupancyDesired == Occupancy.Running
+                && t.Health == SessionHealth.Ok
+                && t.CurrentInstanceId != null
                 && db.WorkerInstances.Any(w =>
                     w.Id == t.CurrentInstanceId && !w.Revoked && w.MachineId == machineId))
             .OrderBy(t => t.Id)
@@ -906,21 +920,120 @@ public sealed class SessionStore(
             .FirstOrDefaultAsync(ct);
 
     /// <summary>
-    /// True when a <c>working</c> task has a pending question (not a permission
-    /// wait). A turn ending then is idle-correct, not a silent death.
+    /// True when the Lead (or a live permission wait) is the bottleneck, so
+    /// no-progress must not treat the worker as wedged. <c>awaiting_pull</c> is
+    /// the worker's move and is not skipped.
     /// </summary>
     public async Task<bool> IsAwaitingLeadAsync(SessionId id, CancellationToken ct = default) =>
         await db.Sessions.AsNoTracking()
             .AnyAsync(t => t.Id == id.Value
-                && t.State == SessionState.Working
-                && (
-                    (t.BlockedAt != null
-                        && t.InputKind != null
-                        && t.InputKind != InputRequestKind.Permission)
-                    // A deny is guidance. The worker often ends the turn after it
-                    // instead of asking again; that is idle, not TurnEndedWithoutResult.
+                && ((t.MessageState == MessageState.AwaitingLead
+                        || t.MessageState == MessageState.AwaitingReport
+                        || t.MessageState == MessageState.AwaitingPermission)
                     || (t.InputKind == InputRequestKind.Permission
                         && t.PermissionVerdict == PermissionVerdict.Deny)), ct);
+
+    public sealed record OccupancyLookaside(
+        string? HarnessSessionRef, string? PreferredMachine, string? ParkMachine);
+
+    /// <summary>One MCP Tasks projection of a message envelope.</summary>
+    public sealed record SessionTaskSnapshot(
+        Guid TaskId,
+        SessionId SessionId,
+        SessionTaskStatus Status,
+        string? StatusMessage,
+        DateTimeOffset CreatedAt,
+        DateTimeOffset LastUpdatedAt);
+
+    public async Task<OccupancyLookaside?> GetOccupancyAsync(SessionId id, CancellationToken ct = default) =>
+        await db.Sessions.AsNoTracking()
+            .Where(t => t.Id == id.Value)
+            .Select(t => new OccupancyLookaside(t.HarnessSessionRef, t.PreferredMachine, t.ParkMachine))
+            .FirstOrDefaultAsync(ct);
+
+    /// <summary>
+    /// Live envelope or last-closed envelope, Team-scoped. Task id is
+    /// <see cref="SessionRow.MessageId"/> / <see cref="SessionRow.LastMessageId"/>.
+    /// </summary>
+    public async Task<SessionTaskSnapshot?> GetTaskSnapshotAsync(
+        TeamId team, Guid taskId, CancellationToken ct = default)
+    {
+        var row = await db.Sessions.AsNoTracking()
+            .FirstOrDefaultAsync(t => t.TeamId == team.Value
+                && (t.MessageId == taskId || t.LastMessageId == taskId), ct);
+        if (row is null)
+            return null;
+        return EnvelopeSnapshot(row, taskId);
+    }
+
+    /// <summary>
+    /// Outstanding envelopes plus the last closed envelope per session.
+    /// Cursor is the last task id from the previous page.
+    /// </summary>
+    public async Task<(IReadOnlyList<SessionTaskSnapshot> Tasks, string? NextCursor)> ListTaskSnapshotsAsync(
+        TeamId team, string? cursor, int take, CancellationToken ct = default)
+    {
+        if (take < 1)
+            take = 50;
+
+        var rows = await db.Sessions.AsNoTracking()
+            .Where(t => t.TeamId == team.Value
+                && (t.MessageId != null || t.LastMessageId != null))
+            .ToListAsync(ct);
+
+        var tasks = rows
+            .SelectMany(EnvelopeSnapshots)
+            .OrderBy(t => t.TaskId)
+            .ToList();
+
+        if (cursor is { Length: > 0 })
+        {
+            if (!Guid.TryParse(cursor, out var after))
+                throw new ArgumentException("invalid cursor", nameof(cursor));
+            tasks = tasks.Where(t => t.TaskId.CompareTo(after) > 0).ToList();
+        }
+
+        string? next = null;
+        if (tasks.Count > take)
+        {
+            next = tasks[take - 1].TaskId.ToString();
+            tasks = tasks.Take(take).ToList();
+        }
+
+        return (tasks, next);
+    }
+
+    private IEnumerable<SessionTaskSnapshot> EnvelopeSnapshots(SessionRow row)
+    {
+        if (row.MessageId is { } live)
+            yield return EnvelopeSnapshot(row, live);
+        if (row.LastMessageId is { } last && last != row.MessageId)
+            yield return EnvelopeSnapshot(row, last);
+    }
+
+    private SessionTaskSnapshot EnvelopeSnapshot(SessionRow row, Guid taskId)
+    {
+        var now = clock.GetUtcNow();
+        var live = row.MessageId == taskId;
+        var status = live
+            ? SessionTaskProjection.LiveStatus(row.MessageState)
+            : SessionTaskProjection.ClosedStatus(row.LastMessageTerminal);
+        var created = live
+            ? row.MessageOpenedAt ?? now
+            : row.LastMessageClosedAt ?? now;
+        var updated = live
+            ? row.MessageOpenedAt ?? now
+            : row.LastMessageClosedAt ?? created;
+        return new SessionTaskSnapshot(
+            taskId,
+            new SessionId(row.Id),
+            status,
+            live
+                ? SessionTaskProjection.LiveStatusMessage(row.MessageState)
+                : SessionTaskProjection.ClosedStatusMessage(row.LastMessageTerminal, row.MessageVerdict),
+            created,
+            updated);
+    }
 
     /// <summary>
     /// The state read of <see cref="GetStateAsync"/> plus the instance currently working the
@@ -1125,7 +1238,13 @@ public sealed class SessionStore(
             return new StoreResult.Rejected(r.Rule, r.Reason);
 
         var ok = (TransitionResult.Transitioned)result;
+        var prevMessageId = row.MessageId;
+        var prevLastMessageId = row.LastMessageId;
         row.CopyFrom(ok.Session);
+        if (row.MessageId != prevMessageId)
+            row.MessageOpenedAt = row.MessageId is null ? null : clock.GetUtcNow();
+        if (row.LastMessageId != prevLastMessageId && row.LastMessageId is not null)
+            row.LastMessageClosedAt = clock.GetUtcNow();
         // #23, §7: the reported result reference is opaque content the store
         // captures on the working → verifying transition. The engine and
         // SessionRecord stay content-free (the reference never lands on the pure
@@ -1180,11 +1299,11 @@ public sealed class SessionStore(
             row.PermissionEscalatedAt = null;
             row.PermissionEscalationReason = null;
         }
-        else if (command is not EscalatePermission)
+        else if (command is not EscalatePermission and not ObserveOccupancy)
             // Leave BlockedAt only for a still-open wait: a new RequestInput
             // (stamped above) or an escalation (same permission request, still
-            // blocked). Everything else — answer, continue, park, liveness loss,
-            // report, cancel — has left the wait, even when the row stays working.
+            // blocked). Occupancy catch-up is not leaving the wait. Everything else
+            // — answer, continue, park, liveness loss, report, cancel — has left it.
             row.BlockedAt = null;
 
         // §11 permission bridge, the two transitions that decide and re-route a permission
@@ -1231,7 +1350,8 @@ public sealed class SessionStore(
         // claimed by any profile-matching box, and load then runs in the wrong
         // cwd. Continuations already carry their own preferred machine — leave
         // those alone. Pin, not Degrade: gone means wait, not a cold start.
-        if (ok.Session.State is SessionState.Parked or SessionState.Failed
+        if ((ok.Session.Health == SessionHealth.Failed
+             || ok.Session.OccupancyDesired == Occupancy.OnDisk)
             && row.PreferredMachine is null)
         {
             var lastMachine = row.ParkMachine ?? LastMachineOf(row.Id);
@@ -1281,9 +1401,12 @@ public sealed class SessionStore(
                 => PermissionWaitDetail(ask),
             _ => DescribeEffects(ok.Effects),
         };
-        AppendEvent(row.Id, row.TeamId, command.GetType().Name, before, row.State,
+        var occupancyFailed = command is ObserveOccupancy && ok.Session.Health == SessionHealth.Failed;
+        AppendEvent(row.Id, row.TeamId,
+            occupancyFailed ? nameof(LivenessLost) : command.GetType().Name, before, row.State,
             detail: detail, inputKind: inputKind,
-            livenessReason: (command as LivenessLost)?.Reason,
+            livenessReason: (command as LivenessLost)?.Reason
+                ?? (occupancyFailed ? LivenessLossReason.ProcessExited : null),
             permissionVerdict: (command as AnswerPermission)?.Verdict,
             permissionAnswerer: command is AnswerPermission byWhom ? AnswererOf(byWhom.Actor) : null);
 

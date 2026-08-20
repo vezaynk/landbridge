@@ -191,11 +191,13 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         var clock = new FakeTimeProvider();
         var seeded = await SeedWorkingAsync(clock, "m1");
 
-        // Reported result while the plane was down: the dispatch is over, the worker is
-        // finished, and the task is waiting on a Lead — not on a clock. Re-adopting it
-        // would put a verifying task back under the liveness scan.
+        // Lead accepted while the plane was down: hidden, occupancy released. Re-adopting
+        // it would put a finished session back under the liveness scan.
         await ReportResultAsync(clock, seeded);
-        Assert.Equal(SessionState.Verifying, await StateAsync(clock, seeded.Session));
+        await using (var db = pg.NewContext())
+            Assert.IsType<StoreResult.Applied>(await new SessionStore(db, clock).ApplyAsync(
+                seeded.Session, new VerdictAccept(new LeadClaim(seeded.Team))));
+        Assert.Equal(SessionState.Completed, await StateAsync(clock, seeded.Session));
 
         var registry = ReconnectedMachine(clock, "m1");
         Assert.Equal(0, await NewDispatch(clock, registry).RehydrateMachineAsync("m1", default));

@@ -53,22 +53,33 @@ public static class SessionStateMachine
                     $"preferred machine does not declare profile '{requiredProfile}' the continuation requires");
         }
 
-        return TransitionResult.Ok(new SessionRecord
+        return Done(new SessionRecord
         {
             Id = id,
             Team = command.Team,
             Namespace = serverAssignedNamespace,
             Profile = command.Profile,
+            OccupancyDesired = Occupancy.Running,
+            OccupancyObserved = Occupancy.None,
+            Health = SessionHealth.Ok,
+            Hidden = false,
+            MessageState = MessageState.Idle,
+            PendingSpawn = PendingSpawn.New,
         });
     }
 
     public static TransitionResult Apply(SessionRecord task, SessionCommand command)
     {
-        if (task.State.IsTerminal())
+        if (command is ObserveOccupancy observe)
+            return Finalize(task, ApplyObserveOccupancy(task, observe));
+
+        // Hidden healthy rows refuse same-id work (derived Completed/Rejected/Canceled).
+        // Failed is not terminal. ObserveOccupancy is already handled.
+        if (task.Hidden && task.Health == SessionHealth.Ok && command is not Cancel)
             return TransitionResult.Reject(Rule.TerminalStatesAreFinal,
                 $"{task.State} is terminal and never resumed");
 
-        return command switch
+        return Finalize(task, command switch
         {
             Dispatch c => ApplyDispatch(task, c),
             LivenessLost c => ApplyLivenessLost(task, c),
@@ -86,16 +97,84 @@ public static class SessionStateMachine
             WakeParked c => ApplyWakeParked(task, c),
             StopPreserveAndPark c => ApplyStopPreserveAndPark(task, c),
             Cancel c => ApplyCancel(task, c),
+            PullReceipt c => ApplyPullReceipt(task, c),
             CreateSession => TransitionResult.Reject(Rule.InvalidSourceState,
                 "CreateSession applies to no existing record; use Create"),
             _ => TransitionResult.Reject(Rule.InvalidSourceState,
                 $"unrecognized command {command.GetType().Name}"),
-        };
+        });
+    }
+
+    private static TransitionResult Done(SessionRecord task, params Effect[] effects) =>
+        TransitionResult.Ok(task with { State = SessionRecord.DeriveState(task) }, effects);
+
+    private static TransitionResult Finalize(SessionRecord before, TransitionResult result)
+    {
+        if (result is not TransitionResult.Transitioned t)
+            return result;
+        var after = CarryEnvelope(before, t.Session);
+        return TransitionResult.Ok(after with { State = SessionRecord.DeriveState(after) }, [.. t.Effects]);
+    }
+
+    /// <summary>
+    /// One outstanding envelope per session. Leaving <see cref="MessageState.Idle"/>
+    /// mints <see cref="SessionRecord.MessageId"/> (the MCP task id). Returning to
+    /// idle closes it onto <see cref="SessionRecord.LastMessageId"/>. Retry of
+    /// <c>health=failed</c> with a note is a new envelope, not a resurrection.
+    /// </summary>
+    private static SessionRecord CarryEnvelope(SessionRecord before, SessionRecord after)
+    {
+        var wasOpen = before.MessageState != MessageState.Idle;
+        var nowOpen = after.MessageState != MessageState.Idle;
+        var retry = before.Health == SessionHealth.Failed && after.Health == SessionHealth.Ok;
+
+        if (retry && wasOpen)
+        {
+            var closed = after with
+            {
+                LastMessageId = before.MessageId,
+                LastMessageTerminal = MessageTerminal.Cancelled,
+                MessageId = nowOpen ? Guid.NewGuid() : null,
+            };
+            return closed;
+        }
+
+        if (!wasOpen && nowOpen)
+            return after with { MessageId = Guid.NewGuid() };
+
+        if (wasOpen && nowOpen)
+            return after with { MessageId = before.MessageId ?? Guid.NewGuid() };
+
+        if (wasOpen && !nowOpen)
+        {
+            return after with
+            {
+                LastMessageId = before.MessageId,
+                LastMessageTerminal = CloseTerminal(before, after),
+                MessageId = null,
+            };
+        }
+
+        return after with { MessageId = null };
+    }
+
+    private static MessageTerminal CloseTerminal(SessionRecord before, SessionRecord after)
+    {
+        if (after.MessageVerdict is MessageVerdict.Accepted or MessageVerdict.Discarded
+            && after.MessageVerdict != before.MessageVerdict)
+            return MessageTerminal.Completed;
+        if (after.Hidden && !before.Hidden)
+            return MessageTerminal.Cancelled;
+        return MessageTerminal.Completed;
     }
 
     private static TransitionResult ApplyDispatch(SessionRecord task, Dispatch c)
     {
-        if (task.State != SessionState.Submitted)
+        if (task.Hidden || task.Health != SessionHealth.Ok
+            || task.OccupancyDesired != Occupancy.Running
+            || task.OccupancyObserved is not (Occupancy.None or Occupancy.OnDisk)
+            || task.CurrentInstance is not null
+            || task.PendingSpawn is null)
             return WrongState(task, SessionState.Submitted);
 
         if (!c.Machine.Ready)
@@ -112,10 +191,9 @@ public static class SessionStateMachine
             return TransitionResult.Reject(Rule.MachineIneligibleForDispatch,
                 $"machine {c.Machine.MachineId} does not declare profile '{requiredProfile}'");
 
-        return TransitionResult.Ok(
+        return Done(
             task with
             {
-                State = SessionState.Working,
                 CurrentInstance = c.NewInstance,
                 Attempt = task.Attempt + 1,
             },
@@ -124,24 +202,13 @@ public static class SessionStateMachine
 
     private static TransitionResult ApplyLivenessLost(SessionRecord task, LivenessLost c)
     {
-        if (task.State is not (SessionState.Working or SessionState.BlockedOnInput or SessionState.Verifying))
+        if (task.OccupancyDesired != Occupancy.Running || task.CurrentInstance is null)
             return TransitionResult.Reject(Rule.InvalidSourceState,
-                $"liveness loss applies to working, blocked_on_input, or verifying, not {task.State}");
+                "liveness loss applies only to a live attempt (desired running and instance set)");
 
         // §9 check 14: a loss that names the attempt it judged applies only while that
-        // attempt is still working this task. The plane's per-dispatch clocks read the row,
-        // decide, and then send this command, so this is where that read is re-checked
-        // against committed state — and without it the requeue landed on whatever the row
-        // held by the time it arrived. That is how a task which parked on a permission
-        // request in between was requeued out from under a worker still alive inside its
-        // tool call (the incumbent is deliberately kept there, §11), taking a §9 check 7
-        // requeue and a kill with it; and how a redispatched successor was requeued for its
-        // predecessor's silence. Machine death carries no instance and is untouched: it is a
-        // fact about the machine rather than about one attempt, and still applies from
-        // blocked_on_input.
-        if (c.Instance is { } judged
-            && (task.State is not (SessionState.Working or SessionState.Verifying)
-                || task.CurrentInstance != judged))
+        // attempt is still the incumbent of a live desired-running row.
+        if (c.Instance is { } judged && task.CurrentInstance != judged)
             return TransitionResult.Reject(Rule.IncumbentInstanceOnly,
                 $"liveness loss was decided about instance {judged}, which is no longer the "
                 + $"incumbent of a live attempt (now {task.State}); the dispatch it judged has moved on");
@@ -149,16 +216,19 @@ public static class SessionStateMachine
         var effects = new List<Effect> { new ClearServicesAndForwards() };
         if (task.CurrentInstance is { } instance)
             effects.Insert(0, new RevokeWorkerInstanceToken(instance));
+        if (task.Park is { } park)
+            effects.Add(new WriteParkRecord(park));
 
-        // No automatic requeue. Failed is a park the Lead did not ask for: same
-        // release (token gone, process gone, workspace kept), plane-authored
-        // reason, inbox. Resume is WakeParked → session/load, with a note if
-        // the Lead thinks the reason was flaky.
-        return TransitionResult.Ok(
+        return Done(
             task with
             {
-                State = SessionState.Failed,
+                Health = SessionHealth.Failed,
                 CurrentInstance = null,
+                OccupancyObserved = task.OccupancyObserved == Occupancy.Running
+                    ? Occupancy.OnDisk
+                    : task.OccupancyObserved,
+                OccupancyDesired = Occupancy.Running,
+                PendingSpawn = null,
                 InfrastructureRequeues = task.InfrastructureRequeues + 1,
                 LastRequeueReason = c.Reason,
             },
@@ -167,7 +237,11 @@ public static class SessionStateMachine
 
     private static TransitionResult ApplyReportResult(SessionRecord task, ReportResult c)
     {
-        if (task.State != SessionState.Working)
+        if (task.MessageState != MessageState.Idle)
+            return WrongState(task, SessionState.Working);
+
+        if (task.Health != SessionHealth.Ok || task.Hidden
+            || (task.OccupancyObserved != Occupancy.Running && task.CurrentInstance is null))
             return WrongState(task, SessionState.Working);
 
         if (RequireIncumbent(task, c.Actor) is { } rejection)
@@ -187,16 +261,17 @@ public static class SessionStateMachine
             is { } tooLong)
             return tooLong;
 
-        // The process stays. A report is "I think I am done", not a yield of the
-        // machine — killing the ACP host would take a compile or a descendant
-        // server with it. Services stay registered. The Lead accepts, replies
-        // (LeadMessage), or parks.
-        return TransitionResult.Ok(task with { State = SessionState.Verifying });
+        return Done(task with
+        {
+            MessageState = MessageState.AwaitingReport,
+            OccupancyObserved = Occupancy.Running,
+            PendingSpawn = null,
+        });
     }
 
     private static TransitionResult ApplyVerdict(SessionRecord task, Actor actor, bool accepted)
     {
-        if (task.State != SessionState.Verifying)
+        if (task.MessageState != MessageState.AwaitingReport)
             return WrongState(task, SessionState.Verifying);
 
         // §9 check 4 (doer/judge split): completion comes from a Lead or human
@@ -220,28 +295,46 @@ public static class SessionStateMachine
             effects.Add(new RevokeWorkerInstanceToken(instance));
 
         if (accepted)
-            return TransitionResult.Ok(
-                task with { State = SessionState.Completed, CurrentInstance = null, CompletionProvenance = provenance },
+            return Done(
+                task with
+                {
+                    Hidden = true,
+                    OccupancyDesired = Occupancy.OnDisk,
+                    MessageState = MessageState.Idle,
+                    MessageVerdict = MessageVerdict.Accepted,
+                    CurrentInstance = null,
+                    PendingSpawn = null,
+                    CompletionProvenance = provenance,
+                },
                 effects.ToArray());
 
-        // A fail is not a redispatch. The assignment is rejected; the session
-        // can still be resumed as a new piece of work. No verification-retry
-        // loop — if the Lead wants more from this worker they reply
-        // (LeadMessage) instead of failing.
-        return TransitionResult.Ok(
+        // Discard is hide, not a Rejected phase. MCP still sends fail.
+        return Done(
             task with
             {
-                State = SessionState.Rejected,
+                Hidden = true,
+                OccupancyDesired = Occupancy.OnDisk,
+                MessageState = MessageState.Idle,
+                MessageVerdict = MessageVerdict.Discarded,
                 VerificationFailures = task.VerificationFailures + 1,
                 CurrentInstance = null,
+                PendingSpawn = null,
+                CompletionProvenance = provenance,
             },
             effects.ToArray());
     }
 
     private static TransitionResult ApplyRequestInput(SessionRecord task, RequestInput c)
     {
-        if (task.State != SessionState.Working)
+        if (task.Health != SessionHealth.Ok || task.Hidden)
             return WrongState(task, SessionState.Working);
+        if (task.MessageState != MessageState.Idle)
+            return TransitionResult.Reject(Rule.InvalidSourceState,
+                "request_input requires an idle message envelope");
+        if (c.Kind == InputRequestKind.Permission
+            && task.OccupancyObserved != Occupancy.Running && task.CurrentInstance is null)
+            return TransitionResult.Reject(Rule.PermissionWaiterStillIncumbent,
+                "a permission wait requires a live attempt");
 
         if (RequireIncumbent(task, c.Actor) is { } rejection)
             return rejection;
@@ -279,10 +372,21 @@ public static class SessionStateMachine
         // Lead follow-up (ideas/sessions.md stage 3). Services and the instance
         // stay either way. Park / wait-TTL / a dead-session AnswerInput are the
         // edges that release them.
+        // The worker is observably up even if started never landed (tests, lost event).
         if (c.Kind == InputRequestKind.Permission)
-            return TransitionResult.Ok(task with { State = SessionState.BlockedOnInput });
+            return Done(task with
+            {
+                MessageState = MessageState.AwaitingPermission,
+                OccupancyObserved = Occupancy.Running,
+                PendingSpawn = null,
+            });
 
-        return TransitionResult.Ok(task);
+        return Done(task with
+        {
+            MessageState = MessageState.AwaitingLead,
+            OccupancyObserved = Occupancy.Running,
+            PendingSpawn = null,
+        });
     }
 
     private static TransitionResult ApplyAnswerInput(SessionRecord task, AnswerInput c)
@@ -298,7 +402,8 @@ public static class SessionStateMachine
         // token and requeues for redispatch, which is right for every kind whose worker has
         // already exited — and stranding for the one whose worker is still alive inside a
         // tool call waiting for allow or deny. Refused rather than approximated.
-        if (c.PendingKind == InputRequestKind.Permission)
+        if (task.MessageState == MessageState.AwaitingPermission
+            || c.PendingKind == InputRequestKind.Permission)
             return TransitionResult.Reject(Rule.PermissionVerdictAnswersPermissionRequests,
                 "this task is waiting on a permission verdict, not prose; answer it with allow or deny");
 
@@ -326,12 +431,18 @@ public static class SessionStateMachine
         if (c.Park is { } park)
             effects.Add(new WriteParkRecord(park));
 
-        return TransitionResult.Ok(
+        return Done(
             task with
             {
-                State = SessionState.Submitted,
+                OccupancyDesired = Occupancy.Running,
+                OccupancyObserved = task.OccupancyObserved == Occupancy.Running
+                    ? Occupancy.OnDisk
+                    : task.OccupancyObserved,
+                MessageState = MessageState.AwaitingPull,
                 CurrentInstance = null,
                 Park = c.Park ?? task.Park,
+                PendingSpawn = PendingSpawn.Load,
+                PullRedelivered = false,
             },
             effects.ToArray());
     }
@@ -344,11 +455,10 @@ public static class SessionStateMachine
     /// </summary>
     private static TransitionResult ApplyAnswerPermission(SessionRecord task, AnswerPermission c)
     {
-        if (task.State != SessionState.BlockedOnInput)
+        if (task.MessageState != MessageState.AwaitingPermission)
         {
-            // A question stays working; a verdict on it is the crossed-path
-            // refusal, not a wrong-state one.
-            if (task.State == SessionState.Working && c.PendingKind != InputRequestKind.Permission)
+            if (task.MessageState is MessageState.Idle or MessageState.AwaitingLead
+                && c.PendingKind != InputRequestKind.Permission)
                 return TransitionResult.Reject(Rule.PermissionVerdictAnswersPermissionRequests,
                     "a permission verdict answers a permission request; this task is waiting on "
                     + (c.PendingKind is { } kind ? $"{kind} input" : "input of no recorded kind"));
@@ -392,7 +502,11 @@ public static class SessionStateMachine
             is { } tooLong)
             return tooLong;
 
-        return TransitionResult.Ok(task with { State = SessionState.Working });
+        if (task.OccupancyObserved != Occupancy.Running && task.CurrentInstance is null)
+            return TransitionResult.Reject(Rule.PermissionWaiterStillIncumbent,
+                "a permission verdict requires a live attempt");
+
+        return Done(task with { MessageState = MessageState.Idle });
     }
 
     /// <summary>
@@ -402,7 +516,7 @@ public static class SessionStateMachine
     /// </summary>
     private static TransitionResult ApplyEscalatePermission(SessionRecord task, EscalatePermission c)
     {
-        if (task.State != SessionState.BlockedOnInput)
+        if (task.MessageState != MessageState.AwaitingPermission)
             return WrongState(task, SessionState.BlockedOnInput);
 
         if (c.PendingKind != InputRequestKind.Permission)
@@ -423,37 +537,21 @@ public static class SessionStateMachine
             is { } tooLong)
             return tooLong;
 
-        // The record is unchanged on purpose: state, incumbent, and park all still describe
-        // a task blocked on the same request. What changed is stored beside the request by
-        // the control plane, which is also where the wait deadline it does not reset lives —
-        // escalating does not buy the human more time than the Lead had.
-        return TransitionResult.Ok(task);
+        // The record is unchanged on purpose: occupancy, incumbent, and park all still
+        // describe a task blocked on the same request. Escalating does not require
+        // observed=running (authority flag only).
+        return Done(task);
     }
 
     private static TransitionResult ApplyWaitTtlExpired(SessionRecord task, WaitTtlExpired c)
     {
-        if (task.State is not (SessionState.BlockedOnInput or SessionState.Working))
-            return WrongState(task, SessionState.BlockedOnInput);
-
-        var effects = new List<Effect> { new WriteParkRecord(c.Park), new ClearServicesAndForwards() };
-        if (task.CurrentInstance is { } instance)
-            effects.Insert(0, new RevokeWorkerInstanceToken(instance));
-
-        return TransitionResult.Ok(
-            task with
-            {
-                State = SessionState.Parked,
-                CurrentInstance = null,
-                Park = c.Park,
-            },
-            effects.ToArray());
+        if (task.OccupancyDesired == Occupancy.OnDisk && task.OccupancyObserved != Occupancy.Running)
+            return Done(task with { Park = c.Park }, new WriteParkRecord(c.Park));
+        return Deactivate(task, c.Park, actorChecked: true);
     }
 
     private static TransitionResult ApplyPark(SessionRecord task, Park c)
     {
-        if (task.State is not (SessionState.Working or SessionState.BlockedOnInput or SessionState.Verifying))
-            return WrongState(task, SessionState.Working);
-
         var authorized = c.Actor switch
         {
             HumanSession => true,
@@ -464,32 +562,50 @@ public static class SessionStateMachine
             return TransitionResult.Reject(Rule.ActorLacksAuthority,
                 "park is for the Lead of this Team or a human");
 
-        var effects = new List<Effect> { new WriteParkRecord(c.Record), new ClearServicesAndForwards() };
+        return Deactivate(task, c.Record, actorChecked: true);
+    }
+
+    private static TransitionResult Deactivate(SessionRecord task, ParkRecord park, bool actorChecked)
+    {
+        _ = actorChecked;
+        if (task.Health == SessionHealth.Failed)
+            return TransitionResult.Reject(Rule.InvalidSourceState,
+                "deactivate is refused on health=failed; retry or leave the inbox");
+        if (task.Hidden)
+            return TransitionResult.Reject(Rule.TerminalStatesAreFinal,
+                "deactivate is refused on a hidden row");
+        if (task.MessageState == MessageState.AwaitingPermission)
+            return TransitionResult.Reject(Rule.InvalidSourceState,
+                "deactivate is refused while awaiting_permission; the waiter is live in-process");
+        if (task.OccupancyObserved != Occupancy.Running && task.CurrentInstance is null)
+            return WrongState(task, SessionState.Working);
+
+        var effects = new List<Effect> { new WriteParkRecord(park), new ClearServicesAndForwards() };
         if (task.CurrentInstance is { } instance)
             effects.Insert(0, new RevokeWorkerInstanceToken(instance));
 
-        return TransitionResult.Ok(
+        return Done(
             task with
             {
-                State = SessionState.Parked,
+                OccupancyDesired = Occupancy.OnDisk,
+                OccupancyObserved = Occupancy.OnDisk,
                 CurrentInstance = null,
-                Park = c.Record,
+                Park = park,
+                PendingSpawn = null,
             },
             effects.ToArray());
     }
 
     private static TransitionResult ApplyContinueSession(SessionRecord task, ContinueSession c)
     {
-        if (task.State is not (SessionState.BlockedOnInput or SessionState.Working))
-            return WrongState(task, SessionState.BlockedOnInput);
+        if (task.MessageState == MessageState.AwaitingPermission
+            || c.PendingKind == InputRequestKind.Permission)
+            return TransitionResult.Reject(Rule.PermissionVerdictAnswersPermissionRequests,
+                "this task is waiting on a permission verdict, not prose; answer it with allow or deny");
 
         if (!IsLeadOrHuman(task, c.Actor))
             return TransitionResult.Reject(Rule.ActorLacksAuthority,
                 "input requests are answered by the Lead or a human");
-
-        if (c.PendingKind == InputRequestKind.Permission)
-            return TransitionResult.Reject(Rule.PermissionVerdictAnswersPermissionRequests,
-                "this task is waiting on a permission verdict, not prose; answer it with allow or deny");
 
         if (OverCap(c.Answer, AnswerInput.MaxAnswerBytes, Rule.AnswerWithinSizeCap,
                 "answer",
@@ -501,7 +617,11 @@ public static class SessionStateMachine
             return TransitionResult.Reject(Rule.InvalidSourceState,
                 "continue-session needs the incumbent still on the row");
 
-        return TransitionResult.Ok(task with { State = SessionState.Working });
+        return Done(task with
+        {
+            MessageState = MessageState.AwaitingPull,
+            PullRedelivered = false,
+        });
     }
 
     /// <summary>
@@ -511,20 +631,17 @@ public static class SessionStateMachine
     /// </summary>
     private static TransitionResult ApplyLeadMessage(SessionRecord task, LeadMessage c)
     {
-        if (task.State is not (SessionState.Working or SessionState.Verifying))
-            return WrongState(task, SessionState.Working);
+        if (task.MessageState == MessageState.AwaitingPermission
+            || c.PendingKind == InputRequestKind.Permission)
+            return TransitionResult.Reject(Rule.PermissionVerdictAnswersPermissionRequests,
+                "this task is waiting on a permission verdict, not prose; answer it with allow or deny");
 
         if (!IsLeadOrHuman(task, c.Actor))
             return TransitionResult.Reject(Rule.ActorLacksAuthority,
                 "only the Lead of this Team or a human can message a live worker");
 
-        if (c.PendingKind == InputRequestKind.Permission)
-            return TransitionResult.Reject(Rule.PermissionVerdictAnswersPermissionRequests,
-                "this task is waiting on a permission verdict, not prose; answer it with allow or deny");
-
-        if (task.CurrentInstance is null)
-            return TransitionResult.Reject(Rule.InvalidSourceState,
-                "lead-message needs the incumbent still on the row");
+        if (task.MessageState is not (MessageState.Idle or MessageState.AwaitingReport or MessageState.AwaitingPull))
+            return WrongState(task, SessionState.Working);
 
         if (OverCap(c.Text, AnswerInput.MaxAnswerBytes, Rule.AnswerWithinSizeCap,
                 "message",
@@ -532,48 +649,74 @@ public static class SessionStateMachine
             is { } tooLong)
             return tooLong;
 
-        return TransitionResult.Ok(task with { State = SessionState.Working });
+        // Live path keeps the instance. Occupancy-lag / on-disk path is store-routed
+        // (null instance + pending_spawn=load) before this command, or via WakeParked.
+        return Done(task with
+        {
+            MessageState = MessageState.AwaitingPull,
+            OccupancyDesired = Occupancy.Running,
+            Hidden = false,
+            PullRedelivered = false,
+        });
     }
 
     private static TransitionResult ApplyWakeParked(SessionRecord task, WakeParked c)
     {
-        if (task.State is not (SessionState.Parked or SessionState.Failed))
-            return WrongState(task, SessionState.Parked);
-
-        // Same cap as the blocked half: one answer path, one gate, so a Lead's answer
-        // is accepted or refused identically whether or not the sweeper parked first.
         if (OverCap(c.Answer, AnswerInput.MaxAnswerBytes, Rule.AnswerWithinSizeCap,
                 "answer",
                 "answer the decision and point at a reference for the detail")
             is { } tooLong)
             return tooLong;
 
-        // The park record survives into submitted: redispatch reads it for
-        // machine/directory affinity (§11).
-        return TransitionResult.Ok(task with { State = SessionState.Submitted });
+        if (task.Health == SessionHealth.Failed)
+        {
+            // Same-id retry: session/new, not load. Unhides. Persist even if predecessor dying.
+            var retryEffects = new List<Effect>();
+            if (task.CurrentInstance is { } dying)
+                retryEffects.Add(new RevokeWorkerInstanceToken(dying));
+            return Done(
+                task with
+                {
+                    Health = SessionHealth.Ok,
+                    Hidden = false,
+                    OccupancyDesired = Occupancy.Running,
+                    CurrentInstance = null,
+                    PendingSpawn = PendingSpawn.New,
+                    MessageState = string.IsNullOrWhiteSpace(c.Answer)
+                        ? MessageState.Idle
+                        : MessageState.AwaitingPull,
+                    PullRedelivered = false,
+                    LastRequeueReason = task.LastRequeueReason,
+                },
+                retryEffects.ToArray());
+        }
+
+        if (task.Hidden)
+            return TransitionResult.Reject(Rule.TerminalStatesAreFinal,
+                "same-id wake of a hidden healthy row is refused; new work is a new session id");
+
+        if (task.OccupancyDesired != Occupancy.OnDisk && task.OccupancyObserved != Occupancy.OnDisk)
+            return WrongState(task, SessionState.Parked);
+
+        return Done(task with
+        {
+            OccupancyDesired = Occupancy.Running,
+            PendingSpawn = PendingSpawn.Load,
+            MessageState = string.IsNullOrWhiteSpace(c.Answer)
+                ? task.MessageState
+                : MessageState.AwaitingPull,
+            CurrentInstance = null,
+            PullRedelivered = false,
+        });
     }
 
     private static TransitionResult ApplyStopPreserveAndPark(SessionRecord task, StopPreserveAndPark c)
     {
-        if (task.State != SessionState.Working)
-            return WrongState(task, SessionState.Working);
-
         if (c.Actor is not LeadClaim lead || lead.Team != task.Team)
             return TransitionResult.Reject(Rule.ActorLacksAuthority,
                 "preserve_and_park is a Lead stop disposition");
 
-        var effects = new List<Effect> { new ClearServicesAndForwards(), new WriteParkRecord(c.Park) };
-        if (task.CurrentInstance is { } instance)
-            effects.Insert(0, new RevokeWorkerInstanceToken(instance));
-
-        return TransitionResult.Ok(
-            task with
-            {
-                State = SessionState.Parked,
-                CurrentInstance = null,
-                Park = c.Park,
-            },
-            effects.ToArray());
+        return Deactivate(task, c.Park, actorChecked: true);
     }
 
     private static TransitionResult ApplyCancel(SessionRecord task, Cancel c)
@@ -596,19 +739,175 @@ public static class SessionStateMachine
             return TransitionResult.Reject(Rule.ActorLacksAuthority,
                 "cancellation is for the Lead of this Team or a human");
 
+        if (task.Hidden && task.Health == SessionHealth.Ok)
+            return TransitionResult.Reject(Rule.TerminalStatesAreFinal,
+                "cancel is refused on a hidden healthy row");
+
         var effects = new List<Effect>();
         if (task.CurrentInstance is { } instance)
             effects.Add(new RevokeWorkerInstanceToken(instance));
-        if (task.State is SessionState.Working or SessionState.Verifying)
+        if (task.OccupancyObserved == Occupancy.Running
+            || task.CurrentInstance is not null
+            || task.MessageState is MessageState.AwaitingReport)
             effects.Add(new ClearServicesAndForwards());
         if (c.Disposition == CancelDisposition.Discard)
-            effects.Add(task.State == SessionState.Verifying
+            effects.Add(task.MessageState == MessageState.AwaitingReport
                 ? new DeferWorkspaceDiscardUntilVerdict()
                 : new DiscardWorkspace());
 
-        return TransitionResult.Ok(
-            task with { State = SessionState.Canceled, CurrentInstance = null },
+        var desired = c.Disposition == CancelDisposition.Discard ? Occupancy.None : Occupancy.OnDisk;
+        return Done(
+            task with
+            {
+                Hidden = true,
+                OccupancyDesired = desired,
+                CurrentInstance = null,
+                PendingSpawn = null,
+                MessageState = MessageState.Idle,
+                // health=failed stays failed; healthy cancel is hidden+on_disk/none
+            },
             effects.ToArray());
+    }
+
+    private static TransitionResult ApplyPullReceipt(SessionRecord task, PullReceipt c)
+    {
+        if (RequireIncumbent(task, c.Actor) is { } rejection)
+            return rejection;
+        if (task.MessageState != MessageState.AwaitingPull)
+            return TransitionResult.Reject(Rule.InvalidSourceState,
+                "get_session receipt applies only while awaiting_pull");
+        return Done(task with
+        {
+            MessageState = MessageState.Idle,
+            PullRedelivered = false,
+        });
+    }
+
+    private static TransitionResult ApplyObserveOccupancy(SessionRecord task, ObserveOccupancy c)
+    {
+        var hadInstance = task.CurrentInstance is not null;
+        var pin = c.PinMachine is { } m ? new ParkRecord(m) : task.Park;
+        var effects = new List<Effect>();
+        if (pin is { } park)
+            effects.Add(new WriteParkRecord(park));
+
+        if (c.Observed == Occupancy.Running)
+        {
+            return Done(task with
+            {
+                OccupancyObserved = Occupancy.Running,
+                PendingSpawn = null,
+                Park = pin ?? task.Park,
+            }, effects.ToArray());
+        }
+
+        // Commanded-exit is occupancy catch-up of a death the plane already ordered.
+        // Never a health transition. If a successor is already minted, leave it alone.
+        if (c.CommandedExit)
+        {
+            if (task.PendingSpawn is PendingSpawn.New or PendingSpawn.Load && hadInstance)
+                return Done(task, effects.ToArray());
+            if (hadInstance && task.CurrentInstance is { } dead)
+                effects.Insert(0, new RevokeWorkerInstanceToken(dead));
+            return Done(task with
+            {
+                OccupancyObserved = c.Observed,
+                CurrentInstance = null,
+                Park = pin ?? task.Park,
+            }, effects.ToArray());
+        }
+
+        if (hadInstance && task.CurrentInstance is { } inst)
+            effects.Add(new RevokeWorkerInstanceToken(inst));
+
+        var next = task with
+        {
+            OccupancyObserved = c.Observed,
+            CurrentInstance = null,
+            Park = pin ?? task.Park,
+        };
+
+        // exited. Branch on pending_spawn × hadInstance.
+        if (task.PendingSpawn is PendingSpawn.New or PendingSpawn.Load && !hadInstance)
+        {
+            // Predecessor echo after retry/answer-on-disk. Occupancy-only.
+            return Done(next with { PendingSpawn = task.PendingSpawn }, effects.ToArray());
+        }
+
+        if (task.PendingSpawn is PendingSpawn.New or PendingSpawn.Load && hadInstance)
+        {
+            next = next with
+            {
+                Health = SessionHealth.Failed,
+                OccupancyDesired = Occupancy.Running,
+                PendingSpawn = null,
+                InfrastructureRequeues = task.InfrastructureRequeues + 1,
+                LastRequeueReason = LivenessLossReason.ProcessExited,
+            };
+            effects.Insert(0, new ClearServicesAndForwards());
+            return Done(next, effects.ToArray());
+        }
+
+        if (task.OccupancyDesired is Occupancy.OnDisk or Occupancy.None)
+        {
+            // Stop-in-flight echo. Never health.
+            return Done(next with { PendingSpawn = null }, effects.ToArray());
+        }
+
+        if (task.MessageState == MessageState.AwaitingLead)
+        {
+            return Done(
+                next with
+                {
+                    OccupancyDesired = Occupancy.OnDisk,
+                    PendingSpawn = null,
+                },
+                effects.ToArray());
+        }
+
+        if (task.MessageState == MessageState.AwaitingPull && !task.PullRedelivered)
+        {
+            return Done(
+                next with
+                {
+                    OccupancyDesired = Occupancy.Running,
+                    PendingSpawn = PendingSpawn.Load,
+                    PullRedelivered = true,
+                },
+                effects.ToArray());
+        }
+
+        if (task.MessageState == MessageState.AwaitingPull && task.PullRedelivered)
+        {
+            effects.Insert(0, new ClearServicesAndForwards());
+            return Done(
+                next with
+                {
+                    Health = SessionHealth.Failed,
+                    OccupancyDesired = Occupancy.Running,
+                    PendingSpawn = null,
+                    InfrastructureRequeues = task.InfrastructureRequeues + 1,
+                    LastRequeueReason = LivenessLossReason.ProcessExited,
+                },
+                effects.ToArray());
+        }
+
+        if (task.OccupancyDesired == Occupancy.Running)
+        {
+            effects.Insert(0, new ClearServicesAndForwards());
+            return Done(
+                next with
+                {
+                    Health = SessionHealth.Failed,
+                    OccupancyDesired = Occupancy.Running,
+                    PendingSpawn = null,
+                    InfrastructureRequeues = task.InfrastructureRequeues + 1,
+                    LastRequeueReason = LivenessLossReason.ProcessExited,
+                },
+                effects.ToArray());
+        }
+
+        return Done(next with { PendingSpawn = null }, effects.ToArray());
     }
 
     /// <summary>

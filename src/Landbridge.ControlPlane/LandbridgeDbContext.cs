@@ -52,7 +52,21 @@ public sealed class LandbridgeDbContext(DbContextOptions<LandbridgeDbContext> op
             e.HasIndex(t => t.Namespace).IsUnique();
             // Partial index over the dispatch hot path (§3.1: split hot from cold).
             e.HasIndex(t => new { t.State, t.Profile }).HasFilter("state = 'Submitted'");
+            e.HasIndex(t => new { t.Profile, t.OccupancyDesired, t.OccupancyObserved, t.Health })
+                .HasFilter(
+                    "occupancy_desired = 'Running' AND health = 'Ok' AND hidden = false "
+                    + "AND occupancy_observed IN ('None','OnDisk') AND current_instance_id IS NULL "
+                    + "AND pending_spawn IN ('New','Load')");
             e.Property(t => t.State).HasConversion<string>();
+            e.Property(t => t.OccupancyDesired).HasConversion<string>();
+            e.Property(t => t.OccupancyObserved).HasConversion<string>();
+            e.Property(t => t.Health).HasConversion<string>();
+            e.Property(t => t.MessageState).HasConversion<string>();
+            e.Property(t => t.MessageVerdict).HasConversion<string>();
+            e.Property(t => t.LastMessageTerminal).HasConversion<string>();
+            e.HasIndex(t => new { t.TeamId, t.MessageId });
+            e.HasIndex(t => new { t.TeamId, t.LastMessageId });
+            e.Property(t => t.PendingSpawn).HasConversion<string>();
             // §9 check 4 completion provenance stores as its enum name, like the
             // other enum columns; null until the task reaches completed.
             e.Property(t => t.CompletionProvenance).HasConversion<string>();

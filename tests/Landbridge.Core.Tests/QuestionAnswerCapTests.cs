@@ -22,7 +22,8 @@ public class QuestionAnswerCapTests
 
     private static TransitionResult Answer(string? answer) =>
         SessionStateMachine.Apply(
-            Given.Session(SessionState.BlockedOnInput), new AnswerInput(Given.Lead, Given.Park, answer));
+            Given.Session(SessionState.Working, message: MessageState.AwaitingLead),
+            new AnswerInput(Given.Lead, Given.Park, answer));
 
     private static TransitionResult Wake(string? answer) =>
         SessionStateMachine.Apply(Given.Session(SessionState.Parked), new WakeParked(answer));
@@ -43,11 +44,11 @@ public class QuestionAnswerCapTests
 
     [Fact]
     public void A_null_answer_is_accepted() =>
-        Expect.Transitioned(Answer(null), SessionState.Submitted); // unblocking without words is legal
+        Expect.Transitioned(Answer(null), SessionState.Working); // unblocking without words is legal
 
     [Fact]
     public void An_answer_at_the_cap_is_accepted() =>
-        Expect.Transitioned(Answer(new string('x', AnswerInput.MaxAnswerBytes)), SessionState.Submitted);
+        Expect.Transitioned(Answer(new string('x', AnswerInput.MaxAnswerBytes)), SessionState.Working);
 
     [Fact]
     public void An_answer_one_byte_over_the_cap_is_rejected() =>
@@ -60,15 +61,15 @@ public class QuestionAnswerCapTests
         // One answer, two branches (§11): a Lead does not know whether the wait-TTL
         // sweeper parked the task first, so the same text must be accepted or refused
         // the same way either way — otherwise the cap depends on a race.
-        Expect.Transitioned(Wake(new string('x', AnswerInput.MaxAnswerBytes)), SessionState.Submitted);
+        Expect.Transitioned(Wake(new string('x', AnswerInput.MaxAnswerBytes)), SessionState.Working);
         Expect.Rejected(Wake(new string('x', AnswerInput.MaxAnswerBytes + 1)), Rule.AnswerWithinSizeCap);
 
         var continueAt = SessionStateMachine.Apply(
-            Given.Session(SessionState.BlockedOnInput),
+            Given.Session(SessionState.Working, message: MessageState.AwaitingLead),
             new ContinueSession(Given.Lead, new string('x', AnswerInput.MaxAnswerBytes)));
         Expect.Transitioned(continueAt, SessionState.Working);
         var continueOver = SessionStateMachine.Apply(
-            Given.Session(SessionState.BlockedOnInput),
+            Given.Session(SessionState.Working, message: MessageState.AwaitingLead),
             new ContinueSession(Given.Lead, new string('x', AnswerInput.MaxAnswerBytes + 1)));
         Expect.Rejected(continueOver, Rule.AnswerWithinSizeCap);
     }

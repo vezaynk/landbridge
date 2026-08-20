@@ -334,3 +334,18 @@ public sealed record StopPreserveAndPark(Actor Actor, ParkRecord Park) : Session
 /// requeue cap inside <c>LivenessLost</c> — not a command anyone sends (§6).
 /// </summary>
 public sealed record Cancel(Actor Actor, CancelDisposition? Disposition) : SessionCommand(Actor);
+
+/// <summary>
+/// Worker <c>get_session</c> while awaiting pull: the recorded receipt.
+/// Compare-and-set on the incumbent.
+/// </summary>
+public sealed record PullReceipt(Actor Actor) : SessionCommand(Actor);
+
+/// <summary>
+/// Runner fact: observed occupancy caught up. Always applicable (not gated on
+/// hidden). Never a health transition on commanded stop.
+/// </summary>
+public sealed record ObserveOccupancy(
+    Occupancy Observed,
+    string? PinMachine = null,
+    bool CommandedExit = false) : SessionCommand(ControlPlaneActor.Instance);

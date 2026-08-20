@@ -471,6 +471,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         // Redispatch, then ask something else.
         var second = WorkerInstanceId.New();
         await store.DispatchNextAsync(Machine(), second);
+        await store.GetAssignmentAsync(new WorkerCaller(Team, id, second));
         await store.ApplyAsync(id, new RequestInput(
             new WorkerCaller(Team, id, second), InputRequestKind.AuthHelp, "I need a staging-pg credential"));
 
@@ -503,7 +504,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
 
         await using var v = pg.NewContext();
         var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
-        Assert.Equal(SessionState.Submitted, row.State);
+        Assert.Equal(SessionState.Working, row.State);
         Assert.Equal("staging-pg", row.InputAnswer);
     }
 
@@ -814,6 +815,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         await store.ApplyAsync(id, new WakeParked("retry"));
         var successor = WorkerInstanceId.New();
         await store.DispatchNextAsync(Machine(), successor);
+        await store.GetAssignmentAsync(new WorkerCaller(Team, id, successor));
 
         // The orphaned predecessor's call is refused by the incumbent check.
         var zombieResult = await store.ApplyAsync(id,
@@ -853,7 +855,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         await using (var v = pg.NewContext())
         {
             var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
-            Assert.Equal(SessionState.Submitted, row.State);
+            Assert.Equal(SessionState.Working, row.State);
             // Park record survives into submitted for redispatch affinity (§11).
             Assert.Equal("m1", row.ParkMachine);
         }
@@ -876,12 +878,12 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         // parked, so the held-lease machine is moot (the wake keeps the park record).
         var woken = Assert.IsType<StoreResult.Applied>(
             await store.AnswerOrWakeAsync(Lead, id, leaseMachine: null));
-        Assert.Equal(SessionState.Submitted, woken.Session.State);
+        Assert.Equal(SessionState.Working, woken.Session.State);
 
         await using (var v = pg.NewContext())
         {
             var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
-            Assert.Equal(SessionState.Submitted, row.State);
+            Assert.Equal(SessionState.Working, row.State);
             // Park record survives into submitted for redispatch affinity (§11).
             Assert.Equal("m1", row.ParkMachine);
         }
@@ -916,13 +918,13 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         {
             var applied = Assert.IsType<StoreResult.Applied>(
                 await NewStore(db).AnswerOrWakeAsync(Lead, id, leaseMachine: "m1", sessionLive: false));
-            Assert.Equal(SessionState.Submitted, applied.Session.State);
+            Assert.Equal(SessionState.Working, applied.Session.State);
         }
 
         await using (var v = pg.NewContext())
         {
             var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
-            Assert.Equal(SessionState.Submitted, row.State);      // requeued, not left working
+            Assert.Equal(SessionState.Working, row.State);      // load in flight, not left running
             Assert.Equal("m1", row.ParkMachine);               // preferred machine (§11)
             Assert.Equal("sess-answer", row.HarnessSessionRef); // the ref redispatch resumes
             Assert.Equal(0, row.InfrastructureRequeues);       // a Lead answer is not an infra requeue (§6)
@@ -1078,10 +1080,10 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         // (§6, §11). No park machine, and the infrastructure counter is untouched.
         var applied = Assert.IsType<StoreResult.Applied>(
             await store.AnswerOrWakeAsync(Lead, id, leaseMachine: null));
-        Assert.Equal(SessionState.Submitted, applied.Session.State);
+        Assert.Equal(SessionState.Working, applied.Session.State);
         await using var v = pg.NewContext();
         var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
-        Assert.Equal(SessionState.Submitted, row.State);
+        Assert.Equal(SessionState.Working, row.State);
         Assert.Null(row.ParkMachine);
         Assert.Equal(0, row.InfrastructureRequeues);
     }
@@ -1123,7 +1125,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
             await store.ApplyAsync(id, new WaitTtlExpired(new ParkRecord("m1"))));
         Assert.Equal(Rule.InvalidSourceState, rejected.Rule);
         await using var v = pg.NewContext();
-        Assert.Equal(SessionState.Submitted, (await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value)).State);
+        Assert.Equal(SessionState.Working, (await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value)).State);
     }
 
     [SkippableFact]
@@ -1140,9 +1142,9 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         // …and the same one answer call now routes to the wake and requeues it.
         // One call, correct outcome either way — exactly one transition, no double move.
         var woken = Assert.IsType<StoreResult.Applied>(await store.AnswerOrWakeAsync(Lead, id, leaseMachine: null));
-        Assert.Equal(SessionState.Submitted, woken.Session.State);
+        Assert.Equal(SessionState.Working, woken.Session.State);
         await using var v = pg.NewContext();
-        Assert.Equal(SessionState.Submitted, (await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value)).State);
+        Assert.Equal(SessionState.Working, (await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value)).State);
     }
 
     /// <summary>Create → dispatch → block, so the task sits in blocked_on_input.</summary>

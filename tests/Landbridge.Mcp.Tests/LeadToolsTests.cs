@@ -143,11 +143,11 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         var tools = LeadFor(new Principal.Lead(Team));
 
         var msg = await tools.AnswerInputRequest(sessionId.ToString(), "use the staging DB", CancellationToken.None);
-        Assert.Contains("Submitted", msg);
+        Assert.Contains("Working", msg);
 
         await using var v = pg.NewContext();
         var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == sessionId.Value);
-        Assert.Equal(SessionState.Submitted, row.State);
+        Assert.Equal(SessionState.Working, row.State);
         Assert.Null(row.ParkMachine); // no machine to prefer; cold start
         // §11: the cold-start path is exactly where the answer matters most — the
         // transcript that held the question is on a machine that is gone, so the row
@@ -171,11 +171,11 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         // is gone, so the answer redispatches (→ submitted) rather than prompting
         // a dead session. Resume goes back through dispatch (§11).
         var msg = await tools.AnswerInputRequest(sessionId.ToString(), "staging-pg, not docker", CancellationToken.None);
-        Assert.Contains("Submitted", msg);
+        Assert.Contains("Working", msg);
 
         await using var v = pg.NewContext();
         var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == sessionId.Value);
-        Assert.Equal(SessionState.Submitted, row.State);
+        Assert.Equal(SessionState.Working, row.State);
         Assert.Equal("m1", row.ParkMachine); // held-lease machine preferred (§11)
         Assert.Equal("staging-pg, not docker", row.InputAnswer);
     }
@@ -233,7 +233,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         var tools = LeadFor(new Principal.Lead(Team), registry);
         var msg = await tools.AnswerInputRequest(
             sessionId.ToString(), "use staging-pg; docker has no seed data", CancellationToken.None);
-        Assert.Contains("Submitted", msg); // requeued for redispatch, not resumed in place
+        Assert.Contains("Working", msg); // load in flight, not resumed in place
 
         // Redispatch the woken task and confirm a fresh worker instance reads its
         // assignment via the same read get_session delegates to — carrying the answer it

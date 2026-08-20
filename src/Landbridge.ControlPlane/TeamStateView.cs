@@ -262,7 +262,8 @@ public sealed record ContinuationSource(
     string? Profile,
     string? HarnessSessionRef,
     string? ParkMachine,
-    string? LastRanOn = null);
+    string? LastRanOn = null,
+    SessionHealth Health = SessionHealth.Ok);
 
 /// <summary>
 /// One blocked_on_input task as the wait-TTL sweeper reads it (§11):

@@ -94,7 +94,7 @@ Two bars, neither negotiable, neither degrading gracefully. Confirm both by runn
 
 **3. Do not put bypass / always-approve / yolo in `spawn`.** Permissions are `session/request_permission`. landbridged posts the worker bearer at `POST /worker/permission` and a Lead or human decides. A bypass flag on argv skips a dialog Landbridge is now the one answering.
 
-Then test **park**: `park_session` a live session and confirm the process is gone. Wait TTL is off by default — a forgotten question holds the lease until you answer or park.
+Then test **park**: `park_session` a live session and confirm the process is gone. Wait TTL is off by default — a forgotten question holds the lease until you answer or deactivate. Permission waits cannot be parked.
 
 If either bar fails, stop. Report to the human rather than working around it.
 

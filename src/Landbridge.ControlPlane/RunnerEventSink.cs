@@ -30,19 +30,20 @@ public sealed class RunnerEventSink(
         switch (evt)
         {
             case StartedEvent s:
-                // §10: started confirms the harness is up; the task stays tracked
-                // (requeue-on-disconnect still applies), activity refreshes.
+                // §10: started confirms the harness is up; occupancy observed=running.
                 registry.RecordProgress(s.Session);
+                await WithStoreAsync(store =>
+                    store.ApplyAsync(s.Session, new ObserveOccupancy(Occupancy.Running), ct));
                 break;
 
             case SessionStartedEvent ss:
-                // §11 resume: the harness reported its opaque session ref. Stamp it
-                // onto the task row verbatim (never interpreted — like
-                // ResultReference/TraceContext) so a later park carries it and
-                // redispatch resumes the transcript. A session-init is also forward
-                // progress, so refresh activity like the other liveness signals.
+                // §11 resume: stamp the harness session ref and observe running.
                 registry.RecordProgress(ss.Session);
-                await WithStoreAsync(store => store.StampHarnessSessionRefAsync(ss.Session, ss.SessionRef, ct));
+                await WithStoreAsync(async store =>
+                {
+                    await store.StampHarnessSessionRefAsync(ss.Session, ss.SessionRef, ct);
+                    await store.ApplyAsync(ss.Session, new ObserveOccupancy(Occupancy.Running), ct);
+                });
                 break;
 
             case AliveEvent a:
@@ -218,46 +219,35 @@ public sealed class RunnerEventSink(
         // taking a second requeue off the §9 check 7 cap and leaving the successor with no
         // clock over it. Consuming the expectation here is what makes the plane's own kill
         // safe to send at all; see RunnerConnectionRegistry.SendKillAsync.
-        if (registry.ConsumeCommandedExit(e.Session))
-        {
-            logger.LogDebug(
-                "runner exited for task {Task} (code {Code}) is the plane's own kill echoing back",
-                e.Session, e.ExitCode);
-            return;
-        }
-
-        SessionState? state = null;
-        var awaitingLead = false;
+        var commanded = registry.ConsumeCommandedExit(e.Session);
+        var keepSuccessor = false;
+        var failed = false;
+        string? pin = registry.MachineFor(e.Session);
         await WithStoreAsync(async store =>
         {
-            state = await store.GetStateAsync(e.Session, ct);
-            // A question is a turn, not a death. If the process died while the
-            // session was idle for the Lead, keep the row working and mark the
-            // process gone so the answer redispatches instead of PromptCommand
-            // into a corpse. Permission still lives in blocked_on_input below.
-            if (state == SessionState.Working)
+            var row = await store.GetOccupancyAsync(e.Session, ct);
+            if (row is null)
+                return;
+            var observed = string.IsNullOrEmpty(row.HarnessSessionRef) ? Occupancy.None : Occupancy.OnDisk;
+            pin ??= row.PreferredMachine ?? row.ParkMachine;
+            var applied = await store.ApplyAsync(
+                e.Session,
+                new ObserveOccupancy(observed, pin, CommandedExit: commanded),
+                ct);
+            if (applied is StoreResult.Applied ok)
             {
-                awaitingLead = await store.IsAwaitingLeadAsync(e.Session, ct);
-                if (!awaitingLead)
-                    await store.ApplyAsync(e.Session, new LivenessLost(LivenessLossReason.ProcessExited), ct);
-            }
-            else if (state == SessionState.Verifying)
-            {
-                // A report keeps the process. If it then dies, that is an infra
-                // fail — the Lead cannot reply into a corpse.
-                await store.ApplyAsync(e.Session, new LivenessLost(LivenessLossReason.ProcessExited), ct);
+                failed = ok.Session.Health == SessionHealth.Failed;
+                keepSuccessor = ok.Session.CurrentInstance is not null
+                    && ok.Session.OccupancyDesired == Occupancy.Running;
             }
         });
 
-        // §6/§11: blocked_on_input (and a working question whose process died)
-        // keep the lease on this machine so the sweeper can still find it
-        // (MachineFor). Mark the process gone so an answer redispatches instead
-        // of sending PromptCommand into a dead session. A still-up session never
-        // reaches this handler. Every other state is done here or already handled.
-        if (state == SessionState.BlockedOnInput || awaitingLead)
-            registry.MarkProcessGone(e.Session);
-        else
+        if (keepSuccessor)
+            return;
+        if (failed || commanded)
             registry.Untrack(e.Session);
+        else
+            registry.MarkProcessGone(e.Session);
     }
 
     /// <summary>

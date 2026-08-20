@@ -171,14 +171,14 @@ public class LifecycleTests
         // never → working. The predecessor token is revoked (§5) and the
         // infrastructure counter is untouched — a Lead answering is not an
         // infrastructure requeue (§6, two counters).
-        var task = Given.Session(SessionState.BlockedOnInput);
+        var task = Given.Session(SessionState.Working, message: MessageState.AwaitingLead);
         var incumbent = task.CurrentInstance!.Value;
 
         var result = SessionStateMachine.Apply(
             task,
             new AnswerInput(byLead ? Given.Lead : Given.Human, Given.Park));
 
-        var next = Expect.Transitioned(result, SessionState.Submitted);
+        var next = Expect.Transitioned(result, SessionState.Working);
         Assert.Equal(Given.Park, next.Park);
         Assert.Null(next.CurrentInstance);
         Assert.Equal(0, next.InfrastructureRequeues);
@@ -193,7 +193,7 @@ public class LifecycleTests
     [InlineData(false)]
     public void Continue_session_resumes_a_live_wait_in_place(bool byLead)
     {
-        var task = Given.Session(SessionState.BlockedOnInput);
+        var task = Given.Session(SessionState.Working, message: MessageState.AwaitingLead);
         var incumbent = task.CurrentInstance!.Value;
 
         var result = SessionStateMachine.Apply(
@@ -220,7 +220,7 @@ public class LifecycleTests
     [Fact]
     public void Wait_ttl_expiry_parks_the_task_and_writes_the_park_record()
     {
-        var task = Given.Session(SessionState.BlockedOnInput);
+        var task = Given.Session(SessionState.Working, message: MessageState.AwaitingLead);
         var incumbent = task.CurrentInstance!.Value;
 
         var result = SessionStateMachine.Apply(task, new WaitTtlExpired(Given.Park));
@@ -241,7 +241,7 @@ public class LifecycleTests
 
         var result = SessionStateMachine.Apply(task, new WakeParked());
 
-        var next = Expect.Transitioned(result, SessionState.Submitted);
+        var next = Expect.Transitioned(result, SessionState.Working);
         Assert.Equal(Given.Park, next.Park);
     }
 
@@ -264,8 +264,8 @@ public class LifecycleTests
     [Fact]
     public void Park_from_blocked_on_input_clears_services()
     {
-        // A question no longer tears services down, so park is the first time they go.
-        var task = Given.Session(SessionState.BlockedOnInput);
+        // Permission waits cannot be deactivated; a prose wait can.
+        var task = Given.Session(SessionState.Working, message: MessageState.AwaitingLead);
         var incumbent = task.CurrentInstance!.Value;
 
         var result = SessionStateMachine.Apply(task, new Park(Given.Lead, Given.Park));
@@ -304,8 +304,12 @@ public class LifecycleTests
 
         var first = WorkerInstanceId.New();
         task = Expect.Transitioned(SessionStateMachine.Apply(task, new Dispatch(Given.Machine(), first)), SessionState.Working);
+        task = Expect.Transitioned(
+            SessionStateMachine.Apply(task, new ObserveOccupancy(Occupancy.Running)), SessionState.Working);
         task = Expect.Transitioned(SessionStateMachine.Apply(task, new ReportResult(new WorkerCaller(task.Team, task.Id, first), "ref-1")), SessionState.Verifying);
         task = Expect.Transitioned(SessionStateMachine.Apply(task, new LeadMessage(Given.Lead, "add a test")), SessionState.Working);
+        task = Expect.Transitioned(
+            SessionStateMachine.Apply(task, new PullReceipt(new WorkerCaller(task.Team, task.Id, first))), SessionState.Working);
         task = Expect.Transitioned(SessionStateMachine.Apply(task, new ReportResult(new WorkerCaller(task.Team, task.Id, first), "ref-2")), SessionState.Verifying);
         task = Expect.Transitioned(SessionStateMachine.Apply(task, new VerdictAccept(Given.Lead)), SessionState.Completed);
 

@@ -15,6 +15,20 @@ public sealed class SessionRow
     public Guid TeamId { get; set; }
     public string Namespace { get; set; } = "";
     public SessionState State { get; set; }
+    public Occupancy OccupancyDesired { get; set; } = Occupancy.Running;
+    public Occupancy OccupancyObserved { get; set; } = Occupancy.None;
+    public SessionHealth Health { get; set; } = SessionHealth.Ok;
+    public bool Hidden { get; set; }
+    public MessageState MessageState { get; set; } = MessageState.Idle;
+    public MessageVerdict? MessageVerdict { get; set; }
+    public Guid? MessageId { get; set; }
+    public Guid? LastMessageId { get; set; }
+    public MessageTerminal? LastMessageTerminal { get; set; }
+    public DateTimeOffset? MessageOpenedAt { get; set; }
+    public DateTimeOffset? LastMessageClosedAt { get; set; }
+    public PendingSpawn? PendingSpawn { get; set; } = Landbridge.Core.PendingSpawn.New;
+    public bool PullRedelivered { get; set; }
+    public DateTimeOffset? MessagePulledAt { get; set; }
     public string? Profile { get; set; }
 
     public int Attempt { get; set; }
@@ -290,6 +304,17 @@ public sealed class SessionRow
         Team = new TeamId(TeamId),
         Namespace = Namespace,
         State = State,
+        OccupancyDesired = OccupancyDesired,
+        OccupancyObserved = OccupancyObserved,
+        Health = Health,
+        Hidden = Hidden,
+        MessageState = MessageState,
+        MessageVerdict = MessageVerdict,
+        MessageId = MessageId,
+        LastMessageId = LastMessageId,
+        LastMessageTerminal = LastMessageTerminal,
+        PendingSpawn = PendingSpawn,
+        PullRedelivered = PullRedelivered,
         Profile = Profile,
         Attempt = Attempt,
         InfrastructureRequeues = InfrastructureRequeues,
@@ -305,6 +330,17 @@ public sealed class SessionRow
     internal void CopyFrom(SessionRecord task)
     {
         State = task.State;
+        OccupancyDesired = task.OccupancyDesired;
+        OccupancyObserved = task.OccupancyObserved;
+        Health = task.Health;
+        Hidden = task.Hidden;
+        MessageState = task.MessageState;
+        MessageVerdict = task.MessageVerdict;
+        MessageId = task.MessageId;
+        LastMessageId = task.LastMessageId;
+        LastMessageTerminal = task.LastMessageTerminal;
+        PendingSpawn = task.PendingSpawn;
+        PullRedelivered = task.PullRedelivered;
         Attempt = task.Attempt;
         InfrastructureRequeues = task.InfrastructureRequeues;
         // The reason follows the counter it explains. The cap itself is deliberately not

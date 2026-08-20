@@ -52,12 +52,15 @@ public class InstanceFencingAndParkTests
             SessionStateMachine.Apply(task, new LivenessLost(LivenessLossReason.LivenessTimeout)),
             SessionState.Failed);
         var submitted = Expect.Transitioned(
-            SessionStateMachine.Apply(failed, new WakeParked("retry")),
-            SessionState.Submitted);
+            SessionStateMachine.Apply(failed, new WakeParked()),
+            SessionState.Working);
 
         var successor = WorkerInstanceId.New();
         var redispatched = Expect.Transitioned(
             SessionStateMachine.Apply(submitted, new Dispatch(Given.Machine(), successor)),
+            SessionState.Working);
+        redispatched = Expect.Transitioned(
+            SessionStateMachine.Apply(redispatched, new ObserveOccupancy(Occupancy.Running)),
             SessionState.Working);
         Assert.Equal(2, redispatched.Attempt);
 
@@ -124,9 +127,11 @@ public class InstanceFencingAndParkTests
             SessionState.BlockedOnInput);
         Assert.Equal(judged, blocked.CurrentInstance);
 
-        Expect.Rejected(
-            SessionStateMachine.Apply(blocked, new LivenessLost(LivenessLossReason.NoProgress, judged)),
-            Rule.IncumbentInstanceOnly);
+        // Aliveness still applies while the permission waiter is live. No-progress
+        // is a plane skip; if a loss reaches the engine it is a mechanical fail.
+        Expect.Transitioned(
+            SessionStateMachine.Apply(blocked, new LivenessLost(LivenessLossReason.LivenessTimeout, judged)),
+            SessionState.Failed);
     }
 
     [Fact]
@@ -144,7 +149,7 @@ public class InstanceFencingAndParkTests
             SessionState.Failed);
         var submitted = Expect.Transitioned(
             SessionStateMachine.Apply(failed, new WakeParked()),
-            SessionState.Submitted);
+            SessionState.Working);
         var redispatched = Expect.Transitioned(
             SessionStateMachine.Apply(submitted, new Dispatch(Given.Machine(), WorkerInstanceId.New())),
             SessionState.Working);
@@ -162,12 +167,12 @@ public class InstanceFencingAndParkTests
         // park). The answer still requeues the task (→ submitted) rather than
         // rejecting: redispatch cold-starts it elsewhere from the workspace (§11).
         // No park record is written and the infrastructure counter is untouched (§6).
-        var task = Given.Session(SessionState.BlockedOnInput);
+        var task = Given.Session(SessionState.Working, message: MessageState.AwaitingLead);
         var incumbent = task.CurrentInstance!.Value;
 
         var result = SessionStateMachine.Apply(task, new AnswerInput(Given.Lead, Park: null));
 
-        var next = Expect.Transitioned(result, SessionState.Submitted);
+        var next = Expect.Transitioned(result, SessionState.Working);
         Assert.Null(next.Park);
         Assert.Null(next.CurrentInstance);
         Assert.Equal(0, next.InfrastructureRequeues);
@@ -179,7 +184,7 @@ public class InstanceFencingAndParkTests
     [Fact]
     public void Workers_cannot_answer_input_requests()
     {
-        var task = Given.Session(SessionState.BlockedOnInput);
+        var task = Given.Session(SessionState.Working, message: MessageState.AwaitingLead);
         Expect.Rejected(
             SessionStateMachine.Apply(task, new AnswerInput(Given.IncumbentOf(task), Given.Park)),
             Rule.ActorLacksAuthority);
@@ -219,13 +224,16 @@ public class InstanceFencingAndParkTests
     public void Park_wake_redispatch_chain_preserves_affinity_and_counts_attempts()
     {
         // blocked → parked → submitted → working: the §11 recovery path.
-        var task = Given.Session(SessionState.BlockedOnInput) with { Attempt = 1 };
+        var task = Given.Session(SessionState.Working, message: MessageState.AwaitingLead) with { Attempt = 1 };
 
         var parked = Expect.Transitioned(
             SessionStateMachine.Apply(task, new WaitTtlExpired(Given.Park)), SessionState.Parked);
+        parked = Expect.Transitioned(
+            SessionStateMachine.Apply(parked, new ObserveOccupancy(Occupancy.OnDisk, Given.Park.Machine)),
+            SessionState.Parked);
 
         var woken = Expect.Transitioned(
-            SessionStateMachine.Apply(parked, new WakeParked()), SessionState.Submitted);
+            SessionStateMachine.Apply(parked, new WakeParked()), SessionState.Working);
         Assert.Equal(Given.Park, woken.Park); // redispatch reads this for affinity
 
         var resumed = Expect.Transitioned(
@@ -236,7 +244,6 @@ public class InstanceFencingAndParkTests
 
     [Theory]
     [InlineData(SessionState.Submitted)]
-    [InlineData(SessionState.Verifying)]
     public void Wait_ttl_only_applies_to_a_waiting_task(SessionState state)
     {
         Expect.Rejected(
