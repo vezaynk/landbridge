@@ -936,11 +936,92 @@ public sealed class SessionStore(
     public sealed record OccupancyLookaside(
         string? HarnessSessionRef, string? PreferredMachine, string? ParkMachine);
 
+    /// <summary>
+    /// Occupancy + message as MCP Tasks reads them, with event-log timestamps.
+    /// </summary>
+    public sealed record SessionTaskSnapshot(
+        SessionRecord Session, DateTimeOffset CreatedAt, DateTimeOffset LastUpdatedAt);
+
     public async Task<OccupancyLookaside?> GetOccupancyAsync(SessionId id, CancellationToken ct = default) =>
         await db.Sessions.AsNoTracking()
             .Where(t => t.Id == id.Value)
             .Select(t => new OccupancyLookaside(t.HarnessSessionRef, t.PreferredMachine, t.ParkMachine))
             .FirstOrDefaultAsync(ct);
+
+    /// <summary>
+    /// One session as the MCP Tasks projection reads it: occupancy + message,
+    /// scoped to the Lead's Team, plus event-log timestamps for
+    /// <c>createdAt</c> / <c>lastUpdatedAt</c>.
+    /// </summary>
+    public async Task<SessionTaskSnapshot?> GetTaskSnapshotAsync(
+        TeamId team, SessionId id, CancellationToken ct = default)
+    {
+        var row = await db.Sessions.AsNoTracking()
+            .FirstOrDefaultAsync(t => t.Id == id.Value && t.TeamId == team.Value, ct);
+        if (row is null)
+            return null;
+        var bounds = await EventBoundsAsync([id.Value], ct);
+        return SnapshotOf(row, bounds.GetValueOrDefault(id.Value));
+    }
+
+    /// <summary>
+    /// Team-scoped MCP <c>tasks/list</c>. Includes hidden rows (MCP: if
+    /// <c>tasks/get</c> can retrieve it, <c>tasks/list</c> must). Cursor is the
+    /// last session id from the previous page.
+    /// </summary>
+    public async Task<(IReadOnlyList<SessionTaskSnapshot> Tasks, string? NextCursor)> ListTaskSnapshotsAsync(
+        TeamId team, string? cursor, int take, CancellationToken ct = default)
+    {
+        if (take < 1)
+            take = 50;
+
+        var q = db.Sessions.AsNoTracking()
+            .Where(t => t.TeamId == team.Value);
+        if (cursor is { Length: > 0 })
+        {
+            if (!Guid.TryParse(cursor, out var after))
+                throw new ArgumentException("invalid cursor", nameof(cursor));
+            q = q.Where(t => t.Id > after);
+        }
+
+        var rows = await q.OrderBy(t => t.Id).Take(take + 1).ToListAsync(ct);
+        string? next = null;
+        if (rows.Count > take)
+        {
+            rows.RemoveAt(take);
+            next = rows[^1].Id.ToString();
+        }
+
+        var bounds = await EventBoundsAsync(rows.Select(r => r.Id).ToArray(), ct);
+        var tasks = rows.Select(r => SnapshotOf(r, bounds.GetValueOrDefault(r.Id))).ToArray();
+        return (tasks, next);
+    }
+
+    private async Task<Dictionary<Guid, (DateTimeOffset Created, DateTimeOffset Updated)>> EventBoundsAsync(
+        IReadOnlyList<Guid> ids, CancellationToken ct)
+    {
+        if (ids.Count == 0)
+            return [];
+        return await db.SessionEvents.AsNoTracking()
+            .Where(e => ids.Contains(e.SessionId))
+            .GroupBy(e => e.SessionId)
+            .Select(g => new
+            {
+                g.Key,
+                Created = g.Min(e => e.OccurredAt),
+                Updated = g.Max(e => e.OccurredAt),
+            })
+            .ToDictionaryAsync(x => x.Key, x => (x.Created, x.Updated), ct);
+    }
+
+    private SessionTaskSnapshot SnapshotOf(
+        SessionRow row, (DateTimeOffset Created, DateTimeOffset Updated) bounds)
+    {
+        var now = clock.GetUtcNow();
+        var created = bounds.Created == default ? now : bounds.Created;
+        var updated = bounds.Updated == default ? created : bounds.Updated;
+        return new SessionTaskSnapshot(row.ToDomain(), created, updated);
+    }
 
     /// <summary>
     /// The state read of <see cref="GetStateAsync"/> plus the instance currently working the
