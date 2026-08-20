@@ -11,8 +11,9 @@ runs today.
 One control plane per Instance, many machines, an optional relay, and a
 dashboard. Everything an agent touches goes through the control plane's MCP
 surface; everything a machine does goes through `landbridged`. `landbridged` only ever
-dials *out*, so it works behind NAT with no inbound firewall rule. Completion is
-adjudicated by the Lead over MCP (§7, §9 check 4) — there is no verifier process.
+dials *out*, so it works behind NAT with no inbound firewall rule. A worker mails
+`report_result`; the Lead closes the session with `submit_review` when they are done
+with that worker (§7, §9 check 4) — there is no verifier process.
 
 ```
    human (browser / harness)
@@ -57,7 +58,7 @@ adjudicated by the Lead over MCP (§7, §9 check 4) — there is no verifier pro
   machine credential, and opens relay tunnels. It never touches the workspace or
   interprets task content (spec §2 principle 6, §10).
 - **`landbridge-relay`** is a standalone module that dials the plane; it is not part
-  of the host process. (There is no verifier module — completion is Lead-adjudicated.)
+  of the host process. (There is no verifier module — the Lead closes the session.)
 
 ## The engine is pure; opaque metadata rides the row
 
@@ -82,10 +83,10 @@ record as plain columns the plane stores and returns but never dereferences:
 
 | Field | Carries | Interpreted by |
 |---|---|---|
-| `Description` | the whole brief — what to do and how it will be judged | the worker, then the Lead or a human adjudicating (§7, §9 check 4) |
+| `Description` | the whole brief — what to do and how it will be judged | the worker, then the Lead reading reports (§7, §9 check 4) |
 | `Workspace` | optional context (repo, package, base ref), not isolation | the worker's skill (§7) |
-| `ResultReference` | where the finished work lives (a commit/URL) | the Lead reading it before adjudicating, via `get_session_report`, and a human on the §12 dashboard (§8.1, §7) |
-| `CompletionProvenance` | who adjudicated a completed task (`lead-session` \| `human`) | the §12 dashboard (§9 check 4) |
+| `ResultReference` | where the work lives (a commit/URL) | the Lead reading it via `get_session_report`, and a human on the §12 dashboard (§8.1, §7) |
+| `CompletionProvenance` | who closed the session (`lead-session` \| `human`) | the §12 dashboard (§9 check 4) |
 | `ParkRecord{Machine, Directory, HarnessSessionRef, Attempt}` | resume affinity | `landbridged` on redispatch (§11) |
 | `TraceContext` | W3C `traceparent` for cross-process tracing | OpenTelemetry, not the domain |
 | `Profile` | required runner-profile routing key | exact-match at dispatch, never parsed |
@@ -103,7 +104,7 @@ instantly — `TokenService` stores only a SHA-256 hash and validates by lookup:
 | Identity | Token prefix | Obtained | Authorizes |
 |---|---|---|---|
 | Human | `lbr_h_` | OAuth code flow / operator passphrase | create Teams, confirm verdicts, dashboard |
-| Lead | `lbr_l_` | claimed against a Team under a human session | create tasks, answer, adjudicate completion (`submit_review`), read Team state |
+| Lead | `lbr_l_` | claimed against a Team under a human session | create tasks, answer, close sessions (`submit_review`), read Team state |
 | Machine (`landbridged`) | `lbr_m_` / `lbr_r_` | enrollment token → client credentials | runner channel |
 | Worker | `lbr_w_` | **minted at dispatch** | MCP worker tools, scoped to `{team, task, worker, instance}` |
 
@@ -157,21 +158,12 @@ for), and nothing collects or checks a host fingerprint, so the copy is not
 defeated by it — revocation is the whole answer today. Binding refresh and connect
 to a host-sealed secret (TPM, keychain) is a tracked follow-up, not built.
 
-## The task state machine (§6)
+## Occupancy and the message machine (§6)
 
-```
- submitted ──► working ──► verifying ──► completed
-     ▲          │  │           │
-     │          │  ▼           └──► rejected  (verification retries exhausted)
-     └──────────┘ blocked_on_input   (only the verification counter drives this)
-      liveness/     │        ▲
-      ack lost      ▼        │ answer / wake
-                  parked ────┘
-```
-
-Additional states: `blocked_on_input`, `parked`, `canceled`. In
-`blocked_on_input` and `parked` the harness process is *expected* to be gone —
-per-task liveness is suspended and process exit is not a failure (§11).
+A session is a durable row. Occupancy is `desired`/`observed` (`none | on_disk | running`).
+The outstanding envelope is `idle | awaiting_lead | awaiting_permission | awaiting_report | awaiting_pull`.
+`report_result` is mail (`awaiting_report`); occupancy stays running. `submit_review` closes the row
+(hide + `desired=on_disk`). Derived `SessionState` is a compatibility view, not the source of truth.
 
 Two counters, not one (`SessionRecord.InfrastructureRequeues` vs
 `VerificationFailures`): a machine rebooting three times must not exhaust the

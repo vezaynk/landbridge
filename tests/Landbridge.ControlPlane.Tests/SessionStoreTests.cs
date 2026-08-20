@@ -246,7 +246,8 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
 
         Assert.IsType<StoreResult.Applied>(result);
         await using var verify = pg.NewContext();
-        Assert.Equal(SessionState.Verifying, (await verify.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value)).State);
+        Assert.Equal(SessionState.Working, (await verify.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value)).State);
+        Assert.Equal(MessageState.AwaitingReport, (await verify.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value)).MessageState);
         Assert.Single(await verify.RegisteredServices.AsNoTracking().Where(s => s.SessionId == id.Value).ToListAsync());
         Assert.IsType<StoreResult.Applied>(await NewStore(db).ApplyAsync(id, new VerdictAccept(new LeadClaim(Team))));
         Assert.Empty(await verify.RegisteredServices.AsNoTracking().Where(s => s.SessionId == id.Value).ToListAsync());
@@ -256,8 +257,8 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
     public async Task Report_result_persists_the_reference_on_the_row()
     {
         // #23, §7: report_result's opaque reference is dropped by CopyFrom; the store
-        // must capture it on working → verifying so a later read (the Lead reading the
-        // result before adjudicating, §9 check 4) finds it.
+        // must capture it on report_result so a later read (the Lead reading the
+        // result, §9 check 4) finds it.
         Skip.IfNot(pg.Available, pg.SkipReason);
         await using var db = pg.NewContext();
         var store = NewStore(db);
@@ -267,7 +268,8 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
 
         var applied = Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(id,
             new ReportResult(new WorkerCaller(Team, id, instance), "git:branch/result-42")));
-        Assert.Equal(SessionState.Verifying, applied.Session.State);
+        Assert.Equal(SessionState.Working, applied.Session.State);
+        Assert.Equal(MessageState.AwaitingReport, applied.Session.MessageState);
 
         await using var v = pg.NewContext();
         Assert.Equal("git:branch/result-42",
@@ -335,7 +337,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Null(fetched!.Report);
         // #81, the asymmetry that makes the reference worth surfacing: §6 REQUIRED it for
         // this transition while the report was optional, so on a task like this one it is
-        // the only thing the worker said — and the Lead still has to adjudicate.
+        // the only thing the worker said.
         Assert.Equal("git:ref", fetched.ResultReference);
     }
 
@@ -358,7 +360,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
     [SkippableFact]
     public async Task Report_over_the_cap_is_rejected_and_the_task_stays_working()
     {
-        // §10: over-cap is refused; the task does not advance to verifying, so the
+        // §10: over-cap is refused; the task does not advance a report, so the
         // worker can re-report with a summary (detail in the workspace).
         Skip.IfNot(pg.Available, pg.SkipReason);
         await using var db = pg.NewContext();
@@ -991,7 +993,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task A_lead_follow_up_after_a_permission_verdict_on_a_verifying_session_is_not_a_deadlock()
+    public async Task A_lead_follow_up_after_a_permission_verdict_on_a_reported_session_is_not_a_deadlock()
     {
         // Trial: leftover InputKind=Permission after the wait was decided, then
         // the worker reported. get_session_question said "nothing waiting";

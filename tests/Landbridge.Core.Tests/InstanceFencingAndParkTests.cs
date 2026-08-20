@@ -73,10 +73,9 @@ public class InstanceFencingAndParkTests
             Rule.IncumbentInstanceOnly);
 
         // The incumbent proceeds untouched.
-        Expect.Transitioned(
+        Expect.Reported(
             SessionStateMachine.Apply(redispatched,
-                new ReportResult(new WorkerCaller(task.Team, task.Id, successor), "real-ref")),
-            SessionState.Verifying);
+                new ReportResult(new WorkerCaller(task.Team, task.Id, successor), "real-ref")));
     }
 
     [Fact]
@@ -275,7 +274,7 @@ public class InstanceFencingAndParkTests
     {
         foreach (var state in new[]
                  {
-                     SessionState.Submitted, SessionState.Working, SessionState.Verifying,
+                     SessionState.Submitted, SessionState.Working,
                      SessionState.BlockedOnInput, SessionState.Parked, SessionState.Failed,
                  })
         {

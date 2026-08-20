@@ -44,7 +44,7 @@ public sealed class DashboardQueries(LandbridgeDbContext db, RunnerConnectionReg
     // drift to the bottom). Everything else is terminal or empty.
     private static readonly SessionState[] ActiveStates =
     [
-        SessionState.Submitted, SessionState.Working, SessionState.Verifying,
+        SessionState.Submitted, SessionState.Working,
         SessionState.BlockedOnInput, SessionState.Parked, SessionState.Failed,
     ];
 
@@ -625,7 +625,7 @@ public sealed class DashboardQueries(LandbridgeDbContext db, RunnerConnectionReg
             .Where(t => t.TeamId == runId)
             .OrderBy(t => t.Id)
             .Select(t => new ConformanceSessionRow(
-                t.Id, t.State, t.Attempt, t.Workspace, t.Profile,
+                t.Id, t.State, t.MessageState, t.Attempt, t.Workspace, t.Profile,
                 t.ResultReference, t.LastRequeueReason))
             .ToListAsync(ct);
     }
@@ -662,7 +662,7 @@ public sealed record MachineSessionView(Guid SessionId, Guid TeamId, string Name
 
 /// <summary>One dummy task in an operator profile-check run.</summary>
 public sealed record ConformanceSessionRow(
-    Guid Id, SessionState State, int Attempt, string? Workspace, string? Profile,
+    Guid Id, SessionState State, MessageState MessageState, int Attempt, string? Workspace, string? Profile,
     string? ResultReference, LivenessLossReason? LastRequeueReason);
 
 /// <summary>One Team's one-line overview for the sorted Team list (§12).</summary>
@@ -695,12 +695,11 @@ public sealed record TeamDetail(
 
 /// <summary>One task in a Team, with its park count (§12 "parks per task"); for a
 /// continuation task, the prior task it resumed (§6/§11 Y-continues-X lineage); and,
-/// for a completed task, who adjudicated it (§9 check 4 provenance).
-/// <see cref="ResultReference"/> is the §8.1 artifact pointer its worker handed over on
-/// working → verifying — where the finished work is said to live — shown here because a
-/// human auditing a completed task afterwards,
-/// needs the same pointer the Lead rules on (§7, #81); null until the task reaches
-/// verifying. Then this task's input exchange (§11): the typed <see cref="InputKind"/>,
+/// for a closed session, who closed it (§9 check 4 provenance).
+/// <see cref="ResultReference"/> is the §8.1 pointer its worker handed over on
+/// <c>report_result</c> — where the work is said to live — shown here because a
+/// human auditing afterwards needs the same pointer the Lead reads (§7, #81);
+/// null until a report. Then this session's input exchange (§11): the typed <see cref="InputKind"/>,
 /// the worker's <see cref="Question"/>, and the <see cref="Answer"/> given. Unlike the
 /// agent-facing views this is a human surface, so it carries the prose itself (§12) —
 /// a person cannot answer a question they cannot read.

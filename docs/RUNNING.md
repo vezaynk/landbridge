@@ -607,14 +607,12 @@ Flags: `--config <path>` (required for a normal run), `--machine-id <id>`,
 | `LANDBRIDGE_STATE_DIR` / `XDG_STATE_HOME` | State-dir resolution (see enrollment). |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | Enables OTLP export from the runner when set. |
 
-### Completion (adjudication)
+### Closing a session
 
-There is no verifier process. A task in `verifying` is completed by a Lead (or a
-human) calling `submit_review` over MCP (§7, §9 check 4): the Lead reads the
-reported result and rules on evidence it gathers itself (a test run, a CI check).
-In `lead` mode (the default) the Lead's verdict completes the task with no human
-confirmation; in `review` mode the verdict must carry it. A task's own worker can
-never complete it.
+There is no verifier process. A worker mails `report_result`; the session stays
+occupied. A Lead (or a human) closes it with `submit_review` over MCP (§7, §9
+check 4) when they are done with that worker. A session's own worker can never
+close it.
 
 ## Running the tests
 
@@ -632,15 +630,16 @@ Paid real-harness e2e (`Category=RealClaude` / `RealCodex` / `RealOpenCode` /
 `RealGrok` / `RealGoose`) reads API keys from the environment. Locally, put
 them in user secrets on the MultiMachine test project — they are loaded at
 assembly start and published into the process so spawned CLIs inherit them.
-Process env (including CI job secrets) is not overwritten. Goose also needs
-`LANDBRIDGE_REAL_GOOSE=1` (the dispatch cell sets it) plus `GOOSE_PROVIDER` /
-`GOOSE_MODEL`. That cell runs both the direct `goose acp` bar and the
-ACP-bridge facts.
+Process env (including CI job secrets) is not overwritten. Goose defaults to
+`GOOSE_PROVIDER=anthropic` / `GOOSE_MODEL=claude-haiku-4-5-20251001` and
+opts in on the same Anthropic key as Claude; `LANDBRIDGE_REAL_GOOSE=1` is
+the already-configured-CLI path (same role as `LANDBRIDGE_REAL_CLAUDE`).
+The dispatch cell runs both the direct `goose acp` bar and the ACP-bridge facts.
 
 ```bash
-dotnet user-secrets set ANTHROPIC_API_KEY '…' --project tests/Landbridge.MultiMachine.Tests
-dotnet user-secrets set CODEX_API_KEY     '…' --project tests/Landbridge.MultiMachine.Tests
-dotnet user-secrets set XAI_API_KEY       '…' --project tests/Landbridge.MultiMachine.Tests
+dotnet user-secrets set ANTHROPIC_API_KEY      '…' --project tests/Landbridge.MultiMachine.Tests
+dotnet user-secrets set CODEX_API_KEY          '…' --project tests/Landbridge.MultiMachine.Tests
+dotnet user-secrets set XAI_API_KEY            '…' --project tests/Landbridge.MultiMachine.Tests
 ```
 
 The Aspire loop loads this same secrets id, so one store feeds both the paid

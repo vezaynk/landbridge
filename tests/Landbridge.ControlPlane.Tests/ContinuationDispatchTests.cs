@@ -59,6 +59,9 @@ public sealed class ContinuationDispatchTests(PostgresFixture pg) : IAsyncLifeti
         Assert.Equal(MachineGonePolicy.Degrade, row.OnMachineGone);
         // The inherited session ref lands on the same column §11 resume reads at dispatch.
         Assert.Equal("sess-1", row.HarnessSessionRef);
+        // And pending_spawn is load, so DispatchService actually passes it as
+        // ResumeSessionRef rather than inferring from the leftover-ref column.
+        Assert.Equal(PendingSpawn.Load, row.PendingSpawn);
     }
 
     [SkippableFact]

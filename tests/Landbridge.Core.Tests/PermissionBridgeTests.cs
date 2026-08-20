@@ -127,7 +127,7 @@ public class PermissionBridgeTests
     [Fact]
     public void A_verdict_is_refused_on_a_task_that_is_not_blocked()
     {
-        foreach (var state in new[] { SessionState.Working, SessionState.Submitted, SessionState.Verifying, SessionState.Parked })
+        foreach (var state in new[] { SessionState.Working, SessionState.Submitted, SessionState.Parked })
             Expect.Rejected(
                 Decide(Given.Session(state), PermissionVerdict.Allow),
                 Rule.InvalidSourceState);

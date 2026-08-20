@@ -21,7 +21,7 @@ public class WrongSourceStateAndAuthorityTests
 
     /// <summary>Every state a task can be in and still be moved at all (§6: terminals are final).</summary>
     public static TheoryData<SessionState> NonTerminalStates() =>
-        new(SessionState.Submitted, SessionState.Working, SessionState.Verifying, SessionState.BlockedOnInput, SessionState.Parked, SessionState.Failed);
+        new(SessionState.Submitted, SessionState.Working, SessionState.BlockedOnInput, SessionState.Parked, SessionState.Failed);
 
     // ── Commands the dispatch table does not recognize ────────────────────────
 
@@ -52,7 +52,6 @@ public class WrongSourceStateAndAuthorityTests
 
     [Theory]
     [InlineData(SessionState.Working)]
-    [InlineData(SessionState.Verifying)]
     [InlineData(SessionState.BlockedOnInput)]
     [InlineData(SessionState.Parked)]
     [InlineData(SessionState.Failed)]
@@ -84,7 +83,6 @@ public class WrongSourceStateAndAuthorityTests
 
     [Theory]
     [InlineData(SessionState.Submitted)]
-    [InlineData(SessionState.Verifying)]
     [InlineData(SessionState.BlockedOnInput)]
     [InlineData(SessionState.Parked)]
     public void Report_result_applies_only_from_working(SessionState state)
@@ -95,25 +93,24 @@ public class WrongSourceStateAndAuthorityTests
         Expect.Rejected(SessionStateMachine.Apply(task, report), Rule.InvalidSourceState);
     }
 
-    [Theory]
-    [InlineData(SessionState.Submitted)]
-    [InlineData(SessionState.Working)]
-    [InlineData(SessionState.BlockedOnInput)]
-    [InlineData(SessionState.Parked)]
-    public void Both_verdicts_apply_only_from_verifying(SessionState state)
+    [Fact]
+    public void Submit_review_refuses_a_live_permission_wait()
     {
-        // A verdict is a judgement on a submitted result. Accepting a task that has
-        // not reported would complete work nobody looked at, so the state gate comes
-        // before the §9 check 4 identity gate.
-        var task = Given.Session(state);
+        var task = Given.Session(SessionState.BlockedOnInput);
+        Expect.Rejected(SessionStateMachine.Apply(task, new VerdictAccept(Given.Lead)), Rule.InvalidSourceState);
+        Expect.Rejected(SessionStateMachine.Apply(task, new VerdictFail(Given.Lead)), Rule.InvalidSourceState);
+    }
 
+    [Fact]
+    public void Submit_review_refuses_a_failed_attempt()
+    {
+        var task = Given.Session(SessionState.Failed);
         Expect.Rejected(SessionStateMachine.Apply(task, new VerdictAccept(Given.Lead)), Rule.InvalidSourceState);
         Expect.Rejected(SessionStateMachine.Apply(task, new VerdictFail(Given.Lead)), Rule.InvalidSourceState);
     }
 
     [Theory]
     [InlineData(SessionState.Submitted)]
-    [InlineData(SessionState.Verifying)]
     [InlineData(SessionState.Parked)]
     [InlineData(SessionState.Failed)]
     public void Answer_input_applies_only_from_blocked_on_input_or_working(SessionState state)

@@ -98,7 +98,7 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
         await fleet.StartAsync(ct);
 
         var task = await fleet.CreateSessionAsync("chaos baseline", profile: null, ct);
-        await AssertReachesAsync(fleet, task, SessionState.Verifying, "the scripted worker never reported", ct);
+        await AssertReportedAsync(fleet, task, "the scripted worker never reported", ct);
         await fleet.AcceptAsync(task, ct);
         await AssertReachesAsync(fleet, task, SessionState.Completed, "the Lead's accept never committed", ct);
     }
@@ -255,8 +255,8 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
 
         // ── 4. The whole loop still works, not just the requeue path.
         var after = await fleet.CreateSessionAsync("chaos post-restart", profile: null, ct);
-        await AssertReachesAsync(fleet, after, SessionState.Verifying,
-            "a task created after the restart never reached verifying", ct, siblings.Append(after));
+        await AssertReportedAsync(fleet, after,
+            "a task created after the restart never reported", ct, siblings.Append(after));
         await fleet.AcceptAsync(after, ct);
         await AssertReachesAsync(fleet, after, SessionState.Completed,
             "a task created after the restart never completed", ct, siblings.Append(after));
@@ -746,8 +746,8 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
         // ── The machine is still there: a fresh task runs the whole loop. Pre-fix the
         // teardown left landbridged registered nowhere, so nothing could be dispatched at all.
         var after = await fleet.CreateSessionAsync("chaos post-reattach", profile: null, ct);
-        await AssertReachesAsync(fleet, after, SessionState.Verifying,
-            "a task created after the superseded teardown never reached verifying, so the live " +
+        await AssertReportedAsync(fleet, after,
+            "a task created after the superseded teardown never reported, so the live " +
             "connection was unregistered with it", ct, [held, after]);
         await fleet.AcceptAsync(after, ct);
         await AssertReachesAsync(fleet, after, SessionState.Completed,
@@ -785,6 +785,18 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
         var actual = await fleet.StateAsync(task, ct);
         Assert.Fail(
             $"{because}: task {task} is {actual?.ToString() ?? "(gone)"}, expected {expected} " +
+            $"within {TransitionBudget}\n" + await fleet.DiagnoseAsync(context ?? [task], ct));
+    }
+
+    private static async Task AssertReportedAsync(
+        ChaosFleet fleet, SessionId task, string because,
+        CancellationToken ct, IEnumerable<SessionId>? context = null)
+    {
+        if (await fleet.WaitForReportAsync(task, TransitionBudget, ct))
+            return;
+        var actual = await fleet.MessageStateAsync(task, ct);
+        Assert.Fail(
+            $"{because}: task {task} message is {actual?.ToString() ?? "(gone)"}, expected awaiting_report " +
             $"within {TransitionBudget}\n" + await fleet.DiagnoseAsync(context ?? [task], ct));
     }
 

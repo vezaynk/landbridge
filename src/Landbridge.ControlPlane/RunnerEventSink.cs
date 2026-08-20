@@ -152,7 +152,7 @@ public sealed class RunnerEventSink(
     /// entirely on what the task did first.
     ///
     /// <para>Almost always it is not. A worker reports its result over MCP and waits for the
-    /// tool to return before ending its turn, so the working → verifying transition is
+    /// tool to return before ending its turn, so <c>awaiting_report</c> is
     /// already committed by the time this arrives; the same holds for a worker that asked and
     /// is now blocked_on_input. Both leave nothing to do.</para>
     ///
@@ -197,6 +197,10 @@ public sealed class RunnerEventSink(
             // A question is a turn, not a death. The session is idle for the Lead;
             // requeueing it would kill the process the Lead is about to doorbell.
             if (await store.IsAwaitingLeadAsync(te.Session, ct))
+                return;
+            // A registered service is the job. Ending the turn does not yield
+            // occupancy; the same exemption as the no-progress clock.
+            if (await store.HasRegisteredServiceAsync(te.Session, ct))
                 return;
 
             logger.LogInformation(
@@ -284,7 +288,7 @@ public sealed class RunnerEventSink(
             foreach (var task in held)
             {
                 var state = await store.GetStateAsync(task, ct);
-                if (state is SessionState.Working or SessionState.BlockedOnInput or SessionState.Verifying)
+                if (state is SessionState.Working or SessionState.BlockedOnInput)
                     await store.ApplyAsync(task, new LivenessLost(LivenessLossReason.MachineReboot), ct);
             }
         });

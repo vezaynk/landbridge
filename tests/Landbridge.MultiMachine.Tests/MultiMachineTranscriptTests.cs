@@ -49,13 +49,13 @@ public sealed class MultiMachineTranscriptTests(PostgresFixture pg) : IAsyncLife
         var task = await rig.CreateSessionAsync($"echo:{PlantedSecret}", ct);
         await rig.DispatchToAsync("A", ct);
         Assert.True(
-            await FleetRig.WaitUntilAsync(async () => await rig.StateAsync(task, ct) == SessionState.Verifying, Bound),
-            "the echo worker never reached verifying. " + await rig.DiagnoseAsync(task, ct));
+            await FleetRig.WaitUntilAsync(async () => await rig.HasReportAsync(task, ct), Bound),
+            "the echo worker never mailed a report. " + await rig.DiagnoseAsync(task, ct));
         Assert.Equal("A", rig.MachineRanOn(task));
 
         var relay = rig.PlaneServices.GetRequiredService<TranscriptRelayService>();
 
-        // While it is still verifying, the gate refuses: report_result does not revoke the
+        // While it is still awaiting_report, the gate refuses: report_result does not revoke the
         // reporting instance's token, so an in-flight transcript can still carry a live
         // credential (§12/§13).
         var tooEarly = await relay.ListAsync(task, "A", ct);

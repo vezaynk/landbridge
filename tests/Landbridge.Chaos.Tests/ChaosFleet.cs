@@ -293,7 +293,7 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     /// <summary>
     /// Creates a task as the Lead. <paramref name="profile"/> selects the runner
     /// profile (§10 exact-match routing): <c>null</c> is the reporting worker that
-    /// drives a task to <c>verifying</c>, <see cref="ChaosProfiles.Wedge"/> is the
+    /// drives a task to a report, <see cref="ChaosProfiles.Wedge"/> is the
     /// worker that emits nothing and reports nothing.
     /// </summary>
     public async Task<SessionId> CreateSessionAsync(string description, string? profile, CancellationToken ct)
@@ -307,7 +307,7 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
         return task;
     }
 
-    /// <summary>Accept a verifying task as the Lead, driving it to <c>completed</c> (§7).</summary>
+    /// <summary>Accept a reported session as the Lead, driving it to <c>completed</c> (§7).</summary>
     public async Task AcceptAsync(SessionId task, CancellationToken ct)
     {
         await using var lead = await ConnectLeadAsync(ct);
@@ -439,6 +439,12 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
         return await PlaneProbe.StateAsync(db, task, ct);
     }
 
+    public async Task<MessageState?> MessageStateAsync(SessionId task, CancellationToken ct)
+    {
+        await using var db = pg.NewContext();
+        return await PlaneProbe.MessageStateAsync(db, task, ct);
+    }
+
     /// <summary>The committed row facts the scenarios assert on, in one read.</summary>
     public async Task<TaskFacts?> FactsAsync(SessionId task, CancellationToken ct)
     {
@@ -484,6 +490,9 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
 
     public Task<bool> WaitForStateAsync(SessionId task, SessionState state, TimeSpan timeout, CancellationToken ct) =>
         WaitUntilAsync(async () => await StateAsync(task, ct) == state, timeout, ct);
+
+    public Task<bool> WaitForReportAsync(SessionId task, TimeSpan timeout, CancellationToken ct) =>
+        WaitUntilAsync(async () => await MessageStateAsync(task, ct) == MessageState.AwaitingReport, timeout, ct);
 
     // ── Diagnostics ─────────────────────────────────────────────────────────────
 
@@ -536,7 +545,7 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     /// <list type="bullet">
     /// <item><c>default</c> — <c>Landbridge.WorkerHarness</c>, which dials the plane with
     /// its injected token, calls <c>get_session</c>, reports a result and exits: a task
-    /// that reaches <c>verifying</c> on its own.</item>
+    /// that mails a report on its own.</item>
     /// <item><c>wedge</c> — <c>Landbridge.Runner.TestHarness run</c>, which writes a marker
     /// and then only watches stdin. It never speaks MCP, so it registers no service and
     /// makes no progress, while landbridged keeps emitting <c>alive</c> for it every

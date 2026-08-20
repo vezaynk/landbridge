@@ -15,11 +15,11 @@ public class ReportCapTests
 
     [Fact]
     public void A_null_report_is_accepted() =>
-        Expect.Transitioned(Report(null), SessionState.Verifying); // back-compat: report is optional
+        Expect.Reported(Report(null)); // back-compat: report is optional
 
     [Fact]
     public void A_report_at_the_cap_is_accepted() =>
-        Expect.Transitioned(Report(new string('x', ReportResult.MaxReportBytes)), SessionState.Verifying);
+        Expect.Reported(Report(new string('x', ReportResult.MaxReportBytes)));
 
     [Fact]
     public void A_report_one_byte_over_the_cap_is_rejected() =>

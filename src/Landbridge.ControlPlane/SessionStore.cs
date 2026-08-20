@@ -72,6 +72,12 @@ public sealed class SessionStore(
             TeamId = task.Team.Value,
             Namespace = task.Namespace,
             State = task.State,
+            OccupancyDesired = task.OccupancyDesired,
+            OccupancyObserved = task.OccupancyObserved,
+            Health = task.Health,
+            Hidden = task.Hidden,
+            MessageState = task.MessageState,
+            PendingSpawn = task.PendingSpawn,
             Profile = task.Profile,
             VerificationRetryLimit = task.VerificationRetryLimit,
             InfrastructureRequeueLimit = task.InfrastructureRequeueLimit,
@@ -183,12 +189,12 @@ public sealed class SessionStore(
         if (sessionLive)
         {
             // A live worker the Lead spoke to without being asked — including a
-            // reply to a report still sitting in verifying — is a follow-up on
-            // the same session, not a continue-from-blocked. A *live* permission
-            // wait stays on the verdict path. A leftover Permission kind after
-            // the verdict (or after the worker reported) is not a wait: passing
-            // it here made LeadMessage / ContinueSession refuse both tools
-            // while get_session_question said "nothing waiting".
+            // reply to a report — is a follow-up on the same session, not a
+            // continue-from-blocked. A *live* permission wait stays on the
+            // verdict path. A leftover Permission kind after the verdict (or
+            // after the worker reported) is not a wait: passing it here made
+            // LeadMessage / ContinueSession refuse both tools while
+            // get_session_question said "nothing waiting".
             var pending = row.InputKind;
             var livePermissionWait = pending == InputRequestKind.Permission
                 && row.State == SessionState.BlockedOnInput
@@ -196,7 +202,7 @@ public sealed class SessionStore(
             if (pending == InputRequestKind.Permission && !livePermissionWait)
                 pending = null;
 
-            if (row.State == SessionState.Verifying
+            if (row.MessageState == MessageState.AwaitingReport
                 || (row.State == SessionState.Working && pending is null))
                 return await RunTransition(row, new LeadMessage(lead, answer, pending), ct);
             return await RunTransition(row, new ContinueSession(lead, answer, pending), ct);
@@ -862,11 +868,10 @@ public sealed class SessionStore(
     public async Task<SessionReportView?> GetSessionReportAsync(TeamId team, SessionId task, CancellationToken ct = default) =>
         await db.Sessions.AsNoTracking()
             .Where(t => t.Id == task.Value && t.TeamId == team.Value)
-            // §8.1: the artifact pointer rides along with the prose because this is the
-            // adjudication read (§7) and the two are asymmetric — §6 REQUIRES the
-            // reference for working → verifying while the report is optional, so a task
-            // whose worker wrote no prose still has a reference, and it is then the only
-            // thing the worker said. Verbatim, never dereferenced (#81).
+            // §8.1: the pointer rides along with the prose — §6 REQUIRES the
+            // reference on report_result while the report is optional, so a session
+            // whose worker wrote no prose still has a reference. Verbatim, never
+            // dereferenced (#81).
             // §6/§9 check 7: the infrastructure account rides the per-task fetch in full —
             // count, cap, and the last reason — because this is where a Lead asks "what
             // happened to this task", and for a task the cap abandoned it is the ONLY
@@ -1293,13 +1298,12 @@ public sealed class SessionStore(
         if (row.LastMessageId != prevLastMessageId && row.LastMessageId is not null)
             row.LastMessageClosedAt = clock.GetUtcNow();
         // #23, §7: the reported result reference is opaque content the store
-        // captures on the working → verifying transition. The engine and
-        // SessionRecord stay content-free (the reference never lands on the pure
-        // state), and CopyFrom deliberately does not carry it — so a succeeding
-        // ReportResult is the one place the row's ResultReference is written. It is
-        // read back by the Lead's per-task get_session_report fetch and the §12
-        // dashboard (#81) — the §7 adjudication read — alongside the worker's
-        // optional in-band report below.
+        // captures on report_result. The engine and SessionRecord stay content-free
+        // (the reference never lands on the pure state), and CopyFrom deliberately
+        // does not carry it — so a succeeding ReportResult is the one place the
+        // row's ResultReference is written. It is read back by get_session_report
+        // and the §12 dashboard (#81) alongside the worker's optional in-band
+        // report below.
         if (command is ReportResult reported)
         {
             row.ResultReference = reported.ResultReference;

@@ -185,27 +185,24 @@ public sealed class SessionRow
     public string? Workspace { get; set; }
 
     /// <summary>
-    /// The §8.1 artifact pointer the worker handed over on the working → verifying
-    /// transition — a commit, branch, or URL saying where the finished work lives.
-    /// Opaque: stored verbatim, never dereferenced, never entering <c>Landbridge.Core</c>
-    /// (§2 principle 1). §6 <b>requires</b> it for that transition while the
-    /// <see cref="WorkerReport"/> beside it stays optional, so it is the one thing every
-    /// task that reached verifying has said about its output. Read back by the Lead's
-    /// <c>get_session_report</c> fetch and the §12 dashboard — the §7 adjudication read
-    /// (#81) — as agent-authored CLAIMS to resolve against reality, never authority.
-    /// Null until the task reaches verifying.
+    /// The §8.1 pointer the worker handed over on <c>report_result</c> — a commit,
+    /// branch, or URL saying where the work lives. Opaque: stored verbatim, never
+    /// dereferenced, never entering <c>Landbridge.Core</c> (§2 principle 1). §6
+    /// <b>requires</b> it on a report while the <see cref="WorkerReport"/> beside it
+    /// stays optional. Read back by the Lead's <c>get_session_report</c> fetch and
+    /// the §12 dashboard (#81) as agent-authored CLAIMS, never authority.
+    /// Null until a report.
     /// </summary>
     public string? ResultReference { get; set; }
 
     /// <summary>
-    /// The worker's optional in-band report (§10), captured on the working →
-    /// verifying transition next to <see cref="ResultReference"/> — the worker's own
-    /// summary of what it did/verified plus proposals. Opaque content the plane
-    /// stores verbatim and never parses (§2 principle 1); its size is capped at the
-    /// engine (<see cref="Landbridge.Core.ReportResult.MaxReportBytes"/>). Null when the
-    /// worker reported none. Surfaced to the Lead (get_team_state), a successor
-    /// worker (get_session), and the §12 dashboard — agent-authored CLAIMS the Lead
-    /// verifies before accepting (§13), never authority.
+    /// The worker's optional in-band report (§10), captured on <c>report_result</c>
+    /// next to <see cref="ResultReference"/> — the worker's own summary plus proposals.
+    /// Opaque content the plane stores verbatim and never parses (§2 principle 1); its
+    /// size is capped at the engine (<see cref="Landbridge.Core.ReportResult.MaxReportBytes"/>).
+    /// Null when the worker reported none. Surfaced to the Lead (get_team_state), a
+    /// successor worker (get_session), and the §12 dashboard — agent-authored CLAIMS
+    /// (§13), never authority.
     /// </summary>
     public string? WorkerReport { get; set; }
 
@@ -288,10 +285,9 @@ public sealed class SessionRow
     public MachineGonePolicy? OnMachineGone { get; set; }
 
     /// <summary>
-    /// Who adjudicated this task's completion (§9 check 4): a Lead session or a
-    /// human, set on the verifying → completed transition and null otherwise. Typed
-    /// state the engine derives from the verdict actor, carried by <see cref="CopyFrom"/>
-    /// and rendered on the §12 dashboard task view.
+    /// Who closed this session (§9 check 4): a Lead session or a human, set on
+    /// <c>submit_review</c> and null otherwise. Typed state the engine derives from
+    /// the actor, carried by <see cref="CopyFrom"/> and rendered on the §12 dashboard.
     /// </summary>
     public VerdictProvenance? CompletionProvenance { get; set; }
 

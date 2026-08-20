@@ -53,9 +53,9 @@ public sealed record WriteParkRecord(ParkRecord Park) : Effect;
 public sealed record DiscardWorkspace : Effect;
 
 /// <summary>
-/// Cancellation with discard while verifying: deletion is deferred until the
-/// task leaves verifying, so an adjudicator is never judging a vanished
-/// workspace (§11). Like <see cref="DiscardWorkspace"/>, nothing enacts either
-/// half today — this records which of the two intents applied.
+/// Cancellation with discard while a report is outstanding: deletion is deferred
+/// until the session closes, so the Lead is never reading a vanished workspace
+/// (§11). Like <see cref="DiscardWorkspace"/>, nothing enacts either half today —
+/// this records which of the two intents applied.
 /// </summary>
 public sealed record DeferWorkspaceDiscardUntilVerdict : Effect;

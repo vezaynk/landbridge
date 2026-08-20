@@ -1065,7 +1065,7 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
                 new WorkerCaller(seeded.Team, seeded.Session, seeded.Instance), InputRequestKind.Question));
     }
 
-    /// <summary>The worker reports a result, taking the task to verifying (§7).</summary>
+    /// <summary>The worker reports a result, taking the task a report (§7).</summary>
     private async Task ReportResultAsync(TimeProvider clock, Seeded seeded)
     {
         await using var db = pg.NewContext();

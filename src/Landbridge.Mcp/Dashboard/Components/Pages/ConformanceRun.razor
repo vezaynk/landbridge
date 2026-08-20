@@ -12,7 +12,7 @@ else if (Ready && Run is { } run)
 {
     <h1>Profile check</h1>
     <p class="sub">Profile <span class="mono">@run.Profile</span> —
-        @(run.Verifying + run.Completed)/@run.Total workers reported.
+        @(run.Reported + run.Completed)/@run.Total workers reported.
         This page refreshes.</p>
     @if (run.MachinesDeclaring.Count == 0)
     {
@@ -30,7 +30,7 @@ else if (Ready && Run is { } run)
     }
     <div class="metrics">
         <div class="metric"><div class="n">@run.Pending</div><div class="l">pending</div></div>
-        <div class="metric"><div class="n">@run.Verifying</div><div class="l">verifying</div></div>
+        <div class="metric"><div class="n">@run.Reported</div><div class="l">reported</div></div>
         <div class="metric"><div class="n">@run.Completed</div><div class="l">completed</div></div>
         <div class="metric"><div class="n">@run.Failed</div><div class="l">failed</div></div>
     </div>
@@ -77,7 +77,8 @@ else if (Ready && Run is { } run)
         var tasks = rows.Select(r => new ConformanceSessionView(
             r.Id,
             ConformanceCatalog.KindOf(r.Workspace) ?? "unknown",
-            r.State, r.Attempt, r.ResultReference, r.LastRequeueReason?.ToString())).ToList();
+            r.State, r.Attempt, r.ResultReference, r.LastRequeueReason?.ToString(),
+            r.MessageState)).ToList();
         var machines = new List<string>();
         foreach (var id in Registry.MachineIds())
         {

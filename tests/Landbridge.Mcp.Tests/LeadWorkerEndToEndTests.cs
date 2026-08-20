@@ -38,7 +38,7 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
     public Task DisposeAsync() => Task.CompletedTask;
 
     [SkippableFact]
-    public async Task Lead_creates_a_task_over_mcp_and_a_worker_carries_it_to_verifying()
+    public async Task Lead_creates_a_task_over_mcp_and_a_worker_reports()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
@@ -100,14 +100,15 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             }, cancellationToken: ct);
 
             Assert.NotEqual(true, reported.IsError);
-            Assert.Contains("Verifying", Assert.Single(reported.Content.OfType<TextContentBlock>()).Text);
+            Assert.Contains("Working", Assert.Single(reported.Content.OfType<TextContentBlock>()).Text);
         }
 
         // ── The record moved through the state machine, not around it ───────
         await using (var v = pg.NewContext())
         {
             var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == sessionId.Value, ct);
-            Assert.Equal(SessionState.Verifying, row.State);
+            Assert.Equal(SessionState.Working, row.State);
+            Assert.Equal(MessageState.AwaitingReport, row.MessageState);
         }
 
         await app.StopAsync(ct);

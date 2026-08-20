@@ -37,7 +37,7 @@ namespace Landbridge.WorkerHarness;
 /// to the returned loopback address, prove a byte round-trip through the real relay,
 /// then <c>report_result("relay-echo:ok:&lt;bytes&gt;")</c>.</item>
 /// <item>anything else — the default skeleton move: <c>report_result</c> a reference
-/// and exit 0 (drives working → verifying).</item>
+/// and exit 0.</item>
 /// </list></para>
 ///
 /// No shell, argv only (§10 convention). Any failure writes a diagnostic to
@@ -160,8 +160,8 @@ public static class Program
         if (description is not null && description.StartsWith(ConsumePrefix, StringComparison.Ordinal))
             return await RunConsumeModeAsync(client, cwd, description[ConsumePrefix.Length..].Trim(), ct);
 
-        // ── Default (§10) — report a result, driving working → verifying. No real
-        //    work; a reference is all the state machine requires (verification is separate).
+        // ── Default (§10) — mail a report. No real work; a reference is all
+        //    the state machine requires.
         var reported = await client.CallToolAsync(
             "report_result",
             new Dictionary<string, object?> { ["resultReference"] = "landbridge-worker-harness:done" },

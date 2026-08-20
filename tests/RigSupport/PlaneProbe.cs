@@ -157,8 +157,8 @@ internal static class PlaneProbe
     }
 
     /// <summary>
-    /// Accept a <c>verifying</c> task as the Lead, driving it to <c>completed</c> (§7) — the
-    /// terminal state a transcript becomes readable in (§12).
+    /// Close a session as the Lead via <c>submit_review accept</c> — hide + occupancy
+    /// release. Transcripts become readable once the row is hidden (§12).
     /// </summary>
     public static async Task AcceptAsync(McpClient lead, SessionId task, CancellationToken ct)
     {
@@ -182,6 +182,13 @@ internal static class PlaneProbe
     /// <summary>The task's committed state, or null when there is no such row.</summary>
     public static Task<SessionState?> StateAsync(LandbridgeDbContext db, SessionId task, CancellationToken ct) =>
         new SessionStore(db, TimeProvider.System).GetStateAsync(task, ct);
+
+    public static async Task<MessageState?> MessageStateAsync(
+        LandbridgeDbContext db, SessionId task, CancellationToken ct)
+    {
+        var row = await db.Sessions.AsNoTracking().SingleOrDefaultAsync(t => t.Id == task.Value, ct);
+        return row?.MessageState;
+    }
 
     /// <summary>
     /// Append one task's committed facts to <paramref name="sb"/>: the row, its worker

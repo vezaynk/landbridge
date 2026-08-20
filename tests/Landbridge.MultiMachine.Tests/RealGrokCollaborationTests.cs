@@ -9,7 +9,7 @@ namespace Landbridge.MultiMachine.Tests;
 /// §10 BYO-harness, fourth harness: Grok Build (<c>grok agent stdio</c>). Opt-in and
 /// token-spending, gated like the other real tiers.
 ///
-/// <para>The portable bar — verifying + session ref, usage/cost, park → resume via
+/// <para>The portable bar — report + session ref, usage/cost, park → resume via
 /// <c>session/load</c> — lives in <see cref="RealHarnessBar"/>.</para>
 /// </summary>
 [Trait("Category", RealGrok)]
@@ -41,8 +41,8 @@ public sealed class RealGrokCollaborationTests(PostgresFixture pg) : IAsyncLifet
     public Task DisposeAsync() => Task.CompletedTask;
 
     [SkippableFact(Timeout = RealHarnessBar.EchoTimeoutMs)]
-    public Task Real_worker_drives_a_task_to_verifying_on_the_fleet() =>
-        RealHarnessBar.DriveToVerifyingAsync(pg, RealHarnessProfiles.Grok(RequireRealGrok()));
+    public Task Real_worker_reports_on_the_fleet() =>
+        RealHarnessBar.DriveToReportAsync(pg, RealHarnessProfiles.Grok(RequireRealGrok()));
 
     [SkippableFact(Timeout = RealHarnessBar.EchoTimeoutMs)]
     public Task Real_worker_reports_usage_the_harness_emits() =>

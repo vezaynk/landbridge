@@ -100,7 +100,8 @@ public sealed record LivenessLost(LivenessLossReason Reason, WorkerInstanceId? I
     : SessionCommand(ControlPlaneActor.Instance);
 
 /// <summary>
-/// working → verifying. Requires a result reference (§6).
+/// Idle envelope → <c>awaiting_report</c>. Requires a result reference (§6).
+/// Occupancy does not change. A report is mail, not a session phase.
 ///
 /// <para><see cref="Report"/> is the worker's optional in-band summary (§10): what
 /// it did, what it verified, evidence pointers, and proposals (e.g. "task X should
@@ -122,13 +123,14 @@ public sealed record ReportResult(Actor Actor, string? ResultReference, string? 
 }
 
 /// <summary>
-/// verifying → completed. Caller identity is not an agent. The plane trusts
-/// the Lead; a session's own worker can never complete it.
+/// Close the session (hide, desired=on_disk). Caller identity is not an agent.
+/// The plane trusts the Lead; a session's own worker can never close it.
+/// Allowed while idle or after a report; not a grade of an artifact.
 /// </summary>
 public sealed record VerdictAccept(Actor Actor) : SessionCommand(Actor);
 
 /// <summary>
-/// verifying → rejected. A fail is not a redispatch: if the Lead wants more
+/// Close and discard. A fail is not a redispatch: if the Lead wants more
 /// from this worker they reply (<see cref="LeadMessage"/>) instead. Same
 /// identity gate as <see cref="VerdictAccept"/>.
 /// </summary>

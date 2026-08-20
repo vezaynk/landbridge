@@ -21,7 +21,7 @@ namespace Landbridge.MultiMachine.Tests;
 /// dedicated CI job (<c>.github/workflows/ci.yml</c>, <c>real-codex-e2e</c>) sets the key
 /// and runs only this trait.</para>
 ///
-/// <para>The portable minimum bar — verifying + session ref, tokens (Codex computes no
+/// <para>The portable minimum bar — report + session ref, tokens (Codex computes no
 /// cost), park → resume via <c>codex exec resume</c> — lives in <see cref="RealHarnessBar"/>
 /// and is wrapped below so <c>Category=RealCodex</c> still isolates the job. Dead-man hang,
 /// stop-as-signal, and the mixed claude+codex fleet stay in this file.</para>
@@ -105,8 +105,8 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
     public Task DisposeAsync() => Task.CompletedTask;
 
     [SkippableFact(Timeout = RealHarnessBar.EchoTimeoutMs)]
-    public Task Real_worker_drives_a_task_to_verifying_on_the_fleet() =>
-        RealHarnessBar.DriveToVerifyingAsync(pg, RealHarnessProfiles.Codex(RequireRealCodex()));
+    public Task Real_worker_reports_on_the_fleet() =>
+        RealHarnessBar.DriveToReportAsync(pg, RealHarnessProfiles.Codex(RequireRealCodex()));
 
     [SkippableFact(Timeout = RealHarnessBar.EchoTimeoutMs)]
     public Task Real_worker_reports_usage_the_harness_emits() =>
@@ -239,8 +239,8 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
         var token = NewToken();
         var stepA = await rig.CreateSessionAsync(EchoDescription("A", token), ct);
         Assert.True(
-            await rig.DispatchUntilVerifyingAsync(stepA, "A", MaxAttempts, PerLegBudget, ct),
-            "the real claude worker never drove step A to verifying.\n"
+            await rig.DispatchUntilReportedAsync(stepA, "A", MaxAttempts, PerLegBudget, ct),
+            "the real claude worker never mailed a report on step A.\n"
             + await rig.RealWorkerDiagnosticsAsync(stepA, ct));
 
         // The handoff: read what A actually committed to the plane, not the test's constant.
@@ -250,7 +250,7 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
         // Step B, on the codex machine: report the token the claude worker produced.
         var stepB = await rig.CreateSessionAsync(EchoDescription("B", token), ct);
         Assert.True(
-            await rig.DispatchUntilVerifyingAsync(stepB, "B", MaxAttempts, PerLegBudget, ct),
+            await rig.DispatchUntilReportedAsync(stepB, "B", MaxAttempts, PerLegBudget, ct),
             "the real codex worker never confirmed the cross-harness handoff.\n"
             + CodexFailureHypotheses(rig, stepB) + await rig.RealWorkerDiagnosticsAsync(stepB, ct));
 

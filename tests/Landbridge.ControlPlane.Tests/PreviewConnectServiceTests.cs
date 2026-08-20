@@ -235,10 +235,11 @@ public sealed class PreviewConnectServiceTests(PostgresFixture pg) : IAsyncLifet
         var mint = await new PreviewMappingService(db, clock)
             .CreateAsync(team, taskA, "web", PreviewAuthPolicy.Public, TimeSpan.FromHours(2));
 
-        // A finishes: its registration goes with it (ClearServicesAndForwards), which frees
+        // A closes: its registration goes with it (ClearServicesAndForwards), which frees
         // the name — and the label, TTL-bound rather than task-bound, outlives it.
+        // A report does not yield occupancy or services.
         Assert.IsType<StoreResult.Applied>(await new SessionStore(db, clock).ApplyAsync(
-            taskA, new ReportResult(new WorkerCaller(team, taskA, instanceA), "ref")));
+            taskA, new VerdictAccept(new LeadClaim(team))));
 
         // B, same Team, registers the same name on a different port — legitimate, since the
         // name is free now.

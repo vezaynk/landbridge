@@ -53,6 +53,13 @@ public static class SessionStateMachine
                     $"preferred machine does not declare profile '{requiredProfile}' the continuation requires");
         }
 
+        // Continuation with a transcript is session/load on first dispatch.
+        // Do not infer load from a leftover HarnessSessionRef later — the
+        // pending_spawn column is the wire selector (§11 occupancy).
+        var pending = command.Continues?.InheritedSessionRef is { Length: > 0 }
+            ? PendingSpawn.Load
+            : PendingSpawn.New;
+
         return Done(new SessionRecord
         {
             Id = id,
@@ -64,7 +71,7 @@ public static class SessionStateMachine
             Health = SessionHealth.Ok,
             Hidden = false,
             MessageState = MessageState.Idle,
-            PendingSpawn = PendingSpawn.New,
+            PendingSpawn = pending,
         });
     }
 
@@ -249,7 +256,7 @@ public static class SessionStateMachine
 
         if (string.IsNullOrWhiteSpace(c.ResultReference))
             return TransitionResult.Reject(Rule.ResultReferenceRequired,
-                "working → verifying requires a result reference");
+                "report_result requires a result reference");
 
         // §10: the in-band report is bounded. Over-cap is refused here (a length
         // check, not content interpretation — the same shape as the non-empty checks
@@ -271,14 +278,31 @@ public static class SessionStateMachine
 
     private static TransitionResult ApplyVerdict(SessionRecord task, Actor actor, bool accepted)
     {
-        if (task.MessageState != MessageState.AwaitingReport)
-            return WrongState(task, SessionState.Verifying);
+        if (task.Hidden)
+            return TransitionResult.Reject(Rule.TerminalStatesAreFinal,
+                "a hidden session is already closed");
 
-        // §9 check 4 (doer/judge split): completion comes from a Lead or human
+        if (task.Health == SessionHealth.Failed)
+            return TransitionResult.Reject(Rule.InvalidSourceState,
+                "a failed attempt is retried with answer_input_request, not closed with submit_review");
+
+        if (task.MessageState == MessageState.AwaitingPermission)
+            return TransitionResult.Reject(Rule.InvalidSourceState,
+                "a live permission wait cannot be closed; answer_permission_request");
+
+        if (task.MessageState == MessageState.AwaitingLead)
+            return TransitionResult.Reject(Rule.InvalidSourceState,
+                "an unanswered question is cancel_session, not submit_review");
+
+        if (task.MessageState is not (MessageState.Idle or MessageState.AwaitingReport))
+            return TransitionResult.Reject(Rule.InvalidSourceState,
+                "submit_review closes a session that is idle or has a report; cancel_session to stop mid-exchange");
+
+        // §9 check 4 (doer/judge split): closing the row comes from a Lead or human
         // credential, NEVER the task's own worker — a WorkerCaller is refused here
         // structurally, exactly as a subagent never accepts its own work. The
         // plane trusts the Lead. Provenance is derived from the actor and
-        // recorded on the completing transition (§12 dashboard).
+        // recorded on the close.
         var provenance = actor switch
         {
             HumanSession => (VerdictProvenance?)VerdictProvenance.Human,

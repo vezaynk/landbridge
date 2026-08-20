@@ -349,7 +349,7 @@ public static class Program
     // ── Fan-out leaf: a pure deterministic transform, no forward ────────────────
 
     /// <summary><c>map:&lt;seed&gt;</c>: report the deterministic transform of the seed and
-    /// exit, driving working → verifying. The fan-out property is that a Lead can spread
+    /// exit after <c>report_result</c>. The fan-out property is that a Lead can spread
     /// many of these across machines and collect the correct set back.</summary>
     /// <summary>
     /// <c>echo:&lt;text&gt;</c> — print <paramref name="text"/> to stdout, then report. The only

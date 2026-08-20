@@ -26,18 +26,18 @@ namespace Landbridge.Mcp.Tests;
 /// <summary>
 /// The whole task lifecycle end to end (spec §5, §6, §9 check 4), created → … →
 /// completed, over real HTTP and real MCP with no LLM. It extends the walking
-/// skeleton with the Lead-adjudicated verdict path:
+/// skeleton with the Lead close path:
 ///
 /// <list type="number">
 /// <item>A Lead creates a <c>lead</c>-mode task over real MCP.</item>
 /// <item>The real <see cref="DispatchService"/> claims it, mints the worker token,
 ///   and the real <see cref="ProcessSupervisor"/> spawns the fake
 ///   <see cref="Landbridge.WorkerHarness"/>, which authenticates back to <c>/mcp</c>,
-///   calls <c>get_session</c>, then <c>report_result(ref)</c> — working → verifying.</item>
+///   calls <c>get_session</c>, then <c>report_result(ref)</c>.</item>
 /// <item>The Lead reads the reported reference (proving #23 persistence end to end),
-///   then calls <c>submit_review accept</c> over MCP — verifying → completed with
-///   lead-session provenance, no human confirmation (the doer/judge split: the
-///   Lead adjudicates, never the task's own worker).</item>
+///   then calls <c>submit_review accept</c> over MCP — close, with
+///   lead-session provenance (the doer/judge split: the Lead closes, never the
+///   session's own worker).</item>
 /// </list>
 ///
 /// The former automated-verifier module is cut (§7): CI and tests are evidence a
@@ -128,16 +128,16 @@ public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifet
                 publicMcpUrl: baseUrl);
             await dispatch.RunDispatchPassAsync(ct);
 
-            // ── The harness authenticated and reported: working → verifying ──
+            // ── The harness authenticated and reported: report_result ──
             var workDir = Path.Combine(workRoot, sessionId.ToString());
             var reached = await WaitUntilAsync(
-                async () => await StateAsync(sessionId, ct) == SessionState.Verifying,
+                async () => await HasReportAsync(sessionId, ct),
                 TimeSpan.FromSeconds(60));
             if (!reached)
             {
                 var errPath = Path.Combine(workDir, "harness_error.txt");
                 var detail = File.Exists(errPath) ? await File.ReadAllTextAsync(errPath, ct) : "(no harness_error.txt)";
-                Assert.Fail($"worker harness never drove the task to verifying. Harness diagnostic:\n{detail}");
+                Assert.Fail($"worker harness never mailed a report. Harness diagnostic:\n{detail}");
             }
 
             // The reference the harness reported (§10) — persisted by #23; a plain
@@ -147,15 +147,14 @@ public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifet
                 Assert.Equal(reportedRef,
                     (await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == sessionId.Value, ct)).ResultReference);
 
-            // ── Lead adjudicates over real MCP: submit_review accept → completed ──
-            // Lead mode (§7, §9 check 4): the Lead session's verdict completes the
-            // task with no human confirmation — the Claude Code shape, orchestrator
-            // judgment over a schema-mandated non-agent verdict.
+            // ── Lead closes over real MCP: submit_review accept → completed ──
+            // (§7, §9 check 4): the Lead session closes the row — never the
+            // session's own worker.
             await using (var lead = await ConnectAsync(new Uri(baseUrl + "/"), leadToken, ct))
             {
                 // #81: and it landed where the Lead actually reads it. The row assertion
-                // above only proves persistence; this is the §7 adjudication read over real
-                // MCP, and until now no tool returned this column at all.
+                // above only proves persistence; this is the Lead's get_session_report
+                // over real MCP.
                 var reportRead = await lead.CallToolAsync("get_session_report", new Dictionary<string, object?>
                 {
                     ["sessionId"] = sessionId.ToString(),
@@ -193,6 +192,13 @@ public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifet
     {
         await using var db = pg.NewContext();
         return await new SessionStore(db, TimeProvider.System).GetStateAsync(id, ct);
+    }
+
+    private async Task<bool> HasReportAsync(SessionId id, CancellationToken ct)
+    {
+        await using var db = pg.NewContext();
+        var row = await db.Sessions.AsNoTracking().SingleOrDefaultAsync(t => t.Id == id.Value, ct);
+        return row?.MessageState == MessageState.AwaitingReport;
     }
 
     private WebApplication BuildServer()

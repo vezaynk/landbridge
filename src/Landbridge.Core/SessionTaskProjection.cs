@@ -63,7 +63,7 @@ public static class SessionTaskProjection
         MessageState.AwaitingLead =>
             "waiting on the Lead; get_session_question then answer_input_request",
         MessageState.AwaitingReport =>
-            "report ready; get_session_report then submit_review",
+            "report ready; get_session_report, then reply or submit_review to close",
         MessageState.AwaitingPull =>
             "worker pulling get_session",
         _ => null,

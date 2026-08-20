@@ -463,8 +463,9 @@ public sealed class DispatchService : IHostedService
     /// <summary>
     /// Requeues working tasks that have lost liveness (§10 per-task liveness), on
     /// two independent clocks. Tasks that are blocked_on_input/parked have liveness
-    /// suspended (§11) and are left tracked; verifying/terminal tasks are simply
-    /// untracked.
+    /// suspended (§11) and are left tracked; terminal tasks are simply
+    /// untracked. A report keeps the process and is skipped as Lead-owed
+    /// (<see cref="SessionStore.IsAwaitingLeadAsync"/>).
     ///
     /// <para><b>Aliveness</b> (<see cref="_livenessWindow"/>, default 60s): landbridged
     /// has stopped even asserting the harness process exists. That means the process
@@ -587,22 +588,6 @@ public sealed class DispatchService : IHostedService
                     // transition means it has not, and killing a process the plane still
                     // considers live would destroy work nothing requeued.
                     await KillAbandonedDispatchAsync(tracked.Session, tracked.Machine, ct);
-                    break;
-                case { State: SessionState.Verifying } dispatch:
-                    // A report keeps the process. No-progress while verifying is the
-                    // Lead thinking, not a wedge. A dead process is a fail.
-                    if (!notAlive)
-                        break;
-                    _logger.LogWarning(
-                        "task {Task} on {Machine} died while verifying; failing the attempt",
-                        tracked.Session, tracked.Machine);
-                    var verifyingLoss = await store.ApplyAsync(
-                        tracked.Session, new LivenessLost(LivenessLossReason.LivenessTimeout, dispatch.Instance), ct);
-                    if (verifyingLoss is StoreResult.Applied)
-                    {
-                        _registry.Untrack(tracked.Session);
-                        await KillAbandonedDispatchAsync(tracked.Session, tracked.Machine, ct);
-                    }
                     break;
                 case null:
                 case { State: SessionState.Completed or SessionState.Rejected

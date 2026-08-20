@@ -295,11 +295,9 @@ foreach (var harness in devHarnesses)
         });
 }
 
-// Completion is Lead-adjudicated (§7, §9 check 4): a Lead session's submit_review
-// verdict completes a `lead`-mode task, so there is no separate verifier resource in
-// the loop. CI and tests are evidence a Lead gathers itself, not a verdict actor.
-// The dev loop is no longer zero-human by construction — a human-driven Lead closes
-// the lifecycle — which is the point of the realignment.
+// A worker mails report_result; a Lead's submit_review closes the session (§7, §9
+// check 4). There is no separate verifier resource in the loop. CI and tests are
+// evidence a Lead gathers itself, not a verdict actor.
 
 builder.Build().Run();
 

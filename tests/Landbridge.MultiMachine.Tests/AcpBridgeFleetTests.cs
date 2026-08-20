@@ -20,7 +20,7 @@ public sealed class AcpBridgeFleetTests(PostgresFixture pg) : IAsyncLifetime
     public Task DisposeAsync() => Task.CompletedTask;
 
     [SkippableFact]
-    public async Task Scripted_worker_reaches_verifying_through_the_acp_bridge()
+    public async Task Scripted_worker_reports_through_the_acp_bridge()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(1));
@@ -36,8 +36,8 @@ public sealed class AcpBridgeFleetTests(PostgresFixture pg) : IAsyncLifetime
         var task = await rig.CreateSessionAsync("map:" + seed, ct);
         await rig.DispatchToAsync("A", ct);
         Assert.True(
-            await FleetRig.WaitUntilAsync(async () => await rig.StateAsync(task, ct) == SessionState.Verifying, TimeSpan.FromSeconds(30)),
-            "bridged scripted worker never reached verifying. " + await rig.DiagnoseAsync(task, ct));
+            await FleetRig.WaitUntilAsync(async () => await rig.HasReportAsync(task, ct), TimeSpan.FromSeconds(30)),
+            "bridged scripted worker never mailed a report. " + await rig.DiagnoseAsync(task, ct));
         Assert.Equal("map:" + CollabProgram.MapTransform(seed), await rig.ResultReferenceAsync(task, ct));
     }
 

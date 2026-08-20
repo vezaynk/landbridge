@@ -35,14 +35,14 @@ Before creating a session, check that it carries:
 
 **Integration is itself a session.** When concurrent sessions produce work that must combine, the combining step is a session you author — sequenced after its inputs complete, with its own workspace and its own bar in the description. Workers cannot negotiate a merge among themselves; they have no channel, and should not. If two sessions' outputs conflict, the conflict routes to you, and what you dispatch in response is an integration session, not a message.
 
-**A report keeps the worker.** `report_result` is "I think I am done", not a yield of the machine. Occupancy stays `running`; services stay registered; the message is `awaiting_report`. From there you have four moves:
+**A report is mail, not a gate.** `report_result` is the worker telling you what it did. Occupancy stays `running`; services stay registered; the message is `awaiting_report`. From there you have four moves:
 
-- **`submit_review(accept)`** — you gathered the evidence and the work is done. Hides the row and releases occupancy.
 - **`answer_input_request` with a note** — you want more from this same worker. Same session, same process if it is still up.
 - **`park_session`** — set `desired=on_disk` without hiding the row. Refused while a permission wait is live. Wake later is `answer_input_request` (same id, `session/load`). Hidden healthy rows refuse same-id wake — new work is `create_session(continues:)`.
-- **`submit_review(fail)`** — discard: hide the row. If you want another pass, reply instead of discarding.
+- **`submit_review(accept)`** — close: you are done with this worker. Hides the row and releases occupancy. Allowed while idle or after a report, not only after a report.
+- **`submit_review(fail)`** — discard: hide the row. If you want another pass, reply instead of discarding. An unanswered question is `cancel_session`, not this.
 
-**Accept carefully. Discard hides.** A wrong accept ships. When you are unsure, reply with what is missing or escalate — do not accept to move on, and do not discard just to get another attempt. And when a result reveals the _session_ was wrong — the design shifted, the scope was off — that is not yours to accept or silently paper over: take the delta to your human.
+**Close when you are done with the worker, not to grade an artifact.** When you are unsure, reply with what is missing. When a report reveals the _session_ was wrong — the design shifted, the scope was off — take the delta to your human rather than papering over it.
 
 ## Workspace is context, not isolation
 
@@ -125,7 +125,7 @@ Remember that the tool name and arguments came up through an agent's process. A 
 
 **Infrastructure failure is mechanical `health=failed`.** A handshake flake, a dead process, a silent machine, a turn that ended with no report — token revoked, process gone, workspace kept. The plane does **not** requeue. Retry is yours: `answer_input_request` with a note (`session/new` on the same id, not `session/load`, not `continues:`). A rising `infrastructureRequeues` count is a placement problem, never a verdict on the work.
 
-**Deactivate when you are done waiting.** A live session occupies the machine. `park_session` releases occupancy without hiding. After a report you are ready to close, `submit_review` (accept or fail=discard) hides the row. An idle worker you will not talk to again is a leak.
+**Deactivate when you are done waiting.** A live session occupies the machine. `park_session` releases occupancy without hiding. When you are done with this worker, `submit_review` (accept or fail=discard) hides the row. An idle worker you will not talk to again is a leak.
 
 **Clean up before you close out.** Send a continuation to stop processes and tidy the session directory. A report that left a dev server up is not finished work.
 
@@ -177,6 +177,6 @@ The default bundle assumes software. Replace this section for other domains.
 
 - Name the repo and base ref in the description (or `workspace`). The worker makes its own worktree and branch.
 - If the repo is private, say so in the brief and tell them to send a session-local public key (or an OAuth URL) rather than wait for a token. When it arrives, install it as a read-only deploy key and reply on the same session.
-- Prefer test commands and linters as the bar in the description — and run them yourself before accepting
+- Prefer test commands and linters as the bar in the description — and run them yourself before you close the session
 - Anything load-bearing goes into version control, not an artifact URL
 
