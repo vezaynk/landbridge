@@ -35,7 +35,19 @@ public static class PermissionPolicy
 
     internal static bool IsProtocolOrRuntimeTool(string tool)
     {
-        var n = LastSegment(tool);
+        if (string.IsNullOrWhiteSpace(tool))
+            return false;
+        var s = tool.Trim();
+        // Harness spellings of our MCP: Goose titles "landbridge: get session",
+        // MCP wire mcp__landbridge__get_session, dunder names landbridge__….
+        // Prefix / namespace only — a shell title that merely mentions
+        // "landbridge" in the command is not our MCP.
+        if (s.StartsWith("landbridge:", StringComparison.OrdinalIgnoreCase)
+            || s.StartsWith("landbridge__", StringComparison.OrdinalIgnoreCase)
+            || s.Contains("mcp__landbridge__", StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        var n = LastSegment(s);
         return n is "get_session" or "report_result" or "request_input"
             or "start_process" or "stop_process" or "list_processes" or "write_process"
             or "register_service" or "list_services" or "open_forward" or "open_preview"
