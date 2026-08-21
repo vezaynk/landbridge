@@ -196,7 +196,8 @@ public sealed class RunnerEventSink(
                 return;
             // A question is a turn, not a death. The session is idle for the Lead;
             // requeueing it would kill the process the Lead is about to doorbell.
-            if (await store.IsAwaitingLeadAsync(te.Session, ct))
+            if (await store.IsAwaitingLeadAsync(te.Session, ct)
+                || await store.HasUnreadReportAsync(te.Session, ct))
                 return;
             // A registered service is the job. Ending the turn does not yield
             // occupancy; the same exemption as the no-progress clock.

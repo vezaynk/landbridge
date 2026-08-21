@@ -1142,16 +1142,25 @@ public sealed class SessionStore(
     /// <summary>
     /// True when the Lead (or a live permission wait) is the bottleneck, so
     /// no-progress must not treat the worker as wedged. <c>awaiting_pull</c> is
-    /// the worker's move and is not skipped.
+    /// the worker's move and is not skipped. Unread report mail is not a wait —
+    /// the worker may keep working, so the progress clock still runs.
     /// </summary>
     public async Task<bool> IsAwaitingLeadAsync(SessionId id, CancellationToken ct = default) =>
         await db.Sessions.AsNoTracking()
             .AnyAsync(t => t.Id == id.Value
-                && (t.ReportUnread
-                    || t.MessageState == MessageState.AwaitingLead
+                && (t.MessageState == MessageState.AwaitingLead
+                    || t.MessageState == MessageState.AwaitingReport
                     || t.MessageState == MessageState.AwaitingPermission
                     || (t.InputKind == InputRequestKind.Permission
                         && t.PermissionVerdict == PermissionVerdict.Deny)), ct);
+
+    /// <summary>
+    /// True when this session has unread report mail. Turn-ended is moot then
+    /// (the worker already handed over); the no-progress clock still runs.
+    /// </summary>
+    public async Task<bool> HasUnreadReportAsync(SessionId id, CancellationToken ct = default) =>
+        await db.Sessions.AsNoTracking()
+            .AnyAsync(t => t.Id == id.Value && t.ReportUnread, ct);
 
     public sealed record OccupancyLookaside(
         string? HarnessSessionRef, string? PreferredMachine, string? ParkMachine);
