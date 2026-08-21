@@ -178,7 +178,8 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
             {
                 var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == sessionId.Value, ct);
                 Assert.Equal(SessionState.Working, row.State);
-                Assert.Equal(MessageState.AwaitingReport, row.MessageState);
+                Assert.True(row.ReportUnread);
+                Assert.Equal(MessageState.Idle, row.MessageState);
             }
         }
         finally
@@ -199,7 +200,7 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
     {
         await using var db = pg.NewContext();
         var row = await db.Sessions.AsNoTracking().SingleOrDefaultAsync(t => t.Id == id.Value, ct);
-        return row?.MessageState == MessageState.AwaitingReport;
+        return row is { ResultReference: { Length: > 0 } };
     }
 
     private WebApplication BuildServer()

@@ -62,6 +62,13 @@ public sealed record SessionRecord
     public MessageVerdict? MessageVerdict { get; init; }
 
     /// <summary>
+    /// Unread worker mail from <c>report_result</c>. Not an envelope wait: the
+    /// worker stays <see cref="MessageState.Idle"/> and may speak again. The Lead
+    /// inbox lists it until a per-session fetch delivers it (mark-as-read).
+    /// </summary>
+    public bool ReportUnread { get; init; }
+
+    /// <summary>
     /// Id of the outstanding envelope, null iff <see cref="MessageState"/> is
     /// <see cref="MessageState.Idle"/>. MCP Tasks use this as <c>taskId</c>.
     /// </summary>

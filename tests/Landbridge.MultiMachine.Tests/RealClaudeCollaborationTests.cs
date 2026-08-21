@@ -68,7 +68,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// would abandon the Bash call it is supposed to wait out and then complete.</para>
     /// </summary>
     private const string McpToolsRule =
-        " Landbridge's tools are MCP tools, named exactly mcp__landbridge__get_session, " +
+        " Landbridge's tools are MCP tools, named exactly mcp__landbridge__get_inbox, " +
         "mcp__landbridge__report_result and so on — call them as tools, under those names. There is " +
         "no `landbridge` program: no such command exists on this machine, so never run `landbridge` in a " +
         "shell, and never try to reach the landbridge MCP server yourself over HTTP or with curl. (A " +
@@ -80,11 +80,11 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// <b>description</b>, read via <c>get_session</c>, so one profile drives every role.</summary>
     private const string WorkerPrompt =
         "You are a Landbridge worker agent. Your FIRST action must be to call the " +
-        "mcp__landbridge__get_session tool to read your assignment. The assignment's description tells " +
+        "mcp__landbridge__get_inbox tool to read your assignment. The assignment's description tells " +
         "you the exact string to report. Your ONLY other action is to call the " +
         "mcp__landbridge__report_result tool once, with that exact string as resultReference. Do not " +
         "write files, do not explain, do not ask questions. Two tool calls total: " +
-        "mcp__landbridge__get_session, then mcp__landbridge__report_result." + McpToolsRule;
+        "mcp__landbridge__get_inbox, then mcp__landbridge__report_result." + McpToolsRule;
 
     /// <summary>
     /// The prompt for scenarios whose description asks for more than an echo (§7: the
@@ -96,7 +96,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// </summary>
     private const string StepwiseWorkerPrompt =
         "You are a Landbridge worker agent. Your FIRST action must be to call the " +
-        "mcp__landbridge__get_session tool to read your assignment. Its description lists numbered " +
+        "mcp__landbridge__get_inbox tool to read your assignment. Its description lists numbered " +
         "steps: carry them out in order, exactly as written, using the tools it names. Do not add " +
         "steps, do not skip steps, and do not substitute one tool for another. Do not write or " +
         "edit files unless a step tells you to. Do not explain and do not ask questions." +
@@ -349,7 +349,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
             spawnArgv: ["claude-agent-acp"],
             agentProcesses: true,
             prompt: StepwiseWorkerPrompt,
-            followUp: "There is new input on your assignment. Call mcp__landbridge__get_session to read it, then continue.");
+            followUp: "There is new input on your assignment. Call mcp__landbridge__get_inbox to read it, then continue.");
         await rig.StartAsync(ct);
         await rig.AddMachineAsync("A");
 
@@ -427,7 +427,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
             spawnArgv: ["claude-agent-acp"],
             agentProcesses: true,
             prompt: StepwiseWorkerPrompt,
-            followUp: "There is new input on your assignment. Call mcp__landbridge__get_session to read it, then continue.");
+            followUp: "There is new input on your assignment. Call mcp__landbridge__get_inbox to read it, then continue.");
         await rig.StartAsync(ct);
         await rig.AddMachineAsync("A");
         await rig.AddMachineAsync("B");
@@ -495,7 +495,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         "You are a Landbridge worker agent. Remember this test nonce for the rest of this conversation: " +
         $"{nonce}. Do not write it to any file, and do not put it in any tool call yet — a later " +
         "task in this same conversation will ask you to report it. Now call the " +
-        "mcp__landbridge__get_session tool and do exactly what its description tells you." + McpToolsRule;
+        "mcp__landbridge__get_inbox tool and do exactly what its description tells you." + McpToolsRule;
 
     /// <summary>
     /// The follow-up turn for the continuation leg (§11) — generic config carrying no
@@ -503,7 +503,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// is new but whose conversation is not.
     /// </summary>
     private const string ContinuationReportPrompt =
-        "This conversation continues under a new task. FIRST call the mcp__landbridge__get_session tool " +
+        "This conversation continues under a new task. FIRST call the mcp__landbridge__get_inbox tool " +
         "to read that new assignment, then do exactly what its description says. The value it asks " +
         "for is one you were told earlier in this conversation." + McpToolsRule;
 
@@ -521,7 +521,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     // ── §10 process scenario prompts and descriptions ──────────────────────────
 
     private const string ProcessTools =
-        "mcp__landbridge__get_session,mcp__landbridge__report_result,mcp__landbridge__start_process," +
+        "mcp__landbridge__get_inbox,mcp__landbridge__report_result,mcp__landbridge__start_process," +
         "mcp__landbridge__list_processes,mcp__landbridge__stop_process";
 
     /// <summary>Start a long-lived listener as an agent process and finish the task, leaving it
@@ -568,7 +568,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// scenario cannot avoid: the producer has to hold its turn open while its registration is
     /// forwardable, and the consumer has to actually speak to the forwarded port.</summary>
     private const string ServiceTools =
-        "mcp__landbridge__get_session,mcp__landbridge__report_result,mcp__landbridge__start_process," +
+        "mcp__landbridge__get_inbox,mcp__landbridge__report_result,mcp__landbridge__start_process," +
         "mcp__landbridge__register_service,mcp__landbridge__open_forward,Bash";
 
     /// <summary>Producer: bind (via the process), advertise, then stay working. The register

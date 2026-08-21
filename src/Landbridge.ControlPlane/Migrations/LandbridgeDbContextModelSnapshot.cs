@@ -702,6 +702,10 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasColumnType("boolean")
                         .HasColumnName("pull_redelivered");
 
+                    b.Property<bool>("ReportUnread")
+                        .HasColumnType("boolean")
+                        .HasColumnName("report_unread");
+
                     b.Property<string>("ResultReference")
                         .HasColumnType("text")
                         .HasColumnName("result_reference");

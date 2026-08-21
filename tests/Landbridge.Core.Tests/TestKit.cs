@@ -98,8 +98,8 @@ internal static class Given
         WorkerInstanceId? instance = null,
         int verificationFailures = 0,
         int retryLimit = 3) =>
-        Session(SessionState.Working, instance, verificationFailures, retryLimit,
-            message: MessageState.AwaitingReport);
+        Session(SessionState.Working, instance, verificationFailures, retryLimit)
+            with { ReportUnread = true };
 
     /// <summary>A seated worker waiting on a prose question. Derived state is Working.</summary>
     public static SessionRecord Asking(WorkerInstanceId? instance = null) =>
@@ -118,7 +118,8 @@ internal static class Expect
     public static SessionRecord Reported(TransitionResult result)
     {
         var task = Transitioned(result, SessionState.Working);
-        Assert.Equal(MessageState.AwaitingReport, task.MessageState);
+        Assert.Equal(MessageState.Idle, task.MessageState);
+        Assert.True(task.ReportUnread);
         return task;
     }
 

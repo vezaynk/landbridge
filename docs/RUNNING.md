@@ -287,8 +287,8 @@ the worked example in the runner-config reference:
 
 ```json
 "spawn": ["claude-agent-acp"],
-"prompt": "You are a Landbridge worker on a live session. First call mcp__landbridge__get_session. When you think you are done, call mcp__landbridge__report_result and stay up; the Lead may reply. If blocked, call mcp__landbridge__request_input. You do not complete the session yourself.",
-"follow_up": "There is new input on your assignment. Call mcp__landbridge__get_session to read it, then continue."
+"prompt": "You are a Landbridge worker on a live session. First call mcp__landbridge__get_inbox. When you think you are done, call mcp__landbridge__report_result and stay up; the Lead may reply. If blocked, call mcp__landbridge__request_input. You do not complete the session yourself.",
+"follow_up": "There is new input on your assignment. Call mcp__landbridge__get_inbox to read it, then continue."
 ```
 
 The load-bearing parts:

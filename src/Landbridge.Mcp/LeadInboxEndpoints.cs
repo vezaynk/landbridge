@@ -9,8 +9,9 @@ namespace Landbridge.Mcp;
 /// <summary>
 /// Lead-only HTTP inbox: one JSON snapshot and one SSE feed of the same
 /// snapshot. Wakes on session NOTIFY via <see cref="SessionEventFanout"/>;
-/// each event is a full Team snapshot, not a delta. Prose stays on
-/// <c>get_session_question</c> / <c>get_session_report</c>.
+/// each event is a full Team snapshot, not a delta. Team-wide is
+/// identifiers only; <c>?sessionId=</c> (repeatable) carries bodies and
+/// marks unread report mail as read.
 /// </summary>
 public static class LeadInboxEndpoints
 {
@@ -35,9 +36,10 @@ public static class LeadInboxEndpoints
             return reject;
         if (ParseSessionFilter(http) is { } bad)
             return bad;
-        var sessionId = SessionFilterOf(http);
+        var filter = SessionFilterOf(http);
         var lead = LandbridgeClaims.AsLead(http.User)!;
-        var inbox = await store.GetLeadInboxAsync(lead.Team, sessionId, ct);
+        var actor = filter is { Count: > 0 } ? lead : (Landbridge.Core.Actor?)null;
+        var inbox = await store.GetLeadInboxAsync(lead.Team, filter, ct, actor);
         return Results.Json(inbox, Json);
     }
 
@@ -56,8 +58,9 @@ public static class LeadInboxEndpoints
             return;
         }
 
-        var sessionId = SessionFilterOf(http);
+        var filter = SessionFilterOf(http);
         var lead = LandbridgeClaims.AsLead(http.User)!;
+        var actor = filter is { Count: > 0 } ? lead : (Landbridge.Core.Actor?)null;
         http.Response.Headers.ContentType = "text/event-stream";
         http.Response.Headers.CacheControl = "no-cache, no-transform";
         http.Response.Headers.Connection = "keep-alive";
@@ -65,7 +68,7 @@ public static class LeadInboxEndpoints
         http.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
 
         await using var snapshots = LeadInboxWatch
-            .Snapshots(store, fanout, lead.Team, sessionId, ct)
+            .Snapshots(store, fanout, lead.Team, filter, actor, ct)
             .GetAsyncEnumerator(ct);
         var next = snapshots.MoveNextAsync().AsTask();
 
@@ -96,19 +99,42 @@ public static class LeadInboxEndpoints
 
     private static IResult? ParseSessionFilter(HttpContext http)
     {
-        var raw = http.Request.Query["sessionId"].ToString();
-        if (string.IsNullOrWhiteSpace(raw))
-            return null;
-        if (Guid.TryParse(raw, out _))
-            return null;
-        return Results.Json(new { error = "sessionId is not a valid session id" },
-            statusCode: StatusCodes.Status400BadRequest);
+        foreach (var raw in SessionIdValues(http))
+        {
+            if (!Guid.TryParse(raw, out _))
+            {
+                return Results.Json(new { error = "sessionId is not a valid session id" },
+                    statusCode: StatusCodes.Status400BadRequest);
+            }
+        }
+        return null;
     }
 
-    private static Guid? SessionFilterOf(HttpContext http)
+    private static IReadOnlyList<Guid>? SessionFilterOf(HttpContext http)
     {
-        var raw = http.Request.Query["sessionId"].ToString();
-        return Guid.TryParse(raw, out var id) ? id : null;
+        var ids = new List<Guid>();
+        foreach (var raw in SessionIdValues(http))
+        {
+            if (Guid.TryParse(raw, out var id))
+                ids.Add(id);
+        }
+        return ids.Count == 0 ? null : ids;
+    }
+
+    private static IEnumerable<string> SessionIdValues(HttpContext http)
+    {
+        foreach (var raw in http.Request.Query["sessionId"])
+        {
+            if (!string.IsNullOrWhiteSpace(raw))
+                yield return raw;
+        }
+        foreach (var raw in http.Request.Query["sessionIds"])
+        {
+            if (string.IsNullOrWhiteSpace(raw))
+                continue;
+            foreach (var part in raw.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+                yield return part;
+        }
     }
 
     private static IResult? RejectUnlessLead(HttpContext http)

@@ -168,6 +168,57 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task Send_input_request_refuses_a_session_waiting_on_a_question()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var sessionId = await SeedBlockedOnInputTask();
+        var tools = LeadFor(new Principal.Lead(Team));
+
+        var ex = await Assert.ThrowsAsync<McpException>(
+            () => tools.SendInputRequest(sessionId.ToString(), "use staging", CancellationToken.None));
+        Assert.Contains("send_input_response", ex.Message);
+    }
+
+    [SkippableFact]
+    public async Task Send_input_response_refuses_a_session_that_is_not_waiting()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var tools = LeadFor(new Principal.Lead(Team));
+        var idText = await tools.CreateSession("build the thing", "default", CancellationToken.None);
+
+        var ex = await Assert.ThrowsAsync<McpException>(
+            () => tools.SendInputResponse(idText, "keep going", CancellationToken.None));
+        Assert.Contains("send_input_request", ex.Message);
+    }
+
+    [SkippableFact]
+    public async Task Send_input_request_follows_up_a_live_worker_that_is_not_waiting()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = new SessionStore(db, _clock);
+        var created = (StoreResult.Applied)await store.CreateAsync(
+            new CreateSession(new LeadClaim(Team), Team, "build the thing", "default"));
+        var instance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), instance);
+
+        var sent = new List<RunnerCommand>();
+        var registry = new RunnerConnectionRegistry(_clock);
+        registry.Register("m1", new HashSet<string> { "default" }, (cmd, _) =>
+        {
+            sent.Add(cmd);
+            return Task.CompletedTask;
+        });
+        registry.TrackDispatch("m1", created.Session.Id);
+        var tools = LeadFor(new Principal.Lead(Team), registry);
+
+        var msg = await tools.SendInputRequest(
+            created.Session.Id.ToString(), "keep going on the tests", CancellationToken.None);
+        Assert.Contains("Working", msg);
+        Assert.IsType<PromptCommand>(Assert.Single(sent));
+    }
+
+    [SkippableFact]
     public async Task Answer_input_request_requeues_for_a_cold_start_when_the_dispatched_machine_is_gone()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
@@ -179,7 +230,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         // from the workspace (§6, §11), rather than refusing.
         var tools = LeadFor(new Principal.Lead(Team));
 
-        var msg = await tools.AnswerInputRequest(sessionId.ToString(), "use the staging DB", CancellationToken.None);
+        var msg = await tools.SendInputResponse(sessionId.ToString(), "use the staging DB", CancellationToken.None);
         Assert.Contains("Working", msg);
 
         await using var v = pg.NewContext();
@@ -207,7 +258,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         // m1 still holds the lease, so the park record prefers it — but the process
         // is gone, so the answer redispatches (→ submitted) rather than prompting
         // a dead session. Resume goes back through dispatch (§11).
-        var msg = await tools.AnswerInputRequest(sessionId.ToString(), "staging-pg, not docker", CancellationToken.None);
+        var msg = await tools.SendInputResponse(sessionId.ToString(), "staging-pg, not docker", CancellationToken.None);
         Assert.Contains("Working", msg);
 
         await using var v = pg.NewContext();
@@ -232,7 +283,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         registry.TrackDispatch("m1", sessionId);
         var tools = LeadFor(new Principal.Lead(Team), registry);
 
-        var msg = await tools.AnswerInputRequest(sessionId.ToString(), "use staging-pg", CancellationToken.None);
+        var msg = await tools.SendInputResponse(sessionId.ToString(), "use staging-pg", CancellationToken.None);
         Assert.Contains("Working", msg);
 
         await using var v = pg.NewContext();
@@ -268,7 +319,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         // and the answer text lands on this branch exactly as on the blocked one:
         // the Lead does not know which branch it took, so neither may lose words.
         var tools = LeadFor(new Principal.Lead(Team), registry);
-        var msg = await tools.AnswerInputRequest(
+        var msg = await tools.SendInputResponse(
             sessionId.ToString(), "use staging-pg; docker has no seed data", CancellationToken.None);
         Assert.Contains("Working", msg); // load in flight, not resumed in place
 
@@ -437,227 +488,94 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
             new SystemLoad(0, 0, 0), RunningSessions: 0, profiles, DateTimeOffset.UtcNow);
 
     [SkippableFact]
-    public async Task Get_task_report_returns_the_report_delimited_as_untrusted()
+    public async Task Per_session_inbox_carries_report_body_and_marks_it_read()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         const string report = "ran the suite (green); proposes task Z on profile gpu";
         var sessionId = await SeedReportedTask(Team, report);
         var tools = LeadFor(new Principal.Lead(Team));
 
-        var text = await tools.GetSessionReport(sessionId.ToString(), CancellationToken.None);
+        var teamWide = await tools.GetLeadInbox(ct: CancellationToken.None);
+        var flag = Assert.Single(teamWide.Items, i => i.SessionId == sessionId.Value);
+        Assert.Equal(LeadInboxKind.Report, flag.Kind);
+        Assert.Null(flag.Report);
+        Assert.Null(flag.ResultReference);
 
-        Assert.Contains(report, text, StringComparison.Ordinal);       // the report itself
-        Assert.Contains("Untrusted", text, StringComparison.Ordinal);  // §13 delimiting
-        // #81: the §8.1 artifact pointer rides the same fetch — this is the read surface the
-        // column had none of, and it is what the Lead reads on get_session_report.
-        Assert.Contains("git:ref", text, StringComparison.Ordinal);
-        Assert.Contains("RESULT_REFERENCE", text, StringComparison.Ordinal); // delimited, like the prose
+        var delivered = await tools.GetLeadInbox(sessionId.ToString(), CancellationToken.None);
+        var item = Assert.Single(delivered.Items);
+        Assert.Equal(LeadInboxKind.Report, item.Kind);
+        Assert.Equal("git:ref", item.ResultReference);
+        Assert.Equal(report, item.Report);
+
+        Assert.Empty((await tools.GetLeadInbox(sessionId.ToString(), CancellationToken.None)).Items);
+        Assert.Empty((await tools.GetLeadInbox(ct: CancellationToken.None)).Items);
     }
 
     [SkippableFact]
-    public async Task Get_task_report_surfaces_the_result_reference_when_there_is_no_report()
+    public async Task Per_session_inbox_carries_a_reference_when_the_worker_left_no_prose()
     {
-        // #81, the case that makes the reference load-bearing rather than redundant: §6
-        // requires it to mail a report while the report is optional, so a worker that
-        // left no prose still handed over an artifact — and a Lead told only "no report"
-        // would be reading a report with nothing at all.
         Skip.IfNot(pg.Available, pg.SkipReason);
         var sessionId = await SeedReportedTask(Team, report: null);
         var tools = LeadFor(new Principal.Lead(Team));
 
-        var text = await tools.GetSessionReport(sessionId.ToString(), CancellationToken.None);
-
-        Assert.Contains("git:ref", text, StringComparison.Ordinal);
-        Assert.Contains("no worker report", text, StringComparison.Ordinal);
+        var item = Assert.Single((await tools.GetLeadInbox(sessionId.ToString(), CancellationToken.None)).Items);
+        Assert.Equal("git:ref", item.ResultReference);
+        Assert.Null(item.Report);
     }
 
     [SkippableFact]
-    public async Task Get_task_report_says_no_reference_before_a_report()
-    {
-        // A task nobody has reported on has no artifact to point at. Saying that is the
-        // honest answer; an empty delimited block would read as "the worker reported ''".
-        Skip.IfNot(pg.Available, pg.SkipReason);
-        var sessionId = await SeedTask(Team);
-        var tools = LeadFor(new Principal.Lead(Team));
-
-        var text = await tools.GetSessionReport(sessionId.ToString(), CancellationToken.None);
-
-        Assert.Contains("no result reference", text, StringComparison.Ordinal);
-        Assert.DoesNotContain("RESULT_REFERENCE", text, StringComparison.Ordinal);
-    }
-
-    [SkippableFact]
-    public async Task Get_task_report_refuses_a_task_in_another_team()
+    public async Task Per_session_inbox_of_another_team_is_empty()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
-        // A task in a different Team; this Lead may not read its report (§13 scoping).
         var foreign = await SeedReportedTask(TeamId.New(), "secret");
         var tools = LeadFor(new Principal.Lead(Team));
 
-        var ex = await Assert.ThrowsAsync<McpException>(
-            () => tools.GetSessionReport(foreign.ToString(), CancellationToken.None));
-        Assert.Contains("your Team", ex.Message, StringComparison.Ordinal);
+        var inbox = await tools.GetLeadInbox(foreign.ToString(), CancellationToken.None);
+        Assert.Empty(inbox.Items);
     }
 
     [SkippableFact]
-    public async Task Get_task_report_says_so_when_there_is_no_report()
+    public async Task Per_session_inbox_carries_the_infrastructure_account_on_a_requeued_report()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
-        var sessionId = await SeedReportedTask(Team, report: null); // reported a result, no report
-        var tools = LeadFor(new Principal.Lead(Team));
-
-        var text = await tools.GetSessionReport(sessionId.ToString(), CancellationToken.None);
-        Assert.Contains("no worker report", text, StringComparison.Ordinal);
-    }
-
-    [SkippableFact]
-    public async Task Get_task_report_carries_the_infrastructure_account_of_a_requeued_task()
-    {
-        Skip.IfNot(pg.Available, pg.SkipReason);
-        // Two requeues against a cap of five, then a worker that finally reported: the
-        // report is worth reading AND the task took three machines to get there (§9
-        // check 7), and #91 was that the second fact reached get_team_state but not here.
         const string report = "ran the suite (green) on the third machine";
         var sessionId = await SeedRequeuedTask(
             requeueLimit: 5, requeues: 2, LivenessLossReason.MachineReboot, report);
         var tools = LeadFor(new Principal.Lead(Team));
 
-        var text = await tools.GetSessionReport(sessionId.ToString(), CancellationToken.None);
-
-        Assert.Contains("2 infrastructure loss", text, StringComparison.Ordinal);
-        Assert.Contains(nameof(LivenessLossReason.MachineReboot), text, StringComparison.Ordinal);
-        Assert.Contains(report, text, StringComparison.Ordinal);
-        Assert.Contains("parked the attempt", text, StringComparison.Ordinal);
-        Assert.Contains("answer_input_request", text, StringComparison.Ordinal);
+        var item = Assert.Single((await tools.GetLeadInbox(sessionId.ToString(), CancellationToken.None)).Items);
+        Assert.Equal(report, item.Report);
+        Assert.Equal(2, item.InfrastructureRequeues);
+        Assert.Equal(LivenessLossReason.MachineReboot, item.LastRequeueReason);
     }
 
     [SkippableFact]
-    public async Task Get_task_report_on_a_failed_attempt_names_the_reason_and_how_to_resume()
+    public async Task Per_session_inbox_carries_a_question_body_without_closing_the_wait()
     {
-        Skip.IfNot(pg.Available, pg.SkipReason);
-        var sessionId = await SeedRequeuedTask(
-            requeueLimit: 1, requeues: 1, LivenessLossReason.NoProgress);
-        var tools = LeadFor(new Principal.Lead(Team));
-
-        var text = await tools.GetSessionReport(sessionId.ToString(), CancellationToken.None);
-
-        Assert.Contains("1 infrastructure loss", text, StringComparison.Ordinal);
-        Assert.Contains(nameof(LivenessLossReason.NoProgress), text, StringComparison.Ordinal);
-        Assert.Contains("parked the attempt", text, StringComparison.Ordinal);
-        Assert.Contains("answer_input_request", text, StringComparison.Ordinal);
-        Assert.DoesNotContain("ended by its requeue cap", text, StringComparison.Ordinal);
-    }
-
-    [SkippableFact]
-    public async Task Get_task_report_stays_silent_about_requeues_on_a_task_that_had_none()
-    {
-        Skip.IfNot(pg.Available, pg.SkipReason);
-        // The visibility choice (#91): the account appears only when there is one. A "0 of
-        // 5 requeues" line on every report read is noise on a surface §13 keeps
-        // deliberately narrow, and the §12 dashboard shows no badge on a clean task either.
-        var sessionId = await SeedReportedTask(Team, "nothing went wrong");
-        var tools = LeadFor(new Principal.Lead(Team));
-
-        var text = await tools.GetSessionReport(sessionId.ToString(), CancellationToken.None);
-
-        Assert.DoesNotContain("requeue", text, StringComparison.OrdinalIgnoreCase);
-        Assert.Contains("nothing went wrong", text, StringComparison.Ordinal);
-    }
-
-    [SkippableFact]
-    public async Task Get_task_report_is_honest_that_an_uncapped_task_has_no_cap()
-    {
-        Skip.IfNot(pg.Available, pg.SkipReason);
-        // Non-positive limit is the documented opt-out (uncapped, §9 check 7). "3 of 0"
-        // would be nonsense, so the count stands alone and the line says the cap is off —
-        // the same honesty as "reason not recorded" on a pre-column row. It must also not
-        // recite the cap's consequences at a task that has no cap to reach.
-        var sessionId = await SeedRequeuedTask(
-            requeueLimit: 0, requeues: 3, LivenessLossReason.LivenessTimeout);
-        var tools = LeadFor(new Principal.Lead(Team));
-
-        var text = await tools.GetSessionReport(sessionId.ToString(), CancellationToken.None);
-
-        Assert.Contains("3 infrastructure loss", text, StringComparison.Ordinal);
-        Assert.Contains(nameof(LivenessLossReason.LivenessTimeout), text, StringComparison.Ordinal);
-        Assert.Contains("parked the attempt", text, StringComparison.Ordinal);
-        Assert.DoesNotContain("of 0", text, StringComparison.Ordinal);
-        Assert.DoesNotContain("ended by its requeue cap", text, StringComparison.Ordinal);
-    }
-
-    [SkippableFact]
-    public async Task Get_task_question_returns_the_question_delimited_and_flags_it_unanswered()
-    {
-        // §11: the Lead's read half. The worker's ask comes back verbatim, delimited as
-        // untrusted (§13), with the typed kind and the fact that nobody has answered.
         Skip.IfNot(pg.Available, pg.SkipReason);
         var sessionId = await SeedBlockedOnInputTask();
         var tools = LeadFor(new Principal.Lead(Team));
 
-        var text = await tools.GetSessionQuestion(sessionId.ToString(), CancellationToken.None);
+        var first = Assert.Single((await tools.GetLeadInbox(sessionId.ToString(), CancellationToken.None)).Items);
+        Assert.Equal(LeadInboxKind.Question, first.Kind);
+        Assert.Equal(SeededQuestion, first.Question);
+        Assert.Null(first.Answer);
 
-        Assert.Contains(SeededQuestion, text, StringComparison.Ordinal);
-        Assert.Contains("Untrusted", text, StringComparison.Ordinal);
-        Assert.Contains("question", text, StringComparison.Ordinal);       // the typed kind
-        Assert.Contains("Not yet answered", text, StringComparison.Ordinal);
+        var second = Assert.Single((await tools.GetLeadInbox(sessionId.ToString(), CancellationToken.None)).Items);
+        Assert.Equal(SeededQuestion, second.Question);
+
+        await tools.SendInputResponse(sessionId.ToString(), "target staging-pg", CancellationToken.None);
+        var after = await tools.GetLeadInbox(sessionId.ToString(), CancellationToken.None);
+        Assert.DoesNotContain(after.Items, i => i.Kind == LeadInboxKind.Question);
     }
 
     [SkippableFact]
-    public async Task Get_task_question_shows_the_answer_already_given_so_a_lead_does_not_answer_twice()
+    public async Task Per_session_inbox_of_a_question_in_another_team_is_empty()
     {
-        // §4: a Lead that reattached (or took over) needs to tell an open question from
-        // a closed one before it answers — so the answer rides the same read.
         Skip.IfNot(pg.Available, pg.SkipReason);
-        var sessionId = await SeedBlockedOnInputTask();
+        var foreign = await SeedBlockedOnInputTaskIn(TeamId.New(), "the other Team's secret question");
         var tools = LeadFor(new Principal.Lead(Team));
-        await tools.AnswerInputRequest(sessionId.ToString(), "target staging-pg", CancellationToken.None);
-
-        var text = await tools.GetSessionQuestion(sessionId.ToString(), CancellationToken.None);
-
-        Assert.Contains(SeededQuestion, text, StringComparison.Ordinal);
-        Assert.Contains("target staging-pg", text, StringComparison.Ordinal);
-        Assert.Contains("Already answered", text, StringComparison.Ordinal);
-    }
-
-    [SkippableFact]
-    public async Task Get_task_question_refuses_a_task_in_another_team()
-    {
-        // §13: Team-scoped like get_session_report — a cross-Team task is refused the same
-        // way an absent one is, so nothing leaks about another Team's tasks.
-        Skip.IfNot(pg.Available, pg.SkipReason);
-        var foreignTeam = TeamId.New();
-        var foreign = await SeedBlockedOnInputTaskIn(foreignTeam, "the other Team's secret question");
-        var tools = LeadFor(new Principal.Lead(Team));
-
-        var ex = await Assert.ThrowsAsync<McpException>(
-            () => tools.GetSessionQuestion(foreign.ToString(), CancellationToken.None));
-        Assert.Contains("your Team", ex.Message, StringComparison.Ordinal);
-        Assert.DoesNotContain("secret", ex.Message, StringComparison.Ordinal);
-
-        // Indistinguishable from a task that never existed: same sentence, only the id
-        // differs, so the refusal never reveals that the other Team's task is real.
-        var absentId = Guid.NewGuid();
-        var absent = await Assert.ThrowsAsync<McpException>(
-            () => tools.GetSessionQuestion(absentId.ToString(), CancellationToken.None));
-        Assert.Equal(
-            ex.Message.Replace(foreign.ToString(), "<id>", StringComparison.Ordinal),
-            absent.Message.Replace(absentId.ToString(), "<id>", StringComparison.Ordinal));
-    }
-
-    [SkippableFact]
-    public async Task Get_task_question_says_the_lead_is_answering_blind_when_the_worker_left_no_question()
-    {
-        // A kind with no question is the doorbell case this feature exists to end. The
-        // read says so rather than returning an empty fence, so the Lead knows it is
-        // guessing and can cancel-and-rebrief instead.
-        Skip.IfNot(pg.Available, pg.SkipReason);
-        var sessionId = await SeedBlockedOnInputTask(question: null, kind: InputRequestKind.AuthHelp);
-        var tools = LeadFor(new Principal.Lead(Team));
-
-        var text = await tools.GetSessionQuestion(sessionId.ToString(), CancellationToken.None);
-
-        Assert.Contains("no question", text, StringComparison.Ordinal);
-        Assert.Contains("authhelp", text, StringComparison.Ordinal); // the kind still routes it
+        Assert.Empty((await tools.GetLeadInbox(foreign.ToString(), CancellationToken.None)).Items);
     }
 
     [SkippableFact]
@@ -691,7 +609,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
 
         var oversized = new string('x', AnswerInput.MaxAnswerBytes + 1);
         var ex = await Assert.ThrowsAsync<McpException>(
-            () => tools.AnswerInputRequest(sessionId.ToString(), oversized, CancellationToken.None));
+            () => tools.SendInputResponse(sessionId.ToString(), oversized, CancellationToken.None));
         Assert.Contains(nameof(Rule.AnswerWithinSizeCap), ex.Message);
         // The refusal says where the detail belongs, so the Lead's next move is obvious.
         Assert.Contains("reference", ex.Message, StringComparison.Ordinal);

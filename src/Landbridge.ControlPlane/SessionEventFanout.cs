@@ -69,14 +69,17 @@ public sealed class SessionEventFanout : IHostedService, IAsyncDisposable
     /// (single-slot, drop-write). <paramref name="sessionId"/> limits wakes
     /// to that session so a filtered feed is not stolen by another row.
     /// </summary>
-    public Subscription Subscribe(Guid? sessionId = null)
+    public Subscription Subscribe(Guid? sessionId = null) =>
+        Subscribe(sessionId is { } id ? new HashSet<Guid> { id } : null);
+
+    public Subscription Subscribe(IReadOnlySet<Guid>? sessionIds)
     {
         var channel = Channel.CreateBounded<bool>(new BoundedChannelOptions(1)
         {
             FullMode = BoundedChannelFullMode.DropWrite,
         });
         var id = Guid.NewGuid();
-        var sub = new Subscription(this, id, channel, sessionId);
+        var sub = new Subscription(this, id, channel, sessionIds);
         _subscribers[id] = sub;
         return sub;
     }
@@ -92,20 +95,21 @@ public sealed class SessionEventFanout : IHostedService, IAsyncDisposable
         private readonly SessionEventFanout _owner;
         private readonly Guid _id;
         private readonly Channel<bool> _channel;
-        private readonly Guid? _sessionId;
+        private readonly IReadOnlySet<Guid>? _sessionIds;
         private int _disposed;
 
-        internal Subscription(SessionEventFanout owner, Guid id, Channel<bool> channel, Guid? sessionId)
+        internal Subscription(
+            SessionEventFanout owner, Guid id, Channel<bool> channel, IReadOnlySet<Guid>? sessionIds)
         {
             _owner = owner;
             _id = id;
             _channel = channel;
-            _sessionId = sessionId;
+            _sessionIds = sessionIds is { Count: > 0 } ? sessionIds : null;
         }
 
         public ChannelReader<bool> Reader => _channel.Reader;
 
-        internal bool Matches(Guid sessionId) => _sessionId is null || _sessionId == sessionId;
+        internal bool Matches(Guid sessionId) => _sessionIds is null || _sessionIds.Contains(sessionId);
 
         internal bool TryWake() => _channel.Writer.TryWrite(true);
 

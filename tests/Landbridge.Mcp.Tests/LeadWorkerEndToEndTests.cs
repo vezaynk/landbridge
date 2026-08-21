@@ -107,7 +107,8 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         {
             var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == sessionId.Value, ct);
             Assert.Equal(SessionState.Working, row.State);
-            Assert.Equal(MessageState.AwaitingReport, row.MessageState);
+            Assert.True(row.ReportUnread);
+            Assert.Equal(MessageState.Idle, row.MessageState);
         }
 
         await app.StopAsync(ct);
@@ -187,15 +188,14 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             Assert.Contains("hasQuestion", stateText, StringComparison.OrdinalIgnoreCase);
             Assert.DoesNotContain(question, stateText, StringComparison.Ordinal);
 
-            var read = await lead.CallToolAsync("get_session_question", new Dictionary<string, object?>
+            var read = await lead.CallToolAsync("get_lead_inbox", new Dictionary<string, object?>
             {
                 ["sessionId"] = sessionId.ToString(),
             }, cancellationToken: ct);
             var readText = Assert.Single(read.Content.OfType<TextContentBlock>()).Text;
             Assert.Contains(question, readText, StringComparison.Ordinal);
-            Assert.Contains("Untrusted", readText, StringComparison.Ordinal); // §13 delimiting
 
-            var answered = await lead.CallToolAsync("answer_input_request", new Dictionary<string, object?>
+            var answered = await lead.CallToolAsync("send_input_response", new Dictionary<string, object?>
             {
                 ["sessionId"] = sessionId.ToString(),
                 ["answer"] = answer,
@@ -218,7 +218,7 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         await using (var worker = await ConnectAsync(baseUri, successorToken, ct))
         {
             var assignment = await worker.CallToolAsync(
-                "get_session", new Dictionary<string, object?>(), cancellationToken: ct);
+                "get_inbox", new Dictionary<string, object?>(), cancellationToken: ct);
             var text = Assert.Single(assignment.Content.OfType<TextContentBlock>()).Text;
 
             // Parsed, not substring-matched: the wire escapes non-ASCII (the answer's

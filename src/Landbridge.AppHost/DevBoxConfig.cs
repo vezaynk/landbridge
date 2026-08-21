@@ -110,8 +110,8 @@ internal static class DevBoxConfig
     {
         "claude" => new(
             ["claude-agent-acp"],
-            Prompt("mcp__landbridge__get_session", "mcp__landbridge__report_result", "mcp__landbridge__request_input"),
-            FollowUp("mcp__landbridge__get_session"),
+            Prompt("mcp__landbridge__get_inbox", "mcp__landbridge__report_result", "mcp__landbridge__request_input"),
+            FollowUp("mcp__landbridge__get_inbox"),
             AuthMethod: null,
             Env: null,
             Telemetry: new JsonObject
@@ -126,15 +126,15 @@ internal static class DevBoxConfig
             }),
         "codex" => new(
             ["codex-acp"],
-            Prompt("mcp__landbridge__get_session", "mcp__landbridge__report_result", "mcp__landbridge__request_input"),
-            FollowUp("mcp__landbridge__get_session"),
+            Prompt("mcp__landbridge__get_inbox", "mcp__landbridge__report_result", "mcp__landbridge__request_input"),
+            FollowUp("mcp__landbridge__get_inbox"),
             AuthMethod: "api-key",
             Env: new JsonObject { ["CODEX_HOME"] = ContainerCodexHome },
             Telemetry: null),
         "grok" => new(
             ["grok", "agent", "stdio"],
-            Prompt("landbridge__get_session", "landbridge__report_result", "landbridge__request_input"),
-            FollowUp("landbridge__get_session"),
+            Prompt("landbridge__get_inbox", "landbridge__report_result", "landbridge__request_input"),
+            FollowUp("landbridge__get_inbox"),
             AuthMethod: null,
             Env: new JsonObject { ["GROK_FOLDER_TRUST"] = "0" },
             Telemetry: null),

@@ -490,7 +490,7 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
         WaitUntilAsync(async () => await StateAsync(task, ct) == state, timeout, ct);
 
     public Task<bool> WaitForReportAsync(SessionId task, TimeSpan timeout, CancellationToken ct) =>
-        WaitUntilAsync(async () => await MessageStateAsync(task, ct) == MessageState.AwaitingReport, timeout, ct);
+        WaitUntilAsync(async () => (await FactsAsync(task, ct))?.ResultReference is { Length: > 0 }, timeout, ct);
 
     // ── Diagnostics ─────────────────────────────────────────────────────────────
 

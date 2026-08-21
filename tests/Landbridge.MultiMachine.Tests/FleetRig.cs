@@ -331,7 +331,7 @@ internal sealed class FleetRig(
     public async Task<string> QuestionAsync(SessionId task, CancellationToken ct)
     {
         await using var lead = await PlaneProbe.ConnectMcpAsync(new Uri(_baseUrl + "/"), _leadToken, ct);
-        var read = await lead.CallToolAsync("get_session_question", new Dictionary<string, object?>
+        var read = await lead.CallToolAsync("get_lead_inbox", new Dictionary<string, object?>
         {
             ["sessionId"] = task.Value.ToString(),
         }, cancellationToken: ct);
@@ -380,7 +380,7 @@ internal sealed class FleetRig(
     public async Task AnswerAsync(SessionId task, string answer, CancellationToken ct)
     {
         await using var lead = await PlaneProbe.ConnectMcpAsync(new Uri(_baseUrl + "/"), _leadToken, ct);
-        var answered = await lead.CallToolAsync("answer_input_request", new Dictionary<string, object?>
+        var answered = await lead.CallToolAsync("send_input_response", new Dictionary<string, object?>
         {
             ["sessionId"] = task.Value.ToString(),
             ["answer"] = answer,
@@ -680,7 +680,7 @@ internal sealed class FleetRig(
     {
         await using var db = pg.NewContext();
         var row = await db.Sessions.AsNoTracking().SingleOrDefaultAsync(t => t.Id == task.Value, ct);
-        return row is { MessageState: MessageState.AwaitingReport };
+        return row is { ResultReference: { Length: > 0 } };
     }
 
     /// <summary>

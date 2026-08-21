@@ -85,7 +85,7 @@ record as plain columns the plane stores and returns but never dereferences:
 |---|---|---|
 | `Description` | the whole brief — what to do and how it will be judged | the worker, then the Lead reading reports (§7, §9 check 4) |
 | `Workspace` | optional context (repo, package, base ref), not isolation | the worker's skill (§7) |
-| `ResultReference` | where the work lives (a commit/URL) | the Lead reading it via `get_session_report`, and a human on the §12 dashboard (§8.1, §7) |
+| `ResultReference` | where the work lives (a commit/URL) | the Lead reading it via `get_lead_inbox(sessionId)`, and a human on the §12 dashboard (§8.1, §7) |
 | `CompletionProvenance` | who closed the session (`lead-session` \| `human`) | the §12 dashboard (§9 check 4) |
 | `ParkRecord{Machine, Directory, HarnessSessionRef, Attempt}` | resume affinity | `landbridged` on redispatch (§11) |
 | `TraceContext` | W3C `traceparent` for cross-process tracing | OpenTelemetry, not the domain |

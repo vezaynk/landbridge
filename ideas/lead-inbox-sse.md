@@ -16,9 +16,9 @@ The Lead inbox is a snapshot of outstanding items. HTTP SSE and `watch_lead_inbo
 | `get_lead_inbox` | Lead MCP | JSON snapshot |
 | `watch_lead_inbox` | Lead MCP | waits until at least one item, then the snapshot |
 
-`?sessionId=` / `sessionId` argument limits the snapshot to one session. Workers, machines, and humans are 403. Unauthenticated is 401. Team scope is the calling Lead's Team. Another Team's sessions never appear.
+`?sessionId=` (repeatable) / `sessionId` or `sessionIds` limits the snapshot. Team-wide is identifiers only. A session filter carries bodies and marks unread report mail as read. Workers, machines, and humans are 403. Unauthenticated is 401. Team scope is the calling Lead's Team. Another Team's sessions never appear.
 
-Each snapshot lists **every outstanding fact**, not one row per session. Identifiers only: `sessionId`, `kind`, `messageId`, `namespace`. Prose stays on `get_session_question` / `get_session_report`. `get_team_state` remains the full occupancy view.
+Each snapshot lists **every outstanding fact**, not one row per session. Team-wide: `sessionId`, `kind`, `messageId`, `namespace`. Per-session: result reference, report, question, permission options, infrastructure account. A question or permission wait stays until answered. `get_team_state` remains the full occupancy view. Worker pull is `get_inbox` / `watch_inbox`.
 
 ## Kind
 
@@ -28,7 +28,7 @@ A session is in the inbox when `hidden = false` and something is still outstandi
 |---|---|
 | `failed` | `health = failed` |
 | `permission` | `message_state = awaiting_permission` |
-| `report` | `message_state = awaiting_report` |
+| `report` | `report_unread` (not an envelope wait; worker stays idle) |
 | `question` / `spawnRequest` / `authHelp` / `endpointWait` / `unreachable` | `message_state = awaiting_lead` (typed by `input_kind`) |
 | `pull` | `message_state = awaiting_pull` (worker-owed) |
 

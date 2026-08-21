@@ -80,6 +80,14 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         return new WorkerCaller(Team, created.Session.Id, instance);
     }
 
+    private async Task EscalateAsync(SessionId session, string reason)
+    {
+        await using var db = pg.NewContext();
+        Assert.IsType<StoreResult.Applied>(
+            await new SessionStore(db, TimeProvider.System).EscalatePermissionAsync(
+                new LeadClaim(Team), session, reason));
+    }
+
     /// <summary>
     /// Starts the worker's relaying call and waits until the request has actually landed in
     /// blocked_on_input, so a test answers a request that exists rather than racing it.
@@ -131,7 +139,7 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         var worker = WorkerFor(caller);
 
         var json = await worker.RequestPermission(
-            "mcp__landbridge__get_session",
+            "mcp__landbridge__get_inbox",
             JsonDocument.Parse("{}").RootElement,
             "toolu_proto",
             CancellationToken.None);
@@ -281,7 +289,7 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         // answer_input_request would revoke this worker's token and requeue the task, which
         // would strand a process still holding its tool call open.
         var refused = await Assert.ThrowsAsync<McpException>(
-            () => lead.AnswerInputRequest(caller.Session.ToString(), "go ahead", CancellationToken.None));
+            () => lead.SendInputResponse(caller.Session.ToString(), "go ahead", CancellationToken.None));
         Assert.Contains(Rule.PermissionVerdictAnswersPermissionRequests.ToString(), refused.Message);
 
         Assert.Equal(SessionState.BlockedOnInput, await StateOf(caller.Session));
@@ -321,7 +329,7 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         var pending = await AskPermissionAsync(caller);
         var lead = LeadFor(new Principal.Lead(Team));
 
-        await lead.EscalatePermissionRequest(caller.Session.ToString(), why, CancellationToken.None);
+        await EscalateAsync(caller.Session, why);
 
         // Still blocked, still the same request — escalation is an authority change.
         Assert.Equal(SessionState.BlockedOnInput, await StateOf(caller.Session));
@@ -357,9 +365,13 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         var pending = await AskPermissionAsync(caller);
         var lead = LeadFor(new Principal.Lead(Team));
 
-        var refused = await Assert.ThrowsAsync<McpException>(
-            () => lead.EscalatePermissionRequest(caller.Session.ToString(), "  ", CancellationToken.None));
-        Assert.Contains(Rule.PermissionEscalationCarriesReason.ToString(), refused.Message);
+        await using (var db = pg.NewContext())
+        {
+            var refused = Assert.IsType<StoreResult.Rejected>(
+                await new SessionStore(db, TimeProvider.System).EscalatePermissionAsync(
+                    new LeadClaim(Team), caller.Session, "  "));
+            Assert.Equal(Rule.PermissionEscalationCarriesReason, refused.Rule);
+        }
 
         // Not escalated, so the Lead still has authority.
         await lead.AnswerPermissionRequest(caller.Session.ToString(), "allow", null, CancellationToken.None);
@@ -456,22 +468,16 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         var pending = await AskPermissionAsync(caller);
         var lead = LeadFor(new Principal.Lead(Team));
 
-        var text = await lead.GetSessionQuestion(caller.Session.ToString(), CancellationToken.None);
+        var item = Assert.Single((await lead.GetLeadInbox(caller.Session.ToString(), CancellationToken.None)).Items);
+        Assert.Equal(LeadInboxKind.Permission, item.Kind);
+        Assert.Equal(Tool, item.PermissionTool);
+        Assert.Equal(ProposedInput, item.Question);
+        Assert.Null(item.PermissionOptions);
+        Assert.Null(item.EscalationReason);
 
-        Assert.Contains("Untrusted permission request", text);
-        Assert.Contains("<<<TOOL", text);
-        Assert.Contains(Tool, text);
-        Assert.Contains("<<<PROPOSED_INPUT", text);
-        Assert.Contains(ProposedInput, text);
-        // The rubric's escape hatch is on the page the Lead is reading when it decides.
-        Assert.Contains("escalate_permission_request", text);
-        Assert.DoesNotContain("<<<OPTIONS", text);
-
-        await lead.EscalatePermissionRequest(caller.Session.ToString(), "credential access", CancellationToken.None);
-        var escalated = await lead.GetSessionQuestion(caller.Session.ToString(), CancellationToken.None);
-        Assert.Contains("<<<ESCALATION", escalated);
-        Assert.Contains("credential access", escalated);
-        Assert.DoesNotContain("Decide it with answer_permission_request", escalated);
+        await EscalateAsync(caller.Session, "credential access");
+        var escalated = Assert.Single((await lead.GetLeadInbox(caller.Session.ToString(), CancellationToken.None)).Items);
+        Assert.Equal("credential access", escalated.EscalationReason);
 
         await using (var db = pg.NewContext())
         {
@@ -480,10 +486,9 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         }
         await pending.WaitAsync(Patience);
 
-        var settled = await lead.GetSessionQuestion(caller.Session.ToString(), CancellationToken.None);
-        Assert.Contains("already had its permission request", settled);
-        Assert.Contains("allow", settled);
-        Assert.Contains("answer_input_request", settled);
+        Assert.DoesNotContain(
+            (await lead.GetLeadInbox(caller.Session.ToString(), CancellationToken.None)).Items,
+            i => i.Kind == LeadInboxKind.Permission);
     }
 
     [SkippableFact]
@@ -500,12 +505,11 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         }
 
         var lead = LeadFor(new Principal.Lead(Team));
-        var text = await lead.GetSessionQuestion(caller.Session.ToString(), CancellationToken.None);
-        Assert.Contains("<<<OPTIONS", text);
-        Assert.Contains("optionId=allow-once", text);
-        Assert.Contains("kind=allow_once", text);
-        Assert.Contains("Allow once", text);
-        Assert.Contains("optionId=reject-once", text);
+        var item = Assert.Single((await lead.GetLeadInbox(caller.Session.ToString(), CancellationToken.None)).Items);
+        Assert.Equal(LeadInboxKind.Permission, item.Kind);
+        Assert.NotNull(item.PermissionOptions);
+        Assert.Contains(item.PermissionOptions, o => o.OptionId == "allow-once" && o.Kind == "allow_once" && o.Name == "Allow once");
+        Assert.Contains(item.PermissionOptions, o => o.OptionId == "reject-once");
 
         await lead.AnswerPermissionRequest(caller.Session.ToString(), "allow-once", null, CancellationToken.None);
         await using var check = pg.NewContext();
@@ -524,7 +528,7 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         var pending = await AskPermissionAsync(caller);
         var lead = LeadFor(new Principal.Lead(Team));
 
-        await lead.EscalatePermissionRequest(caller.Session.ToString(), "sudo, unexplained", CancellationToken.None);
+        await EscalateAsync(caller.Session, "sudo, unexplained");
         await using (var db = pg.NewContext())
         {
             await new SessionStore(db, TimeProvider.System).AnswerPermissionAsync(
@@ -581,7 +585,7 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         var caller = await SeedWorkingTask();
         var pending = await AskPermissionAsync(caller);
         var lead = LeadFor(new Principal.Lead(Team));
-        await lead.EscalatePermissionRequest(caller.Session.ToString(), "reads a credential", CancellationToken.None);
+        await EscalateAsync(caller.Session, "reads a credential");
 
         await using var db = pg.NewContext();
         var inbox = await new DashboardQueries(db, new RunnerConnectionRegistry(TimeProvider.System))

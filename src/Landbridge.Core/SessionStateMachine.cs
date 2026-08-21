@@ -106,6 +106,7 @@ public static class SessionStateMachine
             StopPreserveAndPark c => ApplyStopPreserveAndPark(task, c),
             Cancel c => ApplyStopSession(task, c.Actor),
             PullReceipt c => ApplyPullReceipt(task, c),
+            DeliverReport c => ApplyDeliverReport(task, c),
             CreateSession => TransitionResult.Reject(Rule.InvalidSourceState,
                 "CreateSession applies to no existing record; use Create"),
             _ => TransitionResult.Reject(Rule.InvalidSourceState,
@@ -271,10 +272,21 @@ public static class SessionStateMachine
 
         return Done(task with
         {
-            MessageState = MessageState.AwaitingReport,
+            MessageState = MessageState.Idle,
+            ReportUnread = true,
             OccupancyObserved = Occupancy.Running,
             PendingSpawn = null,
         });
+    }
+
+    private static TransitionResult ApplyDeliverReport(SessionRecord task, DeliverReport c)
+    {
+        if (!IsLeadOrHuman(task, c.Actor))
+            return TransitionResult.Reject(Rule.ActorLacksAuthority,
+                "report delivery is a Lead or human read");
+        if (!task.ReportUnread)
+            return Done(task);
+        return Done(task with { ReportUnread = false });
     }
 
     private static TransitionResult ApplyStopSession(SessionRecord task, Actor actor)
@@ -304,6 +316,7 @@ public static class SessionStateMachine
                 Hidden = true,
                 OccupancyDesired = Occupancy.OnDisk,
                 MessageState = MessageState.Idle,
+                ReportUnread = false,
                 MessageVerdict = null,
                 CurrentInstance = null,
                 PendingSpawn = null,

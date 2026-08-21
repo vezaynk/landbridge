@@ -144,9 +144,9 @@ public static class Program
 
         // ── Learn the assignment (§7): namespace, description, attempt.
         var assignment = await client.CallToolAsync(
-            "get_session", new Dictionary<string, object?>(), cancellationToken: setupCts.Token);
+            "get_inbox", new Dictionary<string, object?>(), cancellationToken: setupCts.Token);
         if (assignment.IsError == true)
-            throw new InvalidOperationException("get_session returned an error: " + TextOf(assignment));
+            throw new InvalidOperationException("get_inbox returned an error: " + TextOf(assignment));
 
         var assignmentJson = TextOf(assignment);
         await File.WriteAllTextAsync(Path.Combine(cwd, "get_session.json"), assignmentJson, ct);

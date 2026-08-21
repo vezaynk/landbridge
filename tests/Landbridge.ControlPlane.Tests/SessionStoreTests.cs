@@ -247,7 +247,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         Assert.IsType<StoreResult.Applied>(result);
         await using var verify = pg.NewContext();
         Assert.Equal(SessionState.Working, (await verify.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value)).State);
-        Assert.Equal(MessageState.AwaitingReport, (await verify.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value)).MessageState);
+        Assert.True((await verify.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value)).ReportUnread);
         Assert.Single(await verify.RegisteredServices.AsNoTracking().Where(s => s.SessionId == id.Value).ToListAsync());
         Assert.IsType<StoreResult.Applied>(await NewStore(db).ApplyAsync(id, new VerdictAccept(new LeadClaim(Team))));
         Assert.Empty(await verify.RegisteredServices.AsNoTracking().Where(s => s.SessionId == id.Value).ToListAsync());
@@ -269,7 +269,8 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         var applied = Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(id,
             new ReportResult(new WorkerCaller(Team, id, instance), "git:branch/result-42")));
         Assert.Equal(SessionState.Working, applied.Session.State);
-        Assert.Equal(MessageState.AwaitingReport, applied.Session.MessageState);
+        Assert.True(applied.Session.ReportUnread);
+        Assert.Equal(MessageState.Idle, applied.Session.MessageState);
 
         await using var v = pg.NewContext();
         Assert.Equal("git:branch/result-42",
@@ -1192,8 +1193,8 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         await using var b = pg.NewContext();
         var worker = new WorkerCaller(Team, id, instance);
 
-        var ra = await NewStore(a).ApplyAsync(id, new ReportResult(worker, "ref-a"));
-        var rb = await NewStore(b).ApplyAsync(id, new RequestInput(worker, InputRequestKind.Question));
+        var ra = await NewStore(a).ApplyAsync(id, new RequestInput(worker, InputRequestKind.Question, "a?"));
+        var rb = await NewStore(b).ApplyAsync(id, new RequestInput(worker, InputRequestKind.Question, "b?"));
 
         // First commit wins; the second sees a stale row. Depending on scheduling
         // the loser is either a concurrency Conflict or a clean Rejected (the row

@@ -318,7 +318,7 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
         await using (var worker = await fleet.ConnectMcpAsync(stale!, ct))
         {
             var assignment = await worker.CallToolAsync(
-                "get_session", new Dictionary<string, object?>(), cancellationToken: ct);
+                "get_inbox", new Dictionary<string, object?>(), cancellationToken: ct);
             Assert.NotEqual(true, assignment.IsError);
         }
 
@@ -812,7 +812,7 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
         {
             await using var client = await fleet.ConnectMcpAsync(bearer, ct);
             var result = await client.CallToolAsync(
-                "get_session", new Dictionary<string, object?>(), cancellationToken: ct);
+                "get_inbox", new Dictionary<string, object?>(), cancellationToken: ct);
             return result.IsError == true;
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
