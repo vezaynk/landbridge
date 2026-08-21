@@ -276,7 +276,7 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
     {
         await using var db = pg.NewContext();
         var row = await db.Sessions.AsNoTracking().SingleOrDefaultAsync(t => t.Id == id.Value, ct);
-        return row?.MessageState == MessageState.AwaitingReport;
+        return row is { ResultReference: { Length: > 0 } };
     }
 
     /// <summary>

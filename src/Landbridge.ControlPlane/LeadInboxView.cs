@@ -5,25 +5,48 @@ using Landbridge.Core;
 namespace Landbridge.ControlPlane;
 
 /// <summary>
-/// Structure-only Lead inbox: every outstanding fact on this Team (or one
-/// session). Identifiers and kind, never prose — the Lead fetches question
-/// and report text with the existing per-session tools.
+/// Lead inbox snapshot: outstanding facts on this Team (or selected sessions).
+/// Team-wide reads are identifiers only. A per-session read carries bodies and
+/// marks unread report mail as delivered.
 /// </summary>
 public sealed record LeadInboxView(IReadOnlyList<LeadInboxItem> Items);
 
 /// <param name="MessageId">
 /// The live envelope id when one is open. Null on a failed session that has
-/// no leftover message. Not the session id.
+/// no leftover message, and on unread report mail (not an envelope).
 /// </param>
 public sealed record LeadInboxItem(
     Guid SessionId,
     LeadInboxKind Kind,
     Guid? MessageId,
-    string Namespace);
+    string Namespace,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? ResultReference = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? Report = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? Question = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? Answer = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? InputKind = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? PermissionTool = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    IReadOnlyList<PermissionOption>? PermissionOptions = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    string? EscalationReason = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    int? InfrastructureRequeues = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    int? InfrastructureRequeueLimit = null,
+    [property: JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    LivenessLossReason? LastRequeueReason = null);
 
 /// <summary>
 /// One outstanding fact. A session may contribute more than one (mechanical
-/// <see cref="Failed"/> plus a leftover envelope).
+/// <see cref="Failed"/> plus a leftover envelope, or unread report mail plus
+/// a later question).
 /// </summary>
 [JsonConverter(typeof(LeadInboxKindJsonConverter))]
 public enum LeadInboxKind
@@ -43,7 +66,8 @@ public static class LeadInboxKindMapping
 {
     /// <summary>
     /// Every outstanding fact on the row. Failed does not hide a leftover
-    /// envelope; <see cref="MessageState.AwaitingPull"/> is included.
+    /// envelope; unread report mail does not hide a later wait;
+    /// <see cref="MessageState.AwaitingPull"/> is included.
     /// </summary>
     public static IEnumerable<LeadInboxItem> ItemsFor(
         Guid sessionId,
@@ -51,10 +75,14 @@ public static class LeadInboxKindMapping
         SessionHealth health,
         MessageState message,
         InputRequestKind? inputKind,
-        Guid? messageId)
+        Guid? messageId,
+        bool reportUnread)
     {
         if (health == SessionHealth.Failed)
             yield return new LeadInboxItem(sessionId, LeadInboxKind.Failed, messageId, ns);
+
+        if (reportUnread)
+            yield return new LeadInboxItem(sessionId, LeadInboxKind.Report, null, ns);
 
         var live = message switch
         {
@@ -72,7 +100,7 @@ public static class LeadInboxKindMapping
             },
             _ => (LeadInboxKind?)null,
         };
-        if (live is { } kind)
+        if (live is { } kind && !(kind == LeadInboxKind.Report && reportUnread))
             yield return new LeadInboxItem(sessionId, kind, messageId, ns);
     }
 

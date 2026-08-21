@@ -36,3 +36,22 @@ public sealed record WorkerAssignment(
     // this task asks something; the answer alone stays null while it is still waiting.
     [property: JsonPropertyName("question")] string? Question = null,
     [property: JsonPropertyName("answer")] string? Answer = null);
+
+/// <summary>
+/// Worker inbox: the assignment header plus any Lead envelope this pull delivered.
+/// Replaces <c>get_session</c>. <see cref="Items"/> is non-empty only when this
+/// call was the receipt for <c>awaiting_pull</c>.
+/// </summary>
+public sealed record WorkerInboxView(
+    [property: JsonPropertyName("namespace")] string Namespace,
+    [property: JsonPropertyName("description")] string Description,
+    [property: JsonPropertyName("attempt")] int Attempt,
+    [property: JsonPropertyName("report")] string? Report,
+    [property: JsonPropertyName("question")] string? Question,
+    [property: JsonPropertyName("answer")] string? Answer,
+    [property: JsonPropertyName("items")] IReadOnlyList<WorkerInboxItem> Items);
+
+public sealed record WorkerInboxItem(
+    [property: JsonPropertyName("messageId")] Guid? MessageId,
+    [property: JsonPropertyName("kind")] string Kind,
+    [property: JsonPropertyName("text")] string? Text);

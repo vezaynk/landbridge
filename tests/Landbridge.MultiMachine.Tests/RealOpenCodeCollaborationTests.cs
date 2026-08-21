@@ -31,7 +31,7 @@ namespace Landbridge.MultiMachine.Tests;
 /// (1) The dead-man incompatibility is the same landmine but <em>silent</em> — where a hung
 /// <c>codex exec</c> prints <c>Reading additional input from stdin...</c> to stderr, OpenCode
 /// prints nothing at all and leaves an empty transcript. (2) MCP tool names are
-/// <c>landbridge_get_session</c>, not <c>mcp__landbridge__get_session</c>
+/// <c>landbridge_get_inbox</c>, not <c>mcp__landbridge__get_inbox</c>
 /// (<c>packages/opencode/src/mcp/catalog.ts:119</c>), and the worker prompts here spell that
 /// underscore form rather than the bare <c>get_session</c> they used to — see
 /// <see cref="McpToolsRule"/> for why the portable bare spelling turned out to cost more than it
@@ -60,8 +60,8 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
     /// the worker ran <c>landbridge get_session</c> instead of calling its MCP tool.
     ///
     /// <para><b>The spelling is this tier's own, and that is the whole subtlety.</b> OpenCode names
-    /// landbridge's tools <c>landbridge_get_session</c> (<c>mcp/catalog.ts:119</c>), where claude and Codex
-    /// both use <c>mcp__landbridge__get_session</c>. Porting the claude wording verbatim would name a tool
+    /// landbridge's tools <c>landbridge_get_inbox</c> (<c>mcp/catalog.ts:119</c>), where claude and Codex
+    /// both use <c>mcp__landbridge__get_inbox</c>. Porting the claude wording verbatim would name a tool
     /// that does not exist on this harness — inventing a phantom tool, which is precisely the bug
     /// this rule exists to prevent. So the underscore form here is not a typo, and a "consistency"
     /// edit that aligns it with the other two tiers breaks this one.</para>
@@ -73,7 +73,7 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
     /// naming its own real tool is unambiguous in a way no shared spelling can be.</para>
     /// </summary>
     private const string McpToolsRule =
-        " Landbridge's tools are MCP tools, named exactly landbridge_get_session, landbridge_report_result and so " +
+        " Landbridge's tools are MCP tools, named exactly landbridge_get_inbox, landbridge_report_result and so " +
         "on — call them as tools, under those names. There is no `landbridge` program: no such command " +
         "exists on this machine, so never run `landbridge` in a shell, and never try to reach the " +
         "landbridge MCP server yourself over HTTP or with curl. (A shell command your assignment " +
@@ -255,7 +255,7 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
     /// and the fact fails on its assertions rather than hanging until the outer deadline.
     /// </summary>
     private const string SlowWorkerPrompt =
-        "You are a Landbridge worker agent. First call the landbridge_get_session tool to read your "
+        "You are a Landbridge worker agent. First call the landbridge_get_inbox tool to read your "
         + "assignment. Then, before reporting anything, count slowly from 1 to 400, writing each "
         + "number on its own line with a short remark about it. Only after finishing the count "
         + "may you call the landbridge_report_result tool with the exact string from the description."
@@ -326,7 +326,7 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
               agent that ran with no landbridge tools and reported nothing. Check that "oauth": false
               is present too — without it OAuth auto-detection can displace the header.
            3. TOOL NAMES. OpenCode spells MCP tools <server>_<tool>, so the worker is looking for
-              landbridge_get_session, NOT mcp__landbridge__get_session (mcp/catalog.ts:119). A prompt that
+              landbridge_get_inbox, NOT mcp__landbridge__get_inbox (mcp/catalog.ts:119). A prompt that
               names the qualified form will have the agent hunting a tool that does not exist.
            4. PERMISSIONS. session/request_permission is answered by the plane, not --auto.
            5. AUTH. ANTHROPIC_API_KEY must be in the environment, or the machine's opencode must

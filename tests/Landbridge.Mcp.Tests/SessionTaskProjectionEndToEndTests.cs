@@ -114,7 +114,7 @@ public sealed class SessionTaskProjectionEndToEndTests(PostgresFixture pg) : IAs
             var got = await GetTaskAsync(lead, messageId.ToString(), ct);
             Assert.Equal(messageId.ToString(), got["taskId"]?.GetValue<string>());
             Assert.Equal("input_required", got["status"]?.GetValue<string>());
-            Assert.Contains("answer_input_request", got["statusMessage"]?.GetValue<string>(),
+            Assert.Contains("send_input_response", got["statusMessage"]?.GetValue<string>(),
                 StringComparison.Ordinal);
 
             var listed = await ListTasksAsync(lead, ct);

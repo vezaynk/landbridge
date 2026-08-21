@@ -269,9 +269,9 @@ own spelling and each `prompt` below differs only in that.
 
 | Harness | Landbridge tool spelling |
 |---|---|
-| Claude, Codex | `mcp__landbridge__get_session` |
-| OpenCode | `landbridge_get_session` |
-| Grok, Goose | `landbridge__get_session` |
+| Claude, Codex | `mcp__landbridge__get_inbox` |
+| OpenCode | `landbridge_get_inbox` |
+| Grok, Goose | `landbridge__get_inbox` |
 
 Everything else in these profiles is the same profile. Goose's spelling is from its
 extension naming (`{server}__{tool}` on the `landbridge` MCP server handed over at
@@ -300,11 +300,11 @@ follow differ only in the spawn argv and the tool spelling.
       // The opening turn, on the wire instead of in the argv. Note the tool names are
       // still harness-specific: ACP standardizes the CLIENT-agent channel, not the
       // agent-MCP one, so OpenCode still spells landbridge's tools `landbridge_<name>`.
-      "prompt": "You are a Landbridge worker on a live session. First call the landbridge_get_session MCP tool to read your assignment (namespace, description, workspace, attempt). Do the work in this session's directory; you are not the only agent on the machine. When you think you are done, call landbridge_report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself — and stay up; the Lead may reply. If you are blocked or a decision is above your scope, call landbridge_request_input instead of guessing. You do not complete the session yourself.",
+      "prompt": "You are a Landbridge worker on a live session. First call the landbridge_get_inbox MCP tool to read your assignment (namespace, description, workspace, attempt). Do the work in this session's directory; you are not the only agent on the machine. When you think you are done, call landbridge_report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself — and stay up; the Lead may reply. If you are blocked or a decision is above your scope, call landbridge_request_input instead of guessing. You do not complete the session yourself.",
       // The wake-up turn, sent when there is new input on the assignment (an answered
       // question). Configuration, never content: the answer is pulled by the worker over
       // MCP, and that pull is the read receipt (§11).
-      "follow_up": "There is new input on your assignment. Call landbridge_get_session to read it, then continue.",
+      "follow_up": "There is new input on your assignment. Call landbridge_get_inbox to read it, then continue.",
       // No events block: ACP is the event source. No resume block: resume is session/load.
       // No stdin key: deadman is correct and `closed` is refused.
       "stop": { "wind_down_seconds": 30 },
@@ -341,8 +341,8 @@ there is no interactive login step in the enroll path.
       "name": "claude-<hostname>-linux",
       // The adapter, not `claude`. It spawns claude itself.
       "spawn": ["claude-agent-acp"],
-      "prompt": "You are a Landbridge worker on a live session. Read the landbridge-worker skill from the landbridge MCP server first (`landbridge://skills/worker`). Then call the mcp__landbridge__get_session MCP tool to read your assignment (namespace, description, workspace, attempt). Do the work in this session's directory; you are not the only agent on the machine. When you think you are done, call mcp__landbridge__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself — and stay up; the Lead may reply. If you are blocked or a decision is above your scope, call mcp__landbridge__request_input instead of guessing. You do not complete the session yourself.",
-      "follow_up": "There is new input on your assignment. Call mcp__landbridge__get_session to read it, then continue.",
+      "prompt": "You are a Landbridge worker on a live session. Read the landbridge-worker skill from the landbridge MCP server first (`landbridge://skills/worker`). Then call the mcp__landbridge__get_inbox MCP tool to read your assignment (namespace, description, workspace, attempt). Do the work in this session's directory; you are not the only agent on the machine. When you think you are done, call mcp__landbridge__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself — and stay up; the Lead may reply. If you are blocked or a decision is above your scope, call mcp__landbridge__request_input instead of guessing. You do not complete the session yourself.",
+      "follow_up": "There is new input on your assignment. Call mcp__landbridge__get_inbox to read it, then continue.",
       // Model and turn caps are the adapter's business, not a landbridged key — it reads the
       // same environment claude does. `--max-turns` has no ACP equivalent, so on this
       // profile the bound is the model plus the §10 no-progress ceiling. See the cost note.
@@ -374,8 +374,8 @@ ACP simply has.
     {
       "name": "codex-<hostname>-linux",
       "spawn": ["codex-acp"],
-      "prompt": "You are a Landbridge worker on a live session. First call the mcp__landbridge__get_session MCP tool to read your assignment. Do the work in this session's directory; you are not the only agent on the machine. When you think you are done, call mcp__landbridge__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself — and stay up; the Lead may reply. If you are blocked or a decision is above your scope, call mcp__landbridge__request_input instead of guessing. You do not complete the session yourself.",
-      "follow_up": "There is new input on your assignment. Call mcp__landbridge__get_session to read it, then continue.",
+      "prompt": "You are a Landbridge worker on a live session. First call the mcp__landbridge__get_inbox MCP tool to read your assignment. Do the work in this session's directory; you are not the only agent on the machine. When you think you are done, call mcp__landbridge__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself — and stay up; the Lead may reply. If you are blocked or a decision is above your scope, call mcp__landbridge__request_input instead of guessing. You do not complete the session yourself.",
+      "follow_up": "There is new input on your assignment. Call mcp__landbridge__get_inbox to read it, then continue.",
       // codex-acp refuses session/new until ACP `authenticate` has run, and declares two
       // methods: `api-key` (from the environment) and `chat-gpt` (a cached login). The
       // method is required on the profile — guessing the first declared one is how a
@@ -416,8 +416,8 @@ gone, along with its side effect of declaring a landbridge MCP server for every 
       // `grok agent stdio`, NOT `grok -p --output-format streaming-json`. The latter is an
       // output shape that merely resembles ACP; the former is the protocol.
       "spawn": ["grok", "agent", "stdio"],
-      "prompt": "You are a Landbridge worker on a live session. First call the landbridge__get_session MCP tool to read your assignment (namespace, description, workspace, attempt). Do the work in this session's directory; you are not the only agent on the machine. When you think you are done, call landbridge__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself — and stay up; the Lead may reply. If you are blocked or a decision is above your scope, call landbridge__request_input instead of guessing. You do not complete the session yourself.",
-      "follow_up": "There is new input on your assignment. Call landbridge__get_session to read it, then continue.",
+      "prompt": "You are a Landbridge worker on a live session. First call the landbridge__get_inbox MCP tool to read your assignment (namespace, description, workspace, attempt). Do the work in this session's directory; you are not the only agent on the machine. When you think you are done, call landbridge__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself — and stay up; the Lead may reply. If you are blocked or a decision is above your scope, call landbridge__request_input instead of guessing. You do not complete the session yourself.",
+      "follow_up": "There is new input on your assignment. Call landbridge__get_inbox to read it, then continue.",
       // 1.0.4+ gates project-local config behind folder trust and a work dir is a
       // throwaway folder. Carried over from the stream profile; re-confirm under ACP.
       "env": { "GROK_FOLDER_TRUST": "0" },
@@ -453,8 +453,8 @@ wrap it with [`landbridge-acp-bridge`](../../../tools/Landbridge.AcpBridge/READM
       // `goose acp`, NOT `goose serve` and NOT `goose run`. serve is a long-lived
       // remote transport; run is not the protocol.
       "spawn": ["goose", "acp"],
-      "prompt": "You are a Landbridge worker on a live session. First call the landbridge__get_session MCP tool to read your assignment (namespace, description, workspace, attempt). Do the work in this session's directory; you are not the only agent on the machine. When you think you are done, call landbridge__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself — and stay up; the Lead may reply. If you are blocked or a decision is above your scope, call landbridge__request_input instead of guessing. You do not complete the session yourself.",
-      "follow_up": "There is new input on your assignment. Call landbridge__get_session to read it, then continue.",
+      "prompt": "You are a Landbridge worker on a live session. First call the landbridge__get_inbox MCP tool to read your assignment (namespace, description, workspace, attempt). Do the work in this session's directory; you are not the only agent on the machine. When you think you are done, call landbridge__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself — and stay up; the Lead may reply. If you are blocked or a decision is above your scope, call landbridge__request_input instead of guessing. You do not complete the session yourself.",
+      "follow_up": "There is new input on your assignment. Call landbridge__get_inbox to read it, then continue.",
       // Goose 1.46's session/new starts on `auto` (auto-approve). Pin approve so
       // tool calls go through session/request_permission. Skipped if this
       // session did not advertise the mode.
@@ -592,8 +592,8 @@ background processes (§10 `start_process`). Permissions go through
 
 ```jsonc
 "spawn": ["claude-agent-acp"],
-"prompt": "<opening turn naming mcp__landbridge__get_session / report_result / request_input>",
-"follow_up": "There is new input on your assignment. Call mcp__landbridge__get_session to read it, then continue.",
+"prompt": "<opening turn naming mcp__landbridge__get_inbox / report_result / request_input>",
+"follow_up": "There is new input on your assignment. Call mcp__landbridge__get_inbox to read it, then continue.",
 "processes": { "agent_initiated": true }
 ```
 
@@ -660,7 +660,7 @@ The sweeper still requeues a task whose machine died while waiting.
 
 **`park_session` is the release.** A Lead or human who wants the machine back sends it; the
 runner `session/cancel`s, the instance token is revoked, and a later wake is `session/load`.
-Answering a still-live wait is `answer_input_request`, which delivers the profile's
+Answering a still-live wait is `send_input_response`, which delivers the profile's
 `follow_up` turn so the worker pulls `get_session`. Do not put bypass / `--always-approve` /
 `--auto` in `spawn` — permissions are protocol, not argv.
 

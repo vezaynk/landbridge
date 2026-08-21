@@ -5,9 +5,12 @@ public sealed class PermissionPolicyTests
     private static readonly SessionId Session = new(Guid.Parse("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"));
 
     [Theory]
+    [InlineData("mcp__landbridge__get_inbox")]
     [InlineData("mcp__landbridge__get_session")]
     [InlineData("landbridge__report_result")]
     [InlineData("landbridge_request_input")]
+    [InlineData("get_inbox")]
+    [InlineData("watch_inbox")]
     [InlineData("get_session")]
     [InlineData("start_process")]
     [InlineData("landbridge: get session")]
@@ -36,7 +39,7 @@ public sealed class PermissionPolicyTests
     {
         Assert.Equal(
             PermissionDisposition.AutoAllow,
-            PermissionPolicy.Classify("tool", """{"name":"mcp__landbridge__get_session"}"""));
+            PermissionPolicy.Classify("tool", """{"name":"mcp__landbridge__get_inbox"}"""));
     }
 
     [Theory]

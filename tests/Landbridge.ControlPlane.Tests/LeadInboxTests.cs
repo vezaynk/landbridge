@@ -113,6 +113,27 @@ public sealed class LeadInboxTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task A_filtered_read_with_a_lead_actor_delivers_unread_report_mail()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var report = await SeedWorkingAsync(db, "report");
+        Assert.IsType<StoreResult.Applied>(await report.Store.ApplyAsync(
+            report.Id, new ReportResult(new WorkerCaller(Team, report.Id, report.Instance), "git:ref", "done")));
+
+        var flagged = Assert.Single((await NewStore(db).GetLeadInboxAsync(Team)).Items);
+        Assert.Equal(LeadInboxKind.Report, flagged.Kind);
+        Assert.Null(flagged.ResultReference);
+
+        var delivered = await NewStore(db).GetLeadInboxAsync(Team, [report.Id.Value], actor: Lead);
+        var item = Assert.Single(delivered.Items);
+        Assert.Equal("git:ref", item.ResultReference);
+        Assert.Equal("done", item.Report);
+
+        Assert.Empty((await NewStore(db).GetLeadInboxAsync(Team)).Items);
+    }
+
+    [SkippableFact]
     public async Task Session_filter_hides_other_sessions_in_the_same_team()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);

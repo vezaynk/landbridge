@@ -21,6 +21,7 @@ public sealed class SessionRow
     public bool Hidden { get; set; }
     public MessageState MessageState { get; set; } = MessageState.Idle;
     public MessageVerdict? MessageVerdict { get; set; }
+    public bool ReportUnread { get; set; }
     public Guid? MessageId { get; set; }
     public Guid? LastMessageId { get; set; }
     public MessageTerminal? LastMessageTerminal { get; set; }
@@ -304,6 +305,7 @@ public sealed class SessionRow
         Hidden = Hidden,
         MessageState = MessageState,
         MessageVerdict = MessageVerdict,
+        ReportUnread = ReportUnread,
         MessageId = MessageId,
         LastMessageId = LastMessageId,
         LastMessageTerminal = LastMessageTerminal,
@@ -330,6 +332,7 @@ public sealed class SessionRow
         Hidden = task.Hidden;
         MessageState = task.MessageState;
         MessageVerdict = task.MessageVerdict;
+        ReportUnread = task.ReportUnread;
         MessageId = task.MessageId;
         LastMessageId = task.LastMessageId;
         LastMessageTerminal = task.LastMessageTerminal;

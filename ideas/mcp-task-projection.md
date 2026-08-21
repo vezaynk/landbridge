@@ -28,7 +28,7 @@ Idle with no `last_message_id` means there is no task to get. Mechanical `health
 
 - `tasks/get` / `tasks/list` — Lead only, Team-scoped. Live `message_id` plus the last closed envelope per session.
 - `tasks/cancel` is refused: closing an envelope is answering or `stop_session`.
-- `tasks/update` and `tasks/result` are not implemented. Answers stay `answer_input_request` / `answer_permission_request` / `stop_session`.
+- `tasks/update` and `tasks/result` are not implemented. Answers stay `send_input_response` / `send_input_request` / `answer_permission_request` / `stop_session`.
 - Polling is the MCP Tasks subscription. `notifications/tasks/status` is not wired. Lead wake is `watch_lead_inbox` / HTTP SSE at `/lead/inbox/events` (`ideas/lead-inbox-sse.md`), not this projection.
 
 `ttl` is null. `pollInterval` is 5000.

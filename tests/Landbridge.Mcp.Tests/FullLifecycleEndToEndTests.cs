@@ -152,7 +152,7 @@ public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifet
                 // #81: and it landed where the Lead actually reads it. The row assertion
                 // above only proves persistence; this is the Lead's get_session_report
                 // over real MCP.
-                var reportRead = await lead.CallToolAsync("get_session_report", new Dictionary<string, object?>
+                var reportRead = await lead.CallToolAsync("get_lead_inbox", new Dictionary<string, object?>
                 {
                     ["sessionId"] = sessionId.ToString(),
                 }, cancellationToken: ct);
@@ -194,7 +194,7 @@ public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifet
     {
         await using var db = pg.NewContext();
         var row = await db.Sessions.AsNoTracking().SingleOrDefaultAsync(t => t.Id == id.Value, ct);
-        return row?.MessageState == MessageState.AwaitingReport;
+        return row is { ResultReference: { Length: > 0 } };
     }
 
     private WebApplication BuildServer()

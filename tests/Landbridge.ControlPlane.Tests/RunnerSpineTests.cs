@@ -520,7 +520,8 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         await using var v = pg.NewContext();
         var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
         Assert.Equal(SessionState.Working, row.State);
-        Assert.Equal(MessageState.AwaitingReport, row.MessageState);
+        Assert.True(row.ReportUnread);
+        Assert.Equal(MessageState.Idle, row.MessageState);
         Assert.Equal(0, row.InfrastructureRequeues);
     }
 

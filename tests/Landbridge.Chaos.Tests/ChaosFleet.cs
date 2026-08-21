@@ -318,12 +318,33 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     /// </summary>
     public async Task ResumeFailedAsync(SessionId task, CancellationToken ct)
     {
-        await using var db = pg.NewContext();
-        var store = new SessionStore(db, TimeProvider.System);
-        var result = await store.ApplyAsync(task, new WakeParked("chaos: resume after fail"), ct);
-        if (result is not StoreResult.Applied)
-            throw new InvalidOperationException($"resume of {task} did not apply: {result.GetType().Name}");
-        Note($"resumed failed task {task}");
+        // Occupancy catch-up from the death that just failed the row races this
+        // write; Conflict means someone else already moved xmin. Reload and
+        // retry, and treat an already-healthy working row as the resume landing.
+        for (var attempt = 0; ; attempt++)
+        {
+            await using var db = pg.NewContext();
+            var store = new SessionStore(db, TimeProvider.System);
+            // Empty note: the wedge never pulls MCP, and a non-empty answer would
+            // leave awaiting_pull on a process that cannot receipt it.
+            var result = await store.ApplyAsync(task, new WakeParked(), ct);
+            if (result is StoreResult.Applied)
+            {
+                Note($"resumed failed task {task}");
+                return;
+            }
+
+            var facts = await FactsAsync(task, ct);
+            if (facts is { State: SessionState.Working })
+            {
+                Note($"resume of {task} already landed ({result.GetType().Name})");
+                return;
+            }
+
+            if (result is not StoreResult.Conflict || attempt >= 8)
+                throw new InvalidOperationException($"resume of {task} did not apply: {result.GetType().Name}");
+            await Task.Delay(50, ct);
+        }
     }
 
     private Task<McpClient> ConnectLeadAsync(CancellationToken ct) => ConnectMcpAsync(_leadToken, ct);
@@ -490,7 +511,7 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
         WaitUntilAsync(async () => await StateAsync(task, ct) == state, timeout, ct);
 
     public Task<bool> WaitForReportAsync(SessionId task, TimeSpan timeout, CancellationToken ct) =>
-        WaitUntilAsync(async () => await MessageStateAsync(task, ct) == MessageState.AwaitingReport, timeout, ct);
+        WaitUntilAsync(async () => (await FactsAsync(task, ct))?.ResultReference is { Length: > 0 }, timeout, ct);
 
     // ── Diagnostics ─────────────────────────────────────────────────────────────
 

@@ -1,5 +1,4 @@
 using System.Runtime.CompilerServices;
-using System.Threading.Channels;
 using Landbridge.Core;
 
 namespace Landbridge.ControlPlane;
@@ -9,16 +8,28 @@ namespace Landbridge.ControlPlane;
 /// </summary>
 public static class LeadInboxWatch
 {
-    public static async IAsyncEnumerable<LeadInboxView> Snapshots(
+    public static IAsyncEnumerable<LeadInboxView> Snapshots(
         SessionStore store,
         SessionEventFanout fanout,
         TeamId team,
         Guid? sessionId,
+        CancellationToken ct) =>
+        Snapshots(store, fanout, team, sessionId is { } id ? [id] : null, actor: null, ct);
+
+    public static async IAsyncEnumerable<LeadInboxView> Snapshots(
+        SessionStore store,
+        SessionEventFanout fanout,
+        TeamId team,
+        IReadOnlyList<Guid>? sessionIds,
+        Actor? actor,
         [EnumeratorCancellation] CancellationToken ct)
     {
-        using var sub = fanout.Subscribe(sessionId);
-        yield return await store.GetLeadInboxAsync(team, sessionId, ct);
+        var filter = sessionIds is { Count: > 0 }
+            ? sessionIds.Where(id => id != Guid.Empty).ToHashSet()
+            : null;
+        using var sub = fanout.Subscribe(filter);
+        yield return await store.GetLeadInboxAsync(team, sessionIds, ct, actor);
         await foreach (var _ in sub.Reader.ReadAllAsync(ct))
-            yield return await store.GetLeadInboxAsync(team, sessionId, ct);
+            yield return await store.GetLeadInboxAsync(team, sessionIds, ct, actor);
     }
 }

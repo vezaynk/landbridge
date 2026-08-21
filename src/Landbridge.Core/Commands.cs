@@ -98,8 +98,10 @@ public sealed record LivenessLost(LivenessLossReason Reason, WorkerInstanceId? I
     : SessionCommand(ControlPlaneActor.Instance);
 
 /// <summary>
-/// Idle envelope → <c>awaiting_report</c>. Requires a result reference (§6).
-/// Occupancy does not change. A report is mail, not a session phase.
+/// Idle envelope stays idle. Requires a result reference (§6). Occupancy does
+/// not change. A report is unread mail (<c>ReportUnread</c>), not a wait: the
+/// worker may speak again. The Lead inbox lists it until a per-session fetch
+/// delivers it.
 ///
 /// <para><see cref="Report"/> is the worker's optional in-band summary (§10): what
 /// it did, what it verified, evidence pointers, and proposals (e.g. "task X should
@@ -339,6 +341,12 @@ public sealed record Cancel(Actor Actor, CancelDisposition? Disposition) : Sessi
 /// Compare-and-set on the incumbent.
 /// </summary>
 public sealed record PullReceipt(Actor Actor) : SessionCommand(Actor);
+
+/// <summary>
+/// Per-session Lead inbox delivery of unread report mail. Idempotent. Does not
+/// close a question or permission wait — those stay outstanding until answered.
+/// </summary>
+public sealed record DeliverReport(Actor Actor) : SessionCommand(Actor);
 
 /// <summary>
 /// Runner fact: observed occupancy caught up. Always applicable (not gated on

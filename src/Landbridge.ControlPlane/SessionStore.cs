@@ -165,6 +165,59 @@ public sealed class SessionStore(
     /// process-gone path: park and requeue for redispatch. A parked row still wakes
     /// regardless — the session was already released.</para>
     /// </summary>
+    /// <summary>
+    /// Close a Lead-owed wait (<c>awaiting_lead</c>, leftover <c>awaiting_report</c>).
+    /// Refused on a live permission wait and when nothing is waiting — that is
+    /// <see cref="SendInputRequestAsync"/>.
+    /// </summary>
+    public async Task<StoreResult> SendInputResponseAsync(
+        LeadClaim lead, SessionId id, string? leaseMachine, string? answer = null,
+        bool sessionLive = false,
+        CancellationToken ct = default)
+    {
+        var row = await db.Sessions.AsNoTracking().FirstOrDefaultAsync(t => t.Id == id.Value, ct);
+        if (row is null)
+            return new StoreResult.NotFound($"no task {id}");
+        if (IsLivePermissionWait(row))
+            return new StoreResult.Rejected(Rule.PermissionVerdictAnswersPermissionRequests,
+                "this task is waiting on a permission verdict, not prose; answer it with allow or deny");
+        if (!IsLeadOwedWait(row))
+            return new StoreResult.Rejected(Rule.InvalidSourceState,
+                "this session is not waiting on a response; use send_input_request");
+        return await AnswerOrWakeAsync(lead, id, leaseMachine, answer, sessionLive, ct);
+    }
+
+    /// <summary>
+    /// Lead-initiated talk: follow-up, park wake, failed retry. Refused while a
+    /// question or permission wait is open — that is
+    /// <see cref="SendInputResponseAsync"/> / <c>answer_permission_request</c>.
+    /// </summary>
+    public async Task<StoreResult> SendInputRequestAsync(
+        LeadClaim lead, SessionId id, string? leaseMachine, string? text = null,
+        bool sessionLive = false,
+        CancellationToken ct = default)
+    {
+        var row = await db.Sessions.AsNoTracking().FirstOrDefaultAsync(t => t.Id == id.Value, ct);
+        if (row is null)
+            return new StoreResult.NotFound($"no task {id}");
+        if (IsLivePermissionWait(row))
+            return new StoreResult.Rejected(Rule.PermissionVerdictAnswersPermissionRequests,
+                "this task is waiting on a permission verdict, not prose; answer it with allow or deny");
+        if (IsLeadOwedWait(row))
+            return new StoreResult.Rejected(Rule.InvalidSourceState,
+                "this session is waiting on a response; use send_input_response");
+        return await AnswerOrWakeAsync(lead, id, leaseMachine, text, sessionLive, ct);
+    }
+
+    private static bool IsLivePermissionWait(SessionRow row) =>
+        row.MessageState == MessageState.AwaitingPermission
+        || (row.InputKind == InputRequestKind.Permission
+            && row.State == SessionState.BlockedOnInput
+            && row.PermissionVerdict is null);
+
+    private static bool IsLeadOwedWait(SessionRow row) =>
+        row.MessageState is MessageState.AwaitingLead or MessageState.AwaitingReport;
+
     public async Task<StoreResult> AnswerOrWakeAsync(
         LeadClaim lead, SessionId id, string? leaseMachine, string? answer = null,
         bool sessionLive = false,
@@ -710,6 +763,40 @@ public sealed class SessionStore(
     }
 
     /// <summary>
+    /// Worker inbox: assignment header always, plus the Lead envelope this
+    /// call delivered when <c>awaiting_pull</c> (pull-is-receipt).
+    /// </summary>
+    public async Task<WorkerInboxView?> GetWorkerInboxAsync(WorkerCaller caller, CancellationToken ct = default)
+    {
+        var receipt = await ApplyAsync(caller.Session, new PullReceipt(caller), ct);
+        Guid? deliveredId = null;
+        if (receipt is StoreResult.Applied applied)
+        {
+            deliveredId = applied.Session.LastMessageId;
+            var r = await db.Sessions.AsNoTracking().FirstAsync(t => t.Id == caller.Session.Value, ct);
+            return ToWorkerInbox(r, deliveredId, r.InputAnswer);
+        }
+
+        var row = await db.Sessions.AsNoTracking().FirstOrDefaultAsync(t => t.Id == caller.Session.Value, ct);
+        if (row is null)
+            return null;
+        if (row.TeamId != caller.Team.Value || row.CurrentInstanceId != caller.Instance.Value)
+            return null;
+
+        return ToWorkerInbox(row, deliveredId: null, deliveredText: null);
+    }
+
+    private static WorkerInboxView ToWorkerInbox(SessionRow row, Guid? deliveredId, string? deliveredText)
+    {
+        IReadOnlyList<WorkerInboxItem> items = deliveredId is { } id
+            ? [new WorkerInboxItem(id, "lead_message", deliveredText)]
+            : [];
+        return new WorkerInboxView(
+            row.Namespace, row.Description, row.Attempt,
+            row.WorkerReport, row.InputQuestion, row.InputAnswer, items);
+    }
+
+    /// <summary>
     /// Lead-authored words this worker has been given, in order: the session
     /// description (the original brief) then the latest follow-up on
     /// <see cref="SessionRow.InputAnswer"/> if one has landed. Worker reports,
@@ -810,20 +897,40 @@ public sealed class SessionStore(
 
     /// <summary>
     /// The Lead inbox snapshot: every outstanding fact in this Team, optionally
-    /// one session. Occupancy columns, not derived <see cref="SessionState"/>.
-    /// Hidden rows are omitted. A failed row still lists a leftover envelope.
-    /// <see cref="MessageState.AwaitingPull"/> is included. Structure only.
+    /// one session. Identifiers only — no delivery.
     /// </summary>
     public async Task<LeadInboxView> GetLeadInboxAsync(
-        TeamId team, Guid? sessionId = null, CancellationToken ct = default)
+        TeamId team, Guid? sessionId = null, CancellationToken ct = default) =>
+        await GetLeadInboxAsync(team, sessionId is { } id ? [id] : null, ct);
+
+    /// <summary>
+    /// The Lead inbox snapshot: every outstanding fact in this Team, optionally
+    /// selected sessions. Occupancy columns, not derived <see cref="SessionState"/>.
+    /// Hidden rows are omitted. A failed row still lists a leftover envelope.
+    /// Unread report mail is listed while <c>report_unread</c> is set.
+    /// Team-wide reads are identifiers only. A non-empty session filter carries
+    /// bodies and delivers unread reports (mark-as-read) when
+    /// <paramref name="actor"/> is the Team's Lead or a human.
+    /// </summary>
+    public async Task<LeadInboxView> GetLeadInboxAsync(
+        TeamId team,
+        IReadOnlyList<Guid>? sessionIds,
+        CancellationToken ct = default,
+        Actor? actor = null)
     {
+        var filter = sessionIds is { Count: > 0 } ids
+            ? ids.Where(id => id != Guid.Empty).Distinct().ToArray()
+            : null;
+        var deliver = filter is { Length: > 0 } && actor is LeadClaim or HumanSession;
+
         var query = db.Sessions.AsNoTracking()
             .Where(t => t.TeamId == team.Value && !t.Hidden);
-        if (sessionId is { } only)
-            query = query.Where(t => t.Id == only);
+        if (filter is { Length: > 0 })
+            query = query.Where(t => filter.Contains(t.Id));
 
         var rows = await query
             .Where(t => t.Health == SessionHealth.Failed
+                || t.ReportUnread
                 || t.MessageState == MessageState.AwaitingLead
                 || t.MessageState == MessageState.AwaitingPermission
                 || t.MessageState == MessageState.AwaitingReport
@@ -838,21 +945,83 @@ public sealed class SessionStore(
                 t.MessageId,
                 t.MessageOpenedAt,
                 t.BlockedAt,
+                t.ReportUnread,
+                t.ResultReference,
+                t.WorkerReport,
+                t.InputQuestion,
+                t.InputAnswer,
+                t.PermissionTool,
+                t.PermissionOptions,
+                t.PermissionEscalationReason,
+                t.InfrastructureRequeues,
+                t.InfrastructureRequeueLimit,
+                t.LastRequeueReason,
             })
             .ToListAsync(ct);
 
         var items = rows
             .SelectMany(t => LeadInboxKindMapping.ItemsFor(
-                    t.Id, t.Namespace, t.Health, t.MessageState, t.InputKind, t.MessageId)
-                .Select(item => new { Item = item, Opened = t.MessageOpenedAt ?? t.BlockedAt }))
+                    t.Id, t.Namespace, t.Health, t.MessageState, t.InputKind, t.MessageId, t.ReportUnread)
+                .Select(item => new
+                {
+                    Item = deliver ? BodyFor(item, t) : item,
+                    Opened = t.MessageOpenedAt ?? t.BlockedAt,
+                    t.ReportUnread,
+                }))
             .OrderBy(t => LeadInboxKindMapping.Rank(t.Item.Kind))
             .ThenBy(t => t.Opened ?? DateTimeOffset.MaxValue)
             .ThenBy(t => t.Item.SessionId)
             .ThenBy(t => LeadInboxKindMapping.Rank(t.Item.Kind))
-            .Select(t => t.Item)
             .ToList();
 
-        return new LeadInboxView(items);
+        if (deliver && actor is not null)
+        {
+            foreach (var session in items.Where(t => t.ReportUnread && t.Item.Kind == LeadInboxKind.Report)
+                         .Select(t => t.Item.SessionId)
+                         .Distinct())
+            {
+                await ApplyAsync(new SessionId(session), new DeliverReport(actor), ct);
+            }
+        }
+
+        return new LeadInboxView(items.Select(t => t.Item).ToList());
+
+        static LeadInboxItem BodyFor(LeadInboxItem item, dynamic row) => item.Kind switch
+        {
+            LeadInboxKind.Report => item with
+            {
+                ResultReference = (string?)row.ResultReference,
+                Report = (string?)row.WorkerReport,
+                InfrastructureRequeues = row.InfrastructureRequeues > 0 ? (int)row.InfrastructureRequeues : null,
+                InfrastructureRequeueLimit = row.InfrastructureRequeues > 0 ? (int)row.InfrastructureRequeueLimit : null,
+                LastRequeueReason = row.InfrastructureRequeues > 0 ? (LivenessLossReason?)row.LastRequeueReason : null,
+            },
+            LeadInboxKind.Failed => item with
+            {
+                ResultReference = (string?)row.ResultReference,
+                Report = (string?)row.WorkerReport,
+                InfrastructureRequeues = (int)row.InfrastructureRequeues,
+                InfrastructureRequeueLimit = (int)row.InfrastructureRequeueLimit,
+                LastRequeueReason = (LivenessLossReason?)row.LastRequeueReason,
+            },
+            LeadInboxKind.Permission => item with
+            {
+                Question = (string?)row.InputQuestion,
+                PermissionTool = (string?)row.PermissionTool,
+                PermissionOptions = PermissionOption.Parse((string?)row.PermissionOptions) is { Count: > 0 } opts
+                    ? opts
+                    : null,
+                EscalationReason = (string?)row.PermissionEscalationReason,
+                InputKind = nameof(InputRequestKind.Permission),
+            },
+            LeadInboxKind.Pull => item,
+            _ => item with
+            {
+                Question = (string?)row.InputQuestion,
+                Answer = (string?)row.InputAnswer,
+                InputKind = row.InputKind is InputRequestKind kind ? kind.ToString() : null,
+            },
+        };
     }
 
     /// <summary>
@@ -973,16 +1142,25 @@ public sealed class SessionStore(
     /// <summary>
     /// True when the Lead (or a live permission wait) is the bottleneck, so
     /// no-progress must not treat the worker as wedged. <c>awaiting_pull</c> is
-    /// the worker's move and is not skipped.
+    /// the worker's move and is not skipped. Unread report mail is not a wait —
+    /// the worker may keep working, so the progress clock still runs.
     /// </summary>
     public async Task<bool> IsAwaitingLeadAsync(SessionId id, CancellationToken ct = default) =>
         await db.Sessions.AsNoTracking()
             .AnyAsync(t => t.Id == id.Value
-                && ((t.MessageState == MessageState.AwaitingLead
-                        || t.MessageState == MessageState.AwaitingReport
-                        || t.MessageState == MessageState.AwaitingPermission)
+                && (t.MessageState == MessageState.AwaitingLead
+                    || t.MessageState == MessageState.AwaitingReport
+                    || t.MessageState == MessageState.AwaitingPermission
                     || (t.InputKind == InputRequestKind.Permission
                         && t.PermissionVerdict == PermissionVerdict.Deny)), ct);
+
+    /// <summary>
+    /// True when this session has unread report mail. Turn-ended is moot then
+    /// (the worker already handed over); the no-progress clock still runs.
+    /// </summary>
+    public async Task<bool> HasUnreadReportAsync(SessionId id, CancellationToken ct = default) =>
+        await db.Sessions.AsNoTracking()
+            .AnyAsync(t => t.Id == id.Value && t.ReportUnread, ct);
 
     public sealed record OccupancyLookaside(
         string? HarnessSessionRef, string? PreferredMachine, string? ParkMachine);
