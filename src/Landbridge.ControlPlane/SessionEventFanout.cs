@@ -69,8 +69,11 @@ public sealed class SessionEventFanout : IHostedService, IAsyncDisposable
     /// (single-slot, drop-write). <paramref name="sessionId"/> limits wakes
     /// to that session so a filtered feed is not stolen by another row.
     /// </summary>
+    public Subscription Subscribe(Guid sessionId) =>
+        Subscribe((IReadOnlySet<Guid>)new HashSet<Guid> { sessionId });
+
     public Subscription Subscribe(Guid? sessionId = null) =>
-        Subscribe(sessionId is { } id ? new HashSet<Guid> { id } : null);
+        sessionId is { } id ? Subscribe(id) : Subscribe((IReadOnlySet<Guid>?)null);
 
     public Subscription Subscribe(IReadOnlySet<Guid>? sessionIds)
     {

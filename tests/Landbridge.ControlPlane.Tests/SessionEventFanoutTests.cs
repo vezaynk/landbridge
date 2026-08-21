@@ -71,6 +71,9 @@ public sealed class SessionEventFanoutTests(PostgresFixture pg) : IAsyncLifetime
 
         var woke = new TaskCompletionSource();
         using var sub = fanout.Subscribe(watched.Value);
+        // Creating `watched` NOTIFY can land after Subscribe; drain it so the
+        // other-session create below is what would wake us if the filter leaked.
+        while (sub.Reader.TryRead(out _)) { }
         var reading = Task.Run(async () =>
         {
             await foreach (var _ in sub.Reader.ReadAllAsync(cts.Token))
