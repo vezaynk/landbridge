@@ -756,6 +756,11 @@ public static class SessionStateMachine
         // Never a health transition. If a successor is already minted, leave it alone.
         if (c.CommandedExit)
         {
+            // Predecessor's kill echo after a same-id retry already minted
+            // (or seated) a successor. Do not clear that instance.
+            if (hadInstance && task.Health == SessionHealth.Ok
+                && task.OccupancyDesired == Occupancy.Running)
+                return Done(task, effects.ToArray());
             if (task.PendingSpawn is PendingSpawn.New or PendingSpawn.Load && hadInstance)
                 return Done(task, effects.ToArray());
             if (hadInstance && task.CurrentInstance is { } dead)

@@ -247,7 +247,7 @@ public sealed class RunnerEventSink(
             }
         });
 
-        if (keepSuccessor)
+        if (keepSuccessor || registry.HasLiveProcess(e.Session))
             return;
         if (failed || commanded)
             registry.Untrack(e.Session);

@@ -325,7 +325,9 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
         {
             await using var db = pg.NewContext();
             var store = new SessionStore(db, TimeProvider.System);
-            var result = await store.ApplyAsync(task, new WakeParked("chaos: resume after fail"), ct);
+            // Empty note: the wedge never pulls MCP, and a non-empty answer would
+            // leave awaiting_pull on a process that cannot receipt it.
+            var result = await store.ApplyAsync(task, new WakeParked(), ct);
             if (result is StoreResult.Applied)
             {
                 Note($"resumed failed task {task}");
