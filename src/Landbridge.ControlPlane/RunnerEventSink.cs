@@ -247,7 +247,11 @@ public sealed class RunnerEventSink(
             }
         });
 
-        if (keepSuccessor || registry.HasLiveProcess(e.Session))
+        if (keepSuccessor)
+            return;
+        // A commanded kill's exited event names only the session. If the Lead
+        // already retried, TrackDispatch has a live successor — do not untrack it.
+        if (commanded && registry.HasLiveProcess(e.Session))
             return;
         if (failed || commanded)
             registry.Untrack(e.Session);
