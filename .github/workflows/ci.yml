@@ -270,7 +270,7 @@ jobs:
       # One line, so a bump rewrites every cell that needs claude.
       - name: Install claude CLI
         if: matrix.harness != 'grok' && matrix.harness != 'goose'
-        run: npm install -g @anthropic-ai/claude-code@2.1.238
+        run: npm install -g @anthropic-ai/claude-code@2.1.241
 
       # The ACP adapters. Claude and Codex have no native ACP server, so the shared
       # real-harness bar — which now builds its rigs on `protocol: acp` — spawns these
@@ -297,7 +297,7 @@ jobs:
 
       - name: Install opencode CLI
         if: matrix.harness == 'opencode'
-        run: npm install -g opencode-ai@1.18.19
+        run: npm install -g opencode-ai@1.18.21
 
       - name: Install grok CLI
         if: matrix.harness == 'grok'
