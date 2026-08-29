@@ -311,16 +311,10 @@ internal sealed class FleetRig(
     }
 
     /// <summary>Create a task for this fleet's Team via the real Lead MCP surface.</summary>
-    /// <param name="continues">
-    /// §11 continuation: the prior task whose agent session this new task resumes — "talk to
-    /// the agent that has the context". Seeds the new row's session ref and preferred machine
-    /// from that task, so its first dispatch prefers the machine holding the transcript.
-    /// </param>
-    public async Task<SessionId> CreateSessionAsync(string description, CancellationToken ct, SessionId? continues = null)
+    public async Task<SessionId> CreateSessionAsync(string description, CancellationToken ct)
     {
         await using var lead = await PlaneProbe.ConnectMcpAsync(new Uri(_baseUrl + "/"), _leadToken, ct);
-        return await PlaneProbe.CreateSessionAsync(
-            lead, description, ct, continues: continues);
+        return await PlaneProbe.CreateSessionAsync(lead, description, ct);
     }
 
     /// <summary>
@@ -386,6 +380,21 @@ internal sealed class FleetRig(
             ["answer"] = answer,
         }, cancellationToken: ct);
         Assert.NotEqual(true, answered.IsError);
+    }
+
+    /// <summary>
+    /// Talk to a worker that is not waiting: live follow-up, park wake, stopped unhide,
+    /// or failed retry.
+    /// </summary>
+    public async Task SendInputRequestAsync(SessionId task, string text, CancellationToken ct)
+    {
+        await using var lead = await PlaneProbe.ConnectMcpAsync(new Uri(_baseUrl + "/"), _leadToken, ct);
+        var sent = await lead.CallToolAsync("send_input_request", new Dictionary<string, object?>
+        {
+            ["sessionId"] = task.Value.ToString(),
+            ["text"] = text,
+        }, cancellationToken: ct);
+        Assert.NotEqual(true, sent.IsError);
     }
 
     /// <summary>

@@ -205,114 +205,61 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     }
 
     /// <summary>
-    /// §11 <b>continuation</b> — "talk to the agent that has the context" — end to end against
-    /// the real CLI: a completed task's transcript is carried into a <em>new</em> task, and the
-    /// continuation worker reports a value that only that conversation holds.
-    ///
-    /// <para>This is the second half of what #102 blocked, and it needed one thing park-resume
-    /// did not: the harness has to run in the continued task's directory
-    /// (<c>DispatchCommand.WorkDirSession</c>, seeded from the row and resolved transitively so
-    /// chains land on the root). A continuation runs there whether or not it resumes — the
-    /// workspace is the work (§7) — and resuming additionally <em>requires</em> it, which is
-    /// what this fact turns on: a harness session is <b>directory</b>-local as well as
-    /// machine-local, so a resume aimed at the continuation's own new, never-used directory
-    /// fails outright. A task, never a path: work_root is machine-local runner config, so the
-    /// plane names a task and the runner maps it. The cold-start half of the same rule is
-    /// scripted and token-free, in <c>MultiMachineCollaborationTests</c>.</para>
-    ///
-    /// <para>The nonce is the proof, and it is airtight for the same reason as above: it appears
-    /// only in the FIRST task's spawn prompt. The continuation's row is new — its description
-    /// never carries it, so <c>get_session</c> cannot supply it — and the resume argv is static
-    /// profile config. A cold-started continuation mails a report too; only a resumed one
-    /// reaches it with this value.</para>
+    /// After <c>stop_session</c>, <c>send_input_request</c> unhides the same session and
+    /// <c>session/load</c>s. The worker reports a value that only the first conversation holds.
+    /// Successor-as-a-new-row is <c>fork_session</c> (#225), not this.
     /// </summary>
     [SkippableFact(Timeout = RealHarnessBar.TwoLegTimeoutMs)]
-    public async Task Real_claude_continues_a_finished_tasks_conversation_from_that_tasks_directory()
+    public async Task Real_claude_send_input_request_resumes_a_stopped_sessions_conversation()
     {
         var claudeBin = RequireRealClaude();
         using var cts = new CancellationTokenSource(RealHarnessBar.TwoLegTimeout);
         var ct = cts.Token;
 
-        // The value the first worker is told, and — separately — the part of it that is the
-        // proof. The hex is random per run and appears ONLY in the first task's spawn prompt,
-        // so a continuation reporting it can only have resumed the inherited conversation;
-        // that is the whole assertion. The "nonce-" prefix is decoration, and a model can
-        // defensibly read it as a label on the value rather than part of it — claude 2.1.226
-        // did exactly that, reporting the hex alone. Asserting the prefixed string would make
-        // this fact hostage to the next model's reading of a word we chose, and tightening the
-        // prompt would only move that hostage, so the assertion is on the hex.
         var remembered = NewToken();
         var nonce = "nonce-" + remembered;
         await using var rig = new FleetRig(
             pg,
-            // The first task's worker is told the nonce and reports something else; the
-            // continuation's is asked for the nonce back. Same turn headroom as the park fact,
-            // for the same reason.
-            // One entry point, both legs: the continuation resumes with session/load on the
-            // connection its spawn opens, so there is no second argv to declare.
             spawnArgv: ["claude-agent-acp"],
             prompt: RememberThenWorkPrompt(nonce),
-            followUp: ContinuationReportPrompt);
+            followUp: StoppedSessionReportPrompt);
         await rig.StartAsync(ct);
         await rig.AddMachineAsync("A");
 
-        // Task one: an ordinary task that finishes. Its worker holds the nonce in conversation.
-        var first = await rig.CreateSessionAsync(EchoDescription("A", "first-done"), ct);
+        var session = await rig.CreateSessionAsync(EchoDescription("A", "first-done"), ct);
         Assert.True(
-            await rig.DispatchUntilReportedAsync(first, "A", MaxAttempts, PerLegBudget, ct),
+            await rig.DispatchUntilReportedAsync(session, "A", MaxAttempts, PerLegBudget, ct),
             "the first real claude worker never mailed a report.\n"
-            + await rig.RealWorkerDiagnosticsAsync(first, ct));
-        var firstSession = await rig.HarnessSessionRefAsync(first, ct);
+            + await rig.RealWorkerDiagnosticsAsync(session, ct));
+        var firstSession = await rig.HarnessSessionRefAsync(session, ct);
         Assert.False(
             string.IsNullOrWhiteSpace(firstSession),
-            "no harness session ref was stamped on the first task, so there is nothing to continue.\n"
-            + await rig.RealWorkerDiagnosticsAsync(first, ct));
+            "no harness session ref was stamped, so there is nothing to load.\n"
+            + await rig.RealWorkerDiagnosticsAsync(session, ct));
 
-        // Accept it, so the continuation really is of a FINISHED task — the ordinary shape of
-        // "talk to the agent that has the context", and the one where the predecessor's process
-        // is long gone rather than merely superseded.
-        await rig.AcceptAsync(first, ct);
-        Assert.Equal(SessionState.Completed, await rig.StateAsync(first, ct));
-
-        // Task two continues it: a new task id, seeded with the inherited session ref and the
-        // machine that ran it, and asking for the remembered value.
-        var second = await rig.CreateSessionAsync(ContinuationDescription, ct, continues: first);
-        Assert.Equal(firstSession, await rig.HarnessSessionRefAsync(second, ct));
-
+        var exitsBefore = rig.WorkerObserved(session)?.Exits ?? 0;
+        await rig.AcceptAsync(session, ct);
+        Assert.Equal(SessionState.Completed, await rig.StateAsync(session, ct));
         Assert.True(
-            await rig.DispatchUntilReportedAsync(second, "A", MaxAttempts, PerLegBudget, ct),
-            "the continuation worker never mailed a report.\n"
-            + await rig.RealWorkerDiagnosticsAsync(second, ct));
+            await FleetRig.WaitUntilAsync(
+                () => Task.FromResult((rig.WorkerObserved(session)?.Exits ?? 0) > exitsBefore),
+                TimeSpan.FromSeconds(60)),
+            $"stop_session did not bring down the worker for {session} within 60s.");
 
-        // The value only the inherited conversation held — the hex, not the prefixed string
-        // (see where `remembered` is minted).
-        Assert.Contains(remembered, await rig.ResultReferenceAsync(second, ct));
+        await rig.SendInputRequestAsync(session, StoppedSessionDescription, ct);
+        Assert.True(
+            await rig.DispatchUntilAsync(
+                session, "A",
+                async () => (await rig.ResultReferenceAsync(session, ct))?.Contains(remembered) == true,
+                MaxAttempts, PerLegBudget, ct),
+            "the resumed worker never mailed the remembered nonce.\n"
+            + await rig.RealWorkerDiagnosticsAsync(session, ct));
 
-        // Harness-side proof, independent of anything the agent said: the continuation's
-        // captured instances report the SAME session id the plane inherited. A cold start
-        // mints a new one, so only a real resume produces this — and the resume could only
-        // have happened from the first task's directory. Transcripts stay keyed by the
-        // dispatched task even though the work dir is shared.
-        //
-        // The first task is allowed a bounded retry. Turn-ended-without-result fails the
-        // attempt and the same-id retry is session/new, so an abandoned first-leg file may
-        // carry a different id. The inherited ref is the last stamp; it must appear on
-        // the first task, and every continuation instance must use it.
         var profile = RealHarnessProfiles.Claude(claudeBin);
-        var firstInstances = rig.InstanceSessionIdsOn("A", first, profile);
-        var continuationInstances = rig.InstanceSessionIdsOn("A", second, profile);
-        var idDump =
-            $"plane={firstSession}; first=[{string.Join(",", firstInstances)}]; " +
-            $"continuation=[{string.Join(",", continuationInstances)}]";
-        Assert.NotEmpty(firstInstances);
-        Assert.NotEmpty(continuationInstances);
-        Assert.True(
-            firstInstances.Contains(firstSession),
-            "the first task never captured the session id the plane stamped.\n" + idDump);
-        Assert.True(
-            continuationInstances.All(id => id == firstSession),
-            "a continuation instance cold-started instead of loading the inherited session.\n" + idDump);
-        Assert.Equal("A", rig.MachineRanOn(second));
+        var instances = rig.InstanceSessionIdsOn("A", session, profile);
+        Assert.NotEmpty(instances);
+        Assert.Contains(firstSession, instances);
+        Assert.Equal("A", rig.MachineRanOn(session));
     }
 
 
@@ -502,15 +449,12 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     /// task content, and deliberately not the nonce. Worded for a worker whose assignment
     /// is new but whose conversation is not.
     /// </summary>
-    private const string ContinuationReportPrompt =
-        "This conversation continues under a new task. FIRST call the mcp__landbridge__get_inbox tool " +
-        "to read that new assignment, then do exactly what its description says. The value it asks " +
+    private const string StoppedSessionReportPrompt =
+        "This conversation is the same session, resumed. FIRST call the mcp__landbridge__get_inbox tool " +
+        "to read the assignment, then do exactly what its description says. The value it asks " +
         "for is one you were told earlier in this conversation." + McpToolsRule;
 
-    /// <summary>The continuation task's own description: it names no value, because the whole
-    /// point is that the value comes from the inherited conversation and from nowhere the new
-    /// task row could supply it.</summary>
-    private const string ContinuationDescription =
+    private const string StoppedSessionDescription =
         """
         Call report_result exactly once, with resultReference set to the exact value you were
         asked to remember earlier in this conversation, and nothing else.

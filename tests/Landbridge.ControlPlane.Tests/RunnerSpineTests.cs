@@ -112,38 +112,6 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Null(command.ResumeSessionRef);
     }
 
-    [SkippableFact]
-    public async Task Dispatch_of_a_continuation_rides_the_inherited_session_ref_as_resume()
-    {
-        Skip.IfNot(pg.Available, pg.SkipReason);
-        var clock = TimeProvider.System;
-        var scopes = ScopeFactory(clock);
-        var team = TeamId.New();
-        SessionId sessionId;
-        await using (var db = pg.NewContext())
-        {
-            var created = (StoreResult.Applied)await new SessionStore(db, clock).CreateAsync(
-                new CreateSession(new LeadClaim(team), team, "completion criteria", "default",
-                    Continues: new Continuation(
-                        SessionId.New(), team, "m1", "sess-inherited",
-                        MachineGonePolicy.Degrade, PreferredMachineProfiles: null)));
-            sessionId = created.Session.Id;
-            Assert.Equal(PendingSpawn.Load, created.Session.PendingSpawn);
-        }
-
-        var registry = new RunnerConnectionRegistry(clock);
-        var captured = new List<RunnerCommand>();
-        registry.Register("m1", Set("default"), (cmd, _) => { captured.Add(cmd); return Task.CompletedTask; });
-        registry.ApplyHeartbeat("m1", Heartbeat("m1", "default"));
-
-        var dispatch = new DispatchService(scopes, registry, clock, NullLogger<DispatchService>.Instance);
-        await dispatch.RunDispatchPassAsync(CancellationToken.None);
-
-        var command = Assert.IsType<DispatchCommand>(Assert.Single(captured));
-        Assert.Equal(sessionId, command.Session);
-        Assert.Equal("sess-inherited", command.ResumeSessionRef);
-    }
-
     // ── Lease liveness ──────────────────────────────────────────────────────────
 
     [Fact]

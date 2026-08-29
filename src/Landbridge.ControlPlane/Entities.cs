@@ -229,10 +229,8 @@ public sealed class SessionRow
     public string? HarnessSessionRef { get; set; }
 
     /// <summary>
-    /// Continuation lineage (§6/§11): the prior task whose harness session this task
-    /// resumes, or null for an ordinary profile-targeted task. Seeded at creation
-    /// from <c>create_session(continues:)</c> and rendered as the Y-continues-X link in
-    /// <c>get_team_state</c> and the dashboard task view. Opaque — the plane stores
+    /// Lineage for a future <c>fork_session</c> (#225). Unused after
+    /// <c>create_session(continues:)</c> was dropped. Opaque — the plane stores
     /// the id and never dereferences the state machine through it.
     /// </summary>
     public Guid? ContinuesSessionId { get; set; }
@@ -261,25 +259,16 @@ public sealed class SessionRow
     public Guid? WorkDirSessionId { get; set; }
 
     /// <summary>
-    /// Continuation dispatch affinity (§6/§11): the machine that last held/ran the
-    /// continued task. Distinct from <see cref="ParkMachine"/> — a submitted
-    /// continuation is not parked — so it does not perturb park semantics or the
-    /// dashboard "parked on" signal. <see cref="SessionStore.DispatchNextAsync"/> makes
-    /// this the preferred machine (park-record-style affinity): the task is claimable
-    /// on this machine (and resumes there), and on another machine only under
-    /// <see cref="OnMachineGone"/> = <see cref="MachineGonePolicy.Degrade"/> once this
-    /// machine is gone. Cleared when a degrade cold-start abandons the session. Null
-    /// for a non-continuation task.
+    /// Machine-local <c>session/load</c> affinity. Park, fail, and stop pin the last
+    /// box so a later load is claimable only there. If that machine is gone the row
+    /// waits. Null for an ordinary first dispatch.
     /// </summary>
     public string? PreferredMachine { get; set; }
 
     /// <summary>
-    /// What to do when <see cref="PreferredMachine"/> is gone at dispatch (§6/§11):
-    /// <see cref="MachineGonePolicy.Degrade"/> cold-starts elsewhere (memory lost,
-    /// logged), <see cref="MachineGonePolicy.Pin"/> waits in submitted. Null (and
-    /// unused) until a park or fail pins the same-task <c>session/load</c> to the
-    /// box that holds the transcript. Stored as its enum name like the other
-    /// enum columns.
+    /// Written as <see cref="MachineGonePolicy.Pin"/> when
+    /// <see cref="PreferredMachine"/> is set. Degrade (cold-start elsewhere) is gone.
+    /// Stored as its enum name like the other enum columns.
     /// </summary>
     public MachineGonePolicy? OnMachineGone { get; set; }
 

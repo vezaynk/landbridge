@@ -268,6 +268,21 @@ public class LifecycleTests
     }
 
     [Fact]
+    public void Waking_a_stopped_session_that_never_ran_is_a_cold_start()
+    {
+        var stopped = Expect.Transitioned(
+            SessionStateMachine.Apply(Given.Session(SessionState.Submitted), new StopSession(Given.Lead)),
+            SessionState.Completed);
+
+        var next = Expect.Transitioned(
+            SessionStateMachine.Apply(stopped, new WakeParked("try it", ResumeTranscript: false)),
+            SessionState.Submitted);
+        Assert.False(next.Hidden);
+        Assert.Equal(PendingSpawn.New, next.PendingSpawn);
+        Assert.Equal(Occupancy.Running, next.OccupancyDesired);
+    }
+
+    [Fact]
     public void Park_from_working_releases_the_session_and_revokes_the_instance()
     {
         var task = Given.Session(SessionState.Working);

@@ -222,8 +222,7 @@ liveness** (aliveness vs no-progress, so a ten-minute build is no longer mistake
 for a hang), capped requeues, and **a requeue that takes the process down with it** —
 the plane kills the dispatch it gave up on where the machine is still connected, so a
 wedged harness stops spending instead of running until its `landbridged` restarts; §11
-park → resume; **continuation tasks** (`continues:`) that resume a
-prior task's transcript under a fresh token; **agent-started background processes**
+park → resume; **agent-started background processes**
 (`start_process` / `write_process` / `stop_process` / `list_processes` — supervised by
 `landbridged` as its own children, so they outlive the task that started them, machine-scoped
 for any later task to find and stop, never restarted, with an optional stdin pipe);

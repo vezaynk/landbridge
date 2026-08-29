@@ -160,7 +160,6 @@ public class WrongSourceStateAndAuthorityTests
                      new StopPreserveAndPark(Given.Lead, Given.Park),
                      new Park(Given.Lead, Given.Park),
                      new Cancel(Given.Lead, CancelDisposition.Preserve),
-                     new WakeParked(),
                  })
         {
             Expect.Rejected(SessionStateMachine.Apply(task, command), Rule.TerminalStatesAreFinal);

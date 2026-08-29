@@ -5,10 +5,9 @@ using Microsoft.Extensions.Time.Testing;
 namespace Landbridge.Runner.Tests;
 
 /// <summary>
-/// Which directory a task's harness runs in (§7, §11). Ordinarily its own; for a
-/// <c>continues:</c> continuation, its predecessor's — named by the plane as
-/// <see cref="DispatchCommand.WorkDirSession"/>, because a continuation runs under a NEW task id
-/// and the runner's own directory for it would be empty.
+/// Which directory a task's harness runs in (§7, §11). Ordinarily its own; when the
+/// plane names a predecessor via <see cref="DispatchCommand.WorkDirSession"/>
+/// (future <c>fork_session</c>, #225), that predecessor's.
 ///
 /// <para>Inheritance is a property of <b>continuation</b>, not of resume, and one of these
 /// facts exists to pin exactly that: a cold start with no session ref still runs there,

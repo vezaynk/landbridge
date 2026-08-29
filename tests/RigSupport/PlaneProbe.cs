@@ -129,23 +129,16 @@ internal static class PlaneProbe
     /// §10 exact-match profile routing, or null for <c>default</c>. A rig that declares a
     /// second profile (a wedged-worker archetype, say) selects it here.
     /// </param>
-    /// <param name="continues">
-    /// §11 continuation: the prior task whose agent session this one continues. Seeds the new
-    /// row's session ref and preferred machine, so its first dispatch prefers the machine
-    /// holding the transcript.
-    /// </param>
     public static async Task<SessionId> CreateSessionAsync(
         McpClient lead,
         string description,
         CancellationToken ct,
-        string profile = "default",
-        SessionId? continues = null)
+        string profile = "default")
     {
         var created = await lead.CallToolAsync("create_session", new Dictionary<string, object?>
         {
             ["description"] = description,
             ["profile"] = profile,
-            ["continues"] = continues?.Value.ToString(),
         }, cancellationToken: ct);
 
         var text = TextOf(created);

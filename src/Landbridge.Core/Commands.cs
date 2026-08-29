@@ -15,49 +15,15 @@ public abstract record SessionCommand(Actor Actor);
 /// <see cref="Description"/> (prose instructions, §7) rides along as content
 /// the engine never interprets. The store persists it verbatim; the state
 /// machine stays free of session content (§2 principle 1). The description is
-/// the whole brief.
-///
-/// <para><see cref="Continues"/> switches the task to <b>continuation targeting</b>
-/// (§6/§11): rather than being dispatched to any profile-matching machine, the new
-/// task resumes a prior task's harness session on the machine that holds it. The
-/// resolved facts ride the command; the engine only validates them (same-Team,
-/// profile declarable) and never dereferences a task id or session ref (§2
-/// principle 1). Null for ordinary profile targeting.</para>
+/// the whole brief. More work on an existing worker is
+/// <c>send_input_request</c> on that session id, not a second create.
+/// Successor-as-a-new-row is <c>fork_session</c> (not yet).
 /// </summary>
 public sealed record CreateSession(
     Actor Actor,
     TeamId Team,
     string Description,
-    string Profile,
-    Continuation? Continues = null) : SessionCommand(Actor);
-
-/// <summary>
-/// Continuation targeting facts (§6/§11), resolved by the control plane from the
-/// continued task's row and the live connection registry <em>before</em> the
-/// <see cref="CreateSession"/> command reaches the engine. Everything here is opaque
-/// to the engine — it dereferences none of it — but two fields gate creation:
-/// <see cref="ContinuedTeam"/> must equal the creating Team (continuation is
-/// same-Team only), and, when <see cref="PreferredMachineProfiles"/> is known
-/// (the preferred machine is currently connected), the effective profile must be
-/// one the preferred machine declares, or the continuation could never dispatch to
-/// the machine that holds its transcript.
-///
-/// <para><see cref="PreferredMachine"/> is the machine that last held/ran the
-/// continued task; the plane seeds it and <see cref="InheritedSessionRef"/> onto the
-/// new task as park-record-style affinity, so the first dispatch prefers that
-/// machine and hands the runner the session ref to <c>--resume</c> (§11 resume
-/// seam). <see cref="OnMachineGone"/> decides what happens if that machine is gone
-/// at dispatch. <see cref="PreferredMachineProfiles"/> is null when the machine's
-/// declared profiles are not known at creation (it is gone), which skips the
-/// profile-declarable check — dispatch's own profile routing still applies.</para>
-/// </summary>
-public sealed record Continuation(
-    SessionId ContinuedSession,
-    TeamId ContinuedTeam,
-    string? PreferredMachine,
-    string? InheritedSessionRef,
-    MachineGonePolicy OnMachineGone,
-    IReadOnlySet<string>? PreferredMachineProfiles);
+    string Profile) : SessionCommand(Actor);
 
 /// <summary>
 /// submitted → working. The dispatch transaction is the claim (§6); the
@@ -325,7 +291,13 @@ public sealed record LeadMessage(
 /// <see cref="InputRequestKind.EndpointWait"/> consumer woken because the service
 /// registered. Same cap and opacity as <see cref="AnswerInput.Answer"/>.</para>
 /// </summary>
-public sealed record WakeParked(string? Answer = null) : SessionCommand(ControlPlaneActor.Instance);
+/// <param name="ResumeTranscript">
+/// Healthy wake: <c>session/load</c> when the row has a transcript (park, or a
+/// stopped session that had been dispatched). False is <c>session/new</c> — a
+/// stopped session that never ran. Failed retry ignores this and is always new.
+/// </param>
+public sealed record WakeParked(string? Answer = null, bool ResumeTranscript = true)
+    : SessionCommand(ControlPlaneActor.Instance);
 
 /// <summary>working → parked: stop with disposition preserve_and_park (§6, §11).</summary>
 public sealed record StopPreserveAndPark(Actor Actor, ParkRecord Park) : SessionCommand(Actor);
