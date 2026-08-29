@@ -60,6 +60,17 @@ internal static class DevBoxConfig
         File.WriteAllText(Path.Combine(dir, "config.toml"), $"model = \"{model}\"\n");
     }
 
+    /// <summary>
+    /// Same default as the paid Grok e2e. Spawn carries <c>--model</c> because
+    /// ACP <c>config_options</c> is skipped unless the agent advertised that slug;
+    /// #220 showed grok 1.0.3 otherwise defaulting to
+    /// <c>grok-4.20-0309-non-reasoning</c>.
+    /// </summary>
+    public static string GrokModel(IConfiguration? config = null) =>
+        (config is null
+            ? FirstNonEmptyEnv("LANDBRIDGE_GROK_MODEL")
+            : FirstNonEmpty(config, "LANDBRIDGE_GROK_MODEL")) ?? "grok-4.6";
+
     public static string? FirstNonEmpty(IConfiguration config, params string[] names)
     {
         foreach (var name in names)
@@ -73,6 +84,18 @@ internal static class DevBoxConfig
         {
             if (config[name] is { Length: > 0 } value && !string.IsNullOrWhiteSpace(value))
                 return value;
+        }
+
+        return null;
+    }
+
+    private static string? FirstNonEmptyEnv(params string[] names)
+    {
+        foreach (var name in names)
+        {
+            if (Environment.GetEnvironmentVariable(name) is { Length: > 0 } env
+                && !string.IsNullOrWhiteSpace(env))
+                return env;
         }
 
         return null;
@@ -104,7 +127,8 @@ internal static class DevBoxConfig
         string FollowUp,
         string? AuthMethod,
         JsonObject? Env,
-        JsonObject? Telemetry);
+        JsonObject? Telemetry,
+        JsonObject? ConfigOptions = null);
 
     private static Recipe ForHarness(string harness) => harness switch
     {
@@ -132,12 +156,13 @@ internal static class DevBoxConfig
             Env: new JsonObject { ["CODEX_HOME"] = ContainerCodexHome },
             Telemetry: null),
         "grok" => new(
-            ["grok", "agent", "stdio"],
+            ["grok", "--model", GrokModel(), "agent", "stdio"],
             Prompt("landbridge__get_inbox", "landbridge__report_result", "landbridge__request_input"),
             FollowUp("landbridge__get_inbox"),
             AuthMethod: null,
             Env: new JsonObject { ["GROK_FOLDER_TRUST"] = "0" },
-            Telemetry: null),
+            Telemetry: null,
+            ConfigOptions: new JsonObject { ["model"] = GrokModel() }),
         _ => throw new ArgumentOutOfRangeException(nameof(harness), harness, "unknown Aspire-seeded harness"),
     };
 
@@ -163,6 +188,8 @@ internal static class DevBoxConfig
             profile["env"] = recipe.Env.DeepClone();
         if (recipe.Telemetry is not null)
             profile["telemetry"] = recipe.Telemetry.DeepClone();
+        if (recipe.ConfigOptions is not null)
+            profile["config_options"] = recipe.ConfigOptions.DeepClone();
         return profile;
     }
 
