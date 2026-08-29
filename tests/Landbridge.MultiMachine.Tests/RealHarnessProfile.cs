@@ -66,11 +66,18 @@ internal sealed class RealHarnessProfile
         "write files, do not explain, do not ask questions. Two tool calls total: " +
         GetTask + ", then " + ReportResult + "." + McpToolsRule;
 
+    /// <summary>
+    /// Park first-leg opening turn. Same closed two-tool shape as <see cref="EchoPrompt"/>:
+    /// get_inbox, then request_input, do not explain. "Do exactly what its description
+    /// tells you" made grok 1.0.3 recite the inbox and <c>end_turn</c> (#222).
+    /// </summary>
     public string RememberThenAsk(string nonce) =>
         "You are a Landbridge worker agent. Remember this test nonce for the rest of this conversation: " +
-        nonce + ". Do not write it to any file, and do not put it in any tool call yet. Now call " +
-        "the " + GetTask + " tool and do exactly what its description tells you. On this first " +
-        "turn that means " + RequestInput + ", then stop — do not call " + ReportResult + " yet." +
+        nonce + ". Do not write it to any file, and do not put it in any tool call yet. Your FIRST " +
+        "action must be to call the " + GetTask + " tool to read your assignment. Your ONLY other " +
+        "action is to call the " + RequestInput + " tool exactly once as the assignment describes, " +
+        "then stop. Do not call " + ReportResult + ". Do not write files, do not explain, do not " +
+        "quote the assignment. Two tool calls total: " + GetTask + ", then " + RequestInput + "." +
         McpToolsRule;
 
     /// <summary>
@@ -78,14 +85,19 @@ internal sealed class RealHarnessProfile
     /// a first-leg retry that never asked (no answer on get_session — ask, then stop)
     /// and a park/resume (answer is there — report the nonce). Sending only
     /// "report now" made OpenCode's silent first turn skip the ask on retry.
+    /// Same closed two-tool shape as <see cref="EchoPrompt"/> / <see cref="RememberThenAsk"/>:
+    /// grok 1.0.3 recited the inbox and <c>end_turn</c>ed (#222).
     /// </summary>
     public string ResumeAndReport =>
-        "Your session resumed. FIRST call " + GetTask + ". " +
-        "If the assignment has no answer yet, call " + RequestInput + " exactly once as " +
-        "the assignment describes, then stop — do not call " + ReportResult + ". " +
-        "If the assignment already has an answer, call " + ReportResult + " exactly once, " +
-        "with resultReference set to the exact nonce you were asked to remember, and nothing else." +
-        McpToolsRule;
+        "Your session resumed. Your FIRST action must be to call the " + GetTask +
+        " tool to read your assignment. Do not explain. " +
+        "If the assignment has no answer yet, your ONLY other action is to call the " +
+        RequestInput + " tool exactly once as the assignment describes, then stop. Do not call " +
+        ReportResult + ". Two tool calls total: " + GetTask + ", then " + RequestInput + ". " +
+        "If the assignment already has an answer, your ONLY other action is to call the " +
+        ReportResult + " tool exactly once, with resultReference set to the exact nonce you were " +
+        "asked to remember, and nothing else. Two tool calls total: " + GetTask + ", then " +
+        ReportResult + "." + McpToolsRule;
 
     public string AskThenStopDescription =>
         "Call " + RequestInput + " exactly once, with kind 'question' and question set to this exact " +
