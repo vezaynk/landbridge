@@ -146,7 +146,7 @@ public class EnforcementRuleTests
     {
         var data = new TheoryData<SessionState, string>();
         foreach (var state in new[] { SessionState.Completed, SessionState.Rejected, SessionState.Canceled })
-        foreach (var command in CommandNames)
+        foreach (var command in CommandNames.Where(c => c != "wake"))
             data.Add(state, command);
         return data;
     }
@@ -181,5 +181,20 @@ public class EnforcementRuleTests
         var task = Given.Session(terminal, instance: null) with { CurrentInstance = null };
         var result = SessionStateMachine.Apply(task, CommandByName(commandName, task));
         Expect.Rejected(result, Rule.TerminalStatesAreFinal);
+    }
+
+    [Theory]
+    [InlineData(SessionState.Completed)]
+    [InlineData(SessionState.Rejected)]
+    [InlineData(SessionState.Canceled)]
+    public void Send_input_request_unhides_a_stopped_session(SessionState hidden)
+    {
+        var task = Given.Session(hidden, instance: null) with { CurrentInstance = null };
+        var next = Expect.Transitioned(
+            SessionStateMachine.Apply(task, new WakeParked("more")), SessionState.Working);
+        Assert.False(next.Hidden);
+        Assert.Equal(Occupancy.Running, next.OccupancyDesired);
+        Assert.Equal(PendingSpawn.Load, next.PendingSpawn);
+        Assert.Equal(MessageState.AwaitingPull, next.MessageState);
     }
 }

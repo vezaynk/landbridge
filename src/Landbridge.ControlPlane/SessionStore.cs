@@ -49,22 +49,6 @@ public sealed class SessionStore(
             InfrastructureRequeueLimit =
                 policy?.InfrastructureRequeueLimit ?? SessionRecord.DefaultInfrastructureRequeueLimit,
         };
-        // §11 continuation, directory half: resolve which task's work dir holds the session
-        // this one will resume, transitively — the source's own answer if it had one (a
-        // chain: the session has lived in the root task's dir all along and B never had a
-        // dir), else the source itself. Read here rather than carried on the engine's
-        // Continuation command for the same reason TraceContext is: it is storage
-        // bookkeeping the engine never sees (§7 content-free). One extra read, on the
-        // create path only, and only for a continuation.
-        Guid? workDirTask = null;
-        if (command.Continues is { } continues)
-        {
-            var source = continues.ContinuedSession.Value;
-            workDirTask = await db.Sessions.AsNoTracking()
-                .Where(t => t.Id == source)
-                .Select(t => t.WorkDirSessionId)
-                .FirstOrDefaultAsync(ct) ?? source;
-        }
 
         db.Sessions.Add(new SessionRow
         {
@@ -87,19 +71,6 @@ public sealed class SessionStore(
             // Read straight off the ambient Activity here, never through a command
             // field — the engine stays content-free (§7). Null when nothing samples.
             TraceContext = Activity.Current?.Id,
-            // §6/§11 continuation targeting: seed the park-record-style affinity from
-            // the resolved facts the command carries (all opaque; the engine validated
-            // team + profile above but never landed them on the record). The inherited
-            // session ref goes straight onto the same HarnessSessionRef column the §11
-            // resume path already reads at dispatch, so the FIRST dispatch to the
-            // preferred machine hands the runner --resume with no new machinery. Null
-            // Continues leaves every field default, i.e. an ordinary profile-targeted
-            // task.
-            ContinuesSessionId = command.Continues?.ContinuedSession.Value,
-            WorkDirSessionId = workDirTask,
-            PreferredMachine = command.Continues?.PreferredMachine,
-            OnMachineGone = command.Continues?.OnMachineGone,
-            HarnessSessionRef = command.Continues?.InheritedSessionRef,
         });
         AppendEvent(id.Value, task.Team.Value, "created", from: null, to: task.State, detail: null);
         await CommitAsync(id.Value, ct);
@@ -227,12 +198,15 @@ public sealed class SessionStore(
         if (row is null)
             return new StoreResult.NotFound($"no task {id}");
 
-        if (row.State is SessionState.Parked or SessionState.Failed)
+        if (row.State is SessionState.Parked or SessionState.Failed or SessionState.Completed)
         {
             if (row.TeamId != lead.Team.Value)
                 return new StoreResult.Rejected(Rule.ActorLacksAuthority,
                     "input requests are answered by the Lead or a human");
-            return await RunTransition(row, new WakeParked(answer), ct);
+            // Stopped healthy with a transcript: session/load. Never-dispatched
+            // then stopped: session/new. Failed retry ignores ResumeTranscript.
+            var resume = !string.IsNullOrEmpty(row.HarnessSessionRef) || row.Attempt > 0;
+            return await RunTransition(row, new WakeParked(answer, ResumeTranscript: resume), ct);
         }
 
         // A live ACP session takes the in-place path: same instance, same process,
@@ -477,19 +451,10 @@ public sealed class SessionStore(
     /// <para>Profile is matched exactly as the engine matches it. A session
     /// without a profile is not claimable.</para>
     ///
-    /// <para>Continuation targeting (§6/§11) adds a preferred-machine clause to the
-    /// SQL half of check 5. A row with no <c>preferred_machine</c> (an ordinary
-    /// first dispatch) is claimable by any profile-matching machine. A park or
-    /// fail pins the last box so <c>session/load</c> stays in the original cwd. A
-    /// continuation row is claimable only by its preferred machine — so the first
-    /// dispatch prefers it and resumes the transcript there — <em>unless</em> that
-    /// machine is gone (absent from <paramref name="connectedMachines"/>) and its
-    /// policy is <see cref="MachineGonePolicy.Degrade"/>, in which case any
-    /// profile-matching machine may claim it and cold-start. <see cref="MachineGonePolicy.Pin"/>
-    /// with a gone machine matches no machine — the task waits in submitted until the
-    /// machine returns. <paramref name="connectedMachines"/> defaults to just the
-    /// asking machine when a caller supplies none (the pure store tests), which is
-    /// the honest "any other preferred machine is unknown to me" reading.</para>
+    /// <para>A row with no <c>preferred_machine</c> (an ordinary first dispatch) is
+    /// claimable by any profile-matching machine. A park, fail, or stop pins the last
+    /// box so <c>session/load</c> stays machine-local. If that machine is gone the
+    /// row waits — there is no degrade cold-start.</para>
     /// </summary>
     public async Task<StoreResult> DispatchNextAsync(
         MachineSnapshot machine, WorkerInstanceId newInstance, CancellationToken ct = default,
@@ -511,11 +476,8 @@ public sealed class SessionStore(
         // (not SELECT *) keeps the xmin concurrency token out of the raw query;
         // the row lock is held to end of transaction, so concurrent dispatchers
         // skip it. Profile match is the SQL half of check 5: exact string, no fallback.
-        // The preferred-machine clause is the §6/§11 continuation half
-        // (see the method summary): NOT (preferred_machine = ANY(connected)) reads as
-        // "preferred machine gone" and is true for an empty connected set too.
         var profiles = machine.DeclaredProfiles.ToArray();
-        var connected = (connectedMachines is { Count: > 0 } c ? c : [machine.MachineId]).ToArray();
+        _ = connectedMachines;
         var claimedId = await db.Database
             .SqlQuery<Guid>(
                 $"""
@@ -530,7 +492,6 @@ public sealed class SessionStore(
                    AND (
                          preferred_machine IS NULL
                       OR preferred_machine = {machine.MachineId}
-                      OR (on_machine_gone = 'Degrade' AND NOT (preferred_machine = ANY({connected})))
                    )
                  ORDER BY id
                  FOR UPDATE SKIP LOCKED
@@ -543,107 +504,25 @@ public sealed class SessionStore(
 
         var claimed = await db.Sessions.FirstAsync(t => t.Id == claimedId, ct);
 
-        // §6/§11 degrade cold-start: the SQL invariant means a claimed continuation
-        // row whose preferred machine is not the asking machine can only be a Degrade
-        // task whose machine went away — so this claim abandons the (now unreachable,
-        // machine-local) transcript. Detected before the transition; enacted after it
-        // commits-in-transaction below.
-        var degradeColdStart =
-            claimed.PreferredMachine is { } preferred && preferred != machine.MachineId;
-        var gonePreferred = claimed.PreferredMachine;
-
         var result = await RunTransition(claimed, new Dispatch(machine, newInstance), ct, tx);
         if (result is StoreResult.Applied applied)
         {
-            if (degradeColdStart)
-            {
-                // Abandon the transcript: suppress the resume ref for this dispatch,
-                // and clear the continuation affinity so a later requeue treats this
-                // as an ordinary task on the machine it actually cold-started on (the
-                // new session re-stamps HarnessSessionRef on its own SessionStartedEvent).
-                // Record the memory-lost event in the same transaction so the Lead can
-                // see the conversational memory was dropped (§11). No extra NOTIFY: the
-                // dispatch transition's own pg_notify already fired in this tx.
-                claimed.HarnessSessionRef = null;
-                claimed.PreferredMachine = null;
-                claimed.OnMachineGone = null;
-                // WorkDirSessionId is deliberately NOT cleared. Directory inheritance is a
-                // property of continuation, not of resume (§7, §11): this task still works
-                // where its predecessor worked, and keeping it means the task's directory is
-                // the same on every attempt instead of moving when a session is abandoned.
-                // On this machine that directory starts empty — the predecessor's artifacts
-                // went with the machine that vanished — which is what the memory-lost event
-                // below is telling the Lead.
-                db.SessionEvents.Add(new SessionEventRow
-                {
-                    SessionId = claimed.Id,
-                    TeamId = claimed.TeamId,
-                    Kind = SessionEventRow.ContinuationMemoryLostKind,
-                    Detail = $"preferred machine '{gonePreferred}' gone; cold-started on " +
-                             $"'{machine.MachineId}' — conversational memory lost",
-                    OccurredAt = clock.GetUtcNow(),
-                });
-                await db.SaveChangesAsync(ct);
-            }
-
             await tx.CommitAsync(ct);
             // Surface the row's opaque transport metadata so DispatchService can act
             // on it (neither reaches the engine): the trace context parents the
             // dispatch span on the Lead's create_session trace, and the harness session
-            // ref — present when the task was worked before and parked/requeued, or
-            // seeded from a continuation's inherited session — rides the
-            // DispatchCommand back so the runner can resume the transcript (§11). Null
-            // on a first-ever dispatch, and deliberately suppressed on a degrade
-            // cold-start so the runner starts fresh rather than --resume a session
-            // that lives on the gone machine.
+            // ref — present when the task was worked before and parked/requeued —
+            // rides the DispatchCommand back so the runner can resume the transcript.
+            // Null on a first-ever dispatch.
             return applied with
             {
                 TraceContext = claimed.TraceContext,
-                HarnessSessionRef = degradeColdStart ? null : claimed.HarnessSessionRef,
-                // §7/§11: which task's work dir the harness runs in. Deliberately NOT
-                // suppressed with the session ref — a continuation works where its
-                // predecessor worked whether or not it resumes the transcript, so this rides
-                // every dispatch of a continuation, cold starts included.
+                HarnessSessionRef = claimed.HarnessSessionRef,
                 WorkDirSession = claimed.WorkDirSessionId is { } dir ? new SessionId(dir) : null,
             };
         }
         return result;
     }
-
-    /// <summary>
-    /// The seed facts a <c>create_session(continues:)</c> reads off the continued task's
-    /// row (§6/§11): its owning Team (the same-Team gate), its profile (the default
-    /// when the caller omits one), the opaque harness session ref to resume, the
-    /// park machine (a fallback preferred machine when the task is parked and no
-    /// longer tracked in the live registry), and <see cref="ContinuationSource.LastRanOn"/>
-    /// — the machine of the task's most recent dispatch, read off its worker-instance
-    /// rows. A pure read; null when the continued task does not exist. Team-scoping is
-    /// deliberately not applied here so the tool can surface a precise cross-Team
-    /// rejection rather than an indistinguishable not-found (the engine enforces the
-    /// same-Team gate on the resulting command).
-    ///
-    /// <para><b>Why the instance rows and not just the two columns.</b> The registry
-    /// forgets a task the moment its process exits and <c>ParkMachine</c> only ever
-    /// describes a parked task, so for the ordinary continuation — one whose predecessor
-    /// finished — neither can say where it ran, and that used to be refused outright.
-    /// <see cref="WorkerInstanceRow.MachineId"/> is the durable answer (one row per
-    /// dispatch, §12) and outlives both. Deliberately <em>not</em> filtered on
-    /// <c>!Revoked</c>: a task that reached a terminal state has had its last instance
-    /// revoked, and where it ran is still where it ran.</para>
-    /// </summary>
-    public async Task<ContinuationSource?> ReadContinuationSourceAsync(SessionId continued, CancellationToken ct = default) =>
-        await db.Sessions.AsNoTracking()
-            .Where(t => t.Id == continued.Value)
-            .Select(t => new ContinuationSource(
-                new TeamId(t.TeamId), t.Profile, t.HarnessSessionRef, t.ParkMachine,
-                db.WorkerInstances
-                    .Where(w => w.SessionId == t.Id && w.MachineId != null)
-                    .OrderByDescending(w => w.CreatedAt)
-                    .ThenByDescending(w => w.Id)
-                    .Select(w => w.MachineId)
-                    .FirstOrDefault(),
-                t.Health))
-            .FirstOrDefaultAsync(ct);
 
     /// <summary>
     /// Records a live endpoint for a working task (§8.2). Only the incumbent
@@ -1573,11 +1452,10 @@ public sealed class SessionStore(
         if (answerText is not null)
             row.InputAnswer = answerText;
 
-        // Same-task session/load is machine-local (stage 5; #175 is the later
-        // move). A park or fail that does not pin PreferredMachine can be
-        // claimed by any profile-matching box, and load then runs in the wrong
-        // cwd. Continuations already carry their own preferred machine — leave
-        // those alone. Pin, not Degrade: gone means wait, not a cold start.
+        // Same-task session/load is machine-local. A park, fail, or stop that
+        // does not pin PreferredMachine can be claimed by any profile-matching
+        // box, and load then runs in the wrong cwd. If that machine is later
+        // gone the row waits — there is no degrade cold-start.
         if ((ok.Session.Health == SessionHealth.Failed
              || ok.Session.OccupancyDesired == Occupancy.OnDisk)
             && row.PreferredMachine is null)

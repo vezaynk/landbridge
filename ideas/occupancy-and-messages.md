@@ -100,7 +100,7 @@ Do not violate. Restated here because several are easy to break while splitting 
 - Report keeps the process until Lead accept, discard, or reply.
 - Waiting may occupy seats. Back-pressure is what `landbridged` observes. There is no `max_concurrent`.
 - Token valid while the instance is live. Revoke when leaving `running`, or on instance death.
-- New work = new session id. Optional `create_session(continues:)` reuses another row's harness transcript under the new id.
+- New work = new session id. More work on an existing worker is `send_input_request` on that id (unhides a stopped healthy row). Successor-as-a-new-row is `fork_session` (#225), not `create_session(continues:)`.
 - `session/load` is machine-local.
 - Work-dir GC is skill advice.
 - Spend is observability plus the operator's provider key limits.
@@ -116,13 +116,13 @@ Do not violate. Restated here because several are easy to break while splitting 
 1. **A session has no lifecycle enum and no terminal state.** Occupancy + health + hidden. `IsTerminal` is deleted.
 2. **Occupancy vocabulary is identical on desired and observed:** `none | on_disk | running`. Lead writes desired; dispatch claims a row whose desired is already `running`. Observed is runner events (`started` / `session-started` / `exited`, not `alive`). Mismatch is in-flight. Do not add `spawning` / `parking` / `retrying`.
 3. **`health` is mechanical only.** Handshake, process death, machine gone, ack/liveness/no-progress, turn-ended-without-result. "I cannot do this work" is a report, then accept/discard.
-4. **`hidden` is a default-off list filter, not `IsTerminal`.** Accept and discard both set `hidden=true`. Same-id wake of a hidden **healthy** row is **refused** (command matrix in §4). **Hidden + `health=failed` still allows same-id retry** (`answer_input_request`) so clearing the fault inbox does not trap the transcript. `create_session(continues:)` still refuses `health=failed` (retry is the same id, not a continuation). New work remains a new session id. There is no unhide. `ObserveOccupancy` is always allowed.
+4. **`hidden` is a default-off list filter, not `IsTerminal`.** Stop sets `hidden=true`. `send_input_request` unhides. **Hidden + `health=failed` still allows same-id retry** (`session/new`). Successor-as-a-new-row is `fork_session` (#225). `ObserveOccupancy` is always allowed.
 5. **Park-as-state is deleted.** Deactivate is `desired=on_disk`. The MCP tool stays `park_session` (names frozen). The row is never called `Parked`. `ParkRecord` remains preferred-machine affinity, not a state. Deactivate and wait-TTL are **refused** while `awaiting_permission` (the waiter is live in-process; occupying the seat is the point).
 6. **Rejected-as-state is deleted.** `submit_review` verdict `fail` becomes discard-into-hidden. Verdict lives on the message (`accepted` | `discarded`), with provenance.
 7. **Canceled-as-state is deleted.** Cancel is an action: stop, optional workspace-discard intent, `hidden=true`.
 8. **The message machine is the only session state machine**, one outstanding envelope, worker transitions from `idle` only, incumbent instance only.
 9. **Busy is derived from the message machine**, never stored on the session.
-10. **Retry of `health=failed` is `session/new` on the same session id, not `session/load`.** Failed sessions cannot be continued (`create_session(continues:)` refuses `health=failed`). Wake of a *healthy* `on_disk` row is `session/load`.
+10. **Retry of `health=failed` is `session/new` on the same session id, not `session/load`.** Wake of a *healthy* `on_disk` or hidden row is `session/load` (`send_input_request` unhides).
 11. **No auto-requeue**, including at the infrastructure cap. The cap remains an observability counter; it does not abandon the row into a terminal enum.
 12. **Pull-is-receipt is recorded** (default; Open Questions). `get_session` while `awaiting_pull` is the transition to `idle`.
 13. **Deactivate-without-hide stays a Lead tool** (default; Open Questions). Waiting occupies seats; wait TTL is off by default, so an explicit occupancy release is required.
@@ -221,7 +221,7 @@ Workspace discard remains a recorded intent (`DiscardWorkspace` no-op).
 
 **Wake / reactivate same id** (healthy + `on_disk`): `desired=running`, `pending_spawn=load` → `session/load` on the pinned machine.
 
-**New work** is a new session id. `create_session(continues:)` stays: same-Team, seeds `HarnessSessionRef` + preferred machine + work-dir inheritance (`LeadTools.CreateSession`, `Continuation`). Continue is allowed from hidden (ex-completed) **healthy** sessions that have a transcript. Refused from `health=failed`. Never-dispatched source still refused (no transcript, no directory).
+**New work** is a new session id. More work on an existing worker is `send_input_request` on that id (unhides if stopped). Successor-as-a-new-row is `fork_session` (#225).
 
 **`desired=none`** is discard (workspace-gone intent). Preserve-stop is `on_disk`. Nothing enacts discard today (`DiscardWorkspace` no-op); the column records the intent so a later enactor can tell preserve from discard without a `Canceled` enum. A discard must not delete a directory a continuation merely borrowed (§11).
 

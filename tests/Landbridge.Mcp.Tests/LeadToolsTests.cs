@@ -168,6 +168,41 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task Send_input_request_unhides_a_stopped_session_that_had_run()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var sessionId = await SeedTaskWithReport();
+        var tools = LeadFor(new Principal.Lead(Team));
+        await tools.StopSession(sessionId.ToString(), CancellationToken.None);
+
+        var ok = await tools.SendInputRequest(sessionId.ToString(), "more of this", CancellationToken.None);
+        Assert.DoesNotContain("Completed", ok, StringComparison.Ordinal);
+
+        await using var v = pg.NewContext();
+        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == sessionId.Value);
+        Assert.False(row.Hidden);
+        Assert.Equal(Occupancy.Running, row.OccupancyDesired);
+        Assert.Equal(PendingSpawn.Load, row.PendingSpawn);
+        Assert.Equal("more of this", row.InputAnswer);
+    }
+
+    [SkippableFact]
+    public async Task Send_input_request_on_a_stopped_never_dispatched_session_is_a_cold_start()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var tools = LeadFor(new Principal.Lead(Team));
+        var idText = await tools.CreateSession("build the thing", "default", CancellationToken.None);
+        await tools.StopSession(idText, CancellationToken.None);
+
+        await tools.SendInputRequest(idText, "try it", CancellationToken.None);
+
+        await using var v = pg.NewContext();
+        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == Guid.Parse(idText));
+        Assert.False(row.Hidden);
+        Assert.Equal(PendingSpawn.New, row.PendingSpawn);
+    }
+
+    [SkippableFact]
     public async Task Send_input_request_refuses_a_session_waiting_on_a_question()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);

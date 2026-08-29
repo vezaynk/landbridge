@@ -30,36 +30,6 @@ public static class SessionStateMachine
             return TransitionResult.Reject(Rule.NamespaceServerAssigned,
                 "namespace must be server-assigned before creation completes");
 
-        // §6/§11 continuation targeting: the resolved facts ride the command as
-        // opaque plane metadata (the store seeds them onto the row, never onto the
-        // pure record below). Only two of them are the engine's to gate — the rest
-        // it never dereferences (§2 principle 1).
-        if (command.Continues is { } cont)
-        {
-            // Same-Team only: a continuation resumes a transcript that belongs to
-            // one Team; addressing another Team's task is refused at creation.
-            if (cont.ContinuedTeam != command.Team)
-                return TransitionResult.Reject(Rule.ContinuationSameTeamOnly,
-                    "continues must reference a task in the caller's Team");
-
-            // If the preferred machine's declared profiles are known (it is
-            // connected), the effective profile must be one it declares — otherwise
-            // the continuation could never dispatch to the machine that holds its
-            // transcript. When the machine is gone the set is null and the check is
-            // skipped (dispatch's own profile routing still applies).
-            var requiredProfile = command.Profile;
-            if (cont.PreferredMachineProfiles is { } declared && !declared.Contains(requiredProfile))
-                return TransitionResult.Reject(Rule.ContinuationProfileDeclaredByPreferredMachine,
-                    $"preferred machine does not declare profile '{requiredProfile}' the continuation requires");
-        }
-
-        // Continuation with a transcript is session/load on first dispatch.
-        // Do not infer load from a leftover HarnessSessionRef later — the
-        // pending_spawn column is the wire selector (§11 occupancy).
-        var pending = command.Continues?.InheritedSessionRef is { Length: > 0 }
-            ? PendingSpawn.Load
-            : PendingSpawn.New;
-
         return Done(new SessionRecord
         {
             Id = id,
@@ -71,7 +41,7 @@ public static class SessionStateMachine
             Health = SessionHealth.Ok,
             Hidden = false,
             MessageState = MessageState.Idle,
-            PendingSpawn = pending,
+            PendingSpawn = PendingSpawn.New,
         });
     }
 
@@ -80,11 +50,12 @@ public static class SessionStateMachine
         if (command is ObserveOccupancy observe)
             return Finalize(task, ApplyObserveOccupancy(task, observe));
 
-        // Hidden healthy rows refuse same-id work (derived Completed). Failed is
-        // not terminal. ObserveOccupancy is already handled.
-        if (task.Hidden && task.Health == SessionHealth.Ok)
+        // Hidden is a list filter. Same-id work is refused except
+        // send_input_request (WakeParked), which unhides. Failed is not terminal.
+        // ObserveOccupancy is already handled.
+        if (task.Hidden && task.Health == SessionHealth.Ok && command is not WakeParked)
             return TransitionResult.Reject(Rule.TerminalStatesAreFinal,
-                $"{task.State} is terminal and never resumed");
+                $"{task.State} is hidden; more work on this worker is send_input_request");
 
         return Finalize(task, command switch
         {
@@ -692,17 +663,16 @@ public static class SessionStateMachine
                 retryEffects.ToArray());
         }
 
-        if (task.Hidden)
-            return TransitionResult.Reject(Rule.TerminalStatesAreFinal,
-                "same-id wake of a hidden healthy row is refused; new work is a new session id");
-
-        if (task.OccupancyDesired != Occupancy.OnDisk && task.OccupancyObserved != Occupancy.OnDisk)
+        if (!task.Hidden
+            && task.OccupancyDesired != Occupancy.OnDisk
+            && task.OccupancyObserved != Occupancy.OnDisk)
             return WrongState(task, SessionState.Parked);
 
         return Done(task with
         {
+            Hidden = false,
             OccupancyDesired = Occupancy.Running,
-            PendingSpawn = PendingSpawn.Load,
+            PendingSpawn = c.ResumeTranscript ? PendingSpawn.Load : PendingSpawn.New,
             MessageState = string.IsNullOrWhiteSpace(c.Answer)
                 ? task.MessageState
                 : MessageState.AwaitingPull,

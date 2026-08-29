@@ -62,15 +62,9 @@ public abstract record RunnerCommand : RunnerMessage
 /// <c>resume.args</c> and never interprets it (§11 resume seam).</para>
 ///
 /// <para><see cref="WorkDirSession"/> is additive and wire-compatible in the same way, and
-/// names the task whose working directory this dispatch runs in. It is <b>not</b> about
-/// resume: a <c>continues:</c> continuation runs where its predecessor worked whether or
-/// not it resumes that transcript, because the workspace <em>is</em> the work (§7, §11) —
-/// a cold-started continuation still needs the worktree and artifacts the predecessor
-/// left. Transcript resume is the additional bonus when the machine and session survive,
-/// and it needs this too, since a harness session is directory-local as well as
-/// machine-local (Claude Code resumes only from the directory that created it) and a
-/// continuation runs under a NEW task id. Null whenever the directory is the dispatched
-/// task's own — every ordinary task, and every park-resume of one.</para>
+/// names the task whose working directory this dispatch runs in. Null whenever the
+/// directory is the dispatched task's own — every ordinary task, and every park-resume
+/// of one. A future <c>fork_session</c> (#225) will name a predecessor here.</para>
 ///
 /// <para><b>Not the same value as continuation lineage</b>, which is why it is its own
 /// field rather than something the runner could derive: the plane resolves it

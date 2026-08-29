@@ -84,8 +84,8 @@ public sealed class LeadTools(
      Description("Create a session for this Team. Only a Lead may create sessions. The description is the " +
                  "whole brief (what to do and how you will judge it); the plane never parses it. Profile is " +
                  "required — call list_profiles first and pass an exact name. The worker isolates itself. " +
-                 "Pass 'continues' to resume a prior session's harness conversation under a new session id. " +
-                 "Returns the new session id.")]
+                 "More work on an existing worker is send_input_request on that session id (it unhides a " +
+                 "stopped row). Returns the new session id.")]
     public async Task<string> CreateSession(
         [Description("Opaque, non-empty prose: what to accomplish and how you will judge it. " +
                      "Read by the worker, never parsed by the control plane.")]
@@ -93,88 +93,15 @@ public sealed class LeadTools(
         [Description("Runner profile name for exact-match routing. Required. Call list_profiles first — " +
                      "a name no machine declares makes a session nothing can ever claim.")]
         string profile,
-        CancellationToken ct = default,
-        [Description("Optional: continue a prior session in THIS Team — the new session resumes that " +
-                     "session's harness conversation under a new session id and worker token, on the " +
-                     "machine that holds it. Same-Team only. 'talk to the agent that has the context.'")]
-        string? continues = null,
-        [Description("For a continuation, what to do if the machine holding the session is gone at dispatch: " +
-                     "'degrade' (default — cold-start a fresh session on any matching machine, losing the " +
-                     "conversation) or 'pin' (wait for that machine to return). Ignored without 'continues'.")]
-        string? onMachineGone = null)
+        CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(description))
             throw new McpException("description must be non-empty; it is the worker's instructions.");
         if (string.IsNullOrWhiteSpace(profile))
             throw new McpException("profile is required; call list_profiles and pass an exact name.");
 
-        var lead = Lead;
-
-        // §6/§11 continuation targeting. The tool resolves the runtime facts the
-        // engine can't reach — the continued task's Team/profile/session ref (a store
-        // read) and the machine that last held it (the live connection registry) — and
-        // rides them on the command as opaque content. The engine re-checks the
-        // same-Team and profile gates (defense in depth); everything else is seeded
-        // verbatim and never interpreted (§7).
-        Continuation? continuation = null;
-        if (!string.IsNullOrWhiteSpace(continues))
-        {
-            var continuedId = ParseSessionId(continues);
-            var source = await store.ReadContinuationSourceAsync(continuedId, ct)
-                ?? throw new McpException($"cannot continue session {continues}: no such session.");
-            if (source.Team != lead.Team)
-                throw new McpException($"cannot continue session {continues}: it belongs to another Team.");
-            if (source.Health == SessionHealth.Failed)
-                throw new McpException(
-                    $"cannot continue session {continues}: it failed mechanically; retry that session instead of continues:.");
-
-            // The machine that last held/ran the continued task, most authoritative first:
-            // the live registry for a currently-tracked task, the park record for a parked
-            // one, else the durable worker-instance row for a task that has simply finished
-            // (§12). The third is what makes the ordinary case work — continuing a completed
-            // task, whose process exited and is therefore tracked nowhere.
-            //
-            // A machine that is gone is NOT refused here. Whether that is fatal is exactly
-            // what on_machine_gone decides, at dispatch, where the answer is knowable: the
-            // Lead's `degrade` (the default) cold-starts on any profile-matching machine and
-            // records continuation-memory-lost, and `pin` waits in submitted for the machine
-            // to come back (§6/§11). Refusing at creation pre-empted that decision, and told
-            // the Lead to create a plain task instead — which would silently drop the
-            // directory inheritance and the lineage a degraded continuation still keeps.
-            var preferredMachine =
-                registry.MachineFor(continuedId) ?? source.ParkMachine ?? source.LastRanOn;
-            if (preferredMachine is null)
-                throw new McpException(
-                    $"cannot continue session {continues}: it has never been dispatched, so there is no " +
-                    "transcript to resume and no working directory to carry on in. Create an ordinary " +
-                    "session instead. (A continuation whose machine is merely gone is fine — " +
-                    "on_machine_gone decides that at dispatch.)");
-
-            var policy = MachineGonePolicy.Degrade;
-            if (!string.IsNullOrWhiteSpace(onMachineGone))
-            {
-                if (!Enum.TryParse<MachineGonePolicy>(onMachineGone, ignoreCase: true, out var parsedPolicy))
-                    throw new McpException(
-                        $"unknown on_machine_gone '{onMachineGone}'; expected one of: " +
-                        string.Join(", ", Enum.GetNames<MachineGonePolicy>()));
-                policy = parsedPolicy;
-            }
-
-            // Profile is required on every create, including a continuation.
-            // The preferred machine's declared profiles when it is connected, so the
-            // engine can refuse a profile it could never honour; null when it is gone.
-            var declaredProfiles = registry.SnapshotFor(preferredMachine)?.DeclaredProfiles;
-            continuation = new Continuation(
-                continuedId, source.Team, preferredMachine, source.HarnessSessionRef, policy, declaredProfiles);
-        }
-        else if (!string.IsNullOrWhiteSpace(onMachineGone))
-        {
-            throw new McpException("on_machine_gone only applies together with continues.");
-        }
-
         var result = await store.CreateAsync(
-            new CreateSession(lead, lead.Team, description, profile.Trim(),
-                Continues: continuation), ct);
+            new CreateSession(Lead, Lead.Team, description, profile.Trim()), ct);
 
         return result switch
         {
@@ -189,7 +116,7 @@ public sealed class LeadTools(
     [McpServerTool(Name = "stop_session"),
      Description("Hide this session and release occupancy. The worker gets a wind-down " +
                  "(default 5 minutes) then a kill. Not a grade of the work — more work on the " +
-                 "same worker is send_input_request, not this. Allowed mid-exchange (a question " +
+                 "same worker is send_input_request (it unhides), not this. Allowed mid-exchange (a question " +
                  "or a live permission wait). A session's own worker can never stop it. park_session " +
                  "releases occupancy without hiding.")]
     public async Task<string> StopSession(
@@ -271,17 +198,18 @@ public sealed class LeadTools(
     }
 
     [McpServerTool(Name = "send_input_request"),
-     Description("Talk to a worker that is not waiting on you: a live follow-up, a parked wake, or a " +
-                 "failed retry. Pass your words as 'text' — that is the only thing the worker receives. " +
-                 "Refused while a question wait is open (use send_input_response) or a permission wait " +
-                 "is live (use answer_permission_request). A still-live ACP session stays on the same " +
-                 "instance; a dead, parked, or failed session is redispatched.")]
+     Description("Talk to a worker that is not waiting on you: a live follow-up, a parked wake, a " +
+                 "stopped session (unhides and session/load), or a failed retry (session/new). Pass " +
+                 "your words as 'text' — that is the only thing the worker receives. Refused while a " +
+                 "question wait is open (use send_input_response) or a permission wait is live (use " +
+                 "answer_permission_request). A still-live ACP session stays on the same instance; a " +
+                 "dead, parked, stopped, or failed session is redispatched.")]
     public async Task<string> SendInputRequest(
         [Description("The session id to talk to.")]
         string sessionId,
         [Description("What the worker should do next. It reaches the worker on its next get_inbox. " +
-                     "Capped at 16 KB; over-cap is refused. Omit only to wake a parked or failed " +
-                     "session that needs no words.")]
+                     "Capped at 16 KB; over-cap is refused. Omit only to wake a parked, stopped, or " +
+                     "failed session that needs no words.")]
         string? text = null,
         CancellationToken ct = default)
     {
@@ -297,6 +225,7 @@ public sealed class LeadTools(
     {
         if (result is StoreResult.Applied applied
             && applied.Session.State == SessionState.Working
+            && applied.Session.CurrentInstance is not null
             && live
             && machine is { } dest)
         {
