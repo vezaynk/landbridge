@@ -69,19 +69,30 @@ public sealed class SessionEventFanoutTests(PostgresFixture pg) : IAsyncLifetime
                 new CreateSession(new LeadClaim(Team), Team, "watch me", "default"), cts.Token)).Session.Id;
         }
 
-        var woke = new TaskCompletionSource();
+        var wakes = 0;
+        using var pulse = new SemaphoreSlim(0);
         using var sub = fanout.Subscribe(watched.Value);
-        // Creating `watched` NOTIFY can land after Subscribe; drain it so the
-        // other-session create below is what would wake us if the filter leaked.
-        while (sub.Reader.TryRead(out _)) { }
         var reading = Task.Run(async () =>
         {
             await foreach (var _ in sub.Reader.ReadAllAsync(cts.Token))
             {
-                woke.TrySetResult();
-                return;
+                Interlocked.Increment(ref wakes);
+                pulse.Release();
             }
         }, cts.Token);
+
+        // Create's NOTIFY can land after Subscribe. Wait it out so a late
+        // delivery cannot look like a leak from the other session below.
+        // Timeout is success: the notify already passed us. The previous
+        // TryRead-then-sleep-200ms lost that race on #220's dispatch.
+        using (var absorb = CancellationTokenSource.CreateLinkedTokenSource(cts.Token))
+        {
+            absorb.CancelAfter(TimeSpan.FromSeconds(2));
+            try { await pulse.WaitAsync(absorb.Token); }
+            catch (OperationCanceledException) when (!cts.IsCancellationRequested) { }
+        }
+
+        var afterCreate = Volatile.Read(ref wakes);
 
         await using (var db = pg.NewContext())
         {
@@ -90,8 +101,8 @@ public sealed class SessionEventFanoutTests(PostgresFixture pg) : IAsyncLifetime
                 new CreateSession(new LeadClaim(Team), Team, "not you", "default"), cts.Token));
         }
 
-        await Task.Delay(200, cts.Token);
-        Assert.False(woke.Task.IsCompleted);
+        await Task.Delay(TimeSpan.FromMilliseconds(500), cts.Token);
+        Assert.Equal(afterCreate, Volatile.Read(ref wakes));
 
         await using (var db = pg.NewContext())
         {
@@ -100,7 +111,8 @@ public sealed class SessionEventFanoutTests(PostgresFixture pg) : IAsyncLifetime
                 watched, new Cancel(new LeadClaim(Team), CancelDisposition.Preserve), cts.Token));
         }
 
-        await woke.Task.WaitAsync(cts.Token);
+        await pulse.WaitAsync(cts.Token);
+        Assert.True(Volatile.Read(ref wakes) > afterCreate);
 
         await cts.CancelAsync();
         try { await reading; } catch (OperationCanceledException) { }

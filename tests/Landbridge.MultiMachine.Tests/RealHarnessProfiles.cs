@@ -74,11 +74,19 @@ internal static class RealHarnessProfiles
     public static RealHarnessProfile Grok(string bin) => new()
     {
         Name = "grok",
-        // Native, per xAI docs — the one entry point in this file NOT measured, because
-        // grok installs through the GitHub API. `grok agent stdio`, NOT
-        // `-p --output-format streaming-json`, which is an output shape not the protocol.
-        AcpSpawn = [bin, "agent", "stdio"],
+        // Native. `grok agent stdio`, NOT `-p --output-format streaming-json`.
+        // --model is on argv because ACP config_options is skipped unless the
+        // agent advertised that slug (same reason Codex pins via config.toml).
+        // Measured #220 on grok 1.0.3: without this, the default was
+        // grok-4.20-0309-non-reasoning, which narrated tool calls and died
+        // TurnEndedWithoutResult on park/resume. LANDBRIDGE_GROK_MODEL is the
+        // override; the CI default is grok-4.6.
+        AcpSpawn = [bin, "--model", GrokModel, "agent", "stdio"],
         Bin = bin,
+        ConfigOptions = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["model"] = GrokModel,
+        },
         // 1.0.4 gates project-local config behind folder trust. A landbridged work
         // dir is a throwaway temp folder, so disable the gate.
         Env = new Dictionary<string, string>(StringComparer.Ordinal)
@@ -356,7 +364,10 @@ internal static class RealHarnessProfiles
         $$"""
 
          Suspect, in order:
-           1. MODEL SLUG. This tier pins '{{GrokModel}}'. Override with LANDBRIDGE_GROK_MODEL.
+           1. MODEL SLUG. Spawn is `grok --model {{GrokModel}} agent stdio` (and
+              config_options.model is the same slug, skipped if unadvertised).
+              Override with LANDBRIDGE_GROK_MODEL. Without the argv pin, grok 1.0.3
+              defaulted to grok-4.20-0309-non-reasoning and narrated tools (#220).
            2. MCP WIRING. The plane is handed over on session/new. A 401 means the
               minted token or url is wrong. GROK_FOLDER_TRUST=0 is set so a throwaway
               work dir is not blocked by folder trust.
