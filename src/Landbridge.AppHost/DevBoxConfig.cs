@@ -61,10 +61,11 @@ internal static class DevBoxConfig
     }
 
     /// <summary>
-    /// Same default as the paid Grok e2e. Spawn carries <c>--model</c> because
-    /// ACP <c>config_options</c> is skipped unless the agent advertised that slug;
-    /// #220 showed grok 1.0.3 otherwise defaulting to
-    /// <c>grok-4.20-0309-non-reasoning</c>.
+    /// Same default as the paid Grok e2e. <c>GROK_DEFAULT_MODEL</c> is the pin
+    /// grok actually reads: <c>--model</c> on argv is ignored by
+    /// <c>agent stdio</c> on 1.0.3 (#222 still sat on
+    /// <c>grok-4.20-0309-non-reasoning</c>). ACP <c>config_options</c> is
+    /// skipped unless advertised.
     /// </summary>
     public static string GrokModel(IConfiguration? config = null) =>
         (config is null
@@ -160,7 +161,11 @@ internal static class DevBoxConfig
             Prompt("landbridge__get_inbox", "landbridge__report_result", "landbridge__request_input"),
             FollowUp("landbridge__get_inbox"),
             AuthMethod: null,
-            Env: new JsonObject { ["GROK_FOLDER_TRUST"] = "0" },
+            Env: new JsonObject
+            {
+                ["GROK_FOLDER_TRUST"] = "0",
+                ["GROK_DEFAULT_MODEL"] = GrokModel(),
+            },
             Telemetry: null,
             ConfigOptions: new JsonObject { ["model"] = GrokModel() }),
         _ => throw new ArgumentOutOfRangeException(nameof(harness), harness, "unknown Aspire-seeded harness"),

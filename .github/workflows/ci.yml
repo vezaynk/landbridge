@@ -334,6 +334,7 @@ jobs:
           LANDBRIDGE_CODEX_MODEL: ${{ inputs.codex_model || 'gpt-5.3-codex' }}
           LANDBRIDGE_OPENCODE_MODEL: ${{ inputs.opencode_model || 'anthropic/claude-haiku-4-5-20251001' }}
           LANDBRIDGE_GROK_MODEL: ${{ inputs.grok_model || 'grok-4.6' }}
+          GROK_DEFAULT_MODEL: ${{ inputs.grok_model || 'grok-4.6' }}
           LANDBRIDGE_REAL_GOOSE: ${{ matrix.harness == 'goose' && '1' || '' }}
           GOOSE_PROVIDER: ${{ matrix.harness == 'goose' && 'anthropic' || '' }}
           GOOSE_MODEL: ${{ inputs.goose_model || 'claude-haiku-4-5-20251001' }}

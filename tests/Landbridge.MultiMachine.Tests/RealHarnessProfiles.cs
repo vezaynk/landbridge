@@ -75,12 +75,13 @@ internal static class RealHarnessProfiles
     {
         Name = "grok",
         // Native. `grok agent stdio`, NOT `-p --output-format streaming-json`.
-        // --model is on argv because ACP config_options is skipped unless the
-        // agent advertised that slug (same reason Codex pins via config.toml).
-        // Measured #220 on grok 1.0.3: without this, the default was
-        // grok-4.20-0309-non-reasoning, which narrated tool calls and died
-        // TurnEndedWithoutResult on park/resume. LANDBRIDGE_GROK_MODEL is the
-        // override; the CI default is grok-4.6.
+        // GROK_DEFAULT_MODEL is the pin grok actually reads. --model on argv
+        // is ignored by `agent stdio` on 1.0.3: measured #222, spawn was
+        // `grok --model grok-4.6 agent stdio` and the session still sat on
+        // grok-4.20-0309-non-reasoning, which narrated tools and died
+        // TurnEndedWithoutResult on park/resume. ACP config_options is
+        // skipped unless advertised (same as Codex). LANDBRIDGE_GROK_MODEL
+        // is the Landbridge override; the CI default is grok-4.6.
         AcpSpawn = [bin, "--model", GrokModel, "agent", "stdio"],
         Bin = bin,
         ConfigOptions = new Dictionary<string, string>(StringComparer.Ordinal)
@@ -92,6 +93,7 @@ internal static class RealHarnessProfiles
         Env = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             ["GROK_FOLDER_TRUST"] = "0",
+            ["GROK_DEFAULT_MODEL"] = GrokModel,
         },
         GetTask = "landbridge__get_inbox",
         ReportResult = "landbridge__report_result",
@@ -364,10 +366,11 @@ internal static class RealHarnessProfiles
         $$"""
 
          Suspect, in order:
-           1. MODEL SLUG. Spawn is `grok --model {{GrokModel}} agent stdio` (and
-              config_options.model is the same slug, skipped if unadvertised).
-              Override with LANDBRIDGE_GROK_MODEL. Without the argv pin, grok 1.0.3
-              defaulted to grok-4.20-0309-non-reasoning and narrated tools (#220).
+           1. MODEL SLUG. GROK_DEFAULT_MODEL={{GrokModel}} is the pin grok
+              agent stdio reads. --model on argv is ignored on 1.0.3 (#222
+              still sat on grok-4.20-0309-non-reasoning). config_options.model
+              is the same slug, skipped if unadvertised. Override with
+              LANDBRIDGE_GROK_MODEL.
            2. MCP WIRING. The plane is handed over on session/new. A 401 means the
               minted token or url is wrong. GROK_FOLDER_TRUST=0 is set so a throwaway
               work dir is not blocked by folder trust.
