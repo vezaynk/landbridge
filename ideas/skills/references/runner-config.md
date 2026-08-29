@@ -418,13 +418,13 @@ gone, along with its side effect of declaring a landbridge MCP server for every 
       "spawn": ["grok", "--model", "grok-4.6", "agent", "stdio"],
       "prompt": "You are a Landbridge worker on a live session. First call the landbridge__get_inbox MCP tool to read your assignment (namespace, description, workspace, attempt). Do the work in this session's directory; you are not the only agent on the machine. When you think you are done, call landbridge__report_result with a reference to where the work lives (a branch/commit/URL) — not the work itself — and stay up; the Lead may reply. If you are blocked or a decision is above your scope, call landbridge__request_input instead of guessing. You do not complete the session yourself.",
       "follow_up": "There is new input on your assignment. Call landbridge__get_inbox to read it, then continue.",
-      // --model is on argv because ACP config_options is skipped unless the agent
-      // advertised that slug. Without it, grok 1.0.3 defaulted to
-      // grok-4.20-0309-non-reasoning and narrated tool calls (#220).
+      // --model on argv is ignored by `grok agent stdio` on 1.0.3 (#222 still
+      // sat on grok-4.20-0309-non-reasoning). GROK_DEFAULT_MODEL is the pin.
+      // config_options.model is the same slug, skipped if unadvertised.
       "config_options": { "model": "grok-4.6" },
       // 1.0.4+ gates project-local config behind folder trust and a work dir is a
       // throwaway folder. Carried over from the stream profile; re-confirm under ACP.
-      "env": { "GROK_FOLDER_TRUST": "0" },
+      "env": { "GROK_FOLDER_TRUST": "0", "GROK_DEFAULT_MODEL": "grok-4.6" },
       "stop": { "wind_down_seconds": 30 },
       "logs": { "capture": true }
     }
