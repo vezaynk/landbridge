@@ -289,7 +289,7 @@ jobs:
 
       - name: Install codex CLI
         if: matrix.harness == 'codex'
-        run: npm install -g @openai/codex@0.150.1
+        run: npm install -g @openai/codex@0.151.0
 
       - name: Install codex ACP adapter
         if: matrix.harness == 'codex'
