@@ -321,13 +321,13 @@ public sealed class DispatchService : IHostedService
             var command = new DispatchCommand(
                 task.Id, profile, minted.Token, McpConfigJson: BuildWorkerMcpConfig(minted.Token),
                 // #112 G2: the plane URL as a spawn substitution so a profile can write
-                // a harness-native MCP file without parsing Claude's mcp.json. The runner
-                // already consumes SpawnSubstitutions; this is the first producer.
+                // a harness-native MCP file. The runner already consumes SpawnSubstitutions;
+                // this is the first producer.
                 SpawnSubstitutions: new Dictionary<string, string> { ["mcp_url"] = _publicMcpUrl },
                 // §11 resume: pass the prior work session's ref (present when this task
                 // was worked before and parked/requeued) so landbridged continues the
-                // transcript. Opaque metadata surfaced by the store; landbridged resumes
-                // only if the resolved profile declares resume.args, else cold-starts.
+                // transcript. Opaque metadata surfaced by the store; landbridged
+                // session/loads when the agent declared loadSession, else cold-starts.
                 ResumeSessionRef: applied.Session.PendingSpawn == PendingSpawn.Load
                     ? applied.HarnessSessionRef
                     : null,
@@ -416,18 +416,11 @@ public sealed class DispatchService : IHostedService
     }
 
     /// <summary>
-    /// One of the two carriers a worker's identity reaches the harness by (§13): Claude
-    /// Code's <c>--mcp-config</c> HTTP shape, with the freshly-minted worker token as a
-    /// bearer header. landbridged writes it to <c>{work_dir}/mcp.json</c> (0600) and
-    /// substitutes the path into the profile's spawn argv — the runner never
-    /// interprets it, it is transport (§10). Built with the DOM so the token is
-    /// escaped correctly and no serializer reflection is needed.
-    ///
-    /// <para>The other carrier is <c>LANDBRIDGE_WORKER_TOKEN</c>, stamped on every spawn.
-    /// The plane still always <em>sends</em> this JSON — it cannot see the profile —
-    /// but landbridged writes the file only when spawn/resume argv names
-    /// <c>{mcp_config}</c> (#112 G11). A Grok/Codex/OpenCode profile that never
-    /// references it must not leave a live bearer on disk.</para>
+    /// Opaque <c>McpConfigJson</c> on the frozen dispatch envelope, for older
+    /// <c>landbridged</c> that still read it. Current landbridged builds ACP
+    /// <c>mcpServers</c> from <see cref="DispatchCommand.WorkerToken"/> and
+    /// <c>mcp_url</c>, and writes <c>mcp.json</c> itself only when spawn argv
+    /// names <c>{mcp_config}</c>.
     /// </summary>
     private string BuildWorkerMcpConfig(string workerToken) =>
         new JsonObject

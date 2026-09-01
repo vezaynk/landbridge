@@ -104,7 +104,7 @@ public sealed record SessionRecord
     /// Why this task was last requeued for infrastructure reasons (§6), or null if it
     /// never was. Typed state the engine takes off the command — the same shape as
     /// <see cref="CompletionProvenance"/> — so the store persists it and the Lead
-    /// (<c>get_session_report</c>, <c>get_team_state</c>) and the §12 dashboard can tell
+    /// (<c>get_lead_inbox</c>, <c>get_team_state</c>) and the §12 dashboard can tell
     /// requeue causes apart instead of counting identical events (#73). On an
     /// at-cap abandonment this is the reason that ended the task.
     /// </summary>

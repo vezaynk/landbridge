@@ -5,7 +5,6 @@ using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
 using Landbridge.Core;
 using Landbridge.Mcp.Auth;
-using Landbridge.Mcp;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Configuration;
 using ModelContextProtocol;
@@ -31,7 +30,6 @@ public sealed class WorkerTools(
     IHttpContextAccessor http,
     IConfiguration config,
     ProcessControlRelay processes,
-    IPermissionClassifier? classifier = null,
     SessionEventFanout? inbox = null)
 {
     /// <summary>The relay a worker dials when config supplies none (§8.3), mirroring <see cref="DispatchService.DefaultPublicMcpUrl"/>.</summary>
@@ -154,75 +152,6 @@ public sealed class WorkerTools(
         var caller = Caller;
         return Describe(await store.ApplyAsync(caller.Session, new RequestInput(caller, parsed, question), ct));
     }
-
-    /// <summary>
-    /// The default interval at which <c>request_permission</c> re-reads the row while it
-    /// waits (§11 permission bridge). Half a second is imperceptible next to a human or a
-    /// Lead deciding, and it is one indexed primary-key read per tick on a query that only
-    /// runs while a worker is genuinely blocked.
-    /// </summary>
-    public static readonly TimeSpan DefaultPermissionPollInterval = TimeSpan.FromMilliseconds(500);
-
-    /// <summary>The poll interval from config, for tests that want millisecond granularity.</summary>
-    private TimeSpan PermissionPollInterval =>
-        int.TryParse(config["Landbridge:PermissionPollIntervalMs"], out var ms) && ms > 0
-            ? TimeSpan.FromMilliseconds(ms)
-            : DefaultPermissionPollInterval;
-
-    // The harness's permission-prompt contract, verified against Claude Code 2.1.220 on the
-    // wire rather than inferred. The request arrives as tool_name + input (+ tool_use_id);
-    // the response is a PermissionResult serialized into this tool's text content —
-    // {"behavior":"allow","updatedInput":{…}} or {"behavior":"deny","message":"…"}. The
-    // parameter names are snake_case because the harness chose them: they are a wire shape
-    // this tool has to match exactly, the same reason WorkerAssignment pins its own.
-    private const string BehaviorAllow = "allow";
-    private const string BehaviorDeny = "deny";
-
-    [McpServerTool(Name = "request_permission"),
-     Description("NOT FOR AGENTS TO CALL. This is the plane half of the permission bridge: ACP " +
-                 "session/request_permission is answered by landbridged via POST /worker/permission, " +
-                 "which runs the same code. The MCP tool remains for a harness that still hooks " +
-                 "a prompt tool. Calling it yourself does nothing useful.")]
-    public async Task<string> RequestPermission(
-        [Description("The tool awaiting approval, as the harness names it.")]
-        string tool_name,
-        [Description("The arguments the harness proposes to call that tool with.")]
-        JsonElement input,
-        [Description("The harness's id for the tool call being approved, for correlation.")]
-        string? tool_use_id = null,
-        CancellationToken ct = default)
-    {
-        var caller = Caller;
-
-        // The proposed input, verbatim and unparsed — this is agent-adjacent text that a
-        // person is about to read in order to decide, so nothing here normalizes, truncates,
-        // or prettifies it. The surfaces that render it escape and fence it (§13).
-        var proposed = input.ValueKind == JsonValueKind.Undefined ? "{}" : input.GetRawText();
-
-        var result = await PermissionRelay.OpenAndAwaitAsync(
-            store, caller, tool_name, proposed, PermissionPollInterval, TimeProvider.System, ct,
-            classifier);
-
-        // v1 passes the proposed input through unchanged. An answerer who wanted a
-        // different call would deny and say so, which is legible to the agent; silently
-        // rewriting its arguments would not be.
-        return result.Allow ? Allow(proposed) : Deny(result.Message);
-    }
-
-    /// <summary>An <c>allow</c> permission result carrying the harness's own proposed input back.</summary>
-    private static string Allow(string proposedInputJson) =>
-        $"{{\"behavior\":\"{BehaviorAllow}\",\"updatedInput\":{proposedInputJson}}}";
-
-    /// <summary>
-    /// A <c>deny</c> permission result. The message is what the agent actually reads, so it
-    /// is the whole point of a denial rather than a decoration on it (§11).
-    /// </summary>
-    private static string Deny(string message) =>
-        JsonSerializer.Serialize(new Dictionary<string, string>
-        {
-            ["behavior"] = BehaviorDeny,
-            ["message"] = message,
-        });
 
     [McpServerTool(Name = "start_process"),
      Description("Run something long WITHOUT blocking: this returns as soon as the process is up, so you " +

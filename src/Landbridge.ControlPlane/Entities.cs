@@ -51,7 +51,7 @@ public sealed class SessionRow
     /// <see cref="CopyFrom"/> off the engine's record. The event row records every
     /// requeue's reason as history (<see cref="SessionEventRow.LivenessReason"/>); this is
     /// the <em>live</em> one — the same row-vs-event-log split
-    /// <see cref="InputKind"/> makes — so <c>get_team_state</c>, <c>get_session_report</c>,
+    /// <see cref="InputKind"/> makes — so <c>get_team_state</c>, <c>get_lead_inbox</c>,
     /// and the §12 task views can say why a task keeps coming back (or, on a task the
     /// cap abandoned, why it stopped) without walking the log. Null until the first
     /// infrastructure requeue; retained afterwards.
@@ -96,7 +96,7 @@ public sealed class SessionRow
     /// <see cref="InputKind"/>, captured verbatim on the RequestInput transition and
     /// size-capped at the engine (<see cref="Landbridge.Core.RequestInput.MaxQuestionBytes"/>).
     /// Opaque: the plane stores it and never parses it (§2 principle 1). Read by the
-    /// Lead per task (<c>get_session_question</c>), by a human on the §12 dashboard and
+    /// Lead per task (<c>get_lead_inbox(sessionId)</c>), by a human on the §12 dashboard and
     /// inbox — where the answering happens — and by the resumed worker on
     /// <c>get_session</c>, which matters most on a cold start, where the transcript that
     /// held the question is gone. Retained past the answer so the pair stays readable;
@@ -188,7 +188,7 @@ public sealed class SessionRow
     /// branch, or URL saying where the work lives. Opaque: stored verbatim, never
     /// dereferenced, never entering <c>Landbridge.Core</c> (§2 principle 1). §6
     /// <b>requires</b> it on a report while the <see cref="WorkerReport"/> beside it
-    /// stays optional. Read back by the Lead's <c>get_session_report</c> fetch and
+    /// stays optional. Read back by the Lead's <c>get_lead_inbox(sessionId)</c> fetch and
     /// the §12 dashboard (#81) as agent-authored CLAIMS, never authority.
     /// Null until a report.
     /// </summary>
@@ -575,8 +575,7 @@ public sealed class SessionEventRow
 ///
 /// <para><b><see cref="CostUsd"/> is null unless the harness stated a cost.</b> Claude does;
 /// Codex states none anywhere. Nothing here derives dollars from tokens — a derived figure is
-/// a different kind of claim from a reported one, and <see cref="ModelPricing"/> exists to
-/// keep that boundary visible rather than to quietly fill this column in.</para>
+/// a different kind of claim from a reported one.</para>
 ///
 /// <para><see cref="ReasoningOutputTokens"/> is a portion OF <see cref="OutputTokens"/>, never
 /// an addition to it (Codex breaks it out, Claude's stream does not expose one). It is stored

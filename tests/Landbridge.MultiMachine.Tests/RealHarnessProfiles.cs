@@ -62,9 +62,7 @@ internal static class RealHarnessProfiles
         GetTask = "landbridge_get_inbox",
         ReportResult = "landbridge_report_result",
         RequestInput = "landbridge_request_input",
-        // Tokens required. Cost is optional: Anthropic-pinned ACP reports one,
-        // the previous big-pickle default reported none. A stored $0.00 is still
-        // forbidden — that would claim the dispatch was free.
+        // Tokens required. Cost is whatever the agent reported, including $0.
         Usage = UsageExpectation.Tokens,
         SupportsResume = true,
         FailureHypotheses = OpenCodeHypotheses(),
@@ -119,7 +117,7 @@ internal static class RealHarnessProfiles
         RequestInput = "landbridge__request_input",
         SessionMode = "approve",
         // Tokens, not Cost. Measured 2026-08-17 through the ACP-bridge turn:
-        // PromptResponse carried buckets. A stored $0.00 is still forbidden.
+        // PromptResponse carried buckets. Cost is whatever the agent reported.
         Usage = UsageExpectation.Tokens,
         SupportsResume = true,
         FailureHypotheses = GooseHypotheses(),
@@ -135,7 +133,7 @@ internal static class RealHarnessProfiles
         RequestInput = "landbridge__request_input",
         SessionMode = "approve",
         // Tokens, not Cost: first live turn will say whether PromptResponse
-        // carries buckets. A stored $0.00 is still forbidden.
+        // carries buckets.
         Usage = UsageExpectation.Tokens,
         SupportsResume = true,
         FailureHypotheses = GooseHypotheses()

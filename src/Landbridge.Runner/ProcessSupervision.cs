@@ -331,10 +331,9 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             ["machine_id"] = machineId,
             ["work_dir"] = workDir,
         };
-        // So a files[] body can write Claude's --mcp-config JSON without the
-        // plane's BuildWorkerMcpConfig helper. Tokens are lbr_<class>_<64 hex>
-        // and are safe to splice into JSON. Empty when the dispatch carries none
-        // (the same tests that omit McpConfigJson).
+        // So a files[] body can embed the bearer without parsing a generated
+        // mcp.json. Tokens are lbr_<class>_<64 hex> and are safe to splice into
+        // JSON. Empty when the dispatch carries none.
         if (dispatch.WorkerToken.Length > 0)
             substitutions["worker_token"] = dispatch.WorkerToken;
         // §11 resume: the ref is still offered as a {session_id} substitution — files[] and
@@ -346,11 +345,13 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             foreach (var (key, value) in dispatch.SpawnSubstitutions)
                 substitutions[key] = value;
 
-        // §13 / #112 G11: write Claude's mcp.json only when this argv actually
-        // names {mcp_config}. The plane still sends McpConfigJson on every
-        // dispatch (it cannot see the profile); a Grok/Codex/OpenCode spawn that
-        // never references the token must not leave a live bearer on disk.
-        if (dispatch.McpConfigJson is not null && ArgvReferences(spawnArgv, "mcp_config"))
+        substitutions.TryGetValue("mcp_url", out var mcpUrl);
+
+        // §13 / #112 G11: write mcp.json only when this argv actually names
+        // {mcp_config}. Built here from the token and URL; fall back to the
+        // plane's blob so an older envelope still produces the file.
+        if (ArgvReferences(spawnArgv, "mcp_config")
+            && (AcpMcpServers.ConfigFileJson(mcpUrl, dispatch.WorkerToken) ?? dispatch.McpConfigJson) is { } mcpJson)
         {
             // In an inherited dir the plain name is already taken by the task that owns the
             // dir, and that task's own worker may still be running (a continuation of a task
@@ -359,7 +360,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             // task-scoped name. The task's own dir keeps the documented mcp.json.
             var mcpPath = Path.Combine(
                 workDir, inheritedDir ? $"mcp-{dispatch.Session}.json" : "mcp.json");
-            File.WriteAllText(mcpPath, dispatch.McpConfigJson);
+            File.WriteAllText(mcpPath, mcpJson);
             SetOwnerOnly(mcpPath);
             substitutions["mcp_config"] = mcpPath;
         }
@@ -424,7 +425,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
         psi.Environment["LANDBRIDGE_SESSION_ID"] = dispatch.Session.ToString();
         if (dispatch.WorkerToken.Length > 0)
             psi.Environment["LANDBRIDGE_WORKER_TOKEN"] = dispatch.WorkerToken;
-        if (substitutions.TryGetValue("mcp_url", out var mcpUrl) && mcpUrl.Length > 0)
+        if (mcpUrl is { Length: > 0 })
             psi.Environment["LANDBRIDGE_MCP_URL"] = mcpUrl;
 
         // §1 tracing: hand the worker the current handle span's W3C id so its root
@@ -539,7 +540,7 @@ public sealed class ProcessSupervisor : IProcessSupervisor
             // deadman policy is already holding open. One task, one conversation.
             var cts = new CancellationTokenSource();
             supervised.EventReaderCts = cts;
-            var mcpServers = AcpMcpServers.FromGeneratedConfig(dispatch.McpConfigJson);
+            var mcpServers = AcpMcpServers.ForPlane(mcpUrl, dispatch.WorkerToken);
             var client = new AcpClient(
                 dispatch.Session,
                 _ring,

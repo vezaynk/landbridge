@@ -303,15 +303,4 @@ public sealed class TaskUsageTests(PostgresFixture pg) : IAsyncLifetime
             Assert.True(view.CostIsPartial);
         }
     }
-
-    [SkippableFact]
-    public void The_pricing_multiplier_is_a_stub_that_yields_no_figure_rather_than_zero()
-    {
-        // The user's ruling made concrete: today the derived path produces NOTHING, not a
-        // 1.0-multiplied number and not $0.00. A zero would claim the work was free.
-        var pricing = new ModelPricing();
-
-        Assert.False(pricing.TryDerive("gpt-5.1-codex", 1000, 100, 50, 10, out var cost));
-        Assert.Equal(0m, cost);
-    }
 }

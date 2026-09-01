@@ -16,16 +16,12 @@ namespace Landbridge.MultiMachine.Tests;
 /// <para><b>Provenance.</b> Everything about the recipe below was established by reading
 /// OpenCode's source at tag <c>v1.18.17</c> (npm <c>opencode-ai@1.18.17</c>, the version the CI
 /// job installs) — <b>no <c>opencode</c> binary was run</b> while writing it. The per-key
-/// citations live on the members that use them; the parser half is pinned for $0 by
-/// <c>Landbridge.Runner.Tests/OpenCodeStreamMappingTests</c>. This tier is where the reading gets
+/// citations live on the members that use them. This tier is where the reading gets
 /// checked against reality.</para>
 ///
 /// <para><b>Why OpenCode was the cheap harness to add.</b> It needed no seam Codex had not
-/// already forced into existence: <c>stdin: closed</c> (#110) and the flat tool-call mode (#111)
-/// are exactly the two knobs it requires. What it <em>did</em> force is one generalization of the
-/// usage keys from bare property names to dotted paths (#142) — no new key — plus one semantic
-/// boolean, <c>usage_reasoning_is_subset</c>, mirroring the <c>usage_cached_is_subset</c> that
-/// Codex forced one bucket over.</para>
+/// already forced into existence. ACP usage buckets are disjoint on the wire; there is no
+/// per-profile subset correction.</para>
 ///
 /// <para><b>Three differences from the Codex tier worth knowing before reading the facts.</b>
 /// (1) The dead-man incompatibility is the same landmine but <em>silent</em> — where a hung

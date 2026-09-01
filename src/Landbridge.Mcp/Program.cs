@@ -263,8 +263,7 @@ app.Use(async (ctx, next) =>
 app.MapMcp().RequireAuthorization();
 
 // ACP session/request_permission lands in landbridged, which is not an MCP client.
-// POST /worker/permission is the same PermissionRelay the MCP request_permission
-// tool runs, authenticated with the worker bearer.
+// POST /worker/permission runs PermissionRelay, authenticated with the worker bearer.
 app.MapWorkerPermissionEndpoint();
 
 // Lead inbox: JSON snapshot plus SSE of the same snapshot. Lead bearer only.

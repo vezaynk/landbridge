@@ -220,7 +220,7 @@ public sealed class SessionStore(
             // verdict path. A leftover Permission kind after the verdict (or
             // after the worker reported) is not a wait: passing it here made
             // LeadMessage / ContinueSession refuse both tools while
-            // get_session_question said "nothing waiting".
+            // get_lead_inbox said "nothing waiting".
             var pending = row.InputKind;
             var livePermissionWait = pending == InputRequestKind.Permission
                 && row.State == SessionState.BlockedOnInput
@@ -750,7 +750,7 @@ public sealed class SessionStore(
                 t.InfrastructureRequeues,
                 t.LastRequeueReason,
                 // §10: the bulk read carries only a flag that a report exists, never
-                // the prose — the Lead fetches the text per task via get_session_report.
+                // the prose — the Lead fetches the text per task via get_lead_inbox(sessionId).
                 HasReport = t.WorkerReport != null,
                 // A live wait of any kind — including Permission. The kind is how
                 // you answer (verdict vs prose); has_question is how you notice.
@@ -902,53 +902,6 @@ public sealed class SessionStore(
             },
         };
     }
-
-    /// <summary>
-    /// The Lead's deliberate per-task report fetch (§10, §13): the worker's opaque
-    /// in-band report for one task, pulled one item at a time rather than riding the
-    /// bulk <see cref="GetTeamStateAsync"/> read (which carries only a flag). Scoped
-    /// to the caller's own Team in the query, so a task in another Team — or no task
-    /// at all — returns null, indistinguishable and leaking nothing (§13). A non-null
-    /// view with a null <see cref="SessionReportView.Report"/> means the task is the
-    /// Lead's but the worker left no report. A pure read; no transition.
-    /// </summary>
-    public async Task<SessionReportView?> GetSessionReportAsync(TeamId team, SessionId task, CancellationToken ct = default) =>
-        await db.Sessions.AsNoTracking()
-            .Where(t => t.Id == task.Value && t.TeamId == team.Value)
-            // §8.1: the pointer rides along with the prose — §6 REQUIRES the
-            // reference on report_result while the report is optional, so a session
-            // whose worker wrote no prose still has a reference. Verbatim, never
-            // dereferenced (#81).
-            // §6/§9 check 7: the infrastructure account rides the per-task fetch in full —
-            // count, cap, and the last reason — because this is where a Lead asks "what
-            // happened to this task", and for a task the cap abandoned it is the ONLY
-            // answer: there is no worker report to read when nothing ever finished.
-            .Select(t => new SessionReportView(
-                t.Id, t.Namespace, t.WorkerReport, t.ResultReference,
-                t.InfrastructureRequeues, t.InfrastructureRequeueLimit, t.LastRequeueReason))
-            .FirstOrDefaultAsync(ct);
-
-    /// <summary>
-    /// The Lead's deliberate per-task question fetch (§10/§11, §13) — the read half of
-    /// the human-in-the-loop channel, shaped exactly like
-    /// <see cref="GetSessionReportAsync"/>: the worker's opaque question for one task,
-    /// pulled one item at a time rather than riding the bulk
-    /// <see cref="GetTeamStateAsync"/> read (which carries the typed kind and a flag,
-    /// never the prose). It returns the answer already given alongside, so a Lead — or
-    /// a fresh one after a takeover (§4) — can see whether the question is still open
-    /// before answering it twice. Team-scoped in the query, so a task in another Team,
-    /// or no task at all, returns null: indistinguishable, leaking nothing (§13). A
-    /// non-null view with a null question means the task is the Lead's but nothing was
-    /// asked. A pure read; no transition.
-    /// </summary>
-    public async Task<SessionQuestionView?> GetSessionQuestionAsync(TeamId team, SessionId task, CancellationToken ct = default) =>
-        await db.Sessions.AsNoTracking()
-            .Where(t => t.Id == task.Value && t.TeamId == team.Value)
-            .Select(t => new SessionQuestionView(
-                t.Id, t.Namespace, t.State, t.InputKind, t.InputQuestion, t.InputAnswer,
-                t.PermissionTool, t.PermissionVerdict, t.PermissionEscalationReason,
-                t.PermissionOptions, t.PermissionOptionId))
-            .FirstOrDefaultAsync(ct);
 
     /// <summary>
     /// The wait-TTL sweeper's poll (§11): every task in
@@ -1357,7 +1310,7 @@ public sealed class SessionStore(
         // captures on report_result. The engine and SessionRecord stay content-free
         // (the reference never lands on the pure state), and CopyFrom deliberately
         // does not carry it — so a succeeding ReportResult is the one place the
-        // row's ResultReference is written. It is read back by get_session_report
+        // row's ResultReference is written. It is read back by get_lead_inbox(sessionId)
         // and the §12 dashboard (#81) alongside the worker's optional in-band
         // report below.
         if (command is ReportResult reported)

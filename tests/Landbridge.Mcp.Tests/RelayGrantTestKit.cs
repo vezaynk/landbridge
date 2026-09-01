@@ -168,34 +168,6 @@ internal static class RelayGrantTestKit
             new ConfigurationBuilder().Build(),
             inbox);
 
-    /// <summary>
-    /// <see cref="WorkerTools"/> wired for the direct-call tests, over the same store shape
-    /// <see cref="LeadToolsFor"/> uses. <paramref name="pollIntervalMs"/> sets
-    /// <c>Landbridge:PermissionPollIntervalMs</c> so §11's permission wait runs at millisecond
-    /// granularity against the real clock — the wait is a genuine delay loop, so a test
-    /// drives it by making the ticks short rather than by advancing a fake clock through
-    /// them.
-    /// </summary>
-    public static WorkerTools WorkerToolsFor(
-        LandbridgeDbContext db, TimeProvider clock, RunnerConnectionRegistry registry,
-        IHttpContextAccessor http, int? pollIntervalMs = null)
-    {
-        var config = new ConfigurationBuilder();
-        if (pollIntervalMs is { } ms)
-            config.AddInMemoryCollection(new Dictionary<string, string?>
-            {
-                ["Landbridge:PermissionPollIntervalMs"] = ms.ToString(),
-            });
-        return new WorkerTools(
-            new SessionStore(db, clock),
-            new RelayGrantService(db, clock),
-            new ForwardOrchestrator(registry, new ForwardWaiters(), NullLogger<ForwardOrchestrator>.Instance),
-            new PreviewMappingService(db, clock),
-            http,
-            config.Build(),
-            new ProcessControlRelay(registry));
-    }
-
     // ── Seeding (against the fixture DB, so the plane's own scope sees it) ─────
 
     /// <summary>

@@ -17,7 +17,7 @@ namespace Landbridge.Mcp.Tests;
 
 /// <summary>
 /// The runner-facing permission bridge: landbridged posts the worker bearer at
-/// <c>POST /worker/permission</c> and gets the same verdict the MCP tool would.
+/// <c>POST /worker/permission</c> and gets the plane's verdict.
 /// </summary>
 [Collection(PostgresCollection.Name)]
 public sealed class WorkerPermissionEndpointsTests(PostgresFixture pg) : IAsyncLifetime

@@ -119,8 +119,8 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
     {
         // §10/§11 over the wire: the whole human-in-the-loop loop through real MCP tool
         // calls — request_input(question) → get_team_state (kind + flag, no prose) →
-        // get_session_question (delimited) → answer_input_request(answer) → the
-        // redispatched worker's get_session carries the answer. This is the round trip the
+        // get_lead_inbox(sessionId) → answer_input_request(answer) → the
+        // redispatched worker's get_inbox carries the answer. This is the round trip the
         // park/resume machinery existed for and could not previously complete.
         Skip.IfNot(pg.Available, pg.SkipReason);
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));

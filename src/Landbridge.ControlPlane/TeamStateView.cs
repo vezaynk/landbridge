@@ -103,13 +103,13 @@ public sealed record ProfileMachineView(
 /// ordinary task — an identifier, never prose. <see cref="CompletionProvenance"/>
 /// records who closed the session (§9 check 4), null until then.
 /// <see cref="HasReport"/> is a <em>flag</em> — not the text — that the worker left
-/// an in-band report (§10); the Lead fetches the report itself deliberately, one
-/// task at a time, via <c>get_session_report</c> (keeps this bulk view prose-free).
+/// an in-band report (§10); the Lead fetches the report itself on
+/// <c>get_lead_inbox(sessionId)</c> (keeps this bulk view prose-free).
 /// <see cref="InputKind"/> and <see cref="HasQuestion"/> split the worker's input
 /// request the same way (§11): the typed kind rides along because it is structure and
 /// it is the triage fact — <c>auth_help</c> needs a human, a <c>question</c> the Lead
 /// can take — while the question's text does not, and is pulled per task with
-/// <c>get_session_question</c>. <see cref="HasQuestion"/> is a live wait (the row still
+/// <c>get_lead_inbox(sessionId)</c>. <see cref="HasQuestion"/> is a live wait (the row still
 /// has <c>BlockedAt</c>), not "this task ever asked": a working task with no flag
 /// is still turning, one with the flag is idle for the Lead.
 /// <see cref="InfrastructureRequeues"/> and <see cref="LastRequeueReason"/> are the §6
@@ -117,8 +117,7 @@ public sealed record ProfileMachineView(
 /// structure, and both here because a task quietly on its fourth machine is a shape of
 /// trouble <see cref="Attempt"/> alone does not name. On a
 /// <see cref="SessionState.Canceled"/> task a non-null reason is what distinguishes the
-/// requeue cap (§9 check 7) from a cancel someone asked for; the cap it was measured
-/// against comes with the per-task <c>get_session_report</c> fetch.
+/// requeue cap (§9 check 7) from a cancel someone asked for.
 /// </summary>
 public sealed record TeamSessionSummary(
     Guid SessionId,
@@ -133,75 +132,6 @@ public sealed record TeamSessionSummary(
     bool HasQuestion,
     int InfrastructureRequeues = 0,
     LivenessLossReason? LastRequeueReason = null);
-
-/// <summary>
-/// One task's worker report (§10), returned by the Lead's deliberate per-task
-/// <c>get_session_report</c> fetch (§13: free text pulled one item at a time, not on
-/// the bulk status read). <see cref="Report"/> is the opaque worker-authored text,
-/// null when the task has left none. Team-scoped at the store, so this is only ever
-/// built for a task in the caller's own Team.
-///
-/// <para><see cref="ResultReference"/> is the §8.1 pointer the worker handed over
-/// on <c>report_result</c> — a commit, branch, or URL, stored verbatim and never
-/// dereferenced. §6 requires it on a report while the prose beside it stays
-/// optional. Non-null after a report; null before, or on a session the plane ended
-/// first.</para>
-///
-/// <para>The infrastructure account travels with it (§6/§9 check 7, #73):
-/// <see cref="InfrastructureRequeues"/> of <see cref="InfrastructureRequeueLimit"/>
-/// requeues, and <see cref="LastRequeueReason"/> for the signal behind the last one.
-/// This is the read that answers "what happened to this task", and on a task the cap
-/// abandoned it is the <em>only</em> answer available — nothing ever finished, so there
-/// is no report to explain it. A count that has reached the limit means the cap ended
-/// the task; a non-positive limit means the cap is configured off.</para>
-/// </summary>
-public sealed record SessionReportView(
-    Guid SessionId,
-    string Namespace,
-    string? Report,
-    string? ResultReference,
-    int InfrastructureRequeues = 0,
-    int InfrastructureRequeueLimit = SessionRecord.DefaultInfrastructureRequeueLimit,
-    LivenessLossReason? LastRequeueReason = null);
-
-/// <summary>
-/// One task's input exchange (§10/§11), returned by the Lead's deliberate per-task
-/// <c>get_session_question</c> fetch — the question read path, shaped exactly like
-/// <see cref="SessionReportView"/> because it is the same discipline: free text pulled
-/// one item at a time, never on the bulk status read (§13).
-/// <see cref="Question"/> is the opaque worker-authored ask (null when the task asked
-/// nothing), <see cref="Answer"/> the opaque answer already given (null while the
-/// question is still open), and <see cref="Kind"/> the typed routing fact.
-/// <see cref="State"/> rides along because "is this still waiting on me?" is the
-/// question a Lead asks in the same breath — a task that has moved back to
-/// <c>submitted</c> has been answered. Team-scoped at the store.
-/// </summary>
-/// <param name="PermissionTool">On an <see cref="InputRequestKind.Permission"/> request
-/// (§11 permission bridge), the harness tool awaiting approval — with
-/// <paramref name="Question"/> carrying the proposed tool input verbatim beside it. Null on
-/// every other kind, which is also how a reader tells the two apart without switching on
-/// <paramref name="Kind"/>.</param>
-/// <param name="Verdict">How a permission request was decided, null while it is still
-/// pending. <paramref name="Answer"/> carries the decision's message, so the
-/// question/answer pair reads the same way for a permission request as for a prose one.</param>
-/// <param name="EscalationReason">Why a pending permission request was marked human-only,
-/// null if it was not — and, for a Lead reading this, the signal that it can no longer
-/// decide this one itself.</param>
-public sealed record SessionQuestionView(
-    Guid SessionId,
-    string Namespace,
-    SessionState State,
-    InputRequestKind? Kind,
-    string? Question,
-    string? Answer,
-    string? PermissionTool = null,
-    PermissionVerdict? Verdict = null,
-    string? EscalationReason = null,
-    string? OptionsJson = null,
-    string? SelectedOptionId = null)
-{
-    public IReadOnlyList<PermissionOption> Options => PermissionOption.Parse(OptionsJson);
-}
 
 /// <summary>
 /// One permission request as an answerer reads it (§11/§12 permission bridge): everything

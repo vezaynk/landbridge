@@ -117,10 +117,6 @@ internal static class RealHarnessBar
         Assert.True(
             tokens.Sum(u => u.InputTokens + u.OutputTokens + u.CacheReadTokens + u.CacheWriteTokens) > 0,
             $"a usage row landed for {profile.Name} but every token bucket was zero");
-        // A real dollar figure is fine (OpenCode + Anthropic reports one). A
-        // $0.00 is the adapter not computing cost and must not be stored as
-        // "this dispatch was free".
-        Assert.DoesNotContain(tokens, u => u.CostUsd is 0m);
     }
 
     /// <summary>

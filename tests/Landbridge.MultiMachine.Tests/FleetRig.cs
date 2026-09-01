@@ -319,7 +319,7 @@ internal sealed class FleetRig(
 
     /// <summary>
     /// The question a worker asked with <c>request_input</c>, read over the real Lead MCP
-    /// surface (<c>get_session_question</c>) — proof the ask crossed the wire, and the thing a
+    /// surface (<c>get_lead_inbox(sessionId)</c>) — proof the ask crossed the wire, and the thing a
     /// Lead reads before answering.
     /// </summary>
     public async Task<string> QuestionAsync(SessionId task, CancellationToken ct)

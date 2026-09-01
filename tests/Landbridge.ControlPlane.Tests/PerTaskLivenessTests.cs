@@ -260,9 +260,6 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
 
         var store = new SessionStore(db, clock);
         var team = new TeamId(row.TeamId);
-        var report = await store.GetSessionReportAsync(team, id);
-        Assert.Equal(2, report!.InfrastructureRequeues);
-        Assert.Equal(LivenessLossReason.NoProgress, report.LastRequeueReason);
 
         var summary = Assert.Single((await store.GetTeamStateAsync(team)).Sessions);
         Assert.Equal(SessionState.Failed, summary.State);
