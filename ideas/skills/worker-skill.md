@@ -114,7 +114,7 @@ Two things come back. A **log path** on this machine, so you read its output wit
 
 - **Stop what you started** when the work is genuinely done: `stop_process(name)`.
 - If it must outlive _this_ session, say so in your report, and expect a later cleanup session. Any worker on that machine can stop it, so the agent that tidies up need not be you.
-- Names are unique per machine, shared with the operator's own declared services. Pick something specific (`build-payments`, not `build`).
+- Names are unique per machine. Pick something specific (`build-payments`, not `build`).
 
 ### Talking to a process: `write_process`
 
@@ -134,7 +134,7 @@ Success means the pipe accepted your bytes. It does **not** mean the program und
 
 ### When a machine needs something permanent
 
-Occasionally a process must outlive even the Team's work — a database the operator wants running tomorrow. That is a machine fixture, not a session's service, and it belongs to the operator: ask them to declare it in the `landbridged` config, or to run it under the machine's service manager themselves. If you are asked to set one up yourself, on Linux a transient unit writes nothing to disk, so there is no file for anyone to find orphaned later:
+Occasionally a process must outlive even the Team's work — a database the operator wants running tomorrow. That is a machine fixture, not a session's process, and it belongs to the operator: ask them to run it under the machine's service manager. If you are asked to set one up yourself, on Linux a transient unit writes nothing to disk, so there is no file for anyone to find orphaned later:
 
 ```
 systemd-run --user --unit=landbridge-dev-myapp --collect \
@@ -147,7 +147,7 @@ Stop it with `systemctl --user stop landbridge-dev-myapp`. Because a transient u
 
 Why this is the sanctioned route rather than a loophole: **the service manager forks the process itself.** The result is not a descendant of your harness, so the tree-kill does not reach it, and it does not inherit `LANDBRIDGE_MACHINE_ID`/`LANDBRIDGE_SESSION_ID`, so the stray reaper's environment scan does not match it. It escapes supervision **by construction** — because a different supervisor owns it and can be asked to stop it — rather than by hiding from ours.
 
-**Better still, where the service is stable and known in advance: ask the operator to declare it.** One unit file they write, own, and track, and your session does nothing but check the port answers and call `register_service`. You author nothing, nothing accumulates in their config directories, and stopping the service is a thing they already know how to do. Prefer this whenever the service is a fixture of the project rather than something you are standing up ad hoc.
+**Better still, where the service is stable and known in advance: ask the operator to run it as a real unit.** One unit file they write, own, and track, and your session does nothing but check the port answers and call `register_service`. You author nothing, nothing accumulates in their config directories, and stopping the service is a thing they already know how to do. Prefer this whenever the service is a fixture of the project rather than something you are standing up ad hoc.
 
 Three practical traps:
 
@@ -155,7 +155,7 @@ Three practical traps:
 - **A user manager can die at logout.** Without `loginctl enable-linger <user>` the whole `--user` manager — and every service under it — goes away when the operator's session ends. If the service needs to survive that, say so to the human; enabling linger is theirs to do, not yours.
 - **Name units per project**, `landbridge-dev-<project>-<service>`, so two Teams on one machine cannot collide on a unit name the way they must not collide on a port.
 
-**macOS is genuinely weaker here, and worth saying so plainly.** launchd has no clean transient equivalent. `launchctl submit -l <label> -- <cmd>` avoids writing a plist but is deprecated; anything else needs a plist in `~/Library/LaunchAgents`. If you write one, you own removing it: `launchctl bootout gui/$(id -u)/<label>` and delete the file on teardown. And be honest with yourself about the failure mode — if your session is hard-killed, both the running job and the plist file are left behind, and nobody is coming to clean them up. On macOS, prefer the operator-declared route.
+**macOS is genuinely weaker here, and worth saying so plainly.** launchd has no clean transient equivalent. `launchctl submit -l <label> -- <cmd>` avoids writing a plist but is deprecated; anything else needs a plist in `~/Library/LaunchAgents`. If you write one, you own removing it: `launchctl bootout gui/$(id -u)/<label>` and delete the file on teardown. And be honest with yourself about the failure mode — if your session is hard-killed, both the running job and the plist file are left behind, and nobody is coming to clean them up. On macOS, prefer asking the operator to own a LaunchAgent.
 
 ### Never scrub Landbridge's environment to escape supervision
 
@@ -170,8 +170,8 @@ Nothing stops your processes automatically — not your turn ending, not the ses
 - **Stop what you started** with `stop_process(name)` once the work is genuinely done. It closes the process's stdin first and gives it a moment to exit on its own before taking it down, so a build gets to flush.
 - **If it must outlive this session**, say so plainly in your report, and name the processes you left running. Your Lead will send a continuation session to clean up — and because a continuation resumes _this_ session, that will most likely be you, still remembering what you started.
 - **Any Worker on the machine can stop any process on it**, so the agent that tidies up need not be the one that started things.
-- **Check what is already running** with `list_processes` — it shows both the processes agents started and the operator's own services, marked, plus whether each has stdin open (so you know whether a graceful stop exists before you call one).
-- **Pick specific names.** They are unique per machine and share a namespace with the operator's own declared services, so `build-payments` is a good name and `build` will collide with somebody. A suffix is the cheapest way to be safe: `dev-<short-session-id>`, or `<project>-<purpose>`. A name is released once the process exits, so a retry can reuse it.
+- **Check what is already running** with `list_processes` — it shows the processes agents started, plus whether each has stdin open (so you know whether a graceful stop exists before you call one).
+- **Pick specific names.** They are unique per machine, so `build-payments` is a good name and `build` will collide with somebody. A suffix is the cheapest way to be safe: `dev-<short-session-id>`, or `<project>-<purpose>`. A name is released once the process exits, so a retry can reuse it.
 
 ## Asking questions
 

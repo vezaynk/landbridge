@@ -242,12 +242,11 @@ The long-lived refresh token is the only durable secret on the box.
 ## The runner config
 
 `landbridged` contains no harness knowledge — everything specific is data (spec §10).
-`--config <path>` points at a JSON file with a `machine` section, one or more
-`profiles` (no reserved `default`; `create_session` requires an exact name), and an optional `services` array —
-the operator's own long-lived processes (§8.2), which `landbridged` supervises as its own
-children, keeps up, and verifies at dial. Those are the operator's, not an agent's: a
-worker can see them in `list_processes` but cannot stop them. The full schema and a worked
-Claude Code profile live in
+`--config <path>` points at a JSON file with a `machine` section and one or more
+`profiles` (no reserved `default`; `create_session` requires an exact name). A leftover
+`services[]` block is refused — landbridged no longer supervises operator fixtures.
+Session-scoped long work is `start_process`; something that must survive a restart
+belongs to systemd or launchd. The full schema and a worked Claude Code profile live in
 [`ideas/skills/references/runner-config.md`](../ideas/skills/references/runner-config.md).
 The Aspire loop generates the same shape per box (see
 [`src/Landbridge.AppHost/DevBoxConfig.cs`](../src/Landbridge.AppHost/DevBoxConfig.cs)).

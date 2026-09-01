@@ -32,104 +32,28 @@ one shape and an entry point per harness.
 | `profiles[]` | `hooks` | Argv hooks, **never a shell** (§10). `before_spawn` runs after `files[]` and before `Process.Start`; non-zero or timeout (10s) is fail-closed (`spawn_failed`). `after_exit` is best-effort after the worker's `exited` and stray reap, skipped for superseded instances. Hook processes get `LANDBRIDGE_MACHINE_ID`, `LANDBRIDGE_HOOK`, and the same `profiles[].env` map the worker does (minus reserved `LANDBRIDGE_*`), not `LANDBRIDGE_SESSION_ID` / `LANDBRIDGE_WORKER_TOKEN`. Use only when the harness will not read a project-local file (Codex / `CODEX_HOME`). |
 | `profiles[]` | `telemetry` | `otel` bool (opt-in, default **false**), `endpoint` (OTLP destination; falls back to the one landbridged inherited), and `env` (a string map of harness-specific variables, applied verbatim). When on, landbridged sets the vendor-neutral `OTEL_*` exporter variables and appends `landbridge.session_id`/`landbridge.machine_id` to `OTEL_RESOURCE_ATTRIBUTES`, so the harness's own token/cost telemetry is attributable per task (§10). `otel: true` with **no endpoint configured and none inherited sets nothing at all** and warns once — telemetry is never enabled without a destination. Claude Code additionally needs `"env": { "CLAUDE_CODE_ENABLE_TELEMETRY": "1" }` (its own flag is data, since landbridged holds no harness knowledge). **Visibility only**: Landbridge ingests none of it and enforces no ceiling — see [docs/TELEMETRY.md](../../../docs/TELEMETRY.md). |
 | `profiles[]` | `logs` | §12 machine-local transcript capture: `capture` (bool, default **false**), `max_bytes` (per-stream cap, default 50 MiB), `prune_after_days` (local hygiene, default 7, `0` disables). There is no `format` or `path`: both were read by nothing and have been removed, and a config still carrying either is accepted unchanged — see [Transcript capture](#transcript-capture-12) below. |
-| `profiles[]` | `processes` | §10 agent-started **processes**: `agent_initiated` (bool, default **false**) and `max` (default 8). Named `processes`, not `services` — they are different things (§10). Whether a task on this profile may call `start_process`, and how many the machine may hold. |
-| `services[]` | — | Optional: long-lived processes `landbridged` supervises as its own children. See [Operator-declared services](#operator-declared-services-10) below. |
+| `profiles[]` | `processes` | §10 agent-started **processes**: `agent_initiated` (bool, default **false**) and `max` (default 8). Whether a task on this profile may call `start_process`, and how many the machine may hold. |
 
-## Operator-declared services (§10)
+A leftover `services[]` block is **refused at load**. landbridged no longer supervises operator fixtures. Session-scoped long work is `start_process`; something that must survive a landbridged restart belongs to systemd or launchd. See the worker skill.
+
+## Long-lived work (§10)
 
 A worker that starts `npm run dev` from its own shell loses it the moment its session ends
-— the service is inside the session's process tree, which is tree-killed, and it carries
-`LANDBRIDGE_*`, which the stray reaper matches. For a service that must outlive the session
-using it, declare it here and `landbridged` supervises it as **its own child**, outside
-every session's tree:
+— the process is inside the session's process tree, which is tree-killed, and it carries
+`LANDBRIDGE_*`, which the stray reaper matches. Session-scoped long work is
+`start_process`: `landbridged` supervises it as its own child, never restarts it, and a
+landbridged restart kills it. Something that must survive a restart belongs to systemd
+or launchd — see the worker skill.
 
-```jsonc
-"services": [
-  {
-    "name": "web-dev",                    // [a-zA-Z0-9_-]{1,64} — becomes a directory name
-    "spawn": ["/abs/node/bin/npm", "run", "dev"],   // argv, never a shell
-    "working_directory": "/abs/path/to/checkout",
-    "env": { "PORT": "5173" },            // explicit: nothing is inherited implicitly
-    "port": 5173,                         // the loopback port this service owns
-    "readiness": { "tcp_port": 5173, "timeout_seconds": 60 },
-    "restart": { "max_backoff_seconds": 60 },
-    "logs": { "capture": true },          // → <state>/services/web-dev/NNNN.ndjson
-    "backend": "direct",                  // the only supported value
-    "enabled": true                       // false = declared but deliberately not started
-  }
-]
-```
+Gate processes per profile with `processes.agent_initiated`; cap them with `processes.max`.
+Names are unique among live processes on a machine; an exited process releases its name.
+**Ports are not part of a process.** If it listens, the agent picks a random port and
+calls `register_service`. Processes also carry a start-time stdin choice (`open_stdin`,
+**default off**).
 
-**Why this is not an escape hatch.** The process is not a descendant of any harness, so
-the session tree-kill does not reach it, and it is tagged with `LANDBRIDGE_MACHINE_ID` but
-deliberately **not** `LANDBRIDGE_SESSION_ID` — so the restart sweep (keyed on machine id) reaps
-the previous generation when `landbridged` restarts, while per-session exit cleanup (which
-requires a matching session id) steps over it. It escapes the session's lifetime while
-staying inside Landbridge's kill guarantee, on every OS, with no `setsid` and no environment
-scrubbing. The worker skill forbids the other route to the same effect for exactly that
-reason.
-
-**Names and ports must both be unique on a machine.** Names because they are identifiers
-(and directory names); ports because a forward dial is resolved to a service *by port*, so a
-shared port would make that lookup answer for whichever service came first, and the resulting
-refusal would make no sense from the consumer's side. `landbridged` rejects either at config load
-and names both offenders — it prints the problem and exits non-zero before connecting, so this
-is caught at start rather than at the first dial.
-
-**`readiness` is a real check.** The port must accept a connection before the service is
-reported `running`. That is what a holder task waits for before calling
-`register_service` (§8.2), and what lets `landbridged` refuse a forward dial for a service
-that is down instead of connecting to whatever else may hold the port.
-
-**Restart, not re-adopt.** On `landbridged` restart every service is killed and started
-again from config; there is no PID registry and no attempt to inherit survivors. Absolute
-paths in `spawn` and an explicit `env` matter for the same reason they do under a system
-service manager: the service gets `landbridged`'s environment, not your shell's.
-
-**`backend`** is `direct` today and a config naming anything else is refused rather than
-quietly supervised the other way. Delegation to `systemd-run`/`pm2`/`docker` is a later
-option, and it costs the property refuse-at-dial relies on: `landbridged` would no longer own
-the process, so "is my service up" becomes a query rather than a fact.
-
-**To stop a service, set `enabled: false`** — not a dashboard button, and deliberately so.
-A service's desired state lives in this file, so a command that stopped it would leave the
-config and reality disagreeing until the next restart silently undid it; keeping the switch
-here means the declaration is always the truth. A disabled service is still declared: it
-reports as `disabled` (distinct from `stopped`, so you can tell "I turned this off" from
-"this died and nobody meant it"), and a forward dial for its port is still refused rather
-than connecting to whatever else has taken it.
-
-**Agents can start their own background processes**, and on most machines that is the primary
-path — the `services[]` block above is for operator-owned fixtures. The two are different
-things and §10 defines both: a **service** is operator-declared and restart-supervised (a
-daemon); a **process** is agent-started via `start_process`, **never restarted**, and lives
-until something stops it or this `landbridged` restarts (a job). Same supervision, same machine
-tagging, same stray-sweep bound.
-
-Gate processes per profile with `processes.agent_initiated`; cap them with `processes.max`. Names
-are unique across processes *and* services on a machine, checked at admission among live entries —
-an exited process releases its name. **Ports are not part of a process at all**, and that is the
-one place the two diverge sharply: a service declares a port and gets refuse-at-dial protection, a
-process declares nothing and is invisible to it. If an agent's process listens on something that
-is the agent's business, and reachability is a separate `register_service` call. Processes also
-carry a start-time stdin choice (`open_stdin`, **default off**): without a pipe there is no
-`write_process` and no graceful stop, which suits the fire-and-forget majority.
-
-Worth knowing as the operator: **nothing reclaims a process when its session ends.** Cleanup
-is the Lead's job — a message on the session that started it, or a later cleanup session —
-and the Machine Group view is where you see what a machine is still holding. Expect more of
-them than the "keep the dev server up" case suggests: the worker skill tells agents to run
-*all* long work this way, because `start_process` is the only non-blocking route that works
-on every harness, so ordinary builds and test runs land here too.
-
-**Status, not logs, on the dashboard.** Each service's state, port, uptime, restart count
-and last exit code ride the machine heartbeat to the §12 Machine Group view. The log
-*contents* stay on the machine — serving them would be live tailing, which §16 open
-question 8 defers. Read them on the box, under the state dir.
-
-Services are not tasks: they do not occupy a session seat, and the load they
-consume is already visible to back-pressure. And they need a profile permissive enough to
-be useful alongside — see the archetypes below.
+**Nothing reclaims a process when its session ends.** Cleanup is the Lead's job — a
+message on the session that started it, or a later cleanup session — and the Machine
+Group view is where you see what a machine is still holding.
 
 ## Spawn substitutions
 

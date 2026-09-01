@@ -224,16 +224,12 @@ public sealed class ProcessToolsEndToEndTests(PostgresFixture pg) : IAsyncLifeti
             // The name below is taken FROM the list result, never from this test's knowledge —
             // if list_processes were a stub, the stop could not be addressed at all.
             var listed = await CallAsync(second, "list_processes", new Dictionary<string, object?>(), ct);
-            var survivor = Assert.Single(
-                listed.EnumerateArray().ToList(), e => e.GetProperty("kind").GetString() == "process");
+            var survivor = Assert.Single(listed.EnumerateArray().ToList());
             var discoveredName = survivor.GetProperty("name").GetString()!;
             Assert.Equal("long-build", discoveredName); // sanity: it found the right one
             Assert.Equal("running", survivor.GetProperty("state").GetString());
-            // A process carries no port — absent or null, never a number. (The serializer omits
-            // nulls, so the property may not be there at all; asserting the absence directly is
-            // the honest check.)
-            Assert.True(!survivor.TryGetProperty("port", out var portEl)
-                        || portEl.ValueKind == JsonValueKind.Null);
+            Assert.False(survivor.TryGetProperty("kind", out _));
+            Assert.False(survivor.TryGetProperty("port", out _));
             Assert.False(survivor.GetProperty("stdinOpen").GetBoolean()); // started fire-and-forget
 
             var stopped = await CallAsync(second, "stop_process", new Dictionary<string, object?>

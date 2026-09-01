@@ -1,6 +1,6 @@
 @if (Machine.Processes is { Count: > 0 })
 {
-    <div class="machine-services">
+    <div>
         <h3>Background processes <span class="nt">started by agents on this machine</span></h3>
         <table>
             <thead>
@@ -75,9 +75,7 @@
     private static RenderFragment ProcessBadge(ServiceState state) => state switch
     {
         ServiceState.Running => @<Badge Text="running" CssClass="ready" />,
-        ServiceState.Starting => @<Badge Text="starting" CssClass="state-submitted" />,
         ServiceState.Exited => @<Badge Text="exited" CssClass="backpressure" />,
-        ServiceState.Failed => @<Badge Text="failed" CssClass="down" />,
         _ => @<Badge Text="stopped" CssClass="backpressure" />,
     };
 }

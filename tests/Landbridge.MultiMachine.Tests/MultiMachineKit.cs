@@ -180,13 +180,12 @@ internal sealed class DaemonHarness : IAsyncDisposable
         var supervisor = workerSupervisor ?? new ProcessSupervisor(config.Machine, ring, TimeProvider.System);
         var backPressure = new BackPressureMonitor(
             new PortableSystemLoadReader(config.Machine.WorkRoot), config.Machine.BackPressure);
-        // §10: agent-started processes live under the machine's ServiceSupervisor, alongside
-        // the operator's declared services (one namespace). Only stood up for a rig that
-        // shares its worker supervisor — without one the daemon could not resolve a profile
-        // to gate on anyway. No declared services: this fleet's operator declares none.
+        // §10: agent-started processes live under the machine's ServiceSupervisor.
+        // Only stood up for a rig that shares its worker supervisor — without one the
+        // daemon could not resolve a profile to gate on anyway.
         _services = workerSupervisor is null
             ? null
-            : new ServiceSupervisor([], machineId, TimeProvider.System,
+            : new ServiceSupervisor(machineId, TimeProvider.System,
                 logs: new ServiceLogStore(Path.Combine(_workRoot, "processes")),
                 log: log);
         _daemon = new RunnerDaemon(

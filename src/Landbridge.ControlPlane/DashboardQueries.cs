@@ -113,7 +113,6 @@ public sealed class DashboardQueries(LandbridgeDbContext db, RunnerConnectionReg
                 isBound ? bound.HumanId : null,
                 isBound ? bound.BoundAt : null,
                 // §10/§12: passed through from the last heartbeat, unexamined.
-                registry.ServicesOn(id),
                 registry.ProcessesOn(id)));
         }
 
@@ -654,7 +653,6 @@ public sealed record MachineView(
     IReadOnlyList<MachineSessionView> RunningSessions,
     Guid? BoundToHuman = null,
     DateTimeOffset? BoundAt = null,
-    IReadOnlyList<ServiceStatus>? Services = null,
     IReadOnlyList<ProcessStatus>? Processes = null);
 
 /// <summary>A task running on a machine, tagged with its owning Team (§12).</summary>

@@ -496,7 +496,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         You have been sent to clean up after an earlier task on this machine.
 
         1. Call list_processes. Exactly one entry has kind "process"; you did not start it.
-           (An entry with kind "service" belongs to the operator — never touch those.)
+           (Stop only processes you started, or that a cleanup session was sent to tidy.)
         2. Call stop_process with that entry's name. It returns the exit code as "value".
         3. Call report_result exactly once with resultReference set to this exact form,
            substituting the name you stopped and the exit code you were given:

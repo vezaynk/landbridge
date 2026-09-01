@@ -13,11 +13,8 @@ namespace Landbridge.Runner;
 /// </summary>
 public sealed record RunnerConfig(
     MachineConfig Machine,
-    IReadOnlyDictionary<string, ProfileConfig> Profiles,
-    IReadOnlyList<ServiceConfig>? Services = null)
+    IReadOnlyDictionary<string, ProfileConfig> Profiles)
 {
-    /// <summary>§10 operator-declared services; empty when the section is absent.</summary>
-    public IReadOnlyList<ServiceConfig> DeclaredServices => Services ?? [];
 
     /// <summary>
     /// Exact-string profile resolution (§7, §10). The name is required; there
@@ -69,7 +66,13 @@ public sealed record RunnerConfig(
 
         var machine = ValidateMachine(dto.Machine, problems);
         var profiles = ValidateProfiles(dto.Profiles, problems);
-        var services = ValidateServices(dto.Services, problems);
+        if (dto.Services is { Count: > 0 })
+        {
+            problems.Add(
+                "services[] is gone — landbridged no longer supervises operator fixtures. " +
+                "Session-scoped long work is start_process; something that must survive a " +
+                "landbridged restart belongs to systemd or launchd.");
+        }
 
         if (problems.Count > 0)
         {
@@ -77,145 +80,13 @@ public sealed record RunnerConfig(
             return false;
         }
 
-        config = new RunnerConfig(machine!, profiles!, services);
+        config = new RunnerConfig(machine!, profiles!);
         errors = [];
         return true;
     }
 
     /// <summary>
-    /// §10 operator-declared services. Absent or empty is the normal case, so a
-    /// missing section is not a problem — but a declared one is validated strictly,
-    /// because a service's name becomes a filesystem path segment (see
-    /// <see cref="IsValidServiceName"/>) and its backend decides whether landbridged owns
-    /// the process at all.
-    /// </summary>
-    private static IReadOnlyList<ServiceConfig> ValidateServices(
-        List<ServiceDto>? dtos, List<string> problems)
-    {
-        if (dtos is null || dtos.Count == 0)
-            return [];
-
-        var built = new List<ServiceConfig>(dtos.Count);
-        var seen = new HashSet<string>(StringComparer.Ordinal);
-
-        // §8.2 refuse-at-dial resolves a dial target to a service by port, so two
-        // services claiming one port would make that lookup answer for whichever it
-        // happened to find first — and a dial refused on that basis is unexplainable
-        // from the outside. Rejected here, where both names can be named.
-        var portOwners = new Dictionary<int, string>();
-
-        foreach (var dto in dtos)
-        {
-            var name = dto.Name?.Trim();
-            if (string.IsNullOrEmpty(name))
-            {
-                problems.Add("a service is missing `name` (§10 services)");
-                continue;
-            }
-
-            if (!IsValidServiceName(name))
-            {
-                problems.Add(
-                    $"service name '{name}' is invalid: use 1-64 characters of a-z, A-Z, 0-9, " +
-                    "'-' or '_' (§10 — the name becomes a directory name under the state dir, " +
-                    "so it must not be able to steer a path)");
-                continue;
-            }
-
-            if (!seen.Add(name))
-            {
-                problems.Add($"duplicate service name '{name}' (§10 — service names are identifiers)");
-                continue;
-            }
-
-            if (dto.Spawn is null || dto.Spawn.Count == 0)
-            {
-                problems.Add($"service '{name}' has an empty spawn argv — landbridged needs a command to run (§10)");
-                continue;
-            }
-
-            // v1 supervises services as landbridged's own children. The key exists so a
-            // config asking for a delegated backend fails loudly instead of being
-            // silently ignored and quietly supervised the other way.
-            var backend = dto.Backend?.Trim();
-            if (!string.IsNullOrEmpty(backend) && !string.Equals(backend, ServiceBackends.Direct, StringComparison.Ordinal))
-            {
-                problems.Add(
-                    $"service '{name}' declares backend '{backend}', which is not implemented — " +
-                    $"'{ServiceBackends.Direct}' (landbridged supervises the process itself) is the only " +
-                    "supported value (§10)");
-                continue;
-            }
-
-            if (dto.Port is { } p && p is < 1 or > 65535)
-            {
-                problems.Add($"service '{name}' port must be in 1..65535 when set (§10)");
-                continue;
-            }
-
-            // The effective port is the one a forward can dial and the one
-            // ServiceSupervisor.IsServiceOnPort resolves — `port` when declared, else the
-            // readiness port. A separate readiness-only port is not part of this rule
-            // because nothing dials it.
-            var effectivePort = dto.Port ?? dto.Readiness?.TcpPort;
-            if (effectivePort is { } ep && !portOwners.TryAdd(ep, name))
-            {
-                problems.Add(
-                    $"services '{portOwners[ep]}' and '{name}' both claim port {ep} — declared " +
-                    "ports must be unique on a machine (§10), because a forward dial is " +
-                    "resolved to a service by port");
-                continue;
-            }
-
-            if (dto.Readiness?.TcpPort is { } rp && rp is < 1 or > 65535)
-            {
-                problems.Add($"service '{name}' readiness.tcp_port must be in 1..65535 when set (§10)");
-                continue;
-            }
-
-            if (dto.Logs?.MaxBytes is { } mb && mb < 1)
-            {
-                problems.Add($"service '{name}' logs.max_bytes must be >= 1 when set (§12)");
-                continue;
-            }
-
-            built.Add(BuildService(dto, name));
-        }
-
-        return built;
-    }
-
-    private static ServiceConfig BuildService(ServiceDto dto, string name)
-    {
-        var readiness = dto.Readiness?.TcpPort is { } tcpPort
-            ? new ReadinessConfig(
-                tcpPort,
-                dto.Readiness.TimeoutSeconds is { } t and > 0
-                    ? TimeSpan.FromSeconds(t)
-                    : ServiceDefaults.ReadinessTimeout)
-            : null;
-
-        var maxBackoff = dto.Restart?.MaxBackoffSeconds is { } b and > 0
-            ? TimeSpan.FromSeconds(b)
-            : ServiceDefaults.MaxBackoff;
-
-        return new ServiceConfig(
-            name,
-            dto.Spawn!,
-            dto.WorkingDirectory,
-            dto.Env ?? new Dictionary<string, string>(StringComparer.Ordinal),
-            dto.Port,
-            readiness,
-            maxBackoff,
-            new LogsConfig(
-                dto.Logs?.Capture ?? false,
-                dto.Logs?.MaxBytes ?? TranscriptDefaults.MaxBytes,
-                dto.Logs?.PruneAfterDays ?? TranscriptDefaults.PruneAfterDays),
-            dto.Enabled ?? true);
-    }
-
-    /// <summary>
-    /// <b>A security control, not hygiene.</b> A service name becomes a directory
+    /// <b>A security control, not hygiene.</b> A process name becomes a directory
     /// name under the state dir, so it occupies the slot a <c>SessionId</c> Guid used to
     /// fill — and the Guid is precisely why the transcript path builder could be
     /// called closed. An arbitrary string there would reopen it: <c>..</c>, a
@@ -634,31 +505,14 @@ public sealed record LogsConfig(
 /// </summary>
 /// <param name="Max">
 /// Resource bound, not an authority control: the gate answers <em>may this task start
-/// processes</em>, this answers <em>how many</em>. Services are already-running load that
-/// back-pressure cannot gate the way it gates dispatch, so an agent looping on
-/// <c>start_process</c> needs a ceiling.
+/// processes</em>, this answers <em>how many</em>. Back-pressure cannot gate a looping
+/// <c>start_process</c> the way it gates dispatch, so an agent needs a ceiling.
 /// </param>
 public sealed record ProfileProcessesConfig(bool AgentInitiated = false, int Max = 8);
 
-/// <summary>Accepted <c>services[].backend</c> values (§10).</summary>
-public static class ServiceBackends
-{
-    /// <summary>landbridged spawns and supervises the process itself — the only v1 backend.</summary>
-    public const string Direct = "direct";
-}
-
-/// <summary>Defaults for §10 service supervision.</summary>
+/// <summary>Defaults for §10 process supervision.</summary>
 public static class ServiceDefaults
 {
-    /// <summary>How long a readiness port may take to answer before the start is a failure.</summary>
-    public static readonly TimeSpan ReadinessTimeout = TimeSpan.FromSeconds(60);
-
-    /// <summary>Ceiling on the exponential restart backoff.</summary>
-    public static readonly TimeSpan MaxBackoff = TimeSpan.FromSeconds(60);
-
-    /// <summary>First restart delay; doubles up to <see cref="MaxBackoff"/>.</summary>
-    public static readonly TimeSpan InitialBackoff = TimeSpan.FromSeconds(1);
-
     /// <summary>
     /// How long <c>stop_process</c> waits after closing stdin before taking the tree — the same
     /// graceful-then-kill shape a message-mode worker stop uses (§10/§11). Long enough for a
@@ -668,35 +522,16 @@ public static class ServiceDefaults
 }
 
 /// <summary>
-/// One operator-declared service (§10): a long-lived process <c>landbridged</c> supervises
-/// as its <b>own child</b>, outside any task's process tree. That placement is the
-/// whole point — it is why the service survives the task that uses it without anyone
-/// having to <c>setsid</c> or scrub <c>LANDBRIDGE_*</c> to escape supervision, and it keeps
-/// the kill guarantee inside Landbridge on every OS rather than depending on a system
-/// service manager that macOS and containers may not have.
-///
-/// <para>This record is also reused for an agent-started <b>process</b> (§10
-/// <c>start_process</c>), which differs in policy rather than in shape: never restarted,
-/// declared over the wire, and machine-scoped. See <see cref="ServiceSupervisor"/>.</para>
+/// Runtime record for an agent-started process (§10 <c>start_process</c>):
+/// landbridged's own child, never restarted, machine-scoped.
+/// See <see cref="ServiceSupervisor"/>.
 /// </summary>
 public sealed record ServiceConfig(
     string Name,
     IReadOnlyList<string> Spawn,
     string? WorkingDirectory,
     IReadOnlyDictionary<string, string> Env,
-    int? Port,
-    ReadinessConfig? Readiness,
-    TimeSpan MaxBackoff,
-    LogsConfig Logs,
-    bool Enabled = true);
-
-/// <summary>
-/// §10 readiness: the loopback port that must accept a connection before the service
-/// counts as <see cref="Landbridge.Contracts.ServiceState.Running"/>. A real check, not a
-/// sleep — it is what lets a holder task register only once the port actually answers
-/// (§8.2), and what lets landbridged refuse a forward dial for a service that is down.
-/// </summary>
-public sealed record ReadinessConfig(int TcpPort, TimeSpan Timeout);
+    LogsConfig Logs);
 
 /// <summary>Thrown by <see cref="RunnerConfig.Load"/> with every validation failure.</summary>
 public sealed class RunnerConfigException(IReadOnlyList<string> errors)

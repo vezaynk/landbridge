@@ -296,12 +296,10 @@ public sealed class WorkerTools(
     }
 
     [McpServerTool(Name = "list_processes"),
-     Description("List what is running on your machine — the background processes agents started, " +
-                 "and the operator's own declared services, each marked with its kind. Use it to pick " +
+     Description("List the background processes agents started on this machine. Use it to pick " +
                  "a name that is not taken, to work out why a start was refused, and above all to find " +
-                 "out what an earlier session left running when you have been sent to clean up. A service " +
-                 "is the operator's and not yours to stop; a process is fair game for any session on the " +
-                 "machine.")]
+                 "out what an earlier session left running when you have been sent to clean up. Any " +
+                 "session on the machine may stop a process.")]
     public IReadOnlyList<RunningThing> ListProcesses() => processes.List(Caller.Session);
 
     [McpServerTool(Name = "write_process"),

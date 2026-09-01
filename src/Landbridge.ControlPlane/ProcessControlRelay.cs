@@ -24,8 +24,7 @@ namespace Landbridge.ControlPlane;
 public sealed class ProcessControlRelay(RunnerConnectionRegistry registry)
 {
     /// <summary>How long a machine has to answer a start. Generous: the runner spawns the
-    /// process and waits for readiness before replying, because a worker told "started" needs
-    /// the port to be answering before it registers (§8.2).</summary>
+    /// OS process and replies once it is up. A process declares no port.</summary>
     private static readonly TimeSpan StartTimeout = TimeSpan.FromSeconds(90);
 
     /// <summary>Stop and write are local acts on the machine; they should be quick or broken.</summary>
@@ -106,16 +105,11 @@ public sealed class ProcessControlRelay(RunnerConnectionRegistry registry)
     }
 
     /// <summary>
-    /// §10: what the machine holding this task is running — <b>both kinds, marked</b>. Read from
-    /// the last heartbeat, so it needs no wire round trip and no new member.
-    ///
-    /// <para>Both kinds, because names and ports share one namespace and a refusal cites the
-    /// existing holder: an agent picking a name, or working out why one was refused, has to be
-    /// able to see what is already taken — including the operator's own services, which it may
-    /// not touch.</para>
+    /// §10: the agent-started processes the machine holding this task last reported.
+    /// Read from the last heartbeat, so it needs no wire round trip and no new member.
     ///
     /// <para>This is the enumeration the cleanup story depends on. A continuation agent that has
-    /// lost its notes cannot otherwise discover what an earlier task left running, and guessing
+    /// lost its notes cannot otherwise discover what an earlier session left running, and guessing
     /// names is not a recovery path.</para>
     /// </summary>
     public IReadOnlyList<RunningThing> List(SessionId task)
@@ -125,21 +119,11 @@ public sealed class ProcessControlRelay(RunnerConnectionRegistry registry)
             return [];
 
         var all = new List<RunningThing>();
-        foreach (var s in registry.ServicesOn(machine))
-        {
-            all.Add(new RunningThing(
-                s.Name, "service", s.State.ToString().ToLowerInvariant(),
-                s.Port == 0 ? null : s.Port, s.StartedAt, s.LastExitCode, s.LastFailureAt,
-                StdinOpen: true));
-        }
         foreach (var p in registry.ProcessesOn(machine))
         {
-            // Port is null for a process by construction — Landbridge tracks no port for one. The
-            // stdin mode is here because a cleanup agent must know whether a graceful stop even
-            // exists before it calls stop_process.
             all.Add(new RunningThing(
-                p.Name, "process", p.State.ToString().ToLowerInvariant(),
-                null, p.StartedAt, p.ExitCode, p.ExitedAt, p.StdinOpen));
+                p.Name, p.State.ToString().ToLowerInvariant(),
+                p.StartedAt, p.ExitCode, p.ExitedAt, p.StdinOpen));
         }
         return all.OrderBy(x => x.Name, StringComparer.Ordinal).ToList();
     }
@@ -199,15 +183,11 @@ public sealed class ProcessControlRelay(RunnerConnectionRegistry registry)
 /// </summary>
 public sealed record ProcessStartOutcome(bool Started, string? LogPath, string? Refusal);
 
-/// <summary>
-/// One thing running on a machine (§10). <see cref="Kind"/> is <c>service</c> (operator-declared,
-/// restart-supervised, not an agent's to stop) or <c>process</c> (agent-started, never restarted).
-/// </summary>
-/// <param name="Port">Only a config-declared service has one; always null for a process.</param>
+/// <summary>One agent-started process on a machine (§10).</summary>
 /// <param name="StdinOpen">Whether a graceful (EOF) stop is available. False means stopping it is
 /// a bounded wait and then a tree kill.</param>
 public sealed record RunningThing(
-    string Name, string Kind, string State, int? Port,
+    string Name, string State,
     DateTimeOffset? StartedAt, int? ExitCode, DateTimeOffset? EndedAt, bool StdinOpen);
 
 /// <summary>What a worker learns from <c>stop_process</c> or <c>write_process</c>.
