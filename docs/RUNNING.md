@@ -146,16 +146,16 @@ secrets or the environment variable `Landbridge__Operator__PassphraseHash` (see 
   dummy-task check aimed at a named profile: `POST` mints the set,
   `GET /dashboard/conformance/{runId}` reports states), and `/dashboard/connect`
   (how to reach the plane as a Lead, and how to enroll a machine — including
-  issuing an enrollment token, claiming a Team, and minting a one-time setup
+  issuing an enrollment token, claiming a Lead factory, and minting a one-time setup
   link whose first GET is markdown that contains the Lead bearer). Pages carry a
   5-second auto-refresh and each has a JSON twin (`?format=json` or an
   `Accept: application/json` request). A pasted human/Lead token is accepted as a
-  secondary door — but a **Lead** token reads only its own Team: `/dashboard/teams`,
-  `/dashboard/inbox` and `/dashboard/events` come back filtered to it, another
+  secondary door — but a **Lead** token reads only the Teams it owns: `/dashboard/teams`,
+  `/dashboard/inbox` and `/dashboard/events` come back filtered to those Teams, another
   Team's `/dashboard/teams/{id}` is a 403, and `/dashboard/machines` plus
   `/dashboard/conformance` are human-only (machine enumeration is a human surface
   by design, §12). `/dashboard/connect` is readable by a Lead; issuing an
-  enrollment token or claiming a Team is human-only. The mutating forms (login,
+  enrollment token or claiming a Lead factory is human-only. The mutating forms (login,
   logout, the permission verdict, **Revoke machine**, the profile-check start,
   the Connect claims) are refused unless the request carries this dashboard's
   own `Origin` — so a scripted POST has to send one.
@@ -170,14 +170,15 @@ secrets or the environment variable `Landbridge__Operator__PassphraseHash` (see 
   passphrase; `/oauth/token` mints an opaque human session.
 
 Lead identity is then *derived from the authenticated token*, not claimed through
-a tool call — a human-session/lead principal is what the MCP Lead tools require.
-An earlier draft of spec §10 listed `claim_lead` / `release_lead` / `list_teams` /
-`get_machine_group_status` tools; per §10's as-built reconciliation all four are
-**deliberate non-goals, not pending work**. Claiming and releasing a Lead is the
-credential lifecycle rather than a tool call, and Team / Machine Group enumeration
-is a human surface served by the web dashboard (each page has a `?format=json`
-twin a reattaching Lead can read with its own token). The slash-command prompts
-are separately not built — no MCP prompt is registered on this branch.
+a tool call — a Lead factory principal is what the MCP Lead tools require.
+`create_team` mints a Team that factory owns; every other Lead tool takes `teamId`.
+There is no `list_teams`. An earlier draft of spec §10 listed `claim_lead` /
+`release_lead` / `list_teams` / `get_machine_group_status` tools; claiming and
+releasing the factory is still the credential lifecycle rather than a tool call,
+and Team / Machine Group enumeration is a human surface served by the web
+dashboard (each page has a `?format=json` twin a reattaching Lead can read for
+the Teams it owns). The slash-command prompts are separately not built — no MCP
+prompt is registered on this branch.
 
 ## Enrolling a real second machine
 

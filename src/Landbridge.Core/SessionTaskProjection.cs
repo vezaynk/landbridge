@@ -61,9 +61,9 @@ public static class SessionTaskProjection
         MessageState.AwaitingPermission =>
             "permission wait; answer_permission_request",
         MessageState.AwaitingLead =>
-            "waiting on the Lead; get_lead_inbox(sessionId) then send_input_response",
+            "waiting on the Lead; get_lead_inbox(teamId, sessionId) then send_input_response",
         MessageState.AwaitingReport =>
-            "report ready; get_lead_inbox(sessionId), then reply or stop_session",
+            "report ready; get_lead_inbox(teamId, sessionId), then reply or stop_session",
         MessageState.AwaitingPull =>
             "worker pulling get_inbox",
         _ => null,

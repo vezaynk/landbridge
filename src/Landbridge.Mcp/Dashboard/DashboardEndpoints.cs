@@ -21,8 +21,8 @@ namespace Landbridge.Mcp.Dashboard;
 /// and JSON is <see cref="DashboardJsonReads"/>.
 ///
 /// <para>Two rules run across the whole surface rather than route by route. Reads are scoped to
-/// what the resolved principal may see — a human operator reads the instance, a Lead reads its
-/// own Team (<see cref="Gated"/>). Mutating POSTs must come from this dashboard's own origin
+/// what the resolved principal may see — a human operator reads the instance, a Lead reads the
+/// Teams that factory owns (<see cref="Gated"/>). Mutating POSTs must come from this dashboard's own origin
 /// (<see cref="CrossOriginRefusal"/>), because the session cookie is the only thing they need
 /// and a browser will attach it to anyone's form.</para>
 /// </summary>
@@ -206,7 +206,7 @@ public static class DashboardEndpoints
 
     /// <summary>
     /// POST /dashboard/preview — mint a shareable preview for a registered service
-    /// (§12 button, §8.4). Operator-gated; a Lead may mint only for its own Team. The
+    /// (§12 button, §8.4). Operator-gated; a Lead may mint only for a Team it owns. The
     /// service field is <c>{sessionId}:{name}</c> from the Team view so the mapping binds
     /// the exact owning task. Returns the URL (HTML result page, or JSON twin).
     /// </summary>
@@ -467,13 +467,13 @@ public static class DashboardEndpoints
     }
 
     /// <summary>
-    /// The single Team a caller's multi-Team reads are confined to, or null for the instance-wide
+    /// The Teams a caller's multi-Team reads are confined to, or null for the instance-wide
     /// view a human operator gets. The inverse of <see cref="OperatorMayAccess"/>, for the routes
-    /// that name no Team: rather than refusing a Lead outright they answer with its own Team,
-    /// which is the §4 reattachment surface it is entitled to.
+    /// that name no Team: rather than refusing a Lead outright they answer with the Teams that
+    /// factory owns, which is the §4 reattachment surface it is entitled to.
     /// </summary>
     private const string MachinesAreHumanOnly =
-        "the machine group is a human-operator view; a Lead session sees its own Team's tasks "
+        "the machine group is a human-operator view; a Lead session sees its owned Teams "
         + "on /dashboard/teams and through get_team_state";
 
     private const string RevokingIsHumanOnly =
@@ -481,7 +481,7 @@ public static class DashboardEndpoints
         + "session cannot un-trust one — ask your operator";
 
     private const string NotYourTeam =
-        "this session may only read its own Team";
+        "this session may only read a Team it owns";
 
     /// <summary>
     /// A 403 for a caller whose credential does not reach what it asked for: the JSON twin gets

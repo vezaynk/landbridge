@@ -222,7 +222,7 @@ else if (Ready && Team is { } team)
         }
         TeamId = id;
         if (!OperatorMayAccess(new TeamId(TeamId)))
-            return "this session may only read its own Team";
+            return "this session may only read a Team it owns";
         Team = await Queries.GetTeamAsync(TeamId, RequestAborted);
         if (Team is null)
         {

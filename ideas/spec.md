@@ -125,10 +125,10 @@ Split hot from cold in the same database. Never join a task-state read against t
 
 A Team is a unit of human-authorized work. It owns a scope declaration and a set of tasks. It terminates. (It owned a dollar budget too, until that was removed — §9's note.)
 
-**The Lead is a harness client the human drives.** Not a dispatched agent, not a daemon. Someone opens their harness, attaches to a Team, and works. The human is the event loop — which is why the Lead needs no lease, no wake conditions, and no runner.
+**The Lead is a harness client the human drives.** Not a dispatched agent, not a daemon. Someone opens their harness with a factory token and a team id, and works. The human is the event loop — which is why the Lead needs no lease, no wake conditions, and no runner.
 
 - A Lead's machine does not need `landbridged`. Enrollment and attachment are independent choices — the one thing it buys is the §8.3 human path: only a Lead that has *bound* an enrolled machine can open a forward onto it for its human. Leading a Team never requires it.
-- Lead authority is the human's session scoped to `{team, lead}`.
+- Lead authority is the human's session descended to a factory credential. The factory owns Teams via `lead_teams`; each tool takes a `teamId` that factory owns. There is no `list_teams`.
 - Multiple Teams run in parallel within an Instance. Leads have no channel to each other; the human is the channel.
 - There are no sub-Teams.
 
@@ -136,7 +136,7 @@ A Team is a unit of human-authorized work. It owns a scope declaration and a set
 
 ### Claiming, releasing, and takeover
 
-One Lead per Team, enforced as a conditional claim — the second claimant is refused.
+One owner per Team, enforced as `lead_teams`' primary key — the second claimant is refused. The Lead token is a factory, not a Team: `create_team` mints another Team that factory owns. Takeover reassigns that Team and only revokes the incumbent factory if it owns no other Team.
 
 A Team can be left leadless by explicit release or by the human's session ending. A leadless Team is claimable and is a **visible state**, not an invisible one: it explains why nothing is progressing.
 
@@ -164,7 +164,7 @@ The control plane is both the OAuth 2.1 authorization server and the resource se
 | Identity | Obtained | Lifetime | Authorizes |
 |---|---|---|---|
 | **Human** | auth code / device flow | session | create Teams, approve permissions, close sessions, dashboard |
-| **Lead** | human session, claimed against a Team | session or until evicted | create tasks, answer questions, **close sessions** (`stop_session`, §7), read Team state, bind its human's machine and open forwards onto it (§8.3) |
+| **Lead** | human session, claimed as a factory | session or until evicted | `create_team`; create tasks, answer questions, **close sessions** (`stop_session`, §7) on a `teamId` it owns; bind its human's machine and open forwards onto it (§8.3) |
 | **Machine** (`landbridged`) | enrollment token → client credentials | long, refreshed | runner channel, log stream, relay tunnels |
 | **Worker** | minted at dispatch | task lifetime | MCP tools, scoped to `{team, task, worker, instance}` |
 
@@ -374,7 +374,7 @@ Preview traffic rides the same per-Team accounting as any other forward (§9 che
 3. Only a lead claim may create tasks.
 4. Closing a session comes from a Lead or human credential, **never the session's own worker** (doer/judge split); provenance (`lead-session` | `human`) is recorded on the close.
 5. Single dispatch per task; the dispatched machine is accepting work and declares a matching profile name.
-6. One Lead per Team; takeover is explicit and logged.
+6. One owner per Team (`lead_teams` primary key); takeover is explicit and logged. The Lead token is a factory and may own several Teams.
 7. Ack timeout and per-task liveness timeout → requeue, **capped per task**: the requeue that reaches the cap abandons the task as `canceled` instead (§6), never `rejected`. Every requeue records which signal fired — undelivered dispatch, aliveness loss, no progress, process exit, machine reboot — on the task and on its event row.
 8. Verification retries exhausted → `rejected`.
 9. *(Removed 2026-08-12 — the dollar budget ceiling. The number is vacant rather than reused; see the note below.)*
@@ -441,9 +441,9 @@ There is no `claim_task`. Workers are dispatched, never claimants (§5, §6) —
 
 This keeps §5's rule intact — authority is structural, from the credential, not from which tools exist — and moves human-facing reads to the human-facing surface (§12).
 
-Status tools return counts and states — **never prose**. Free text is fetched deliberately, one item at a time, delimited as untrusted — including the worker's report and the question it is blocked on, which `get_team_state` flags (`has_report`, `has_question`, plus the typed `input_kind`) but never carries, leaving `get_lead_inbox(sessionId)` to pull each per task (§13). Responses are scoped by credential: a Lead gets full Team state, a worker gets its own task plus registered services and whether a Lead is attached.
+Status tools return counts and states — **never prose**. Free text is fetched deliberately, one item at a time, delimited as untrusted — including the worker's report and the question it is blocked on, which `get_team_state` flags (`has_report`, `has_question`, plus the typed `input_kind`) but never carries, leaving `get_lead_inbox(teamId, sessionId)` to pull each per task (§13). Responses are scoped by credential: a Lead gets state for a Team it owns (pass `teamId`), a worker gets its own task plus registered services and whether a Lead is attached. HTTP twins: `GET /lead/inbox?teamId=` and `GET /lead/inbox/events?teamId=`.
 
-**Slash commands are a convenience layer, not the API.** `/landbridge-teams`, `/landbridge-machines`, `/landbridge-lead`, `/landbridge-status`, `/landbridge-enroll` ship as MCP prompts. Surfacing prompts as slash commands is client behaviour and not universal, so every command must map onto an independently-reachable surface — nothing may be reachable *only* through a prompt. Per the as-built reconciliation above, that surface is a tool for agent actions (`/landbridge-status` → `get_team_state`), the §12 dashboard and its structured-data twin for the human cross-Team/machine views (`/landbridge-teams`, `/landbridge-machines`), the credential/lead-claim flow for `/landbridge-lead`, and the enrollment flow for `/landbridge-enroll`.
+**Slash commands are a convenience layer, not the API.** `/landbridge-teams`, `/landbridge-machines`, `/landbridge-lead`, `/landbridge-status`, `/landbridge-enroll` are named in the skill as triggers; none is registered as an MCP prompt on this build. Surfacing prompts as slash commands is client behaviour and not universal, so every command must map onto an independently-reachable surface — nothing may be reachable *only* through a prompt. That surface is a tool for agent actions (`/landbridge-status` → `get_team_state` with `teamId`), the §12 dashboard and its structured-data twin for the human cross-Team/machine views (`/landbridge-teams`, `/landbridge-machines`), the credential/lead-claim flow (dashboard Connect) for `/landbridge-lead`, and the enrollment skill for `/landbridge-enroll`.
 
 Skills ship as MCP resources, reaching every agent on connect where the client supports auto-discovery (`skill://`, SEP-2640, is draft — see §5); the guaranteed path is the dispatch prompt directing the worker to read the skill resource before starting.
 

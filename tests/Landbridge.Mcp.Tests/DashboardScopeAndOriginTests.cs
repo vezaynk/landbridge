@@ -22,8 +22,9 @@ namespace Landbridge.Mcp.Tests;
 /// HTTP against the ephemeral Postgres fixture.
 ///
 /// <para><b>Who may read what.</b> Every view here accepts a Lead token, because §12 requires a
-/// structured twin a reattaching Lead can consume (§4). What it may consume is its own Team: a
-/// Lead's credential is Team-scoped (§5) and an agent gets no cross-Team or machine-group view
+/// structured twin a reattaching Lead can consume (§4). What it may consume is the Teams that
+/// factory owns: a Lead credential is not itself a Team (§5) and an agent gets no MCP list of
+/// Teams or machine-group view
 /// (§10 as-built, §12 "human operator session only"). The suite therefore seeds <b>two</b> Teams
 /// for every read and asserts the other one is absent — a scoping bug is invisible against a
 /// single-Team fixture, which is how the instance-wide behaviour survived as long as it did.</para>
@@ -47,7 +48,7 @@ public sealed class DashboardScopeAndOriginTests(PostgresFixture pg) : IAsyncLif
 
     public Task DisposeAsync() => Task.CompletedTask;
 
-    // ── Reads: a Lead sees its own Team, a human sees the instance ─────────────
+    // ── Reads: a Lead sees Teams it owns, a human sees the instance ─────────────
 
     /// <summary>
     /// The worst of the reads, because the route takes an arbitrary Team id and the page it
@@ -72,7 +73,7 @@ public sealed class DashboardScopeAndOriginTests(PostgresFixture pg) : IAsyncLif
 
         using var client = Client(app);
 
-        // Its own Team: the full page, prose and all.
+        // A Team it owns: the full page, prose and all.
         var own = await GetAsync(client, $"/dashboard/teams/{mine.Value}", lead, ct);
         Assert.Equal(HttpStatusCode.OK, own.StatusCode);
         Assert.Contains("my own worker said this", await own.Content.ReadAsStringAsync(ct), StringComparison.Ordinal);
@@ -106,7 +107,7 @@ public sealed class DashboardScopeAndOriginTests(PostgresFixture pg) : IAsyncLif
     /// <summary>
     /// The routes that name no Team answer a Lead with its own rather than refusing: the Team
     /// list, the inbox, and the event log are all reattachment surfaces (§4). Each is asserted
-    /// on both halves — its own Team present, the other Team absent — because a filter applied
+    /// on both halves — a Team it owns present, the other Team absent — because a filter applied
     /// to one query and forgotten on the next is the shape this bug had.
     /// </summary>
     [SkippableFact]
@@ -143,7 +144,7 @@ public sealed class DashboardScopeAndOriginTests(PostgresFixture pg) : IAsyncLif
         Assert.DoesNotContain(TheirSecret, inbox.RootElement.GetRawText(), StringComparison.Ordinal);
         Assert.DoesNotContain(theirNamespace, inbox.RootElement.GetRawText(), StringComparison.Ordinal);
 
-        // ── The event log: its own transitions and its own Team's lead events only.
+        // ── The event log: its own transitions and its owned Teams' lead events only.
         using var events = await GetJsonAsync(client, "/dashboard/events?format=json", lead, ct);
         var rows = events.RootElement.EnumerateArray().ToList();
         Assert.NotEmpty(rows);

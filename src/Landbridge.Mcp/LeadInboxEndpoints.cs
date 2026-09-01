@@ -11,10 +11,11 @@ namespace Landbridge.Mcp;
 
 /// <summary>
 /// Lead-only HTTP inbox: one JSON snapshot and one SSE feed of the same
-/// snapshot. Wakes on session NOTIFY via <see cref="SessionEventFanout"/>;
-/// each event is a full Team snapshot, not a delta. Team-wide is
-/// identifiers only; <c>?sessionId=</c> (repeatable) carries bodies and
-/// marks unread report mail as read.
+/// snapshot. <c>?teamId=</c> is required (a Team this factory owns). Wakes on
+/// session NOTIFY via <see cref="SessionEventFanout"/>; each event is a full
+/// Team snapshot, not a delta. Team-wide is identifiers only;
+/// <c>?sessionId=</c> (repeatable) carries bodies and marks unread report mail
+/// as read.
 /// </summary>
 public static class LeadInboxEndpoints
 {

@@ -1,13 +1,15 @@
 <DashboardDocument Title="Lead claimed" ActiveKey="connect">
 <h1>Lead claimed</h1>
-<p class="sub">Team <span class="mono">@TeamId</span>. Shown once. Give this token to the harness as <span class="mono">Authorization: Bearer</span>.</p>
+<p class="sub">First Team <span class="mono">@TeamId</span>. Shown once. This token is a Lead factory — pass that id as <span class="mono">teamId</span> on Lead tools, or call <span class="mono">create_team</span> for another Team.</p>
 <section class="secret">
     <label for="token">Lead token</label>
     <input id="token" type="text" class="mono" readonly value="@Token" />
-    <p class="nt">Point the harness at <span class="mono">@McpUrl</span>.
+    <p class="nt">Point the harness at <span class="mono">@McpUrl</span> as
+        <span class="mono">Authorization: Bearer</span>.
         Read <span class="mono">landbridge://skills/lead</span>, then
         <span class="mono">list_profiles</span> before
-        <span class="mono">create_session</span>.</p>
+        <span class="mono">create_session</span> with that
+        <span class="mono">teamId</span>.</p>
 </section>
 <p><a href="/dashboard/teams/@TeamId">Open this Team</a>
     · <a href="/dashboard/connect">← back to Connect</a></p>
