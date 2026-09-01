@@ -69,8 +69,7 @@ public sealed class RunnerDaemon
     private readonly TranscriptReader? _transcripts;
     private readonly Action<string>? _log;
 
-    /// <summary>§10 operator-declared services, when this machine declares any. Their
-    /// status rides the heartbeat; the daemon itself never interprets it.</summary>
+    /// <summary>§10 agent-started processes. Status rides the heartbeat.</summary>
     private readonly ServiceSupervisor? _services;
 
     private readonly CancellationTokenSource _cts = new();
@@ -121,13 +120,7 @@ public sealed class RunnerDaemon
         // forward-opened/-closed onto the same ring as every other event. The
         // accept-timeout override keeps the consumer plane's bounded wait short in
         // tests; production uses the grant-TTL ceiling.
-        // §8.2 refuse-at-dial: the forwarder asks the service supervisor whether a dial
-        // target belongs to a declared service that is currently down, and refuses rather
-        // than connecting to whatever else may hold the port. Null probe (no declared
-        // services) leaves every dial exactly as before.
-        _forwarder = new RelayForwarder(
-            ring, forwardAcceptTimeout,
-            serviceOnPort: services is null ? null : services.IsServiceOnPort);
+        _forwarder = new RelayForwarder(ring, forwardAcceptTimeout);
     }
 
     /// <summary>Strays killed on the last <see cref="StartAsync"/> (diagnostics/tests).</summary>
@@ -445,12 +438,6 @@ public sealed class RunnerDaemon
             // dashboard offers a transcript link only where one can be served rather
             // than one that silently times out against an older runner.
             TranscriptsServable: _transcripts is not null,
-            // §10/§12: the machine's own view of its declared services, reported for the
-            // Machine Group view. Null when this machine declares none, which is a
-            // different answer from an empty list.
-            Services: _services?.Report(),
-            // §10/§12: agent-started processes ride a separate list from services, so a reader
-            // is never left working out which kind they are looking at.
             Processes: _services?.ReportProcesses());
         // Best-effort, fire-and-forget: never queue a command against the runner (§10).
         _ = _channel.HeartbeatAsync(heartbeat, _cts.Token);

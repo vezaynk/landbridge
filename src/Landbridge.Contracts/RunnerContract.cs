@@ -170,10 +170,9 @@ public sealed record PromptCommand(SessionId Session) : RunnerCommand;
 /// <param name="ServiceName">
 /// Which registered service this forward is for — <b>diagnostic only: the runner never reads
 /// it.</b> A dial is resolved entirely from <see cref="Port"/>, <see cref="Role"/>,
-/// <see cref="Grant"/>, and <see cref="RelayUrl"/>, and refuse-at-dial resolves a target to a
-/// service by <em>port</em> (§10), so this travels for the plane's own logging and for a human
-/// reading a captured envelope. Do not start routing on it: port is the resolution key on both
-/// ends, and a second one would be a second source of truth.
+/// <see cref="Grant"/>, and <see cref="RelayUrl"/>, so this travels for the plane's own logging
+/// and for a human reading a captured envelope. Do not start routing on it: port is the
+/// resolution key on both ends, and a second one would be a second source of truth.
 /// </param>
 /// <param name="Role"><c>consumer</c>|<c>producer</c> (<see cref="RelayTunnel"/>); empty on a legacy envelope.</param>
 /// <param name="Grant">The opaque connection grant both ends present to the relay, each for its own role.</param>
@@ -263,12 +262,10 @@ public sealed record ReadTranscriptCommand(
 /// <summary>
 /// <c>start-process</c> (§10) — an agent-started background process.
 ///
-/// <para><b>A process is not a service, and the distinction does real work.</b> A
-/// <em>service</em> is operator-declared in config, restart-supervised, and bound to the
-/// machine generation — a daemon. A <em>process</em> is agent-started over this wire, never
-/// restarted, its exit recorded, and cleaned up by Lead orchestration — a job. Same
-/// supervision substrate, same machine tagging, same stray-sweep bound; different
-/// declaration source, restart policy, and name. Neither is a Landbridge <em>task</em>.</para>
+/// <para><b>A process is a job, not a daemon.</b> It is agent-started over this wire, never
+/// restarted, its exit recorded, and cleaned up by Lead orchestration. Same machine tagging
+/// and stray-sweep bound as a worker. Always-on fixtures belong to systemd or launchd;
+/// leftover <c>services[]</c> is refused at config load. Neither is a Landbridge <em>task</em>.</para>
 ///
 /// <para><b>Machine-scoped, not task-scoped.</b> The task id here is provenance and nothing
 /// more: the process outlives the worker's turn, the task blocking, and the task completing.
@@ -277,17 +274,17 @@ public sealed record ReadTranscriptCommand(
 /// the resumed agent stops what it started — because a process that survived its task's
 /// state machine cannot be reclaimed by that state machine.</para>
 /// </summary>
-/// <param name="Name">Machine-scoped identity, validated against the same allowlist a
-/// config-declared service name faces. Unique across processes <em>and</em> services on this
-/// machine: one namespace, so a collision is always reported rather than resolved silently.</param>
+/// <param name="Name">Machine-scoped identity, validated so it can become a directory name.
+/// Unique among live processes on this machine: a collision is always reported rather than
+/// resolved silently. An exited process releases its name.</param>
 /// <remarks>
 /// <b>Ports are entirely out of scope here.</b> This is a process manager: it keeps a process
 /// alive and reports how it ended. Reachability is a different noun with its own surface —
 /// §8.2 <c>register_service</c> — and there is no overlap to reconcile. If a process happens to
 /// listen on something, that is the agent's business, exactly as if it had started the server
 /// from a shell; a port clash between two processes is the agent's problem too, consistent with
-/// there being no restarts. Processes are therefore invisible to refuse-at-dial by construction,
-/// because they declare nothing to dial.
+/// there being no restarts. A forward dials whatever answers on the registered port;
+/// landbridged does not know which listener was intended.
 /// </remarks>
 /// <param name="OpenStdin">
 /// Whether the child gets a usable stdin pipe. <b>Default false</b>: the common case is

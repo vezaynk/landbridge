@@ -11,39 +11,13 @@ internal sealed class RunnerConfigDto
 {
     public MachineDto? Machine { get; set; }
     public List<ProfileDto>? Profiles { get; set; }
+    // Parsed only so a leftover block can be refused. landbridged no longer
+    // supervises operator fixtures.
     public List<ServiceDto>? Services { get; set; }
 }
 
-// §10 operator-declared services: long-lived processes landbridged supervises as its own
-// children, outside any task's process tree. Config-declared only in v1 — an
-// agent-started process is declared over the wire instead (§10 start_process).
-internal sealed class ServiceDto
-{
-    public string? Name { get; set; }
-    public List<string>? Spawn { get; set; }
-    public string? WorkingDirectory { get; set; }
-    public Dictionary<string, string>? Env { get; set; }
-    public int? Port { get; set; }
-    public ReadinessDto? Readiness { get; set; }
-    public RestartDto? Restart { get; set; }
-    public LogsDto? Logs { get; set; }
-    public string? Backend { get; set; }
-
-    // The honest "stop": desired state lives in config, so turning a service off is an
-    // operator edit rather than a dashboard command whose effect a restart would undo.
-    public bool? Enabled { get; set; }
-}
-
-internal sealed class ReadinessDto
-{
-    public int? TcpPort { get; set; }
-    public double? TimeoutSeconds { get; set; }
-}
-
-internal sealed class RestartDto
-{
-    public double? MaxBackoffSeconds { get; set; }
-}
+// Presence-only. A leftover non-empty services[] is refused at load; members are ignored.
+internal sealed class ServiceDto { }
 
 internal sealed class MachineDto
 {
@@ -101,9 +75,8 @@ internal sealed class ProfileDto
 
     // §10 agent-started processes: whether a task on this profile may call start_process, and
     // how many the machine may hold. Off by default — enabling it is the machine owner's
-    // deliberate choice, the same shape as the open/strict archetypes. Named `processes`, not
-    // `services`, because a process and a service are different things (§10) and this is the
-    // key a human types.
+    // deliberate choice, the same shape as the open/strict archetypes. Named `processes`
+    // because leftover `services[]` is refused at load.
     public ProfileProcessesDto? Processes { get; set; }
 
     // §10 / #112 G3: per-spawn environment. Substituted with the same {session_id} /

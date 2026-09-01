@@ -78,11 +78,11 @@ public static class Program
         var transcripts = new TranscriptStore(
             Path.Combine(stateDir, TranscriptDefaults.DirName), retention, clock);
 
-        // §10 services and agent-started processes. Both are landbridged's own children, tagged
-        // with the machine id only: they outlive every task, and the only thing that ends them
-        // is an explicit stop, their own exit, or this daemon's restart (the stray sweep).
+        // §10 agent-started processes. landbridged's own children, tagged with the
+        // machine id only: they outlive every session, and the only thing that ends
+        // them is an explicit stop, their own exit, or this daemon's restart.
         var services = new ServiceSupervisor(
-            config.DeclaredServices, machineId, clock,
+            machineId, clock,
             logs: new ServiceLogStore(Path.Combine(stateDir, ServiceLogStore.DirName)),
             log: Console.WriteLine);
 
@@ -166,18 +166,12 @@ public static class Program
             services: services,
             log: Console.WriteLine);
         await daemon.StartAsync();
-        // Started AFTER the daemon's restart sweep, which reaps the previous generation by
-        // machine id — starting first would have this generation kill what it just spawned.
-        services.Start();
 
         // Outbound-only: the receive loop runs on the socket landbridged dialed, not
         // a listener (§10). Commands arriving on it drive the daemon.
         wsChannel?.Start((command, ct) => daemon.HandleAsync(command, ct));
 
-        var declaredServices = config.DeclaredServices.Count == 0
-            ? ""
-            : $" services=[{string.Join(", ", config.DeclaredServices.Select(x => x.Name))}]";
-        Console.WriteLine($"landbridged up: machine={machineId} profiles=[{string.Join(", ", config.DeclaredProfiles)}]{declaredServices} strays_reaped={daemon.StraysReaped} control={channelMode}");
+        Console.WriteLine($"landbridged up: machine={machineId} profiles=[{string.Join(", ", config.DeclaredProfiles)}] strays_reaped={daemon.StraysReaped} control={channelMode}");
 
         using var shutdown = new CancellationTokenSource();
         using var sigint = PosixSignalRegistration.Create(PosixSignal.SIGINT, ctx => { ctx.Cancel = true; shutdown.Cancel(); });

@@ -23,19 +23,6 @@ namespace Landbridge.Contracts;
 /// capture: a machine that can serve but captured nothing answers with an empty
 /// inventory, which is a different and honest answer.</para>
 /// </param>
-/// <param name="Services">
-/// §10 operator-declared services this machine supervises, as it currently sees them
-/// (§12 Machine Group view). The heartbeat is the whole channel: the control plane
-/// stores the last reported list against the connection and renders it, and
-/// <b>interprets nothing</b> — it does not persist service state, model a service
-/// lifecycle, or decide when a service is unhealthy. Every judgement stays on the
-/// machine that owns the process, so a disconnected machine's services vanish from
-/// the view exactly as its tasks and profiles already do.
-///
-/// <para>Null from a runner predating the field, which decodes to "this machine
-/// reports nothing about services" — distinct from an empty list, which is a machine
-/// that declares none.</para>
-/// </param>
 public sealed record MachineHeartbeat(
     string MachineId,
     bool Ready,
@@ -45,15 +32,12 @@ public sealed record MachineHeartbeat(
     IReadOnlyList<string> Profiles,
     DateTimeOffset At,
     bool TranscriptsServable = false,
-    IReadOnlyList<ServiceStatus>? Services = null,
     IReadOnlyList<ProcessStatus>? Processes = null);
 
 /// <summary>
-/// What a machine reports about one agent-started <b>process</b> (§10, §12) — deliberately a
-/// separate list from <see cref="ServiceStatus"/> rather than a flag on it, so a reader is
-/// never left working out which kind they are looking at. A service is operator-declared and
-/// restart-supervised; a process is agent-started and never restarted, so <see cref="ServiceState.Exited"/>
-/// is a resting state here rather than a transient one.
+/// What a machine reports about one agent-started <b>process</b> (§10, §12). A process
+/// is agent-started and never restarted, so <see cref="ServiceState.Exited"/> is a
+/// resting state rather than a transient one.
 /// </summary>
 /// <param name="DeclaredBySession">Provenance, not ownership: the task whose worker started it.
 /// The process is machine-scoped and outlives that task, and any worker on this machine may
@@ -70,50 +54,19 @@ public sealed record ProcessStatus(
     DateTimeOffset? ExitedAt = null,
     bool StdinOpen = false);
 
-/// <summary>
-/// What a machine reports about one declared service (§10, §12). Reported, never
-/// interpreted by the plane.
-///
-/// <para><see cref="StartedAt"/> is a timestamp rather than an uptime because a
-/// transmitted duration is stale the moment it is serialized; the dashboard renders
-/// the age, as it already does for heartbeats.</para>
-/// </summary>
-public sealed record ServiceStatus(
-    string Name,
-    ServiceState State,
-    int Port,
-    DateTimeOffset? StartedAt = null,
-    int Restarts = 0,
-    int? LastExitCode = null,
-    DateTimeOffset? LastFailureAt = null);
-
-/// <summary>A declared service's current condition on its machine (§10).</summary>
+/// <summary>A process's current condition on its machine (§10).</summary>
 public enum ServiceState
 {
-    /// <summary>Spawned, not yet past its readiness check.</summary>
-    Starting,
-
-    /// <summary>Process alive and (where declared) its readiness port answered.</summary>
+    /// <summary>Process alive.</summary>
     Running,
 
-    /// <summary>Exited non-zero or failed readiness; the supervisor is backing off to retry.</summary>
-    Failed,
-
-    /// <summary>Not running and not being retried — the supervisor gave up or was told to stop.</summary>
+    /// <summary>Not running — stopped on request.</summary>
     Stopped,
 
     /// <summary>
     /// Ran and ended. A resting state for an agent-started process (§10), which is never
     /// restarted — its exit code is information for the agent to act on, not something to hide
-    /// behind a backoff ladder. A config-declared service does not rest here: it is restarted.
+    /// behind a backoff ladder.
     /// </summary>
     Exited,
-
-    /// <summary>
-    /// Declared with <c>enabled: false</c> and deliberately not started. Distinct from
-    /// <see cref="Stopped"/> on purpose: "the operator turned this off" and "this is not
-    /// running and nobody meant that" are different facts, and an operator reading the
-    /// Machine Group view needs to tell them apart.
-    /// </summary>
-    Disabled,
 }
