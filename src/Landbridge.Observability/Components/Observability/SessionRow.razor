@@ -1,0 +1,69 @@
+<div class="obs-row @(IsSelected ? "obs-row--selected" : "")" @onclick="() => OnSelect.InvokeAsync(Session.Id)">
+    <div class="obs-row__identity">
+        <span class="obs-dot">
+            @if (Session.Meta.Live)
+            {
+                <span class="obs-dot__pulse" style="background:var(@Session.Meta.ColorVar)"></span>
+            }
+            <span class="obs-dot__core" style="background:var(@Session.Meta.ColorVar);opacity:@Fmt.N(Session.Meta.DotOpacity)"></span>
+        </span>
+        <div class="obs-row__names">
+            <span class="obs-row__ns" style="color:var(@Session.NameColorVar)">@Session.Ns</span>
+            <span class="obs-row__sub">@Session.Sub</span>
+        </div>
+    </div>
+
+    <div class="obs-row__status">
+        <div class="obs-row__state-line">
+            <span class="obs-row__state-label" style="color:var(@Session.Meta.ColorVar)">@Session.Meta.Label</span>
+            <span class="obs-row__elapsed">@Session.Elapsed</span>
+        </div>
+        <span class="obs-row__now" style="color:var(@Session.NowColorVar)">@Session.Now</span>
+    </div>
+
+    <TimelineTrack Marks="Session.Events" EdgeColorVar="@Session.EdgeColorVar" />
+
+    <UsageMeter Session="Session" />
+
+    <div class="obs-ports">
+        @if (ShowPorts)
+        {
+            @foreach (var p in Session.Ports)
+            {
+                <span class="obs-port" style="@PortStyle(p)">
+                    <span class="obs-port__dot" style="background:@(p.Live ? "var(--forward)" : "var(--color-neutral-700)")"></span>@p.Label
+                </span>
+            }
+        }
+    </div>
+
+    <div class="obs-row__trail">
+        @if (Session.Unread > 0)
+        {
+            <span class="obs-unread">@Session.Unread</span>
+        }
+        <span class="obs-attempt">@Session.Attempt</span>
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired]
+    public AgentSession Session { get; set; } = null!;
+
+    [Parameter]
+    public bool IsSelected { get; set; }
+
+    [Parameter]
+    public bool ShowPorts { get; set; } = true;
+
+    [Parameter]
+    public EventCallback<int> OnSelect { get; set; }
+
+    private static string PortStyle(PortInfo p)
+    {
+        var border = p.Live ? "var(--forward-line)" : "var(--color-neutral-800)";
+        var bg = p.Live ? "var(--forward-tint)" : "transparent";
+        var fg = p.Live ? "var(--color-neutral-300)" : "var(--color-neutral-600)";
+        return $"border-color:{border};background:{bg};color:{fg};";
+    }
+}

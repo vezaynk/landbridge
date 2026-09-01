@@ -1,0 +1,26 @@
+<div class="obs-rail">
+    <div class="obs-rail__title">Machines</div>
+    <div class="obs-rail__list">
+        @foreach (var m in Machines)
+        {
+            <div class="obs-machine">
+                <span class="obs-machine__dot" style="background:@(m.BackPressure ? "var(--state-wait)" : "var(--state-live)")"></span>
+                <span class="obs-machine__id">@m.Id</span>
+                <span class="obs-machine__spacer"></span>
+                <span class="obs-machine__load">@m.LoadText</span>
+            </div>
+        }
+    </div>
+    <div class="obs-rail__fill"></div>
+    <div class="obs-rail__footnote">
+        heartbeat &lt; 5s on all<br />
+        @BackPressureCount machine@(BackPressureCount == 1 ? "" : "s") under back-pressure
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired]
+    public IReadOnlyList<Machine> Machines { get; set; } = [];
+
+    private int BackPressureCount => Machines.Count(m => m.BackPressure);
+}

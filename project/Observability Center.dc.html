@@ -1,0 +1,521 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet data-dc-atomics><meta name="design_doc_mode" content="canvas">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<link rel="stylesheet" href="nocturne.css">
+<script src="_ds/nocturne-116be5ea-84b1-4477-84c1-fb397a204d43/_ds_bundle.js"></script>
+<style>
+:root{
+  --state-live:#79c39b; --state-wait:#e2b06a; --state-error:#e07a72; --forward:#8ab6c9;
+  --forward-line: color-mix(in srgb, var(--forward) 45%, var(--color-bg));
+  --forward-tint: color-mix(in srgb, var(--forward) 10%, transparent);
+  --accent-tint: color-mix(in srgb, var(--color-accent) 10%, transparent);
+  --accent-tint-hi: color-mix(in srgb, var(--color-accent) 20%, transparent);
+  --error-edge: color-mix(in srgb, var(--state-error) 35%, var(--color-bg));
+  --error-tint: color-mix(in srgb, var(--state-error) 10%, var(--color-bg));
+  --surface-1: color-mix(in srgb, var(--color-bg) 78%, var(--color-neutral-900));
+  --surface-2: color-mix(in srgb, var(--color-bg) 55%, var(--color-neutral-900));
+  --hairline: color-mix(in srgb, var(--color-neutral-900) 65%, var(--color-bg));
+  --well: color-mix(in srgb, var(--color-bg) 82%, #000000);
+  --font-mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+}
+body{margin:0;background:var(--well);color:var(--color-text);font-family:var(--font-body);-webkit-font-smoothing:antialiased}
+a{color:var(--color-accent-400);text-decoration:none}a:hover{color:var(--color-accent-300)}
+@keyframes lbpulse{0%{transform:scale(1);opacity:.55}70%{transform:scale(2.6);opacity:0}100%{transform:scale(2.6);opacity:0}}
+@keyframes lbbreathe{0%,100%{opacity:.95}50%{opacity:.45}}
+@keyframes lbcursor{0%,49%{opacity:1}50%,100%{opacity:0}}
+@keyframes lbsweep{0%{opacity:.9}100%{opacity:.15}}
+@keyframes lbslide{0%{background-position:0 0}100%{background-position:-24px 0}}
+</style></helmet>
+
+<section class="dv-turn" id="t1" style="padding:40px 44px 32px;font-family:var(--font-body)">
+<div style="display:flex;align-items:baseline;gap:10px;margin:0 0 6px">
+<a href="#t1" style="font:600 10px var(--font-mono);padding:3px 7px;background:var(--color-text);color:var(--color-bg);border-radius:var(--radius-sm)">1</a>
+<span style="font:500 13px/1.2 var(--font-body);color:var(--color-text)">Observability center — first pass</span>
+</div>
+<p style="margin:0 0 22px;max-width:760px;font:400 12px/1.6 var(--font-body);color:var(--color-neutral-500)">Fleet-operator view, ~14 concurrent sessions. Vocabulary is taken from the repo: session states, the <span style="font-family:var(--font-mono)">MessageState</span> envelope, runner-wire events, registered services and relay forwards. <a href="#1a">1a</a> is the proposal; <a href="#1b">1b</a>, <a href="#1c">1c</a> and <a href="#1d">1d</a> are the same data at other densities and liveness treatments.</p>
+
+<div style="display:flex;flex-wrap:wrap;gap:28px;align-items:flex-start">
+
+<div class="dv-opt" id="1a" style="flex:none;display:flex;flex-direction:column;gap:9px">
+<div style="display:flex;align-items:baseline;gap:8px;font:400 11px/1.3 var(--font-body);color:var(--color-neutral-600)"><a href="#1a" style="font:600 10.5px var(--font-mono);padding:3px 7px;background:var(--color-accent-900);color:var(--color-accent-300);border-radius:var(--radius-sm)">1a</a>Lane board — one row per live session, with reported usage, chatter and forwards</div>
+<div style="width:1760px;height:900px;background:var(--color-bg);border:1px solid var(--color-neutral-800);border-radius:var(--radius-md);overflow:hidden;display:flex;flex-direction:column;box-shadow:var(--shadow-md)">
+
+  <div style="display:flex;align-items:center;gap:18px;padding:0 16px;height:52px;border-bottom:1px solid var(--color-neutral-900);background:var(--surface-1);flex:none">
+    <div style="display:flex;align-items:baseline;gap:8px">
+      <span style="font:600 13px var(--font-body);letter-spacing:.02em">landbridge</span>
+      <span style="font:400 11px var(--font-mono);color:var(--color-neutral-600)">instance / dev-loop</span>
+    </div>
+    <div style="width:1px;height:22px;background:var(--color-neutral-900)"></div>
+    <div style="display:flex;gap:14px;align-items:center">
+      <div style="display:flex;align-items:center;gap:6px"><span style="width:7px;height:7px;border-radius:50%;background:var(--state-live)"></span><span style="font:500 11px var(--font-mono);color:var(--color-neutral-300)">9 working</span></div>
+      <div style="display:flex;align-items:center;gap:6px"><span style="width:7px;height:7px;border-radius:50%;background:var(--state-wait)"></span><span style="font:500 11px var(--font-mono);color:var(--color-neutral-300)">3 waiting</span></div>
+      <div style="display:flex;align-items:center;gap:6px"><span style="width:7px;height:7px;border-radius:50%;background:var(--state-error)"></span><span style="font:500 11px var(--font-mono);color:var(--color-neutral-300)">1 failed</span></div>
+      <div style="display:flex;align-items:center;gap:6px"><span style="width:7px;height:7px;border-radius:50%;background:var(--color-neutral-700)"></span><span style="font:500 11px var(--font-mono);color:var(--color-neutral-600)">1 submitted</span></div>
+    </div>
+    <div style="flex:1"></div>
+    <div style="display:flex;align-items:center;gap:8px;font:400 11px var(--font-mono);color:var(--color-neutral-600)">
+      <span>6 machines</span><span style="color:var(--color-neutral-800)">·</span><span>5 forwards open</span><span style="color:var(--color-neutral-800)">·</span><span>relay 412 MB</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:6px;padding:5px 10px;border:1px solid var(--color-accent-700);border-radius:var(--radius-sm);background:var(--accent-tint)">
+      <span style="width:6px;height:6px;border-radius:50%;background:var(--color-accent-400);animation:lbbreathe 1.6s ease-in-out infinite"></span>
+      <span style="font:500 11px var(--font-body);color:var(--color-accent-300)">live</span>
+    </div>
+  </div>
+
+  <div style="flex:1;display:grid;grid-template-columns:224px 1fr 364px;min-height:0">
+
+    <div style="border-right:1px solid var(--color-neutral-900);background:var(--surface-1);display:flex;flex-direction:column;min-height:0">
+      <div style="padding:14px 14px 10px;font:600 10px var(--font-body);letter-spacing:.10em;text-transform:uppercase;color:var(--color-neutral-600)">Machines</div>
+      <div style="display:flex;flex-direction:column;gap:2px;padding:0 10px 14px;overflow:hidden">
+        <sc-for list="{{ machines }}" as="m" hint-placeholder-count="6">
+          <div style="display:flex;align-items:center;gap:8px;padding:6px 6px;border-radius:var(--radius-sm)">
+            <span style="width:6px;height:6px;border-radius:50%;background:{{ m.dot }};flex:none"></span>
+            <span style="font:400 10.5px var(--font-mono);color:var(--color-neutral-300);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ m.id }}</span>
+            <span style="flex:1"></span>
+            <span style="font:400 10px var(--font-mono);color:var(--color-neutral-600);white-space:nowrap;flex:none">{{ m.load }}</span>
+          </div>
+        </sc-for>
+      </div>
+      <div style="flex:1"></div>
+      <div style="padding:12px 14px;border-top:1px solid var(--color-neutral-900);font:400 10px/1.6 var(--font-mono);color:var(--color-neutral-700)">heartbeat &lt; 5s on all<br>1 machine under back-pressure</div>
+    </div>
+
+    <div style="display:flex;flex-direction:column;min-height:0;min-width:0;background:var(--color-bg)">
+      <div style="display:grid;grid-template-columns:214px 214px minmax(0,1fr) 148px 118px 50px;gap:12px;padding:9px 16px;border-bottom:1px solid var(--color-neutral-900);font:600 9.5px var(--font-body);letter-spacing:.09em;text-transform:uppercase;color:var(--color-neutral-700);flex:none">
+        <div>Session</div><div>Right now</div>
+        <div style="display:flex;justify-content:space-between;white-space:nowrap"><span>Last {{ windowLabel }}</span><span style="color:var(--color-neutral-800)">now</span></div>
+        <div style="display:flex;align-items:center;gap:7px;white-space:nowrap">
+          <span>Usage</span>
+          <span style="display:inline-flex;align-items:center;gap:3px;text-transform:none;letter-spacing:0;font:400 9px var(--font-mono);color:var(--color-neutral-700)"><span style="width:6px;height:3px;border-radius:1px;background:var(--color-accent-600)"></span>in</span>
+          <span style="display:inline-flex;align-items:center;gap:3px;text-transform:none;letter-spacing:0;font:400 9px var(--font-mono);color:var(--color-neutral-700)"><span style="width:6px;height:3px;border-radius:1px;background:var(--color-accent-400)"></span>out</span>
+          <span style="display:inline-flex;align-items:center;gap:3px;text-transform:none;letter-spacing:0;font:400 9px var(--font-mono);color:var(--color-neutral-700)"><span style="width:6px;height:3px;border-radius:1px;background:var(--color-neutral-700)"></span>cache</span>
+        </div>
+        <div>Forwards</div><div></div>
+      </div>
+      <div style="flex:1;overflow:hidden">
+        <sc-for list="{{ agents }}" as="a" hint-placeholder-count="14">
+          <div onClick="{{ a.onSelect }}" style="display:grid;grid-template-columns:214px 214px minmax(0,1fr) 148px 118px 50px;gap:12px;align-items:center;padding:0 16px;height:{{ a.rowH }}px;border-bottom:1px solid var(--hairline);background:{{ a.rowBg }};cursor:pointer" style-hover="background:var(--surface-2)">
+
+            <div style="display:flex;align-items:center;gap:9px;min-width:0">
+              <span style="position:relative;width:9px;height:9px;flex:none;display:block">
+                <sc-if value="{{ a.live }}" hint-placeholder-val="{{ true }}"><span style="position:absolute;inset:0;border-radius:50%;background:{{ a.color }};animation:lbpulse 2.2s ease-out infinite"></span></sc-if>
+                <span style="position:absolute;inset:1px;border-radius:50%;background:{{ a.color }};opacity:{{ a.dotOpacity }}"></span>
+              </span>
+              <div style="display:flex;flex-direction:column;gap:2px;min-width:0">
+                <span style="font:500 11.5px var(--font-mono);color:{{ a.nameColor }};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ a.ns }}</span>
+                <span style="font:400 9.5px var(--font-mono);color:var(--color-neutral-700);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ a.sub }}</span>
+              </div>
+            </div>
+
+            <div style="display:flex;flex-direction:column;gap:3px;min-width:0">
+              <div style="display:flex;align-items:center;gap:6px">
+                <span style="font:500 9px var(--font-body);letter-spacing:.07em;text-transform:uppercase;color:{{ a.color }}">{{ a.stateLabel }}</span>
+                <span style="font:400 9.5px var(--font-mono);color:var(--color-neutral-700)">{{ a.elapsed }}</span>
+              </div>
+              <span style="font:400 11px var(--font-body);color:{{ a.nowColor }};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ a.now }}</span>
+            </div>
+
+            <div style="position:relative;height:30px;border-left:1px solid var(--hairline)">
+              <div style="position:absolute;left:0;right:0;top:50%;height:1px;background:var(--color-surface)"></div>
+              <sc-for list="{{ a.events }}" as="ev" hint-placeholder-count="10">
+                <div title="{{ ev.label }}" style="{{ ev.css }}"></div>
+              </sc-for>
+              <div style="position:absolute;right:0;top:2px;bottom:2px;width:1px;background:{{ a.edgeColor }};opacity:.8"></div>
+            </div>
+
+            <div style="display:flex;flex-direction:column;gap:4px;min-width:0">
+              <div style="display:flex;align-items:baseline;gap:6px">
+                <span style="font:500 10.5px var(--font-mono);color:{{ a.tokColor }}">{{ a.tokens }}</span>
+                <span style="font:400 9.5px var(--font-mono);color:var(--color-neutral-600)">{{ a.cost }}</span>
+              </div>
+              <div style="display:flex;height:3px;border-radius:2px;overflow:hidden;background:var(--color-surface)">
+                <div style="width:{{ a.uIn }}%;background:var(--color-accent-600)"></div>
+                <div style="width:{{ a.uOut }}%;background:var(--color-accent-400)"></div>
+                <div style="width:{{ a.uCache }}%;background:var(--color-neutral-700)"></div>
+              </div>
+              <span style="font:400 9px var(--font-mono);color:{{ a.rateColor }};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ a.rate }}</span>
+            </div>
+
+            <div style="display:flex;flex-wrap:wrap;gap:4px">
+              <sc-if value="{{ showPorts }}" hint-placeholder-val="{{ true }}">
+                <sc-for list="{{ a.ports }}" as="p" hint-placeholder-count="1">
+                  <span style="display:inline-flex;align-items:center;gap:5px;padding:2px 6px;border:1px solid {{ p.border }};border-radius:var(--radius-sm);background:{{ p.bg }};font:400 9.5px var(--font-mono);color:{{ p.fg }}">
+                    <span style="width:4px;height:4px;border-radius:50%;background:{{ p.dot }}"></span>{{ p.label }}
+                  </span>
+                </sc-for>
+              </sc-if>
+            </div>
+
+            <div style="display:flex;justify-content:flex-end;align-items:center;gap:6px">
+              <sc-if value="{{ a.unread }}" hint-placeholder-val="{{ true }}">
+                <span style="display:inline-flex;align-items:center;justify-content:center;min-width:16px;height:16px;padding:0 4px;border-radius:var(--radius-md);background:var(--color-accent-900);color:var(--color-accent-300);font:500 9.5px var(--font-mono)">{{ a.unread }}</span>
+              </sc-if>
+              <span style="font:400 9.5px var(--font-mono);color:var(--color-neutral-700)">{{ a.attempt }}</span>
+            </div>
+          </div>
+        </sc-for>
+      </div>
+    </div>
+
+    <div style="border-left:1px solid var(--color-neutral-900);background:var(--surface-1);display:flex;flex-direction:column;min-height:0">
+      <div style="padding:13px 14px;border-bottom:1px solid var(--color-neutral-900)">
+        <div style="display:flex;align-items:center;gap:8px">
+          <span style="width:7px;height:7px;border-radius:50%;background:{{ sel.color }};flex:none"></span>
+          <span style="font:500 12px var(--font-mono);color:var(--color-text)">{{ sel.ns }}</span>
+        </div>
+        <div style="margin-top:6px;font:400 10.5px/1.6 var(--font-mono);color:var(--color-neutral-600)">{{ sel.detail }}</div>
+        <div style="display:flex;gap:6px;margin-top:10px">
+          <button style="padding:5px 10px;border:1px solid var(--color-accent-700);border-radius:var(--radius-sm);background:var(--accent-tint);color:var(--color-accent-300);font:500 10.5px var(--font-body);cursor:pointer" style-hover="background:var(--accent-tint-hi)">Tail transcript</button>
+          <button style="padding:5px 10px;border:1px solid var(--color-neutral-800);border-radius:var(--radius-sm);background:transparent;color:var(--color-neutral-500);font:500 10.5px var(--font-body);cursor:pointer" style-hover="border-color:var(--color-neutral-700);color:var(--color-neutral-300)">Event log</button>
+          <button style="padding:5px 10px;border:1px solid var(--color-neutral-800);border-radius:var(--radius-sm);background:transparent;color:var(--color-neutral-500);font:500 10.5px var(--font-body);cursor:pointer" style-hover="border-color:var(--color-neutral-700);color:var(--color-neutral-300)">Stop</button>
+        </div>
+      </div>
+
+      <div style="padding:11px 14px 7px;font:600 9.5px var(--font-body);letter-spacing:.10em;text-transform:uppercase;color:var(--color-neutral-600)">Exchange</div>
+      <div style="display:flex;flex-direction:column;gap:7px;padding:0 14px 12px">
+        <sc-for list="{{ sel.messages }}" as="m" hint-placeholder-count="3">
+          <div style="display:flex;flex-direction:column;gap:3px;padding:8px 10px;border-radius:var(--radius-sm);background:{{ m.bg }};border-left:2px solid {{ m.bar }}">
+            <div style="display:flex;align-items:center;gap:6px">
+              <span style="font:500 9px var(--font-body);letter-spacing:.07em;text-transform:uppercase;color:{{ m.bar }}">{{ m.from }}</span>
+              <span style="flex:1"></span>
+              <span style="font:400 9.5px var(--font-mono);color:var(--color-neutral-700)">{{ m.at }}</span>
+            </div>
+            <div style="font:400 11px/1.5 var(--font-body);color:var(--color-neutral-300);text-wrap:pretty">{{ m.text }}</div>
+          </div>
+        </sc-for>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:8px;padding:9px 14px 7px;border-top:1px solid var(--color-neutral-900)">
+        <span style="font:600 9.5px var(--font-body);letter-spacing:.10em;text-transform:uppercase;color:var(--color-neutral-600)">Transcript tail</span>
+        <span style="width:5px;height:5px;border-radius:50%;background:var(--state-live);animation:lbbreathe 1.4s ease-in-out infinite"></span>
+        <span style="flex:1"></span>
+        <span style="font:400 9.5px var(--font-mono);color:var(--color-neutral-700)">attempt 2 · mac-studio-01</span>
+      </div>
+      <div style="flex:1;overflow:hidden;margin:0 10px 12px;padding:10px 11px;border:1px solid var(--color-surface);border-radius:var(--radius-sm);background:var(--well)">
+        <sc-for list="{{ sel.transcript }}" as="l" hint-placeholder-count="12">
+          <div style="display:flex;gap:8px;padding:1.5px 0">
+            <span style="font:400 9.5px var(--font-mono);color:var(--color-neutral-800);flex:none">{{ l.t }}</span>
+            <span style="font:400 10px/1.45 var(--font-mono);color:{{ l.c }};text-wrap:pretty">{{ l.x }}</span>
+          </div>
+        </sc-for>
+        <div style="display:flex;gap:8px;padding:2px 0">
+          <span style="font:400 9.5px var(--font-mono);color:var(--color-neutral-800)">&nbsp;</span>
+          <span style="display:inline-block;width:6px;height:12px;background:var(--state-live);animation:lbcursor 1.05s step-end infinite"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</div>
+
+<div class="dv-opt" id="1b" style="flex:none;display:flex;flex-direction:column;gap:9px">
+<div style="display:flex;align-items:baseline;gap:8px;font:400 11px/1.3 var(--font-body);color:var(--color-neutral-600)"><a href="#1b" style="font:600 10.5px var(--font-mono);padding:3px 7px;background:var(--color-accent-900);color:var(--color-accent-300);border-radius:var(--radius-sm)">1b</a>Roster — maximum density, one line per session</div>
+<div style="width:1000px;background:var(--color-bg);border:1px solid var(--color-neutral-800);border-radius:var(--radius-md);overflow:hidden;box-shadow:var(--shadow-md)">
+  <div style="display:grid;grid-template-columns:20px 200px 132px 132px 1fr 110px 74px;gap:10px;padding:8px 14px;border-bottom:1px solid var(--color-neutral-900);background:var(--surface-1);font:600 9px var(--font-body);letter-spacing:.09em;text-transform:uppercase;color:var(--color-neutral-700)">
+    <div></div><div>Session</div><div>Machine</div><div>Envelope</div><div>Right now</div><div>Activity</div><div style="text-align:right">Msgs</div>
+  </div>
+  <sc-for list="{{ agents }}" as="a" hint-placeholder-count="14">
+    <div style="display:grid;grid-template-columns:20px 200px 132px 132px 1fr 110px 74px;gap:10px;align-items:center;padding:0 14px;height:26px;border-bottom:1px solid var(--surface-2)" style-hover="background:var(--surface-2)">
+      <span style="width:6px;height:6px;border-radius:50%;background:{{ a.color }};opacity:{{ a.dotOpacity }}"></span>
+      <span style="font:400 10.5px var(--font-mono);color:{{ a.nameColor }};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ a.ns }}</span>
+      <span style="font:400 10px var(--font-mono);color:var(--color-neutral-600);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ a.machine }}</span>
+      <span style="font:400 9.5px var(--font-mono);color:{{ a.color }};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ a.envelope }}</span>
+      <span style="font:400 10.5px var(--font-body);color:{{ a.nowColor }};overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ a.now }}</span>
+      <span style="position:relative;height:14px">
+        <sc-for list="{{ a.spark }}" as="s" hint-placeholder-count="8">
+          <span style="{{ s.css }}"></span>
+        </sc-for>
+      </span>
+      <span style="text-align:right;font:400 10px var(--font-mono);color:var(--color-neutral-600)">{{ a.msgCount }}</span>
+    </div>
+  </sc-for>
+</div>
+</div>
+
+<div class="dv-opt" id="1c" style="flex:none;display:flex;flex-direction:column;gap:9px">
+<div style="display:flex;align-items:baseline;gap:8px;font:400 11px/1.3 var(--font-body);color:var(--color-neutral-600)"><a href="#1c" style="font:600 10.5px var(--font-mono);padding:3px 7px;background:var(--color-accent-900);color:var(--color-accent-300);border-radius:var(--radius-sm)">1c</a>Pulse grid — liveness by motion and decay, idle sessions fade out</div>
+<div style="width:700px;display:grid;grid-template-columns:repeat(3,1fr);gap:10px;padding:14px;background:var(--color-bg);border:1px solid var(--color-neutral-800);border-radius:var(--radius-md);box-shadow:var(--shadow-md)">
+  <sc-for list="{{ cards }}" as="c" hint-placeholder-count="9">
+    <div style="display:flex;flex-direction:column;gap:8px;padding:11px 12px;border:1px solid {{ c.border }};border-radius:var(--radius-md);background:{{ c.bg }};opacity:{{ c.fade }}">
+      <div style="display:flex;align-items:center;gap:8px">
+        <span style="position:relative;width:9px;height:9px;flex:none;display:block">
+          <sc-if value="{{ c.live }}" hint-placeholder-val="{{ true }}"><span style="position:absolute;inset:0;border-radius:50%;background:{{ c.color }};animation:lbpulse 2.2s ease-out infinite"></span></sc-if>
+          <span style="position:absolute;inset:1px;border-radius:50%;background:{{ c.color }}"></span>
+        </span>
+        <span style="font:500 10.5px var(--font-mono);color:var(--color-text);overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ c.ns }}</span>
+      </div>
+      <div style="height:3px;border-radius:2px;background:{{ c.barBg }};overflow:hidden">
+        <div style="height:3px;width:{{ c.barW }}%;background:{{ c.color }}"></div>
+      </div>
+      <div style="font:400 10px/1.5 var(--font-body);color:var(--color-neutral-500);height:28px;overflow:hidden;text-wrap:pretty">{{ c.now }}</div>
+      <div style="display:flex;align-items:center;gap:6px">
+        <span style="font:400 9.5px var(--font-mono);color:{{ c.color }}">{{ c.stateLabel }}</span>
+        <span style="flex:1"></span>
+        <span style="font:400 9.5px var(--font-mono);color:var(--color-neutral-700)">{{ c.elapsed }}</span>
+      </div>
+    </div>
+  </sc-for>
+</div>
+</div>
+
+<div class="dv-opt" id="1d" style="flex:none;display:flex;flex-direction:column;gap:9px">
+<div style="display:flex;align-items:baseline;gap:8px;font:400 11px/1.3 var(--font-body);color:var(--color-neutral-600)"><a href="#1d" style="font:600 10.5px var(--font-mono);padding:3px 7px;background:var(--color-accent-900);color:var(--color-accent-300);border-radius:var(--radius-sm)">1d</a>The marks, spelled out</div>
+<div style="width:440px;padding:16px;background:var(--color-bg);border:1px solid var(--color-neutral-800);border-radius:var(--radius-md);display:flex;flex-direction:column;gap:14px;box-shadow:var(--shadow-md)">
+  <div>
+    <div style="font:600 9.5px var(--font-body);letter-spacing:.10em;text-transform:uppercase;color:var(--color-neutral-600);margin-bottom:9px">Session state</div>
+    <div style="display:flex;flex-direction:column;gap:7px">
+      <sc-for list="{{ legendStates }}" as="s" hint-placeholder-count="6">
+        <div style="display:flex;align-items:center;gap:9px">
+          <span style="width:8px;height:8px;border-radius:50%;background:{{ s.color }};opacity:{{ s.op }};flex:none"></span>
+          <span style="font:500 10.5px var(--font-mono);color:var(--color-neutral-300);width:124px">{{ s.key }}</span>
+          <span style="font:400 10.5px var(--font-body);color:var(--color-neutral-600)">{{ s.note }}</span>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+  <div style="height:1px;background:var(--color-surface)"></div>
+  <div>
+    <div style="font:600 9.5px var(--font-body);letter-spacing:.10em;text-transform:uppercase;color:var(--color-neutral-600);margin-bottom:9px">Timeline marks</div>
+    <div style="display:flex;flex-direction:column;gap:9px">
+      <sc-for list="{{ legendMarks }}" as="m" hint-placeholder-count="6">
+        <div style="display:flex;align-items:center;gap:9px">
+          <span style="position:relative;width:16px;height:14px;flex:none"><span style="{{ m.css }}"></span></span>
+          <span style="font:500 10.5px var(--font-mono);color:var(--color-neutral-300);width:124px">{{ m.key }}</span>
+          <span style="font:400 10.5px var(--font-body);color:var(--color-neutral-600)">{{ m.note }}</span>
+        </div>
+      </sc-for>
+    </div>
+  </div>
+</div>
+</div>
+
+</div>
+<p style="margin:22px 0 0;font:12px/1.5 var(--font-body);color:var(--color-neutral-600)">Try next: "keep <a href="#1a">1a</a> but at <a href="#1b">1b</a>'s row height" · "group the lanes by machine instead of flat" · "show me what the permission answer flow looks like inline"</p>
+</section>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;showPorts&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Lane board&quot;},&quot;timelineWindow&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;5 min&quot;,&quot;15 min&quot;,&quot;1 hour&quot;],&quot;default&quot;:&quot;15 min&quot;,&quot;tsType&quot;:&quot;string&quot;,&quot;section&quot;:&quot;Lane board&quot;}}">
+const C = {
+  live: 'var(--state-live)', wait: 'var(--state-wait)', idle: 'var(--color-neutral-600)', err: 'var(--state-error)',
+  done: 'var(--color-neutral-500)', msg: 'var(--color-accent-400)', msgDim: 'var(--color-accent-600)', fwd: 'var(--forward)', tick: 'var(--color-neutral-700)',
+};
+
+const AGENTS = [
+  { ns: 'sess/rel-splice-fix', profile: 'codex', machine: 'codex-apphost-linux', state: 'working', envelope: 'idle',
+    now: 'Edit — src/Landbridge.Relay/ForwardRegistry.cs', elapsed: '2m14s', attempt: 'a1', unread: 0, seed: 3,
+    ports: [{ name: 'relay-dev', port: 5100, live: true }] },
+  { ns: 'sess/preview-tls-renew', profile: 'claude', machine: 'claude-apphost-linux', state: 'permission', envelope: 'awaiting_permission',
+    now: 'Bash — lego renew --dns cloudflare', elapsed: '46s', attempt: 'a1', unread: 1, seed: 11, ports: [] },
+  { ns: 'sess/dash-inbox-perms', profile: 'claude', machine: 'mac-studio-01', state: 'working', envelope: 'idle',
+    now: 'Bash — dotnet test Landbridge.Mcp.Tests', elapsed: '4m02s', attempt: 'a2', unread: 2, seed: 5,
+    ports: [{ name: 'dash', port: 5050, live: true }, { name: 'pg', port: 5432, live: false }] },
+  { ns: 'sess/runner-stray-sweep', profile: 'grok', machine: 'grok-apphost-linux', state: 'working', envelope: 'idle',
+    now: 'Read — /proc/<pid>/environ', elapsed: '38s', attempt: 'a1', unread: 0, seed: 17, ports: [] },
+  { ns: 'sess/meta-saga-resume', profile: 'codex', machine: 'hetzner-de-03', state: 'question', envelope: 'awaiting_lead',
+    now: 'Asked the Lead — which Postgres tag?', elapsed: '6m11s', attempt: 'a1', unread: 1, seed: 23, ports: [] },
+  { ns: 'sess/token-ramp-audit', profile: 'claude', machine: 'mac-studio-01', state: 'working', envelope: 'idle',
+    now: 'Grep — TokenService.Revoke', elapsed: '1m07s', attempt: 'a1', unread: 0, seed: 29, ports: [] },
+  { ns: 'sess/classifier-argv', profile: 'opencode', machine: '—', state: 'submitted', envelope: 'idle',
+    now: 'Queued — no machine declares opencode-linux', elapsed: '3m50s', attempt: '—', unread: 0, seed: 31, ports: [] },
+  { ns: 'sess/relay-byte-counter', profile: 'codex', machine: 'codex-apphost-linux', state: 'working', envelope: 'awaiting_report',
+    now: 'Wrote report — waiting on Lead review', elapsed: '22s', attempt: 'a1', unread: 1, seed: 37,
+    ports: [{ name: 'bench', port: 8080, live: true }] },
+  { ns: 'sess/os-matrix-windows', profile: 'claude', machine: 'win-box-02', state: 'failed', envelope: 'idle',
+    now: 'No progress for 12m — requeue 4 of 5', elapsed: '12m30s', attempt: 'a4', unread: 0, seed: 41, ports: [] },
+  { ns: 'sess/transcript-serving', profile: 'grok', machine: 'grok-apphost-linux', state: 'parked', envelope: 'awaiting_lead',
+    now: 'Parked — question outlived its lease', elapsed: '31m', attempt: 'a2', unread: 1, seed: 43, ports: [] },
+  { ns: 'sess/harness-bump-rules', profile: 'codex', machine: 'hetzner-de-03', state: 'completed', envelope: 'idle',
+    now: 'Closed by Lead — PR #214', elapsed: '8m', attempt: 'a1', unread: 0, seed: 47, ports: [] },
+  { ns: 'sess/enroll-wizard-spike', profile: 'claude', machine: 'mac-studio-01', state: 'working', envelope: 'idle',
+    now: 'Write — docs/ENROLL.md', elapsed: '55s', attempt: 'a1', unread: 0, seed: 53, ports: [] },
+  { ns: 'sess/preview-label-mint', profile: 'goose', machine: 'mac-mini-04', state: 'working', envelope: 'idle',
+    now: 'Serving preview — h7q2.preview.lb.dev', elapsed: '9m40s', attempt: 'a1', unread: 0, seed: 59,
+    ports: [{ name: 'web', port: 3000, live: true }] },
+  { ns: 'sess/acp-bridge-conform', profile: 'claude', machine: 'win-box-02', state: 'working', envelope: 'idle',
+    now: 'Bash — acp-bridge --probe', elapsed: '1m48s', attempt: 'a1', unread: 0, seed: 61, ports: [] },
+];
+
+const STATE_META = {
+  working:    { color: C.live, label: 'working',     env: 'running',  live: true,  op: 1 },
+  permission: { color: C.wait, label: 'permission',  env: 'awaiting_permission', live: true, op: 1 },
+  question:   { color: C.wait, label: 'blocked',     env: 'awaiting_lead', live: false, op: 1 },
+  submitted:  { color: C.tick, label: 'submitted',   env: 'unplaced', live: false, op: 1 },
+  failed:     { color: C.err,  label: 'failed',      env: 'requeue',  live: true,  op: 1 },
+  parked:     { color: C.wait, label: 'parked',      env: 'awaiting_lead', live: false, op: 0.5 },
+  completed:  { color: C.done, label: 'completed',   env: 'closed',   live: false, op: 0.45 },
+};
+
+function rand(seed) {
+  let s = seed * 9301 + 49297;
+  return () => { s = (s * 9301 + 49297) % 233280; return s / 233280; };
+}
+
+function markCss(type, p, w) {
+  const base = 'position:absolute;top:50%;';
+  if (type === 'tool') return base + 'left:' + p + '%;transform:translate(-50%,-50%);width:2px;height:9px;border-radius:1px;background:' + C.tick + ';';
+  if (type === 'ask') return base + 'left:' + p + '%;transform:translate(-50%,-100%);margin-top:-3px;width:0;height:0;border-left:4px solid transparent;border-right:4px solid transparent;border-bottom:7px solid ' + C.msg + ';';
+  if (type === 'answer') return base + 'left:' + p + '%;transform:translate(-50%,0);margin-top:3px;width:0;height:0;border-left:4px solid transparent;border-right:4px solid transparent;border-top:7px solid ' + C.msgDim + ';';
+  if (type === 'forward') return base + 'left:' + p + '%;transform:translateY(7px);width:' + w + '%;height:3px;border-radius:2px;background:' + C.fwd + ';opacity:.85;';
+  if (type === 'error') return base + 'left:' + p + '%;transform:translate(-50%,-50%) rotate(45deg);width:7px;height:7px;background:' + C.err + ';';
+  if (type === 'park') return base + 'left:' + p + '%;transform:translate(-50%,-50%);width:8px;height:8px;border-radius:50%;border:1px solid ' + C.wait + ';';
+  if (type === 'dispatch') return 'position:absolute;left:' + p + '%;top:1px;bottom:1px;width:1px;background:' + C.tick + ';opacity:.7;';
+  if (type === 'done') return base + 'left:' + p + '%;transform:translate(-50%,-50%);width:8px;height:8px;border-radius:50%;background:' + C.done + ';';
+  return base;
+}
+
+const LABELS = { tool: 'tool-call', ask: 'worker → Lead', answer: 'Lead → worker', forward: 'forward open', error: 'auth-failed', park: 'parked', dispatch: 'dispatch', done: 'report_result' };
+
+function buildEvents(a) {
+  const r = rand(a.seed);
+  const out = [];
+  out.push({ type: 'dispatch', p: 3 });
+  const n = 8 + Math.floor(r() * 9);
+  for (let i = 0; i < n; i++) out.push({ type: 'tool', p: 6 + r() * 90 });
+  if (a.state === 'working' || a.state === 'completed') {
+    out.push({ type: 'ask', p: 20 + r() * 30 });
+    out.push({ type: 'answer', p: 55 + r() * 20 });
+  }
+  if (a.state === 'permission') out.push({ type: 'ask', p: 96 });
+  if (a.state === 'question' || a.state === 'parked') out.push({ type: 'ask', p: 62 + r() * 10 });
+  if (a.state === 'parked') out.push({ type: 'park', p: 92 });
+  if (a.state === 'failed') { out.push({ type: 'error', p: 58 }); out.push({ type: 'error', p: 74 }); out.push({ type: 'dispatch', p: 80 }); }
+  if (a.state === 'completed') out.push({ type: 'done', p: 94 });
+  if (a.ports.length) out.push({ type: 'forward', p: 40 + r() * 15, w: 30 + r() * 25 });
+  return out.map(e => ({ css: markCss(e.type, e.p.toFixed(1), (e.w || 0).toFixed(0)), label: LABELS[e.type] }));
+}
+
+const MESSAGES = [
+  { from: 'worker', at: '14:22:06', text: 'Registered service `dash` on 5050. Splice tests pass locally; the Windows leg still skips.' },
+  { from: 'lead', at: '14:22:41', text: 'Skips are fine — SkippableFact is the documented deferral. Push and open the PR.' },
+  { from: 'worker', at: '14:24:18', text: 'May I run `dotnet test` against the shared Postgres container? It is outside the argv allowlist.' },
+];
+
+const TRANSCRIPT = [
+  { t: '14:24:02', x: 'tool-call  Read src/Landbridge.Mcp/Dashboard/DashboardEndpoints.cs', c: 'var(--color-neutral-600)' },
+  { t: '14:24:04', x: 'tool-call  Grep "InboxView" (14 hits)', c: 'var(--color-neutral-600)' },
+  { t: '14:24:09', x: 'The inbox renders permission requests in their own section,', c: 'var(--color-neutral-300)' },
+  { t: '14:24:09', x: 'so the allow/deny form is separate from the question rows.', c: 'var(--color-neutral-300)' },
+  { t: '14:24:15', x: 'tool-call  Edit DashboardEndpoints.cs +38 −6', c: 'var(--color-neutral-600)' },
+  { t: '14:24:31', x: 'session/request_permission  Bash(dotnet test …)', c: 'var(--state-wait)' },
+  { t: '14:24:31', x: 'classifier → ask  (argv allowlist: no match)', c: 'var(--state-wait)' },
+  { t: '14:24:33', x: 'waiting on a verdict — 46s', c: 'var(--state-wait)' },
+];
+
+const MACHINES = [
+  { id: 'codex-apphost-linux', dot: C.live, load: '2 · 41%' },
+  { id: 'claude-apphost-linux', dot: C.live, load: '1 · 22%' },
+  { id: 'grok-apphost-linux', dot: C.live, load: '2 · 58%' },
+  { id: 'mac-studio-01', dot: C.live, load: '3 · 77%' },
+  { id: 'hetzner-de-03', dot: C.wait, load: 'back-pressure' },
+  { id: 'win-box-02', dot: C.live, load: '2 · 35%' },
+  { id: 'mac-mini-04', dot: C.live, load: '1 · 12%' },
+];
+
+class Component extends DCLogic {
+  state = { sel: 2 };
+
+  agents() {
+    if (!this._a) {
+      this._a = AGENTS.map((a, i) => {
+        const m = STATE_META[a.state];
+        return Object.assign({}, a, {
+          i, color: m.color, live: m.live, stateLabel: m.label, envelope: a.envelope,
+          dotOpacity: m.op, events: buildEvents(a),
+          sub: a.profile + ' · ' + a.machine,
+          nameColor: a.state === 'completed' ? 'var(--color-neutral-600)' : 'var(--color-neutral-200)',
+          nowColor: a.state === 'failed' ? 'var(--state-error)' : (a.state === 'completed' ? 'var(--color-neutral-700)' : 'var(--color-neutral-500)'),
+          edgeColor: m.live ? m.color : 'var(--color-surface)',
+          msgCount: a.unread ? String(a.unread) + ' new' : '—',
+          tokens: a.state === 'submitted' ? '—' : (40 + (a.seed * 13) % 260) + '.' + (a.seed % 9) + 'k',
+          tokColor: a.state === 'submitted' ? 'var(--color-neutral-700)' : 'var(--color-neutral-300)',
+          cost: a.state === 'submitted' ? '' : (a.profile === 'codex' || a.profile === 'grok'
+            ? '$ —' : '$' + ((40 + (a.seed * 13) % 260) * 0.0061).toFixed(2)),
+          uIn: a.state === 'submitted' ? 0 : 20 + (a.seed % 11),
+          uOut: a.state === 'submitted' ? 0 : 12 + (a.seed % 8),
+          uCache: a.state === 'submitted' ? 0 : 68 - (a.seed % 11) - (a.seed % 8),
+          rate: a.state === 'submitted' ? 'no dispatch yet'
+            : (m.live && a.state !== 'failed'
+              ? (1 + (a.seed % 9) / 2).toFixed(1) + 'k tok/min · ' + (12 + a.seed % 40) + ' calls'
+              : 'last report ' + (1 + a.seed % 9) + 'm ago'),
+          rateColor: m.live && a.state !== 'failed' ? 'var(--state-live)' : 'var(--color-neutral-700)',
+          ports: a.ports.map(p => ({
+            label: p.name + ':' + p.port,
+            fg: p.live ? 'var(--color-neutral-300)' : 'var(--color-neutral-600)',
+            dot: p.live ? C.fwd : 'var(--color-neutral-700)',
+            border: p.live ? 'var(--forward-line)' : 'var(--color-neutral-800)',
+            bg: p.live ? 'var(--forward-tint)' : 'transparent',
+          })),
+          spark: buildEvents(a).slice(0, 10).map((e, k) => ({
+            css: 'position:absolute;bottom:0;left:' + (k * 11) + 'px;width:3px;height:' + (4 + ((a.seed * (k + 3)) % 9)) + 'px;border-radius:1px;background:' + (k % 4 === 1 ? C.msg : m.color) + ';opacity:' + (k % 4 === 1 ? '.95' : '.35') + ';',
+          })),
+        });
+      });
+    }
+    return this._a;
+  }
+
+  renderVals() {
+    const agents = this.agents().map(a => Object.assign({}, a, {
+      rowH: 46,
+      rowBg: a.i === this.state.sel ? 'var(--surface-2)' : 'transparent',
+      onSelect: () => this.setState({ sel: a.i }),
+    }));
+    const s = agents[this.state.sel] || agents[0];
+    return {
+      agents,
+      showPorts: this.props.showPorts ?? true,
+      windowLabel: this.props.timelineWindow ?? '15 min',
+      machines: MACHINES,
+      sel: {
+        ns: s.ns, color: s.color,
+        detail: s.profile + ' · ' + s.machine + ' · ' + s.stateLabel + ' · envelope ' + s.envelope,
+        messages: MESSAGES.map(m => ({
+          from: m.from === 'lead' ? 'Lead' : 'Worker',
+          at: m.at, text: m.text,
+          bar: m.from === 'lead' ? C.msgDim : C.msg,
+          bg: m.from === 'lead' ? 'var(--surface-1)' : 'var(--surface-2)',
+        })),
+        transcript: TRANSCRIPT,
+      },
+      cards: this.agents().slice(0, 9).map(a => ({
+        ns: a.ns.replace('sess/', ''), color: a.color, live: a.live, now: a.now,
+        stateLabel: a.stateLabel, elapsed: a.elapsed,
+        fade: a.state === 'completed' ? 0.45 : (a.state === 'parked' ? 0.65 : 1),
+        border: a.state === 'failed' ? 'var(--error-edge)' : 'var(--color-neutral-900)',
+        bg: a.state === 'failed' ? 'var(--error-tint)' : 'var(--surface-2)',
+        barBg: 'var(--color-surface)',
+        barW: a.state === 'completed' ? 100 : (a.state === 'failed' ? 68 : 20 + ((a.seed * 7) % 60)),
+      })),
+      legendStates: [
+        { key: 'working', color: C.live, op: 1, note: 'occupancy running, a pulse per lane' },
+        { key: 'awaiting_permission', color: C.wait, op: 1, note: 'a worker is blocked right now' },
+        { key: 'awaiting_lead', color: C.wait, op: 1, note: 'question sent, no answer yet' },
+        { key: 'parked', color: C.wait, op: 0.5, note: 'the wait outlived its TTL' },
+        { key: 'failed', color: C.err, op: 1, note: 'requeued on a liveness loss' },
+        { key: 'completed', color: C.done, op: 0.45, note: 'closed; the lane greys out' },
+      ],
+      legendMarks: [
+        { key: 'tool-call', css: markCss('tool', 50, 0).replace('top:50%', 'top:7px'), note: 'one tick per ACP session/update' },
+        { key: 'worker → Lead', css: markCss('ask', 50, 0).replace('top:50%', 'top:11px'), note: 'an ask, above the line' },
+        { key: 'Lead → worker', css: markCss('answer', 50, 0).replace('top:50%', 'top:0px'), note: 'the response, below it' },
+        { key: 'forward', css: markCss('forward', 10, 55).replace('top:50%', 'top:4px'), note: 'relay splice, for as long as it held' },
+        { key: 'auth-failed', css: markCss('error', 50, 0).replace('top:50%', 'top:7px'), note: 'collapsed across retries' },
+        { key: 'report_result', css: markCss('done', 50, 0).replace('top:50%', 'top:7px'), note: 'the worker mailed its result' },
+      ],
+    };
+  }
+}
+
+</script>
+</body>
+</html>

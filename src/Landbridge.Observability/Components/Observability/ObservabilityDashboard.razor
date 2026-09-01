@@ -1,0 +1,99 @@
+@implements IDisposable
+@inject DashboardSimulator Simulator
+
+<div class="obs-board">
+    <div class="obs-header">
+        <div class="obs-header__brand">
+            <span class="obs-header__brand-name">landbridge</span>
+            <span class="obs-header__brand-sub">instance / dev-loop</span>
+        </div>
+        <div class="obs-header__rule"></div>
+        <div class="obs-header__counts">
+            <div class="obs-count"><span class="obs-count__dot" style="background:var(--state-live)"></span><span class="obs-count__label">@_summary.Working working</span></div>
+            <div class="obs-count"><span class="obs-count__dot" style="background:var(--state-wait)"></span><span class="obs-count__label">@_summary.Waiting waiting</span></div>
+            <div class="obs-count"><span class="obs-count__dot" style="background:var(--state-error)"></span><span class="obs-count__label">@_summary.Failed failed</span></div>
+            <div class="obs-count"><span class="obs-count__dot" style="background:var(--color-neutral-700)"></span><span class="obs-count__label obs-count__label--dim">@_summary.Submitted submitted</span></div>
+        </div>
+        <div class="obs-header__spacer"></div>
+        <div class="obs-header__stats">
+            <span>@_summary.MachineCount machines</span><span class="obs-header__stats-sep">·</span>
+            <span>@_summary.ForwardsOpen forwards open</span><span class="obs-header__stats-sep">·</span>
+            <span>relay @_summary.RelayMb MB</span>
+        </div>
+        <div class="obs-live-pill"><span class="obs-live-pill__dot"></span><span class="obs-live-pill__label">live</span></div>
+    </div>
+
+    <div class="obs-body">
+        <MachineRail Machines="_machines" />
+
+        <div class="obs-lanes">
+            <div class="obs-lanes__head">
+                <div>Session</div>
+                <div>Right now</div>
+                <div class="obs-lanes__head-window"><span>Last 15 min</span><span>now</span></div>
+                <div class="obs-lanes__head-usage">
+                    <span>Usage</span>
+                    <span class="obs-usage-key"><span class="obs-usage-key__swatch" style="background:var(--color-accent-600)"></span>in</span>
+                    <span class="obs-usage-key"><span class="obs-usage-key__swatch" style="background:var(--color-accent-400)"></span>out</span>
+                    <span class="obs-usage-key"><span class="obs-usage-key__swatch" style="background:var(--color-neutral-700)"></span>cache</span>
+                </div>
+                <div>Forwards</div>
+                <div></div>
+            </div>
+            <div class="obs-lanes__body">
+                @foreach (var a in _agents)
+                {
+                    <SessionRow Session="a" IsSelected="a.Id == _selectedId" OnSelect="SelectSession" />
+                }
+            </div>
+        </div>
+
+        @if (_selected is not null)
+        {
+            <DetailPanel Session="_selected" />
+        }
+    </div>
+</div>
+
+@code {
+    private IReadOnlyList<AgentSession> _agents = [];
+    private IReadOnlyList<Machine> _machines = [];
+    private FleetSummary _summary = new();
+    private int _selectedId;
+    private AgentSession? _selected;
+
+    protected override void OnInitialized()
+    {
+        Refresh();
+        _selectedId = _agents.Count > 0 ? _agents[2].Id : 0; // dash-inbox-perms, matching the mockup's default selection
+        Simulator.MarkRead(_selectedId);
+        Refresh();
+        Simulator.Changed += HandleChanged;
+    }
+
+    private void Refresh()
+    {
+        Simulator.RunWithLock((agents, machines) =>
+        {
+            _agents = agents;
+            _machines = machines;
+        });
+        _summary = Simulator.GetSummary();
+        _selected = _agents.FirstOrDefault(a => a.Id == _selectedId);
+    }
+
+    private void HandleChanged() => InvokeAsync(() =>
+    {
+        Refresh();
+        StateHasChanged();
+    });
+
+    private void SelectSession(int id)
+    {
+        _selectedId = id;
+        Simulator.MarkRead(id);
+        Refresh();
+    }
+
+    public void Dispose() => Simulator.Changed -= HandleChanged;
+}

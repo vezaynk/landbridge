@@ -1,0 +1,36 @@
+<div class="obs-track">
+    <div class="obs-track__line"></div>
+    @foreach (var m in Marks)
+    {
+        <div class="@MarkClass(m)" style="@MarkStyle(m)" title="@m.Label"></div>
+    }
+    <div class="obs-track__edge" style="background:var(@EdgeColorVar)"></div>
+</div>
+
+@code {
+    [Parameter, EditorRequired]
+    public IReadOnlyList<TimelineMark> Marks { get; set; } = [];
+
+    [Parameter, EditorRequired]
+    public string EdgeColorVar { get; set; } = "--color-surface";
+
+    private static string MarkClass(TimelineMark m) => "obs-mark " + m.Type switch
+    {
+        MarkType.Tool => "obs-mark--tool",
+        MarkType.Ask => "obs-mark--ask",
+        MarkType.Answer => "obs-mark--answer",
+        MarkType.Forward => "obs-mark--forward",
+        MarkType.Error => "obs-mark--error",
+        MarkType.Park => "obs-mark--park",
+        MarkType.Dispatch => "obs-mark--dispatch",
+        MarkType.Done => "obs-mark--done",
+        _ => "",
+    };
+
+    private static string MarkStyle(TimelineMark m)
+    {
+        var style = $"left:{Fmt.Pct(m.PositionPct)};";
+        if (m.Type == MarkType.Forward) style += $"width:{Fmt.Pct(m.WidthPct)};";
+        return style;
+    }
+}

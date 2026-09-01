@@ -1,0 +1,19 @@
+<div class="obs-usage">
+    <div class="obs-usage__top">
+        <span class="obs-usage__tokens" style="color:@TokColor">@Session.TokensLabel</span>
+        <span class="obs-usage__cost">@Session.CostLabel</span>
+    </div>
+    <div class="obs-usage__bar">
+        <div style="width:@(Fmt.Pct(Session.UsageInPct));background:var(--color-accent-600)"></div>
+        <div style="width:@(Fmt.Pct(Session.UsageOutPct));background:var(--color-accent-400)"></div>
+        <div style="width:@(Fmt.Pct(Session.UsageCachePct));background:var(--color-neutral-700)"></div>
+    </div>
+    <span class="obs-usage__rate" style="color:var(@Session.RateColorVar)">@Session.RateLabel</span>
+</div>
+
+@code {
+    [Parameter, EditorRequired]
+    public AgentSession Session { get; set; } = null!;
+
+    private string TokColor => Session.HasDispatch ? "var(--color-neutral-300)" : "var(--color-neutral-700)";
+}

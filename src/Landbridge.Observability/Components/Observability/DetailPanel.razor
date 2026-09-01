@@ -1,0 +1,64 @@
+<div class="obs-detail">
+    <div class="obs-detail__head">
+        <div class="obs-detail__title">
+            <span class="obs-detail__title-dot" style="background:var(@Session.Meta.ColorVar)"></span>
+            <span class="obs-detail__title-ns">@Session.Ns</span>
+        </div>
+        <div class="obs-detail__meta">@Session.Profile · @Session.Machine · @Session.Meta.Label · envelope @Session.Meta.Envelope</div>
+        <div class="obs-detail__actions">
+            <button class="obs-btn obs-btn--primary" type="button">Tail transcript</button>
+            <button class="obs-btn obs-btn--ghost" type="button">Event log</button>
+            <button class="obs-btn obs-btn--ghost" type="button">Stop</button>
+        </div>
+    </div>
+
+    <div class="obs-detail__section-title">Exchange</div>
+    <div class="obs-exchange">
+        @foreach (var m in Session.Messages)
+        {
+            var bar = m.FromLead ? "var(--color-accent-600)" : "var(--color-accent-400)";
+            var bg = m.FromLead ? "var(--surface-1)" : "var(--surface-2)";
+            <div class="obs-message" style="border-left-color:@bar;background:@bg">
+                <div class="obs-message__head">
+                    <span class="obs-message__from" style="color:@bar">@m.From</span>
+                    <span class="obs-message__spacer"></span>
+                    <span class="obs-message__at">@m.At</span>
+                </div>
+                <div class="obs-message__text">@m.Text</div>
+            </div>
+        }
+    </div>
+
+    <div class="obs-transcript-head">
+        <span class="obs-transcript-head__title">Transcript tail</span>
+        <span class="obs-transcript-head__dot"></span>
+        <span class="obs-transcript-head__spacer"></span>
+        <span class="obs-transcript-head__tag">@Session.Attempt · @Session.Machine</span>
+    </div>
+    <div class="obs-transcript">
+        @foreach (var l in Session.Transcript.TakeLast(14))
+        {
+            <div class="obs-transcript__line">
+                <span class="obs-transcript__time">@l.Time</span>
+                <span class="obs-transcript__text" style="color:@LineColor(l.Kind)">@l.Text</span>
+            </div>
+        }
+        <div class="obs-transcript__line">
+            <span class="obs-transcript__time">&nbsp;</span>
+            <span class="obs-transcript__cursor"></span>
+        </div>
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired]
+    public AgentSession Session { get; set; } = null!;
+
+    private static string LineColor(TranscriptLineKind k) => k switch
+    {
+        TranscriptLineKind.ToolCall => "var(--color-neutral-600)",
+        TranscriptLineKind.Narration => "var(--color-neutral-300)",
+        TranscriptLineKind.Waiting => "var(--state-wait)",
+        _ => "var(--color-neutral-500)",
+    };
+}
