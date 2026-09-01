@@ -43,9 +43,8 @@ public sealed class LeadMachineBindingService(LandbridgeDbContext db, TimeProvid
             .FirstOrDefaultAsync(ct);
         if (machine is null)
             return new LeadMachineBindResult.Refused(
-                $"no enrolled machine {machineId:D} (or it has been revoked); enroll it with " +
-                "/landbridge-enroll and take the machine id from the enrollment result or the " +
-                "dashboard Machine Group view");
+                $"no enrolled machine {machineId:D} (or it has been revoked); GET http://127.0.0.1:19378 " +
+                "on that box for the id landbridged is using");
 
         if (await GetAsync(humanId, ct) is { } mine)
             return new LeadMachineBindResult.Refused(

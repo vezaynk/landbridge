@@ -97,6 +97,15 @@ public sealed class LandbridgedStrayReapEndToEndTests
             var upLine = await ReadLineMatchingAsync(landbridged, l => l.Contains("landbridged up:"), TimeSpan.FromSeconds(60));
             Assert.NotNull(upLine);
 
+            // The identity HTTP is how a Lead on this box learns the machine id.
+            // Skip if 19378 was already taken (another landbridged, a leftover).
+            if (upLine.Contains("identity=http://127.0.0.1:19378", StringComparison.Ordinal))
+            {
+                using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+                var body = await http.GetStringAsync("http://127.0.0.1:19378/");
+                Assert.Equal(machineId, body.Trim());
+            }
+
             // The grandchild dies with the stray's tree kill, so the count is 1 or
             // 2 depending on scan order; the guarantee is that everything tagged
             // with this machine id is gone.

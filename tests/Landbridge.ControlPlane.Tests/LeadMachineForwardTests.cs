@@ -99,7 +99,7 @@ public sealed class LeadMachineForwardTests(PostgresFixture pg) : IAsyncLifetime
             await bindings.BindAsync(Guid.NewGuid(), Guid.NewGuid()));
 
         Assert.Contains("no enrolled machine", refused.Reason);
-        Assert.Contains("/landbridge-enroll", refused.Reason);
+        Assert.Contains("127.0.0.1:19378", refused.Reason);
     }
 
     [SkippableFact]

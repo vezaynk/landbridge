@@ -374,12 +374,13 @@ public sealed class LeadTools(
      Description("Claim an enrolled machine as your human's OWN machine — the box they are sitting at " +
                  "(spec §8.3). This is what makes open_lead_forward possible: it needs somewhere to bind " +
                  "a local port, and a Lead has no machine of its own. The machine must already be enrolled " +
-                 "with landbridged installed (/landbridge-enroll); pass the machine id from the enrollment result " +
-                 "or the dashboard Machine Group view. One machine per person, and one person per machine: " +
-                 "if you have moved, unbind_machine first. Only bind a machine your human actually controls " +
-                 "— a forward will open a listening port on it.")]
+                 "with landbridged installed. On that box GET http://127.0.0.1:19378 — landbridged answers " +
+                 "with the machine id; pass it here. Enrollment stdout and the dashboard Machine Group view " +
+                 "also have it. One machine per person, and one person per machine: if you have moved, " +
+                 "unbind_machine first. Only bind a machine your human actually controls — a forward will " +
+                 "open a listening port on it.")]
     public async Task<string> BindMachine(
-        [Description("The enrolled machine's id (a uuid), from /landbridge-enroll or the dashboard Machine Group view.")]
+        [Description("The enrolled machine's id (a uuid). On the box you are sitting at, GET http://127.0.0.1:19378 — landbridged answers with it.")]
         string machineId,
         CancellationToken ct)
     {
@@ -434,8 +435,9 @@ public sealed class LeadTools(
         var bound = await bindings.GetAsync(human, ct)
             ?? throw new McpException(
                 "you have no machine bound, so there is nowhere to open a local port. Three steps: " +
-                "install and enroll landbridged on the machine your human is sitting at (/landbridge-enroll), " +
-                "then bind_machine with the machine id it reports, then call open_lead_forward again. " +
+                "install and enroll landbridged on the machine your human is sitting at, " +
+                "GET http://127.0.0.1:19378 for that box's machine id, bind_machine with it, then call " +
+                "open_lead_forward again. " +
                 "If the service speaks HTTP, its worker can mint a browser preview URL with open_preview " +
                 "instead — that needs no landbridged on your human's side.");
 

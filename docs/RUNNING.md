@@ -218,6 +218,11 @@ connects:
 landbridged --config /etc/landbridged/config.json --state-dir /var/lib/landbridged
 ```
 
+While running, `landbridged` serves this machine's id on loopback
+`http://127.0.0.1:19378` (plain-text GET). A Lead on the same box reads it to
+`bind_machine`. The port is well-known and not configurable; bind failure is
+logged (`identity=unbound` on the up line) and is not fatal.
+
 The access token is short-lived and re-minted at `POST /machine/refresh` —
 proactively at ~50% of its remaining lifetime and reactively on a 401 reconnect.
 The long-lived refresh token is the only durable secret on the box.

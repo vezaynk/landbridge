@@ -137,7 +137,7 @@ A worker can register a live service — a database, an API, a dev server — an
 **For anything else — Postgres, Redis, an SSH port, any raw TCP protocol — your human needs a local port**, and that means their machine must be part of the fleet and claimed as theirs. One-time setup:
 
 1. **Install and enroll `landbridged` on the machine your human is actually sitting at.** Enrollment is the same on their laptop as on any machine — an agent on that box follows the `landbridge-enroll` skill. There is no `/landbridge-enroll` command to invoke; point them at the skill, not at a slash command. Enrolling their laptop does not volunteer it for work — nothing dispatches there unless it declares itself ready.
-2. **`bind_machine`** with the machine id enrollment reported. That is the explicit statement "this is my human's own box"; without it the control plane has no idea where the person is, and refuses to open a port anywhere. One machine per person: if they move to a different one, `unbind_machine` first.
+2. **`bind_machine`** with this machine's id. If you are on the same box as `landbridged`, GET `http://127.0.0.1:19378` — the body is the UUID. That is the explicit statement "this is my human's own box"; without it the control plane has no idea where the person is, and refuses to open a port anywhere. One machine per person: if they move to a different one, `unbind_machine` first. Enrollment stdout and the dashboard Machine Group view also have the id if the loopback GET fails.
 
 Then, once per connection they want: **`open_lead_forward(serviceName)`** returns a host and port on their machine. Hand it over as a command to run — `psql -h 127.0.0.1 -p <port> ...` — not as a fact to note.
 
