@@ -22,6 +22,7 @@ public sealed class LocalIdentityListener : IAsyncDisposable
 
     private readonly HttpListener _http = new();
     private readonly string _machineId;
+    private volatile bool _stopping;
     private Task? _loop;
 
     private LocalIdentityListener(string machineId) => _machineId = machineId;
@@ -90,22 +91,24 @@ public sealed class LocalIdentityListener : IAsyncDisposable
     {
         try
         {
-            while (_http.IsListening)
+            while (!_stopping && _http.IsListening)
             {
                 HttpListenerContext context;
                 try
                 {
                     context = await _http.GetContextAsync();
                 }
-                catch (Exception e) when (e is HttpListenerException or ObjectDisposedException)
+                catch (Exception e) when (e is HttpListenerException or ObjectDisposedException or InvalidOperationException)
                 {
+                    // Stop() races GetContextAsync: macOS throws InvalidOperationException
+                    // ("Please call the Start() method") rather than HttpListenerException.
                     return;
                 }
 
                 _ = Task.Run(() => Handle(context));
             }
         }
-        catch (ObjectDisposedException)
+        catch (Exception e) when (e is ObjectDisposedException or InvalidOperationException)
         {
             // stopped
         }
@@ -160,13 +163,14 @@ public sealed class LocalIdentityListener : IAsyncDisposable
 
     public async ValueTask DisposeAsync()
     {
+        _stopping = true;
         try { if (_http.IsListening) _http.Stop(); }
-        catch (ObjectDisposedException) { }
+        catch (Exception e) when (e is ObjectDisposedException or InvalidOperationException) { }
 
         if (_loop is not null)
         {
             try { await _loop; }
-            catch (Exception e) when (e is HttpListenerException or ObjectDisposedException or OperationCanceledException) { }
+            catch (Exception e) when (e is HttpListenerException or ObjectDisposedException or InvalidOperationException or OperationCanceledException) { }
         }
 
         _http.Close();
