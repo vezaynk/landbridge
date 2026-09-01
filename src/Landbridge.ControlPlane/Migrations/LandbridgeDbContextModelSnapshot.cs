@@ -878,6 +878,53 @@ namespace Landbridge.ControlPlane.Migrations
 
                     b.ToTable("worker_instances", (string)null);
                 });
+
+            modelBuilder.Entity("Landbridge.ControlPlane.FrictionReportRow", b =>
+                {
+                    b.Property<long>("Seq")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("seq");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityAlwaysColumn(b.Property<long>("Seq"));
+
+                    b.Property<DateTimeOffset>("At")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("at");
+
+                    b.Property<Guid?>("HumanId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("human_id");
+
+                    b.Property<string>("Message")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("message");
+
+                    b.Property<string>("Role")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("role");
+
+                    b.Property<Guid?>("SessionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("session_id");
+
+                    b.Property<Guid>("TeamId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("team_id");
+
+                    b.HasKey("Seq")
+                        .HasName("pk_friction_reports");
+
+                    b.HasIndex("At")
+                        .HasDatabaseName("ix_friction_reports_at");
+
+                    b.HasIndex("TeamId")
+                        .HasDatabaseName("ix_friction_reports_team_id");
+
+                    b.ToTable("friction_reports", (string)null);
+                });
 #pragma warning restore 612, 618
         }
     }

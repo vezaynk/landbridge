@@ -56,6 +56,7 @@ public static class StoreServiceCollectionExtensions
         services.TryAddSingleton<LeadSetupLinkStore>();
         services.TryAddScoped<SessionStore>();
         services.TryAddScoped<TeamForwardUsageService>();
+        services.TryAddScoped<FrictionStore>();
         return services;
     }
 }

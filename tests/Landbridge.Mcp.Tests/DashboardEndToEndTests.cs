@@ -623,6 +623,42 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         await app.StopAsync(ct);
     }
 
+    [SkippableFact]
+    public async Task Friction_tab_renders_a_report_in_html_and_json()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var ct = cts.Token;
+
+        await using var app = BuildPlane();
+        await app.StartAsync(ct);
+
+        var team = TeamId.New();
+        var session = SessionId.New();
+        await using (var db = pg.NewContext())
+        {
+            await new FrictionStore(db, TimeProvider.System).RecordAsync(
+                FrictionReportRow.WorkerRole, team.Value, session.Value, null,
+                "get_inbox returned empty after send_input_request", ct);
+        }
+
+        var html = await GetAuthedAsync(app, "/dashboard/friction", ct);
+        Assert.Contains("Friction", html, StringComparison.Ordinal);
+        Assert.Contains("get_inbox returned empty after send_input_request", html, StringComparison.Ordinal);
+        Assert.Contains("worker", html, StringComparison.Ordinal);
+        Assert.Contains("href=\"/dashboard/friction\"", html, StringComparison.Ordinal);
+
+        var json = await GetAuthedAsync(app, "/dashboard/friction?format=json", ct);
+        using var doc = JsonDocument.Parse(json);
+        var row = Assert.Single(doc.RootElement.EnumerateArray());
+        Assert.Equal("worker", row.GetProperty("role").GetString());
+        Assert.Equal(team.Value, row.GetProperty("teamId").GetGuid());
+        Assert.Equal(session.Value, row.GetProperty("sessionId").GetGuid());
+        Assert.Equal("get_inbox returned empty after send_input_request", row.GetProperty("message").GetString());
+
+        await app.StopAsync(ct);
+    }
+
     // ── Host + seeding helpers ────────────────────────────────────────────────
 
     /// <summary>The operator passphrase a configured verifier accepts, and its SHA-256 hex.</summary>

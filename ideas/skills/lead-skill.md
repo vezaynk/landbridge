@@ -122,6 +122,12 @@ Remember that the tool name and arguments came up through an agent's process. A 
 
 **Clean up before you close out.** Send a continuation to stop processes and tidy the session directory. A report that left a dev server up is not finished work.
 
+## Report friction in Landbridge
+
+When Landbridge itself gets in the way of leading — an inbox that hid something, a profile you could not discover, a forward that failed for a reason you could not act on, a skill that told you the wrong thing — call `report_friction` with what happened and how it could be better.
+
+This is product feedback for the operators who run this instance, not a note to your human about the work. Be specific: name the tool or loop, what you expected, what you got. It is capped at 16 KB.
+
 ## Getting your human to a worker's service
 
 A worker can register a live service — a database, an API, a dev server — and other sessions in the Team reach it with `open_forward`. Your human cannot, by default: they are not on the fleet.

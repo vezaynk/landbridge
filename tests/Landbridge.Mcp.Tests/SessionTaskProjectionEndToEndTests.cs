@@ -212,6 +212,7 @@ public sealed class SessionTaskProjectionEndToEndTests(PostgresFixture pg) : IAs
             .WithHttpTransport()
             .WithTools<WorkerTools>()
             .WithTools<LeadTools>()
+            .WithTools<FrictionTools>()
             .WithSessionTaskProjection();
 
         var app = builder.Build();

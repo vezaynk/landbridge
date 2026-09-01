@@ -635,6 +635,25 @@ public sealed class DashboardQueries(LandbridgeDbContext db, RunnerConnectionReg
             .Where(t => t.TeamId == runId)
             .Select(t => t.Profile)
             .FirstOrDefaultAsync(ct);
+
+    /// <summary>
+    /// Agent-reported friction about Landbridge itself, newest first. A Lead sees
+    /// only its Team; a human sees the instance.
+    /// </summary>
+    public async Task<IReadOnlyList<FrictionReportView>> GetFrictionAsync(
+        int limit = 200, Guid? teamScope = null, CancellationToken ct = default)
+    {
+        var rows = db.FrictionReports.AsNoTracking();
+        if (teamScope is { } only)
+            rows = rows.Where(f => f.TeamId == only);
+
+        return await rows
+            .OrderByDescending(f => f.Seq)
+            .Take(limit)
+            .Select(f => new FrictionReportView(
+                f.Seq, f.At, f.Role, f.TeamId, f.SessionId, f.HumanId, f.Message))
+            .ToListAsync(ct);
+    }
 }
 
 // ── View records (the JSON twin's wire shape) ──────────────────────────────────
@@ -939,3 +958,13 @@ public sealed record TeamUsageView(
             byModel.Count > 0 ? byModel.Max(m => m.ReportedAt) : null);
     }
 }
+
+/// <summary>One <c>report_friction</c> row for the dashboard Friction tab.</summary>
+public sealed record FrictionReportView(
+    long Seq,
+    DateTimeOffset At,
+    string Role,
+    Guid TeamId,
+    Guid? SessionId,
+    Guid? HumanId,
+    string Message);

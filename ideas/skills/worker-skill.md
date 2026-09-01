@@ -13,7 +13,7 @@ You are the worker on this session. You are not the Lead, you cannot create work
 
 Your dispatch carries a session with a `description` and an optional `workspace`. Read what is there before doing anything.
 
-**Landbridge's tools are MCP tools, and there is no `landbridge` command line.** Everything this skill tells you to call — `get_inbox`, `report_result`, `request_input`, `start_process`, `register_service` and the rest — the harness exposes as MCP tools named `mcp__landbridge__get_inbox`, `mcp__landbridge__report_result`, and so on. Call them as tools, under those names. No `landbridge` executable exists on any machine here: the daemon is `landbridged`, you never invoke it yourself, and nothing named `landbridge` is on any PATH. So a shell command beginning with `landbridge` cannot work, and neither can reaching the MCP server yourself over HTTP or with `curl` — the tool call is the only route. This is not pedantry about naming: a worker that shells out instead of calling the tool has invented a program that does not exist, and even when it guesses a plausible command it has bypassed the one path that records what it did. If a landbridge tool looks unavailable, or a call comes back refused, handle it the way the refusal guidance under [Asking questions](#asking-questions) says — and never by routing around it with a shell.
+**Landbridge's tools are MCP tools, and there is no `landbridge` command line.** Everything this skill tells you to call — `get_inbox`, `report_result`, `request_input`, `start_process`, `register_service`, `report_friction` and the rest — the harness exposes as MCP tools named `mcp__landbridge__get_inbox`, `mcp__landbridge__report_result`, and so on. Call them as tools, under those names. No `landbridge` executable exists on any machine here: the daemon is `landbridged`, you never invoke it yourself, and nothing named `landbridge` is on any PATH. So a shell command beginning with `landbridge` cannot work, and neither can reaching the MCP server yourself over HTTP or with `curl` — the tool call is the only route. This is not pedantry about naming: a worker that shells out instead of calling the tool has invented a program that does not exist, and even when it guesses a plausible command it has bypassed the one path that records what it did. If a landbridge tool looks unavailable, or a call comes back refused, handle it the way the refusal guidance under [Asking questions](#asking-questions) says — and never by routing around it with a shell.
 
 **You are not the only agent on this machine.** Other sessions — from your Team and from others — are running here at the same time. Isolate yourself. Do not wait for the Lead to assign you a port or a worktree.
 
@@ -200,6 +200,12 @@ It also takes an optional `report`: a short in-band summary that flows straight 
 Say what you _didn't_ do. Scope you deliberately left, tests you couldn't run, assumptions you made. That is the most useful part of a report and the part most often omitted.
 
 After `report_result` you stay idle and may keep working; the Lead sees unread mail in their inbox. **You stay up.** A report is mail, not a yield of the machine — your process and anything you started stay running so the Lead can reply on this same session. You do not close the session. If the Lead wants more, you will get another turn: pull `get_inbox` — their note is the `answer`. If they close, the assignment ends.
+
+## Report friction in Landbridge
+
+When Landbridge itself gets in the way — a tool that refuses for a reason you cannot act on, a loop that takes three calls where one would do, a skill that told you the wrong thing, a missing affordance — call `report_friction` with what happened and how it could be better.
+
+This is product feedback for the operators who run this instance, not a message to your Lead. Do **not** use it for the assignment: blockers and questions about the work still go to `request_input`, and results still go to `report_result`. Be specific: name the tool, what you expected, what you got. It is capped at 16 KB.
 
 ## Subagents
 

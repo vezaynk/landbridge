@@ -185,6 +185,7 @@ public sealed class SkillResourcesEndToEndTests(PostgresFixture pg) : IAsyncLife
             .WithHttpTransport()
             .WithTools<WorkerTools>()
             .WithTools<LeadTools>()
+            .WithTools<FrictionTools>()
             .WithResources<SkillResources>();
 
         var app = builder.Build();

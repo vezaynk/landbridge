@@ -1,0 +1,70 @@
+@page "/dashboard/friction"
+@inherits DashboardPageBase
+
+<PageTitle>Friction · Landbridge</PageTitle>
+
+@if (RefuseReason is { } reason)
+{
+    <ScopeCard Reason="@reason" />
+}
+else if (Ready)
+{
+    <h1>Friction</h1>
+    <p class="sub">What Leads and workers reported about Landbridge itself — missing
+        tools, confusing refusals, awkward loops — not about their assignments.
+        Newest first.</p>
+
+    @if (List.Count == 0)
+    {
+        <EmptyState Message="No friction reported yet." />
+    }
+    else
+    {
+        <section>
+            <table>
+                <thead>
+                    <tr>
+                        <th>When</th><th>Who</th><th>Team</th><th>Session</th><th>Message</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var f in List)
+                    {
+                        <tr>
+                            <td>@Age(f.At, Now)</td>
+                            <td>
+                                <Badge Text="@f.Role" CssClass="@(f.Role == "lead" ? "state-verifying" : "state-submitted")" />
+                                @if (f.HumanId is { } human)
+                                {
+                                    <span class="mono nt"> @ShortId(human)</span>
+                                }
+                            </td>
+                            <td><TeamLink TeamId="@f.TeamId" /></td>
+                            <td>
+                                @if (f.SessionId is { } session)
+                                {
+                                    <span class="mono">@ShortId(session)</span>
+                                }
+                                else
+                                {
+                                    <span class="nt">—</span>
+                                }
+                            </td>
+                            <td><QuestionCell Question="@f.Message" /></td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </section>
+    }
+}
+
+@code {
+    private IReadOnlyList<FrictionReportView> List { get; set; } = [];
+
+    protected override async Task<string?> LoadAsync()
+    {
+        List = await Queries.GetFrictionAsync(200, TeamScope, RequestAborted);
+        return null;
+    }
+}

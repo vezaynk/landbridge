@@ -93,7 +93,8 @@ internal static class RelayGrantTestKit
         builder.Services.AddMcpServer()
             .WithHttpTransport()
             .WithTools<WorkerTools>()
-            .WithTools<LeadTools>();
+            .WithTools<LeadTools>()
+            .WithTools<FrictionTools>();
 
         var app = builder.Build();
         app.UseAuthentication();
