@@ -38,7 +38,7 @@ namespace Landbridge.ControlPlane;
 /// renders one as an empty slot is a rendering gap that view owns, not a missing
 /// source.
 /// </summary>
-public sealed class DashboardQueries(LandbridgeDbContext db, RunnerConnectionRegistry registry)
+public sealed partial class DashboardQueries(LandbridgeDbContext db, RunnerConnectionRegistry registry)
 {
     // The task states that mean a Team is still doing something (§12: idle Teams
     // drift to the bottom). Everything else is terminal or empty.

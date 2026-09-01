@@ -1,0 +1,74 @@
+@using Landbridge.ControlPlane
+<div class="obs-rail">
+    <div class="obs-rail__title">Machines</div>
+    <div class="obs-rail__list">
+        @if (Machines.Count == 0)
+        {
+            <div class="obs-machine">
+                <span class="obs-machine__id" style="color:var(--color-neutral-700)">No machines connected.</span>
+            </div>
+        }
+        @foreach (var m in Machines)
+        {
+            <div class="obs-machine">
+                <span class="obs-machine__dot" style="background:@(m.UnderBackPressure ? "var(--state-wait)" : m.Ready ? "var(--state-live)" : "var(--color-neutral-700)")"></span>
+                <span class="obs-machine__id">@m.MachineId</span>
+                <span class="obs-machine__spacer"></span>
+                <span class="obs-machine__load">@LoadText(m)</span>
+                <form class="obs-machine__revoke" method="post" action="/dashboard/machines/revoke">
+                    <input type="hidden" name="machineId" value="@m.MachineId" />
+                    <button type="submit" title="Revoke machine">revoke</button>
+                </form>
+            </div>
+        }
+    </div>
+    <div class="obs-rail__fill"></div>
+    <div class="obs-rail__footnote">
+        @HeartbeatLine<br />
+        @BackPressureCount machine@(BackPressureCount == 1 ? "" : "s") under back-pressure<br />
+        no subagents reported
+        @if (IdleMachineEmpty)
+        {
+            <text><br />No sessions running on this machine.</text>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired]
+    public IReadOnlyList<ObservabilityMachine> Machines { get; set; } = [];
+
+    [Parameter]
+    public DateTimeOffset Now { get; set; }
+
+    [Parameter]
+    public int LaneCount { get; set; }
+
+    private int BackPressureCount => Machines.Count(m => m.UnderBackPressure);
+
+    private bool IdleMachineEmpty =>
+        LaneCount == 0 && Machines.Count > 0 && Machines.All(m => m.RunningSessionCount == 0);
+
+    private string HeartbeatLine
+    {
+        get
+        {
+            if (Machines.Count == 0 || Machines.Any(m => m.LastHeartbeat is null))
+                return "heartbeat —";
+            var oldest = Machines.Max(m => Now - m.LastHeartbeat!.Value);
+            if (oldest < TimeSpan.FromSeconds(5))
+                return "heartbeat < 5s on all";
+            var secs = (int)oldest.TotalSeconds;
+            return secs < 60 ? $"oldest heartbeat {secs}s" : $"oldest heartbeat {secs / 60}m";
+        }
+    }
+
+    private static string LoadText(ObservabilityMachine m)
+    {
+        if (m.UnderBackPressure)
+            return "back-pressure";
+        if (m.Ready)
+            return m.RunningSessionCount > 0 ? $"ready · {m.RunningSessionCount}" : "ready";
+        return "not ready";
+    }
+}

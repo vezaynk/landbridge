@@ -1,0 +1,95 @@
+@using Landbridge.ControlPlane
+<div class="obs-row @(IsSelected ? "obs-row--selected" : "")" @onclick="() => OnSelect.InvokeAsync(Lane.SessionId)">
+    <div class="obs-row__identity">
+        <span class="obs-dot">
+            @if (Meta.Live)
+            {
+                <span class="obs-dot__pulse" style="background:var(@Meta.ColorVar)"></span>
+            }
+            <span class="obs-dot__core" style="background:var(@Meta.ColorVar);opacity:@Fmt.N(Meta.DotOpacity)"></span>
+        </span>
+        <div class="obs-row__names">
+            <span class="obs-row__ns" style="color:var(@NameColorVar)">@Lane.Namespace</span>
+            <span class="obs-row__sub">@Sub</span>
+        </div>
+    </div>
+
+    <div class="obs-row__status">
+        <div class="obs-row__state-line">
+            <span class="obs-row__state-label" style="color:var(@Meta.ColorVar)">@Meta.Label</span>
+            <span class="obs-row__elapsed">@Elapsed</span>
+        </div>
+        <span class="obs-row__now" style="color:var(@NowColorVar)">@LaneNow.Text(Lane)</span>
+    </div>
+
+    <TimelineTrack Marks="Lane.Marks" EdgeColorVar="@EdgeColorVar" />
+
+    <UsageMeter Lane="Lane" Meta="Meta" Now="Now" />
+
+    <div class="obs-ports">
+        @foreach (var p in Lane.Ports)
+        {
+            <span class="obs-port" style="@PortStyle(p)">
+                <span class="obs-port__dot" style="background:@(p.Live ? "var(--forward)" : "var(--color-neutral-700)")"></span>@p.Name:@p.Port
+            </span>
+        }
+    </div>
+
+    <div class="obs-row__trail">
+        @if (Unread > 0)
+        {
+            <span class="obs-unread">@Unread</span>
+        }
+        <span class="obs-attempt">a@Lane.Attempt</span>
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired]
+    public ObservabilityLane Lane { get; set; } = null!;
+
+    [Parameter]
+    public bool IsSelected { get; set; }
+
+    [Parameter]
+    public DateTimeOffset Now { get; set; }
+
+    [Parameter]
+    public EventCallback<Guid> OnSelect { get; set; }
+
+    private LaneMeta Meta => LaneMeta.Of(Lane);
+    private string Sub => $"{Lane.Profile ?? "unprofiled"} · {Lane.Machine} · {ShortId(Lane.TeamId)}";
+    private string NameColorVar => Lane.State == SessionState.Completed ? "--color-neutral-600" : "--color-neutral-200";
+    private string NowColorVar => Lane.State switch
+    {
+        SessionState.Failed => "--state-error",
+        SessionState.Completed or SessionState.Canceled or SessionState.Rejected => "--color-neutral-700",
+        _ => "--color-neutral-500",
+    };
+    private string EdgeColorVar => Meta.Live ? Meta.ColorVar : "--color-surface";
+    private int Unread => (Lane.ReportUnread ? 1 : 0) + (Lane.BlockedAt is not null ? 1 : 0);
+
+    private string Elapsed
+    {
+        get
+        {
+            var start = Lane.OpenedAt ?? Lane.BlockedAt;
+            if (start is null)
+                return "";
+            var ts = Now - start.Value;
+            if (ts < TimeSpan.Zero)
+                ts = TimeSpan.Zero;
+            return ts.TotalHours >= 1
+                ? $"{(int)ts.TotalHours}h{ts.Minutes:00}m"
+                : ts.Minutes > 0 ? $"{ts.Minutes}m{ts.Seconds:00}s" : $"{ts.Seconds}s";
+        }
+    }
+
+    private static string PortStyle(ObservabilityPort p)
+    {
+        var border = p.Live ? "var(--forward-line)" : "var(--color-neutral-800)";
+        var bg = p.Live ? "var(--forward-tint)" : "transparent";
+        var fg = p.Live ? "var(--color-neutral-300)" : "var(--color-neutral-600)";
+        return $"border-color:{border};background:{bg};color:{fg};";
+    }
+}

@@ -2,30 +2,46 @@
 @inject NavigationManager Nav
 
 <PageTitle>@Title · Landbridge</PageTitle>
-<nav>
-    <span class="brand">Landbridge</span>
-    <a class="@Active("machines")" href="/dashboard/machines">Machines</a>
-    <a class="@Active("teams")" href="/dashboard/teams">Teams</a>
-    <a class="@Active("inbox")" href="/dashboard/inbox">Inbox</a>
-    <a class="@Active("events")" href="/dashboard/events">Events</a>
-    <a class="@Active("friction")" href="/dashboard/friction">Friction</a>
-    <a class="@Active("conformance")" href="/dashboard/conformance">Profile check</a>
-    <a class="@Active("connect")" href="/dashboard/connect">Connect</a>
-    @if (!ShouldHideSignOut)
-    {
-        <form class="logout" method="post" action="/dashboard/logout">
-            <button type="submit">Sign out</button>
-        </form>
-    }
-</nav>
-<main>
+@if (IsFleetBoard)
+{
     @Body
-</main>
+}
+else
+{
+    <nav>
+        <span class="brand">landbridge</span>
+        <a class="@Active("machines")" href="/dashboard/machines">Fleet</a>
+        <a class="@Active("teams")" href="/dashboard/teams">Teams</a>
+        <a class="@Active("inbox")" href="/dashboard/inbox">Inbox</a>
+        <a class="@Active("events")" href="/dashboard/events">Events</a>
+        <a class="@Active("friction")" href="/dashboard/friction">Friction</a>
+        <a class="@Active("conformance")" href="/dashboard/conformance">Profile check</a>
+        <a class="@Active("connect")" href="/dashboard/connect">Connect</a>
+        @if (!ShouldHideSignOut)
+        {
+            <form class="logout" method="post" action="/dashboard/logout">
+                <button type="submit">Sign out</button>
+            </form>
+        }
+    </nav>
+    <main>
+        @Body
+    </main>
+}
 
 @code {
     [Parameter] public string Title { get; set; } = "Dashboard";
     [Parameter] public string ActiveKey { get; set; } = "";
     [Parameter] public bool HideSignOut { get; set; }
+
+    private bool IsFleetBoard
+    {
+        get
+        {
+            var path = new Uri(Nav.Uri).AbsolutePath.TrimEnd('/');
+            return path is "/dashboard" or "/dashboard/machines";
+        }
+    }
 
     private bool ShouldHideSignOut
     {
@@ -46,6 +62,7 @@
         {
             current = path switch
             {
+                "/dashboard" => "machines",
                 "/dashboard/machines" => "machines",
                 "/dashboard/teams" => "teams",
                 var p when p.StartsWith("/dashboard/teams/", StringComparison.Ordinal) => "teams",

@@ -76,7 +76,7 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             var ok = await client.SendAsync(req, ct);
             Assert.Equal(HttpStatusCode.OK, ok.StatusCode);
             var body = await ok.Content.ReadAsStringAsync(ct);
-            Assert.Contains("Machine Group", body, StringComparison.Ordinal);
+            Assert.Contains("landbridge", body, StringComparison.Ordinal);
         }
 
         await app.StopAsync(ct);
@@ -135,7 +135,7 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         req.Headers.Add("Cookie", $"{DashboardAuth.CookieName}={token}");
         var view = await client.SendAsync(req, ct);
         Assert.Equal(HttpStatusCode.OK, view.StatusCode);
-        Assert.Contains("Machine Group", await view.Content.ReadAsStringAsync(ct), StringComparison.Ordinal);
+        Assert.Contains("landbridge", await view.Content.ReadAsStringAsync(ct), StringComparison.Ordinal);
 
         await app.StopAsync(ct);
     }
@@ -239,6 +239,7 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Contains(ns, body, StringComparison.Ordinal);                       // the running task
         Assert.Contains(ShortId(team.Value), body, StringComparison.Ordinal);      // its owning Team
         Assert.Contains("no subagents reported", body, StringComparison.Ordinal);  // honest empty tree
+        Assert.Contains("Observability center", body, StringComparison.Ordinal);
 
         await app.StopAsync(ct);
     }

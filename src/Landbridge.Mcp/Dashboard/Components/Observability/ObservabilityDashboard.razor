@@ -1,0 +1,95 @@
+@using Landbridge.ControlPlane
+<div class="obs-board">
+    <div class="obs-header">
+        <div class="obs-header__brand">
+            <span class="obs-header__brand-name">landbridge</span>
+            <span class="obs-header__brand-sub">instance</span>
+        </div>
+        <div class="obs-header__rule"></div>
+        <div class="obs-header__counts">
+            <div class="obs-count"><span class="obs-count__dot" style="background:var(--state-live)"></span><span class="obs-count__label">@Snapshot.Summary.Working working</span></div>
+            <div class="obs-count"><span class="obs-count__dot" style="background:var(--state-wait)"></span><span class="obs-count__label">@Snapshot.Summary.Waiting waiting</span></div>
+            <div class="obs-count"><span class="obs-count__dot" style="background:var(--state-error)"></span><span class="obs-count__label">@Snapshot.Summary.Failed failed</span></div>
+            <div class="obs-count"><span class="obs-count__dot" style="background:var(--color-neutral-700)"></span><span class="obs-count__label obs-count__label--dim">@Snapshot.Summary.Submitted submitted</span></div>
+        </div>
+        <div class="obs-header__spacer"></div>
+        <div class="obs-header__stats">
+            <span>@Snapshot.Summary.MachineCount machines</span><span class="obs-header__stats-sep">·</span>
+            <span>@Snapshot.Summary.ForwardsOpen forwards open</span><span class="obs-header__stats-sep">·</span>
+            <span>relay @RelayMb MB</span>
+        </div>
+        <nav class="obs-header__nav">
+            <a href="/dashboard/teams">Teams</a>
+            <a href="/dashboard/inbox">Inbox</a>
+            <a href="/dashboard/events">Events</a>
+            <a href="/dashboard/friction">Friction</a>
+            <a href="/dashboard/conformance">Check</a>
+            <a href="/dashboard/connect">Connect</a>
+        </nav>
+        <div class="obs-live-pill"><span class="obs-live-pill__dot"></span><span class="obs-live-pill__label">live</span></div>
+        <form class="obs-header__logout" method="post" action="/dashboard/logout">
+            <button type="submit">Sign out</button>
+        </form>
+    </div>
+
+    <div class="obs-body @(Selected is null ? "obs-body--no-detail" : "")">
+        <MachineRail Machines="Snapshot.Machines" Now="Now" LaneCount="Snapshot.Lanes.Count" />
+
+        <div class="obs-lanes">
+            <div class="obs-lanes__head">
+                <div>Session</div>
+                <div>Right now</div>
+                <div class="obs-lanes__head-window"><span>Last 15 min</span><span>now</span></div>
+                <div class="obs-lanes__head-usage">
+                    <span>Usage</span>
+                    <span class="obs-usage-key"><span class="obs-usage-key__swatch" style="background:var(--color-accent-600)"></span>in</span>
+                    <span class="obs-usage-key"><span class="obs-usage-key__swatch" style="background:var(--color-accent-400)"></span>out</span>
+                    <span class="obs-usage-key"><span class="obs-usage-key__swatch" style="background:var(--color-neutral-700)"></span>cache</span>
+                </div>
+                <div>Forwards</div>
+                <div></div>
+            </div>
+            <div class="obs-lanes__body">
+                @if (Snapshot.Lanes.Count == 0)
+                {
+                    <div class="obs-empty">No sessions in the fleet.</div>
+                }
+                @foreach (var lane in Snapshot.Lanes)
+                {
+                    <SessionRow Lane="lane" IsSelected="lane.SessionId == SelectedId" Now="Now" OnSelect="SelectSession" />
+                }
+            </div>
+        </div>
+
+        @if (Selected is not null)
+        {
+            <DetailPanel Lane="Selected" Now="Now" />
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired]
+    public ObservabilitySnapshot Snapshot { get; set; } = null!;
+
+    [Parameter]
+    public DateTimeOffset Now { get; set; }
+
+    private Guid SelectedId { get; set; }
+
+    private ObservabilityLane? Selected =>
+        Snapshot.Lanes.FirstOrDefault(l => l.SessionId == SelectedId)
+        ?? Snapshot.Lanes.FirstOrDefault();
+
+    protected override void OnParametersSet()
+    {
+        if (SelectedId == Guid.Empty && Snapshot.Lanes.Count > 0)
+            SelectedId = Snapshot.Lanes[0].SessionId;
+        else if (SelectedId != Guid.Empty && Snapshot.Lanes.All(l => l.SessionId != SelectedId) && Snapshot.Lanes.Count > 0)
+            SelectedId = Snapshot.Lanes[0].SessionId;
+    }
+
+    private int RelayMb => (int)(Snapshot.Summary.RelayBytes / (1024 * 1024));
+
+    private void SelectSession(Guid id) => SelectedId = id;
+}

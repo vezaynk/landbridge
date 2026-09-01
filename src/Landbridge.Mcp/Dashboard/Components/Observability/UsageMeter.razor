@@ -1,0 +1,77 @@
+@using Landbridge.ControlPlane
+<div class="obs-usage">
+    <div class="obs-usage__top">
+        <span class="obs-usage__tokens" style="color:@TokColor">@TokensLabel</span>
+        <span class="obs-usage__cost">@CostLabel</span>
+    </div>
+    <div class="obs-usage__bar">
+        <div style="width:@(Fmt.Pct(Split.In));background:var(--color-accent-600)"></div>
+        <div style="width:@(Fmt.Pct(Split.Out));background:var(--color-accent-400)"></div>
+        <div style="width:@(Fmt.Pct(Split.Cache));background:var(--color-neutral-700)"></div>
+    </div>
+    <span class="obs-usage__rate" style="color:var(@RateColorVar)">@RateLabel</span>
+</div>
+
+@code {
+    [Parameter, EditorRequired]
+    public ObservabilityLane Lane { get; set; } = null!;
+
+    [Parameter]
+    public LaneMeta Meta { get; set; } = null!;
+
+    [Parameter]
+    public DateTimeOffset Now { get; set; }
+
+    private bool HasDispatch => Lane.State != SessionState.Submitted;
+    private (double In, double Out, double Cache) Split => LaneUsage.Split(Lane);
+    private string TokColor => HasDispatch ? "var(--color-neutral-300)" : "var(--color-neutral-700)";
+
+    private string TokensLabel
+    {
+        get
+        {
+            if (!HasDispatch)
+                return "—";
+            var total = Lane.InputTokens + Lane.OutputTokens + Lane.CacheReadTokens + Lane.CacheWriteTokens;
+            if (total == 0)
+                return "—";
+            return $"{total / 1000.0:0.0}k";
+        }
+    }
+
+    private string CostLabel
+    {
+        get
+        {
+            if (!HasDispatch)
+                return "";
+            return Lane.CostUsd is { } c ? $"${c:0.00}" : "$ —";
+        }
+    }
+
+    private string RateColorVar => HasDispatch && Meta.Live && Lane.State != SessionState.Failed
+        ? "--state-live"
+        : "--color-neutral-700";
+
+    private string RateLabel
+    {
+        get
+        {
+            if (!HasDispatch)
+                return "no dispatch yet";
+            var total = Lane.InputTokens + Lane.OutputTokens + Lane.CacheReadTokens + Lane.CacheWriteTokens;
+            if (Meta.Live && Lane.State != SessionState.Failed && Lane.OpenedAt is { } opened && total > 0)
+            {
+                var minutes = Math.Max((Now - opened).TotalMinutes, 1.0 / 60);
+                var rateK = total / 1000.0 / minutes;
+                return $"{rateK:0.0}k tok/min";
+            }
+            if (Lane.UsageReportedAt is { } at)
+            {
+                var mins = Math.Max(1, (int)(Now - at).TotalMinutes);
+                return $"last report {mins}m ago";
+            }
+            return "unmeasured";
+        }
+    }
+}

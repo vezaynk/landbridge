@@ -1,89 +1,27 @@
+@page "/dashboard"
 @page "/dashboard/machines"
+@layout DashboardLayout
 @inherits DashboardPageBase
 
-<PageTitle>Machine Group · Landbridge</PageTitle>
+<PageTitle>Observability center · Landbridge</PageTitle>
 
 @if (RefuseReason is { } reason)
 {
-    <ScopeCard Reason="@reason" />
+    <div class="login-wrap card">
+        <h1>Fleet board</h1>
+        <ScopeCard Reason="@reason" />
+        <p><a href="/dashboard/teams">← your Team</a></p>
+    </div>
 }
-else if (Ready)
+else if (Ready && Snapshot is { } snap)
 {
-    <h1>Machine Group</h1>
-    <p class="sub">Connected machines, their readiness and heartbeat, the tasks each is
-        running, and whether a human has bound it as their own machine (§8.3).</p>
-
-    @if (MachinesList.Count == 0)
-    {
-        <EmptyState Message="No machines connected." />
-    }
-    else
-    {
-        @foreach (var m in MachinesList)
-        {
-            <section>
-                <h2>
-                    <code>@m.MachineId</code>
-                    @if (m.UnderBackPressure)
-                    {
-                        <Badge Text="back-pressure" CssClass="backpressure" />
-                    }
-                    else if (m.Ready)
-                    {
-                        <Badge Text="ready" CssClass="ready" />
-                    }
-                    else
-                    {
-                        <Badge Text="not ready" CssClass="down" />
-                    }
-                    <span class="nt">heartbeat @Age(m.LastHeartbeat, Now)</span>
-                </h2>
-                @if (m.BoundToHuman is { } boundTo)
-                {
-                    <p class="nt">bound @Age(m.BoundAt, Now) as the own machine of human
-                        <span class="mono">@ShortId(boundTo)</span> — a Lead-facing forward target</p>
-                }
-                <div class="pill-row">
-                    @if (m.Profiles.Count == 0)
-                    {
-                        <span class="nt">no profiles declared</span>
-                    }
-                    @foreach (var p in m.Profiles)
-                    {
-                        <Badge Text="@p" CssClass="state-submitted" />
-                    }
-                </div>
-                @if (m.RunningSessions.Count == 0)
-                {
-                    <EmptyState Message="No sessions running on this machine." />
-                }
-                else
-                {
-                    <ul class="machine-tasks">
-                        @foreach (var t in m.RunningSessions)
-                        {
-                            <li>
-                                <code>@t.Namespace</code> <StateBadge State="@t.State" />
-                                <span class="nt">Team </span><TeamLink TeamId="@t.TeamId" />
-                                <div class="subtree">no subagents reported</div>
-                            </li>
-                        }
-                    </ul>
-                }
-                <MachineProcesses Machine="@m" Now="@Now" />
-                <form class="machine-revoke" method="post" action="/dashboard/machines/revoke">
-                    <input type="hidden" name="machineId" value="@m.MachineId" />
-                    <button type="submit">Revoke machine</button>
-                    <span class="nt">closes its channel, requeues its tasks, and kills its
-                        worker tokens — it must enroll again to return</span>
-                </form>
-            </section>
-        }
-    }
+    <div class="obs-page">
+        <ObservabilityDashboard Snapshot="snap" Now="Now" />
+    </div>
 }
 
 @code {
-    private IReadOnlyList<MachineView> MachinesList { get; set; } = [];
+    private ObservabilitySnapshot? Snapshot { get; set; }
 
     protected override async Task<string?> LoadAsync()
     {
@@ -92,7 +30,7 @@ else if (Ready)
             return "the machine group is a human-operator view; a Lead session sees its owned Teams "
                 + "on /dashboard/teams and through get_team_state";
         }
-        MachinesList = await Queries.GetMachinesAsync(RequestAborted);
+        Snapshot = await Queries.GetObservabilityAsync(Now, teamScope: null, RequestAborted);
         return null;
     }
 }
