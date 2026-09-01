@@ -41,7 +41,7 @@ public class RunnerDaemonTests
     private static Harness Build(
         RunnerConfig? config = null, int straysToReap = 0,
         TranscriptReader? transcripts = null, IControlPlaneChannel? channel = null,
-        ServiceSupervisor? services = null)
+        AgentProcessSupervisor? processes = null)
     {
         var supervisor = new FakeProcessSupervisor();
         var reaper = new FakeStrayReaper(straysToReap);
@@ -54,7 +54,7 @@ public class RunnerDaemonTests
         var daemon = new RunnerDaemon(
             "machine-1", cfg, supervisor,
             new BackPressureMonitor(load, cfg.Machine.BackPressure),
-            channel, ring, reaper, clock, transcripts: transcripts, services: services,
+            channel, ring, reaper, clock, transcripts: transcripts, processes: processes,
             log: logged.Add);
         return new Harness
         {
@@ -329,8 +329,8 @@ public class RunnerDaemonTests
         // §10: the profile carries the policy, and only a task this machine actually holds
         // has a profile to consult. Refusing beats guessing — a service with no owner has no
         // lifetime, which is the one thing this design will not allow.
-        await using var services = new ServiceSupervisor("machine-1", TimeProvider.System);
-        var h = Build(services: services);
+        await using var services = new AgentProcessSupervisor("machine-1", TimeProvider.System);
+        var h = Build(processes: services);
         await h.Daemon.StartAsync(); // the ring pump is what carries the reply to the channel
 
         var outcome = await h.Daemon.HandleAsync(new StartProcessCommand(
@@ -363,10 +363,10 @@ public class RunnerDaemonTests
                 "processes": { "agent_initiated": true } } ]
             }
             """);
-            await using var services = new ServiceSupervisor(
+            await using var services = new AgentProcessSupervisor(
                 "machine-1", TimeProvider.System,
-                logs: new ServiceLogStore(Path.Combine(state, ServiceLogStore.DirName)));
-            var h = Build(config, services: services);
+                logs: new ProcessLogStore(Path.Combine(state, ProcessLogStore.DirName)));
+            var h = Build(config, processes: services);
             await h.Daemon.StartAsync();
 
             // The daemon resolves the profile from the supervised task, so dispatch one first.

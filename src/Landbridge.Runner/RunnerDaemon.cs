@@ -70,7 +70,7 @@ public sealed class RunnerDaemon
     private readonly Action<string>? _log;
 
     /// <summary>§10 agent-started processes. Status rides the heartbeat.</summary>
-    private readonly ServiceSupervisor? _services;
+    private readonly AgentProcessSupervisor? _processes;
 
     private readonly CancellationTokenSource _cts = new();
     private readonly ConcurrentDictionary<Task, byte> _transcriptReads = new();
@@ -102,7 +102,7 @@ public sealed class RunnerDaemon
         TimeProvider clock,
         TimeSpan? forwardAcceptTimeout = null,
         TranscriptReader? transcripts = null,
-        ServiceSupervisor? services = null,
+        AgentProcessSupervisor? processes = null,
         Action<string>? log = null)
     {
         _machineId = machineId;
@@ -114,7 +114,7 @@ public sealed class RunnerDaemon
         _reaper = reaper;
         _clock = clock;
         _transcripts = transcripts;
-        _services = services;
+        _processes = processes;
         _log = log;
         // §8.3 data planes: the forwarder owns all live relay tunnels and emits
         // forward-opened/-closed onto the same ring as every other event. The
@@ -287,7 +287,7 @@ public sealed class RunnerDaemon
 
         // No supervised task means no profile to consult, so no policy can be applied. Refuse
         // rather than guess.
-        if (_services is null || profile is null)
+        if (_processes is null || profile is null)
         {
             _ring.Enqueue(new ProcessStartedEvent(
                 start.Session, start.RequestId, start.Name, Started: false,
@@ -296,7 +296,7 @@ public sealed class RunnerDaemon
                 $"start-process {start.Name} refused (no supervised task on this machine)");
         }
 
-        var outcome = await _services.StartProcessAsync(start, profile, ct);
+        var outcome = await _processes.StartProcessAsync(start, profile, ct);
         _ring.Enqueue(outcome switch
         {
             ProcessOutcome.StartedOk ok => new ProcessStartedEvent(
@@ -315,9 +315,9 @@ public sealed class RunnerDaemon
     /// </summary>
     private async Task<CommandOutcome> HandleStopProcessAsync(StopProcessCommand stop, CancellationToken ct)
     {
-        var outcome = _services is null
+        var outcome = _processes is null
             ? ProcessOutcome.Refused(ProcessRefusals.NoSuchProcess, "this machine supervises no processes")
-            : await _services.StopProcessAsync(stop.Name, ct);
+            : await _processes.StopProcessAsync(stop.Name, ct);
         _ring.Enqueue(outcome switch
         {
             ProcessOutcome.StoppedOk ok => new ProcessStoppedEvent(
@@ -333,9 +333,9 @@ public sealed class RunnerDaemon
     /// stop injects a turn into.</summary>
     private async Task<CommandOutcome> HandleWriteProcessAsync(WriteProcessCommand write, CancellationToken ct)
     {
-        var outcome = _services is null
+        var outcome = _processes is null
             ? ProcessOutcome.Refused(ProcessRefusals.NoSuchProcess, "this machine supervises no processes")
-            : await _services.WriteProcessAsync(write.Name, write.Data, write.AppendNewline, ct);
+            : await _processes.WriteProcessAsync(write.Name, write.Data, write.AppendNewline, ct);
         _ring.Enqueue(outcome switch
         {
             ProcessOutcome.WrittenOk ok => new ProcessWrittenEvent(
@@ -438,7 +438,7 @@ public sealed class RunnerDaemon
             // dashboard offers a transcript link only where one can be served rather
             // than one that silently times out against an older runner.
             TranscriptsServable: _transcripts is not null,
-            Processes: _services?.ReportProcesses());
+            Processes: _processes?.ReportProcesses());
         // Best-effort, fire-and-forget: never queue a command against the runner (§10).
         _ = _channel.HeartbeatAsync(heartbeat, _cts.Token);
     }

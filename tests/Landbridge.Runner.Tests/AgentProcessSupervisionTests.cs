@@ -7,7 +7,7 @@ namespace Landbridge.Runner.Tests;
 /// §10 agent-started processes, plus leftover <c>services[]</c> refusal.
 /// Operator-declared fixtures are gone; long work is <c>start_process</c>.
 /// </summary>
-public class ServiceSupervisionTests
+public class AgentProcessSupervisionTests
 {
     private static string Config(string servicesJson) => $$"""
     {
@@ -48,7 +48,7 @@ public class ServiceSupervisionTests
         var root = TestKit.NewWorkRoot();
         try
         {
-            var store = new ServiceLogStore(Path.Combine(root, "services"));
+            var store = new ProcessLogStore(Path.Combine(root, ProcessLogStore.DirName));
             Assert.Throws<ArgumentException>(() => store.CreateWriter("../escape", 1024));
         }
         finally
@@ -58,22 +58,22 @@ public class ServiceSupervisionTests
     }
 
     [Fact]
-    public void Service_logs_live_outside_the_pruned_transcript_root()
+    public void Process_logs_live_outside_the_pruned_transcript_root()
     {
         var state = TestKit.NewWorkRoot();
         try
         {
             var transcripts = Path.Combine(state, TranscriptDefaults.DirName);
-            var services = Path.Combine(state, ServiceLogStore.DirName);
-            Assert.NotEqual(transcripts, services);
+            var processes = Path.Combine(state, ProcessLogStore.DirName);
+            Assert.NotEqual(transcripts, processes);
 
-            using var writer = new ServiceLogStore(services).CreateWriter("web-dev", 4096);
+            using var writer = new ProcessLogStore(processes).CreateWriter("web-dev", 4096);
             writer.WriteStdoutLine("listening on 5173");
             writer.Dispose();
 
             new TranscriptStore(transcripts, TimeSpan.FromTicks(1), TimeProvider.System).Prune();
-            Assert.True(Directory.Exists(Path.Combine(services, "web-dev")));
-            Assert.NotEmpty(Directory.GetFiles(Path.Combine(services, "web-dev")));
+            Assert.True(Directory.Exists(Path.Combine(processes, "web-dev")));
+            Assert.NotEmpty(Directory.GetFiles(Path.Combine(processes, "web-dev")));
         }
         finally
         {
@@ -101,7 +101,7 @@ public class ServiceSupervisionTests
     [Fact]
     public async Task A_profile_that_does_not_permit_processes_refuses()
     {
-        await using var sup = new ServiceSupervisor("m1", TimeProvider.System);
+        await using var sup = new AgentProcessSupervisor("m1", TimeProvider.System);
         var outcome = await sup.StartProcessAsync(
             Ask("dev"), ProfileWith(agentInitiated: false), CancellationToken.None);
 
@@ -114,7 +114,7 @@ public class ServiceSupervisionTests
     [Fact]
     public async Task A_name_off_the_wire_faces_the_same_validator_as_a_config_name()
     {
-        await using var sup = new ServiceSupervisor("m1", TimeProvider.System);
+        await using var sup = new AgentProcessSupervisor("m1", TimeProvider.System);
         Assert.Equal(
             ProcessRefusals.InvalidName,
             Assert.IsType<ProcessOutcome.RefusedOutcome>(
@@ -129,12 +129,12 @@ public class ServiceSupervisionTests
         var cwd = TestKit.NewWorkRoot();
         try
         {
-            await using var sup = new ServiceSupervisor("m1", TimeProvider.System);
+            await using var sup = new AgentProcessSupervisor("m1", TimeProvider.System);
             Assert.IsType<ProcessOutcome.StartedOk>(
                 await sup.StartProcessAsync(Ask("watcher", cwd: cwd), ProfileWith(true), CancellationToken.None));
 
             var reported = Assert.Single(sup.ReportProcesses());
-            Assert.Equal(ServiceState.Running, reported.State);
+            Assert.Equal(ProcessState.Running, reported.State);
         }
         finally
         {
@@ -147,20 +147,20 @@ public class ServiceSupervisionTests
     {
         // The whole point of a process rather than a service: a crash is information, not
         // something to hide behind a backoff ladder. The exit code rests in the report.
-        await using var sup = new ServiceSupervisor("m1", TimeProvider.System);
+        await using var sup = new AgentProcessSupervisor("m1", TimeProvider.System);
         Assert.IsType<ProcessOutcome.StartedOk>(await sup.StartProcessAsync(
             Ask("job", spawn: [TestKit.HarnessPath(), "exit-code", "3"]),
             ProfileWith(true), CancellationToken.None));
 
         Assert.True(await TestKit.WaitUntilAsync(
-            () => sup.ReportProcesses().Single().State == ServiceState.Exited, TimeSpan.FromSeconds(10)));
+            () => sup.ReportProcesses().Single().State == ProcessState.Exited, TimeSpan.FromSeconds(10)));
         var reported = sup.ReportProcesses().Single();
         Assert.Equal(TestHarness.Program.ServiceExitCode, reported.ExitCode);
         Assert.NotNull(reported.ExitedAt);
 
         // Still exited a moment later: nothing revives it.
         await Task.Delay(TimeSpan.FromMilliseconds(600));
-        Assert.Equal(ServiceState.Exited, sup.ReportProcesses().Single().State);
+        Assert.Equal(ProcessState.Exited, sup.ReportProcesses().Single().State);
     }
 
     [Fact]
@@ -169,7 +169,7 @@ public class ServiceSupervisionTests
         var cwd = TestKit.NewWorkRoot();
         try
         {
-            await using var sup = new ServiceSupervisor("m1", TimeProvider.System);
+            await using var sup = new AgentProcessSupervisor("m1", TimeProvider.System);
             await sup.StartProcessAsync(Ask("mine", cwd: cwd), ProfileWith(true), CancellationToken.None);
             var again = Assert.IsType<ProcessOutcome.RefusedOutcome>(
                 await sup.StartProcessAsync(Ask("mine", cwd: cwd), ProfileWith(true), CancellationToken.None));
@@ -188,7 +188,7 @@ public class ServiceSupervisionTests
         var cwd = TestKit.NewWorkRoot();
         try
         {
-            await using var sup = new ServiceSupervisor("m1", TimeProvider.System);
+            await using var sup = new AgentProcessSupervisor("m1", TimeProvider.System);
             var profile = ProfileWith(true, cap: 2);
             Assert.IsType<ProcessOutcome.StartedOk>(
                 await sup.StartProcessAsync(Ask("one", cwd: cwd), profile, CancellationToken.None));
@@ -209,7 +209,7 @@ public class ServiceSupervisionTests
     [Fact]
     public async Task A_process_that_cannot_start_is_refused_and_leaves_nothing_behind()
     {
-        await using var sup = new ServiceSupervisor("m1", TimeProvider.System);
+        await using var sup = new AgentProcessSupervisor("m1", TimeProvider.System);
         Assert.Equal(
             ProcessRefusals.SpawnFailed,
             Assert.IsType<ProcessOutcome.RefusedOutcome>(await sup.StartProcessAsync(
@@ -227,7 +227,7 @@ public class ServiceSupervisionTests
         var cwd = TestKit.NewWorkRoot();
         try
         {
-            await using var sup = new ServiceSupervisor("m1", TimeProvider.System);
+            await using var sup = new AgentProcessSupervisor("m1", TimeProvider.System);
             await sup.StartProcessAsync(Ask("dev", cwd: cwd), ProfileWith(true), CancellationToken.None);
             Assert.Single(sup.ReportProcesses());
 
@@ -250,13 +250,13 @@ public class ServiceSupervisionTests
     {
         // Uniqueness is among LIVE entries. A corpse must not block a retry — otherwise a
         // resumed agent re-running the same job would be stuck on a name it already owns.
-        await using var sup = new ServiceSupervisor("m1", TimeProvider.System);
+        await using var sup = new AgentProcessSupervisor("m1", TimeProvider.System);
         var profile = ProfileWith(true, cap: 1);
 
         Assert.IsType<ProcessOutcome.StartedOk>(await sup.StartProcessAsync(
             Ask("job", spawn: [TestKit.HarnessPath(), "exit-code", "3"]), profile, CancellationToken.None));
         Assert.True(await TestKit.WaitUntilAsync(
-            () => sup.ReportProcesses().Single().State == ServiceState.Exited, TimeSpan.FromSeconds(10)));
+            () => sup.ReportProcesses().Single().State == ProcessState.Exited, TimeSpan.FromSeconds(10)));
 
         // Same name, and a cap of 1 that the corpse must not be counted against.
         Assert.IsType<ProcessOutcome.StartedOk>(await sup.StartProcessAsync(
@@ -272,8 +272,8 @@ public class ServiceSupervisionTests
         var state = TestKit.NewWorkRoot();
         try
         {
-            var logs = new ServiceLogStore(Path.Combine(state, ServiceLogStore.DirName));
-            await using var sup = new ServiceSupervisor("m1", TimeProvider.System, logs: logs);
+            var logs = new ProcessLogStore(Path.Combine(state, ProcessLogStore.DirName));
+            await using var sup = new AgentProcessSupervisor("m1", TimeProvider.System, logs: logs);
             // Opt in explicitly: stdin is closed by default, so write_process only works for a
             // process whose starter asked for a pipe.
             Assert.IsType<ProcessOutcome.StartedOk>(await sup.StartProcessAsync(
@@ -308,7 +308,7 @@ public class ServiceSupervisionTests
         var cwd = TestKit.NewWorkRoot();
         try
         {
-            await using var sup = new ServiceSupervisor("m1", TimeProvider.System);
+            await using var sup = new AgentProcessSupervisor("m1", TimeProvider.System);
             // No flag at all — the default is closed.
             Assert.IsType<ProcessOutcome.StartedOk>(await sup.StartProcessAsync(
                 Ask("quiet", cwd: cwd), ProfileWith(true), CancellationToken.None));
@@ -335,7 +335,7 @@ public class ServiceSupervisionTests
         var cwd = TestKit.NewWorkRoot();
         try
         {
-            await using var sup = new ServiceSupervisor("m1", TimeProvider.System);
+            await using var sup = new AgentProcessSupervisor("m1", TimeProvider.System);
             await sup.StartProcessAsync(Ask("hard", cwd: cwd), ProfileWith(true), CancellationToken.None);
             Assert.False(sup.ReportProcesses().Single().StdinOpen); // the default
             Assert.IsType<ProcessOutcome.StoppedOk>(await sup.StopProcessAsync("hard", CancellationToken.None));
@@ -354,7 +354,7 @@ public class ServiceSupervisionTests
     [Fact]
     public async Task A_write_is_refused_for_an_unknown_process_and_for_an_oversized_payload()
     {
-        await using var sup = new ServiceSupervisor("m1", TimeProvider.System);
+        await using var sup = new AgentProcessSupervisor("m1", TimeProvider.System);
 
         Assert.Equal(
             ProcessRefusals.NoSuchProcess,
@@ -377,7 +377,7 @@ public class ServiceSupervisionTests
         var cwd = TestKit.NewWorkRoot();
         try
         {
-            await using var sup = new ServiceSupervisor("machine-xyz", TimeProvider.System);
+            await using var sup = new AgentProcessSupervisor("machine-xyz", TimeProvider.System);
             await sup.StartProcessAsync(
                 Ask("tagged", spawn: [TestKit.HarnessPath(), "echo-env"], cwd: cwd),
                 ProfileWith(true), CancellationToken.None);

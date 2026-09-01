@@ -212,7 +212,7 @@ public sealed class ProcessToolsEndToEndTests(PostgresFixture pg) : IAsyncLifeti
         registry.ApplyHeartbeat("m1", new MachineHeartbeat(
             "m1", Ready: true, UnderBackPressure: false, new SystemLoad(0, 0, 0),
             RunningSessions: 1, ["default"], DateTimeOffset.UtcNow,
-            Processes: [new ProcessStatus("long-build", ServiceState.Running, starter.Session.Value)]));
+            Processes: [new ProcessStatus("long-build", ProcessState.Running, starter.Session.Value)]));
 
         // 3. The cleanup task — a DIFFERENT task id, as a Lead's continuation carries — can see
         //    it and stop it. This is the half that task-scoped lifetime would have made impossible.

@@ -72,10 +72,10 @@
     [Parameter, EditorRequired] public MachineView Machine { get; set; } = default!;
     [Parameter] public DateTimeOffset Now { get; set; }
 
-    private static RenderFragment ProcessBadge(ServiceState state) => state switch
+    private static RenderFragment ProcessBadge(ProcessState state) => state switch
     {
-        ServiceState.Running => @<Badge Text="running" CssClass="ready" />,
-        ServiceState.Exited => @<Badge Text="exited" CssClass="backpressure" />,
+        ProcessState.Running => @<Badge Text="running" CssClass="ready" />,
+        ProcessState.Exited => @<Badge Text="exited" CssClass="backpressure" />,
         _ => @<Badge Text="stopped" CssClass="backpressure" />,
     };
 }

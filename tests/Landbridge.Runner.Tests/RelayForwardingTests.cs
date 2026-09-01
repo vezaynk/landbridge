@@ -366,7 +366,7 @@ public sealed class RelayForwardingTests
 
     private static RunnerDaemon BuildDaemon(
         OutboundEventRing ring, InMemoryControlPlaneChannel channel, TimeSpan acceptTimeout,
-        ServiceSupervisor? services = null)
+        AgentProcessSupervisor? processes = null)
     {
         var config = RunnerConfig.Load("""
             { "machine": { "work_root": "/tmp/landbridged-forward-test" },
@@ -377,7 +377,7 @@ public sealed class RelayForwardingTests
             "machine-fwd", config, new FakeProcessSupervisor(),
             new BackPressureMonitor(new FakeLoadReader(), config.Machine.BackPressure),
             channel, ring, new FakeStrayReaper(0), clock, forwardAcceptTimeout: acceptTimeout,
-            services: services);
+            processes: processes);
     }
 
     private static async Task<T> WaitForEventAsync<T>(

@@ -273,7 +273,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
     ///
     /// <para>Everything here is real: the profile gate (<c>processes.agent_initiated</c>) is
     /// applied on the machine by the real <see cref="Landbridge.Runner.RunnerDaemon"/>, the process
-    /// is a real supervised child of that machine's <c>ServiceSupervisor</c>, and the discovery
+    /// is a real supervised child of that machine's <c>AgentProcessSupervisor</c>, and the discovery
     /// read answers off the machine's own heartbeat — the plane holds no process state of its
     /// own. The cleanup worker is handed no name: it must find the survivor, which is the half
     /// of the story a task-scoped lifetime would have made impossible.</para>
@@ -315,7 +315,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         // It is really running, as the machine itself reports it.
         Assert.True(
             await FleetRig.WaitUntilAsync(
-                () => Task.FromResult(rig.ProcessesOn("A").Any(p => p.Name == processName && p.State == ServiceState.Running)),
+                () => Task.FromResult(rig.ProcessesOn("A").Any(p => p.Name == processName && p.State == ProcessState.Running)),
                 TimeSpan.FromSeconds(30)),
             "the machine never reported the agent-started process as running.\n"
             + await rig.RealWorkerDiagnosticsAsync(starter, ct));
@@ -326,7 +326,7 @@ public sealed class RealClaudeCollaborationTests(PostgresFixture pg) : IAsyncLif
         Assert.Equal(SessionState.Completed, await rig.StateAsync(starter, ct));
         Assert.Contains(
             rig.ProcessesOn("A"),
-            p => p.Name == processName && p.State == ServiceState.Running);
+            p => p.Name == processName && p.State == ProcessState.Running);
 
         // Step 2: the cleanup worker — a different task, told no names — finds it and stops it.
         var cleaner = await rig.CreateSessionAsync(CleanupDescription, ct);
