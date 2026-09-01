@@ -1,7 +1,4 @@
-using System.Diagnostics;
 using System.Net;
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 using Landbridge.Contracts;
 using Landbridge.ControlPlane;
@@ -144,7 +141,7 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task Wrong_passphrase_re_renders_the_form_sets_no_cookie_and_applies_the_delay()
+    public async Task Wrong_passphrase_re_renders_the_form_and_sets_no_cookie()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
@@ -154,15 +151,11 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         await app.StartAsync(ct);
         using var client = Client(app);
 
-        var sw = Stopwatch.StartNew();
         var res = await PostLoginAsync(app, client, ct, ("passphrase", "not-the-passphrase"));
-        sw.Stop();
 
         Assert.Equal(HttpStatusCode.Unauthorized, res.StatusCode);
         Assert.False(res.Headers.Contains("Set-Cookie"));
         Assert.Contains("Incorrect operator passphrase", await res.Content.ReadAsStringAsync(ct), StringComparison.Ordinal);
-        // The brute-force friction delay (~500ms) was applied (allow timer slack).
-        Assert.True(sw.Elapsed >= TimeSpan.FromMilliseconds(400), $"expected the delay, took {sw.ElapsedMilliseconds}ms");
 
         await app.StopAsync(ct);
     }
@@ -661,12 +654,12 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
 
     // ── Host + seeding helpers ────────────────────────────────────────────────
 
-    /// <summary>The operator passphrase a configured verifier accepts, and its SHA-256 hex.</summary>
+    /// <summary>The operator passphrase a configured verifier accepts, and its Identity hash.</summary>
     private const string OperatorPassphrase = "correct-operator-passphrase";
     private static string OperatorPassphraseHash =>
-        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(OperatorPassphrase)));
+        Landbridge.ControlPlane.Auth.OperatorPassphrase.Hash(OperatorPassphrase);
 
-    /// <param name="operatorPassphraseHash">The SHA-256 hex the operator verifier
+    /// <param name="operatorPassphraseHash">The Identity hash the operator verifier
     /// compares against; null leaves the verifier unconfigured (fail-closed 503).</param>
     private WebApplication BuildPlane(string? operatorPassphraseHash = null)
     {

@@ -10,6 +10,9 @@
     <!-- IHostedService (DispatchService) lives here; the DI/logging abstractions
          come transitively with EF Core. -->
     <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.0" />
+    <!-- Operator passphrase at rest: PasswordHasher (PBKDF2), not SHA-256. -->
+    <PackageReference Include="Microsoft.Extensions.Identity.Core" Version="10.0.0" />
+    <PackageReference Include="System.Threading.RateLimiting" Version="10.0.0" />
     <!-- Pin Relational to the base EF Core version. The Npgsql provider (10.0.3)
          and NamingConventions transitively request an older Relational (10.0.4),
          but base EF Core and Design are 10.0.10 and demand Relational 10.0.10.0 at

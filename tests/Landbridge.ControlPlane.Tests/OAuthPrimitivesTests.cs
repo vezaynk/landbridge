@@ -47,10 +47,7 @@ public sealed class OAuthPrimitivesTests
     public void Pkce_supports_s256_only(string? method, bool expected) =>
         Assert.Equal(expected, Pkce.IsSupportedMethod(method));
 
-    // ── Operator verifier (fail-closed, hashed at rest) ───────────────────────
-
-    private static string Sha256Hex(string s) =>
-        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(s)));
+    // ── Operator verifier (fail-closed, Identity PBKDF2 at rest) ──────────────
 
     [Fact]
     public void Verifier_is_unconfigured_and_fails_closed_when_no_hash_is_set()
@@ -65,19 +62,31 @@ public sealed class OAuthPrimitivesTests
     {
         Assert.False(new ConfiguredOperatorVerifier("   ").IsConfigured);
         Assert.False(new ConfiguredOperatorVerifier("not-hex").IsConfigured);
-        // Right hex, wrong length (not a SHA-256 digest) → fails closed.
         Assert.False(new ConfiguredOperatorVerifier("abcd").IsConfigured);
+        // Leftover SHA-256 hex is not a password hash — fail closed, don't treat as a wrong guess.
+        Assert.False(new ConfiguredOperatorVerifier(
+            Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes("dev")))).IsConfigured);
     }
 
     [Fact]
     public void Verifier_accepts_the_right_passphrase_and_rejects_others()
     {
-        var v = new ConfiguredOperatorVerifier(Sha256Hex("correct horse battery staple"));
+        var v = new ConfiguredOperatorVerifier(OperatorPassphrase.Hash("correct horse battery staple"));
         Assert.True(v.IsConfigured);
         Assert.True(v.Verify("correct horse battery staple"));
         Assert.False(v.Verify("wrong"));
         Assert.False(v.Verify(""));
         Assert.False(v.Verify(null));
+    }
+
+    [Fact]
+    public void Attempt_limiter_caps_per_key()
+    {
+        using var limiter = new OperatorAttemptLimiter();
+        for (var i = 0; i < OperatorAttemptLimiter.PermitsPerWindow; i++)
+            Assert.True(limiter.TryAcquire("10.0.0.1"));
+        Assert.False(limiter.TryAcquire("10.0.0.1"));
+        Assert.True(limiter.TryAcquire("10.0.0.2"));
     }
 
     // ── Canonical resource id (RFC 8707 audience binding) ─────────────────────

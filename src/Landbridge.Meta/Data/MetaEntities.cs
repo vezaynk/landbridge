@@ -182,7 +182,7 @@ public sealed class InstanceRow
     // ── Per-instance secrets (design note §5) ──
     // The two retained secrets below are encrypted at rest (task #79); the hash is not,
     // being already one-way. Destroy blanks all three.
-    /// <summary>SHA-256 hex of the operator passphrase. The plaintext is NEVER stored (shown once at create).</summary>
+    /// <summary>Identity PBKDF2 hash of the operator passphrase. The plaintext is NEVER stored (shown once at create).</summary>
     public required string PassphraseHash { get; set; }
     /// <summary>Postgres password — retained to rebuild the connection string on recreate.</summary>
     public required string DbPassword { get; set; }

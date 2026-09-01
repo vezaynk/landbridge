@@ -27,6 +27,9 @@
     <!-- AOT-safe ACP v1 client. Owns JSON-RPC framing and the typed protocol
          surface; AcpClient keeps Landbridge session policy on top. -->
     <PackageReference Include="AcpKit.Client.V1" Version="0.0.4" />
+    <!-- Generic host: SIGINT/SIGTERM, ILogger. Not ASP.NET, not Kestrel. -->
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.0" />
+    <PackageReference Include="Microsoft.Extensions.Logging.Console" Version="10.0.0" />
   </ItemGroup>
 
   <!-- §1 tracing: landbridged exports traces/metrics to the Aspire dashboard when

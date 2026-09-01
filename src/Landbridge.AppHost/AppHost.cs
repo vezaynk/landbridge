@@ -17,7 +17,7 @@
 // config. No Team is minted — a human Lead creates work over MCP, exactly as
 // in production.
 //
-// landbridged is not a Host builder, so it gets no ServiceDefaults traces.
+// landbridged uses the generic host (not ASP.NET), so it gets no ServiceDefaults traces.
 // The Claude box opts into harness OTLP (`telemetry.otel`) so token/cost
 // metrics can land in the Aspire dashboard. Console logs stream as a resource.
 using Landbridge.ControlPlane;
@@ -167,7 +167,7 @@ var mcp = builder.AddProject<Projects.Landbridge_Mcp>("mcp", options => options.
     // `dev`. Set it here too so an override of ASPNETCORE_ENVIRONMENT cannot
     // silently fail-close the only human door in this loop.
     .WithEnvironment("Landbridge__Operator__PassphraseHash",
-        Convert.ToHexString(SHA256.HashData("dev"u8)))
+        Landbridge.ControlPlane.Auth.OperatorPassphrase.Hash("dev"))
     .WithHttpHealthCheck("/health");
 
 // landbridge-relay as a dev-loop resource (§8.3). Same fixed, un-proxied endpoint

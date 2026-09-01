@@ -79,8 +79,9 @@ public class CreatorTests
         var row = await h.Db.Instances.SingleAsync(i => i.Id == result.Id);
         // The plaintext is what the shown-once page renders …
         Assert.Equal(DeterministicSecrets.FixedPassphrase, result.Passphrase);
-        // … and the row holds only its SHA-256 hash, never the plaintext.
-        Assert.Equal(SecretGenerator.Hash(DeterministicSecrets.FixedPassphrase), row.PassphraseHash);
+        // … and the row holds only the PBKDF2 hash, never the plaintext.
+        var v = new Landbridge.Meta.Auth.MetaOperatorVerifier(row.PassphraseHash);
+        Assert.True(v.Verify(DeterministicSecrets.FixedPassphrase));
         Assert.NotEqual(result.Passphrase, row.PassphraseHash);
     }
 

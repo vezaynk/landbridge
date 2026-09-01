@@ -33,13 +33,6 @@ namespace Landbridge.Mcp;
 public static class OAuthEndpoints
 {
     /// <summary>
-    /// Cheap brute-force friction on a wrong operator passphrase (§5). Not real
-    /// rate-limiting — that is a documented follow-up — just a fixed delay so an
-    /// online guessing loop is slow.
-    /// </summary>
-    private static readonly TimeSpan FailedAttemptDelay = TimeSpan.FromMilliseconds(500);
-
-    /// <summary>
     /// The one <c>invalid_grant</c> description the token endpoint ever emits. Every
     /// way a code exchange can fail — unknown, expired, replayed, or bound to a
     /// different client/redirect/resource/verifier — answers with this exact string,
@@ -52,12 +45,14 @@ public static class OAuthEndpoints
     {
         // Anonymous by construction: a client reaches these before it has a token.
         app.MapGet("/oauth/authorize", (HttpContext http, IOperatorVerifier verifier, ICimdClient cimd,
-            OAuthAuthorizationCodeService codes, OAuthServerConfig server, ILoggerFactory logs, CancellationToken ct) =>
-            AuthorizeAsync(http, isPost: false, verifier, cimd, codes, server, logs, ct));
+            OAuthAuthorizationCodeService codes, OAuthServerConfig server, ILoggerFactory logs,
+            OperatorAttemptLimiter attempts, CancellationToken ct) =>
+            AuthorizeAsync(http, isPost: false, verifier, cimd, codes, server, logs, attempts, ct));
 
         app.MapPost("/oauth/authorize", (HttpContext http, IOperatorVerifier verifier, ICimdClient cimd,
-            OAuthAuthorizationCodeService codes, OAuthServerConfig server, ILoggerFactory logs, CancellationToken ct) =>
-            AuthorizeAsync(http, isPost: true, verifier, cimd, codes, server, logs, ct));
+            OAuthAuthorizationCodeService codes, OAuthServerConfig server, ILoggerFactory logs,
+            OperatorAttemptLimiter attempts, CancellationToken ct) =>
+            AuthorizeAsync(http, isPost: true, verifier, cimd, codes, server, logs, attempts, ct));
 
         app.MapPost("/oauth/token", TokenAsync);
         return app;
@@ -67,7 +62,8 @@ public static class OAuthEndpoints
 
     private static async Task<IResult> AuthorizeAsync(
         HttpContext http, bool isPost, IOperatorVerifier verifier, ICimdClient cimd,
-        OAuthAuthorizationCodeService codes, OAuthServerConfig server, ILoggerFactory logs, CancellationToken ct)
+        OAuthAuthorizationCodeService codes, OAuthServerConfig server, ILoggerFactory logs,
+        OperatorAttemptLimiter attempts, CancellationToken ct)
     {
         var log = logs.CreateLogger("Landbridge.Mcp.OAuth");
 
@@ -79,7 +75,7 @@ public static class OAuthEndpoints
         {
             log.LogError(
                 "/oauth/authorize was called but no operator passphrase is configured ({Key}); refusing " +
-                "every authorization. Set the SHA-256 hex of the operator passphrase to open the front door.",
+                "every authorization. Set an Identity PBKDF2 hash of the operator passphrase to open the front door.",
                 ConfiguredOperatorVerifier.PassphraseHashKey);
             return Results.StatusCode(StatusCodes.Status503ServiceUnavailable);
         }
@@ -141,12 +137,12 @@ public static class OAuthEndpoints
             return ConsentPage(doc, p);
 
         // POST: verify the operator passphrase (the human-verification seam).
+        var clientKey = http.Connection.RemoteIpAddress?.ToString();
+        if (!attempts.TryAcquire(clientKey))
+            return ConsentPage(doc, p, "Too many attempts. Try again in a minute.");
         var passphrase = http.Request.Form["passphrase"].ToString();
         if (!verifier.Verify(passphrase))
-        {
-            await Task.Delay(FailedAttemptDelay, ct); // brute-force friction (§5)
             return ConsentPage(doc, p, "Incorrect operator passphrase.");
-        }
 
         // Verified. Mint a single-use code bound to {client_id, redirect_uri,
         // code_challenge, resource} and 302 it back with the verbatim state.

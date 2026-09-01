@@ -122,19 +122,17 @@ Grok installer) and later runs reuse the Docker layer cache.
 ## Authenticating a human
 
 Two doors, both gated by an **operator passphrase**. The plane stores only the
-SHA-256 hex of the passphrase, never the plaintext. When it is unset, both
-`/oauth/authorize` and the dashboard login are **fail-closed (503)**.
+an ASP.NET Identity PBKDF2 hash of the passphrase, never the plaintext.
+When it is unset (or a leftover SHA-256 hex), both `/oauth/authorize` and the
+dashboard login are **fail-closed (503)**. Passphrase POSTs are capped at 10 per
+minute per client IP.
 
-The Aspire loop and `appsettings.Development.json` set the hash for the
-passphrase `dev`, so local `/dashboard/login` works without extra config.
-Production `appsettings.json` leaves the hash empty.
+The Aspire loop hashes the passphrase `dev` at startup. Production
+`appsettings.json` leaves the hash empty.
 
-Generate the hash and set it (illustrative — any way of producing the SHA-256 hex
-works):
-
-```bash
-printf '%s' 'your-passphrase' | shasum -a 256    # → the hex to store
-```
+The hash is not `sha256(passphrase)`. Mint one with Identity's hasher (the
+Development/Aspire host does this for `dev`) or copy the value Meta writes into
+an Instance on create.
 
 Then supply it to the host as `Landbridge:Operator:PassphraseHash`, e.g. via user
 secrets or the environment variable `Landbridge__Operator__PassphraseHash` (see the
@@ -552,7 +550,7 @@ this branch.
 | `Landbridge:WorkerMcpUrl` (or env `LANDBRIDGE_WORKER_MCP_URL`) | *(same as PublicMcpUrl)* | URL stamped onto a worker at dispatch (`mcpServers` / `{mcp_url}`). The Aspire loop sets `http://host.docker.internal:5050` so Linux containers can reach the host plane. Unset in production. |
 | `Landbridge:Classifier:Url` (or env `LANDBRIDGE_CLASSIFIER_URL`) | *(unset → Ask)* | Plane-side classifier sidecar (`POST /classify`). Unset or unreachable is Ask, never fail-open. Aspire sets `http://127.0.0.1:5310`. |
 | `Landbridge:Classifier:TimeoutMs` | `45000` | How long the plane waits for one classify call (covers both LLM stages). Timeout is Ask. |
-| `Landbridge:Operator:PassphraseHash` | *(empty → fail-closed)* | SHA-256 hex of the operator passphrase gating `/oauth/authorize` and dashboard login. Store the hash, never the plaintext. |
+| `Landbridge:Operator:PassphraseHash` | *(empty → fail-closed)* | Identity PBKDF2 hash of the operator passphrase gating `/oauth/authorize` and dashboard login. Store the hash, never the plaintext. A leftover SHA-256 hex is treated as unset. |
 | `Landbridge:WaitTtl` | infinite | How long a `blocked_on_input` task waits before parking (spec §11). Off by default; a live ACP session is held until a Lead answers or `park_session`. Set a TimeSpan (e.g. `00:30:00`) to restore a timer. |
 | `Landbridge:MachineLivenessTtl` | `00:01:30` | Heartbeat-age window past which a machine is treated as rebooted and its waiting tasks requeue (≈ six missed 15s heartbeats). |
 | `Landbridge:WaitTtlSweepInterval` | `00:01:00` | How often the `WaitTtlSweeper` background loop runs. |
