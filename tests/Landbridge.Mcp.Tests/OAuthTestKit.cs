@@ -39,8 +39,7 @@ internal static class OAuthTestKit
 {
     public const string Passphrase = "operator-correct-horse";
 
-    public static string PassphraseHash =>
-        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(Passphrase)));
+    public static string PassphraseHash => OperatorPassphrase.Hash(Passphrase);
 
     public static int FreePort()
     {
@@ -89,6 +88,7 @@ internal static class OAuthTestKit
 
         builder.Services.AddSingleton(OAuthServerConfig.FromPublicMcpUrl(url));
         builder.Services.AddSingleton<IOperatorVerifier, ConfiguredOperatorVerifier>();
+        builder.Services.AddSingleton<OperatorAttemptLimiter>();
         builder.Services.AddSingleton<ICimdClient>(sp =>
             new CimdClient(sp.GetRequiredService<IConfiguration>().GetValue<bool>(CimdClient.AllowInsecureKey)));
 

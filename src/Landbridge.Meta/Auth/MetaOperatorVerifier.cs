@@ -1,5 +1,5 @@
 using System.Security.Cryptography;
-using System.Text;
+using Microsoft.AspNetCore.Identity;
 
 namespace Landbridge.Meta.Auth;
 
@@ -8,53 +8,69 @@ namespace Landbridge.Meta.Auth;
 /// "human-only", a separate credential class from the plane's §5 identities). This
 /// is a deliberate, self-contained copy of the plane's
 /// <c>ConfiguredOperatorVerifier</c> pattern — meta shares no code and no token
-/// store with the plane — down to the same fail-closed and constant-time
-/// properties: the SHA-256 hex of the passphrase lives in configuration
+/// store with the plane — down to the same fail-closed properties: an Identity
+/// PBKDF2 hash of the passphrase lives in configuration
 /// (<c>Meta:Operator:PassphraseHash</c>), never the plaintext, and an unset/garbage
-/// value reads as "not configured" so the login door fails closed (503) rather
-/// than authenticating anyone.
+/// or leftover SHA-256 hex value reads as "not configured" so the login door fails
+/// closed (503) rather than authenticating anyone.
 /// </summary>
 public sealed class MetaOperatorVerifier
 {
-    /// <summary>Config key holding the SHA-256 hex of the operator passphrase (never the plaintext).</summary>
+    /// <summary>Config key holding the Identity password hash of the operator passphrase (never the plaintext).</summary>
     public const string PassphraseHashKey = "Meta:Operator:PassphraseHash";
 
-    private readonly byte[]? _expectedHashBytes;
+    private static readonly PasswordHasher<object> Hasher = new();
+    private static readonly object User = new();
+    private readonly string? _hash;
 
     /// <summary>DI entry point: reads the configured passphrase hash.</summary>
     public MetaOperatorVerifier(IConfiguration config) : this(config[PassphraseHashKey]) { }
 
-    /// <summary>Core constructor over the raw SHA-256 hex; kept public so tests skip the config system.</summary>
-    public MetaOperatorVerifier(string? passphraseHashHex)
+    /// <summary>Core constructor over the stored hash; kept public so tests skip the config system.</summary>
+    public MetaOperatorVerifier(string? passphraseHash)
     {
-        _expectedHashBytes = TryDecodeHex(passphraseHashHex);
+        _hash = LooksConfigured(passphraseHash) ? passphraseHash!.Trim() : null;
     }
 
     /// <summary>True iff an operator passphrase is configured at all; when false the login door is fail-closed.</summary>
-    public bool IsConfigured => _expectedHashBytes is not null;
+    public bool IsConfigured => _hash is not null;
 
-    /// <summary>Constant-time verify against the configured hash; false whenever unconfigured or blank.</summary>
+    /// <summary>Verify against the configured hash; false whenever unconfigured or blank.</summary>
     public bool Verify(string? passphrase)
     {
-        if (_expectedHashBytes is null || string.IsNullOrEmpty(passphrase))
+        if (_hash is null || string.IsNullOrEmpty(passphrase))
             return false;
-
-        var presentedHash = SHA256.HashData(Encoding.UTF8.GetBytes(passphrase));
-        return CryptographicOperations.FixedTimeEquals(presentedHash, _expectedHashBytes);
+        var result = Hasher.VerifyHashedPassword(User, _hash, passphrase);
+        return result is PasswordVerificationResult.Success
+            or PasswordVerificationResult.SuccessRehashNeeded;
     }
 
-    private static byte[]? TryDecodeHex(string? hex)
+    private static bool LooksConfigured(string? stored)
     {
-        if (string.IsNullOrWhiteSpace(hex))
-            return null;
+        if (string.IsNullOrWhiteSpace(stored))
+            return false;
+        stored = stored.Trim();
+        if (stored.Length == 64 && IsHex(stored))
+            return false;
         try
         {
-            var bytes = Convert.FromHexString(hex.Trim());
-            return bytes.Length == 32 ? bytes : null; // must be a SHA-256 digest
+            var bytes = Convert.FromBase64String(stored);
+            return bytes.Length > 13 && bytes[0] is 0x00 or 0x01;
         }
         catch (FormatException)
         {
-            return null;
+            return false;
         }
+    }
+
+    private static bool IsHex(string s)
+    {
+        foreach (var c in s)
+        {
+            var hex = c is >= '0' and <= '9' or >= 'a' and <= 'f' or >= 'A' and <= 'F';
+            if (!hex)
+                return false;
+        }
+        return true;
     }
 }

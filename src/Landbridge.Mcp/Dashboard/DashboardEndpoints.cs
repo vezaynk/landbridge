@@ -30,11 +30,6 @@ public static class DashboardEndpoints
 {
     private static readonly System.Text.Json.JsonSerializerOptions Json = DashboardNegotiate.Json;
 
-    /// <summary>Fixed delay added to a wrong-passphrase login, mirroring
-    /// <c>/oauth/authorize</c>'s brute-force friction (§5). Kept in lockstep with
-    /// that endpoint's <c>FailedAttemptDelay</c>.</summary>
-    private static readonly TimeSpan WrongPassphraseDelay = TimeSpan.FromMilliseconds(500);
-
     public static IEndpointRouteBuilder MapDashboard(this IEndpointRouteBuilder app)
     {
         if (app is WebApplication web)
@@ -108,8 +103,8 @@ public static class DashboardEndpoints
     /// Two mutually-exclusive submissions, decided by which field is filled:
     /// <list type="bullet">
     /// <item>the operator passphrase (the primary door) — fail-closed 503 when no
-    /// operator credential is configured, a fixed <see cref="WrongPassphraseDelay"/>
-    /// on a wrong guess (both mirroring <c>/oauth/authorize</c>), and on success a
+    /// operator credential is configured, a per-IP attempt cap (both mirroring
+    /// <c>/oauth/authorize</c>), and on success a
     /// freshly-minted human session (§5) dropped as the <c>landbridge_session</c>
     /// cookie;</item>
     /// <item>a pasted token (the secondary door) — for a Lead token or a
@@ -125,7 +120,7 @@ public static class DashboardEndpoints
     /// </summary>
     private static async Task<IResult> HandleLoginAsync(
         HttpContext http, IOperatorVerifier verifier, TokenService tokens, IConfiguration config,
-        CancellationToken ct)
+        OperatorAttemptLimiter attempts, CancellationToken ct)
     {
         if (CrossOriginRefusal(http, config) is { } refusal)
             return refusal;
@@ -163,16 +158,17 @@ public static class DashboardEndpoints
             return RazorPage<LoginResult>(new
             {
                 Error = "No operator passphrase is configured. Set Landbridge:Operator:PassphraseHash "
-                    + "to the SHA-256 hex of the passphrase (docs/RUNNING.md). "
+                    + "to an Identity PBKDF2 hash of the passphrase (docs/RUNNING.md). "
                     + "The Aspire / Development host uses the passphrase 'dev'.",
                 Next = next,
             }, StatusCodes.Status503ServiceUnavailable);
 
+        if (!attempts.TryAcquire(http.Connection.RemoteIpAddress?.ToString()))
+            return RazorPage<LoginResult>(new { Error = "Too many attempts. Try again in a minute.", Next = next },
+                StatusCodes.Status429TooManyRequests);
+
         if (!verifier.Verify(passphrase))
-        {
-            await Task.Delay(WrongPassphraseDelay, ct); // brute-force friction (§5)
             return RazorPage<LoginResult>(new { Error = "Incorrect operator passphrase.", Next = next }, 401);
-        }
 
         // Verified operator → mint a fresh human session (§5, the root credential)
         // and drop the cookie for its own 12h lifetime.

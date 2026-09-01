@@ -39,7 +39,7 @@ Triage order: failed, permission, report, Lead-owed asks, pull; then oldest enve
 ## SSE
 
 - `event: snapshot` with the full JSON view. Not a delta. Missed events are fine — the next snapshot is complete.
-- `: ping` comment keepalive (~15s).
+- `event: ping` keepalive (~15s). Clients ignore unknown event types; this one carries no payload.
 - No `Last-Event-ID` resume.
 - Subscribe to NOTIFY, then snapshot, so a write during the first read coalesces into a follow-up snapshot.
 - NOTIFYs coalesce per connection (single-slot drop-write).

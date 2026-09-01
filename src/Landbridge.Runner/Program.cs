@@ -1,5 +1,9 @@
 using System.Runtime.InteropServices;
 using Landbridge.Contracts;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Hosting.Internal;
+using Microsoft.Extensions.Logging;
 
 namespace Landbridge.Runner;
 
@@ -59,7 +63,7 @@ public static class Program
         // §1 tracing: stand up OTLP export when the environment provides a
         // collector (the Aspire dev loop does; a standalone runner leaves it unset
         // and this no-ops). Disposed last so the handle spans flush on shutdown.
-        using var otelExport = RunnerTelemetry.TryStartOtelExport();
+        var otelExport = RunnerTelemetry.TryStartOtelExport();
 
         var clock = TimeProvider.System;
         var ring = new OutboundEventRing(capacity: 1024);
@@ -165,45 +169,35 @@ public static class Program
         // still runs; the Lead then uses enroll stdout or the dashboard.
         var identity = LocalIdentityListener.TryBindLoopback(machineId, log: Console.WriteLine);
 
-        var daemon = new RunnerDaemon(
-            machineId, config, supervisor, backPressure, channel, ring, reaper, clock,
-            transcripts: new TranscriptReader(transcripts),
-            processes: processes,
-            log: Console.WriteLine);
-        await daemon.StartAsync();
-
-        // Outbound-only: the receive loop runs on the socket landbridged dialed, not
-        // a listener (§10). Commands arriving on it drive the daemon.
-        wsChannel?.Start((command, ct) => daemon.HandleAsync(command, ct));
-
-        var identityBit = identity is null
-            ? "identity=unbound"
-            : $"identity=http://127.0.0.1:{LocalIdentityListener.Port}";
-        Console.WriteLine($"landbridged up: machine={machineId} profiles=[{string.Join(", ", config.DeclaredProfiles)}] strays_reaped={daemon.StraysReaped} {identityBit} control={channelMode}");
-
-        using var shutdown = new CancellationTokenSource();
-        using var sigint = PosixSignalRegistration.Create(PosixSignal.SIGINT, ctx => { ctx.Cancel = true; shutdown.Cancel(); });
-        using var sigterm = PosixSignalRegistration.Create(PosixSignal.SIGTERM, ctx => { ctx.Cancel = true; shutdown.Cancel(); });
-
-        try
+        var hostBuilder = Host.CreateEmptyApplicationBuilder(new HostApplicationBuilderSettings
         {
-            await Task.Delay(Timeout.Infinite, shutdown.Token);
-        }
-        catch (OperationCanceledException)
+            Args = args,
+            ApplicationName = "landbridged",
+        });
+        hostBuilder.Logging.SetMinimumLevel(LogLevel.Information);
+        hostBuilder.Logging.AddSimpleConsole(o =>
         {
-            // signalled
-        }
+            o.SingleLine = true;
+            o.TimestampFormat = "";
+        });
+        hostBuilder.Services.AddSingleton<IHostLifetime, ConsoleLifetime>();
+        hostBuilder.Services.Configure<ConsoleLifetimeOptions>(o => o.SuppressStatusMessages = true);
+        hostBuilder.Services.AddSingleton(sp =>
+        {
+            var log = sp.GetRequiredService<ILogger<LandbridgedHost>>();
+            Action<string> line = s => log.LogInformation("{Message}", s);
+            var daemon = new RunnerDaemon(
+                machineId, config, supervisor, backPressure, channel, ring, reaper, clock,
+                transcripts: new TranscriptReader(transcripts),
+                processes: processes,
+                log: line);
+            return new LandbridgedHost(
+                daemon, processes, config, machineId, channelMode, log,
+                wsChannel, identity, refresher, refreshHttp, otelExport);
+        });
+        hostBuilder.Services.AddHostedService(sp => sp.GetRequiredService<LandbridgedHost>());
 
-        Console.WriteLine("landbridged shutting down; killing everything it started");
-        await daemon.ShutdownAsync();
-        if (identity is not null)
-            await identity.DisposeAsync();
-        await processes.DisposeAsync();
-        if (wsChannel is not null)
-            await wsChannel.DisposeAsync();
-        if (refresher is not null)
-            await refresher.DisposeAsync();
-        refreshHttp?.Dispose();
+        await hostBuilder.Build().RunAsync();
         return 0;
     }
 

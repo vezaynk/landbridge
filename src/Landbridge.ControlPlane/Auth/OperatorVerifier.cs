@@ -1,5 +1,3 @@
-using System.Security.Cryptography;
-using System.Text;
 using Microsoft.Extensions.Configuration;
 
 namespace Landbridge.ControlPlane.Auth;
@@ -24,74 +22,42 @@ public interface IOperatorVerifier
     bool IsConfigured { get; }
 
     /// <summary>
-    /// Verifies a presented operator passphrase, in constant time. Returns false
-    /// for a wrong passphrase and (defensively) whenever <see cref="IsConfigured"/>
-    /// is false — the endpoint checks configuration first, but this never returns
-    /// true against an absent credential.
+    /// Verifies a presented operator passphrase. Returns false for a wrong
+    /// passphrase and (defensively) whenever <see cref="IsConfigured"/> is false —
+    /// the endpoint checks configuration first, but this never returns true against
+    /// an absent credential.
     /// </summary>
     bool Verify(string? passphrase);
 }
 
 /// <summary>
-/// The v1 operator verifier: a single shared passphrase whose SHA-256 hex is held
-/// in configuration (<c>Landbridge:Operator:PassphraseHash</c>) — never the plaintext
-/// (§5, §13: opaque credentials hashed at rest). Verification hashes the presented
-/// passphrase the same way and compares the two <em>hashes</em> in constant time,
-/// so both the compare length and the timing are independent of the real secret.
-///
-/// <para>Real rate-limiting is a follow-up; the authorize endpoint adds a small
-/// fixed delay on a failed attempt as cheap brute-force friction. A per-user
-/// credential store slots in behind this same interface without touching the
-/// endpoints.</para>
+/// The operator verifier: a single shared passphrase whose Identity PBKDF2 hash
+/// is held in configuration (<c>Landbridge:Operator:PassphraseHash</c>) — never the
+/// plaintext (§5, §13). A leftover SHA-256 hex is treated as unconfigured.
 /// </summary>
 public sealed class ConfiguredOperatorVerifier : IOperatorVerifier
 {
-    /// <summary>Config key holding the SHA-256 hex of the operator passphrase (never the plaintext).</summary>
+    /// <summary>Config key holding the Identity password hash of the operator passphrase (never the plaintext).</summary>
     public const string PassphraseHashKey = "Landbridge:Operator:PassphraseHash";
 
-    private readonly byte[]? _expectedHashBytes;
+    private readonly string? _hash;
 
     /// <summary>DI entry point: reads the configured passphrase hash (§5).</summary>
     public ConfiguredOperatorVerifier(IConfiguration config) : this(config[PassphraseHashKey]) { }
 
     /// <summary>
-    /// Core constructor over the raw SHA-256 hex (never the plaintext). A blank or
-    /// malformed value is treated as "not configured" so the endpoint fails closed
-    /// rather than comparing against garbage. Kept public so tests exercise the
-    /// verification without depending on the configuration system.
+    /// Core constructor over the stored hash (never the plaintext). A blank or
+    /// leftover SHA-256 hex is treated as "not configured" so the endpoint fails
+    /// closed. Kept public so tests exercise verification without the configuration
+    /// system.
     /// </summary>
-    public ConfiguredOperatorVerifier(string? passphraseHashHex)
+    public ConfiguredOperatorVerifier(string? passphraseHash)
     {
-        _expectedHashBytes = TryDecodeHex(passphraseHashHex);
+        _hash = OperatorPassphrase.LooksConfigured(passphraseHash) ? passphraseHash!.Trim() : null;
     }
 
-    public bool IsConfigured => _expectedHashBytes is not null;
+    public bool IsConfigured => _hash is not null;
 
-    public bool Verify(string? passphrase)
-    {
-        if (_expectedHashBytes is null || string.IsNullOrEmpty(passphrase))
-            return false;
-
-        var presentedHash = SHA256.HashData(Encoding.UTF8.GetBytes(passphrase));
-        // Both operands are fixed 32-byte SHA-256 digests, so the compare's length
-        // and timing reveal nothing about the configured secret.
-        return CryptographicOperations.FixedTimeEquals(presentedHash, _expectedHashBytes);
-    }
-
-    private static byte[]? TryDecodeHex(string? hex)
-    {
-        if (string.IsNullOrWhiteSpace(hex))
-            return null;
-        try
-        {
-            var bytes = Convert.FromHexString(hex.Trim());
-            // Must be a SHA-256 digest; anything else is a misconfiguration and
-            // fails closed.
-            return bytes.Length == 32 ? bytes : null;
-        }
-        catch (FormatException)
-        {
-            return null;
-        }
-    }
+    public bool Verify(string? passphrase) =>
+        _hash is not null && OperatorPassphrase.Verify(_hash, passphrase);
 }

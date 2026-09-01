@@ -1,6 +1,8 @@
 using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Auth;
 using Landbridge.Mcp.Dashboard.Components;
 using Microsoft.AspNetCore.Http.HttpResults;
+using Microsoft.Extensions.DependencyInjection.Extensions;
 
 namespace Landbridge.Mcp.Dashboard;
 
@@ -16,6 +18,7 @@ public static class DashboardHosting
     {
         services.AddScoped<DashboardQueries>();
         services.AddHttpContextAccessor();
+        services.TryAddSingleton<OperatorAttemptLimiter>();
         services.AddRazorComponents()
             .AddInteractiveServerComponents();
         return services;

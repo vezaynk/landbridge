@@ -148,7 +148,7 @@ touches an Instance's database.
 | Key | Meaning |
 |---|---|
 | `ConnectionStrings:Meta` / `LANDBRIDGE_META_DB` | Meta's own Postgres. |
-| `Meta:Operator:PassphraseHash` | SHA-256 **hex** of the operator passphrase. Fail-closed (503 login) when unset. Generate: `printf '%s' 'your-passphrase' \| shasum -a 256`. |
+| `Meta:Operator:PassphraseHash` | Identity PBKDF2 hash of the operator passphrase. Fail-closed (503 login) when unset or a leftover SHA-256 hex. |
 | `Meta:Domain` | Base domain for the two routes per Instance. |
 | `Meta:McpImageRepo` / `Meta:RelayImageRepo` | Image repositories (no tag). |
 | `Meta:DefaultImageTag` | Tag a create pins when it names none. **No default** — a create with neither is rejected (§1.4). |

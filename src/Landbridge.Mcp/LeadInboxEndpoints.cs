@@ -1,10 +1,11 @@
+using System.Net.ServerSentEvents;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
 using Landbridge.Core;
 using Landbridge.Mcp.Auth;
-using Microsoft.AspNetCore.Http.Features;
 
 namespace Landbridge.Mcp;
 
@@ -27,7 +28,7 @@ public static class LeadInboxEndpoints
     public static IEndpointRouteBuilder MapLeadInbox(this IEndpointRouteBuilder app)
     {
         app.MapGet("/lead/inbox", GetSnapshotAsync).RequireAuthorization();
-        app.MapGet("/lead/inbox/events", StreamEventsAsync).RequireAuthorization();
+        app.MapGet("/lead/inbox/events", StreamEvents).RequireAuthorization();
         return app;
     }
 
@@ -49,63 +50,68 @@ public static class LeadInboxEndpoints
         return Results.Json(inbox, Json);
     }
 
-    private static async Task StreamEventsAsync(
+    private static async Task<IResult> StreamEvents(
         HttpContext http, SessionStore store, SessionEventFanout fanout, TokenService tokens, CancellationToken ct)
     {
         if (RejectUnlessLead(http) is { } reject)
-        {
-            await reject.ExecuteAsync(http);
-            return;
-        }
-
+            return reject;
         if (ParseSessionFilter(http) is { } bad)
-        {
-            await bad.ExecuteAsync(http);
-            return;
-        }
+            return bad;
 
         var filter = SessionFilterOf(http);
         var factory = LandbridgeClaims.AsLeadPrincipal(http.User)!;
         var team = await RequireOwnedTeamAsync(http, factory, tokens, ct);
         if (team is null)
-        {
-            http.Response.StatusCode = StatusCodes.Status400BadRequest;
-            await http.Response.WriteAsJsonAsync(new { error = "teamId is required: a team id from create_team, or one a human gave you" }, ct);
-            return;
-        }
-        var actor = filter is { Count: > 0 } ? new Landbridge.Core.LeadClaim(team.Value) : (Landbridge.Core.Actor?)null;
-        http.Response.Headers.ContentType = "text/event-stream";
-        http.Response.Headers.CacheControl = "no-cache, no-transform";
-        http.Response.Headers.Connection = "keep-alive";
+            return Results.Json(new { error = "teamId is required: a team id from create_team, or one a human gave you" },
+                statusCode: StatusCodes.Status400BadRequest);
+        var actor = filter is { Count: > 0 } ? new LeadClaim(team.Value) : (Actor?)null;
         http.Response.Headers["X-Accel-Buffering"] = "no";
-        http.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
+        return TypedResults.ServerSentEvents(Enumerate(store, fanout, team.Value, filter, actor, ct));
+    }
 
+    private static async IAsyncEnumerable<SseItem<string>> Enumerate(
+        SessionStore store,
+        SessionEventFanout fanout,
+        TeamId team,
+        IReadOnlyList<Guid>? filter,
+        Actor? actor,
+        [EnumeratorCancellation] CancellationToken ct)
+    {
         await using var snapshots = LeadInboxWatch
-            .Snapshots(store, fanout, team.Value, filter, actor, ct)
+            .Snapshots(store, fanout, team, filter, actor, ct)
             .GetAsyncEnumerator(ct);
         var next = snapshots.MoveNextAsync().AsTask();
 
         while (!ct.IsCancellationRequested)
         {
             bool moved;
+            bool ping;
             try
             {
                 moved = await next.WaitAsync(PingInterval, ct);
+                ping = false;
             }
             catch (TimeoutException)
             {
-                await WritePingAsync(http, ct);
-                continue;
+                moved = false;
+                ping = true;
             }
             catch (OperationCanceledException)
             {
-                break;
+                yield break;
+            }
+
+            if (ping)
+            {
+                yield return new SseItem<string>("", eventType: "ping");
+                continue;
             }
 
             if (!moved)
-                break;
+                yield break;
 
-            await WriteSnapshotAsync(http, snapshots.Current, ct);
+            yield return new SseItem<string>(
+                JsonSerializer.Serialize(snapshots.Current, Json), eventType: "snapshot");
             next = snapshots.MoveNextAsync().AsTask();
         }
     }
@@ -176,20 +182,5 @@ public static class LeadInboxEndpoints
 
         return Results.Json(new { error = "lead credential required" },
             statusCode: StatusCodes.Status403Forbidden);
-    }
-
-    private static async Task WriteSnapshotAsync(HttpContext http, LeadInboxView inbox, CancellationToken ct)
-    {
-        var json = JsonSerializer.Serialize(inbox, Json);
-        await http.Response.WriteAsync("event: snapshot\ndata: ", ct);
-        await http.Response.WriteAsync(json, ct);
-        await http.Response.WriteAsync("\n\n", ct);
-        await http.Response.Body.FlushAsync(ct);
-    }
-
-    private static async Task WritePingAsync(HttpContext http, CancellationToken ct)
-    {
-        await http.Response.WriteAsync(": ping\n\n", ct);
-        await http.Response.Body.FlushAsync(ct);
     }
 }
