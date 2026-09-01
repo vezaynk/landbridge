@@ -81,9 +81,9 @@ public static class Program
         // §10 agent-started processes. landbridged's own children, tagged with the
         // machine id only: they outlive every session, and the only thing that ends
         // them is an explicit stop, their own exit, or this daemon's restart.
-        var services = new ServiceSupervisor(
+        var processes = new AgentProcessSupervisor(
             machineId, clock,
-            logs: new ServiceLogStore(Path.Combine(stateDir, ServiceLogStore.DirName)),
+            logs: new ProcessLogStore(Path.Combine(stateDir, ProcessLogStore.DirName)),
             log: Console.WriteLine);
 
         var supervisor = new ProcessSupervisor(config.Machine, ring, clock, reaper, transcripts);
@@ -163,7 +163,7 @@ public static class Program
         var daemon = new RunnerDaemon(
             machineId, config, supervisor, backPressure, channel, ring, reaper, clock,
             transcripts: new TranscriptReader(transcripts),
-            services: services,
+            processes: processes,
             log: Console.WriteLine);
         await daemon.StartAsync();
 
@@ -188,7 +188,7 @@ public static class Program
 
         Console.WriteLine("landbridged shutting down; killing everything it started");
         await daemon.ShutdownAsync();
-        await services.DisposeAsync();
+        await processes.DisposeAsync();
         if (wsChannel is not null)
             await wsChannel.DisposeAsync();
         if (refresher is not null)

@@ -94,7 +94,7 @@ public sealed record RunnerConfig(
     /// writes outside the root. This allowlist restores the property the Guid was
     /// silently providing, at the config boundary where it can be reported.
     /// </summary>
-    internal static bool IsValidServiceName(string name) =>
+    internal static bool IsValidProcessName(string name) =>
         name.Length is > 0 and <= 64
         && name.All(c => c is >= 'a' and <= 'z' or >= 'A' and <= 'Z' or >= '0' and <= '9' or '-' or '_');
 
@@ -511,7 +511,7 @@ public sealed record LogsConfig(
 public sealed record ProfileProcessesConfig(bool AgentInitiated = false, int Max = 8);
 
 /// <summary>Defaults for §10 process supervision.</summary>
-public static class ServiceDefaults
+public static class ProcessDefaults
 {
     /// <summary>
     /// How long <c>stop_process</c> waits after closing stdin before taking the tree — the same
@@ -524,9 +524,9 @@ public static class ServiceDefaults
 /// <summary>
 /// Runtime record for an agent-started process (§10 <c>start_process</c>):
 /// landbridged's own child, never restarted, machine-scoped.
-/// See <see cref="ServiceSupervisor"/>.
+/// See <see cref="AgentProcessSupervisor"/>.
 /// </summary>
-public sealed record ServiceConfig(
+public sealed record AgentProcessConfig(
     string Name,
     IReadOnlyList<string> Spawn,
     string? WorkingDirectory,

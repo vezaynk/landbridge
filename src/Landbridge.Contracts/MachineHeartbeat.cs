@@ -36,7 +36,7 @@ public sealed record MachineHeartbeat(
 
 /// <summary>
 /// What a machine reports about one agent-started <b>process</b> (§10, §12). A process
-/// is agent-started and never restarted, so <see cref="ServiceState.Exited"/> is a
+/// is agent-started and never restarted, so <see cref="ProcessState.Exited"/> is a
 /// resting state rather than a transient one.
 /// </summary>
 /// <param name="DeclaredBySession">Provenance, not ownership: the task whose worker started it.
@@ -47,7 +47,7 @@ public sealed record MachineHeartbeat(
 /// graceful EOF lever, so stopping is the bounded wait and then a tree kill.</param>
 public sealed record ProcessStatus(
     string Name,
-    ServiceState State,
+    ProcessState State,
     Guid DeclaredBySession,
     DateTimeOffset? StartedAt = null,
     int? ExitCode = null,
@@ -55,7 +55,7 @@ public sealed record ProcessStatus(
     bool StdinOpen = false);
 
 /// <summary>A process's current condition on its machine (§10).</summary>
-public enum ServiceState
+public enum ProcessState
 {
     /// <summary>Process alive.</summary>
     Running,

@@ -63,21 +63,21 @@ public abstract record ProcessOutcome
 /// count toward <see cref="ProcessSupervisor.RunningTotal"/>, and they consume load that
 /// back-pressure already observes directly.</para>
 /// </summary>
-public sealed class ServiceSupervisor : IAsyncDisposable
+public sealed class AgentProcessSupervisor : IAsyncDisposable
 {
     private readonly string _machineId;
     private readonly TimeProvider _clock;
-    private readonly ServiceLogStore? _logs;
+    private readonly ProcessLogStore? _logs;
     private readonly Action<string>? _log;
     private readonly SpawnerThread _spawner = new();
-    private readonly ConcurrentDictionary<string, SupervisedService> _state = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, SupervisedProcess> _state = new(StringComparer.Ordinal);
     private readonly CancellationTokenSource _cts = new();
     private readonly object _admission = new();
 
-    public ServiceSupervisor(
+    public AgentProcessSupervisor(
         string machineId,
         TimeProvider clock,
-        ServiceLogStore? logs = null,
+        ProcessLogStore? logs = null,
         Action<string>? log = null)
     {
         _machineId = machineId;
@@ -135,7 +135,7 @@ public sealed class ServiceSupervisor : IAsyncDisposable
                 $"profile '{profile.Name}' does not permit agent-started processes"));
         }
 
-        if (!RunnerConfig.IsValidServiceName(command.Name))
+        if (!RunnerConfig.IsValidProcessName(command.Name))
         {
             // The name arrives off the wire here, not from a file an operator wrote — which is
             // the case the validator exists for: it becomes a directory name, and the closed
@@ -151,7 +151,7 @@ public sealed class ServiceSupervisor : IAsyncDisposable
                 ProcessRefusals.InvalidSpawn, "spawn argv is empty"));
         }
 
-        ServiceConfig config;
+        AgentProcessConfig config;
         lock (_admission)
         {
             // Names are machine-scoped because the agent that cleans up is a continuation —
@@ -161,7 +161,7 @@ public sealed class ServiceSupervisor : IAsyncDisposable
             // not blocked by a corpse.
             if (_state.TryGetValue(command.Name, out var existing))
             {
-                var live = existing.State is not (ServiceState.Exited or ServiceState.Stopped);
+                var live = existing.State is not (ProcessState.Exited or ProcessState.Stopped);
                 if (live)
                 {
                     return Task.FromResult(ProcessOutcome.Refused(
@@ -173,7 +173,7 @@ public sealed class ServiceSupervisor : IAsyncDisposable
             }
 
             var running = _state.Count(e =>
-                e.Value.State is not (ServiceState.Exited or ServiceState.Stopped));
+                e.Value.State is not (ProcessState.Exited or ProcessState.Stopped));
             if (running >= policy.Max)
             {
                 return Task.FromResult(ProcessOutcome.Refused(
@@ -182,7 +182,7 @@ public sealed class ServiceSupervisor : IAsyncDisposable
                     $"(max {policy.Max})"));
             }
 
-            config = new ServiceConfig(
+            config = new AgentProcessConfig(
                 command.Name,
                 command.Spawn,
                 command.WorkingDirectory,
@@ -191,9 +191,9 @@ public sealed class ServiceSupervisor : IAsyncDisposable
                 // its own output with file tools.
                 new LogsConfig(Capture: true));
 
-            _state[command.Name] = new SupervisedService(config, command.Session)
+            _state[command.Name] = new SupervisedProcess(config, command.Session)
             {
-                State = ServiceState.Stopped,
+                State = ProcessState.Stopped,
                 StdinOpen = command.OpenStdin,
             };
         }
@@ -252,7 +252,7 @@ public sealed class ServiceSupervisor : IAsyncDisposable
                 // stdin already gone; the kill below is the whole story
             }
 
-            try { await process.WaitForExitAsync(ct).WaitAsync(ServiceDefaults.StopWindDown, ct); }
+            try { await process.WaitForExitAsync(ct).WaitAsync(ProcessDefaults.StopWindDown, ct); }
             catch (Exception e) when (e is TimeoutException or OperationCanceledException)
             {
                 // did not go quietly
@@ -311,7 +311,7 @@ public sealed class ServiceSupervisor : IAsyncDisposable
                     $"'{name}' was started without a stdin pipe (the default), so there is nothing to " +
                     "write to — restart it with open_stdin true if you need to talk to it");
             }
-            if (s.State != ServiceState.Running)
+            if (s.State != ProcessState.Running)
                 return ProcessOutcome.Refused(ProcessRefusals.NotRunning, $"'{name}' is not running");
             process = s.Process;
         }
@@ -337,7 +337,7 @@ public sealed class ServiceSupervisor : IAsyncDisposable
     /// Records an agent-started process's exit and stops there. No restart, no backoff: for a
     /// job, the exit code IS the result, and the agent — possibly a resumed one — decides.
     /// </summary>
-    private async Task WatchProcessAsync(string name, SupervisedService s, CancellationToken ct)
+    private async Task WatchProcessAsync(string name, SupervisedProcess s, CancellationToken ct)
     {
         await WaitForExitAsync(s, ct);
         if (ct.IsCancellationRequested)
@@ -345,7 +345,7 @@ public sealed class ServiceSupervisor : IAsyncDisposable
 
         lock (s.Gate)
         {
-            s.State = ServiceState.Exited;
+            s.State = ProcessState.Exited;
             s.LastFailureAt = _clock.GetUtcNow();
             s.StartedAt = null;
         }
@@ -367,7 +367,7 @@ public sealed class ServiceSupervisor : IAsyncDisposable
         _cts.Dispose();
     }
 
-    private bool TryStartAsync(SupervisedService s)
+    private bool TryStartAsync(SupervisedProcess s)
     {
         var service = s.Config;
         var psi = new ProcessStartInfo
@@ -428,7 +428,7 @@ public sealed class ServiceSupervisor : IAsyncDisposable
         lock (s.Gate)
         {
             s.Process = process;
-            s.State = ServiceState.Running;
+            s.State = ProcessState.Running;
             s.StartedAt = _clock.GetUtcNow();
         }
 
@@ -451,7 +451,7 @@ public sealed class ServiceSupervisor : IAsyncDisposable
         return true;
     }
 
-    private async Task WaitForExitAsync(SupervisedService s, CancellationToken ct)
+    private async Task WaitForExitAsync(SupervisedProcess s, CancellationToken ct)
     {
         Process? process;
         lock (s.Gate)
@@ -477,7 +477,7 @@ public sealed class ServiceSupervisor : IAsyncDisposable
     /// writes a truncation marker and keeps draining, because logging must not be able
     /// to affect the process.
     /// </summary>
-    private void StartCapture(SupervisedService s, Process process)
+    private void StartCapture(SupervisedProcess s, Process process)
     {
         var writer = _logs!.CreateWriter(s.Config.Name, s.Config.Logs.MaxBytes);
         var cts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
@@ -494,14 +494,14 @@ public sealed class ServiceSupervisor : IAsyncDisposable
             TaskScheduler.Default);
     }
 
-    private void Stop(SupervisedService s)
+    private void Stop(SupervisedProcess s)
     {
         Process? process;
         lock (s.Gate)
         {
             process = s.Process;
             s.Process = null;
-            s.State = ServiceState.Stopped;
+            s.State = ProcessState.Stopped;
             s.StartedAt = null;
         }
 
@@ -531,10 +531,10 @@ public sealed class ServiceSupervisor : IAsyncDisposable
     }
 
     /// <summary>One supervised process's mutable state, guarded by its own gate.</summary>
-    private sealed class SupervisedService(ServiceConfig config, SessionId owner)
+    private sealed class SupervisedProcess(AgentProcessConfig config, SessionId owner)
     {
         public object Gate { get; } = new();
-        public ServiceConfig Config { get; } = config;
+        public AgentProcessConfig Config { get; } = config;
 
         /// <summary>The task that started this process. Provenance, not ownership.</summary>
         public SessionId Owner { get; } = owner;
@@ -545,7 +545,7 @@ public sealed class ServiceSupervisor : IAsyncDisposable
         /// </summary>
         public bool StdinOpen { get; init; }
         public Process? Process { get; set; }
-        public ServiceState State { get; set; } = ServiceState.Stopped;
+        public ProcessState State { get; set; } = ProcessState.Stopped;
         public DateTimeOffset? StartedAt { get; set; }
         public int? LastExitCode { get; set; }
         public DateTimeOffset? LastFailureAt { get; set; }

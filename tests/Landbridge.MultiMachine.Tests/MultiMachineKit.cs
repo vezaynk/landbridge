@@ -130,14 +130,14 @@ internal static class MultiMachineKit
 /// supervisor, so a daemon holding a private supervisor refuses every start with
 /// "no supervised task on this machine". Handing it the supervisor that really spawned
 /// the worker — together with a <see cref="RunnerConfig"/> carrying that worker's
-/// profile and a real <see cref="ServiceSupervisor"/> — is what makes the process tools
+/// profile and a real <see cref="AgentProcessSupervisor"/> — is what makes the process tools
 /// reachable end to end, with the gate decided by the profile exactly as in production.</para>
 /// </summary>
 internal sealed class DaemonHarness : IAsyncDisposable
 {
     private readonly RunnerDaemon _daemon;
     private readonly string _workRoot;
-    private readonly ServiceSupervisor? _services;
+    private readonly AgentProcessSupervisor? _processes;
     private bool _stopped;
 
     /// <param name="workerSupervisor">
@@ -181,22 +181,22 @@ internal sealed class DaemonHarness : IAsyncDisposable
         var supervisor = workerSupervisor ?? new ProcessSupervisor(config.Machine, ring, TimeProvider.System);
         var backPressure = new BackPressureMonitor(
             new PortableSystemLoadReader(config.Machine.WorkRoot), config.Machine.BackPressure);
-        // §10: agent-started processes live under the machine's ServiceSupervisor.
+        // §10: agent-started processes live under the machine's AgentProcessSupervisor.
         // Only stood up for a rig that shares its worker supervisor — without one the
         // daemon could not resolve a profile to gate on anyway.
-        _services = workerSupervisor is null
+        _processes = workerSupervisor is null
             ? null
-            : new ServiceSupervisor(machineId, TimeProvider.System,
-                logs: new ServiceLogStore(Path.Combine(_workRoot, "processes")),
+            : new AgentProcessSupervisor(machineId, TimeProvider.System,
+                logs: new ProcessLogStore(Path.Combine(_workRoot, "processes")),
                 log: log);
         _daemon = new RunnerDaemon(
             machineId, config, supervisor, backPressure, channel, ring, new NoOpReaper(), TimeProvider.System,
-            services: _services);
+            processes: _processes);
     }
 
     /// <summary>What this machine is running, as the heartbeat would report it (§10, §12) —
     /// the read <c>list_processes</c> answers from. Empty for a forward-only harness.</summary>
-    public IReadOnlyList<ProcessStatus> ReportProcesses() => _services?.ReportProcesses() ?? [];
+    public IReadOnlyList<ProcessStatus> ReportProcesses() => _processes?.ReportProcesses() ?? [];
 
     public Task Send(RunnerCommand command, CancellationToken ct) => _daemon.HandleAsync(command, ct);
 
@@ -210,10 +210,10 @@ internal sealed class DaemonHarness : IAsyncDisposable
         // Agent-started processes are machine-scoped and outlive every task (§10), so
         // nothing else takes them down — the rig going away is this fleet's "machine
         // restart", and the sweep is what keeps a leaked listener out of the next test.
-        if (_services is not null)
+        if (_processes is not null)
         {
-            _services.KillAll();
-            await _services.DisposeAsync();
+            _processes.KillAll();
+            await _processes.DisposeAsync();
         }
     }
 
