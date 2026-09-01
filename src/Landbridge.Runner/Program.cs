@@ -160,6 +160,11 @@ public static class Program
         // gate on who may read a transcript is the plane's (human operator, terminal task
         // only), not something landbridged second-guesses; a machine that captured nothing
         // simply answers with an empty inventory.
+        // Loopback identity HTTP: a Lead on this box GETs 127.0.0.1:19378 for the
+        // machine id to bind_machine. Failure to bind is not fatal — the daemon
+        // still runs; the Lead then uses enroll stdout or the dashboard.
+        var identity = LocalIdentityListener.TryBindLoopback(machineId, log: Console.WriteLine);
+
         var daemon = new RunnerDaemon(
             machineId, config, supervisor, backPressure, channel, ring, reaper, clock,
             transcripts: new TranscriptReader(transcripts),
@@ -171,7 +176,10 @@ public static class Program
         // a listener (§10). Commands arriving on it drive the daemon.
         wsChannel?.Start((command, ct) => daemon.HandleAsync(command, ct));
 
-        Console.WriteLine($"landbridged up: machine={machineId} profiles=[{string.Join(", ", config.DeclaredProfiles)}] strays_reaped={daemon.StraysReaped} control={channelMode}");
+        var identityBit = identity is null
+            ? "identity=unbound"
+            : $"identity=http://127.0.0.1:{LocalIdentityListener.Port}";
+        Console.WriteLine($"landbridged up: machine={machineId} profiles=[{string.Join(", ", config.DeclaredProfiles)}] strays_reaped={daemon.StraysReaped} {identityBit} control={channelMode}");
 
         using var shutdown = new CancellationTokenSource();
         using var sigint = PosixSignalRegistration.Create(PosixSignal.SIGINT, ctx => { ctx.Cancel = true; shutdown.Cancel(); });
@@ -188,6 +196,8 @@ public static class Program
 
         Console.WriteLine("landbridged shutting down; killing everything it started");
         await daemon.ShutdownAsync();
+        if (identity is not null)
+            await identity.DisposeAsync();
         await processes.DisposeAsync();
         if (wsChannel is not null)
             await wsChannel.DisposeAsync();

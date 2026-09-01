@@ -94,7 +94,7 @@ public sealed class LeadForwardEndToEndTests(PostgresFixture pg) : IAsyncLifetim
             Assert.Equal(true, unbound.IsError);
             var unboundText = ErrorText(unbound);
             Assert.Contains("no machine bound", unboundText, StringComparison.Ordinal);
-            Assert.Contains("/landbridge-enroll", unboundText, StringComparison.Ordinal);
+            Assert.Contains("127.0.0.1:19378", unboundText, StringComparison.Ordinal);
             Assert.Contains("bind_machine", unboundText, StringComparison.Ordinal);
 
             var bind = await leadClient.CallToolAsync("bind_machine", new Dictionary<string, object?>
