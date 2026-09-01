@@ -208,9 +208,7 @@ if (!string.IsNullOrWhiteSpace(devSeedTokenDir))
             enrollment.Token,
             new MachineDeclaration(
                 Name: name,
-                Purpose: $"Aspire dev-loop {harness} Linux container",
-                Os: DevSeedNaming.Os,
-                PermissionLevel: "standard"))
+                Os: DevSeedNaming.Os))
             ?? throw new InvalidOperationException($"dev seed: enrollment exchange returned null for {name}");
 
         var seedJson = new JsonObject

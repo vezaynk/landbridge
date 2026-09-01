@@ -184,27 +184,17 @@ public abstract record LeadMachineBindResult
 }
 
 /// <summary>
-/// An enrolled machine (§11). <see cref="Purpose"/>, <see cref="Os"/> and
-/// <see cref="PermissionLevel"/> are declared once at enrollment and written server-side,
-/// so a machine cannot re-declare them for itself (§13).
-///
-/// <para><b>As built they are a record, not a control</b> (§11 as-built, 2026-08-03).
-/// Specs are not collected at all — CPU and memory exist only as live load on the
-/// heartbeat, never as declared capacity — and nothing reads these three columns or
-/// <see cref="EnrolledAt"/> once written: no dispatch, forwarding, or tool decision
-/// consults <see cref="PermissionLevel"/>, and the §12 Machine Group view builds from the
-/// live connection registry rather than this table, so the declaration reaches no human
-/// surface either. Only <see cref="Id"/>, <see cref="Name"/> and <see cref="Revoked"/> are
-/// read anywhere. Treat a value here as what a machine said at enrollment, never as a
-/// privilege the plane is enforcing.</para>
+/// An enrolled machine (§11). <see cref="Name"/> and <see cref="Os"/> are
+/// declared once at enrollment and written server-side, so a machine cannot
+/// re-declare them for itself (§13). The §12 Machine Group view builds liveness
+/// from the live connection registry; this row is identity
+/// (<see cref="Id"/>, <see cref="Name"/>, <see cref="Revoked"/>).
 /// </summary>
 public sealed class MachineRow
 {
     public Guid Id { get; set; }
     public string Name { get; set; } = "";
-    public string Purpose { get; set; } = "";
     public string Os { get; set; } = "";
-    public string PermissionLevel { get; set; } = "";
     public DateTimeOffset EnrolledAt { get; set; }
     public bool Revoked { get; set; }
 
@@ -279,5 +269,6 @@ public sealed record IssuedToken(string Token, Guid CredentialId, DateTimeOffset
 /// <summary>Access + refresh pair handed to landbridged at enrollment (§5, §13).</summary>
 public sealed record MachineCredentials(Guid MachineId, IssuedToken Access, IssuedToken Refresh);
 
-/// <summary>Declared at enrollment, bound server-side (§11, §13).</summary>
-public sealed record MachineDeclaration(string Name, string Purpose, string Os, string PermissionLevel);
+/// <summary>Declared at enrollment, bound server-side (§11, §13). Name is the
+/// display label; OS is filled by landbridged.</summary>
+public sealed record MachineDeclaration(string Name, string Os);

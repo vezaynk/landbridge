@@ -16,7 +16,7 @@ public sealed class TokenServiceTests(PostgresFixture pg) : IAsyncLifetime
     public Task DisposeAsync() => Task.CompletedTask;
 
     private static readonly TeamId Team = TeamId.New();
-    private static readonly MachineDeclaration Decl = new("mac-studio", "builds", "macos", "standard");
+    private static readonly MachineDeclaration Decl = new("mac-studio", "macos");
 
     [SkippableFact]
     public async Task Enrollment_exchanges_once_for_machine_credentials_and_never_twice()

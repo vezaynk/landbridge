@@ -203,16 +203,6 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasColumnType("text")
                         .HasColumnName("os");
 
-                    b.Property<string>("PermissionLevel")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("permission_level");
-
-                    b.Property<string>("Purpose")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("purpose");
-
                     b.Property<bool>("Revoked")
                         .HasColumnType("boolean")
                         .HasColumnName("revoked");

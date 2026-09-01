@@ -146,7 +146,7 @@ secrets or the environment variable `Landbridge__Operator__PassphraseHash` (see 
   dummy-task check aimed at a named profile: `POST` mints the set,
   `GET /dashboard/conformance/{runId}` reports states), and `/dashboard/connect`
   (how to reach the plane as a Lead, and how to enroll a machine — including
-  issuing an enrollment token, claiming a Lead factory, and minting a one-time setup
+  issuing an enrollment token, issuing a Lead token, and minting a one-time setup
   link whose first GET is markdown that contains the Lead bearer). Pages carry a
   5-second auto-refresh and each has a JSON twin (`?format=json` or an
   `Accept: application/json` request). A pasted human/Lead token is accepted as a
@@ -155,9 +155,9 @@ secrets or the environment variable `Landbridge__Operator__PassphraseHash` (see 
   Team's `/dashboard/teams/{id}` is a 403, and `/dashboard/machines` plus
   `/dashboard/conformance` are human-only (machine enumeration is a human surface
   by design, §12). `/dashboard/connect` is readable by a Lead; issuing an
-  enrollment token or claiming a Lead factory is human-only. The mutating forms (login,
+  enrollment token or issuing a Lead token is human-only. The mutating forms (login,
   logout, the permission verdict, **Revoke machine**, the profile-check start,
-  the Connect claims) are refused unless the request carries this dashboard's
+  the Connect POSTs) are refused unless the request carries this dashboard's
   own `Origin` — so a scripted POST has to send one.
   Revoking is human-only for the same reason the Machine Group view is: a
   machine belongs to no Team.
@@ -169,16 +169,13 @@ secrets or the environment variable `Landbridge__Operator__PassphraseHash` (see 
   Registration. The `/oauth/authorize` consent step verifies the same operator
   passphrase; `/oauth/token` mints an opaque human session.
 
-Lead identity is then *derived from the authenticated token*, not claimed through
-a tool call — a Lead factory principal is what the MCP Lead tools require.
-`create_team` mints a Team that factory owns; every other Lead tool takes `teamId`.
-There is no `list_teams`. An earlier draft of spec §10 listed `claim_lead` /
-`release_lead` / `list_teams` / `get_machine_group_status` tools; claiming and
-releasing the factory is still the credential lifecycle rather than a tool call,
-and Team / Machine Group enumeration is a human surface served by the web
-dashboard (each page has a `?format=json` twin a reattaching Lead can read for
-the Teams it owns). The slash-command prompts are separately not built — no MCP
-prompt is registered on this branch.
+Lead identity is then *derived from the authenticated token*, not a tool call —
+a Lead factory principal is what the MCP Lead tools require. The dashboard issues
+that token (Connect or a setup link). `create_team` mints a Team that factory
+owns; every other Lead tool takes `teamId`. There is no `list_teams` and no
+`claim_lead`. Team / Machine Group enumeration is a human surface served by the
+web dashboard (each page has a `?format=json` twin a reattaching Lead can read
+for the Teams it owns). No MCP prompt is registered on this branch.
 
 ## Enrolling a real second machine
 
@@ -194,7 +191,7 @@ landbridged --enroll \
   --control-url https://plane.example.com \
   --enroll-token-file ./enroll.token \
   --state-dir /var/lib/landbridged \
-  --name web-builder-01 --purpose "CI worker" --permission-level standard
+  --name web-builder-01
 
 # or piped on stdin (no --enroll-token-file):
 landbridged --enroll --control-url https://plane.example.com < enroll.token
@@ -202,9 +199,8 @@ landbridged --enroll --control-url https://plane.example.com < enroll.token
 
 This POSTs to `POST /enroll` and persists the machine credentials — access token,
 refresh token, machine id, and the control URL — to `credentials.json` under the
-state dir, written `0600` in a `0700` directory. `--name`/`--purpose`/
-`--permission-level` default to the hostname / `general` / `standard`; the OS
-string is filled automatically.
+state dir, written `0600` in a `0700` directory. `--name` defaults to the
+hostname; the OS string is filled automatically.
 
 State-dir resolution order: `--state-dir` → `$LANDBRIDGE_STATE_DIR` →
 `$XDG_STATE_HOME/landbridge` → `~/.landbridge`.
@@ -599,8 +595,7 @@ control-plane validator is active — not the static stub.
 
 Flags: `--config <path>` (required for a normal run), `--machine-id <id>`,
 `--state-dir <dir>`; and for enrollment `--enroll --control-url <url>`
-`[--enroll-token-file <path>]` `[--name <n>]` `[--purpose <p>]`
-`[--permission-level <l>]`.
+`[--enroll-token-file <path>]` `[--name <n>]`.
 
 | Env var | Purpose |
 |---|---|

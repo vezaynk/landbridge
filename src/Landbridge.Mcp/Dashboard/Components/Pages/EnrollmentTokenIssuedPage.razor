@@ -8,9 +8,11 @@
     <pre class="howto">landbridged --enroll \
   --control-url @ControlUrl \
   --enroll-token-file ./enroll.token \
-  --name &lt;harness&gt;-&lt;hostname&gt;-&lt;os&gt; \
-  --purpose "worker" \
-  --permission-level standard</pre>
+  --name $(hostname -s) \
+  --state-dir /var/lib/landbridged</pre>
+    <p class="nt"><span class="mono">--name</span> is the Machine Group label, not a
+        profile. Use the same <span class="mono">--state-dir</span> when you start
+        the daemon (omit both to use <span class="mono">~/.landbridge</span>).</p>
 </section>
 <p><a href="/dashboard/connect">← back to Connect</a></p>
 </DashboardDocument>

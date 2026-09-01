@@ -92,7 +92,7 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
             var enrollment = await tokens.IssueEnrollmentTokenAsync(ct);
             var credentials = await tokens.ExchangeEnrollmentAsync(
                 enrollment.Token,
-                new MachineDeclaration("chaos-box", "spec §17.8 chaos suite", "linux", "standard"),
+                new MachineDeclaration("chaos-box", "linux"),
                 ct)
                 ?? throw new InvalidOperationException("chaos rig: enrollment exchange returned null");
             MachineId = credentials.MachineId.ToString();

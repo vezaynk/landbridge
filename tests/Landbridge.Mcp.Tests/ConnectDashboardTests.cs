@@ -20,7 +20,7 @@ namespace Landbridge.Mcp.Tests;
 
 /// <summary>
 /// The dashboard Connect page: how-to HTML, JSON twin, and the two human-only
-/// credential writes (enrollment token, Lead claim). Same-origin on the writes.
+/// credential writes (enrollment token, Lead token). Same-origin on the writes.
 /// </summary>
 [Collection(PostgresCollection.Name)]
 public sealed class ConnectDashboardTests(PostgresFixture pg) : IAsyncLifetime
@@ -73,7 +73,17 @@ public sealed class ConnectDashboardTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Contains("/dashboard/connect/setup-link", html, StringComparison.Ordinal);
         Assert.Contains("factory", html, StringComparison.OrdinalIgnoreCase);
         Assert.Contains("create_team", html, StringComparison.Ordinal);
+        Assert.Contains("Issue Lead token", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("claim_lead", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("/landbridge-lead", html, StringComparison.Ordinal);
         Assert.Contains("teamId", html, StringComparison.Ordinal);
+        Assert.Contains("--state-dir", html, StringComparison.Ordinal);
+        Assert.Contains("Machine Group label", html, StringComparison.Ordinal);
+        Assert.Contains("park_session", html, StringComparison.Ordinal);
+        Assert.Contains("stop_session", html, StringComparison.Ordinal);
+        Assert.Contains("health=failed", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("permission-level", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("claim one below", html, StringComparison.Ordinal);
 
         var json = await GetAuthedAsync(app, "/dashboard/connect?format=json", ct);
         using var doc = JsonDocument.Parse(json);
@@ -83,6 +93,8 @@ public sealed class ConnectDashboardTests(PostgresFixture pg) : IAsyncLifetime
             doc.RootElement.GetProperty("posts").GetProperty("setupLink").GetString());
         Assert.Equal("landbridge://skills/lead",
             doc.RootElement.GetProperty("leadSkill").GetString());
+        Assert.True(doc.RootElement.GetProperty("leadTokenIsFactory").GetBoolean());
+        Assert.Equal("create_team", doc.RootElement.GetProperty("createTeam").GetString());
         Assert.Equal(15, doc.RootElement.GetProperty("enrollmentTtlMinutes").GetInt32());
 
         await app.StopAsync(ct);
@@ -161,7 +173,7 @@ public sealed class ConnectDashboardTests(PostgresFixture pg) : IAsyncLifetime
 
         await using var db = pg.NewContext();
         var exchanged = await new TokenService(db, TimeProvider.System)
-            .ExchangeEnrollmentAsync(token!, new MachineDeclaration("box", "test", "linux", "standard"), ct);
+            .ExchangeEnrollmentAsync(token!, new MachineDeclaration("box", "linux"), ct);
         Assert.NotNull(exchanged);
 
         await app.StopAsync(ct);

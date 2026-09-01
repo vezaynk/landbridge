@@ -20,7 +20,7 @@ public class CredentialStoreExchangeTests
     private const string Plane = "https://plane.example.com";
 
     private static EnrollRequest Request() =>
-        new("lbr_e_token", "machine-a", "dev laptop", "darwin", "standard");
+        new("lbr_e_token", "machine-a", "darwin");
 
     // ── Enrollment (§5) ───────────────────────────────────────────────────────
 
@@ -63,7 +63,9 @@ public class CredentialStoreExchangeTests
         using var posted = JsonDocument.Parse(request.Body);
         Assert.Equal("lbr_e_token", posted.RootElement.GetProperty("enrollmentToken").GetString());
         Assert.Equal("machine-a", posted.RootElement.GetProperty("name").GetString());
-        Assert.Equal("standard", posted.RootElement.GetProperty("permissionLevel").GetString());
+        Assert.Equal("darwin", posted.RootElement.GetProperty("os").GetString());
+        Assert.False(posted.RootElement.TryGetProperty("purpose", out _));
+        Assert.False(posted.RootElement.TryGetProperty("permissionLevel", out _));
     }
 
     [Theory]

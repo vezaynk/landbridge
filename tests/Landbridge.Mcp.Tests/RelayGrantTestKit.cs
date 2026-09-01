@@ -274,7 +274,7 @@ internal static class RelayGrantTestKit
         var tokens = new TokenService(db, TimeProvider.System);
         var enrollment = await tokens.IssueEnrollmentTokenAsync(ct);
         var credentials = await tokens.ExchangeEnrollmentAsync(
-            enrollment.Token, new MachineDeclaration(name, "a human's own machine", "macos", "standard"), ct);
+            enrollment.Token, new MachineDeclaration(name, "macos"), ct);
         return credentials!.MachineId;
     }
 

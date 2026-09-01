@@ -27,7 +27,7 @@ internal sealed record MachineCredentialFile(
 
 /// <summary>The POST /enroll body landbridged sends (§11, §13). os is auto-filled.</summary>
 internal sealed record EnrollRequest(
-    string EnrollmentToken, string Name, string Purpose, string Os, string PermissionLevel);
+    string EnrollmentToken, string Name, string Os);
 
 /// <summary>The 200 body from /enroll: a machine identity plus its token pair (§5).</summary>
 internal sealed record EnrollResponse(

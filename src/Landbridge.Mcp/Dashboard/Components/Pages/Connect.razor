@@ -21,13 +21,10 @@ else if (Ready)
             <span class="mono">list_profiles</span> takes a <span class="mono">teamId</span>.</p>
         <ol>
             <li>
-                Claim a Lead factory with the form below (operator / human session only).
-                That mints a <span class="mono">lbr_l_…</span> token and assigns the first
+                Issue a Lead token with the form below (operator / human session only).
+                That mints a <span class="mono">lbr_l_…</span> factory token and assigns the first
                 Team (leave the id blank to start a new one). One live owner per Team;
-                a second claimant is refused unless they take over. There is no
-                <span class="mono">claim_lead</span> MCP tool and no
-                <span class="mono">/landbridge-lead</span> slash command — claiming is
-                this credential step.
+                a second person is refused unless they take over.
             </li>
             <li>
                 Point the harness at this plane with that token as a static bearer.
@@ -36,21 +33,21 @@ else if (Ready)
                 not <span class="mono">/mcp</span>). Grok (and any client that only
                 speaks Dynamic Client Registration) cannot complete OAuth here —
                 this plane has no <span class="mono">/register</span>; clients are
-                identified by a Client ID Metadata Document. Put the token in the
-                header instead:
+                identified by a Client ID Metadata Document. For Grok, put the token in
+                the header:
                 <pre class="howto">[mcp_servers.landbridge]
 url = "@McpUrl"
 enabled = true
 
 [mcp_servers.landbridge.headers]
 Authorization = "Bearer lbr_l_…"</pre>
-                Then refresh <span class="mono">/mcps</span> (or restart the harness).
+                Then refresh <span class="mono">/mcps</span> (or restart Grok).
             </li>
             <li>
                 A CIMD client (Claude Code) can OAuth instead: authorization code +
                 PKCE S256, same operator passphrase as this dashboard. That mints a
                 <span class="mono">lbr_h_…</span> human session, not a Lead — still
-                claim a Lead factory and send the <span class="mono">lbr_l_…</span> token.
+                issue a Lead token here and send the <span class="mono">lbr_l_…</span> token.
                 Discovery is
                 <span class="mono">/.well-known/oauth-protected-resource</span> and
                 <span class="mono">/.well-known/oauth-authorization-server</span>.
@@ -76,7 +73,7 @@ Authorization = "Bearer lbr_l_…"</pre>
                 }
                 else
                 {
-                    <span class="nt">none yet — call create_team, or claim one below.</span>
+                    <span class="nt">none yet — call create_team.</span>
                 }
                 Paste that same token into a harness, or stay here and drive from the Team view.
                 New agents should call create_team rather than reuse an id from this page.</p>
@@ -92,11 +89,11 @@ Authorization = "Bearer lbr_l_…"</pre>
                     <input type="checkbox" name="takeover" value="true" />
                     Take over if this Team already has a Lead
                 </label>
-                <p class="nt">Claim Lead shows the token once. One-time setup link
+                <p class="nt">Issue Lead token shows it once. One-time setup link
                     mints a URL whose first GET is markdown that contains the bearer
                     — paste that URL to an agent; do not open it yourself. A takeover
                     evicts the incumbent; their next call is told who did it.</p>
-                <button type="submit">Claim Lead</button>
+                <button type="submit">Issue Lead token</button>
                 <button type="submit" formaction="/dashboard/connect/setup-link">
                     One-time setup link
                 </button>
@@ -113,16 +110,17 @@ Authorization = "Bearer lbr_l_…"</pre>
         <ol>
             <li>Issue a token with the form below (operator only).</li>
             <li>
-                On the box, write it to a <span class="mono">0600</span> file and exchange it:
+                On the box, write it to a <span class="mono">0600</span> file and exchange it.
+                <span class="mono">--name</span> is the Machine Group label (defaults to hostname),
+                not a runner profile.
                 <pre class="howto">landbridged --enroll \
   --control-url @McpUrl \
   --enroll-token-file ./enroll.token \
-  --name &lt;harness&gt;-&lt;hostname&gt;-&lt;os&gt; \
-  --purpose "worker" \
-  --permission-level standard
+  --name $(hostname -s) \
+  --state-dir /var/lib/landbridged
 
-# or pipe, no file:
-landbridged --enroll --control-url @McpUrl &lt; enroll.token</pre>
+# or pipe, no file (same --state-dir, or omit both to use ~/.landbridge):
+landbridged --enroll --control-url @McpUrl --state-dir /var/lib/landbridged &lt; enroll.token</pre>
                 That POSTs <span class="mono">/enroll</span> and writes
                 <span class="mono">credentials.json</span> under the state dir
                 (<span class="mono">0600</span> in a <span class="mono">0700</span> directory).
@@ -135,7 +133,9 @@ landbridged --enroll --control-url @McpUrl &lt; enroll.token</pre>
                 <span class="mono">grok agent stdio</span>,
                 <span class="mono">opencode acp</span>,
                 <span class="mono">goose acp</span>).
-                Name the first profile <span class="mono">&lt;harness&gt;-&lt;hostname&gt;-&lt;os&gt;</span>
+                Name the first <em>profile</em> <span class="mono">&lt;harness&gt;-&lt;hostname&gt;-&lt;os&gt;</span>
+                (that is what <span class="mono">create_session</span> matches, not
+                <span class="mono">--name</span>)
                 and offer a group name (<span class="mono">any-linux</span> /
                 <span class="mono">any-macos</span> /
                 <span class="mono">any-windows</span>).
@@ -147,18 +147,23 @@ landbridged --enroll --control-url @McpUrl &lt; enroll.token</pre>
                 there is no <span class="mono">/landbridge-enroll</span> slash command.
             </li>
             <li>
-                Start the daemon (same <span class="mono">--state-dir</span> you enrolled with):
+                Start the daemon with the <em>same</em> <span class="mono">--state-dir</span> you enrolled with
+                (omit both to use <span class="mono">~/.landbridge</span>):
                 <pre class="howto">landbridged --config /etc/landbridged/config.json --state-dir /var/lib/landbridged</pre>
                 <span class="mono">landbridged</span> reads the config once, at start.
                 A rewrite is invisible until you restart; a restart kills every agent
-                on the box and their sessions go <span class="mono">Failed</span>.
+                on the box and their sessions go <span class="mono">health=failed</span>.
             </li>
             <li>
                 Confirm the machine and its profile badges on
                 <a href="/dashboard/machines">Machines</a>, then run a
                 <a href="/dashboard/conformance">profile check</a> against each name.
-                A badge is not a passing check. When you are done, park or accept the
-                dummies — a report keeps the process.
+                A badge is not a passing check. When you are done,
+                <span class="mono">park_session</span> or
+                <span class="mono">stop_session</span> the dummies — a report keeps
+                the process. For a human forward later, GET
+                <span class="mono">http://127.0.0.1:19378</span> on that box for the
+                machine id <span class="mono">bind_machine</span> wants.
             </li>
         </ol>
         @if (Principal is Principal.Human)

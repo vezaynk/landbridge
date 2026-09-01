@@ -10,10 +10,10 @@ namespace Landbridge.Mcp.Dashboard;
 
 /// <summary>
 /// Operator how-to plus the two credential writes that have no other surface:
-/// issue an enrollment token, and claim a Lead factory (optionally assigning a
-/// Team). GET is any dashboard principal (a Lead may need the recipe). The POSTs
-/// are human-only — a Lead already holds a factory token, and a machine belongs
-/// to no Team.
+/// issue an enrollment token, and issue a Lead factory token (optionally assigning
+/// a first Team). GET is any dashboard principal (a Lead may need the recipe). The
+/// POSTs are human-only — a Lead already holds a factory token, and a machine
+/// belongs to no Team.
 /// </summary>
 internal static class ConnectEndpoints
 {
@@ -57,6 +57,10 @@ internal static class ConnectEndpoints
         leadSkill = "landbridge://skills/lead",
         enrollSkill = "landbridge://skills/enroll",
         runnerConfigSkill = "landbridge://skills/runner-config",
+        leadTokenIsFactory = true,
+        createTeam = "create_team",
+        teamIdRequiredExcept = new[] { "create_team", "list_profiles" },
+        doNotWriteTeamId = true,
         posts = new
         {
             enrollToken = "/dashboard/connect/enroll-token",
@@ -98,7 +102,7 @@ internal static class ConnectEndpoints
     }
 
     /// <summary>
-    /// POST /dashboard/connect/claim — claim a Lead factory from this human
+    /// POST /dashboard/connect/claim — issue a Lead factory token from this human
     /// session and assign a Team (empty <c>teamId</c> starts a new one). The
     /// factory token is shown once. Same-origin, human-only.
     /// </summary>
@@ -147,14 +151,14 @@ internal static class ConnectEndpoints
                         $"team {team.Value:D} is already led by human {ShortId(refused.HeldByHuman)} since {refused.HeldSince:u}; check takeover to evict them"),
                 LeadClaimResult.NoHumanSession =>
                     RefusedClaim(http,
-                        "claiming a Lead requires a human session (the operator passphrase door), not a pasted Lead token"),
-                _ => RefusedClaim(http, "lead claim failed"),
+                        "issuing a Lead token requires a human session (the operator passphrase door), not a pasted Lead token"),
+                _ => RefusedClaim(http, "issuing a Lead token failed"),
             };
         });
     }
 
     /// <summary>
-    /// POST /dashboard/connect/setup-link — claim a Lead and mint a one-time
+    /// POST /dashboard/connect/setup-link — issue a Lead token and mint a one-time
     /// URL whose first GET is markdown that contains the bearer. Same-origin,
     /// human-only. The URL is a capability, not the token.
     /// </summary>
@@ -191,8 +195,8 @@ internal static class ConnectEndpoints
                             $"team {team.Value:D} is already led by human {ShortId(refused.HeldByHuman)} since {refused.HeldSince:u}; check takeover to evict them"),
                     LeadClaimResult.NoHumanSession =>
                         RefusedClaim(http,
-                            "claiming a Lead requires a human session (the operator passphrase door), not a pasted Lead token"),
-                    _ => RefusedClaim(http, "lead claim failed"),
+                            "issuing a Lead token requires a human session (the operator passphrase door), not a pasted Lead token"),
+                    _ => RefusedClaim(http, "issuing a Lead token failed"),
                 };
             }
 
@@ -326,7 +330,7 @@ internal static class ConnectEndpoints
     }
 
     private const string HumanOnly =
-        "issuing an enrollment token, claiming a Lead, or minting a setup link is a "
+        "issuing an enrollment token, issuing a Lead token, or minting a setup link is a "
         + "human-operator action; a Lead factory already has a token — call create_team for another Team";
 
     private const string CrossOriginReason =

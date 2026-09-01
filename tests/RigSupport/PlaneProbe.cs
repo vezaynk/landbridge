@@ -111,7 +111,7 @@ internal static class PlaneProbe
 
     /// <summary>
     /// A live Lead token for <paramref name="team"/>, minted straight against the store the
-    /// way an OAuth callback would (§5): a human session, then the lead-claim flow. Lead
+    /// way an OAuth callback would (§5): a human session, then a factory token. Lead
     /// identity <em>is</em> the credential, so there is no tool to call for this.
     /// </summary>
     public static async Task<string> LeadTokenAsync(LandbridgeDbContext db, TeamId team, CancellationToken ct)

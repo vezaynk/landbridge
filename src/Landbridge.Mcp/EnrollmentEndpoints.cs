@@ -28,7 +28,7 @@ public static class EnrollmentEndpoints
 {
     /// <summary>POST /enroll body: the bootstrap token plus the machine's server-bound declaration (§11, §13).</summary>
     public sealed record EnrollRequest(
-        string? EnrollmentToken, string? Name, string? Purpose, string? Os, string? PermissionLevel);
+        string? EnrollmentToken, string? Name, string? Os);
 
     /// <summary>POST /machine/refresh body: the long-lived refresh token, the only secret a box keeps (§13).</summary>
     public sealed record RefreshRequest(string? RefreshToken);
@@ -44,7 +44,7 @@ public static class EnrollmentEndpoints
     }
 
     /// <summary>
-    /// POST /enroll {enrollmentToken, name, purpose, os, permissionLevel} → the
+    /// POST /enroll {enrollmentToken, name, os} → the
     /// one exchange in the system (§9 check 13): a live, unused enrollment token
     /// becomes a machine identity plus its access/refresh pair.
     /// <list type="bullet">
@@ -59,14 +59,12 @@ public static class EnrollmentEndpoints
         if (body is null
             || string.IsNullOrWhiteSpace(body.EnrollmentToken)
             || string.IsNullOrWhiteSpace(body.Name)
-            || string.IsNullOrWhiteSpace(body.Purpose)
-            || string.IsNullOrWhiteSpace(body.Os)
-            || string.IsNullOrWhiteSpace(body.PermissionLevel))
-            return Results.BadRequest(new { reason = "enrollmentToken, name, purpose, os, and permissionLevel are all required" });
+            || string.IsNullOrWhiteSpace(body.Os))
+            return Results.BadRequest(new { reason = "enrollmentToken, name, and os are all required" });
 
-        // Purpose/OS/permission level are bound server-side here — a machine
-        // cannot re-declare its own privileges (§13).
-        var declaration = new MachineDeclaration(body.Name, body.Purpose, body.Os, body.PermissionLevel);
+        // Name and OS are bound server-side here — a machine cannot re-declare
+        // them for itself (§13).
+        var declaration = new MachineDeclaration(body.Name, body.Os);
         var credentials = await tokens.ExchangeEnrollmentAsync(body.EnrollmentToken, declaration, ct);
         if (credentials is null)
             return Results.StatusCode(StatusCodes.Status401Unauthorized);
