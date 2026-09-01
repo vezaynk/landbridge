@@ -1,6 +1,5 @@
 using Landbridge.ControlPlane;
 using Landbridge.Mcp.Auth;
-using Landbridge.Mcp.Tools;
 using Microsoft.Extensions.DependencyInjection;
 
 namespace Landbridge.Mcp;
@@ -8,9 +7,8 @@ namespace Landbridge.Mcp;
 /// <summary>
 /// The runner-facing half of the §11 permission bridge. ACP
 /// <c>session/request_permission</c> lands in landbridged, which has the worker
-/// bearer but is not an MCP client; this endpoint is the same
-/// <see cref="PermissionRelay"/> the MCP <c>request_permission</c> tool runs,
-/// reachable over plain HTTP with that bearer.
+/// bearer but is not an MCP client; this endpoint runs
+/// <see cref="PermissionRelay"/> over plain HTTP with that bearer.
 /// </summary>
 public static class WorkerPermissionEndpoints
 {
@@ -41,7 +39,7 @@ public static class WorkerPermissionEndpoints
         var optionsJson = body.Options is System.Text.Json.Nodes.JsonArray
             ? body.Options.ToJsonString()
             : null;
-        var poll = WorkerTools.DefaultPermissionPollInterval;
+        var poll = PermissionRelay.DefaultPollInterval;
         if (int.TryParse(config["Landbridge:PermissionPollIntervalMs"], out var ms) && ms > 0)
             poll = TimeSpan.FromMilliseconds(ms);
 

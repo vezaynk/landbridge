@@ -742,13 +742,11 @@ public sealed class AcpClientTests
     }
 
     /// <summary>
-    /// An agent that prices a turn at exactly zero is one that does not compute cost, not one
-    /// that ran for free — <c>opencode acp</c> sent this alongside 14,321 real tokens. §2
-    /// principle 2: recording $0.00 would assert something untrue about the dispatch, so the
-    /// tokens land and the cost stays absent.
+    /// A reported zero is stored as zero. Landbridge does not decide that the
+    /// adapter "meant" unreported.
     /// </summary>
     [Fact]
-    public async Task An_explicit_zero_cost_is_recorded_as_no_cost_at_all()
+    public async Task An_explicit_zero_cost_is_recorded_as_zero()
     {
         var agent = new FakeAgent
         {
@@ -765,7 +763,7 @@ public sealed class AcpClientTests
         var run = await drain;
 
         var usage = Assert.Single(run.Events.OfType<UsageReportedEvent>());
-        Assert.Null(usage.CostUsd);
+        Assert.Equal(0m, usage.CostUsd);
         Assert.Equal(99, usage.InputTokens);
         Assert.Equal(14, usage.OutputTokens);
         Assert.Equal(14208, usage.CacheReadTokens);
@@ -1101,16 +1099,12 @@ public sealed class AcpClientTests
         Assert.DoesNotContain(run.Warnings, w => w.Contains("handshake failed"));
     }
 
-    // ── the generated MCP config translation ────────────────────────────────────
+    // ── ACP mcpServers from the dispatch token and URL ──────────────────────────
 
-    /// <summary>
-    /// §13: a transliteration, not an interpretation — the plane's document decides the
-    /// server, the URL and the headers, and this only respells them.
-    /// </summary>
     [Fact]
-    public void Translates_the_generated_mcp_config_into_acp_servers()
+    public void Builds_acp_servers_from_the_plane_url_and_worker_token()
     {
-        var servers = AcpMcpServers.FromGeneratedConfig(GeneratedMcpConfig);
+        var servers = AcpMcpServers.ForPlane("https://plane.example/mcp", "lbr_w_token");
 
         var server = Assert.Single(servers);
         Assert.Equal("landbridge", server.Name);
@@ -1120,30 +1114,30 @@ public sealed class AcpClientTests
             Assert.Single(server.Headers));
     }
 
-    /// <summary>
-    /// A missing or malformed document yields no servers rather than throwing: by the time
-    /// this runs the worker is already spawned, and the client's toolless-session warning
-    /// diagnoses it far better than a spawn-time crash would.
-    /// </summary>
     [Theory]
-    [InlineData(null)]
-    [InlineData("")]
-    [InlineData("not json")]
-    [InlineData("""{"mcpServers":{}}""")]
-    [InlineData("""{"mcpServers":{"stdio-only":{"command":"/bin/thing"}}}""")]
-    public void Translates_an_unusable_mcp_config_into_no_servers(string? json) =>
-        Assert.Empty(AcpMcpServers.FromGeneratedConfig(json));
+    [InlineData(null, "lbr_w_token")]
+    [InlineData("", "lbr_w_token")]
+    [InlineData("https://plane.example/mcp", null)]
+    [InlineData("https://plane.example/mcp", "")]
+    public void Builds_no_servers_without_a_url_or_token(string? url, string? token) =>
+        Assert.Empty(AcpMcpServers.ForPlane(url, token));
+
+    [Fact]
+    public void Writes_the_mcp_config_file_from_the_same_url_and_token()
+    {
+        var json = AcpMcpServers.ConfigFileJson("https://plane.example/mcp", "lbr_w_token");
+        Assert.NotNull(json);
+        using var doc = JsonDocument.Parse(json);
+        var server = doc.RootElement.GetProperty("mcpServers").GetProperty("landbridge");
+        Assert.Equal("https://plane.example/mcp", server.GetProperty("url").GetString());
+        Assert.Equal("Bearer lbr_w_token",
+            server.GetProperty("headers").GetProperty("Authorization").GetString());
+    }
 
     // ── harness ─────────────────────────────────────────────────────────────────
 
-    private const string GeneratedMcpConfig =
-        """
-        {"mcpServers":{"landbridge":{"type":"http","url":"https://plane.example/mcp",
-        "headers":{"Authorization":"Bearer lbr_w_token"}}}}
-        """;
-
     private static AcpSessionRequest Request(string prompt, string followUp = "Read your assignment again.") =>
-        new("/work/task-1", prompt, followUp, AcpMcpServers.FromGeneratedConfig(GeneratedMcpConfig));
+        new("/work/task-1", prompt, followUp, AcpMcpServers.ForPlane("https://plane.example/mcp", "lbr_w_token"));
 
     // These fixtures are written as literal JSON with placeholders rather than as
     // interpolated raw strings: ACP payloads nest three and four braces deep, which fights

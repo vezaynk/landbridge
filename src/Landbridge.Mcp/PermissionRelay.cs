@@ -5,13 +5,19 @@ namespace Landbridge.Mcp;
 
 /// <summary>
 /// The shared §11 permission-bridge body: open a typed permission request on
-/// the incumbent's session, then wait for a Lead or human verdict. Both the MCP
-/// <c>request_permission</c> tool (legacy harness hook) and
-/// <c>POST /worker/permission</c> (ACP <c>session/request_permission</c>) run
-/// this, so the two transports cannot disagree about what a decision means.
+/// the incumbent's session, then wait for a Lead or human verdict.
+/// <c>POST /worker/permission</c> (ACP <c>session/request_permission</c>) is
+/// the only caller.
 /// </summary>
 public static class PermissionRelay
 {
+    /// <summary>
+    /// How often the wait re-reads the row. Half a second is imperceptible next
+    /// to a Lead or human deciding, and it is one indexed primary-key read per
+    /// tick, only while a worker is genuinely blocked.
+    /// </summary>
+    public static readonly TimeSpan DefaultPollInterval = TimeSpan.FromMilliseconds(500);
+
     public static async Task<PermissionRelayResult> OpenAndAwaitAsync(
         SessionStore store,
         WorkerCaller caller,

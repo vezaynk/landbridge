@@ -487,8 +487,7 @@ Measured 2026-08-16 against live workers, `PromptResponse` carries per-turn buck
 | `opencode acp` 1.18.18 | 99 | 14 | 14,208 | — | 14,321 | `{"amount":0}` |
 
 Both reconcile exactly against `totalTokens`, so the buckets are **disjoint** — they map
-onto §12's four columns with no subset correction, which is the per-harness
-`usage_cached_is_subset` knob the stream mapping needed and ACP does not. `totalTokens` is
+onto §12's four columns with no subset correction. `totalTokens` is
 derivable and deliberately not stored.
 
 Three things the mapping does deliberately:
@@ -496,9 +495,8 @@ Three things the mapping does deliberately:
 - **Reports cumulative totals, not per-turn ones.** `SessionStore.RecordUsageAsync` keeps a
   high-water mark per bucket, so per-turn reports would leave the row holding the largest
   single turn rather than the dispatch's spend.
-- **Treats an explicit zero cost as no cost.** OpenCode priced a 14,321-token turn at
-  `{"amount":0}`; recording $0.00 would assert the dispatch was free. Same rule as Codex,
-  same §2 principle 2.
+- **Relays the agent's cost as reported**, including an explicit zero. A harness that
+  prices a turn at `$0` is that harness's claim.
 - **Records no model.** Nothing in ACP attributes usage to a model, and the profile's argv
   names a CLI rather than whatever it routed to.
 
@@ -572,7 +570,7 @@ does not cover sends `session/request_permission`, with its own options attached
 
 **landbridged routes it through the plane.** The runner posts the worker bearer at
 `POST /worker/permission` together with the harness's `options` array, which is the
-same `PermissionRelay` as the MCP `request_permission` tool. A Lead or human picks
+same `PermissionRelay` as `POST /worker/permission`. A Lead or human picks
 one of those options (`optionId`); that id is returned to the agent as-is. A
 classifier or legacy allow still maps to the agent's `allow_once` option, never
 `allow_always`. A deny without a selected id maps to a reject option, or

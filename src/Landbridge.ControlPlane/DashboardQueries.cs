@@ -882,15 +882,13 @@ public sealed record SessionUsageView(
     DateTimeOffset ReportedAt)
 {
     /// <summary>
-    /// The four buckets summed. Sound to add because they are disjoint by the time they are
-    /// stored — landbridged normalizes a harness that counts cache hits inside its input total
-    /// before reporting. <see cref="ReasoningOutputTokens"/> is deliberately absent: it is part
+    /// The four buckets summed. Sound to add because they are disjoint.
+    /// <see cref="ReasoningOutputTokens"/> is deliberately absent: it is part
     /// of <see cref="OutputTokens"/> already, and adding it would count those tokens twice.
     /// </summary>
     public long TotalTokens => InputTokens + OutputTokens + CacheReadTokens + CacheWriteTokens;
 
-    /// <summary>Where the dollar figure came from, or that there is none (§12 renders the
-    /// three differently — a derived number must never look like a reported one).</summary>
+    /// <summary>Where the dollar figure came from, or that there is none.</summary>
     public UsageCostProvenance CostProvenance =>
         CostUsd is null ? UsageCostProvenance.None : UsageCostProvenance.Reported;
 

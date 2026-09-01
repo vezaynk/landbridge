@@ -207,10 +207,10 @@ internal static class AcpAgentLoop
     }
 
     /// <summary>
-    /// Pulls the plane's URL and bearer out of ACP's <c>mcpServers</c> array — the shape
-    /// <c>AcpMcpServers</c> translated the generated config into. Deliberately reads it the
-    /// long way rather than trusting position: this is the assertion that landbridged sent
-    /// something an agent can actually use.
+    /// Pulls the plane's URL and bearer out of ACP's <c>mcpServers</c> array — the
+    /// shape landbridged builds from the dispatch token and URL. Deliberately reads
+    /// it the long way rather than trusting position: this is the assertion that
+    /// landbridged sent something an agent can actually use.
     /// </summary>
     private static (string? Url, string? Authorization) ReadLandbridgeServer(JsonElement root)
     {

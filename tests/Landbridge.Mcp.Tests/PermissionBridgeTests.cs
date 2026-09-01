@@ -1,9 +1,9 @@
-using System.Text.Json;
 using Landbridge.Contracts;
 using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
 using Landbridge.ControlPlane.Tests;
 using Landbridge.Core;
+using Landbridge.Mcp;
 using Landbridge.Mcp.Auth;
 using Landbridge.Mcp.Tools;
 using Microsoft.AspNetCore.Http;
@@ -15,9 +15,9 @@ using ModelContextProtocol;
 namespace Landbridge.Mcp.Tests;
 
 /// <summary>
-/// §11's permission bridge over a Postgres-backed store: the worker's relaying tool, the
-/// Lead's triage, the escalation that hands one request to a human, and the audit rows all
-/// three leave behind.
+/// §11's permission bridge over a Postgres-backed store: the worker's wait at
+/// <see cref="PermissionRelay"/>, the Lead's triage, the escalation that hands one
+/// request to a human, and the audit rows all three leave behind.
 ///
 /// <para>These tests use <see cref="TimeProvider.System"/> rather than the fake clock the
 /// rest of this suite prefers, because the thing under test is a <em>live</em> wait — the
@@ -58,12 +58,6 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
             pg.NewContext(), TimeProvider.System,
             registry ?? new RunnerConnectionRegistry(TimeProvider.System), AccessorFor(principal));
 
-    private WorkerTools WorkerFor(WorkerCaller caller) =>
-        RelayGrantTestKit.WorkerToolsFor(
-            pg.NewContext(), TimeProvider.System, new RunnerConnectionRegistry(TimeProvider.System),
-            AccessorFor(new Principal.Worker(caller)),
-            PollMs);
-
     private static MachineSnapshot Machine() =>
         new("m1", Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });
 
@@ -92,15 +86,23 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
     /// Starts the worker's relaying call and waits until the request has actually landed in
     /// blocked_on_input, so a test answers a request that exists rather than racing it.
     /// </summary>
-    private async Task<Task<string>> AskPermissionAsync(
+    private async Task<Task<PermissionRelayResult>> AskPermissionAsync(
         WorkerCaller caller, string tool = Tool, string input = ProposedInput)
     {
-        var worker = WorkerFor(caller);
-        var pending = Task.Run(() => worker.RequestPermission(
-            tool, JsonDocument.Parse(input).RootElement, "toolu_test", CancellationToken.None));
+        var store = new SessionStore(pg.NewContext(), TimeProvider.System);
+        var pending = Task.Run(() => PermissionRelay.OpenAndAwaitAsync(
+            store, caller, tool, input, TimeSpan.FromMilliseconds(PollMs),
+            TimeProvider.System, CancellationToken.None));
         await WaitForAsync(async () => await StateOf(caller.Session) == SessionState.BlockedOnInput, pending);
         return pending;
     }
+
+    private Task<PermissionRelayResult> RelayAsync(
+        WorkerCaller caller, string tool, string input) =>
+        PermissionRelay.OpenAndAwaitAsync(
+            new SessionStore(pg.NewContext(), TimeProvider.System),
+            caller, tool, input, TimeSpan.FromMilliseconds(PollMs),
+            TimeProvider.System, CancellationToken.None);
 
     private async Task<SessionState> StateOf(SessionId task)
     {
@@ -126,25 +128,26 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Fail("timed out waiting for the condition to hold");
     }
 
-    private static async Task<string> ResultOf(Task task) =>
-        task is Task<string> t ? await t : "<not a string result>";
+    private static async Task<string> ResultOf(Task task)
+    {
+        if (task is Task<PermissionRelayResult> t)
+        {
+            var r = await t;
+            return r.Allow ? "allow" : $"deny:{r.Message}";
+        }
 
-    private static JsonElement Verdict(string json) => JsonDocument.Parse(json).RootElement;
+        return "<not a permission result>";
+    }
 
     [SkippableFact]
     public async Task Protocol_tools_auto_allow_without_blocking()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var caller = await SeedWorkingTask();
-        var worker = WorkerFor(caller);
 
-        var json = await worker.RequestPermission(
-            "mcp__landbridge__get_inbox",
-            JsonDocument.Parse("{}").RootElement,
-            "toolu_proto",
-            CancellationToken.None);
+        var result = await RelayAsync(caller, "mcp__landbridge__get_inbox", "{}");
 
-        Assert.Contains("\"behavior\":\"allow\"", json, StringComparison.Ordinal);
+        Assert.True(result.Allow);
         Assert.Equal(SessionState.Working, await StateOf(caller.Session));
     }
 
@@ -193,7 +196,7 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task A_lead_allow_unblocks_the_worker_with_the_harness_allow_shape()
+    public async Task A_lead_allow_unblocks_the_worker()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var caller = await SeedWorkingTask();
@@ -202,13 +205,8 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         await LeadFor(new Principal.Lead(Team))
             .AnswerPermissionRequest(caller.Session.ToString(), "allow", null, CancellationToken.None);
 
-        // The contract verified on the wire against Claude Code 2.1.220: a PermissionResult
-        // with behavior 'allow', carrying the proposed input back unchanged.
-        var verdict = Verdict(await pending.WaitAsync(Patience));
-        Assert.Equal("allow", verdict.GetProperty("behavior").GetString());
-        Assert.Equal(
-            JsonDocument.Parse(ProposedInput).RootElement.GetRawText(),
-            verdict.GetProperty("updatedInput").GetRawText());
+        var verdict = await pending.WaitAsync(Patience);
+        Assert.True(verdict.Allow);
 
         // And the worker is working again on its own instance — never requeued, so its
         // token still resolves and there is no successor.
@@ -233,10 +231,10 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         await LeadFor(new Principal.Lead(Team))
             .AnswerPermissionRequest(caller.Session.ToString(), "deny", guidance, CancellationToken.None);
 
-        var verdict = Verdict(await pending.WaitAsync(Patience));
-        Assert.Equal("deny", verdict.GetProperty("behavior").GetString());
+        var verdict = await pending.WaitAsync(Patience);
+        Assert.False(verdict.Allow);
         // The message is the point of a denial: it is what the agent adapts to.
-        Assert.Equal(guidance, verdict.GetProperty("message").GetString());
+        Assert.Equal(guidance, verdict.Message);
         // Denied is not requeued — the worker keeps going and decides what to do next.
         Assert.Equal(SessionState.Working, await StateOf(caller.Session));
     }
@@ -347,9 +345,9 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
             Assert.IsType<StoreResult.Applied>(applied);
         }
 
-        var verdict = Verdict(await pending.WaitAsync(Patience));
-        Assert.Equal("deny", verdict.GetProperty("behavior").GetString());
-        Assert.Equal("denied: use the CI secret store", verdict.GetProperty("message").GetString());
+        var verdict = await pending.WaitAsync(Patience);
+        Assert.False(verdict.Allow);
+        Assert.Equal("denied: use the CI secret store", verdict.Message);
 
         await using var check = pg.NewContext();
         var row = await check.Sessions.AsNoTracking().SingleAsync(t => t.Id == caller.Session.Value);
@@ -392,7 +390,7 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
             Assert.IsType<StoreResult.Applied>(applied);
         }
 
-        Assert.Equal("allow", Verdict(await pending.WaitAsync(Patience)).GetProperty("behavior").GetString());
+        Assert.True((await pending.WaitAsync(Patience)).Allow);
     }
 
     // ── Abandonment ───────────────────────────────────────────────────────────
@@ -437,13 +435,10 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         // The engine's state gate serializes prompts for free: a task already blocked is not
         // working, so a second request is refused — and the tool still owes the harness a
         // well-formed verdict rather than an error.
-        var second = await WorkerFor(caller).RequestPermission(
-            "Bash", JsonDocument.Parse("""{"command":"git status"}""").RootElement, "toolu_two",
-            CancellationToken.None);
+        var second = await RelayAsync(caller, "Bash", """{"command":"git status"}""");
 
-        var verdict = Verdict(second);
-        Assert.Equal("deny", verdict.GetProperty("behavior").GetString());
-        Assert.Contains("InvalidSourceState", verdict.GetProperty("message").GetString()!);
+        Assert.False(second.Allow);
+        Assert.Contains("InvalidSourceState", second.Message);
 
         // The first request is untouched: still Bash, still pending.
         await using (var db = pg.NewContext())

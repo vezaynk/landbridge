@@ -820,7 +820,7 @@ Threat model additions: none. Occupancy is not a new trust boundary. The runner 
 - **Event log:** occupancy and message on the event row. `to_state=Parked` queries (`GetTeamsAsync` parks-by-team) become counts of `kind=deactivated` or occupancy transitions to `on_disk`.
 - **Metrics (minimum):** dispatch-claim latency; count of queued (`running/none`, instance null) older than ack window; count of spawn-in-flight (`running/none`, instance set); count of `health=failed`; count of `awaiting_pull` older than N minutes (doorbell lost); occupancy-mismatch age (in-flight stop/load); `pending_spawn` null skips. Extra xmin writes: one per pulled answer, plus `ObserveOccupancy` on started/session-started/exited — **not** on every `alive`.
 - **Alerts:** same liveness as today, labeled as health not requeue. Cap no longer pages as "abandoned to canceled"; page if `health=failed` count per Team exceeds what a Lead can drain.
-- **`get_session_report`:** still the infrastructure account (`InfrastructureRequeues`, limit, last reason) plus report/reference. On `health=failed` with no report, this remains the only explanation.
+- **`get_lead_inbox(sessionId)`:** the infrastructure account (`InfrastructureRequeues`, limit, last reason) plus report/reference. On `health=failed` with no report, this remains the only explanation.
 
 ---
 

@@ -56,10 +56,9 @@ public abstract record RunnerCommand : RunnerMessage
 /// <see cref="OpenForwardCommand"/>: an older envelope carrying none decodes to
 /// <c>null</c>. It is the opaque harness session ref of a task that was worked
 /// before and parked/requeued; the plane passes it back whenever the row holds
-/// one, and the runner resumes the transcript only if the resolved profile also
-/// declares how (<c>resume.args</c>) — otherwise it cold-starts (documented
-/// fallback). Opaque transport metadata: the runner substitutes it into
-/// <c>resume.args</c> and never interprets it (§11 resume seam).</para>
+/// one, and the runner resumes the transcript with <c>session/load</c> when the
+/// agent declared <c>loadSession</c> — otherwise it cold-starts. Opaque transport
+/// metadata; landbridged never interprets the ref (§11 resume seam).</para>
 ///
 /// <para><see cref="WorkDirSession"/> is additive and wire-compatible in the same way, and
 /// names the task whose working directory this dispatch runs in. Null whenever the
@@ -83,8 +82,9 @@ public abstract record RunnerCommand : RunnerMessage
 /// The runner consumes the map as extra <c>{key}</c> placeholders alongside the built-in
 /// <c>task_id</c> / <c>machine_id</c> / <c>work_dir</c> / <c>session_id</c> /
 /// <c>mcp_config</c> set. <c>DispatchService</c> fills <c>mcp_url</c> with the plane's
-/// public MCP URL so a profile can write a harness-native config file (#112 G2) without
-/// parsing Claude's <c>mcp.json</c>. An older envelope with a null map still decodes;
+/// public MCP URL so landbridged can hand ACP <c>mcpServers</c> (and a profile can
+/// write a harness-native config file) without parsing <c>McpConfigJson</c>. An older
+/// envelope with a null map still decodes;
 /// an older runner receiving the key just substitutes it. The field stays on the
 /// frozen wire for that reason — dropping it is the one change a year-old
 /// <c>landbridged</c> would notice.</para>
@@ -141,12 +141,6 @@ public sealed record KillCommand(SessionId Session) : RunnerCommand;
 /// <c>get_session</c>, and the pull is the receipt exactly as it was under the task model. The
 /// session is what makes the wake-up cheap — no respawn, no cold start, no replay — not what
 /// carries the payload.</para>
-///
-/// <para><b>Only meaningful for a <c>protocol: acp</c> profile.</b> A stream-mode worker has
-/// no channel that accepts a turn: its stdin is a dead-man's pipe, not a request channel,
-/// and the harnesses this repo supports do not read mid-task turns off it (the reason every
-/// stream profile is forced to <c>stop.mode: signal</c>). Such a task is woken the old way,
-/// by redispatch.</para>
 /// </summary>
 public sealed record PromptCommand(SessionId Session) : RunnerCommand;
 
@@ -474,8 +468,8 @@ public sealed record ToolCallEvent(SessionId Session, string Tool, DateTimeOffse
 /// model's token counts and, where the harness states one, its cost in USD.
 ///
 /// <para><b>This is a claim, not a derivation (§2 principle 2).</b> Every number here was
-/// computed by the harness and relayed verbatim; landbridged does no arithmetic on it beyond the
-/// normalization below, and the plane none at all. A harness can under-report, mis-report, or
+/// computed by the harness and relayed verbatim; landbridged does no arithmetic on it, and
+/// the plane none at all. A harness can under-report, mis-report, or
 /// report nothing — which is why nothing is enforced on it and why the §12 section that
 /// renders it is visually separated from everything the plane derives itself.</para>
 ///
@@ -484,20 +478,14 @@ public sealed record ToolCallEvent(SessionId Session, string Tool, DateTimeOffse
 /// then shows the honest empty state rather than a zero — an absence of measurement is not a
 /// measurement of nothing (the same distinction §9.10's relay bytes draw).</para>
 ///
-/// <para><b>The four token buckets are DISJOINT, and that took normalizing</b> because the two
-/// harnesses do not agree on what "input" means. Claude counts uncached prompt tokens in
-/// <c>input_tokens</c> and its cache hits separately, so its buckets are already disjoint.
-/// Codex counts the WHOLE prompt in <c>input_tokens</c> with <c>cached_input_tokens</c> as a
-/// subset of it — its own <c>non_cached_input()</c> subtracts one from the other for display.
-/// Summing the four as reported would therefore double-count a Codex worker's cache hits, so
-/// landbridged subtracts where a profile declares the subset relationship
-/// (<c>usage_cached_is_subset</c>) and what arrives here is always four buckets that add up.
-/// The normalization is declared per profile as data, never inferred from a harness name.</para>
+/// <para><b>The four token buckets are disjoint.</b> ACP reports them that way on
+/// <c>PromptResponse.usage</c> (<c>inputTokens</c>, <c>outputTokens</c>,
+/// <c>cachedReadTokens</c>, <c>cachedWriteTokens</c>). Their sum is the turn; nothing
+/// here subtracts one from another.</para>
 ///
-/// <para><see cref="CostUsd"/> is null where the harness reports no cost at all — Codex has no
-/// cost figure anywhere, on its stream or in its metrics. The plane does not multiply tokens
-/// into dollars to fill the gap; a derived figure and a reported one are different kinds of
-/// claim and §12 keeps them apart (see <c>ModelPricing</c>).</para>
+/// <para><see cref="CostUsd"/> is null where the harness reports no cost at all. The plane
+/// does not multiply tokens into dollars to fill the gap; a derived figure and a reported
+/// one are different kinds of claim and §12 keeps them apart.</para>
 ///
 /// <para><b><see cref="Model"/> is the harness's own name for the model, or null when it names
 /// none.</b> Nothing else may fill it: a model the PLANE asserted — from a profile's declaration

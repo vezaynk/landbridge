@@ -1,6 +1,5 @@
 using System.Globalization;
 using System.Net;
-using Landbridge.ControlPlane;
 using Landbridge.Core;
 
 namespace Landbridge.Mcp.Dashboard;
@@ -75,11 +74,4 @@ internal static class DashboardFormat
         _ => $"{bytes / (1024.0 * 1024.0):N1} MB",
     };
 
-    public static string CostCell(decimal? cost, UsageCostProvenance provenance) =>
-        (cost, provenance) switch
-        {
-            ({ } c, UsageCostProvenance.Reported) => $"{Usd(c)} USD",
-            ({ } c, UsageCostProvenance.Derived) => $"~{Usd(c)} USD est.",
-            _ => "not reported",
-        };
 }

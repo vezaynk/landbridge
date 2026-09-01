@@ -283,19 +283,16 @@ it on does not fill it.
 | cost in USD | **reported** — `total_cost_usd` and per-model `costUSD` | none exists; renders "not reported" |
 | reasoning-token breakdown | not exposed | carried (a portion *of* output) |
 
-**The two harnesses disagree about "input", and `landbridged` normalizes.** Claude's
-`input_tokens` excludes cache; Codex's *includes* its `cached_input_tokens` as a subset.
-A profile declares which by setting `usage_cached_is_subset`, and `landbridged` subtracts so
-the four buckets are disjoint and their sum counts the prompt once. Get this wrong and a
-cache-heavy worker's total roughly doubles.
+**ACP usage buckets are disjoint.** `PromptResponse.usage` reports `inputTokens`,
+`outputTokens`, `cachedReadTokens`, and `cachedWriteTokens` as four columns that add up.
+Nothing here subtracts one from another.
 
 **What is deliberately not built** (each is a "could, here's what it'd take"):
 
-- **Cost for a harness that reports none.** Deriving dollars from Codex's tokens needs a
+- **Cost for a harness that reports none.** Deriving dollars from tokens needs a
   rate per model *and per bucket* — the four are priced differently — plus operator-owned
   rate config and an effective date, since re-pricing an old task at today's rate rewrites
-  history. `ModelPricing` is the stub where that would live; it returns nothing, so the
-  cell reads "not reported" rather than `$0.00`. Zero would claim the work was free.
+  history. The cell reads "not reported" rather than `$0.00`. Zero would claim the work was free.
 - **A model for a harness that names none.** Codex reports tokens without a model, and Landbridge
   does not supply one. It could — a profile could declare the model it pins — but a model the
   *plane* asserted, rendered in a section that says "reported by the harness", would misattribute

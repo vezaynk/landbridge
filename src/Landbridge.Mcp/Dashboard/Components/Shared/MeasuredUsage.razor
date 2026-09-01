@@ -40,13 +40,9 @@
                         <td class="num">@Tokens(m.CacheWriteTokens)</td>
                         <td class="num">@Tokens(m.TotalTokens)</td>
                         <td class="num">
-                            @if (m.CostUsd is { } c && m.CostProvenance == UsageCostProvenance.Reported)
+                            @if (m.CostUsd is { } c)
                             {
                                 @Usd(c) <span class="nt">USD</span>
-                            }
-                            else if (m.CostUsd is { } d && m.CostProvenance == UsageCostProvenance.Derived)
-                            {
-                                <span title="derived by Landbridge from token counts, not reported by the harness">~@Usd(d) <span class="nt">USD est.</span></span>
                             }
                             else
                             {

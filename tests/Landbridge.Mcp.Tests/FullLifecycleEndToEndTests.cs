@@ -150,7 +150,7 @@ public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifet
             await using (var lead = await ConnectAsync(new Uri(baseUrl + "/"), leadToken, ct))
             {
                 // #81: and it landed where the Lead actually reads it. The row assertion
-                // above only proves persistence; this is the Lead's get_session_report
+                // above only proves persistence; this is the Lead's get_lead_inbox
                 // over real MCP.
                 var reportRead = await lead.CallToolAsync("get_lead_inbox", new Dictionary<string, object?>
                 {

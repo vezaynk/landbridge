@@ -275,10 +275,11 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         await using var v = pg.NewContext();
         Assert.Equal("git:branch/result-42",
             (await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value)).ResultReference);
-        // #81: and the read surface actually returns it. Asserting only the raw row is what
-        // let this column go write-only — the Lead's per-task fetch is the §7 read.
+        // #81: and the Lead inbox actually returns it. Asserting only the raw row is what
+        // let this column go write-only.
+        var inbox = await NewStore(v).GetLeadInboxAsync(Team, [id.Value], actor: Lead);
         Assert.Equal("git:branch/result-42",
-            (await NewStore(v).GetSessionReportAsync(Team, id))!.ResultReference);
+            Assert.Single(inbox.Items, i => i.Kind == LeadInboxKind.Report).ResultReference);
     }
 
     [SkippableFact]
@@ -286,8 +287,8 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
     {
         // §10: the worker's optional in-band report is captured verbatim on the row
         // next to the reference. get_team_state stays prose-free (a has_report FLAG,
-        // never the text); the Lead pulls the text per task via get_session_report; a
-        // successor worker sees it on get_session.
+        // never the text); the Lead pulls the text on get_lead_inbox(sessionId); a
+        // successor worker sees it on get_inbox.
         Skip.IfNot(pg.Available, pg.SkipReason);
         await using var db = pg.NewContext();
         var store = NewStore(db);
@@ -307,9 +308,11 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         // get_team_state carries only the FLAG, not the prose (§10 stays prose-free).
         var summary = (await vstore.GetTeamStateAsync(Team)).Sessions.Single(t => t.SessionId == id.Value);
         Assert.True(summary.HasReport);
-        // The Lead fetches the text deliberately, per task.
-        var fetched = await vstore.GetSessionReportAsync(Team, id);
-        Assert.Equal(report, fetched!.Report);
+        // The Lead fetches the text on get_lead_inbox(sessionId).
+        var fetched = Assert.Single(
+            (await vstore.GetLeadInboxAsync(Team, [id.Value], actor: Lead)).Items,
+            i => i.Kind == LeadInboxKind.Report);
+        Assert.Equal(report, fetched.Report);
         // On get_session (the incumbent/successor worker's read).
         var assignment = await vstore.GetAssignmentAsync(caller);
         Assert.Equal(report, assignment!.Report);
@@ -333,29 +336,14 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         // No report: the flag is false, and the per-task fetch finds the task (it is
         // the Lead's) but returns a null report.
         Assert.False((await vstore.GetTeamStateAsync(Team)).Sessions.Single(t => t.SessionId == id.Value).HasReport);
-        var fetched = await vstore.GetSessionReportAsync(Team, id);
-        Assert.NotNull(fetched);
-        Assert.Null(fetched!.Report);
+        var fetched = Assert.Single(
+            (await vstore.GetLeadInboxAsync(Team, [id.Value], actor: Lead)).Items,
+            i => i.Kind == LeadInboxKind.Report);
+        Assert.Null(fetched.Report);
         // #81, the asymmetry that makes the reference worth surfacing: §6 REQUIRED it for
         // this transition while the report was optional, so on a task like this one it is
         // the only thing the worker said.
         Assert.Equal("git:ref", fetched.ResultReference);
-    }
-
-    [SkippableFact]
-    public async Task Get_task_report_is_team_scoped_and_refuses_a_cross_team_task()
-    {
-        // §13: the per-task report fetch is scoped to the caller's Team, so a task in
-        // another Team returns null — indistinguishable from not-found, leaking nothing.
-        Skip.IfNot(pg.Available, pg.SkipReason);
-        await using var db = pg.NewContext();
-        var store = NewStore(db);
-        var id = await CreateSubmitted(db);
-        var instance = WorkerInstanceId.New();
-        await store.DispatchNextAsync(Machine(), instance);
-        await store.ApplyAsync(id, new ReportResult(new WorkerCaller(Team, id, instance), "git:ref", "secret report"));
-
-        Assert.Null(await store.GetSessionReportAsync(TeamId.New(), id)); // another Team → null
     }
 
     [SkippableFact]
@@ -412,10 +400,11 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         Assert.True(summary.HasQuestion);
         Assert.Equal(InputRequestKind.Question, summary.InputKind);
 
-        // The Lead's deliberate per-task fetch carries the text.
-        var fetched = await vstore.GetSessionQuestionAsync(Team, id);
-        Assert.Equal(question, fetched!.Question);
-        Assert.Equal(SessionState.Working, fetched.State);
+        // The Lead's inbox fetch carries the text.
+        var fetched = Assert.Single(
+            (await vstore.GetLeadInboxAsync(Team, [id.Value], actor: Lead)).Items,
+            i => i.Kind == LeadInboxKind.Question);
+        Assert.Equal(question, fetched.Question);
         Assert.Null(fetched.Answer);
 
         // And the incumbent's own get_session read.
@@ -541,24 +530,6 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
-    public async Task Get_task_question_is_team_scoped_and_refuses_a_cross_team_task()
-    {
-        // §13: same scoping as GetSessionReportAsync — another Team's task returns null,
-        // indistinguishable from not-found.
-        Skip.IfNot(pg.Available, pg.SkipReason);
-        await using var db = pg.NewContext();
-        var store = NewStore(db);
-        var id = await CreateSubmitted(db);
-        var instance = WorkerInstanceId.New();
-        await store.DispatchNextAsync(Machine(), instance);
-        await store.ApplyAsync(id, new RequestInput(
-            new WorkerCaller(Team, id, instance), InputRequestKind.Question, "secret question"));
-
-        Assert.Null(await store.GetSessionQuestionAsync(TeamId.New(), id));
-        Assert.Null(await store.GetSessionQuestionAsync(Team, new SessionId(Guid.NewGuid())));
-    }
-
-    [SkippableFact]
     public async Task A_task_that_never_asked_carries_no_question_anywhere()
     {
         // Back-compat: every column stays null, the flag is false, and the per-task
@@ -581,10 +552,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         Assert.False(summary.HasQuestion);
         Assert.Null(summary.InputKind);
 
-        var fetched = await vstore.GetSessionQuestionAsync(Team, id);
-        Assert.NotNull(fetched);
-        Assert.Null(fetched!.Question);
-        Assert.Null(fetched.Answer);
+        Assert.Empty((await vstore.GetLeadInboxAsync(Team, [id.Value], actor: Lead)).Items);
 
         Assert.Null((await vstore.GetAssignmentAsync(new WorkerCaller(Team, id, instance)))!.Question);
     }
@@ -997,7 +965,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
     public async Task A_lead_follow_up_after_a_permission_verdict_on_a_reported_session_is_not_a_deadlock()
     {
         // Trial: leftover InputKind=Permission after the wait was decided, then
-        // the worker reported. get_session_question said "nothing waiting";
+        // the worker reported. get_lead_inbox said "nothing waiting";
         // answer_input_request refused as a live permission wait;
         // answer_permission_request refused as not BlockedOnInput.
         Skip.IfNot(pg.Available, pg.SkipReason);

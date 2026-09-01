@@ -1204,15 +1204,12 @@ public sealed class AcpClient
     /// view has nowhere honest to put it; a gauge written into a cumulative column would read
     /// as consumption that never happened.
     ///
-    /// <para><b>An explicit zero is treated as no cost at all</b>, not as a free dispatch.
-    /// Measured on 2026-08-16: <c>claude-agent-acp</c> priced a turn at $0.0949, and
-    /// <c>opencode acp</c> reported <c>{"amount":0}</c> for a turn that plainly burned 14,321
-    /// tokens — so a zero here means "this adapter does not compute cost", and recording
-    /// $0.00 would assert the dispatch was free.</para>
+    /// Relays the agent's own figure. A zero is stored as zero — Landbridge does
+    /// not second-guess a harness that prices a turn at $0.
     /// </summary>
     private void RecordUsageUpdate(UsageUpdate update)
     {
-        if (update.Cost is not { } cost || cost.Amount <= 0)
+        if (update.Cost is not { } cost)
             return;
         _costUsd = Convert.ToDecimal(cost.Amount);
     }
@@ -1396,69 +1393,60 @@ public sealed record AcpMcpServer(
     IReadOnlyList<KeyValuePair<string, string>> Headers);
 
 /// <summary>
-/// Translates the plane's generated MCP config (§13) into ACP's <c>mcpServers</c> shape.
-///
-/// <para>The generated document is Claude Code's <c>--mcp-config</c> form — an object of
-/// named servers, each with a <c>url</c> and a <c>headers</c> object — and ACP wants an
-/// array of servers whose headers are an array of <c>{name, value}</c> pairs. Same
-/// information, different spelling, so this is a transliteration and nothing more: no
-/// server is invented, renamed, or given a header the plane did not write.</para>
-///
-/// <para>Only HTTP servers cross over. ACP also defines a stdio transport, but the plane
-/// generates exactly one server and it is always the HTTP MCP endpoint, so an entry with no
-/// <c>url</c> is something this translator has never seen and declines to guess at.</para>
+/// The plane's MCP server as ACP <c>session/new</c> wants it: HTTP, named, bearer header.
+/// Built from the dispatch token and public URL — not from a generated config file.
 /// </summary>
 public static class AcpMcpServers
 {
+    public const string ServerName = "landbridge";
+
     /// <summary>
-    /// Parses a generated config into ACP servers. A malformed or absent document yields an
-    /// empty list rather than throwing: the worker is already spawned by the time this runs,
-    /// and <see cref="AcpClient"/> warns about a toolless session far more usefully than a
-    /// spawn-time crash would.
+    /// One HTTP server for the plane, or empty when the dispatch carried no URL or token.
     /// </summary>
-    public static IReadOnlyList<AcpMcpServer> FromGeneratedConfig(string? json)
+    public static IReadOnlyList<AcpMcpServer> ForPlane(string? url, string? workerToken)
     {
-        if (string.IsNullOrWhiteSpace(json))
+        if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(workerToken))
             return [];
 
-        JsonDocument doc;
-        try
+        return
+        [
+            new AcpMcpServer(
+                ServerName,
+                url,
+                [new KeyValuePair<string, string>("Authorization", "Bearer " + workerToken)]),
+        ];
+    }
+
+    /// <summary>
+    /// The <c>{mcp_config}</c> file body a profile may still ask spawn to point at.
+    /// Same facts as <see cref="ForPlane"/>, Claude Code's <c>--mcp-config</c> spelling,
+    /// because that is what those argv still expect. Null when there is nothing to write.
+    /// </summary>
+    public static string? ConfigFileJson(string? url, string? workerToken)
+    {
+        if (string.IsNullOrWhiteSpace(url) || string.IsNullOrWhiteSpace(workerToken))
+            return null;
+
+        var buffer = new ArrayBufferWriter<byte>(256);
+        using (var w = new Utf8JsonWriter(buffer))
         {
-            doc = JsonDocument.Parse(json);
+            w.WriteStartObject();
+            w.WritePropertyName("mcpServers");
+            w.WriteStartObject();
+            w.WritePropertyName(ServerName);
+            w.WriteStartObject();
+            w.WriteString("type", "http");
+            w.WriteString("url", url);
+            w.WritePropertyName("headers");
+            w.WriteStartObject();
+            w.WriteString("Authorization", "Bearer " + workerToken);
+            w.WriteEndObject();
+            w.WriteEndObject();
+            w.WriteEndObject();
+            w.WriteEndObject();
         }
-        catch (JsonException)
-        {
-            return [];
-        }
 
-        using (doc)
-        {
-            if (doc.RootElement.ValueKind != JsonValueKind.Object
-                || !doc.RootElement.TryGetProperty("mcpServers", out var servers)
-                || servers.ValueKind != JsonValueKind.Object)
-                return [];
-
-            var built = new List<AcpMcpServer>();
-            foreach (var entry in servers.EnumerateObject())
-            {
-                if (entry.Value.ValueKind != JsonValueKind.Object)
-                    continue;
-                if (!entry.Value.TryGetProperty("url", out var url) || url.ValueKind != JsonValueKind.String)
-                    continue;
-                if (url.GetString() is not { Length: > 0 } address)
-                    continue;
-
-                var headers = new List<KeyValuePair<string, string>>();
-                if (entry.Value.TryGetProperty("headers", out var h) && h.ValueKind == JsonValueKind.Object)
-                    foreach (var header in h.EnumerateObject())
-                        if (header.Value.ValueKind == JsonValueKind.String)
-                            headers.Add(new KeyValuePair<string, string>(header.Name, header.Value.GetString()!));
-
-                built.Add(new AcpMcpServer(entry.Name, address, headers));
-            }
-
-            return built;
-        }
+        return Encoding.UTF8.GetString(buffer.WrittenSpan);
     }
 }
 
