@@ -8,7 +8,10 @@ namespace Landbridge.Runner.Tests;
 /// Loopback identity HTTP: GET answers with the machine id a Lead passes to
 /// <c>bind_machine</c>. Port 19378 is the production well-known; tests bind
 /// ephemeral loopback so they do not collide with a running landbridged.
+/// One collection so HttpListener's process-wide prefix table is not mutated
+/// by two tests at once (Close throws AddressAlreadyInUse on Linux).
 /// </summary>
+[Collection(nameof(LocalIdentityListenerTests))]
 public class LocalIdentityListenerTests
 {
     [Fact]

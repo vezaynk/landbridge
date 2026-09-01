@@ -165,7 +165,7 @@ public sealed class LocalIdentityListener : IAsyncDisposable
     {
         _stopping = true;
         try { if (_http.IsListening) _http.Stop(); }
-        catch (Exception e) when (e is ObjectDisposedException or InvalidOperationException) { }
+        catch (Exception e) when (e is ObjectDisposedException or InvalidOperationException or HttpListenerException) { }
 
         if (_loop is not null)
         {
@@ -173,6 +173,9 @@ public sealed class LocalIdentityListener : IAsyncDisposable
             catch (Exception e) when (e is HttpListenerException or ObjectDisposedException or InvalidOperationException or OperationCanceledException) { }
         }
 
-        _http.Close();
+        // Managed HttpListener on Linux throws AddressAlreadyInUse from Close
+        // while RemovePrefix races another listener (or this one's accept loop).
+        try { _http.Close(); }
+        catch (Exception e) when (e is HttpListenerException or ObjectDisposedException or InvalidOperationException) { }
     }
 }
