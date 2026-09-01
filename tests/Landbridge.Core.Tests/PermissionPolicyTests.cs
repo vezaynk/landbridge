@@ -22,6 +22,8 @@ public sealed class PermissionPolicyTests
     [InlineData("mcp__landbridge__open_forward")]
     [InlineData("report_friction")]
     [InlineData("mcp__landbridge__report_friction")]
+    [InlineData("create_team")]
+    [InlineData("mcp__landbridge__create_team")]
     public void Protocol_and_runtime_tools_auto_allow(string tool)
     {
         Assert.Equal(PermissionDisposition.AutoAllow, PermissionPolicy.Classify(tool, "{}"));

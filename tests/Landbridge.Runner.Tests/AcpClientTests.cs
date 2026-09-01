@@ -701,9 +701,11 @@ public sealed class AcpClientTests
     // what real agents actually send.
 
     /// <summary>
-    /// A turn's usage lands as one report with the buckets it named and the cost the session
-    /// priced. Both come from the same real turn: the four buckets off the prompt response,
-    /// the dollar figure off the <c>usage_update</c> that preceded it.
+    /// A turn's usage lands with the buckets it named and the cost the session priced.
+    /// Both come from the same real turn: the four buckets off the prompt response, the
+    /// dollar figure off the <c>usage_update</c>. Cost flushes when that notification
+    /// arrives, so there may be a cost-only report before the buckets; the last report
+    /// is the complete cumulative picture.
     /// </summary>
     [Fact]
     public async Task A_turns_token_buckets_and_the_sessions_cost_reach_the_plane()
@@ -722,7 +724,7 @@ public sealed class AcpClientTests
         var (_, drain) = Start(agent, Request("go"));
         var run = await drain;
 
-        var usage = Assert.Single(run.Events.OfType<UsageReportedEvent>());
+        var usage = LastUsage(run);
         Assert.Equal(6, usage.InputTokens);
         Assert.Equal(866, usage.OutputTokens);
         Assert.Equal(61019, usage.CacheReadTokens);
@@ -762,7 +764,7 @@ public sealed class AcpClientTests
         var (_, drain) = Start(agent, Request("go"));
         var run = await drain;
 
-        var usage = Assert.Single(run.Events.OfType<UsageReportedEvent>());
+        var usage = LastUsage(run);
         Assert.Equal(0m, usage.CostUsd);
         Assert.Equal(99, usage.InputTokens);
         Assert.Equal(14, usage.OutputTokens);
@@ -788,13 +790,90 @@ public sealed class AcpClientTests
         var (_, drain) = Start(agent, Request("go"));
         var run = await drain;
 
-        var usage = Assert.Single(run.Events.OfType<UsageReportedEvent>());
+        var usage = LastUsage(run);
         Assert.Null(usage.CostUsd);
         Assert.Null(usage.Model);
         Assert.Equal(1048, usage.InputTokens);
         Assert.Equal(22, usage.OutputTokens);
         Assert.Equal(10240, usage.CacheReadTokens);
         Assert.Equal(0, usage.CacheWriteTokens);
+    }
+
+    /// <summary>
+    /// A cost is spend the moment the agent names it, even with no token buckets yet.
+    /// Waiting for <c>PromptResponse</c> is how a real Claude turn lost the dollar
+    /// figure to AcpKit's response-vs-notification split.
+    /// </summary>
+    [Fact]
+    public async Task A_cost_reports_before_the_prompt_result_has_buckets()
+    {
+        var agent = new FakeAgent
+        {
+            DuringPrompt =
+            [
+                """{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess_1","update":{"sessionUpdate":"usage_update","used":23261,"size":1000000,"cost":{"amount":0.0927805,"currency":"USD"}}}}""",
+            ],
+        };
+        var run = await RunAsync(agent, Request("go"));
+
+        var usage = Assert.Single(run.Events.OfType<UsageReportedEvent>());
+        Assert.Equal(0.0927805m, usage.CostUsd);
+        Assert.Equal(0, usage.InputTokens + usage.OutputTokens + usage.CacheReadTokens + usage.CacheWriteTokens);
+        Assert.Single(run.Events.OfType<TurnEndedEvent>());
+    }
+
+    /// <summary>
+    /// AcpKit handles the prompt result on the request path and <c>session/update</c> on
+    /// a side pump. A cost that lands on the wire after the result must still reach the
+    /// plane — that is the real Claude ordering, including the <c>_meta</c> Claude puts
+    /// on the priced update.
+    /// </summary>
+    [Fact]
+    public async Task A_cost_that_arrives_after_the_prompt_result_still_reaches_the_plane()
+    {
+        var agent = new FakeAgent
+        {
+            HoldOpenAfterTurn = true,
+            TurnUsage =
+            [
+                """{"inputTokens":8,"outputTokens":244,"cachedReadTokens":84506,"cachedWriteTokens":7102,"totalTokens":91860}""",
+            ],
+            AfterPrompt =
+            [
+                """{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess_1","update":{"sessionUpdate":"usage_update","used":23261,"size":1000000,"cost":{"amount":0.0927805,"currency":"USD"},"_meta":{"_claude/origin":{"kind":"human"}}}}}""",
+            ],
+        };
+        var (_, drain) = Start(agent, Request("go"));
+        await agent.WaitForTurnsAsync(1);
+        agent.EndSession();
+        var run = await drain.WaitAsync(TimeSpan.FromSeconds(20));
+
+        var usage = LastUsage(run);
+        Assert.Equal(0.0927805m, usage.CostUsd);
+        Assert.Equal(8, usage.InputTokens);
+        Assert.Equal(244, usage.OutputTokens);
+        Assert.Equal(84506, usage.CacheReadTokens);
+        Assert.Equal(7102, usage.CacheWriteTokens);
+    }
+
+    /// <summary>
+    /// <c>usage_update</c>'s <c>used</c>/<c>size</c> is a context-window gauge. It is
+    /// not spend, and a report of it would claim consumption that never happened.
+    /// </summary>
+    [Fact]
+    public async Task A_context_window_gauge_without_cost_is_not_spend()
+    {
+        var agent = new FakeAgent
+        {
+            DuringPrompt =
+            [
+                """{"jsonrpc":"2.0","method":"session/update","params":{"sessionId":"sess_1","update":{"sessionUpdate":"usage_update","used":23006,"size":200000}}}""",
+            ],
+        };
+        var run = await RunAsync(agent, Request("go"));
+
+        Assert.Empty(run.Events.OfType<UsageReportedEvent>());
+        Assert.Single(run.Events.OfType<TurnEndedEvent>());
     }
 
     /// <summary>
@@ -1203,6 +1282,13 @@ public sealed class AcpClientTests
         public List<string> ToolNames => Events.OfType<ToolCallEvent>().Select(e => e.Tool).ToList();
     }
 
+    private static UsageReportedEvent LastUsage(Run run)
+    {
+        var reports = run.Events.OfType<UsageReportedEvent>().ToList();
+        Assert.NotEmpty(reports);
+        return reports[^1];
+    }
+
     /// <summary>
     /// A scripted ACP agent on the other end of the two pipes: it reads what the client
     /// writes, answers the way the spec says an agent must, and can be configured to answer
@@ -1306,6 +1392,12 @@ public sealed class AcpClientTests
         public string? RequestDuringPrompt { get; init; }
         public string? NoiseBeforeResponses { get; init; }
         public IReadOnlyList<string> DuringPrompt { get; init; } = [];
+        /// <summary>
+        /// Updates sent after the prompt result, on the same stdout, before the
+        /// session is torn down. Models AcpKit delivering a <c>usage_update</c>
+        /// after the request path has already returned.
+        /// </summary>
+        public IReadOnlyList<string> AfterPrompt { get; init; } = [];
         /// <summary>Updates sent after <c>session/request_permission</c>, so the
         /// client can keep reading while an empty permission waits for <c>rawInput</c>.</summary>
         public IReadOnlyList<string> AfterPermission { get; init; } = [];
@@ -1531,6 +1623,12 @@ public sealed class AcpClientTests
                     .Replace("%reason%", reason)
                     .Replace("%usage%", usage is null ? "" : ",\"usage\":" + usage),
                 id);
+
+            foreach (var update in AfterPrompt)
+                Send(update);
+            if (AfterPrompt.Count > 0)
+                await Task.Delay(20);
+
             _turnsSeen.Writer.TryWrite(turn);
 
             // A real ACP agent is a server: answering a prompt does not end it, and its

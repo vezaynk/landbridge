@@ -159,6 +159,13 @@ public sealed class AcpClient
         new UnboundedChannelOptions { SingleReader = true, SingleWriter = false });
 
     /// <summary>
+    /// Guards the session usage totals and the last-reported snapshot.
+    /// <c>session/update</c> arrives on AcpKit's notification pump; <c>session/prompt</c>
+    /// returns on the drive loop. Those two can interleave.
+    /// </summary>
+    private readonly object _usageGate = new();
+
+    /// <summary>
     /// Running totals for the whole session, in the four disjoint buckets §12 measures.
     /// Cumulative rather than per-turn on purpose: <c>SessionStore.RecordUsageAsync</c> keeps a
     /// high-water mark per bucket, so a client that reported each turn separately would
@@ -170,10 +177,13 @@ public sealed class AcpClient
 
     /// <summary>
     /// The most recent dollar figure the agent put on this session, or null if it has never
-    /// named one. See <see cref="RecordUsageUpdate"/> for why an explicit zero counts as
-    /// "never".
+    /// named one. An explicit zero is a reported zero, not "never".
     /// </summary>
     private decimal? _costUsd;
+
+    private long _lastReportedInput, _lastReportedOutput, _lastReportedCacheRead, _lastReportedCacheWrite;
+    private decimal? _lastReportedCost;
+    private bool _usageReported;
 
     /// <summary>Method ids the agent declared at <c>initialize</c>, in its own order.</summary>
     private readonly List<string> _authMethods = [];
@@ -430,23 +440,17 @@ public sealed class AcpClient
         // what the plane may act on (a turn that ended with nothing reported requeues), and
         // accounting for a dispatch should already be in when its fate is decided.
         //
+        // Cost (and Grok's snake_case buckets) also flush as those notifications arrive —
+        // PromptResponse is not the only source. AcpKit can deliver the prompt result
+        // before a `usage_update` that preceded it on the wire has been ingested; a later
+        // notification still reports. The store's high-water / newest-cost merge is built
+        // for more than one report.
+        //
         // No model name. Nothing in ACP attributes usage to a model — not the usage buckets,
         // not `usage_update` — so the report is deliberately unattributed rather than guessing
         // from the profile's argv, which names a CLI and not the model it happened to route to.
-        var reportedTokens = AddTurnUsage(result.RootElement);
-        if (reportedTokens || _costUsd is not null || HasAccumulatedUsage)
-        {
-            _ring.Enqueue(new UsageReportedEvent(
-                _task,
-                Model: null,
-                _inputTokens,
-                _outputTokens,
-                _cacheReadTokens,
-                _cacheWriteTokens,
-                ReasoningOutputTokens: null,
-                _costUsd,
-                _clock.GetUtcNow()));
-        }
+        AddTurnUsage(result.RootElement);
+        ReportUsageIfAny();
 
         _ring.Enqueue(new TurnEndedEvent(_task, StopReason, _clock.GetUtcNow()));
     }
@@ -1199,10 +1203,10 @@ public sealed class AcpClient
     }
 
     /// <summary>
-    /// Takes the dollar figure off a <c>usage_update</c>. The rest of that notification —
-    /// <c>used</c> and <c>size</c> — is a context-window gauge, not spend, and §12's measured
-    /// view has nowhere honest to put it; a gauge written into a cumulative column would read
-    /// as consumption that never happened.
+    /// Takes the dollar figure off a <c>usage_update</c> and reports it now. The rest of
+    /// that notification — <c>used</c> and <c>size</c> — is a context-window gauge, not
+    /// spend, and §12's measured view has nowhere honest to put it; a gauge written into
+    /// a cumulative column would read as consumption that never happened.
     ///
     /// Relays the agent's own figure. A zero is stored as zero — Landbridge does
     /// not second-guess a harness that prices a turn at $0.
@@ -1211,11 +1215,10 @@ public sealed class AcpClient
     {
         if (update.Cost is not { } cost)
             return;
-        _costUsd = Convert.ToDecimal(cost.Amount);
+        lock (_usageGate)
+            _costUsd = Convert.ToDecimal(cost.Amount);
+        ReportUsageIfAny();
     }
-
-    private bool HasAccumulatedUsage =>
-        _inputTokens + _outputTokens + _cacheReadTokens + _cacheWriteTokens > 0;
 
     /// <summary>
     /// Grok's <c>_x.ai/session_notification</c> usage: snake_case buckets, no cost.
@@ -1229,40 +1232,86 @@ public sealed class AcpClient
         if (!update.TryGetProperty("usage", out var usage) || usage.ValueKind != JsonValueKind.Object)
             return;
 
-        AddSnake(usage, "input_tokens", ref _inputTokens);
-        AddSnake(usage, "output_tokens", ref _outputTokens);
-        AddSnake(usage, "cache_read_input_tokens", ref _cacheReadTokens);
-        AddSnake(usage, "cache_creation_input_tokens", ref _cacheWriteTokens);
-
-        static void AddSnake(JsonElement o, string key, ref long total)
+        var any = false;
+        lock (_usageGate)
         {
-            if (!o.TryGetProperty(key, out var v) || v.ValueKind != JsonValueKind.Number
-                || !v.TryGetInt64(out var n) || n < 0)
-                return;
-            Interlocked.Add(ref total, n);
+            any |= AddLocked(usage, "input_tokens", ref _inputTokens);
+            any |= AddLocked(usage, "output_tokens", ref _outputTokens);
+            any |= AddLocked(usage, "cache_read_input_tokens", ref _cacheReadTokens);
+            any |= AddLocked(usage, "cache_creation_input_tokens", ref _cacheWriteTokens);
+        }
+
+        if (any)
+            ReportUsageIfAny();
+    }
+
+    private void AddTurnUsage(JsonElement result)
+    {
+        if (!result.TryGetProperty("usage", out var usage) || usage.ValueKind != JsonValueKind.Object)
+            return;
+
+        lock (_usageGate)
+        {
+            AddLocked(usage, "inputTokens", ref _inputTokens);
+            AddLocked(usage, "outputTokens", ref _outputTokens);
+            AddLocked(usage, "cachedReadTokens", ref _cacheReadTokens);
+            AddLocked(usage, "cachedWriteTokens", ref _cacheWriteTokens);
         }
     }
 
-    private bool AddTurnUsage(JsonElement result)
+    private static bool AddLocked(JsonElement o, string key, ref long total)
     {
-        if (!result.TryGetProperty("usage", out var usage) || usage.ValueKind != JsonValueKind.Object)
+        if (!o.TryGetProperty(key, out var v) || v.ValueKind != JsonValueKind.Number
+            || !v.TryGetInt64(out var n) || n < 0)
             return false;
+        total += n;
+        return true;
+    }
 
-        var any = false;
-        any |= Add(usage, "inputTokens", ref _inputTokens);
-        any |= Add(usage, "outputTokens", ref _outputTokens);
-        any |= Add(usage, "cachedReadTokens", ref _cacheReadTokens);
-        any |= Add(usage, "cachedWriteTokens", ref _cacheWriteTokens);
-        return any;
-
-        static bool Add(JsonElement o, string key, ref long total)
+    /// <summary>
+    /// One cumulative report of whatever we have so far. Skips a true empty (no buckets,
+    /// no cost) so an agent that never named spend does not look like a free dispatch,
+    /// and skips a duplicate of the last report so a prompt-return flush after a live
+    /// notification is a no-op when nothing changed.
+    /// </summary>
+    private void ReportUsageIfAny()
+    {
+        long input, output, cacheRead, cacheWrite;
+        decimal? cost;
+        lock (_usageGate)
         {
-            if (!o.TryGetProperty(key, out var v) || v.ValueKind != JsonValueKind.Number
-                || !v.TryGetInt64(out var n) || n < 0)
-                return false;
-            Interlocked.Add(ref total, n);
-            return true;
+            input = _inputTokens;
+            output = _outputTokens;
+            cacheRead = _cacheReadTokens;
+            cacheWrite = _cacheWriteTokens;
+            cost = _costUsd;
+            if (cost is null && input + output + cacheRead + cacheWrite == 0)
+                return;
+            if (_usageReported
+                && input == _lastReportedInput
+                && output == _lastReportedOutput
+                && cacheRead == _lastReportedCacheRead
+                && cacheWrite == _lastReportedCacheWrite
+                && cost == _lastReportedCost)
+                return;
+            _lastReportedInput = input;
+            _lastReportedOutput = output;
+            _lastReportedCacheRead = cacheRead;
+            _lastReportedCacheWrite = cacheWrite;
+            _lastReportedCost = cost;
+            _usageReported = true;
         }
+
+        _ring.Enqueue(new UsageReportedEvent(
+            _task,
+            Model: null,
+            input,
+            output,
+            cacheRead,
+            cacheWrite,
+            ReasoningOutputTokens: null,
+            cost,
+            _clock.GetUtcNow()));
     }
 
     /// <summary>

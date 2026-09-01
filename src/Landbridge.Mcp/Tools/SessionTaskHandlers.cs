@@ -15,15 +15,17 @@ namespace Landbridge.Mcp.Tools;
 /// MCP Tasks methods projected off the message envelope. Lead-only.
 /// Closing an envelope is answering or <c>stop_session</c> — not <c>tasks/cancel</c>.
 /// </summary>
-public sealed class SessionTaskHandlers(SessionStore store, IHttpContextAccessor http)
+public sealed class SessionTaskHandlers(SessionStore store, TokenService tokens, IHttpContextAccessor http)
 {
     public const int PageSize = 50;
 
     public async ValueTask<JsonNode?> GetAsync(JsonRpcRequest request, CancellationToken ct)
     {
         var lead = RequireLead();
-        var id = ParseTaskId(Params(request));
-        var snap = await store.GetTaskSnapshotAsync(lead.Team, id, ct)
+        var p = Params(request);
+        var team = await RequireTeam(lead, p, ct);
+        var id = ParseTaskId(p);
+        var snap = await store.GetTaskSnapshotAsync(team, id, ct)
             ?? throw NotFound();
         return JsonSerializer.SerializeToNode(ToJson(snap));
     }
@@ -32,10 +34,11 @@ public sealed class SessionTaskHandlers(SessionStore store, IHttpContextAccessor
     {
         var lead = RequireLead();
         var p = Params(request, allowMissing: true);
+        var team = await RequireTeam(lead, p, ct);
         var cursor = p?["cursor"]?.GetValue<string>();
         try
         {
-            var (tasks, next) = await store.ListTaskSnapshotsAsync(lead.Team, cursor, PageSize, ct);
+            var (tasks, next) = await store.ListTaskSnapshotsAsync(team, cursor, PageSize, ct);
             return JsonSerializer.SerializeToNode(new TaskListJson
             {
                 Tasks = tasks.Select(ToJson).ToArray(),
@@ -68,6 +71,21 @@ public sealed class SessionTaskHandlers(SessionStore store, IHttpContextAccessor
                 McpErrorCode.InvalidRequest);
         return LandbridgeClaims.AsLeadPrincipal(user)
             ?? throw new McpProtocolException("tasks are a Lead surface", McpErrorCode.InvalidRequest);
+    }
+
+    private async Task<TeamId> RequireTeam(Principal.Lead lead, JsonObject? p, CancellationToken ct)
+    {
+        var raw = p?["teamId"]?.GetValue<string>();
+        if (string.IsNullOrWhiteSpace(raw) || !Guid.TryParse(raw, out var g))
+            throw new McpProtocolException(
+                "teamId is required: a team id from create_team, or one a human gave you",
+                McpErrorCode.InvalidParams);
+        var team = new TeamId(g);
+        if (!await tokens.OwnsTeamAsync(lead.CredentialId, team, ct))
+            throw new McpProtocolException(
+                "this lead credential does not own that team",
+                McpErrorCode.InvalidRequest);
+        return team;
     }
 
     private static JsonObject? Params(JsonRpcRequest request, bool allowMissing = false)

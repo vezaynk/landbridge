@@ -52,7 +52,7 @@ public static class PermissionPolicy
             or "report_result" or "request_input"
             or "start_process" or "stop_process" or "list_processes" or "write_process"
             or "register_service" or "open_forward" or "open_preview"
-            or "open_lead_forward" or "report_friction";
+            or "open_lead_forward" or "report_friction" or "create_team";
     }
 
     internal static bool NamesProtocolTool(string proposedInput)
@@ -70,7 +70,7 @@ public static class PermissionPolicy
     private static readonly string[] ProtocolHints =
     [
         "get_inbox", "watch_inbox", "get_session", "report_result", "request_input",
-        "report_friction",
+        "report_friction", "create_team",
         "mcp__landbridge__", "landbridge__get_inbox", "landbridge_get_inbox",
         "landbridge__get_session", "landbridge_get_session",
     ];

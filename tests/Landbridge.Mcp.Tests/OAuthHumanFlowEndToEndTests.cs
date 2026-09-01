@@ -175,6 +175,7 @@ public sealed class OAuthHumanFlowEndToEndTests(PostgresFixture pg) : IAsyncLife
             {
                 ["description"] = "prove the front door opens onto the real system",
                 ["profile"] = "default",
+            ["teamId"] = team.Value.ToString(),
             }, cancellationToken: ct);
 
             Assert.NotEqual(true, created.IsError);

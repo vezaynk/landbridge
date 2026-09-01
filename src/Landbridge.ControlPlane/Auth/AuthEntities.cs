@@ -24,9 +24,11 @@ public enum CredentialKind
     Human,
 
     /// <summary>
-    /// A human session's lead claim against one Team (§5). Lives until evicted
-    /// or released; one per Team (§4, §9 check 6). Carries the claiming human's
-    /// id so takeover can attribute an eviction.
+    /// A human session's Lead factory credential (§5). Authorizes
+    /// <c>create_team</c> and acting on Teams that credential owns. Team
+    /// membership is <see cref="LeadTeamRow"/>, not this row's
+    /// <see cref="CredentialRow.TeamId"/>. Lives until evicted or released.
+    /// Carries the claiming human's id so takeover can attribute an eviction.
     /// </summary>
     Lead,
 }
@@ -75,6 +77,19 @@ public sealed class CredentialRow
     /// </summary>
     public Guid? EvictedByHuman { get; set; }
     public DateTimeOffset? EvictedAt { get; set; }
+}
+
+/// <summary>
+/// Ownership of a Team by a Lead factory credential. The Team id is the
+/// capability: a Lead tool accepts it only when this row says the presented
+/// credential owns it. One owner per Team. No MCP list — an agent either
+/// minted the id or a human supplied it.
+/// </summary>
+public sealed class LeadTeamRow
+{
+    public Guid TeamId { get; set; }
+    public Guid LeadCredentialId { get; set; }
+    public DateTimeOffset CreatedAt { get; set; }
 }
 
 /// <summary>
@@ -217,21 +232,18 @@ public abstract record Principal
     }
 
     /// <summary>
-    /// A live lead claim (§5). Maps straight to the engine's
-    /// <see cref="Landbridge.Core.LeadClaim"/> so authority stays structural end to end.
+    /// A live Lead factory credential (§5). <see cref="CredentialId"/> is the
+    /// row that owns Teams via <see cref="LeadTeamRow"/>. The engine actor is
+    /// still <see cref="Landbridge.Core.LeadClaim"/> — Team-only — constructed
+    /// per call after an ownership check, not stored on this principal.
     ///
     /// <para><see cref="HumanId"/> is the claiming human's session id, carried from
-    /// the credential row (§4: a Lead's authority descends from a human). The engine
-    /// actor stays Team-only — task authority is a Team fact — but the human id is
-    /// what a lead↔machine binding keys on (§8.3 human path), so it rides the
-    /// principal rather than being re-derived from the one-live-Lead-per-Team index.
+    /// the credential row (§4: a Lead's authority descends from a human). The human
+    /// id is what a lead↔machine binding keys on (§8.3 human path).
     /// Nullable because <see cref="CredentialRow.HumanId"/> is: a synthesized or
     /// pre-attribution lead credential authenticates but owns no binding.</para>
     /// </summary>
-    public sealed record Lead(Landbridge.Core.TeamId Team, Guid? HumanId = null) : Principal
-    {
-        public Landbridge.Core.LeadClaim Actor => new(Team);
-    }
+    public sealed record Lead(Guid CredentialId, Guid? HumanId = null) : Principal;
 
     /// <summary>
     /// A lead token that was evicted by takeover (§4). It authenticates only

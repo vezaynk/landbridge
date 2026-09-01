@@ -199,12 +199,14 @@ public static class DashboardEndpoints
         ?? Environment.GetEnvironmentVariable("LANDBRIDGE_PREVIEW_URL_BASE")
         ?? "http://preview.localhost";
 
-    private static bool OperatorMayAccess(Principal principal, Landbridge.Core.TeamId team) => principal switch
+    private static async Task<bool> OperatorMayAccess(
+        Principal principal, Landbridge.Core.TeamId team, TokenService tokens, CancellationToken ct)
     {
-        Principal.Human => true,
-        Principal.Lead l => l.Team == team,
-        _ => false,
-    };
+        if (principal is Principal.Human) return true;
+        if (principal is Principal.Lead l)
+            return await tokens.OwnsTeamAsync(l.CredentialId, team, ct);
+        return false;
+    }
 
     /// <summary>
     /// POST /dashboard/preview — mint a shareable preview for a registered service
@@ -226,7 +228,7 @@ public static class DashboardEndpoints
         var form = await http.Request.ReadFormAsync(ct);
         if (!Guid.TryParse(form["teamId"].ToString(), out var teamId))
             return Results.BadRequest(new { error = "invalid team id" });
-        if (!OperatorMayAccess(principal, new Landbridge.Core.TeamId(teamId)))
+        if (!await OperatorMayAccess(principal, new Landbridge.Core.TeamId(teamId), tokens, ct))
             return Results.StatusCode(StatusCodes.Status403Forbidden);
 
         // "{sessionId}:{name}" — the option value the Team view emits per service.
@@ -423,7 +425,7 @@ public static class DashboardEndpoints
 
         if (await previews.ResolveAsync(label, ct) is not PreviewResolveResult.Found found)
             return RazorPage<PreviewAuthErrorPage>(new { Message = "This preview no longer exists." }, 404);
-        if (!OperatorMayAccess(principal, new Landbridge.Core.TeamId(found.Mapping.TeamId)))
+        if (!await OperatorMayAccess(principal, new Landbridge.Core.TeamId(found.Mapping.TeamId), tokens, ct))
             return RazorPage<PreviewAuthErrorPage>(new { Message = "Your session cannot access this preview's Team." }, 403);
 
         // Open-redirect guard: the return must be exactly the label's preview origin.
@@ -454,7 +456,7 @@ public static class DashboardEndpoints
     /// holds a credential scoped to one Team (§5) and reads only that Team (§4 reattachment,
     /// §10 as-built — no cross-Team or machine-group views for agents). Authenticating and then
     /// discarding the principal is what turned a Lead token into an instance-wide reader, so the
-    /// signature no longer allows it: <see cref="TeamScope"/> for a scoped read,
+    /// signature no longer allows it: owned-Team scope for a scoped read,
     /// <see cref="OperatorMayAccess"/> for a named Team, <see cref="Refused"/> for the views
     /// with no Lead-scoped answer.</para>
     /// </summary>
@@ -474,17 +476,6 @@ public static class DashboardEndpoints
     /// that name no Team: rather than refusing a Lead outright they answer with its own Team,
     /// which is the §4 reattachment surface it is entitled to.
     /// </summary>
-    private static Guid? TeamScope(Principal principal) => principal switch
-    {
-        Principal.Lead l => l.Team.Value,
-        Principal.Human => null,
-        // Unreachable — DashboardAuth.ResolveAsync admits only the two above. Written as a
-        // Team that owns nothing rather than as null, so if a third principal ever reaches
-        // here it reads an empty instance instead of the whole one. The permissive answer is
-        // the one this whole seam exists to stop being the default.
-        _ => Guid.Empty,
-    };
-
     private const string MachinesAreHumanOnly =
         "the machine group is a human-operator view; a Lead session sees its own Team's tasks "
         + "on /dashboard/teams and through get_team_state";

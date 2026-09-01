@@ -1,6 +1,8 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.Core;
 using Landbridge.Mcp.Auth;
 using Microsoft.AspNetCore.Http.Features;
 
@@ -30,21 +32,25 @@ public static class LeadInboxEndpoints
     }
 
     private static async Task<IResult> GetSnapshotAsync(
-        HttpContext http, SessionStore store, CancellationToken ct)
+        HttpContext http, SessionStore store, TokenService tokens, CancellationToken ct)
     {
         if (RejectUnlessLead(http) is { } reject)
             return reject;
         if (ParseSessionFilter(http) is { } bad)
             return bad;
         var filter = SessionFilterOf(http);
-        var lead = LandbridgeClaims.AsLead(http.User)!;
-        var actor = filter is { Count: > 0 } ? lead : (Landbridge.Core.Actor?)null;
-        var inbox = await store.GetLeadInboxAsync(lead.Team, filter, ct, actor);
+        var factory = LandbridgeClaims.AsLeadPrincipal(http.User)!;
+        var team = await RequireOwnedTeamAsync(http, factory, tokens, ct);
+        if (team is null)
+            return Results.Json(new { error = "teamId is required: a team id from create_team, or one a human gave you" },
+                statusCode: StatusCodes.Status400BadRequest);
+        var actor = filter is { Count: > 0 } ? new Landbridge.Core.LeadClaim(team.Value) : (Landbridge.Core.Actor?)null;
+        var inbox = await store.GetLeadInboxAsync(team.Value, filter, ct, actor);
         return Results.Json(inbox, Json);
     }
 
     private static async Task StreamEventsAsync(
-        HttpContext http, SessionStore store, SessionEventFanout fanout, CancellationToken ct)
+        HttpContext http, SessionStore store, SessionEventFanout fanout, TokenService tokens, CancellationToken ct)
     {
         if (RejectUnlessLead(http) is { } reject)
         {
@@ -59,8 +65,15 @@ public static class LeadInboxEndpoints
         }
 
         var filter = SessionFilterOf(http);
-        var lead = LandbridgeClaims.AsLead(http.User)!;
-        var actor = filter is { Count: > 0 } ? lead : (Landbridge.Core.Actor?)null;
+        var factory = LandbridgeClaims.AsLeadPrincipal(http.User)!;
+        var team = await RequireOwnedTeamAsync(http, factory, tokens, ct);
+        if (team is null)
+        {
+            http.Response.StatusCode = StatusCodes.Status400BadRequest;
+            await http.Response.WriteAsJsonAsync(new { error = "teamId is required: a team id from create_team, or one a human gave you" }, ct);
+            return;
+        }
+        var actor = filter is { Count: > 0 } ? new Landbridge.Core.LeadClaim(team.Value) : (Landbridge.Core.Actor?)null;
         http.Response.Headers.ContentType = "text/event-stream";
         http.Response.Headers.CacheControl = "no-cache, no-transform";
         http.Response.Headers.Connection = "keep-alive";
@@ -68,7 +81,7 @@ public static class LeadInboxEndpoints
         http.Features.Get<IHttpResponseBodyFeature>()?.DisableBuffering();
 
         await using var snapshots = LeadInboxWatch
-            .Snapshots(store, fanout, lead.Team, filter, actor, ct)
+            .Snapshots(store, fanout, team.Value, filter, actor, ct)
             .GetAsyncEnumerator(ct);
         var next = snapshots.MoveNextAsync().AsTask();
 
@@ -137,6 +150,16 @@ public static class LeadInboxEndpoints
         }
     }
 
+    private static async Task<TeamId?> RequireOwnedTeamAsync(
+        HttpContext http, Principal.Lead factory, TokenService tokens, CancellationToken ct)
+    {
+        var raw = http.Request.Query["teamId"].ToString();
+        if (string.IsNullOrWhiteSpace(raw) || !Guid.TryParse(raw, out var g))
+            return null;
+        var team = new TeamId(g);
+        return await tokens.OwnsTeamAsync(factory.CredentialId, team, ct) ? team : null;
+    }
+
     private static IResult? RejectUnlessLead(HttpContext http)
     {
         if (LandbridgeClaims.AsEvictedLead(http.User) is { } evicted)
@@ -148,7 +171,7 @@ public static class LeadInboxEndpoints
             }, statusCode: StatusCodes.Status403Forbidden);
         }
 
-        if (LandbridgeClaims.AsLead(http.User) is not null)
+        if (LandbridgeClaims.AsLeadPrincipal(http.User) is not null)
             return null;
 
         return Results.Json(new { error = "lead credential required" },

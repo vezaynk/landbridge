@@ -300,7 +300,7 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     {
         await using var lead = await ConnectLeadAsync(ct);
         var task = await PlaneProbe.CreateSessionAsync(
-            lead, description, ct, profile: profile ?? "default");
+            lead, description, ct, Team.Value.ToString(), profile: profile ?? "default");
         Note($"created task {task} profile={profile ?? "default"}");
         return task;
     }
@@ -309,7 +309,7 @@ internal sealed class ChaosFleet(PostgresFixture pg, ChaosFleetOptions options) 
     public async Task AcceptAsync(SessionId task, CancellationToken ct)
     {
         await using var lead = await ConnectLeadAsync(ct);
-        await PlaneProbe.AcceptAsync(lead, task, ct);
+        await PlaneProbe.AcceptAsync(lead, task, Team.Value.ToString(), ct);
     }
 
     /// <summary>

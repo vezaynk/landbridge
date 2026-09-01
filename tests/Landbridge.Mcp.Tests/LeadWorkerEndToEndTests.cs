@@ -69,6 +69,7 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             {
                 ["description"] = "make the suite pass",
                 ["profile"] = "default",
+            ["teamId"] = team.Value.ToString(),
             }, cancellationToken: ct);
 
             Assert.NotEqual(true, created.IsError);
@@ -150,6 +151,7 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             {
                 ["description"] = "add the index",
                 ["profile"] = "default",
+            ["teamId"] = team.Value.ToString(),
             }, cancellationToken: ct);
             sessionId = new SessionId(Guid.Parse(Assert.Single(created.Content.OfType<TextContentBlock>()).Text));
         }
@@ -181,7 +183,10 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         // ── Lead: see it in the poll, read it, answer it ─────────────────────
         await using (var lead = await ConnectAsync(baseUri, leadToken, ct))
         {
-            var state = await lead.CallToolAsync("get_team_state", new Dictionary<string, object?>(), cancellationToken: ct);
+            var state = await lead.CallToolAsync("get_team_state", new Dictionary<string, object?>
+            {
+                ["teamId"] = team.Value.ToString(),
+            }, cancellationToken: ct);
             var stateText = Assert.Single(state.Content.OfType<TextContentBlock>()).Text;
             // §10: the poll shows WHICH task needs attention and WHAT KIND, never the
             // prose — the whole reason the text has its own deliberate read.
@@ -191,6 +196,7 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             var read = await lead.CallToolAsync("get_lead_inbox", new Dictionary<string, object?>
             {
                 ["sessionId"] = sessionId.ToString(),
+                ["teamId"] = team.Value.ToString(),
             }, cancellationToken: ct);
             var readText = Assert.Single(read.Content.OfType<TextContentBlock>()).Text;
             Assert.Contains(question, readText, StringComparison.Ordinal);
@@ -198,6 +204,7 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             var answered = await lead.CallToolAsync("send_input_response", new Dictionary<string, object?>
             {
                 ["sessionId"] = sessionId.ToString(),
+                ["teamId"] = team.Value.ToString(),
                 ["answer"] = answer,
             }, cancellationToken: ct);
             Assert.NotEqual(true, answered.IsError);
@@ -265,6 +272,7 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         {
             ["description"] = "should not happen",
             ["profile"] = "default",
+        ["teamId"] = team.Value.ToString(),
         }, cancellationToken: ct);
 
         // The tool throws (no lead claim); the SDK surfaces it as a tool error.

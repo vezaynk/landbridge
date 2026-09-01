@@ -17,6 +17,7 @@ public static class LandbridgeClaims
 
     private const string Kind = "landbridge:kind";
     private const string Team = "landbridge:team";
+    private const string Credential = "landbridge:credential";
     private const string Task = "landbridge:task";
     private const string Instance = "landbridge:instance";
     private const string Machine = "landbridge:machine";
@@ -45,7 +46,7 @@ public static class LandbridgeClaims
                 break;
             case Principal.Lead l:
                 claims.Add(new Claim(Kind, nameof(Principal.Lead)));
-                claims.Add(new Claim(Team, l.Team.Value.ToString()));
+                claims.Add(new Claim(Credential, l.CredentialId.ToString()));
                 // The claiming human, when the credential row attributed one (§4).
                 // Absent on a synthesized claim, which is why the round trip below
                 // reads it optionally rather than asserting it.
@@ -73,7 +74,7 @@ public static class LandbridgeClaims
             nameof(Principal.Machine) => new Principal.Machine(Guid.Parse(user.FindFirst(Machine)!.Value)),
             nameof(Principal.Human) => new Principal.Human(Guid.Parse(user.FindFirst(Human)!.Value)),
             nameof(Principal.Lead) => new Principal.Lead(
-                new TeamId(Guid.Parse(user.FindFirst(Team)!.Value)),
+                Guid.Parse(user.FindFirst(Credential)!.Value),
                 user.FindFirst(Human) is { } h ? Guid.Parse(h.Value) : null),
             nameof(Principal.EvictedLead) => new Principal.EvictedLead(
                 new TeamId(Guid.Parse(user.FindFirst(Team)!.Value)),
@@ -91,15 +92,14 @@ public static class LandbridgeClaims
     public static HumanSession? AsHuman(ClaimsPrincipal user) =>
         ToPrincipal(user) is Principal.Human ? new HumanSession() : null;
 
-    /// <summary>The engine's lead claim if this principal is a live lead, else null.</summary>
-    public static LeadClaim? AsLead(ClaimsPrincipal user) =>
-        ToPrincipal(user) is Principal.Lead l ? new LeadClaim(l.Team) : null;
+    /// <summary>The live Lead factory principal if this is a live lead, else null.</summary>
+    public static Principal.Lead? AsLead(ClaimsPrincipal user) =>
+        ToPrincipal(user) as Principal.Lead;
 
     /// <summary>
-    /// The whole live-lead principal — Team <em>and</em> the claiming human (§4) —
-    /// if this principal is a live lead, else null. <see cref="AsLead"/> is the
-    /// engine-actor view for task transitions; this is for the lead-scoped facts
-    /// the engine has no opinion about, namely the lead↔machine binding (§8.3).
+    /// The whole live-lead principal — factory credential <em>and</em> the claiming
+    /// human (§4) — if this principal is a live lead, else null. The engine actor
+    /// is a <see cref="LeadClaim"/> built after an ownership check on a Team id.
     /// </summary>
     public static Principal.Lead? AsLeadPrincipal(ClaimsPrincipal user) =>
         ToPrincipal(user) as Principal.Lead;

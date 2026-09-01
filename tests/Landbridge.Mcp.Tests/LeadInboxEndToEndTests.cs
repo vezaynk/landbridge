@@ -44,7 +44,7 @@ public sealed class LeadInboxEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         var token = await ClaimLeadAsync(team, ct);
 
         using var client = Client(app, token);
-        using var resp = await client.GetAsync("/lead/inbox", ct);
+        using var resp = await client.GetAsync($"/lead/inbox?teamId={team.Value}", ct);
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
         Assert.Equal(0, doc.RootElement.GetProperty("items").GetArrayLength());
@@ -66,7 +66,7 @@ public sealed class LeadInboxEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         var (sessionId, messageId) = await SeedQuestionAsync(team, ct);
 
         using var client = Client(app, token);
-        using var resp = await client.GetAsync("/lead/inbox", ct);
+        using var resp = await client.GetAsync($"/lead/inbox?teamId={team.Value}", ct);
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
         var item = Assert.Single(doc.RootElement.GetProperty("items").EnumerateArray());
@@ -87,11 +87,12 @@ public sealed class LeadInboxEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         await using var app = BuildServer();
         await app.StartAsync(ct);
         var a = TeamId.New();
-        var b = await ClaimLeadAsync(TeamId.New(), ct);
+        var other = TeamId.New();
+        var b = await ClaimLeadAsync(other, ct);
         await SeedQuestionAsync(a, ct);
 
         using var client = Client(app, b);
-        using var resp = await client.GetAsync("/lead/inbox", ct);
+        using var resp = await client.GetAsync($"/lead/inbox?teamId={other.Value}", ct);
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
         Assert.Equal(0, doc.RootElement.GetProperty("items").GetArrayLength());
@@ -112,7 +113,7 @@ public sealed class LeadInboxEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         var worker = await MintWorkerAsync(team, ct);
 
         using (var client = Client(app, worker))
-        using (var resp = await client.GetAsync("/lead/inbox", ct))
+        using (var resp = await client.GetAsync($"/lead/inbox?teamId={team.Value}", ct))
             Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
 
         using (var anon = new HttpClient { BaseAddress = new Uri(app.Urls.First(u => u.StartsWith("http://"))) })
@@ -139,7 +140,7 @@ public sealed class LeadInboxEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         using var client = Client(app, token);
         client.Timeout = Timeout.InfiniteTimeSpan;
         Guid sessionId, messageId;
-        using (var req = new HttpRequestMessage(HttpMethod.Get, "/lead/inbox/events"))
+        using (var req = new HttpRequestMessage(HttpMethod.Get, $"/lead/inbox/events?teamId={team.Value}"))
         {
             req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
             using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
@@ -159,7 +160,7 @@ public sealed class LeadInboxEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             Assert.Equal("snapshot", woken.Event);
         }
 
-        using var jsonResp = await client.GetAsync("/lead/inbox", ct);
+        using var jsonResp = await client.GetAsync($"/lead/inbox?teamId={team.Value}", ct);
         jsonResp.EnsureSuccessStatusCode();
         using var doc = JsonDocument.Parse(await jsonResp.Content.ReadAsStringAsync(ct));
         var item = Assert.Single(doc.RootElement.GetProperty("items").EnumerateArray());
@@ -185,16 +186,16 @@ public sealed class LeadInboxEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         var (b, _) = await SeedQuestionAsync(team, ct);
 
         using var client = Client(app, token);
-        using var all = await client.GetAsync("/lead/inbox", ct);
+        using var all = await client.GetAsync($"/lead/inbox?teamId={team.Value}", ct);
         using var allDoc = JsonDocument.Parse(await all.Content.ReadAsStringAsync(ct));
         Assert.Equal(2, allDoc.RootElement.GetProperty("items").GetArrayLength());
 
-        using var one = await client.GetAsync($"/lead/inbox?sessionId={a}", ct);
+        using var one = await client.GetAsync($"/lead/inbox?teamId={team.Value}&sessionId={a}", ct);
         using var oneDoc = JsonDocument.Parse(await one.Content.ReadAsStringAsync(ct));
         var item = Assert.Single(oneDoc.RootElement.GetProperty("items").EnumerateArray());
         Assert.Equal(a.ToString(), item.GetProperty("sessionId").GetString());
 
-        using var bad = await client.GetAsync("/lead/inbox?sessionId=not-a-guid", ct);
+        using var bad = await client.GetAsync($"/lead/inbox?teamId={team.Value}&sessionId=not-a-guid", ct);
         Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
 
         await app.StopAsync(ct);

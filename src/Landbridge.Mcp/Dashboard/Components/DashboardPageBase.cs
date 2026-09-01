@@ -32,17 +32,13 @@ public abstract class DashboardPageBase : ComponentBase, IDisposable
     protected CancellationToken RequestAborted =>
         Http.HttpContext?.RequestAborted ?? CancellationToken.None;
 
-    protected Guid? TeamScope => Principal switch
-    {
-        Principal.Lead l => l.Team.Value,
-        Principal.Human => null,
-        _ => Guid.Empty,
-    };
+    /// <summary>Null is the instance-wide human view; a list is a Lead's owned Teams.</summary>
+    protected IReadOnlyList<Guid>? TeamScope { get; private set; }
 
     protected bool OperatorMayAccess(TeamId team) => Principal switch
     {
         Principal.Human => true,
-        Principal.Lead l => l.Team == team,
+        Principal.Lead => TeamScope is not null && TeamScope.Contains(team.Value),
         _ => false,
     };
 
@@ -75,6 +71,13 @@ public abstract class DashboardPageBase : ComponentBase, IDisposable
             Nav.NavigateTo("/dashboard/login", replace: true);
             return;
         }
+
+        TeamScope = Principal switch
+        {
+            Principal.Human => null,
+            Principal.Lead l => await Tokens.OwnedTeamIdsAsync(l.CredentialId, RequestAborted),
+            _ => [],
+        };
 
         Now = Clock.GetUtcNow();
         StatusOnRefuse = StatusCodes.Status403Forbidden;

@@ -20,19 +20,23 @@ public sealed class FrictionToolsTests(PostgresFixture pg) : IAsyncLifetime
 {
     public async Task InitializeAsync()
     {
-        if (pg.Available) await pg.ResetAsync();
+        if (!pg.Available) return;
+        await pg.ResetAsync();
+        Factory = await LeadFactory.SeedAsync(pg, Team, _clock);
     }
 
     public Task DisposeAsync() => Task.CompletedTask;
 
     private static readonly TeamId Team = TeamId.New();
     private readonly FakeTimeProvider _clock = new();
+    private Principal.Lead Factory = null!;
+    private string Tid => LeadFactory.Id(Team);
 
     private static IHttpContextAccessor AccessorFor(Principal principal) =>
         new HttpContextAccessor { HttpContext = new DefaultHttpContext { User = LandbridgeClaims.ToClaimsPrincipal(principal) } };
 
     private FrictionTools ToolsFor(Principal principal) =>
-        new(new FrictionStore(pg.NewContext(), _clock), AccessorFor(principal));
+        new(new FrictionStore(pg.NewContext(), _clock), new TokenService(pg.NewContext(), _clock), AccessorFor(principal));
 
     [SkippableFact]
     public async Task A_lead_and_a_worker_can_each_record_friction()
@@ -41,12 +45,12 @@ public sealed class FrictionToolsTests(PostgresFixture pg) : IAsyncLifetime
         var session = SessionId.New();
         var leadHuman = Guid.NewGuid();
 
-        var leadAck = await ToolsFor(new Principal.Lead(Team, leadHuman))
-            .ReportFriction("list_profiles hid a saturated machine as missing", CancellationToken.None);
+        var leadAck = await ToolsFor(Factory with { HumanId = leadHuman })
+            .ReportFriction("list_profiles hid a saturated machine as missing", Tid, CancellationToken.None);
         Assert.Equal("ok: friction recorded", leadAck);
 
         var workerAck = await ToolsFor(new Principal.Worker(new WorkerCaller(Team, session, WorkerInstanceId.New())))
-            .ReportFriction("start_process refused with no name in the reason", CancellationToken.None);
+            .ReportFriction("start_process refused with no name in the reason", teamId: null, ct: CancellationToken.None);
         Assert.Equal("ok: friction recorded", workerAck);
 
         await using var db = pg.NewContext();
@@ -66,13 +70,13 @@ public sealed class FrictionToolsTests(PostgresFixture pg) : IAsyncLifetime
     public async Task Empty_and_over_cap_messages_are_refused()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
-        var tools = ToolsFor(new Principal.Lead(Team));
+        var tools = ToolsFor(Factory);
 
-        var empty = await Assert.ThrowsAsync<McpException>(() => tools.ReportFriction("   ", CancellationToken.None));
+        var empty = await Assert.ThrowsAsync<McpException>(() => tools.ReportFriction("   ", Tid, CancellationToken.None));
         Assert.Contains("required", empty.Message, StringComparison.OrdinalIgnoreCase);
 
         var over = new string('x', FrictionStore.MaxMessageBytes + 1);
-        var cap = await Assert.ThrowsAsync<McpException>(() => tools.ReportFriction(over, CancellationToken.None));
+        var cap = await Assert.ThrowsAsync<McpException>(() => tools.ReportFriction(over, Tid, CancellationToken.None));
         Assert.Contains("cap", cap.Message, StringComparison.OrdinalIgnoreCase);
 
         await using var db = pg.NewContext();
@@ -85,7 +89,7 @@ public sealed class FrictionToolsTests(PostgresFixture pg) : IAsyncLifetime
         Skip.IfNot(pg.Available, pg.SkipReason);
         var tools = ToolsFor(new Principal.Human(Guid.NewGuid()));
         var ex = await Assert.ThrowsAsync<McpException>(
-            () => tools.ReportFriction("this should not land", CancellationToken.None));
+            () => tools.ReportFriction("this should not land", teamId: null, ct: CancellationToken.None));
         Assert.Contains("lead claim or a dispatched worker", ex.Message, StringComparison.Ordinal);
     }
 }

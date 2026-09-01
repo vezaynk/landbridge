@@ -133,7 +133,7 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
             // ── Producer: create + dispatch task A onto "mp" (the only ready machine,
             //    and the only submitted task), then wait until its worker has bound
             //    the echo service and registered it.
-            var taskA = await CreateSessionAsync(baseUrl, leadToken, $"relay-serve:{ServiceName}", ct);
+            var taskA = await CreateSessionAsync(baseUrl, leadToken, $"relay-serve:{ServiceName}", ct, team);
             SetReady(registry, "mp", ready: true);
             SetReady(registry, "mc", ready: false);
             await dispatch.RunDispatchPassAsync(ct);
@@ -144,7 +144,7 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
 
             // ── Consumer: create + dispatch task B onto "mc" (now the only ready
             //    machine, and A is working so B is the only submitted task).
-            var taskB = await CreateSessionAsync(baseUrl, leadToken, $"relay-consume:{ServiceName}", ct);
+            var taskB = await CreateSessionAsync(baseUrl, leadToken, $"relay-consume:{ServiceName}", ct, team);
             SetReady(registry, "mp", ready: false);
             SetReady(registry, "mc", ready: true);
             await dispatch.RunDispatchPassAsync(ct);
@@ -247,13 +247,14 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
             machineId, Ready: ready, UnderBackPressure: false,
             new SystemLoad(0, 0, 0), RunningSessions: 0, ["default"], DateTimeOffset.UtcNow));
 
-    private async Task<SessionId> CreateSessionAsync(string baseUrl, string leadToken, string description, CancellationToken ct)
+    private async Task<SessionId> CreateSessionAsync(string baseUrl, string leadToken, string description, CancellationToken ct, TeamId team)
     {
         await using var lead = await RelayGrantTestKit.ConnectMcpAsync(new Uri(baseUrl + "/"), leadToken, ct);
         var created = await lead.CallToolAsync("create_session", new Dictionary<string, object?>
         {
             ["description"] = description,
             ["profile"] = "default",
+            ["teamId"] = team.Value.ToString(),
         }, cancellationToken: ct);
         Assert.NotEqual(true, created.IsError);
         return new SessionId(Guid.Parse(Assert.Single(created.Content.OfType<TextContentBlock>()).Text));

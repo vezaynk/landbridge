@@ -85,6 +85,7 @@ public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifet
             {
                 ["description"] = description,
                 ["profile"] = "default",
+            ["teamId"] = team.Value.ToString(),
             }, cancellationToken: ct);
             Assert.NotEqual(true, created.IsError);
             sessionId = new SessionId(Guid.Parse(Assert.Single(created.Content.OfType<TextContentBlock>()).Text));
@@ -155,6 +156,7 @@ public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifet
                 var reportRead = await lead.CallToolAsync("get_lead_inbox", new Dictionary<string, object?>
                 {
                     ["sessionId"] = sessionId.ToString(),
+                    ["teamId"] = team.Value.ToString(),
                 }, cancellationToken: ct);
                 Assert.NotEqual(true, reportRead.IsError);
                 Assert.Contains(reportedRef,
@@ -163,6 +165,7 @@ public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifet
                 var stopped = await lead.CallToolAsync("stop_session", new Dictionary<string, object?>
                 {
                     ["sessionId"] = sessionId.ToString(),
+                    ["teamId"] = team.Value.ToString(),
                 }, cancellationToken: ct);
                 Assert.NotEqual(true, stopped.IsError);
                 Assert.Contains("Completed", Assert.Single(stopped.Content.OfType<TextContentBlock>()).Text);
