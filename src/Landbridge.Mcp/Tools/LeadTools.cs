@@ -77,7 +77,7 @@ public sealed class LeadTools(
     private static Guid HumanOf(Principal.Lead lead) =>
         lead.HumanId ?? throw new McpException(
             "this lead credential carries no human identity, so it cannot own a machine binding; " +
-            "re-claim the Team from your human session (/landbridge-lead) and try again.");
+            "re-claim the Lead factory from your human session (dashboard Connect) and try again.");
 
     /// <summary>
     /// Resolve the engine actor for <paramref name="teamId"/> after an ownership
@@ -211,7 +211,7 @@ public sealed class LeadTools(
 
     [McpServerTool(Name = "send_input_response"),
      Description("Close a wait the worker opened: a question, spawn_request, auth_help, or endpoint_wait. " +
-                 "Read first with get_lead_inbox(sessionId). Pass your words as 'answer' — that text is " +
+                 "Read first with get_lead_inbox(teamId, sessionId). Pass your words as 'answer' — that text is " +
                  "the only thing the worker receives. Refused if nothing is waiting (use send_input_request) " +
                  "or if a permission wait is live (use answer_permission_request). A still-live ACP session " +
                  "gets a follow-up prompt on the same instance; a dead or parked waiter is redispatched " +
@@ -278,7 +278,7 @@ public sealed class LeadTools(
 
     [McpServerTool(Name = "answer_permission_request"),
      Description("Decide a permission request from a worker's harness (§11) by picking ONE of the " +
-                 "options get_lead_inbox(sessionId) listed (the harness's own optionId). Unlike every other " +
+                 "options get_lead_inbox(teamId, sessionId) listed (the harness's own optionId). Unlike every other " +
                  "blocked session, THE WORKER IS STILL RUNNING and blocked inside this call — your " +
                  "choice resumes it in place, so answer promptly. 'allow'/'deny' still work as aliases " +
                  "for the matching kind when you have not picked a specific optionId. Approve routine " +
@@ -292,7 +292,7 @@ public sealed class LeadTools(
         string sessionId,
         [Description("The Team that owns this session. From create_team, or a human-supplied id.")]
         string teamId,
-        [Description("One optionId from get_lead_inbox(sessionId), or 'allow'/'deny' as aliases for the " +
+        [Description("One optionId from get_lead_inbox(teamId, sessionId), or 'allow'/'deny' as aliases for the " +
                      "matching harness kind.")]
         string option,
         [Description("What the worker is told. Required on a reject-kind option — a refusal it cannot " +
@@ -305,7 +305,7 @@ public sealed class LeadTools(
         var id = ParseSessionId(sessionId);
         if (string.IsNullOrWhiteSpace(option))
             throw new McpException(
-                "option is required: pick an optionId from get_lead_inbox(sessionId), or 'allow'/'deny'.");
+                "option is required: pick an optionId from get_lead_inbox(teamId, sessionId), or 'allow'/'deny'.");
 
         // No park record and no lease machine: this path resumes the worker that is still
         // holding its own tool call open, so there is nothing to redispatch and no transcript
@@ -342,7 +342,7 @@ public sealed class LeadTools(
                  "Team-wide is identifiers only. Pass sessionId or sessionIds to watch those sessions " +
                  "WITH BODIES; unread report mail is marked read when it arrives. A question or " +
                  "permission wait stays until you answer. Call again after you act. HTTP twin: " +
-                 "GET /lead/inbox/events.")]
+                 "GET /lead/inbox/events?teamId=.")]
     public async Task<LeadInboxView> WatchLeadInbox(
         [Description("The Team whose inbox to watch. From create_team, or a human-supplied id.")]
         string teamId,
@@ -505,7 +505,7 @@ public sealed class LeadTools(
                 "instead — that needs no landbridged on your human's side.");
 
         // 2. Issue the grant. Same check-11 gate as a worker's open_forward, scoped
-        // to this Lead's own Team (§9 check 11, §8.2).
+        // to a Team this factory owns (§9 check 11, §8.2).
         var issued = await grants.IssueForLeadAsync(actor.Team, serviceName, ct) switch
         {
             RelayGrantResult.Issued i => i,
@@ -549,5 +549,5 @@ public sealed class LeadTools(
     }
 
     private static McpException Unauthorized() =>
-        new("this tool requires a live lead claim; claim the Team first.");
+        new("this tool requires a live Lead token; claim one from your human session (dashboard Connect) first.");
 }

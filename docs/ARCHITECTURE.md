@@ -104,7 +104,7 @@ instantly — `TokenService` stores only a SHA-256 hash and validates by lookup:
 | Identity | Token prefix | Obtained | Authorizes |
 |---|---|---|---|
 | Human | `lbr_h_` | OAuth code flow / operator passphrase | create Teams, confirm verdicts, dashboard |
-| Lead | `lbr_l_` | claimed against a Team under a human session | create tasks, answer, close sessions (`stop_session`), read Team state |
+| Lead | `lbr_l_` | claimed as a factory under a human session | `create_team`; create tasks, answer, close sessions (`stop_session`) on a `teamId` that factory owns |
 | Machine (`landbridged`) | `lbr_m_` / `lbr_r_` | enrollment token → client credentials | runner channel |
 | Worker | `lbr_w_` | **minted at dispatch** | MCP worker tools, scoped to `{team, task, worker, instance}` |
 
@@ -115,8 +115,8 @@ rather than checked: a worker cannot create a task because its token carries no
 lead claim, not because an `if` rejected it.
 
 ```
-  human session ──claim_lead──► Lead token (scoped {team})
-                                     │ create_session
+  human session ──claim Lead factory──► Lead token (owns Teams via lead_teams)
+                                     │ create_team / create_session(teamId)
                                      ▼
                               submitted task
                                      │ control-plane dispatch (SKIP LOCKED)

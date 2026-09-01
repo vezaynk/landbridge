@@ -64,7 +64,7 @@ else if (Ready && Run is { } run)
     {
         if (Principal is not Principal.Human)
         {
-            return "profile checks are a human-operator view; a Lead session sees its own Team's tasks "
+            return "profile checks are a human-operator view; a Lead session sees its owned Teams "
                 + "on /dashboard/teams and through get_team_state";
         }
         var rows = await Queries.GetConformanceTasksAsync(RunId, RequestAborted);

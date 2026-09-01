@@ -138,7 +138,7 @@ internal static class ConformanceEndpoints
     }
 
     private const string MachinesAreHumanOnly =
-        "profile checks are a human-operator view; a Lead session sees its own Team's tasks "
+        "profile checks are a human-operator view; a Lead session sees its owned Teams "
         + "on /dashboard/teams and through get_team_state";
 
     private const string CrossOriginReason =
