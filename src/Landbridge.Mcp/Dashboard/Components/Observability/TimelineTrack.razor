@@ -1,0 +1,38 @@
+@using Landbridge.ControlPlane
+<div class="obs-track">
+    <div class="obs-track__line"></div>
+    @foreach (var m in Marks)
+    {
+        <div class="@MarkClass(m)" style="@MarkStyle(m)" title="@m.Label"></div>
+    }
+    <div class="obs-track__edge" style="background:var(@EdgeColorVar)"></div>
+</div>
+
+@code {
+    [Parameter, EditorRequired]
+    public IReadOnlyList<ObservabilityMark> Marks { get; set; } = [];
+
+    [Parameter, EditorRequired]
+    public string EdgeColorVar { get; set; } = "--color-surface";
+
+    private static string MarkClass(ObservabilityMark m) => "obs-mark " + m.Kind switch
+    {
+        ObservabilityMarkKind.Tool => "obs-mark--tool",
+        ObservabilityMarkKind.Ask => "obs-mark--ask",
+        ObservabilityMarkKind.Answer => "obs-mark--answer",
+        ObservabilityMarkKind.Forward => "obs-mark--forward",
+        ObservabilityMarkKind.Error => "obs-mark--error",
+        ObservabilityMarkKind.Park => "obs-mark--park",
+        ObservabilityMarkKind.Dispatch => "obs-mark--dispatch",
+        ObservabilityMarkKind.Done => "obs-mark--done",
+        _ => "",
+    };
+
+    private static string MarkStyle(ObservabilityMark m)
+    {
+        var style = $"left:{Fmt.Pct(m.PositionPct)};";
+        if (m.Kind == ObservabilityMarkKind.Forward)
+            style += $"width:{Fmt.Pct(m.WidthPct)};";
+        return style;
+    }
+}

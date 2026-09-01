@@ -63,12 +63,10 @@ public static class DashboardEndpoints
             return Results.Redirect("/dashboard/login");
         }).DisableAntiforgery().WithOrder(-100);
 
-        // Gated views. "/dashboard" lands on the Machine Group view.
-        app.MapGet("/dashboard", () => Results.Redirect("/dashboard/machines"));
-
-        // HTML GETs are Blazor pages (MapDashboardUi). JSON twins are served by
-        // DashboardJsonReads before the router. These POSTs stay HTTP so cookie
-        // writes, redirects, and same-origin checks stay on the request.
+        // HTML GETs for /dashboard and /dashboard/machines are the fleet board
+        // (Blazor @page). JSON twins are served by DashboardJsonReads first.
+        // These POSTs stay HTTP so cookie writes, redirects, and same-origin
+        // checks stay on the request.
 
         // §12 preview mint: 'Create preview' from the Team's registered-services view.
         app.MapPost("/dashboard/preview", HandleCreatePreviewAsync).DisableAntiforgery().WithOrder(-100);

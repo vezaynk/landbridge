@@ -1,0 +1,91 @@
+@using Landbridge.ControlPlane
+<div class="obs-detail">
+    <div class="obs-detail__head">
+        <div class="obs-detail__title">
+            <span class="obs-detail__title-dot" style="background:var(@Meta.ColorVar)"></span>
+            <span class="obs-detail__title-ns">@Lane.Namespace</span>
+        </div>
+        <div class="obs-detail__meta">@Lane.Profile · @Lane.Machine · @Meta.Label · envelope @Meta.Envelope · team @ShortId(Lane.TeamId)</div>
+        <div class="obs-detail__actions">
+            <a class="obs-btn obs-btn--primary" href="/dashboard/sessions/@Lane.SessionId/transcripts">Tail transcript</a>
+            <a class="obs-btn obs-btn--ghost" href="/dashboard/events">Event log</a>
+            <a class="obs-btn obs-btn--ghost" href="/dashboard/teams/@Lane.TeamId">Team</a>
+        </div>
+    </div>
+
+    <div class="obs-detail__section-title">Exchange</div>
+    <div class="obs-exchange">
+        @if (Lane.Exchange.Count == 0)
+        {
+            <div class="obs-message" style="border-left-color:var(--color-neutral-800);background:transparent">
+                <div class="obs-message__text" style="color:var(--color-neutral-700)">No Lead ↔ worker exchange on this session yet.</div>
+            </div>
+        }
+        @foreach (var m in Lane.Exchange)
+        {
+            var fromLead = string.Equals(m.From, "Lead", StringComparison.Ordinal);
+            var bar = fromLead ? "var(--color-accent-600)" : "var(--color-accent-400)";
+            var bg = fromLead ? "var(--surface-1)" : "var(--surface-2)";
+            <div class="obs-message" style="border-left-color:@bar;background:@bg">
+                <div class="obs-message__head">
+                    <span class="obs-message__from" style="color:@bar">@m.From</span>
+                    <span class="obs-message__spacer"></span>
+                    <span class="obs-message__at">@(m.At is { } at ? Age(at, Now) : "")</span>
+                </div>
+                <div class="obs-message__text">@m.Text</div>
+            </div>
+        }
+    </div>
+
+    <div class="obs-transcript-head">
+        <span class="obs-transcript-head__title">Event tail</span>
+        @if (Meta.Live)
+        {
+            <span class="obs-transcript-head__dot"></span>
+        }
+        <span class="obs-transcript-head__spacer"></span>
+        <span class="obs-transcript-head__tag">a@Lane.Attempt · @Lane.Machine</span>
+    </div>
+    <div class="obs-transcript">
+        @foreach (var l in Lane.Tail)
+        {
+            <div class="obs-transcript__line">
+                <span class="obs-transcript__time">@l.At.ToString("HH:mm:ss")</span>
+                <span class="obs-transcript__text" style="color:@LineColor(l.Kind)">@l.Kind @(string.IsNullOrEmpty(l.Text) ? "" : "· " + l.Text)</span>
+            </div>
+        }
+        @if (Lane.Tail.Count == 0)
+        {
+            <div class="obs-transcript__line">
+                <span class="obs-transcript__time">&nbsp;</span>
+                <span class="obs-transcript__text" style="color:var(--color-neutral-700)">no events in the last 15 min</span>
+            </div>
+        }
+        @if (Meta.Live)
+        {
+            <div class="obs-transcript__line">
+                <span class="obs-transcript__time">&nbsp;</span>
+                <span class="obs-transcript__cursor"></span>
+            </div>
+        }
+    </div>
+</div>
+
+@code {
+    [Parameter, EditorRequired]
+    public ObservabilityLane Lane { get; set; } = null!;
+
+    [Parameter]
+    public DateTimeOffset Now { get; set; }
+
+    private LaneMeta Meta => LaneMeta.Of(Lane);
+
+    private static string LineColor(string kind) => kind switch
+    {
+        nameof(RequestInput) => "var(--color-accent-400)",
+        nameof(AnswerInput) or nameof(AnswerPermission) or nameof(WakeParked) => "var(--color-accent-300)",
+        "auth-failed" => "var(--state-error)",
+        nameof(ReportResult) => "var(--color-neutral-300)",
+        _ => "var(--color-neutral-600)",
+    };
+}

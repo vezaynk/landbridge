@@ -140,8 +140,9 @@ secrets or the environment variable `Landbridge__Operator__PassphraseHash` (see 
 
 - **Dashboard** — browse to `/dashboard`, land on `/dashboard/login`, enter the
   passphrase. On success you get a `landbridge_session` cookie (12h, HttpOnly,
-  `Path=/dashboard`) and can view `/dashboard/machines` (Machine Group),
-  `/dashboard/teams` + `/dashboard/teams/{id}` (Team views), `/dashboard/inbox`
+  `Path=/dashboard`) and can view `/dashboard` / `/dashboard/machines` (the
+  fleet observability board: machines, live session lanes, usage, forwards,
+  and a session detail panel), `/dashboard/teams` + `/dashboard/teams/{id}` (Team views), `/dashboard/inbox`
   (human inbox), `/dashboard/events`, `/dashboard/conformance` (operator
   dummy-task check aimed at a named profile: `POST` mints the set,
   `GET /dashboard/conformance/{runId}` reports states), and `/dashboard/connect`
