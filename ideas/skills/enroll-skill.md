@@ -222,6 +222,6 @@ Note that `landbridged` keeps no state a restart would try to reconcile: no sess
 
 ## A note on what this machine is
 
-A name, a purpose, the OS string, and a permission level were declared once, when `landbridged` exchanged the enrollment token for credentials — not from the config, and not on the runner connection, which declares nothing beyond the token. Those four are recorded server-side and are not re-declarable from a config file, so a machine cannot promote its own privileges by editing one. If the machine's role changes, that is a human decision made through the control plane.
+A name and OS string were declared once, when `landbridged` exchanged the enrollment token for credentials — not from the config, and not on the runner connection, which declares nothing beyond the token. Those are recorded server-side and are not re-declarable from a config file. If the machine's role changes, that is a human decision made through the control plane.
 
-Two honest limits on that record. Hardware specs are **not** part of it despite what §11 says — nothing collects CPU or memory as declared capacity, only live load on the heartbeat. And the permission level is stored but not yet read by anything: no dispatch, forwarding, or tool decision consults it today. Treat it as a label the human is recording for later, not a control that is holding.
+Hardware specs are **not** part of that record despite what §11 says — nothing collects CPU or memory as declared capacity, only live load on the heartbeat.

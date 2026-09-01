@@ -58,7 +58,7 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
             var tokens = new TokenService(db, TimeProvider.System);
             var enrollment = await tokens.IssueEnrollmentTokenAsync(ct);
             var creds = await tokens.ExchangeEnrollmentAsync(
-                enrollment.Token, new MachineDeclaration("box-1", "test", "macos", "standard"), ct);
+                enrollment.Token, new MachineDeclaration("box-1", "macos"), ct);
             machineToken = creds!.Access.Token;
 
             var store = new SessionStore(db, TimeProvider.System);
@@ -154,7 +154,7 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
             var tokens = new TokenService(db, TimeProvider.System);
             var enrollment = await tokens.IssueEnrollmentTokenAsync(ct);
             var creds = await tokens.ExchangeEnrollmentAsync(
-                enrollment.Token, new MachineDeclaration("box-1", "test", "macos", "standard"), ct);
+                enrollment.Token, new MachineDeclaration("box-1", "macos"), ct);
             machineToken = creds!.Access.Token;
             // The registry keys on the AUTHENTICATED identity, never the name a heartbeat
             // reports for itself (§13), so this — not "box-1" — is what it is filed under.
@@ -258,7 +258,7 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
             var tokens = new TokenService(db, TimeProvider.System);
             var creds = await tokens.ExchangeEnrollmentAsync(
                 (await tokens.IssueEnrollmentTokenAsync(ct)).Token,
-                new MachineDeclaration("box-1", "test", "macos", "standard"), ct);
+                new MachineDeclaration("box-1", "macos"), ct);
             machineToken = creds!.Access.Token;
             machineGuid = creds.MachineId;
         }

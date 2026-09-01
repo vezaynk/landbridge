@@ -14,7 +14,7 @@ namespace Landbridge.Mcp.Tools;
 
 /// <summary>
 /// The Lead tool surface (spec §10). A Lead is a harness client a human drives
-/// (§4); these tools map onto the engine commands a lead claim authorizes.
+/// (§4); these tools map onto the engine commands a Lead factory authorizes.
 ///
 /// The caller is never a parameter — it comes from the authenticated token
 /// (HttpContext.User → Lead factory), exactly like <see cref="WorkerTools"/>.
@@ -27,7 +27,7 @@ namespace Landbridge.Mcp.Tools;
 /// <para><c>list_profiles</c> is the one tool with no Team in it and no store behind it: a
 /// declared runner profile is machine config no Team owns, and it is read straight off the
 /// live <see cref="RunnerConnectionRegistry"/> (§7 routing, §10 as-built refinement). That
-/// makes the lead-claim check at its top the whole of its authority rather than a
+/// makes the Lead-principal check at its top the whole of its authority rather than a
 /// pre-filter, which is why it is written as a deliberate read of
 /// <see cref="LeadPrincipal"/> rather than left to a downstream re-check that does not
 /// exist for it.</para>
@@ -70,14 +70,14 @@ public sealed class LeadTools(
     }
 
     /// <summary>
-    /// The claiming human, for the facts that key on the person rather than the Team
+    /// The human who issued this factory, for the facts that key on the person rather than the Team
     /// — currently only the lead↔machine binding (§8.3 human path). A lead credential
     /// with no human attribution can authenticate but owns no machine.
     /// </summary>
     private static Guid HumanOf(Principal.Lead lead) =>
         lead.HumanId ?? throw new McpException(
             "this lead credential carries no human identity, so it cannot own a machine binding; " +
-            "re-claim the Lead factory from your human session (dashboard Connect) and try again.");
+            "issue a new Lead token from your human session (dashboard Connect) and try again.");
 
     /// <summary>
     /// Resolve the engine actor for <paramref name="teamId"/> after an ownership
@@ -549,5 +549,5 @@ public sealed class LeadTools(
     }
 
     private static McpException Unauthorized() =>
-        new("this tool requires a live Lead token; claim one from your human session (dashboard Connect) first.");
+        new("this tool requires a live Lead token; issue one from your human session (dashboard Connect) first.");
 }

@@ -37,7 +37,7 @@ public sealed class LeadMachineForwardTests(PostgresFixture pg) : IAsyncLifetime
         var tokens = new TokenService(db, clock);
         var enrollment = await tokens.IssueEnrollmentTokenAsync();
         var credentials = await tokens.ExchangeEnrollmentAsync(
-            enrollment.Token, new MachineDeclaration(name, "lead's laptop", "macos", "standard"));
+            enrollment.Token, new MachineDeclaration(name, "macos"));
         return credentials!.MachineId;
     }
 

@@ -393,7 +393,7 @@ public sealed class DashboardScopeAndOriginTests(PostgresFixture pg) : IAsyncLif
             var tokens = new TokenService(db, TimeProvider.System);
             var creds = await tokens.ExchangeEnrollmentAsync(
                 (await tokens.IssueEnrollmentTokenAsync(ct)).Token,
-                new MachineDeclaration("box-1", "test", "macos", "standard"), ct);
+                new MachineDeclaration("box-1", "macos"), ct);
             machineId = creds!.MachineId;
         }
 

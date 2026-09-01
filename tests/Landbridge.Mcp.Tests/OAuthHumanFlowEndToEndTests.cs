@@ -17,7 +17,7 @@ namespace Landbridge.Mcp.Tests;
 /// read both metadata documents, walk authorize (GET form → POST passphrase) with
 /// a CIMD-served client, exchange the code at the token endpoint with the PKCE
 /// verifier, and then <b>use</b> the returned <c>lbr_h_</c> token to open the real
-/// system: claim a Lead with it and call a Lead tool over MCP. That end proves the
+/// system: issue a Lead token with it and call a Lead tool over MCP. That end proves the
 /// front door opens onto the actual control plane, not a mock.
 /// </summary>
 [Collection(PostgresCollection.Name)]
@@ -155,7 +155,7 @@ public sealed class OAuthHumanFlowEndToEndTests(PostgresFixture pg) : IAsyncLife
             Assert.Equal("Bearer", token.GetProperty("token_type").GetString());
             Assert.True(token.GetProperty("expires_in").GetInt32() > 0);
 
-            // ── 7. USE the token: it is a real §5 human session — claim a Lead
+            // ── 7. USE the token: it is a real §5 human session — issue a Lead token
             //       with it and drive a Lead tool over MCP, onto the real store. ──
             var team = TeamId.New();
             string leadToken;

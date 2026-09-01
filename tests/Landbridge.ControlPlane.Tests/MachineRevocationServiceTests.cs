@@ -29,7 +29,7 @@ public sealed class MachineRevocationServiceTests(PostgresFixture pg) : IAsyncLi
 
     public Task DisposeAsync() => Task.CompletedTask;
 
-    private static readonly MachineDeclaration Decl = new("box-1", "test", "macos", "standard");
+    private static readonly MachineDeclaration Decl = new("box-1", "macos");
 
     [SkippableFact]
     public async Task Revoke_closes_the_channel_requeues_the_work_and_kills_every_credential_on_the_box()

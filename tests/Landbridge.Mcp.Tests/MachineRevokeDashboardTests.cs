@@ -37,7 +37,7 @@ public sealed class MachineRevokeDashboardTests(PostgresFixture pg) : IAsyncLife
 
     public Task DisposeAsync() => Task.CompletedTask;
 
-    private static readonly MachineDeclaration Decl = new("box-1", "test", "macos", "standard");
+    private static readonly MachineDeclaration Decl = new("box-1", "macos");
 
     [SkippableFact]
     public async Task A_human_revokes_a_connected_machine_from_the_machine_group_view()

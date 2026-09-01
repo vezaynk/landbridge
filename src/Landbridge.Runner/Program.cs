@@ -204,8 +204,8 @@ public static class Program
     /// <summary>
     /// The <c>--enroll</c> one-shot (§5 Bootstrap). Exchanges the enrollment token
     /// for machine credentials over HTTP and persists them; prints the machine id
-    /// to stdout (scriptable) and a human note to stderr. Purpose/name/permission
-    /// level are declared here and bound server-side (§13); os is auto-filled.
+    /// to stdout (scriptable) and a human note to stderr. Name is declared here
+    /// and bound server-side (§13); os is auto-filled.
     /// </summary>
     private static async Task<int> RunEnrollAsync(string[] args)
     {
@@ -214,7 +214,7 @@ public static class Program
         {
             Console.Error.WriteLine(
                 "usage: landbridged --enroll --control-url <https://plane> " +
-                "[--enroll-token-file <path>] [--state-dir <dir>] [--name <n>] [--purpose <p>] [--permission-level <l>]\n" +
+                "[--enroll-token-file <path>] [--state-dir <dir>] [--name <n>]\n" +
                 "  The enrollment token is read from --enroll-token-file, or from stdin if omitted " +
                 "(`landbridged --enroll < token` or an interactive prompt) — never from argv (§13).");
             return 2;
@@ -238,9 +238,7 @@ public static class Program
         var request = new EnrollRequest(
             EnrollmentToken: enrollmentToken,
             Name: ArgValue(args, "--name") ?? Environment.MachineName,
-            Purpose: ArgValue(args, "--purpose") ?? "general",
-            Os: RuntimeInformation.OSDescription,
-            PermissionLevel: ArgValue(args, "--permission-level") ?? "standard");
+            Os: RuntimeInformation.OSDescription);
 
         using var http = new HttpClient();
         try

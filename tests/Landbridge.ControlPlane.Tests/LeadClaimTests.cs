@@ -6,9 +6,9 @@ using Microsoft.Extensions.Time.Testing;
 namespace Landbridge.ControlPlane.Tests;
 
 /// <summary>
-/// The human → Lead credential path of §4/§5: a human session claims a Team,
-/// one Lead per Team is a conditional claim, and takeover evicts the incumbent
-/// with an explicit, logged reason.
+/// The human → Lead credential path of §4/§5: a human session issues a factory
+/// token and assigns a Team, one owner per Team is a conditional assign, and
+/// takeover evicts the incumbent with an explicit, logged reason.
 /// </summary>
 [Collection(PostgresCollection.Name)]
 public sealed class LeadClaimTests(PostgresFixture pg) : IAsyncLifetime

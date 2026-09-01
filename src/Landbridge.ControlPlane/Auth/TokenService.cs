@@ -272,9 +272,7 @@ public sealed class TokenService(LandbridgeDbContext db, TimeProvider clock)
         {
             Id = Guid.NewGuid(),
             Name = declaration.Name,
-            Purpose = declaration.Purpose,
             Os = declaration.Os,
-            PermissionLevel = declaration.PermissionLevel,
             EnrolledAt = now,
         };
         db.Set<MachineRow>().Add(machine);

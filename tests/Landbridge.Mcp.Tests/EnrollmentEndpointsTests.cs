@@ -116,7 +116,7 @@ public sealed class EnrollmentEndpointsTests(PostgresFixture pg) : IAsyncLifetim
         await app.StartAsync(ct);
         using var client = Client(app);
 
-        // Missing name/purpose/os/permissionLevel is the caller's own bug — a 400,
+        // Missing name/os is the caller's own bug — a 400,
         // distinct from a token refusal, and no oracle for the token's validity.
         var resp = await client.PostAsJsonAsync("/enroll", new { enrollmentToken = "lbr_e_whatever" }, ct);
         Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
@@ -201,9 +201,7 @@ public sealed class EnrollmentEndpointsTests(PostgresFixture pg) : IAsyncLifetim
         {
             enrollmentToken,
             name = "box-1",
-            purpose = "test runner",
             os = "macOS 15.0",
-            permissionLevel = "standard",
         }, ct);
 
     private static async Task<Enrolled> ReadEnrollAsync(HttpResponseMessage resp, CancellationToken ct)
