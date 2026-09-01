@@ -31,12 +31,16 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
 {
     public async Task InitializeAsync()
     {
-        if (pg.Available) await pg.ResetAsync();
+        if (!pg.Available) return;
+        await pg.ResetAsync();
+        Factory = await LeadFactory.SeedAsync(pg, Team, TimeProvider.System);
     }
 
     public Task DisposeAsync() => Task.CompletedTask;
 
     private static readonly TeamId Team = TeamId.New();
+    private Principal.Lead Factory = null!;
+    private string Tid => LeadFactory.Id(Team);
 
     /// <summary>Short enough that a blocked call notices its verdict promptly.</summary>
     private const int PollMs = 10;
@@ -190,8 +194,8 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         Assert.NotNull(row.CurrentInstanceId);
 
         // Release the worker so the test does not leave a task blocking on nothing.
-        await LeadFor(new Principal.Lead(Team))
-            .AnswerPermissionRequest(caller.Session.ToString(), "allow", null, CancellationToken.None);
+        await LeadFor(Factory)
+            .AnswerPermissionRequest(caller.Session.ToString(), Tid, "allow", null, CancellationToken.None);
         await pending.WaitAsync(Patience);
     }
 
@@ -202,8 +206,8 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         var caller = await SeedWorkingTask();
         var pending = await AskPermissionAsync(caller);
 
-        await LeadFor(new Principal.Lead(Team))
-            .AnswerPermissionRequest(caller.Session.ToString(), "allow", null, CancellationToken.None);
+        await LeadFor(Factory)
+            .AnswerPermissionRequest(caller.Session.ToString(), Tid, "allow", null, CancellationToken.None);
 
         var verdict = await pending.WaitAsync(Patience);
         Assert.True(verdict.Allow);
@@ -228,8 +232,8 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         var caller = await SeedWorkingTask();
         var pending = await AskPermissionAsync(caller);
 
-        await LeadFor(new Principal.Lead(Team))
-            .AnswerPermissionRequest(caller.Session.ToString(), "deny", guidance, CancellationToken.None);
+        await LeadFor(Factory)
+            .AnswerPermissionRequest(caller.Session.ToString(), Tid, "deny", guidance, CancellationToken.None);
 
         var verdict = await pending.WaitAsync(Patience);
         Assert.False(verdict.Allow);
@@ -245,16 +249,16 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         Skip.IfNot(pg.Available, pg.SkipReason);
         var caller = await SeedWorkingTask();
         var pending = await AskPermissionAsync(caller);
-        var lead = LeadFor(new Principal.Lead(Team));
+        var lead = LeadFor(Factory);
 
         var refused = await Assert.ThrowsAsync<McpException>(
-            () => lead.AnswerPermissionRequest(caller.Session.ToString(), "deny", null, CancellationToken.None));
+            () => lead.AnswerPermissionRequest(caller.Session.ToString(), Tid, "deny", null, CancellationToken.None));
         Assert.Contains(Rule.PermissionDenialCarriesMessage.ToString(), refused.Message);
 
         Assert.Equal(SessionState.BlockedOnInput, await StateOf(caller.Session));
         Assert.False(pending.IsCompleted);
 
-        await lead.AnswerPermissionRequest(caller.Session.ToString(), "deny", "no, use the fixture", CancellationToken.None);
+        await lead.AnswerPermissionRequest(caller.Session.ToString(), Tid, "deny", "no, use the fixture", CancellationToken.None);
         await pending.WaitAsync(Patience);
     }
 
@@ -264,13 +268,13 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         Skip.IfNot(pg.Available, pg.SkipReason);
         var caller = await SeedWorkingTask();
         var pending = await AskPermissionAsync(caller);
-        var lead = LeadFor(new Principal.Lead(Team));
+        var lead = LeadFor(Factory);
 
         var refused = await Assert.ThrowsAsync<McpException>(
-            () => lead.AnswerPermissionRequest(caller.Session.ToString(), "maybe", null, CancellationToken.None));
+            () => lead.AnswerPermissionRequest(caller.Session.ToString(), Tid, "maybe", null, CancellationToken.None));
         Assert.Contains("allow", refused.Message);
 
-        await lead.AnswerPermissionRequest(caller.Session.ToString(), "allow", null, CancellationToken.None);
+        await lead.AnswerPermissionRequest(caller.Session.ToString(), Tid, "allow", null, CancellationToken.None);
         await pending.WaitAsync(Patience);
     }
 
@@ -282,18 +286,18 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         Skip.IfNot(pg.Available, pg.SkipReason);
         var caller = await SeedWorkingTask();
         var pending = await AskPermissionAsync(caller);
-        var lead = LeadFor(new Principal.Lead(Team));
+        var lead = LeadFor(Factory);
 
         // answer_input_request would revoke this worker's token and requeue the task, which
         // would strand a process still holding its tool call open.
         var refused = await Assert.ThrowsAsync<McpException>(
-            () => lead.SendInputResponse(caller.Session.ToString(), "go ahead", CancellationToken.None));
+            () => lead.SendInputResponse(caller.Session.ToString(), Tid, "go ahead", CancellationToken.None));
         Assert.Contains(Rule.PermissionVerdictAnswersPermissionRequests.ToString(), refused.Message);
 
         Assert.Equal(SessionState.BlockedOnInput, await StateOf(caller.Session));
         Assert.False(pending.IsCompleted);
 
-        await lead.AnswerPermissionRequest(caller.Session.ToString(), "allow", null, CancellationToken.None);
+        await lead.AnswerPermissionRequest(caller.Session.ToString(), Tid, "allow", null, CancellationToken.None);
         await pending.WaitAsync(Patience);
     }
 
@@ -309,8 +313,8 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         }
 
         var refused = await Assert.ThrowsAsync<McpException>(
-            () => LeadFor(new Principal.Lead(Team))
-                .AnswerPermissionRequest(caller.Session.ToString(), "allow", null, CancellationToken.None));
+            () => LeadFor(Factory)
+                .AnswerPermissionRequest(caller.Session.ToString(), Tid, "allow", null, CancellationToken.None));
 
         Assert.Contains(Rule.PermissionVerdictAnswersPermissionRequests.ToString(), refused.Message);
         Assert.Equal(SessionState.Working, await StateOf(caller.Session));
@@ -325,7 +329,7 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         const string why = "this reads a production credential; the task description never mentions one";
         var caller = await SeedWorkingTask();
         var pending = await AskPermissionAsync(caller);
-        var lead = LeadFor(new Principal.Lead(Team));
+        var lead = LeadFor(Factory);
 
         await EscalateAsync(caller.Session, why);
 
@@ -334,7 +338,7 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         Assert.False(pending.IsCompleted);
 
         var refused = await Assert.ThrowsAsync<McpException>(
-            () => lead.AnswerPermissionRequest(caller.Session.ToString(), "allow", null, CancellationToken.None));
+            () => lead.AnswerPermissionRequest(caller.Session.ToString(), Tid, "allow", null, CancellationToken.None));
         Assert.Contains(Rule.EscalatedPermissionIsHumanOnly.ToString(), refused.Message);
 
         // The human is not blocked by the escalation, and never was.
@@ -361,7 +365,7 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         Skip.IfNot(pg.Available, pg.SkipReason);
         var caller = await SeedWorkingTask();
         var pending = await AskPermissionAsync(caller);
-        var lead = LeadFor(new Principal.Lead(Team));
+        var lead = LeadFor(Factory);
 
         await using (var db = pg.NewContext())
         {
@@ -372,7 +376,7 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         }
 
         // Not escalated, so the Lead still has authority.
-        await lead.AnswerPermissionRequest(caller.Session.ToString(), "allow", null, CancellationToken.None);
+        await lead.AnswerPermissionRequest(caller.Session.ToString(), Tid, "allow", null, CancellationToken.None);
         await pending.WaitAsync(Patience);
     }
 
@@ -448,8 +452,8 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
             Assert.Equal(ProposedInput, row.InputQuestion);
         }
 
-        await LeadFor(new Principal.Lead(Team))
-            .AnswerPermissionRequest(caller.Session.ToString(), "allow", null, CancellationToken.None);
+        await LeadFor(Factory)
+            .AnswerPermissionRequest(caller.Session.ToString(), Tid, "allow", null, CancellationToken.None);
         await first.WaitAsync(Patience);
     }
 
@@ -461,9 +465,9 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         Skip.IfNot(pg.Available, pg.SkipReason);
         var caller = await SeedWorkingTask();
         var pending = await AskPermissionAsync(caller);
-        var lead = LeadFor(new Principal.Lead(Team));
+        var lead = LeadFor(Factory);
 
-        var item = Assert.Single((await lead.GetLeadInbox(caller.Session.ToString(), CancellationToken.None)).Items);
+        var item = Assert.Single((await lead.GetLeadInbox(Tid, caller.Session.ToString(), CancellationToken.None)).Items);
         Assert.Equal(LeadInboxKind.Permission, item.Kind);
         Assert.Equal(Tool, item.PermissionTool);
         Assert.Equal(ProposedInput, item.Question);
@@ -471,7 +475,7 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Null(item.EscalationReason);
 
         await EscalateAsync(caller.Session, "credential access");
-        var escalated = Assert.Single((await lead.GetLeadInbox(caller.Session.ToString(), CancellationToken.None)).Items);
+        var escalated = Assert.Single((await lead.GetLeadInbox(Tid, caller.Session.ToString(), CancellationToken.None)).Items);
         Assert.Equal("credential access", escalated.EscalationReason);
 
         await using (var db = pg.NewContext())
@@ -482,7 +486,7 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         await pending.WaitAsync(Patience);
 
         Assert.DoesNotContain(
-            (await lead.GetLeadInbox(caller.Session.ToString(), CancellationToken.None)).Items,
+            (await lead.GetLeadInbox(Tid, caller.Session.ToString(), CancellationToken.None)).Items,
             i => i.Kind == LeadInboxKind.Permission);
     }
 
@@ -499,14 +503,14 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
                 new RequestInput(caller, InputRequestKind.Permission, ProposedInput, Tool, options)));
         }
 
-        var lead = LeadFor(new Principal.Lead(Team));
-        var item = Assert.Single((await lead.GetLeadInbox(caller.Session.ToString(), CancellationToken.None)).Items);
+        var lead = LeadFor(Factory);
+        var item = Assert.Single((await lead.GetLeadInbox(Tid, caller.Session.ToString(), CancellationToken.None)).Items);
         Assert.Equal(LeadInboxKind.Permission, item.Kind);
         Assert.NotNull(item.PermissionOptions);
         Assert.Contains(item.PermissionOptions, o => o.OptionId == "allow-once" && o.Kind == "allow_once" && o.Name == "Allow once");
         Assert.Contains(item.PermissionOptions, o => o.OptionId == "reject-once");
 
-        await lead.AnswerPermissionRequest(caller.Session.ToString(), "allow-once", null, CancellationToken.None);
+        await lead.AnswerPermissionRequest(caller.Session.ToString(), Tid, "allow-once", null, CancellationToken.None);
         await using var check = pg.NewContext();
         var row = await check.Sessions.AsNoTracking().SingleAsync(t => t.Id == caller.Session.Value);
         Assert.Equal("allow-once", row.PermissionOptionId);
@@ -521,7 +525,7 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         Skip.IfNot(pg.Available, pg.SkipReason);
         var caller = await SeedWorkingTask();
         var pending = await AskPermissionAsync(caller);
-        var lead = LeadFor(new Principal.Lead(Team));
+        var lead = LeadFor(Factory);
 
         await EscalateAsync(caller.Session, "sudo, unexplained");
         await using (var db = pg.NewContext())
@@ -560,8 +564,8 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         var caller = await SeedWorkingTask();
         var pending = await AskPermissionAsync(caller, tool: "Bash", input: """{"command":"git status"}""");
 
-        await LeadFor(new Principal.Lead(Team))
-            .AnswerPermissionRequest(caller.Session.ToString(), "allow", "routine, in the workspace", CancellationToken.None);
+        await LeadFor(Factory)
+            .AnswerPermissionRequest(caller.Session.ToString(), Tid, "allow", "routine, in the workspace", CancellationToken.None);
         await pending.WaitAsync(Patience);
 
         await using var db = pg.NewContext();
@@ -579,7 +583,7 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         Skip.IfNot(pg.Available, pg.SkipReason);
         var caller = await SeedWorkingTask();
         var pending = await AskPermissionAsync(caller);
-        var lead = LeadFor(new Principal.Lead(Team));
+        var lead = LeadFor(Factory);
         await EscalateAsync(caller.Session, "reads a credential");
 
         await using var db = pg.NewContext();

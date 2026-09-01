@@ -93,11 +93,6 @@ namespace Landbridge.ControlPlane.Migrations
                     b.HasIndex("MachineId")
                         .HasDatabaseName("ix_credentials_machine_id");
 
-                    b.HasIndex("TeamId")
-                        .IsUnique()
-                        .HasDatabaseName("ix_credentials_one_live_lead_per_team")
-                        .HasFilter("kind = 'Lead' AND revoked = false");
-
                     b.HasIndex("TokenHash")
                         .IsUnique()
                         .HasDatabaseName("ix_credentials_token_hash");
@@ -924,6 +919,29 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasDatabaseName("ix_friction_reports_team_id");
 
                     b.ToTable("friction_reports", (string)null);
+                });
+
+            modelBuilder.Entity("Landbridge.ControlPlane.Auth.LeadTeamRow", b =>
+                {
+                    b.Property<Guid>("TeamId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("team_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("LeadCredentialId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("lead_credential_id");
+
+                    b.HasKey("TeamId")
+                        .HasName("pk_lead_teams");
+
+                    b.HasIndex("LeadCredentialId")
+                        .HasDatabaseName("ix_lead_teams_lead_credential_id");
+
+                    b.ToTable("lead_teams", (string)null);
                 });
 #pragma warning restore 612, 618
         }

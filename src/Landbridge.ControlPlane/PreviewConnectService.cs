@@ -111,12 +111,11 @@ public sealed class PreviewConnectService(
         // Same validation the dashboard uses (§12): a live Human session sees any
         // preview; a Lead is scoped to its own Team. An evicted, expired, or worker
         // token authorizes nothing here.
-        return await tokens.ValidateAsync(session, ct) switch
-        {
-            Principal.Human => true,
-            Principal.Lead l => l.Team == team,
-            _ => false,
-        };
+        var principal = await tokens.ValidateAsync(session, ct);
+        if (principal is Principal.Human) return true;
+        if (principal is Principal.Lead l)
+            return await tokens.OwnsTeamAsync(l.CredentialId, team, ct);
+        return false;
     }
 }
 

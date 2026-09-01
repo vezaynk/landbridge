@@ -77,6 +77,7 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
             {
                 ["description"] = description,
                 ["profile"] = "default",
+            ["teamId"] = team.Value.ToString(),
             }, cancellationToken: ct);
             Assert.NotEqual(true, created.IsError);
             sessionId = new SessionId(Guid.Parse(Assert.Single(created.Content.OfType<TextContentBlock>()).Text));

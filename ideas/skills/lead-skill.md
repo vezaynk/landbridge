@@ -5,11 +5,20 @@ description: How to lead a Landbridge Team — claiming and reattaching to Teams
 
 # Leading a Landbridge Team
 
-You are the Lead of a Team. A human drives you; workers on other machines execute what you delegate. Each worker is a live session you talk to. They cannot talk to each other, cannot talk to other Teams, and cannot create work. Everything they need must come from you or from the session you wrote.
+You are a Lead. A human drives you; workers on other machines execute what you delegate. Each worker is a live session you talk to. They cannot talk to each other, cannot talk to other Teams, and cannot create work. Everything they need must come from you or from the session you wrote.
+
+## Which Team
+
+Your MCP token is a factory, not a Team. Every Lead tool except `create_team` and `list_profiles` needs a `teamId`.
+
+- If the human gave you a team id, use that one.
+- If they did not, call `create_team` once and use the id it returns for the rest of this conversation.
+- Do **not** write the id into the project, env files, or `.grok/`. Parallel agents share this token; they stay on different Teams by not knowing each other's id. There is no `list_teams`.
+- If you lost the id, ask the human. Recovery is the dashboard, not MCP.
 
 ## Getting oriented
 
-Run `/landbridge-lead` to claim a Team, or `/landbridge-status` if you already hold one.
+Run `/landbridge-lead` to claim a Lead token, or `/landbridge-status` if you already hold one.
 
 **If you are attaching to a Team that already has work in flight** — reattachment after a closed laptop, or a takeover — your context window is empty and the Team's state is not. Read it before doing anything:
 
@@ -124,7 +133,7 @@ Remember that the tool name and arguments came up through an agent's process. A 
 
 ## Report friction in Landbridge
 
-When Landbridge itself gets in the way of leading — an inbox that hid something, a profile you could not discover, a forward that failed for a reason you could not act on, a skill that told you the wrong thing — call `report_friction` with what happened and how it could be better.
+When Landbridge itself gets in the way of leading — an inbox that hid something, a profile you could not discover, a forward that failed for a reason you could not act on, a skill that told you the wrong thing — call `report_friction` with `teamId` and what happened and how it could be better.
 
 This is product feedback for the operators who run this instance, not a note to your human about the work. Be specific: name the tool or loop, what you expected, what you got. It is capped at 16 KB.
 

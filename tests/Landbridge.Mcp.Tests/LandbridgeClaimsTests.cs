@@ -69,11 +69,11 @@ public class LandbridgeClaimsTests
     [Fact]
     public void Lead_principal_round_trips_and_is_reachable_as_a_lead_claim()
     {
-        var team = TeamId.New();
-        var user = LandbridgeClaims.ToClaimsPrincipal(new Principal.Lead(team));
+        var credentialId = Guid.NewGuid();
+        var user = LandbridgeClaims.ToClaimsPrincipal(new Principal.Lead(credentialId));
 
-        Assert.Equal(team, Assert.IsType<Principal.Lead>(LandbridgeClaims.ToPrincipal(user)).Team);
-        Assert.Equal(new LeadClaim(team), LandbridgeClaims.AsLead(user));
+        Assert.Equal(credentialId, Assert.IsType<Principal.Lead>(LandbridgeClaims.ToPrincipal(user)).CredentialId);
+        Assert.Equal(credentialId, LandbridgeClaims.AsLead(user)!.CredentialId);
         Assert.Null(LandbridgeClaims.AsHuman(user));
         Assert.Null(LandbridgeClaims.AsEvictedLead(user));
         // No human attribution on this claim, so no binding can be owned (§8.3).
@@ -83,17 +83,17 @@ public class LandbridgeClaimsTests
     [Fact]
     public void Lead_principal_carries_the_claiming_human_when_the_credential_attributes_one()
     {
-        var team = TeamId.New();
+        var credentialId = Guid.NewGuid();
         var human = Guid.NewGuid();
-        var user = LandbridgeClaims.ToClaimsPrincipal(new Principal.Lead(team, human));
+        var user = LandbridgeClaims.ToClaimsPrincipal(new Principal.Lead(credentialId, human));
 
         // The human rides the lead claim so the §8.3 lead↔machine binding can key on
         // the person; the engine actor stays Team-only.
         var lead = Assert.IsType<Principal.Lead>(LandbridgeClaims.ToPrincipal(user));
-        Assert.Equal(team, lead.Team);
+        Assert.Equal(credentialId, lead.CredentialId);
         Assert.Equal(human, lead.HumanId);
         Assert.Equal(human, LandbridgeClaims.AsLeadPrincipal(user)!.HumanId);
-        Assert.Equal(new LeadClaim(team), LandbridgeClaims.AsLead(user));
+        Assert.Equal(credentialId, LandbridgeClaims.AsLead(user)!.CredentialId);
         // Still not a human session — a lead claim is its own credential class (§5).
         Assert.Null(LandbridgeClaims.AsHuman(user));
     }

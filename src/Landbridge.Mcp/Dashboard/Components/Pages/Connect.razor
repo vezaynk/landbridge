@@ -28,7 +28,9 @@ else if (Ready)
             </li>
             <li>
                 Point the harness at this plane with that token as a static bearer.
-                The MCP endpoint is <span class="mono">POST @McpUrl</span> (the origin,
+                The token is a Lead factory: call <span class="mono">create_team</span>
+                for a new Team, or pass a human-supplied team id. Do not write the id
+                into the project. The MCP endpoint is <span class="mono">POST @McpUrl</span> (the origin,
                 not <span class="mono">/mcp</span>). Grok (and any client that only
                 speaks Dynamic Client Registration) cannot complete OAuth here —
                 this plane has no <span class="mono">/register</span>; clients are
@@ -59,11 +61,22 @@ Authorization = "Bearer lbr_l_…"</pre>
                 back. There is no reserved <span class="mono">default</span>.
             </li>
         </ol>
-        @if (Principal is Principal.Lead lead)
+        @if (Principal is Principal.Lead)
         {
-            <p>This session is already the Lead of Team
-                <TeamLink TeamId="@lead.Team.Value" />. Paste that same token into a
-                harness, or stay here and drive from the Team view.</p>
+            <p>This session is a Lead factory. Teams it owns:
+                @if (TeamScope is { Count: > 0 })
+                {
+                    @foreach (var id in TeamScope)
+                    {
+                        <TeamLink TeamId="@id" />
+                    }
+                }
+                else
+                {
+                    <span class="nt">none yet — call create_team, or claim one below.</span>
+                }
+                Paste that same token into a harness, or stay here and drive from the Team view.
+                New agents should call create_team rather than reuse an id from this page.</p>
         }
         else if (Principal is Principal.Human)
         {

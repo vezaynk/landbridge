@@ -20,6 +20,7 @@ public sealed class LandbridgeDbContext(DbContextOptions<LandbridgeDbContext> op
     public DbSet<TeamForwardUsageRow> TeamForwardUsage => Set<TeamForwardUsageRow>();
     public DbSet<SessionUsageRow> SessionUsage => Set<SessionUsageRow>();
     public DbSet<FrictionReportRow> FrictionReports => Set<FrictionReportRow>();
+    public DbSet<LeadTeamRow> LeadTeams => Set<LeadTeamRow>();
 
     /// <summary>The channel dispatch/transition NOTIFYs land on (§3.1 LISTEN/NOTIFY).</summary>
     public const string EventChannel = "landbridge_session_events";
@@ -138,13 +139,13 @@ public sealed class LandbridgeDbContext(DbContextOptions<LandbridgeDbContext> op
             e.HasIndex(c => c.TokenHash).IsUnique();
             e.HasIndex(c => c.MachineId);
             e.Property(c => c.Kind).HasConversion<string>();
-            // One live Lead per Team is the database's invariant, not a read's
-            // (§9 check 6): a partial unique index makes two concurrent claims
-            // impossible to both win, exactly as dispatch trusts the row lock
-            // rather than a check-then-act read.
-            e.HasIndex(c => c.TeamId).IsUnique()
-                .HasFilter("kind = 'Lead' AND revoked = false")
-                .HasDatabaseName("ix_credentials_one_live_lead_per_team");
+        });
+
+        b.Entity<LeadTeamRow>(e =>
+        {
+            e.ToTable("lead_teams");
+            e.HasKey(t => t.TeamId);
+            e.HasIndex(t => t.LeadCredentialId);
         });
 
         b.Entity<MachineRow>(e =>

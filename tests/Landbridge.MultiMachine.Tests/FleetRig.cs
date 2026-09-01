@@ -307,14 +307,14 @@ internal sealed class FleetRig(
     public async Task AcceptAsync(SessionId task, CancellationToken ct)
     {
         await using var lead = await PlaneProbe.ConnectMcpAsync(new Uri(_baseUrl + "/"), _leadToken, ct);
-        await PlaneProbe.AcceptAsync(lead, task, ct);
+        await PlaneProbe.AcceptAsync(lead, task, Team.Value.ToString(), ct);
     }
 
     /// <summary>Create a task for this fleet's Team via the real Lead MCP surface.</summary>
     public async Task<SessionId> CreateSessionAsync(string description, CancellationToken ct)
     {
         await using var lead = await PlaneProbe.ConnectMcpAsync(new Uri(_baseUrl + "/"), _leadToken, ct);
-        return await PlaneProbe.CreateSessionAsync(lead, description, ct);
+        return await PlaneProbe.CreateSessionAsync(lead, description, ct, Team.Value.ToString());
     }
 
     /// <summary>
@@ -328,6 +328,7 @@ internal sealed class FleetRig(
         var read = await lead.CallToolAsync("get_lead_inbox", new Dictionary<string, object?>
         {
             ["sessionId"] = task.Value.ToString(),
+            ["teamId"] = Team.Value.ToString(),
         }, cancellationToken: ct);
         Assert.NotEqual(true, read.IsError);
         return string.Concat(read.Content.OfType<TextContentBlock>().Select(b => b.Text));
@@ -352,6 +353,7 @@ internal sealed class FleetRig(
             var parked = await lead.CallToolAsync("park_session", new Dictionary<string, object?>
             {
                 ["sessionId"] = task.Value.ToString(),
+                ["teamId"] = Team.Value.ToString(),
             }, cancellationToken: ct);
             Assert.NotEqual(true, parked.IsError);
         }
@@ -377,6 +379,7 @@ internal sealed class FleetRig(
         var answered = await lead.CallToolAsync("send_input_response", new Dictionary<string, object?>
         {
             ["sessionId"] = task.Value.ToString(),
+            ["teamId"] = Team.Value.ToString(),
             ["answer"] = answer,
         }, cancellationToken: ct);
         Assert.NotEqual(true, answered.IsError);
@@ -392,6 +395,7 @@ internal sealed class FleetRig(
         var sent = await lead.CallToolAsync("send_input_request", new Dictionary<string, object?>
         {
             ["sessionId"] = task.Value.ToString(),
+            ["teamId"] = Team.Value.ToString(),
             ["text"] = text,
         }, cancellationToken: ct);
         Assert.NotEqual(true, sent.IsError);
@@ -436,6 +440,7 @@ internal sealed class FleetRig(
         var answered = await lead.CallToolAsync("answer_permission_request", new Dictionary<string, object?>
         {
             ["sessionId"] = task.Value.ToString(),
+            ["teamId"] = Team.Value.ToString(),
             ["option"] = option,
             ["message"] = message,
         }, cancellationToken: ct);

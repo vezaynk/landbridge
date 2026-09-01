@@ -48,18 +48,13 @@ public sealed class TokenService(LandbridgeDbContext db, TimeProvider clock)
     }
 
     /// <summary>
-    /// Claims the Lead of a Team for a human session (§4, §5). One Lead per Team
-    /// is enforced as a conditional claim (§9 check 6): a leadless Team is
-    /// claimed silently; an actively-led Team refuses a second claimant unless
-    /// <paramref name="takeover"/> is set, in which case the incumbent is
-    /// evicted — its token revoked with attribution so its next call learns why
-    /// (§4) — and the takeover is written to the lead event log.
-    ///
-    /// The incumbent read is only advisory: the invariant itself is the
-    /// database's partial unique index (one unrevoked Lead row per Team), so
-    /// two concurrent claimants cannot both win — the loser's insert fails and
-    /// is returned as the same <see cref="LeadClaimResult.Refused"/> a
-    /// sequential second claimant would get.
+    /// Claims the Lead factory for a human session and assigns
+    /// <paramref name="team"/> to that factory (§4, §5). One live owner per
+    /// Team is <see cref="LeadTeamRow"/>'s primary key: a vacant Team is
+    /// claimed silently; an actively-owned Team refuses a second claimant
+    /// unless <paramref name="takeover"/> is set. Takeover reassigns that
+    /// Team. The incumbent factory token is revoked only when it owns no
+    /// other Team — a factory that still owns siblings stays live.
     /// </summary>
     public async Task<LeadClaimResult> ClaimLeadAsync(
         string humanToken, TeamId team, bool takeover = false, CancellationToken ct = default)
@@ -67,22 +62,42 @@ public sealed class TokenService(LandbridgeDbContext db, TimeProvider clock)
         if (await ValidateAsync(humanToken, ct) is not Principal.Human human)
             return new LeadClaimResult.NoHumanSession();
 
-        var incumbent = await db.Set<CredentialRow>()
-            .FirstOrDefaultAsync(c => c.Kind == CredentialKind.Lead && c.TeamId == team.Value && !c.Revoked, ct);
+        var ownership = await db.LeadTeams
+            .FirstOrDefaultAsync(t => t.TeamId == team.Value, ct);
+        CredentialRow? incumbent = null;
+        if (ownership is not null)
+        {
+            incumbent = await db.Set<CredentialRow>()
+                .FirstOrDefaultAsync(c => c.Id == ownership.LeadCredentialId, ct);
+            if (incumbent is { Revoked: false })
+            {
+                if (!takeover)
+                    return new LeadClaimResult.Refused(incumbent.HumanId ?? Guid.Empty, incumbent.CreatedAt);
+            }
+            else
+            {
+                incumbent = null;
+            }
+        }
+
+        var now = clock.GetUtcNow();
+        var (token, row) = NewCredential(CredentialKind.Lead, ttl: null, humanId: human.HumanId);
+        db.Set<CredentialRow>().Add(row);
 
         if (incumbent is not null)
         {
-            if (!takeover)
-                return new LeadClaimResult.Refused(incumbent.HumanId ?? Guid.Empty, incumbent.CreatedAt);
+            var siblings = await db.LeadTeams.CountAsync(
+                t => t.LeadCredentialId == incumbent.Id && t.TeamId != team.Value, ct);
+            if (siblings == 0)
+            {
+                incumbent.Revoked = true;
+                incumbent.RevokedAt = now;
+                incumbent.EvictedByHuman = human.HumanId;
+                incumbent.EvictedAt = now;
+                incumbent.TeamId = team.Value;
+            }
 
-            // Takeover evicts the incumbent (§4): a revoke that carries who and
-            // when, distinct from a voluntary release, so ValidateAsync can hand
-            // the evicted holder an explicit reason rather than a null.
-            var now = clock.GetUtcNow();
-            incumbent.Revoked = true;
-            incumbent.RevokedAt = now;
-            incumbent.EvictedByHuman = human.HumanId;
-            incumbent.EvictedAt = now;
+            ownership!.LeadCredentialId = row.Id;
             db.Set<LeadEventRow>().Add(new LeadEventRow
             {
                 TeamId = team.Value,
@@ -92,37 +107,84 @@ public sealed class TokenService(LandbridgeDbContext db, TimeProvider clock)
                 OccurredAt = now,
             });
         }
-        else
+        else if (ownership is not null)
         {
+            ownership.LeadCredentialId = row.Id;
             db.Set<LeadEventRow>().Add(new LeadEventRow
             {
                 TeamId = team.Value,
                 Kind = LeadEventKind.Claimed,
                 HumanId = human.HumanId,
-                OccurredAt = clock.GetUtcNow(),
+                OccurredAt = now,
+            });
+        }
+        else
+        {
+            db.LeadTeams.Add(new LeadTeamRow
+            {
+                TeamId = team.Value,
+                LeadCredentialId = row.Id,
+                CreatedAt = now,
+            });
+            db.Set<LeadEventRow>().Add(new LeadEventRow
+            {
+                TeamId = team.Value,
+                Kind = LeadEventKind.Claimed,
+                HumanId = human.HumanId,
+                OccurredAt = now,
             });
         }
 
-        var (token, row) = NewCredential(CredentialKind.Lead, ttl: null, teamId: team.Value, humanId: human.HumanId);
-        db.Set<CredentialRow>().Add(row);
         try
         {
             await db.SaveChangesAsync(ct);
         }
-        catch (DbUpdateException ex) when (ex.InnerException is Npgsql.PostgresException { SqlState: "23505" } pg
-                                           && pg.ConstraintName == "ix_credentials_one_live_lead_per_team")
+        catch (DbUpdateException ex) when (ex.InnerException is Npgsql.PostgresException { SqlState: "23505" })
         {
-            // A concurrent claimant won the race between our incumbent read and
-            // our insert. The unique index made the loss safe; report it exactly
-            // like an ordinary refusal, naming the winner (best-effort — the
-            // winner could release in the same instant).
             db.ChangeTracker.Clear();
-            var winner = await db.Set<CredentialRow>().AsNoTracking()
-                .FirstOrDefaultAsync(c => c.Kind == CredentialKind.Lead && c.TeamId == team.Value && !c.Revoked, ct);
+            var winnerOwn = await db.LeadTeams.AsNoTracking()
+                .FirstOrDefaultAsync(t => t.TeamId == team.Value, ct);
+            var winner = winnerOwn is null
+                ? null
+                : await db.Set<CredentialRow>().AsNoTracking()
+                    .FirstOrDefaultAsync(c => c.Id == winnerOwn.LeadCredentialId && !c.Revoked, ct);
             return new LeadClaimResult.Refused(winner?.HumanId ?? Guid.Empty, winner?.CreatedAt ?? clock.GetUtcNow());
         }
         return new LeadClaimResult.Claimed(new IssuedToken(token, row.Id, null), team);
     }
+
+    /// <summary>
+    /// Mints a new Team owned by this Lead factory credential. The id is the
+    /// capability; there is no list. An agent that was not given a Team id
+    /// calls this and keeps the result in conversation, not in the project.
+    /// </summary>
+    public async Task<TeamId> CreateTeamAsync(Guid leadCredentialId, CancellationToken ct = default)
+    {
+        var live = await db.Set<CredentialRow>().AsNoTracking()
+            .AnyAsync(c => c.Id == leadCredentialId && c.Kind == CredentialKind.Lead && !c.Revoked, ct);
+        if (!live)
+            throw new InvalidOperationException("create_team requires a live lead credential");
+
+        var team = TeamId.New();
+        db.LeadTeams.Add(new LeadTeamRow
+        {
+            TeamId = team.Value,
+            LeadCredentialId = leadCredentialId,
+            CreatedAt = clock.GetUtcNow(),
+        });
+        await db.SaveChangesAsync(ct);
+        return team;
+    }
+
+    public Task<bool> OwnsTeamAsync(Guid leadCredentialId, TeamId team, CancellationToken ct = default) =>
+        db.LeadTeams.AsNoTracking()
+            .AnyAsync(t => t.TeamId == team.Value && t.LeadCredentialId == leadCredentialId, ct);
+
+    public async Task<IReadOnlyList<Guid>> OwnedTeamIdsAsync(Guid leadCredentialId, CancellationToken ct = default) =>
+        await db.LeadTeams.AsNoTracking()
+            .Where(t => t.LeadCredentialId == leadCredentialId)
+            .Select(t => t.TeamId)
+            .ToListAsync(ct);
 
     /// <summary>
     /// Voluntary release of a lead claim (§4): the Team becomes leadless and
@@ -140,13 +202,17 @@ public sealed class TokenService(LandbridgeDbContext db, TimeProvider clock)
         var now = clock.GetUtcNow();
         row.Revoked = true;
         row.RevokedAt = now;
-        db.Set<LeadEventRow>().Add(new LeadEventRow
+        var owned = await db.LeadTeams.Where(t => t.LeadCredentialId == row.Id).Select(t => t.TeamId).ToListAsync(ct);
+        foreach (var teamId in owned)
         {
-            TeamId = row.TeamId!.Value,
-            Kind = LeadEventKind.Released,
-            HumanId = row.HumanId,
-            OccurredAt = now,
-        });
+            db.Set<LeadEventRow>().Add(new LeadEventRow
+            {
+                TeamId = teamId,
+                Kind = LeadEventKind.Released,
+                HumanId = row.HumanId,
+                OccurredAt = now,
+            });
+        }
         await db.SaveChangesAsync(ct);
         return true;
     }
@@ -288,7 +354,7 @@ public sealed class TokenService(LandbridgeDbContext db, TimeProvider clock)
             // released lead (revoked, no eviction attribution) and every other
             // dead token stay a clean null.
             return row is { Kind: CredentialKind.Lead, EvictedByHuman: { } by, EvictedAt: { } at }
-                ? new Principal.EvictedLead(new TeamId(row.TeamId!.Value), by, at)
+                ? new Principal.EvictedLead(new TeamId(row.TeamId ?? Guid.Empty), by, at)
                 : null;
 
         switch (row.Kind)
@@ -315,7 +381,7 @@ public sealed class TokenService(LandbridgeDbContext db, TimeProvider clock)
             // Revoked in FindLive. The claiming human rides along (§8.3 human path:
             // a lead↔machine binding keys on the person, not the session).
             case CredentialKind.Lead:
-                return new Principal.Lead(new TeamId(row.TeamId!.Value), row.HumanId);
+                return new Principal.Lead(row.Id, row.HumanId);
 
             // Enrollment and refresh tokens authenticate nothing by themselves:
             // they exist only to be exchanged/refreshed.

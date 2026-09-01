@@ -26,13 +26,17 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
 {
     public async Task InitializeAsync()
     {
-        if (pg.Available) await pg.ResetAsync();
+        if (!pg.Available) return;
+        await pg.ResetAsync();
+        Factory = await LeadFactory.SeedAsync(pg, Team, _clock);
     }
 
     public Task DisposeAsync() => Task.CompletedTask;
 
     private static readonly TeamId Team = TeamId.New();
     private readonly FakeTimeProvider _clock = new();
+    private Principal.Lead Factory = null!;
+    private string Tid => LeadFactory.Id(Team);
 
     private static IHttpContextAccessor AccessorFor(Principal principal) =>
         new HttpContextAccessor { HttpContext = new DefaultHttpContext { User = LandbridgeClaims.ToClaimsPrincipal(principal) } };
@@ -48,9 +52,9 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     public async Task Create_task_via_the_tool_persists_a_submitted_task()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
-        var tools = LeadFor(new Principal.Lead(Team));
+        var tools = LeadFor(Factory);
 
-        var idText = await tools.CreateSession("build the thing", "default", CancellationToken.None);
+        var idText = await tools.CreateSession("build the thing", "default", Tid, CancellationToken.None);
 
         var id = Guid.Parse(idText);
         await using var v = pg.NewContext();
@@ -61,15 +65,35 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task Create_team_mints_an_id_this_factory_owns_and_a_sibling_does_not()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var tools = LeadFor(Factory);
+        var minted = await tools.CreateTeam(CancellationToken.None);
+        Assert.True(Guid.TryParse(minted, out var g));
+
+        var idText = await tools.CreateSession("on the new team", "default", minted, CancellationToken.None);
+        await using var v = pg.NewContext();
+        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == Guid.Parse(idText));
+        Assert.Equal(g, row.TeamId);
+
+        var otherTeam = TeamId.New();
+        var other = await LeadFactory.SeedAsync(pg, otherTeam, _clock);
+        var ex = await Assert.ThrowsAsync<McpException>(
+            () => LeadFor(other).CreateSession("nope", "default", minted, CancellationToken.None));
+        Assert.Contains("does not own that team", ex.Message, StringComparison.Ordinal);
+    }
+
+    [SkippableFact]
     public async Task Create_task_rejects_an_empty_description()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
-        var tools = LeadFor(new Principal.Lead(Team));
+        var tools = LeadFor(Factory);
 
         // The description is the worker's instructions; the tool refuses an empty
         // one before the command ever reaches the store.
         var ex = await Assert.ThrowsAsync<McpException>(
-            () => tools.CreateSession("   ", "default", CancellationToken.None));
+            () => tools.CreateSession("   ", "default", Tid, CancellationToken.None));
         Assert.Contains("description", ex.Message);
     }
 
@@ -77,10 +101,10 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     public async Task Create_task_rejects_an_empty_profile()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
-        var tools = LeadFor(new Principal.Lead(Team));
+        var tools = LeadFor(Factory);
 
         var ex = await Assert.ThrowsAsync<McpException>(
-            () => tools.CreateSession("build the thing", "   ", CancellationToken.None));
+            () => tools.CreateSession("build the thing", "   ", Tid, CancellationToken.None));
         Assert.Contains("profile", ex.Message);
     }
 
@@ -89,9 +113,9 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var sessionId = await SeedTaskWithReport();
-        var tools = LeadFor(new Principal.Lead(Team));
+        var tools = LeadFor(Factory);
 
-        var ok = await tools.StopSession(sessionId.ToString(), CancellationToken.None);
+        var ok = await tools.StopSession(sessionId.ToString(), Tid, CancellationToken.None);
         Assert.Contains("Completed", ok);
 
         await using var v = pg.NewContext();
@@ -104,11 +128,11 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     public async Task Get_team_state_returns_counts_and_states_scoped_to_the_lead_team()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
-        var tools = LeadFor(new Principal.Lead(Team));
-        await tools.CreateSession("first", "default", CancellationToken.None);
-        await tools.CreateSession("second", "default", CancellationToken.None);
+        var tools = LeadFor(Factory);
+        await tools.CreateSession("first", "default", Tid, CancellationToken.None);
+        await tools.CreateSession("second", "default", Tid, CancellationToken.None);
 
-        var view = await tools.GetTeamState(CancellationToken.None);
+        var view = await tools.GetTeamState(Tid, CancellationToken.None);
 
         Assert.Equal(Team.Value, view.TeamId);
         Assert.Equal(2, view.TotalSessions);
@@ -120,16 +144,16 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     public async Task Get_lead_inbox_lists_outstanding_items_and_can_filter_a_session()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
-        var tools = LeadFor(new Principal.Lead(Team));
+        var tools = LeadFor(Factory);
         var id = await SeedBlockedOnInputTask();
 
-        var inbox = await tools.GetLeadInbox(ct: CancellationToken.None);
+        var inbox = await tools.GetLeadInbox(Tid, ct: CancellationToken.None);
         var item = Assert.Single(inbox.Items);
         Assert.Equal(id.Value, item.SessionId);
         Assert.Equal(LeadInboxKind.Question, item.Kind);
 
-        Assert.Empty((await tools.GetLeadInbox(Guid.NewGuid().ToString(), CancellationToken.None)).Items);
-        Assert.Single((await tools.GetLeadInbox(id.Value.ToString(), CancellationToken.None)).Items);
+        Assert.Empty((await tools.GetLeadInbox(Tid, Guid.NewGuid().ToString(), CancellationToken.None)).Items);
+        Assert.Single((await tools.GetLeadInbox(Tid, id.Value.ToString(), CancellationToken.None)).Items);
     }
 
     [SkippableFact]
@@ -143,9 +167,9 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
 
         var tools = RelayGrantTestKit.LeadToolsFor(
             pg.NewContext(), _clock, new RunnerConnectionRegistry(_clock),
-            AccessorFor(new Principal.Lead(Team)), fanout);
+            AccessorFor(Factory), fanout);
 
-        var pending = tools.WatchLeadInbox(ct: cts.Token);
+        var pending = tools.WatchLeadInbox(Tid, ct: cts.Token);
         await Task.Delay(50, cts.Token);
         var id = await SeedBlockedOnInputTask();
 
@@ -159,10 +183,10 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     public async Task Stop_session_via_the_tool_hides_the_row()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
-        var tools = LeadFor(new Principal.Lead(Team));
-        var idText = await tools.CreateSession("build the thing", "default", CancellationToken.None);
+        var tools = LeadFor(Factory);
+        var idText = await tools.CreateSession("build the thing", "default", Tid, CancellationToken.None);
 
-        var msg = await tools.StopSession(idText, CancellationToken.None);
+        var msg = await tools.StopSession(idText, Tid, CancellationToken.None);
 
         Assert.Contains("Completed", msg);
     }
@@ -172,10 +196,10 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var sessionId = await SeedTaskWithReport();
-        var tools = LeadFor(new Principal.Lead(Team));
-        await tools.StopSession(sessionId.ToString(), CancellationToken.None);
+        var tools = LeadFor(Factory);
+        await tools.StopSession(sessionId.ToString(), Tid, CancellationToken.None);
 
-        var ok = await tools.SendInputRequest(sessionId.ToString(), "more of this", CancellationToken.None);
+        var ok = await tools.SendInputRequest(sessionId.ToString(), Tid, "more of this", CancellationToken.None);
         Assert.DoesNotContain("Completed", ok, StringComparison.Ordinal);
 
         await using var v = pg.NewContext();
@@ -190,11 +214,11 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     public async Task Send_input_request_on_a_stopped_never_dispatched_session_is_a_cold_start()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
-        var tools = LeadFor(new Principal.Lead(Team));
-        var idText = await tools.CreateSession("build the thing", "default", CancellationToken.None);
-        await tools.StopSession(idText, CancellationToken.None);
+        var tools = LeadFor(Factory);
+        var idText = await tools.CreateSession("build the thing", "default", Tid, CancellationToken.None);
+        await tools.StopSession(idText, Tid, CancellationToken.None);
 
-        await tools.SendInputRequest(idText, "try it", CancellationToken.None);
+        await tools.SendInputRequest(idText, Tid, "try it", CancellationToken.None);
 
         await using var v = pg.NewContext();
         var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == Guid.Parse(idText));
@@ -207,10 +231,10 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var sessionId = await SeedBlockedOnInputTask();
-        var tools = LeadFor(new Principal.Lead(Team));
+        var tools = LeadFor(Factory);
 
         var ex = await Assert.ThrowsAsync<McpException>(
-            () => tools.SendInputRequest(sessionId.ToString(), "use staging", CancellationToken.None));
+            () => tools.SendInputRequest(sessionId.ToString(), Tid, "use staging", CancellationToken.None));
         Assert.Contains("send_input_response", ex.Message);
     }
 
@@ -218,11 +242,11 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     public async Task Send_input_response_refuses_a_session_that_is_not_waiting()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
-        var tools = LeadFor(new Principal.Lead(Team));
-        var idText = await tools.CreateSession("build the thing", "default", CancellationToken.None);
+        var tools = LeadFor(Factory);
+        var idText = await tools.CreateSession("build the thing", "default", Tid, CancellationToken.None);
 
         var ex = await Assert.ThrowsAsync<McpException>(
-            () => tools.SendInputResponse(idText, "keep going", CancellationToken.None));
+            () => tools.SendInputResponse(idText, Tid, "keep going", CancellationToken.None));
         Assert.Contains("send_input_request", ex.Message);
     }
 
@@ -245,10 +269,10 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
             return Task.CompletedTask;
         });
         registry.TrackDispatch("m1", created.Session.Id);
-        var tools = LeadFor(new Principal.Lead(Team), registry);
+        var tools = LeadFor(Factory, registry);
 
         var msg = await tools.SendInputRequest(
-            created.Session.Id.ToString(), "keep going on the tests", CancellationToken.None);
+            created.Session.Id.ToString(), Tid, "keep going on the tests", CancellationToken.None);
         Assert.Contains("Working", msg);
         Assert.IsType<PromptCommand>(Assert.Single(sent));
     }
@@ -263,9 +287,9 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         // task blocked (§11), so the answer cannot resume in place regardless — it
         // requeues the task (→ submitted) and redispatch cold-starts it elsewhere
         // from the workspace (§6, §11), rather than refusing.
-        var tools = LeadFor(new Principal.Lead(Team));
+        var tools = LeadFor(Factory);
 
-        var msg = await tools.SendInputResponse(sessionId.ToString(), "use the staging DB", CancellationToken.None);
+        var msg = await tools.SendInputResponse(sessionId.ToString(), Tid, "use the staging DB", CancellationToken.None);
         Assert.Contains("Working", msg);
 
         await using var v = pg.NewContext();
@@ -288,12 +312,12 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         registry.Register("m1", new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
         registry.TrackDispatch("m1", sessionId);
         registry.MarkProcessGone(sessionId);
-        var tools = LeadFor(new Principal.Lead(Team), registry);
+        var tools = LeadFor(Factory, registry);
 
         // m1 still holds the lease, so the park record prefers it — but the process
         // is gone, so the answer redispatches (→ submitted) rather than prompting
         // a dead session. Resume goes back through dispatch (§11).
-        var msg = await tools.SendInputResponse(sessionId.ToString(), "staging-pg, not docker", CancellationToken.None);
+        var msg = await tools.SendInputResponse(sessionId.ToString(), Tid, "staging-pg, not docker", CancellationToken.None);
         Assert.Contains("Working", msg);
 
         await using var v = pg.NewContext();
@@ -316,9 +340,9 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
             return Task.CompletedTask;
         });
         registry.TrackDispatch("m1", sessionId);
-        var tools = LeadFor(new Principal.Lead(Team), registry);
+        var tools = LeadFor(Factory, registry);
 
-        var msg = await tools.SendInputResponse(sessionId.ToString(), "use staging-pg", CancellationToken.None);
+        var msg = await tools.SendInputResponse(sessionId.ToString(), Tid, "use staging-pg", CancellationToken.None);
         Assert.Contains("Working", msg);
 
         await using var v = pg.NewContext();
@@ -353,9 +377,9 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         // first — one call, correct outcome either way (§11). It wakes and requeues,
         // and the answer text lands on this branch exactly as on the blocked one:
         // the Lead does not know which branch it took, so neither may lose words.
-        var tools = LeadFor(new Principal.Lead(Team), registry);
+        var tools = LeadFor(Factory, registry);
         var msg = await tools.SendInputResponse(
-            sessionId.ToString(), "use staging-pg; docker has no seed data", CancellationToken.None);
+            sessionId.ToString(), Tid, "use staging-pg; docker has no seed data", CancellationToken.None);
         Assert.Contains("Working", msg); // load in flight, not resumed in place
 
         // Redispatch the woken task and confirm a fresh worker instance reads its
@@ -385,12 +409,12 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
 
         // §4: not a bare authorization error — the reason names who and when.
         var ex = await Assert.ThrowsAsync<McpException>(
-            () => tools.CreateSession("build the thing", "default", CancellationToken.None));
+            () => tools.CreateSession("build the thing", "default", Tid, CancellationToken.None));
         Assert.Contains("taken over", ex.Message);
         Assert.Contains(evictedBy.ToString("N"), ex.Message);
 
         // Reads are refused for the same reason.
-        await Assert.ThrowsAsync<McpException>(() => tools.GetTeamState(CancellationToken.None));
+        await Assert.ThrowsAsync<McpException>(() => tools.GetTeamState(Tid, CancellationToken.None));
     }
 
     [SkippableFact]
@@ -401,7 +425,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         var tools = LeadFor(worker);
 
         await Assert.ThrowsAsync<McpException>(
-            () => tools.CreateSession("build the thing", "default", CancellationToken.None));
+            () => tools.CreateSession("build the thing", "default", Tid, CancellationToken.None));
     }
 
     [SkippableFact]
@@ -416,7 +440,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         registry.ApplyHeartbeat("m1", Heartbeat("m1", "default", "gpu"));
         registry.Register("m2", new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
         registry.ApplyHeartbeat("m2", Heartbeat("m2", "default"));
-        var tools = LeadFor(new Principal.Lead(Team), registry);
+        var tools = LeadFor(Factory, registry);
 
         var view = await tools.ListProfiles(CancellationToken.None);
 
@@ -528,22 +552,22 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         Skip.IfNot(pg.Available, pg.SkipReason);
         const string report = "ran the suite (green); proposes task Z on profile gpu";
         var sessionId = await SeedReportedTask(Team, report);
-        var tools = LeadFor(new Principal.Lead(Team));
+        var tools = LeadFor(Factory);
 
-        var teamWide = await tools.GetLeadInbox(ct: CancellationToken.None);
+        var teamWide = await tools.GetLeadInbox(Tid, ct: CancellationToken.None);
         var flag = Assert.Single(teamWide.Items, i => i.SessionId == sessionId.Value);
         Assert.Equal(LeadInboxKind.Report, flag.Kind);
         Assert.Null(flag.Report);
         Assert.Null(flag.ResultReference);
 
-        var delivered = await tools.GetLeadInbox(sessionId.ToString(), CancellationToken.None);
+        var delivered = await tools.GetLeadInbox(Tid, sessionId.ToString(), CancellationToken.None);
         var item = Assert.Single(delivered.Items);
         Assert.Equal(LeadInboxKind.Report, item.Kind);
         Assert.Equal("git:ref", item.ResultReference);
         Assert.Equal(report, item.Report);
 
-        Assert.Empty((await tools.GetLeadInbox(sessionId.ToString(), CancellationToken.None)).Items);
-        Assert.Empty((await tools.GetLeadInbox(ct: CancellationToken.None)).Items);
+        Assert.Empty((await tools.GetLeadInbox(Tid, sessionId.ToString(), CancellationToken.None)).Items);
+        Assert.Empty((await tools.GetLeadInbox(Tid, ct: CancellationToken.None)).Items);
     }
 
     [SkippableFact]
@@ -551,9 +575,9 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var sessionId = await SeedReportedTask(Team, report: null);
-        var tools = LeadFor(new Principal.Lead(Team));
+        var tools = LeadFor(Factory);
 
-        var item = Assert.Single((await tools.GetLeadInbox(sessionId.ToString(), CancellationToken.None)).Items);
+        var item = Assert.Single((await tools.GetLeadInbox(Tid, sessionId.ToString(), CancellationToken.None)).Items);
         Assert.Equal("git:ref", item.ResultReference);
         Assert.Null(item.Report);
     }
@@ -563,9 +587,9 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var foreign = await SeedReportedTask(TeamId.New(), "secret");
-        var tools = LeadFor(new Principal.Lead(Team));
+        var tools = LeadFor(Factory);
 
-        var inbox = await tools.GetLeadInbox(foreign.ToString(), CancellationToken.None);
+        var inbox = await tools.GetLeadInbox(Tid, foreign.ToString(), CancellationToken.None);
         Assert.Empty(inbox.Items);
     }
 
@@ -576,9 +600,9 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         const string report = "ran the suite (green) on the third machine";
         var sessionId = await SeedRequeuedTask(
             requeueLimit: 5, requeues: 2, LivenessLossReason.MachineReboot, report);
-        var tools = LeadFor(new Principal.Lead(Team));
+        var tools = LeadFor(Factory);
 
-        var item = Assert.Single((await tools.GetLeadInbox(sessionId.ToString(), CancellationToken.None)).Items);
+        var item = Assert.Single((await tools.GetLeadInbox(Tid, sessionId.ToString(), CancellationToken.None)).Items);
         Assert.Equal(report, item.Report);
         Assert.Equal(2, item.InfrastructureRequeues);
         Assert.Equal(LivenessLossReason.MachineReboot, item.LastRequeueReason);
@@ -589,18 +613,18 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var sessionId = await SeedBlockedOnInputTask();
-        var tools = LeadFor(new Principal.Lead(Team));
+        var tools = LeadFor(Factory);
 
-        var first = Assert.Single((await tools.GetLeadInbox(sessionId.ToString(), CancellationToken.None)).Items);
+        var first = Assert.Single((await tools.GetLeadInbox(Tid, sessionId.ToString(), CancellationToken.None)).Items);
         Assert.Equal(LeadInboxKind.Question, first.Kind);
         Assert.Equal(SeededQuestion, first.Question);
         Assert.Null(first.Answer);
 
-        var second = Assert.Single((await tools.GetLeadInbox(sessionId.ToString(), CancellationToken.None)).Items);
+        var second = Assert.Single((await tools.GetLeadInbox(Tid, sessionId.ToString(), CancellationToken.None)).Items);
         Assert.Equal(SeededQuestion, second.Question);
 
-        await tools.SendInputResponse(sessionId.ToString(), "target staging-pg", CancellationToken.None);
-        var after = await tools.GetLeadInbox(sessionId.ToString(), CancellationToken.None);
+        await tools.SendInputResponse(sessionId.ToString(), Tid, "target staging-pg", CancellationToken.None);
+        var after = await tools.GetLeadInbox(Tid, sessionId.ToString(), CancellationToken.None);
         Assert.DoesNotContain(after.Items, i => i.Kind == LeadInboxKind.Question);
     }
 
@@ -609,8 +633,8 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var foreign = await SeedBlockedOnInputTaskIn(TeamId.New(), "the other Team's secret question");
-        var tools = LeadFor(new Principal.Lead(Team));
-        Assert.Empty((await tools.GetLeadInbox(foreign.ToString(), CancellationToken.None)).Items);
+        var tools = LeadFor(Factory);
+        Assert.Empty((await tools.GetLeadInbox(Tid, foreign.ToString(), CancellationToken.None)).Items);
     }
 
     [SkippableFact]
@@ -621,9 +645,9 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         // could read as instructions.
         Skip.IfNot(pg.Available, pg.SkipReason);
         var sessionId = await SeedBlockedOnInputTask();
-        var tools = LeadFor(new Principal.Lead(Team));
+        var tools = LeadFor(Factory);
 
-        var view = await tools.GetTeamState(CancellationToken.None);
+        var view = await tools.GetTeamState(Tid, CancellationToken.None);
 
         var summary = view.Sessions.Single(t => t.SessionId == sessionId.Value);
         Assert.True(summary.HasQuestion);
@@ -640,11 +664,11 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         // is recoverable — an unblocked task whose answer was dropped is not.
         Skip.IfNot(pg.Available, pg.SkipReason);
         var sessionId = await SeedBlockedOnInputTask();
-        var tools = LeadFor(new Principal.Lead(Team));
+        var tools = LeadFor(Factory);
 
         var oversized = new string('x', AnswerInput.MaxAnswerBytes + 1);
         var ex = await Assert.ThrowsAsync<McpException>(
-            () => tools.SendInputResponse(sessionId.ToString(), oversized, CancellationToken.None));
+            () => tools.SendInputResponse(sessionId.ToString(), Tid, oversized, CancellationToken.None));
         Assert.Contains(nameof(Rule.AnswerWithinSizeCap), ex.Message);
         // The refusal says where the detail belongs, so the Lead's next move is obvious.
         Assert.Contains("reference", ex.Message, StringComparison.Ordinal);

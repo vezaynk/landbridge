@@ -54,13 +54,14 @@ public sealed class SessionTaskProjectionEndToEndTests(PostgresFixture pg) : IAs
         {
             ["description"] = "project me",
             ["profile"] = "default",
+        ["teamId"] = team.Value.ToString(),
         }, cancellationToken: ct);
         var sessionId = Assert.Single(created.Content.OfType<TextContentBlock>()).Text;
 
-        var missing = await Assert.ThrowsAsync<McpProtocolException>(() => GetTaskAsync(lead, sessionId, ct));
+        var missing = await Assert.ThrowsAsync<McpProtocolException>(() => GetTaskAsync(lead, sessionId, team, ct));
         Assert.Equal(McpErrorCode.InvalidParams, missing.ErrorCode);
 
-        var listed = await ListTasksAsync(lead, ct);
+        var listed = await ListTasksAsync(lead, team, ct);
         Assert.Empty(listed["tasks"]!.AsArray());
 
         var cancel = await Assert.ThrowsAsync<McpProtocolException>(() => CancelTaskAsync(lead, sessionId, ct));
@@ -90,6 +91,7 @@ public sealed class SessionTaskProjectionEndToEndTests(PostgresFixture pg) : IAs
             {
                 ["description"] = "ask then wait",
                 ["profile"] = "default",
+            ["teamId"] = team.Value.ToString(),
             }, cancellationToken: ct);
             sessionId = new SessionId(Guid.Parse(Assert.Single(created.Content.OfType<TextContentBlock>()).Text));
         }
@@ -111,13 +113,13 @@ public sealed class SessionTaskProjectionEndToEndTests(PostgresFixture pg) : IAs
 
         await using (var lead = await ConnectAsync(new Uri(baseUrl + "/"), leadToken, ct))
         {
-            var got = await GetTaskAsync(lead, messageId.ToString(), ct);
+            var got = await GetTaskAsync(lead, messageId.ToString(), team, ct);
             Assert.Equal(messageId.ToString(), got["taskId"]?.GetValue<string>());
             Assert.Equal("input_required", got["status"]?.GetValue<string>());
             Assert.Contains("send_input_response", got["statusMessage"]?.GetValue<string>(),
                 StringComparison.Ordinal);
 
-            var listed = await ListTasksAsync(lead, ct);
+            var listed = await ListTasksAsync(lead, team, ct);
             Assert.Equal(messageId.ToString(),
                 Assert.Single(listed["tasks"]!.AsArray(), t => t?["status"]?.GetValue<string>() == "input_required")
                     ?["taskId"]?.GetValue<string>());
@@ -137,8 +139,9 @@ public sealed class SessionTaskProjectionEndToEndTests(PostgresFixture pg) : IAs
         await app.StartAsync(ct);
         var baseUrl = app.Urls.First(u => u.StartsWith("http://"));
         var teamA = TeamId.New();
+        var teamB = TeamId.New();
         var a = await ClaimLeadAsync(teamA, ct);
-        var b = await ClaimLeadAsync(TeamId.New(), ct);
+        var b = await ClaimLeadAsync(teamB, ct);
 
         SessionId sessionId;
         await using (var leadA = await ConnectAsync(new Uri(baseUrl + "/"), a, ct))
@@ -147,6 +150,7 @@ public sealed class SessionTaskProjectionEndToEndTests(PostgresFixture pg) : IAs
             {
                 ["description"] = "private",
                 ["profile"] = "default",
+                ["teamId"] = teamA.Value.ToString(),
             }, cancellationToken: ct);
             sessionId = new SessionId(Guid.Parse(Assert.Single(created.Content.OfType<TextContentBlock>()).Text));
         }
@@ -168,9 +172,9 @@ public sealed class SessionTaskProjectionEndToEndTests(PostgresFixture pg) : IAs
         await using (var leadB = await ConnectAsync(new Uri(baseUrl + "/"), b, ct))
         {
             var ex = await Assert.ThrowsAsync<McpProtocolException>(
-                () => GetTaskAsync(leadB, messageId.ToString(), ct));
-            Assert.Equal(McpErrorCode.InvalidParams, ex.ErrorCode);
-            var listed = await ListTasksAsync(leadB, ct);
+                () => GetTaskAsync(leadB, messageId.ToString(), teamA, ct));
+            Assert.Equal(McpErrorCode.InvalidRequest, ex.ErrorCode);
+            var listed = await ListTasksAsync(leadB, teamB, ct);
             Assert.Empty(listed["tasks"]!.AsArray());
         }
 
@@ -233,11 +237,11 @@ public sealed class SessionTaskProjectionEndToEndTests(PostgresFixture pg) : IAs
         return await McpClient.CreateAsync(transport, cancellationToken: ct);
     }
 
-    private static async Task<JsonObject> GetTaskAsync(McpClient client, string taskId, CancellationToken ct) =>
-        await SendAsync(client, "tasks/get", new { taskId }, ct);
+    private static async Task<JsonObject> GetTaskAsync(McpClient client, string taskId, TeamId team, CancellationToken ct) =>
+        await SendAsync(client, "tasks/get", new { taskId, teamId = team.Value.ToString() }, ct);
 
-    private static async Task<JsonObject> ListTasksAsync(McpClient client, CancellationToken ct) =>
-        await SendAsync(client, "tasks/list", new { }, ct);
+    private static async Task<JsonObject> ListTasksAsync(McpClient client, TeamId team, CancellationToken ct) =>
+        await SendAsync(client, "tasks/list", new { teamId = team.Value.ToString() }, ct);
 
     private static async Task<JsonObject> CancelTaskAsync(McpClient client, string taskId, CancellationToken ct) =>
         await SendAsync(client, "tasks/cancel", new { taskId }, ct);

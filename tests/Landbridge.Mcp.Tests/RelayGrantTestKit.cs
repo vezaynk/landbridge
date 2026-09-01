@@ -164,6 +164,7 @@ internal static class RelayGrantTestKit
             new LeadMachineBindingService(db, clock),
             new RelayGrantService(db, clock),
             new ForwardOrchestrator(registry, new ForwardWaiters(), NullLogger<ForwardOrchestrator>.Instance),
+            new TokenService(db, clock),
             http,
             new ConfigurationBuilder().Build(),
             inbox);

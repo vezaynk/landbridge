@@ -130,22 +130,20 @@ public sealed class DashboardQueries(LandbridgeDbContext db, RunnerConnectionReg
     /// human view (§12 — see <see cref="GetInboxAsync"/> for why the parameter exists). A
     /// scoped call returns at most one overview: the Lead's own Team.</param>
     public async Task<IReadOnlyList<TeamOverview>> GetTeamsAsync(
-        Guid? teamScope = null, CancellationToken ct = default)
+        IReadOnlyCollection<Guid>? teamScope = null, CancellationToken ct = default)
     {
         // One place says what a scoped read means, so none of the aggregates below can be
         // left unfiltered by accident — each is a whole-instance read otherwise.
         var tasks = db.Sessions.AsNoTracking();
         var events = db.SessionEvents.AsNoTracking();
         var services = db.RegisteredServices.AsNoTracking();
-        var credentials = db.Credentials.AsNoTracking();
         var forwards = db.TeamForwardUsage.AsNoTracking();
-        if (teamScope is { } only)
+        if (teamScope is not null)
         {
-            tasks = tasks.Where(t => t.TeamId == only);
-            events = events.Where(e => e.TeamId == only);
-            services = services.Where(s => s.TeamId == only);
-            credentials = credentials.Where(c => c.TeamId == only);
-            forwards = forwards.Where(u => u.TeamId == only);
+            tasks = tasks.Where(t => teamScope.Contains(t.TeamId));
+            events = events.Where(e => teamScope.Contains(e.TeamId));
+            services = services.Where(s => teamScope.Contains(s.TeamId));
+            forwards = forwards.Where(u => teamScope.Contains(u.TeamId));
         }
 
         var stateCounts = await tasks
@@ -180,17 +178,23 @@ public sealed class DashboardQueries(LandbridgeDbContext db, RunnerConnectionReg
             .Select(g => new { TeamId = g.Key, Count = g.Count() })
             .ToDictionaryAsync(x => x.TeamId, x => x.Count, ct);
 
-        var leads = await credentials
-            .Where(c => c.Kind == CredentialKind.Lead && !c.Revoked && c.TeamId != null)
-            .Select(c => new { TeamId = c.TeamId!.Value, c.HumanId, c.CreatedAt })
-            .ToListAsync(ct);
-        var leadByTeam = leads.ToDictionary(l => l.TeamId, l => (l.HumanId, l.CreatedAt));
+        var ownerships = db.LeadTeams.AsNoTracking();
+        if (teamScope is not null)
+            ownerships = ownerships.Where(t => teamScope.Contains(t.TeamId));
+        var owned = await ownerships.ToListAsync(ct);
+        var ownerIds = owned.Select(o => o.LeadCredentialId).Distinct().ToList();
+        var owners = await db.Credentials.AsNoTracking()
+            .Where(c => ownerIds.Contains(c.Id) && !c.Revoked)
+            .ToDictionaryAsync(c => c.Id, ct);
+        var leadByTeam = owned
+            .Where(o => owners.ContainsKey(o.LeadCredentialId))
+            .ToDictionary(o => o.TeamId, o => (owners[o.LeadCredentialId].HumanId, owners[o.LeadCredentialId].CreatedAt));
 
         var forwardUsage = await forwards.ToDictionaryAsync(u => u.TeamId, ct);
 
         var teamIds = new HashSet<Guid>(stateCounts.Select(s => s.TeamId));
-        foreach (var l in leads)
-            teamIds.Add(l.TeamId);
+        foreach (var o in owned)
+            teamIds.Add(o.TeamId);
 
         var overviews = new List<TeamOverview>();
         foreach (var teamId in teamIds)
@@ -264,10 +268,16 @@ public sealed class DashboardQueries(LandbridgeDbContext db, RunnerConnectionReg
             })
             .ToListAsync(ct);
 
-        var lead = await db.Credentials.AsNoTracking()
-            .Where(c => c.Kind == CredentialKind.Lead && !c.Revoked && c.TeamId == teamId)
-            .Select(c => new { c.HumanId, c.CreatedAt })
+        var ownerId = await db.LeadTeams.AsNoTracking()
+            .Where(t => t.TeamId == teamId)
+            .Select(t => (Guid?)t.LeadCredentialId)
             .FirstOrDefaultAsync(ct);
+        var lead = ownerId is null
+            ? null
+            : await db.Credentials.AsNoTracking()
+                .Where(c => c.Id == ownerId && c.Kind == CredentialKind.Lead && !c.Revoked)
+                .Select(c => new { c.HumanId, c.CreatedAt })
+                .FirstOrDefaultAsync(ct);
 
         if (tasks.Count == 0 && lead is null)
             return null;
@@ -410,14 +420,14 @@ public sealed class DashboardQueries(LandbridgeDbContext db, RunnerConnectionReg
     /// as-built: no cross-Team views for agents) — so the caller passes the Team it is allowed
     /// to see and the filter happens in SQL, not in a renderer that could forget.</para>
     /// </param>
-    public async Task<InboxView> GetInboxAsync(Guid? teamScope = null, CancellationToken ct = default)
+    public async Task<InboxView> GetInboxAsync(IReadOnlyCollection<Guid>? teamScope = null, CancellationToken ct = default)
     {
         var scopedTasks = db.Sessions.AsNoTracking();
         var scopedEvents = db.SessionEvents.AsNoTracking();
-        if (teamScope is { } only)
+        if (teamScope is not null)
         {
-            scopedTasks = scopedTasks.Where(t => t.TeamId == only);
-            scopedEvents = scopedEvents.Where(e => e.TeamId == only);
+            scopedTasks = scopedTasks.Where(t => teamScope.Contains(t.TeamId));
+            scopedEvents = scopedEvents.Where(e => teamScope.Contains(e.TeamId));
         }
 
         var questions = await scopedTasks
@@ -523,14 +533,14 @@ public sealed class DashboardQueries(LandbridgeDbContext db, RunnerConnectionReg
     /// the instance-wide human view. Scoped on both sources, so a Lead's log carries neither
     /// another Team's transitions nor another Team's takeovers.</param>
     public async Task<IReadOnlyList<DashboardEvent>> GetEventsAsync(
-        int limit = 200, Guid? teamScope = null, CancellationToken ct = default)
+        int limit = 200, IReadOnlyCollection<Guid>? teamScope = null, CancellationToken ct = default)
     {
         var scopedTaskEvents = db.SessionEvents.AsNoTracking();
         var scopedLeadEvents = db.LeadEvents.AsNoTracking();
-        if (teamScope is { } only)
+        if (teamScope is not null)
         {
-            scopedTaskEvents = scopedTaskEvents.Where(e => e.TeamId == only);
-            scopedLeadEvents = scopedLeadEvents.Where(e => e.TeamId == only);
+            scopedTaskEvents = scopedTaskEvents.Where(e => teamScope.Contains(e.TeamId));
+            scopedLeadEvents = scopedLeadEvents.Where(e => teamScope.Contains(e.TeamId));
         }
 
         var rawTaskEvents = await scopedTaskEvents
@@ -641,11 +651,11 @@ public sealed class DashboardQueries(LandbridgeDbContext db, RunnerConnectionReg
     /// only its Team; a human sees the instance.
     /// </summary>
     public async Task<IReadOnlyList<FrictionReportView>> GetFrictionAsync(
-        int limit = 200, Guid? teamScope = null, CancellationToken ct = default)
+        int limit = 200, IReadOnlyCollection<Guid>? teamScope = null, CancellationToken ct = default)
     {
         var rows = db.FrictionReports.AsNoTracking();
-        if (teamScope is { } only)
-            rows = rows.Where(f => f.TeamId == only);
+        if (teamScope is not null)
+            rows = rows.Where(f => teamScope.Contains(f.TeamId));
 
         return await rows
             .OrderByDescending(f => f.Seq)

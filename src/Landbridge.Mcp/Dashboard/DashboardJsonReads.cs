@@ -92,11 +92,11 @@ internal static class DashboardJsonReads
             return true;
         }
 
-        Guid? teamScope = principal switch
+        IReadOnlyCollection<Guid>? teamScope = principal switch
         {
-            Principal.Lead l => l.Team.Value,
+            Principal.Lead l => await tokens.OwnedTeamIdsAsync(l.CredentialId, ct),
             Principal.Human => null,
-            _ => Guid.Empty,
+            _ => Array.Empty<Guid>(),
         };
 
         if (string.Equals(path, "/dashboard/machines", StringComparison.OrdinalIgnoreCase)
@@ -130,9 +130,10 @@ internal static class DashboardJsonReads
                 await http.Response.WriteAsJsonAsync(new { error = "invalid team id" }, DashboardNegotiate.Json, ct);
                 return true;
             }
-            if (principal is Principal.Lead l && l.Team.Value != id)
+            if (principal is Principal.Lead lead
+                && (teamScope is null || !teamScope.Contains(id)))
             {
-                await WriteError(http, 403, "this session may only read its own Team");
+                await WriteError(http, 403, "this session may only read a Team it owns");
                 return true;
             }
             var team = await queries.GetTeamAsync(id, ct);

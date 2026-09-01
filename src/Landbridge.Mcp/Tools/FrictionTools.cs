@@ -1,6 +1,8 @@
 using System.ComponentModel;
 using System.Text;
 using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Auth;
+using Landbridge.Core;
 using Landbridge.Mcp.Auth;
 using Microsoft.AspNetCore.Http;
 using ModelContextProtocol;
@@ -14,17 +16,21 @@ namespace Landbridge.Mcp.Tools;
 /// session transition — a Lead or worker may call it at any time.
 /// </summary>
 [McpServerToolType]
-public sealed class FrictionTools(FrictionStore store, IHttpContextAccessor http)
+public sealed class FrictionTools(FrictionStore store, TokenService tokens, IHttpContextAccessor http)
 {
     [McpServerTool(Name = "report_friction"),
      Description("Report friction in Landbridge itself — a missing tool, a confusing refusal, " +
                  "an awkward loop, a gap in the skills. NOT about the session's work (that is " +
                  "report_result or request_input). Say what happened and how it could be better. " +
-                 "Operators read these on the dashboard. Capped at 16 KB; over-cap is refused.")]
+                 "Operators read these on the dashboard. Capped at 16 KB; over-cap is refused. " +
+                 "A Lead must pass teamId (from create_team or a human).")]
     public async Task<string> ReportFriction(
         [Description("What felt wrong in Landbridge and how it could be improved. Specific: which " +
                      "tool or loop, what you expected, what happened. Not the assignment. Capped at 16 KB.")]
         string message,
+        [Description("Lead only: the Team this report is about. From create_team, or a human-supplied id. " +
+                     "Workers omit this — their token already names the Team.")]
+        string? teamId = null,
         CancellationToken ct = default)
     {
         var user = http.HttpContext?.User ?? throw Unauthorized();
@@ -36,20 +42,27 @@ public sealed class FrictionTools(FrictionStore store, IHttpContextAccessor http
         }
 
         string role;
-        Guid teamId;
+        Guid team;
         Guid? sessionId;
         Guid? humanId;
         if (LandbridgeClaims.AsLeadPrincipal(user) is { } lead)
         {
+            if (string.IsNullOrWhiteSpace(teamId) || !Guid.TryParse(teamId, out var g)
+                || !await tokens.OwnsTeamAsync(lead.CredentialId, new TeamId(g), ct))
+            {
+                throw new McpException(
+                    "teamId is required for a Lead and must be a team this credential owns; " +
+                    "create_team or use a team id you were given.");
+            }
             role = FrictionReportRow.LeadRole;
-            teamId = lead.Team.Value;
+            team = g;
             sessionId = null;
             humanId = lead.HumanId;
         }
         else if (LandbridgeClaims.AsWorker(user) is { } worker)
         {
             role = FrictionReportRow.WorkerRole;
-            teamId = worker.Team.Value;
+            team = worker.Team.Value;
             sessionId = worker.Session.Value;
             humanId = null;
         }
@@ -70,7 +83,7 @@ public sealed class FrictionTools(FrictionStore store, IHttpContextAccessor http
                 $"message is over the {FrictionStore.MaxMessageBytes / 1024} KB cap; shorten it");
         }
 
-        await store.RecordAsync(role, teamId, sessionId, humanId, message, ct);
+        await store.RecordAsync(role, team, sessionId, humanId, message, ct);
         return "ok: friction recorded";
     }
 

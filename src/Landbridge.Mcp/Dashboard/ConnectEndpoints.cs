@@ -241,7 +241,12 @@ internal static class ConnectEndpoints
          This page is a one-time delivery of a Lead bearer. Reloading it 404s.
 
          MCP is `POST {i.McpUrl}` (the origin, not `/mcp`). This token is a Lead
-         claim on team `{i.TeamId:D}`. It is not a human session.
+         factory — it can create Teams. It is not a human session.
+
+         First Team: `{i.TeamId:D}`. Pass that as `teamId` on Lead tools, or call
+         `create_team` for a new Team (keep the id in this conversation; do not
+         write it into the project — parallel agents sharing this token stay
+         apart by not knowing each other's Team id). There is no list of Teams.
 
          ## Grok
 
@@ -263,8 +268,9 @@ internal static class ConnectEndpoints
 
          Send `Authorization: Bearer {i.LeadToken}` on every request to `{i.McpUrl}`.
 
-         Read `landbridge://skills/lead`, call `list_profiles`, then `create_session`
-         with an exact name that came back. There is no reserved `default`.
+         Read `landbridge://skills/lead`. If you were not given a team id, call
+         `create_team`. Call `list_profiles`, then `create_session` with an exact
+         profile name that came back and that team id. There is no reserved `default`.
          """;
 
     private static async Task<(string TeamId, bool Takeover)> ReadClaimAsync(HttpContext http, CancellationToken ct)

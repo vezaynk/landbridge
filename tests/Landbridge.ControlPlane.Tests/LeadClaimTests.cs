@@ -62,7 +62,8 @@ public sealed class LeadClaimTests(PostgresFixture pg) : IAsyncLifetime
         Assert.StartsWith("lbr_l_", claim.Token.Token);
 
         var lead = Assert.IsType<Principal.Lead>(await tokens.ValidateAsync(claim.Token.Token));
-        Assert.Equal(Team, lead.Team);
+        Assert.Equal(claim.Token.CredentialId, lead.CredentialId);
+        Assert.True(await tokens.OwnsTeamAsync(lead.CredentialId, Team));
 
         // A silent claim is still logged as a claim event (§12).
         var ev = await db.LeadEvents.AsNoTracking().SingleAsync();
@@ -160,8 +161,8 @@ public sealed class LeadClaimTests(PostgresFixture pg) : IAsyncLifetime
 
         // The database agrees: one live Lead row for the Team, not two.
         await using var v = pg.NewContext();
-        Assert.Equal(1, await v.Credentials.AsNoTracking()
-            .CountAsync(c => c.Kind == CredentialKind.Lead && c.TeamId == Team.Value && !c.Revoked));
+        Assert.Equal(1, await v.LeadTeams.AsNoTracking()
+            .CountAsync(t => t.TeamId == Team.Value));
     }
 
     [SkippableFact]
@@ -175,15 +176,21 @@ public sealed class LeadClaimTests(PostgresFixture pg) : IAsyncLifetime
         // stands between the two claims. This pins the exact interleaving the
         // check-then-insert bug allowed.
         var winnerHuman = Guid.NewGuid();
+        var winnerCred = Guid.NewGuid();
         await using var winnerDb = pg.NewContext();
         await using var winnerTx = await winnerDb.Database.BeginTransactionAsync();
         winnerDb.Credentials.Add(new CredentialRow
         {
-            Id = Guid.NewGuid(),
+            Id = winnerCred,
             TokenHash = "winner-hash-never-presented",
             Kind = CredentialKind.Lead,
-            TeamId = Team.Value,
             HumanId = winnerHuman,
+            CreatedAt = clock.GetUtcNow(),
+        });
+        winnerDb.LeadTeams.Add(new LeadTeamRow
+        {
+            TeamId = Team.Value,
+            LeadCredentialId = winnerCred,
             CreatedAt = clock.GetUtcNow(),
         });
         await winnerDb.SaveChangesAsync();
@@ -220,5 +227,24 @@ public sealed class LeadClaimTests(PostgresFixture pg) : IAsyncLifetime
         // The Team is claimable again — a fresh human claims it silently.
         var bob = await tokens.IssueHumanSessionAsync();
         Assert.IsType<LeadClaimResult.Claimed>(await tokens.ClaimLeadAsync(bob.Token, Team));
+    }
+
+    [SkippableFact]
+    public async Task Create_team_is_owned_only_by_the_minting_factory()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var tokens = new TokenService(db, new FakeTimeProvider());
+
+        var alice = await tokens.IssueHumanSessionAsync();
+        var bob = await tokens.IssueHumanSessionAsync();
+        var a = Assert.IsType<LeadClaimResult.Claimed>(await tokens.ClaimLeadAsync(alice.Token, TeamId.New()));
+        var b = Assert.IsType<LeadClaimResult.Claimed>(await tokens.ClaimLeadAsync(bob.Token, TeamId.New()));
+
+        var minted = await tokens.CreateTeamAsync(a.Token.CredentialId);
+        Assert.True(await tokens.OwnsTeamAsync(a.Token.CredentialId, minted));
+        Assert.False(await tokens.OwnsTeamAsync(b.Token.CredentialId, minted));
+        Assert.Contains(minted.Value, await tokens.OwnedTeamIdsAsync(a.Token.CredentialId));
+        Assert.DoesNotContain(minted.Value, await tokens.OwnedTeamIdsAsync(b.Token.CredentialId));
     }
 }

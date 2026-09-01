@@ -217,6 +217,7 @@ public sealed class ConnectDashboardTests(PostgresFixture pg) : IAsyncLifetime
         var markdown = await first.Content.ReadAsStringAsync(ct);
         Assert.Contains("lbr_l_", markdown, StringComparison.Ordinal);
         Assert.Contains("[mcp_servers.landbridge]", markdown, StringComparison.Ordinal);
+        Assert.Contains("create_team", markdown, StringComparison.Ordinal);
         Assert.Contains("Authorization = \"Bearer lbr_l_", markdown, StringComparison.Ordinal);
 
         var second = await client.GetAsync(new Uri(url!), ct);

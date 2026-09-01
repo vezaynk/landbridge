@@ -90,6 +90,7 @@ public sealed class LeadForwardEndToEndTests(PostgresFixture pg) : IAsyncLifetim
             var unbound = await leadClient.CallToolAsync("open_lead_forward", new Dictionary<string, object?>
             {
                 ["serviceName"] = "db",
+                ["teamId"] = team.Value.ToString(),
             }, cancellationToken: ct);
             Assert.Equal(true, unbound.IsError);
             var unboundText = ErrorText(unbound);
@@ -100,13 +101,17 @@ public sealed class LeadForwardEndToEndTests(PostgresFixture pg) : IAsyncLifetim
             var bind = await leadClient.CallToolAsync("bind_machine", new Dictionary<string, object?>
             {
                 ["machineId"] = leadMachine.ToString(),
+                ["teamId"] = team.Value.ToString(),
             }, cancellationToken: ct);
             Assert.NotEqual(true, bind.IsError);
             Assert.Contains("leads-laptop", Text(bind), StringComparison.Ordinal);
 
             // The binding shows up on the reattachment surface (§4, §10).
             var state = await leadClient.CallToolAsync(
-                "get_team_state", new Dictionary<string, object?>(), cancellationToken: ct);
+                "get_team_state", new Dictionary<string, object?>
+                {
+                    ["teamId"] = team.Value.ToString(),
+                }, cancellationToken: ct);
             using (var stateDoc = JsonDocument.Parse(Payload(state)))
             {
                 var boundMachine = stateDoc.RootElement.GetProperty("boundMachine");
@@ -117,6 +122,7 @@ public sealed class LeadForwardEndToEndTests(PostgresFixture pg) : IAsyncLifetim
             var result = await leadClient.CallToolAsync("open_lead_forward", new Dictionary<string, object?>
             {
                 ["serviceName"] = "db",
+                ["teamId"] = team.Value.ToString(),
             }, cancellationToken: ct);
 
             Assert.NotEqual(true, result.IsError);
@@ -197,29 +203,40 @@ public sealed class LeadForwardEndToEndTests(PostgresFixture pg) : IAsyncLifetim
         Assert.NotEqual(true, (await leadClient.CallToolAsync("bind_machine", new Dictionary<string, object?>
         {
             ["machineId"] = machine.ToString(),
+            ["teamId"] = team.Value.ToString(),
         }, cancellationToken: ct)).IsError);
 
         var released = await leadClient.CallToolAsync(
-            "unbind_machine", new Dictionary<string, object?>(), cancellationToken: ct);
+            "unbind_machine", new Dictionary<string, object?>
+            {
+                ["teamId"] = team.Value.ToString(),
+            }, cancellationToken: ct);
         Assert.NotEqual(true, released.IsError);
         Assert.Contains("leads-laptop", Text(released), StringComparison.Ordinal);
 
         // Gone from team state, and the forward refuses with the same actionable text.
         var state = await leadClient.CallToolAsync(
-            "get_team_state", new Dictionary<string, object?>(), cancellationToken: ct);
+            "get_team_state", new Dictionary<string, object?>
+            {
+                ["teamId"] = team.Value.ToString(),
+            }, cancellationToken: ct);
         using (var doc = JsonDocument.Parse(Payload(state)))
             AssertNoBoundMachine(doc.RootElement);
 
         var refused = await leadClient.CallToolAsync("open_lead_forward", new Dictionary<string, object?>
         {
             ["serviceName"] = "db",
+            ["teamId"] = team.Value.ToString(),
         }, cancellationToken: ct);
         Assert.Equal(true, refused.IsError);
         Assert.Contains("no machine bound", ErrorText(refused), StringComparison.Ordinal);
 
         // A second unbind is a no-op, not a failure.
         var again = await leadClient.CallToolAsync(
-            "unbind_machine", new Dictionary<string, object?>(), cancellationToken: ct);
+            "unbind_machine", new Dictionary<string, object?>
+            {
+                ["teamId"] = team.Value.ToString(),
+            }, cancellationToken: ct);
         Assert.NotEqual(true, again.IsError);
         Assert.Contains("no machine bound", Text(again), StringComparison.Ordinal);
 
@@ -237,7 +254,8 @@ public sealed class LeadForwardEndToEndTests(PostgresFixture pg) : IAsyncLifetim
         var producerTask = await RelayGrantTestKit.RegisterWorkingServiceAsync(pg, owningTeam, "secret-db", ct);
         // A Lead of a *different* Team, with a bound and connected machine — the only
         // thing missing is Team membership (§8.2, §9 check 11).
-        var outsider = await RelayGrantTestKit.LeadSessionAsync(pg, TeamId.New(), ct);
+        var outsiderTeam = TeamId.New();
+        var outsider = await RelayGrantTestKit.LeadSessionAsync(pg, outsiderTeam, ct);
         var machine = await RelayGrantTestKit.EnrollMachineAsync(pg, "outsiders-laptop", ct);
 
         await using var plane = RelayGrantTestKit.BuildPlane(pg.ConnectionString, relayValidationBearer: null);
@@ -252,11 +270,13 @@ public sealed class LeadForwardEndToEndTests(PostgresFixture pg) : IAsyncLifetim
         Assert.NotEqual(true, (await leadClient.CallToolAsync("bind_machine", new Dictionary<string, object?>
         {
             ["machineId"] = machine.ToString(),
+            ["teamId"] = outsiderTeam.Value.ToString(),
         }, cancellationToken: ct)).IsError);
 
         var refused = await leadClient.CallToolAsync("open_lead_forward", new Dictionary<string, object?>
         {
             ["serviceName"] = "secret-db",
+            ["teamId"] = outsiderTeam.Value.ToString(),
         }, cancellationToken: ct);
 
         Assert.Equal(true, refused.IsError);
@@ -273,7 +293,8 @@ public sealed class LeadForwardEndToEndTests(PostgresFixture pg) : IAsyncLifetim
         using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
         var ct = cts.Token;
 
-        var lead = await RelayGrantTestKit.LeadSessionAsync(pg, TeamId.New(), ct);
+        var team = TeamId.New();
+        var lead = await RelayGrantTestKit.LeadSessionAsync(pg, team, ct);
 
         await using var plane = RelayGrantTestKit.BuildPlane(pg.ConnectionString, relayValidationBearer: null);
         await plane.StartAsync(ct);
@@ -284,6 +305,7 @@ public sealed class LeadForwardEndToEndTests(PostgresFixture pg) : IAsyncLifetim
         var unknown = await leadClient.CallToolAsync("bind_machine", new Dictionary<string, object?>
         {
             ["machineId"] = Guid.NewGuid().ToString(),
+            ["teamId"] = team.Value.ToString(),
         }, cancellationToken: ct);
         Assert.Equal(true, unknown.IsError);
         Assert.Contains("no enrolled machine", ErrorText(unknown), StringComparison.Ordinal);
@@ -291,6 +313,7 @@ public sealed class LeadForwardEndToEndTests(PostgresFixture pg) : IAsyncLifetim
         var garbage = await leadClient.CallToolAsync("bind_machine", new Dictionary<string, object?>
         {
             ["machineId"] = "not-a-uuid",
+            ["teamId"] = team.Value.ToString(),
         }, cancellationToken: ct);
         Assert.Equal(true, garbage.IsError);
         Assert.Contains("not a valid machine id", ErrorText(garbage), StringComparison.Ordinal);

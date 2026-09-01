@@ -17,8 +17,9 @@ namespace Landbridge.Mcp.Tools;
 /// (§4); these tools map onto the engine commands a lead claim authorizes.
 ///
 /// The caller is never a parameter — it comes from the authenticated token
-/// (HttpContext.User → lead claim), exactly like <see cref="WorkerTools"/>, so a
-/// Lead can only ever act on its own Team. Each tool is a thin adapter over an
+/// (HttpContext.User → Lead factory), exactly like <see cref="WorkerTools"/>.
+/// The factory owns Teams via <c>create_team</c>; other tools take a
+/// <c>teamId</c> this credential owns. Each tool is a thin adapter over an
 /// already-tested <see cref="SessionStore"/> transition; the store and the engine
 /// re-check authority (§9 check 3 for creation, the §7 human-confirmation gate
 /// for review, disposition for cancel), so nothing here interprets session content.
@@ -44,6 +45,7 @@ public sealed class LeadTools(
     LeadMachineBindingService bindings,
     RelayGrantService grants,
     ForwardOrchestrator forwards,
+    TokenService tokens,
     IHttpContextAccessor http,
     IConfiguration config,
     SessionEventFanout? inbox = null)
@@ -67,9 +69,6 @@ public sealed class LeadTools(
         }
     }
 
-    /// <summary>The engine actor for session transitions: Team-scoped authority (§5).</summary>
-    private LeadClaim Lead => LeadPrincipal.Actor;
-
     /// <summary>
     /// The claiming human, for the facts that key on the person rather than the Team
     /// — currently only the lead↔machine binding (§8.3 human path). A lead credential
@@ -79,6 +78,34 @@ public sealed class LeadTools(
         lead.HumanId ?? throw new McpException(
             "this lead credential carries no human identity, so it cannot own a machine binding; " +
             "re-claim the Team from your human session (/landbridge-lead) and try again.");
+
+    /// <summary>
+    /// Resolve the engine actor for <paramref name="teamId"/> after an ownership
+    /// check. The factory token is not itself a Team; the id is the capability.
+    /// </summary>
+    private async Task<LeadClaim> LeadOn(string teamId, CancellationToken ct)
+    {
+        var lead = LeadPrincipal;
+        if (string.IsNullOrWhiteSpace(teamId) || !Guid.TryParse(teamId, out var g))
+            throw new McpException(
+                "teamId is required and must be a team id you minted with create_team, or one a human gave you.");
+        var team = new TeamId(g);
+        if (!await tokens.OwnsTeamAsync(lead.CredentialId, team, ct))
+            throw new McpException(
+                "this lead credential does not own that team; create_team or use a team id you were given.");
+        return new LeadClaim(team);
+    }
+
+    [McpServerTool(Name = "create_team"),
+     Description("Mint a new Team owned by this Lead token and return its id. Use that id as teamId on " +
+                 "every other Lead tool. Call this when a human did not give you a team id. Do not write " +
+                 "the id into the project — it is the capability that keeps parallel agents on this " +
+                 "token from sharing a Team. There is no list of Teams.")]
+    public async Task<string> CreateTeam(CancellationToken ct = default)
+    {
+        var team = await tokens.CreateTeamAsync(LeadPrincipal.CredentialId, ct);
+        return team.Value.ToString();
+    }
 
     [McpServerTool(Name = "create_session"),
      Description("Create a session for this Team. Only a Lead may create sessions. The description is the " +
@@ -93,6 +120,8 @@ public sealed class LeadTools(
         [Description("Runner profile name for exact-match routing. Required. Call list_profiles first — " +
                      "a name no machine declares makes a session nothing can ever claim.")]
         string profile,
+        [Description("The Team this session belongs to. From create_team, or a human-supplied id.")]
+        string teamId,
         CancellationToken ct = default)
     {
         if (string.IsNullOrWhiteSpace(description))
@@ -100,8 +129,9 @@ public sealed class LeadTools(
         if (string.IsNullOrWhiteSpace(profile))
             throw new McpException("profile is required; call list_profiles and pass an exact name.");
 
+        var lead = await LeadOn(teamId, ct);
         var result = await store.CreateAsync(
-            new CreateSession(Lead, Lead.Team, description, profile.Trim()), ct);
+            new CreateSession(lead, lead.Team, description, profile.Trim()), ct);
 
         return result switch
         {
@@ -121,15 +151,18 @@ public sealed class LeadTools(
                  "releases occupancy without hiding.")]
     public async Task<string> StopSession(
         [Description("The session to stop.")] string sessionId,
+        [Description("The Team that owns this session. From create_team, or a human-supplied id.")]
+        string teamId,
         CancellationToken ct,
         [Description("Seconds to wait for a graceful stop before kill. Default 300 (5 minutes). " +
                      "0 kills immediately.")]
         int? ttlSeconds = null)
     {
         var ttl = ResolveStopTtl(ttlSeconds);
+        var lead = await LeadOn(teamId, ct);
         var id = ParseSessionId(sessionId);
         var machine = registry.MachineFor(id);
-        var applied = await store.ApplyAsync(id, new Landbridge.Core.StopSession(Lead), ct);
+        var applied = await store.ApplyAsync(id, new Landbridge.Core.StopSession(lead), ct);
         if (applied is StoreResult.Applied ok
             && ok.Session.OccupancyObserved == Occupancy.Running
             && machine is { Length: > 0 })
@@ -158,11 +191,14 @@ public sealed class LeadTools(
                  "send_input_response, not this. Wake later is send_input_request (session/load).")]
     public async Task<string> ParkTask(
         [Description("The session to park.")] string sessionId,
+        [Description("The Team that owns this session. From create_team, or a human-supplied id.")]
+        string teamId,
         CancellationToken ct)
     {
+        var lead = await LeadOn(teamId, ct);
         var id = ParseSessionId(sessionId);
         var machine = registry.MachineFor(id) ?? "unknown";
-        var result = await store.ApplyAsync(id, new Park(Lead, new ParkRecord(machine)), ct);
+        var result = await store.ApplyAsync(id, new Park(lead, new ParkRecord(machine)), ct);
         if (result is StoreResult.Applied && machine != "unknown")
         {
             await registry.SendAsync(
@@ -183,6 +219,8 @@ public sealed class LeadTools(
     public async Task<string> SendInputResponse(
         [Description("The session id that is waiting on you.")]
         string sessionId,
+        [Description("The Team that owns this session. From create_team, or a human-supplied id.")]
+        string teamId,
         [Description("Your answer, in prose: the decision, and enough of why for the worker to apply it to cases " +
                      "you did not enumerate. It reaches the worker on its next get_inbox. Capped at 16 KB; " +
                      "over-cap is refused and the session stays blocked, so point at a reference for detail. " +
@@ -190,10 +228,11 @@ public sealed class LeadTools(
         string? answer = null,
         CancellationToken ct = default)
     {
+        var lead = await LeadOn(teamId, ct);
         var id = ParseSessionId(sessionId);
         var machine = registry.MachineFor(id);
         var live = registry.HasLiveProcess(id);
-        var result = await store.SendInputResponseAsync(Lead, id, machine, answer, live, ct);
+        var result = await store.SendInputResponseAsync(lead, id, machine, answer, live, ct);
         return await DoorbellIfLive(id, machine, live, result, ct);
     }
 
@@ -207,16 +246,19 @@ public sealed class LeadTools(
     public async Task<string> SendInputRequest(
         [Description("The session id to talk to.")]
         string sessionId,
+        [Description("The Team that owns this session. From create_team, or a human-supplied id.")]
+        string teamId,
         [Description("What the worker should do next. It reaches the worker on its next get_inbox. " +
                      "Capped at 16 KB; over-cap is refused. Omit only to wake a parked, stopped, or " +
                      "failed session that needs no words.")]
         string? text = null,
         CancellationToken ct = default)
     {
+        var lead = await LeadOn(teamId, ct);
         var id = ParseSessionId(sessionId);
         var machine = registry.MachineFor(id);
         var live = registry.HasLiveProcess(id);
-        var result = await store.SendInputRequestAsync(Lead, id, machine, text, live, ct);
+        var result = await store.SendInputRequestAsync(lead, id, machine, text, live, ct);
         return await DoorbellIfLive(id, machine, live, result, ct);
     }
 
@@ -248,6 +290,8 @@ public sealed class LeadTools(
     public async Task<string> AnswerPermissionRequest(
         [Description("The session id whose permission request is pending.")]
         string sessionId,
+        [Description("The Team that owns this session. From create_team, or a human-supplied id.")]
+        string teamId,
         [Description("One optionId from get_lead_inbox(sessionId), or 'allow'/'deny' as aliases for the " +
                      "matching harness kind.")]
         string option,
@@ -257,6 +301,7 @@ public sealed class LeadTools(
         string? message = null,
         CancellationToken ct = default)
     {
+        var lead = await LeadOn(teamId, ct);
         var id = ParseSessionId(sessionId);
         if (string.IsNullOrWhiteSpace(option))
             throw new McpException(
@@ -266,7 +311,7 @@ public sealed class LeadTools(
         // holding its own tool call open, so there is nothing to redispatch and no transcript
         // to resume (§11). Escalation is enforced on the row inside the store, so a Lead
         // answering one it already handed over is refused there rather than here.
-        return Describe(await store.AnswerPermissionAsync(Lead, id, option.Trim(), message, ct));
+        return Describe(await store.AnswerPermissionAsync(lead, id, option.Trim(), message, ct));
     }
 
     [McpServerTool(Name = "get_lead_inbox"),
@@ -278,14 +323,16 @@ public sealed class LeadTools(
                  "permission wait stays outstanding until you answer it. Hidden rows are omitted. A " +
                  "failed session still lists a leftover envelope as a second item. For a wake when the " +
                  "inbox is empty, watch_lead_inbox.")]
-    public Task<LeadInboxView> GetLeadInbox(
+    public async Task<LeadInboxView> GetLeadInbox(
+        [Description("The Team whose inbox to read. From create_team, or a human-supplied id.")]
+        string teamId,
         [Description("Optional: only this session's outstanding items, with bodies.")] string? sessionId = null,
         CancellationToken ct = default,
         [Description("Optional: these sessions' outstanding items, with bodies.")] string[]? sessionIds = null)
     {
-        var lead = Lead;
+        var lead = await LeadOn(teamId, ct);
         var filter = SessionFilter(sessionId, sessionIds);
-        return store.GetLeadInboxAsync(lead.Team, filter, ct, filter is { Count: > 0 } ? lead : null);
+        return await store.GetLeadInboxAsync(lead.Team, filter, ct, filter is { Count: > 0 } ? lead : null);
     }
 
     [McpServerTool(Name = "watch_lead_inbox"),
@@ -297,13 +344,15 @@ public sealed class LeadTools(
                  "permission wait stays until you answer. Call again after you act. HTTP twin: " +
                  "GET /lead/inbox/events.")]
     public async Task<LeadInboxView> WatchLeadInbox(
+        [Description("The Team whose inbox to watch. From create_team, or a human-supplied id.")]
+        string teamId,
         [Description("Optional: only this session's outstanding items, with bodies.")] string? sessionId = null,
         CancellationToken ct = default,
         [Description("Optional: these sessions' outstanding items, with bodies.")] string[]? sessionIds = null)
     {
         if (inbox is null)
             throw new McpException("the inbox feed is not available in this process.");
-        var lead = Lead;
+        var lead = await LeadOn(teamId, ct);
         var filter = SessionFilter(sessionId, sessionIds);
         var actor = filter is { Count: > 0 } ? lead : (Actor?)null;
         await foreach (var snapshot in LeadInboxWatch.Snapshots(store, inbox, lead.Team, filter, actor, ct))
@@ -322,10 +371,14 @@ public sealed class LeadTools(
                  "prefer get_lead_inbox / watch_lead_inbox (pass sessionIds to pull bodies). Also reports which machine you have bound " +
                  "as your human's own (bound_machine, null if none) — the consumer end " +
                  "open_lead_forward needs.")]
-    public async Task<TeamStateView> GetTeamState(CancellationToken ct)
+    public async Task<TeamStateView> GetTeamState(
+        [Description("The Team to read. From create_team, or a human-supplied id.")]
+        string teamId,
+        CancellationToken ct)
     {
+        var actor = await LeadOn(teamId, ct);
         var lead = LeadPrincipal;
-        var state = await store.GetTeamStateAsync(lead.Team, ct);
+        var state = await store.GetTeamStateAsync(actor.Team, ct);
         // The binding keys on the human, not the Team, so it is composed on here
         // rather than read out of the Team's rows (§8.3 human path). A lead
         // credential with no human attribution simply shows no binding.
@@ -382,8 +435,11 @@ public sealed class LeadTools(
     public async Task<string> BindMachine(
         [Description("The enrolled machine's id (a uuid). On the box you are sitting at, GET http://127.0.0.1:19378 — landbridged answers with it.")]
         string machineId,
+        [Description("A Team this Lead owns. From create_team, or a human-supplied id.")]
+        string teamId,
         CancellationToken ct)
     {
+        _ = await LeadOn(teamId, ct);
         var human = HumanOf(LeadPrincipal);
         if (!Guid.TryParse(machineId, out var id))
             throw new McpException($"'{machineId}' is not a valid machine id (expected a uuid).");
@@ -403,8 +459,12 @@ public sealed class LeadTools(
                  "machine, or when the machine should no longer be a forward target. Already-established " +
                  "forwards are not severed — a splice lives until its owning session leaves working — but no " +
                  "new open_lead_forward will resolve until a machine is bound again.")]
-    public async Task<string> UnbindMachine(CancellationToken ct)
+    public async Task<string> UnbindMachine(
+        [Description("A Team this Lead owns. From create_team, or a human-supplied id.")]
+        string teamId,
+        CancellationToken ct)
     {
+        _ = await LeadOn(teamId, ct);
         var released = await bindings.UnbindAsync(HumanOf(LeadPrincipal), ct);
         return released is null
             ? "ok: you had no machine bound; nothing to release."
@@ -425,8 +485,11 @@ public sealed class LeadTools(
     public async Task<OpenForwardResult> OpenLeadForward(
         [Description("The name of a service registered by a working session in your Team.")]
         string serviceName,
+        [Description("The Team that owns the service. From create_team, or a human-supplied id.")]
+        string teamId,
         CancellationToken ct)
     {
+        var actor = await LeadOn(teamId, ct);
         var lead = LeadPrincipal;
         var human = HumanOf(lead);
 
@@ -443,7 +506,7 @@ public sealed class LeadTools(
 
         // 2. Issue the grant. Same check-11 gate as a worker's open_forward, scoped
         // to this Lead's own Team (§9 check 11, §8.2).
-        var issued = await grants.IssueForLeadAsync(lead.Team, serviceName, ct) switch
+        var issued = await grants.IssueForLeadAsync(actor.Team, serviceName, ct) switch
         {
             RelayGrantResult.Issued i => i,
             RelayGrantResult.Refused r => throw new McpException($"rejected ({r.Rule}): {r.Reason}"),

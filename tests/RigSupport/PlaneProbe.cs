@@ -133,12 +133,14 @@ internal static class PlaneProbe
         McpClient lead,
         string description,
         CancellationToken ct,
+        string teamId,
         string profile = "default")
     {
         var created = await lead.CallToolAsync("create_session", new Dictionary<string, object?>
         {
             ["description"] = description,
             ["profile"] = profile,
+            ["teamId"] = teamId,
         }, cancellationToken: ct);
 
         var text = TextOf(created);
@@ -151,11 +153,12 @@ internal static class PlaneProbe
     /// Close a session as the Lead via <c>stop_session</c> — hide + occupancy
     /// release. Transcripts become readable once the row is hidden (§12).
     /// </summary>
-    public static async Task AcceptAsync(McpClient lead, SessionId task, CancellationToken ct)
+    public static async Task AcceptAsync(McpClient lead, SessionId task, string teamId, CancellationToken ct)
     {
         var stopped = await lead.CallToolAsync("stop_session", new Dictionary<string, object?>
         {
             ["sessionId"] = task.Value.ToString(),
+            ["teamId"] = teamId,
         }, cancellationToken: ct);
 
         if (stopped.IsError == true)
