@@ -55,7 +55,7 @@ public sealed class TranscriptDashboardEndToEndTests(PostgresFixture pg) : IAsyn
     {
         // The one dashboard route family that refuses a Lead credential outright. Every other
         // §12 view must keep answering one (§12 requires a Lead-consumable twin) — but with the
-        // Lead's own Team, not the instance (§4 reattachment; §10 as-built gives an agent no
+        // Lead's owned Teams, not the instance (§4 reattachment; §10 as-built gives an agent no
         // cross-Team view). So this asserts all three halves: transcripts refused, the Team list
         // served, and another Team's row absent from it. A regression in any one of them —
         // transcripts widened, the twin removed, or the twin widened back to instance-wide —

@@ -157,7 +157,7 @@ The failure you are hunting is the quiet one — a machine that heartbeats, read
 | The machine is present at all | `/dashboard/machines` | a section for this machine id, `heartbeat Ns ago` inside your `heartbeat_seconds` |
 | It declares this profile | same page, profile badges | the name is listed; `no profiles declared` means no heartbeat has landed yet |
 | It will accept work | same page, badge | `ready` — `not ready` or `back-pressure` means nothing will dispatch |
-| The session moves | `/dashboard/teams/{team}`, or the Lead's `get_team_state` | occupancy `running`/`running`, then `awaiting_report` after `report_result`, with `Attempt` reaching 1 and staying there |
+| The session moves | `/dashboard/teams/{team}`, or the Lead's `get_team_state` with that `teamId` | occupancy `running`/`running`, then `awaiting_report` after `report_result`, with `Attempt` reaching 1 and staying there |
 | The work actually happened | the session's report | the value it was asked for, not a restatement of the ask |
 
 Both views take `?format=json` if you would rather read them structured — the Team view with a Lead bearer token, the Machine Group view with an operator session only (machine enumeration is human-only by design, so a Lead token gets a 403 there). There is no MCP tool that lists machines and none that reads events — for those two the dashboard is the only surface.

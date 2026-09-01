@@ -10,9 +10,10 @@ namespace Landbridge.Mcp.Dashboard;
 
 /// <summary>
 /// Operator how-to plus the two credential writes that have no other surface:
-/// issue an enrollment token, and claim a Lead on a Team. GET is any dashboard
-/// principal (a Lead may need the recipe). The POSTs are human-only — a Lead
-/// already holds one Team, and a machine belongs to no Team.
+/// issue an enrollment token, and claim a Lead factory (optionally assigning a
+/// Team). GET is any dashboard principal (a Lead may need the recipe). The POSTs
+/// are human-only — a Lead already holds a factory token, and a machine belongs
+/// to no Team.
 /// </summary>
 internal static class ConnectEndpoints
 {
@@ -97,9 +98,9 @@ internal static class ConnectEndpoints
     }
 
     /// <summary>
-    /// POST /dashboard/connect/claim — claim (or take over) the Lead of a Team
-    /// from this human session. Empty <c>teamId</c> starts a new Team. The Lead
-    /// token is shown once. Same-origin, human-only.
+    /// POST /dashboard/connect/claim — claim a Lead factory from this human
+    /// session and assign a Team (empty <c>teamId</c> starts a new one). The
+    /// factory token is shown once. Same-origin, human-only.
     /// </summary>
     private static async Task<IResult> HandleClaimLeadAsync(
         HttpContext http, TokenService tokens, IConfiguration config, CancellationToken ct)
@@ -326,7 +327,7 @@ internal static class ConnectEndpoints
 
     private const string HumanOnly =
         "issuing an enrollment token, claiming a Lead, or minting a setup link is a "
-        + "human-operator action; a Lead session already holds one Team";
+        + "human-operator action; a Lead factory already has a token — call create_team for another Team";
 
     private const string CrossOriginReason =
         "this form is same-origin only: the request carried no Origin from the dashboard's own host";

@@ -71,6 +71,9 @@ public sealed class ConnectDashboardTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Contains("[mcp_servers.landbridge]", html, StringComparison.Ordinal);
         Assert.Contains("Authorization = \"Bearer", html, StringComparison.Ordinal);
         Assert.Contains("/dashboard/connect/setup-link", html, StringComparison.Ordinal);
+        Assert.Contains("factory", html, StringComparison.OrdinalIgnoreCase);
+        Assert.Contains("create_team", html, StringComparison.Ordinal);
+        Assert.Contains("teamId", html, StringComparison.Ordinal);
 
         var json = await GetAuthedAsync(app, "/dashboard/connect?format=json", ct);
         using var doc = JsonDocument.Parse(json);

@@ -105,7 +105,7 @@ internal static class DashboardJsonReads
             if (principal is not Principal.Human)
             {
                 await WriteError(http, 403,
-                    "the machine group is a human-operator view; a Lead session sees its own Team's tasks "
+                    "the machine group is a human-operator view; a Lead session sees its owned Teams "
                     + "on /dashboard/teams and through get_team_state");
                 return true;
             }
@@ -183,7 +183,7 @@ internal static class DashboardJsonReads
         if (principal is not Principal.Human)
         {
             await WriteError(http, 403,
-                "profile checks are a human-operator view; a Lead session sees its own Team's tasks "
+                "profile checks are a human-operator view; a Lead session sees its owned Teams "
                 + "on /dashboard/teams and through get_team_state");
             return false;
         }

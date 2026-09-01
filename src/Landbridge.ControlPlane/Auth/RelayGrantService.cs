@@ -107,7 +107,7 @@ public sealed class RelayGrantService(
     /// there is no consumer worker instance to bind and the mint records only the
     /// producer + Team. Runs the identical check-11 gate as <see cref="IssueAsync"/>
     /// (registered service owned by a working task in <paramref name="team"/>, which
-    /// for a Lead is its own Team), and the grant validates, is single-use per role,
+    /// for a Lead is a Team it owns), and the grant validates, is single-use per role,
     /// and revokes through the same paths. The Lead's authority is what selects
     /// <paramref name="team"/>; nothing here is broader than what a worker in that
     /// Team could already reach.

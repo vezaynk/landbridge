@@ -11,12 +11,12 @@ The Lead inbox is a snapshot of outstanding items. HTTP SSE and `watch_lead_inbo
 
 | Route | Auth | Body |
 |---|---|---|
-| `GET /lead/inbox` | Lead bearer | JSON snapshot |
-| `GET /lead/inbox/events` | Lead bearer | SSE of the same snapshot |
-| `get_lead_inbox` | Lead MCP | JSON snapshot |
-| `watch_lead_inbox` | Lead MCP | waits until at least one item, then the snapshot |
+| `GET /lead/inbox?teamId=` | Lead bearer | JSON snapshot |
+| `GET /lead/inbox/events?teamId=` | Lead bearer | SSE of the same snapshot |
+| `get_lead_inbox` | Lead MCP | JSON snapshot (`teamId` required) |
+| `watch_lead_inbox` | Lead MCP | waits until at least one item, then the snapshot (`teamId` required) |
 
-`?sessionId=` (repeatable) / `sessionId` or `sessionIds` limits the snapshot. Team-wide is identifiers only. A session filter carries bodies and marks unread report mail as read. Workers, machines, and humans are 403. Unauthenticated is 401. Team scope is the calling Lead's Team. Another Team's sessions never appear.
+`teamId` is required: a Team this factory owns. `?sessionId=` (repeatable) / `sessionId` or `sessionIds` limits the snapshot. Team-wide is identifiers only. A session filter carries bodies and marks unread report mail as read. Workers, machines, and humans are 403. Unauthenticated is 401. Another Team's sessions never appear.
 
 Each snapshot lists **every outstanding fact**, not one row per session. Team-wide: `sessionId`, `kind`, `messageId`, `namespace`. Per-session: result reference, report, question, permission options, infrastructure account. A question or permission wait stays until answered. `get_team_state` remains the full occupancy view. Worker pull is `get_inbox` / `watch_inbox`.
 

@@ -16,11 +16,14 @@ else if (Ready)
         <h2>Connect as a Lead</h2>
         <p>A Lead is a harness the operator drives. It talks to this plane over MCP
             with a <span class="mono">lbr_l_…</span> token. The dashboard login is a
-            <em>human</em> session; Lead tools require a Lead claim on a Team.</p>
+            <em>human</em> session. The Lead token is a factory, not a Team — every
+            Lead tool except <span class="mono">create_team</span> and
+            <span class="mono">list_profiles</span> takes a <span class="mono">teamId</span>.</p>
         <ol>
             <li>
-                Claim a Team with the form below (operator / human session only). That
-                mints a <span class="mono">lbr_l_…</span> token. One live Lead per Team;
+                Claim a Lead factory with the form below (operator / human session only).
+                That mints a <span class="mono">lbr_l_…</span> token and assigns the first
+                Team (leave the id blank to start a new one). One live owner per Team;
                 a second claimant is refused unless they take over. There is no
                 <span class="mono">claim_lead</span> MCP tool and no
                 <span class="mono">/landbridge-lead</span> slash command — claiming is
@@ -28,9 +31,8 @@ else if (Ready)
             </li>
             <li>
                 Point the harness at this plane with that token as a static bearer.
-                The token is a Lead factory: call <span class="mono">create_team</span>
-                for a new Team, or pass a human-supplied team id. Do not write the id
-                into the project. The MCP endpoint is <span class="mono">POST @McpUrl</span> (the origin,
+                Call <span class="mono">create_team</span> for another Team, or pass a
+                human-supplied team id. Do not write the id into the project. The MCP endpoint is <span class="mono">POST @McpUrl</span> (the origin,
                 not <span class="mono">/mcp</span>). Grok (and any client that only
                 speaks Dynamic Client Registration) cannot complete OAuth here —
                 this plane has no <span class="mono">/register</span>; clients are
@@ -48,7 +50,7 @@ Authorization = "Bearer lbr_l_…"</pre>
                 A CIMD client (Claude Code) can OAuth instead: authorization code +
                 PKCE S256, same operator passphrase as this dashboard. That mints a
                 <span class="mono">lbr_h_…</span> human session, not a Lead — still
-                claim a Team and send the <span class="mono">lbr_l_…</span> token.
+                claim a Lead factory and send the <span class="mono">lbr_l_…</span> token.
                 Discovery is
                 <span class="mono">/.well-known/oauth-protected-resource</span> and
                 <span class="mono">/.well-known/oauth-authorization-server</span>.
@@ -58,7 +60,8 @@ Authorization = "Bearer lbr_l_…"</pre>
                 <span class="mono">resources/list</span>. Call
                 <span class="mono">list_profiles</span>, then
                 <span class="mono">create_session</span> with an exact name that came
-                back. There is no reserved <span class="mono">default</span>.
+                back and that <span class="mono">teamId</span>. There is no reserved
+                <span class="mono">default</span>.
             </li>
         </ol>
         @if (Principal is Principal.Lead)

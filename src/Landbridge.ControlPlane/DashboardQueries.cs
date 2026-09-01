@@ -16,8 +16,8 @@ namespace Landbridge.ControlPlane;
 ///
 /// <para><b>Every read here is instance-wide unless the caller scopes it.</b> The §12 views are
 /// a human-operator surface and a human sees the whole instance; the same routes also serve a
-/// reattaching Lead its own Team as structured data (§4), and a Lead's scope is that Team and
-/// nothing else (§10 as-built: no cross-Team or machine views for agents). So the tenant filter
+/// reattaching Lead the Teams that factory owns as structured data (§4). There is no MCP
+/// <c>list_teams</c>; the dashboard list is the recovery surface. So the tenant filter
 /// is a <c>teamScope</c> parameter on the multi-Team reads rather than an assumption — the
 /// endpoint resolves the principal and says what it may see, and <c>null</c> is the deliberate
 /// "a human asked" case, not a default that happens to be permissive.</para>
@@ -126,9 +126,9 @@ public sealed class DashboardQueries(LandbridgeDbContext db, RunnerConnectionReg
     /// (§12). A Team exists if it owns any task or holds a live Lead claim. Carries its
     /// reported relay bytes (§9.10, measured but best-effort).
     /// </summary>
-    /// <param name="teamScope">The one Team this read may see, or null for the instance-wide
+    /// <param name="teamScope">The Teams this read may see, or null for the instance-wide
     /// human view (§12 — see <see cref="GetInboxAsync"/> for why the parameter exists). A
-    /// scoped call returns at most one overview: the Lead's own Team.</param>
+    /// scoped call returns the overviews for the Teams that factory owns.</param>
     public async Task<IReadOnlyList<TeamOverview>> GetTeamsAsync(
         IReadOnlyCollection<Guid>? teamScope = null, CancellationToken ct = default)
     {
@@ -412,13 +412,12 @@ public sealed class DashboardQueries(LandbridgeDbContext db, RunnerConnectionReg
     /// lets the page mark the ones a Lead has handed over.</para>
     /// </summary>
     /// <param name="teamScope">
-    /// The one Team this read may see, or null for the instance-wide human view.
+    /// The Teams this read may see, or null for the instance-wide human view.
     ///
     /// <para>The §12 inbox is "everything waiting on a person <em>across every Team</em>", and
-    /// for a human it still is. But the same routes serve a Lead its own Team as structured
-    /// data (§4 reattachment, §12), and a Lead's scope is its Team and nothing else (§10
-    /// as-built: no cross-Team views for agents) — so the caller passes the Team it is allowed
-    /// to see and the filter happens in SQL, not in a renderer that could forget.</para>
+    /// for a human it still is. The same routes serve a Lead the Teams that factory owns as
+    /// structured data (§4 reattachment, §12) — so the caller passes those ids and the filter
+    /// happens in SQL, not in a renderer that could forget.</para>
     /// </param>
     public async Task<InboxView> GetInboxAsync(IReadOnlyCollection<Guid>? teamScope = null, CancellationToken ct = default)
     {
@@ -529,7 +528,7 @@ public sealed class DashboardQueries(LandbridgeDbContext db, RunnerConnectionReg
     /// (§10/§12). Each event carries only structure — kind, from/to state,
     /// identifiers, the store's own effect-name detail — never prose.
     /// </summary>
-    /// <param name="teamScope">See <see cref="GetInboxAsync"/> — a Lead's own Team, or null for
+    /// <param name="teamScope">See <see cref="GetInboxAsync"/> — a Lead's owned Teams, or null for
     /// the instance-wide human view. Scoped on both sources, so a Lead's log carries neither
     /// another Team's transitions nor another Team's takeovers.</param>
     public async Task<IReadOnlyList<DashboardEvent>> GetEventsAsync(

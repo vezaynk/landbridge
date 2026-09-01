@@ -1,7 +1,9 @@
 <DashboardDocument Title="Setup link" ActiveKey="connect">
 <h1>One-time setup link</h1>
-<p class="sub">Team <span class="mono">@TeamId</span>. The URL is a capability, not the bearer.
-    The first GET returns markdown that contains the token and then 404s.</p>
+<p class="sub">First Team <span class="mono">@TeamId</span>. The URL is a capability, not the bearer.
+    The first GET returns markdown that contains the factory token and then 404s.
+    Pass that Team id as <span class="mono">teamId</span>, or call
+    <span class="mono">create_team</span> for another.</p>
 <section class="secret">
     <label for="url">Link</label>
     <input id="url" type="text" class="mono" readonly value="@Url" />

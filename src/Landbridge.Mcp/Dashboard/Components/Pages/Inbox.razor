@@ -10,7 +10,9 @@
 else if (Ready && View is { } inbox)
 {
     <h1>Human inbox</h1>
-    <p class="sub">Everything waiting on a person, across every Team.</p>
+    <p class="sub">@(Principal is Principal.Lead
+        ? "Everything waiting on a person, on Teams this Lead owns."
+        : "Everything waiting on a person, across every Team.")</p>
 
     <section>
         <h2>Open questions</h2>

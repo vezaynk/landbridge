@@ -89,7 +89,7 @@ else if (Ready)
     {
         if (Principal is not Principal.Human)
         {
-            return "the machine group is a human-operator view; a Lead session sees its own Team's tasks "
+            return "the machine group is a human-operator view; a Lead session sees its owned Teams "
                 + "on /dashboard/teams and through get_team_state";
         }
         MachinesList = await Queries.GetMachinesAsync(RequestAborted);

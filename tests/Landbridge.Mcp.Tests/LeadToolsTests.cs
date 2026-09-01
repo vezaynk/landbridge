@@ -483,7 +483,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         // it was denied.
         Assert.DoesNotContain("secret-machine", refused.Message, StringComparison.Ordinal);
         Assert.DoesNotContain("restricted", refused.Message, StringComparison.Ordinal);
-        Assert.Contains("lead claim", refused.Message, StringComparison.Ordinal);
+        Assert.Contains("Lead token", refused.Message, StringComparison.Ordinal);
 
         // An evicted Lead is refused too, with its own §4 reason rather than this one.
         var evicted = new Principal.EvictedLead(Team, Guid.NewGuid(), DateTimeOffset.UtcNow);
