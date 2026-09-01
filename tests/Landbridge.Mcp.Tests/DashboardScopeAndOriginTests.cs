@@ -167,6 +167,23 @@ public sealed class DashboardScopeAndOriginTests(PostgresFixture pg) : IAsyncLif
         using var allEvents = await GetJsonAsync(client, "/dashboard/events?format=json", human, ct);
         Assert.Contains(allEvents.RootElement.EnumerateArray(), e => e.GetProperty("kind").GetString() == "Claimed");
 
+        await using (var db = pg.NewContext())
+        {
+            var friction = new FrictionStore(db, TimeProvider.System);
+            await friction.RecordAsync(FrictionReportRow.LeadRole, mine.Value, null, null, "my team's friction", ct);
+            await friction.RecordAsync(FrictionReportRow.WorkerRole, theirs.Value, null, null, TheirSecret, ct);
+        }
+
+        using var ownFriction = await GetJsonAsync(client, "/dashboard/friction?format=json", lead, ct);
+        var mineRow = Assert.Single(ownFriction.RootElement.EnumerateArray());
+        Assert.Equal(mine.Value, mineRow.GetProperty("teamId").GetGuid());
+        Assert.Equal("my team's friction", mineRow.GetProperty("message").GetString());
+        Assert.DoesNotContain(TheirSecret, ownFriction.RootElement.GetRawText(), StringComparison.Ordinal);
+
+        using var allFriction = await GetJsonAsync(client, "/dashboard/friction?format=json", human, ct);
+        Assert.Equal(2, allFriction.RootElement.GetArrayLength());
+        Assert.Contains(TheirSecret, allFriction.RootElement.GetRawText(), StringComparison.Ordinal);
+
         await app.StopAsync(ct);
     }
 

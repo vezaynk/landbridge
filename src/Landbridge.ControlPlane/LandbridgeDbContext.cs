@@ -19,6 +19,7 @@ public sealed class LandbridgeDbContext(DbContextOptions<LandbridgeDbContext> op
     public DbSet<OAuthAuthorizationCodeRow> OAuthAuthorizationCodes => Set<OAuthAuthorizationCodeRow>();
     public DbSet<TeamForwardUsageRow> TeamForwardUsage => Set<TeamForwardUsageRow>();
     public DbSet<SessionUsageRow> SessionUsage => Set<SessionUsageRow>();
+    public DbSet<FrictionReportRow> FrictionReports => Set<FrictionReportRow>();
 
     /// <summary>The channel dispatch/transition NOTIFYs land on (§3.1 LISTEN/NOTIFY).</summary>
     public const string EventChannel = "landbridge_session_events";
@@ -235,6 +236,15 @@ public sealed class LandbridgeDbContext(DbContextOptions<LandbridgeDbContext> op
             // The Team id IS the key: one row per Team, so concurrent reports from different
             // relays contend on a single row (§9.10).
             e.HasKey(t => t.TeamId);
+        });
+
+        b.Entity<FrictionReportRow>(e =>
+        {
+            e.ToTable("friction_reports");
+            e.HasKey(f => f.Seq);
+            e.Property(f => f.Seq).UseIdentityAlwaysColumn();
+            e.HasIndex(f => f.At);
+            e.HasIndex(f => f.TeamId);
         });
     }
 }

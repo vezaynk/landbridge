@@ -84,6 +84,7 @@ builder.Services.AddMcpServer()
     .WithHttpTransport()
     .WithTools<WorkerTools>()
     .WithTools<LeadTools>()
+    .WithTools<FrictionTools>()
     // §10/§14: the skill bundle ships as MCP resources so it reaches every agent
     // on connect. Stable landbridge:// URIs; scoping is advisory (see SkillResources).
     .WithResources<SkillResources>()

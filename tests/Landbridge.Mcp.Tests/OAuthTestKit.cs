@@ -100,7 +100,8 @@ internal static class OAuthTestKit
         builder.Services.AddMcpServer()
             .WithHttpTransport()
             .WithTools<WorkerTools>()
-            .WithTools<LeadTools>();
+            .WithTools<LeadTools>()
+            .WithTools<FrictionTools>();
 
         var app = builder.Build();
         app.UseAuthentication();

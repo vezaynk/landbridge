@@ -20,6 +20,8 @@ public sealed class PermissionPolicyTests
     [InlineData("landbridge__stop_session")]
     [InlineData("landbridge__get_team_state")]
     [InlineData("mcp__landbridge__open_forward")]
+    [InlineData("report_friction")]
+    [InlineData("mcp__landbridge__report_friction")]
     public void Protocol_and_runtime_tools_auto_allow(string tool)
     {
         Assert.Equal(PermissionDisposition.AutoAllow, PermissionPolicy.Classify(tool, "{}"));

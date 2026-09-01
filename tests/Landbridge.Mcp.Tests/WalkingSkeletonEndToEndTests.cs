@@ -228,7 +228,8 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
         builder.Services.AddMcpServer()
             .WithHttpTransport()
             .WithTools<WorkerTools>()
-            .WithTools<LeadTools>();
+            .WithTools<LeadTools>()
+            .WithTools<FrictionTools>();
 
         var app = builder.Build();
         app.UseAuthentication();

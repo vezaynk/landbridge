@@ -8,6 +8,7 @@
     <a class="@Active("teams")" href="/dashboard/teams">Teams</a>
     <a class="@Active("inbox")" href="/dashboard/inbox">Inbox</a>
     <a class="@Active("events")" href="/dashboard/events">Events</a>
+    <a class="@Active("friction")" href="/dashboard/friction">Friction</a>
     <a class="@Active("conformance")" href="/dashboard/conformance">Profile check</a>
     <a class="@Active("connect")" href="/dashboard/connect">Connect</a>
     @if (!ShouldHideSignOut)
@@ -50,6 +51,7 @@
                 var p when p.StartsWith("/dashboard/teams/", StringComparison.Ordinal) => "teams",
                 "/dashboard/inbox" => "inbox",
                 "/dashboard/events" => "events",
+                "/dashboard/friction" => "friction",
                 var p when p.StartsWith("/dashboard/conformance", StringComparison.Ordinal) => "conformance",
                 var p when p.StartsWith("/dashboard/connect", StringComparison.Ordinal) => "connect",
                 var p when p.StartsWith("/dashboard/sessions/", StringComparison.Ordinal) => "teams",

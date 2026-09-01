@@ -365,7 +365,8 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
         builder.Services.AddMcpServer()
             .WithHttpTransport()
             .WithTools<WorkerTools>()
-            .WithTools<LeadTools>();
+            .WithTools<LeadTools>()
+            .WithTools<FrictionTools>();
 
         builder.Services.AddSingleton<RunnerConnectionRegistry>();
 

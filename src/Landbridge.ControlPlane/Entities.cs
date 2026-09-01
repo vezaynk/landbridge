@@ -658,3 +658,22 @@ public sealed class TeamForwardUsageRow
     /// reader can see how stale it is rather than trusting it as current.</summary>
     public DateTimeOffset UpdatedAt { get; set; }
 }
+
+/// <summary>
+/// One <c>report_friction</c> from a Lead or a worker: product feedback about
+/// Landbridge itself, not about the session's work. Append-only; the plane stores
+/// the message verbatim and never interprets it.
+/// </summary>
+public sealed class FrictionReportRow
+{
+    public const string LeadRole = "lead";
+    public const string WorkerRole = "worker";
+
+    public long Seq { get; set; }
+    public DateTimeOffset At { get; set; }
+    public string Role { get; set; } = "";
+    public Guid TeamId { get; set; }
+    public Guid? SessionId { get; set; }
+    public Guid? HumanId { get; set; }
+    public string Message { get; set; } = "";
+}

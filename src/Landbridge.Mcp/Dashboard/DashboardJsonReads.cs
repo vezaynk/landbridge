@@ -160,6 +160,13 @@ internal static class DashboardJsonReads
             return true;
         }
 
+        if (string.Equals(path, "/dashboard/friction", StringComparison.OrdinalIgnoreCase))
+        {
+            var friction = await queries.GetFrictionAsync(200, teamScope, ct);
+            await http.Response.WriteAsJsonAsync(friction, DashboardNegotiate.Json, ct);
+            return true;
+        }
+
         return false;
     }
 
