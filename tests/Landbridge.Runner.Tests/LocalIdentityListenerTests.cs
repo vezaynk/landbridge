@@ -131,7 +131,15 @@ public class LocalIdentityListenerTests
         await listener.DisposeAsync();
 
         using var http = new HttpClient { Timeout = TimeSpan.FromSeconds(2) };
-        await Assert.ThrowsAnyAsync<HttpRequestException>(
-            () => http.GetStringAsync($"http://127.0.0.1:{port}/"));
+        try
+        {
+            var body = await http.GetStringAsync($"http://127.0.0.1:{port}/");
+            Assert.Fail($"disposed listener still answered: {body}");
+        }
+        catch (Exception e) when (e is HttpRequestException or TaskCanceledException)
+        {
+            // Linux/macOS reset the socket (HttpRequestException). Windows HTTP.sys
+            // often accepts then hangs until the client timeout (TaskCanceledException).
+        }
     }
 }
