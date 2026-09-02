@@ -28,9 +28,19 @@ public static class DashboardHosting
     /// Maps the Blazor circuit under <c>/dashboard/_blazor</c> so the
     /// <c>landbridge_session</c> cookie (Path=/dashboard) rides the SignalR
     /// connection, then maps the component tree.
+    /// .NET 10 serves <c>blazor.web.js</c> as a fingerprinted static web asset
+    /// rather than an embedded resource; without <c>MapStaticAssets</c>
+    /// the script 404s, the circuit never starts, and row clicks are dead HTML.
     /// </summary>
     public static WebApplication MapDashboardUi(this WebApplication app)
     {
+        // testhost (xUnit) looks for testhost.staticwebassets.endpoints.json;
+        // the circuit script lives next to Landbridge.Mcp.dll in both the
+        // plane and the test output.
+        var manifest = Path.Combine(
+            Path.GetDirectoryName(typeof(App).Assembly.Location)!,
+            "Landbridge.Mcp.staticwebassets.endpoints.json");
+        app.MapStaticAssets(manifest);
         app.MapBlazorHub("/dashboard/_blazor");
         app.MapRazorComponents<App>()
             .AddInteractiveServerRenderMode();

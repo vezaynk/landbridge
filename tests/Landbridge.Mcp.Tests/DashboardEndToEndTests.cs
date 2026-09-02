@@ -102,10 +102,18 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Contains("name=\"token\"", body, StringComparison.Ordinal);
         Assert.Contains("OAuth 2.1", body, StringComparison.Ordinal);                 // third-party clients note
 
-        // The one static asset every page links must be served, unauthenticated.
+        // The stylesheet every page links must be served, unauthenticated.
         var css = await client.GetAsync("/dashboard/dashboard.css", ct);
         Assert.Equal(HttpStatusCode.OK, css.StatusCode);
         Assert.Equal("text/css", css.Content.Headers.ContentType!.MediaType);
+
+        // .NET 10 serves blazor.web.js as a static web asset. If this 404s the
+        // circuit never starts and fleet-board row clicks are dead HTML.
+        var scriptSrc = System.Text.RegularExpressions.Regex.Match(
+            body, @"src=""([^""]*_framework/blazor\.web[^""]*)""");
+        Assert.True(scriptSrc.Success, "login page must link the Blazor circuit script");
+        var js = await client.GetAsync(scriptSrc.Groups[1].Value, ct);
+        Assert.Equal(HttpStatusCode.OK, js.StatusCode);
 
         await app.StopAsync(ct);
     }

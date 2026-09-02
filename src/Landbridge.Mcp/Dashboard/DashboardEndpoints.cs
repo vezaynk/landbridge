@@ -43,7 +43,8 @@ public static class DashboardEndpoints
             });
         }
 
-        // Open: the single stylesheet, and the login/logout seam.
+        // Open: the stylesheet, and the login/logout seam. The Blazor circuit
+        // script is served by MapStaticAssets (see MapDashboardUi).
         app.MapGet("/dashboard/dashboard.css", () =>
             Results.Text(DashboardCss.Content, DashboardCss.ContentType));
 

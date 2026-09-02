@@ -4,12 +4,13 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <base href="/" />
+    <ImportMap />
     <link rel="stylesheet" href="/dashboard/dashboard.css" />
     <HeadOutlet @rendermode="InteractiveServer" />
 </head>
 <body>
     <Routes @rendermode="InteractiveServer" />
-    <script src="_framework/blazor.web.js" autostart="false"></script>
+    <script src="@Assets["_framework/blazor.web.js"]" autostart="false"></script>
     <script>
         Blazor.start({
             circuit: {
