@@ -203,6 +203,7 @@ public sealed class LandbridgeDbContext(DbContextOptions<LandbridgeDbContext> op
             // the same shape as every opaque credential's hash (§5).
             e.HasIndex(m => m.LabelHash).IsUnique();
             e.Property(m => m.AuthPolicy).HasConversion<string>();
+            e.Property(m => m.Ttl).HasColumnType("interval");
         });
 
         b.Entity<OAuthAuthorizationCodeRow>(e =>

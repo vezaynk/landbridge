@@ -98,6 +98,7 @@ public sealed class PreviewConnectService(
             return new PreviewConnectResult.Unavailable(
                 $"the machine hosting service '{mapping.ServiceName}' is not connected");
 
+        await mappings.SlideExpiryAsync(mapping.Id, ct);
         logger.LogInformation(
             "preview connect: label resolved to team {Team} service {Service}, forward {ForwardId} armed",
             mapping.TeamId, mapping.ServiceName, forwardId);

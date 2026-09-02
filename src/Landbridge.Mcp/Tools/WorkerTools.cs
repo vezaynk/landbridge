@@ -309,16 +309,16 @@ public sealed class WorkerTools(
      Description("Mint a shareable browser preview URL for a service YOU registered on this session (spec §8.4). " +
                  "Returns an https URL a human can open in a browser with no landbridged install. Gated (default) " +
                  "requires the viewer to have a Landbridge operator session; public admits on the unguessable link " +
-                 "alone and is always short-lived. Only a service you registered on this session with register_service " +
-                 "is previewable. Hand the URL back in your report.")]
+                 "alone. Both default to a 2-hour idle TTL that slides on each visit. Only a service you registered " +
+                 "on this session with register_service is previewable. Hand the URL back in your report.")]
     public async Task<OpenPreviewResult> OpenPreview(
         [Description("The name of a service you registered on this session with register_service.")]
         string serviceName,
-        [Description("Public preview: anyone with the link can open it (a capability URL, short mandatory TTL). " +
+        [Description("Public preview: anyone with the link can open it (a capability URL). " +
                      "Default false = gated, which requires a Landbridge operator session in the viewer's browser.")]
         bool isPublic = false,
-        [Description("How long the preview stays live, in minutes. Public is capped short; gated defaults to a day. " +
-                     "Omit for the default.")]
+        [Description("Idle lifetime in minutes. Default 120 for both public and gated; each admitted connection " +
+                     "resets the window. Public is capped at 24 hours. Omit for the default.")]
         int? ttlMinutes = null,
         CancellationToken ct = default)
     {
@@ -380,7 +380,7 @@ public sealed record ProcessActionResult(bool Ok, string? Refusal, int? Value);
 /// What <c>open_preview</c> hands back (spec §8.4): the shareable <see cref="Url"/>
 /// to put in a report, the <see cref="Auth"/> policy (<c>gated</c>|<c>public</c>)
 /// so the worker knows whether a viewer needs an operator session, and
-/// <see cref="ExpiresAt"/> when the preview stops admitting new connections.
+/// <see cref="ExpiresAt"/> the idle deadline (each admitted connection slides it).
 /// snake_case-pinned like <see cref="OpenForwardResult"/>.
 /// </summary>
 public sealed record OpenPreviewResult(

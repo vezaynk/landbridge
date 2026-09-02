@@ -412,10 +412,9 @@ public sealed class RegisteredServiceRow
 /// the label (§8.4).</para>
 ///
 /// <para><see cref="ExpiresAt"/> gates whether a <em>new</em> browser connection
-/// is admitted — mandatory and short for <see cref="PreviewAuthPolicy.Public"/>.
-/// It is distinct from a forward grant's own short open-handshake TTL (§8.3): the
-/// mapping expiry bounds the preview's life, the grant expiry bounds one
-/// connection's tunnel-open.</para>
+/// is admitted. <see cref="Ttl"/> is the idle window: each admitted connection
+/// slides <see cref="ExpiresAt"/> to now + <see cref="Ttl"/>. Distinct from a
+/// forward grant's open-handshake TTL (§8.3).</para>
 /// </summary>
 public sealed class PreviewMappingRow
 {
@@ -441,7 +440,10 @@ public sealed class PreviewMappingRow
     /// <summary>Gated (default) requires a §12 operator session; public is the label-only capability (§8.4).</summary>
     public PreviewAuthPolicy AuthPolicy { get; set; }
 
-    /// <summary>When the mapping stops admitting new connections (§8.4). Mandatory + short for public.</summary>
+    /// <summary>Idle window stored at mint. Each admitted connection slides <see cref="ExpiresAt"/> by this.</summary>
+    public TimeSpan Ttl { get; set; }
+
+    /// <summary>When the mapping stops admitting new connections unless activity slides it (§8.4).</summary>
     public DateTimeOffset ExpiresAt { get; set; }
 }
 
