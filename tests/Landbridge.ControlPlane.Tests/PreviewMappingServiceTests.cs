@@ -103,4 +103,31 @@ public sealed class PreviewMappingServiceTests(PostgresFixture pg) : IAsyncLifet
         // A browser/DNS may upcase the host label; resolution must still match (§8.4).
         Assert.IsType<PreviewResolveResult.Found>(await svc.ResolveAsync(mint.Label.ToUpperInvariant()));
     }
+
+    [SkippableFact]
+    public async Task Slide_expiry_resets_the_idle_window_from_now()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var clock = new FakeTimeProvider();
+        var svc = new PreviewMappingService(db, clock);
+        var ttl = TimeSpan.FromMinutes(30);
+
+        var mint = await svc.CreateAsync(Team, SessionId.New(), "web", PreviewAuthPolicy.Public, ttl);
+        Assert.Equal(ttl, mint.Mapping.Ttl);
+        var mintedExpiry = mint.Mapping.ExpiresAt;
+
+        clock.Advance(TimeSpan.FromMinutes(10));
+        await svc.SlideExpiryAsync(mint.Mapping.Id);
+
+        Assert.Equal(clock.GetUtcNow() + ttl, mint.Mapping.ExpiresAt);
+        Assert.True(mint.Mapping.ExpiresAt > mintedExpiry);
+
+        // Still live just before the slid window ends.
+        clock.Advance(ttl - TimeSpan.FromSeconds(1));
+        Assert.IsType<PreviewResolveResult.Found>(await svc.ResolveAsync(mint.Label));
+
+        clock.Advance(TimeSpan.FromSeconds(2));
+        Assert.IsType<PreviewResolveResult.Expired>(await svc.ResolveAsync(mint.Label));
+    }
 }

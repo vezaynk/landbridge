@@ -382,6 +382,10 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("team_id");
 
+                    b.Property<TimeSpan>("Ttl")
+                        .HasColumnType("interval")
+                        .HasColumnName("ttl");
+
                     b.HasKey("Id")
                         .HasName("pk_preview_mappings");
 

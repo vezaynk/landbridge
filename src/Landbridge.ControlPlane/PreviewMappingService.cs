@@ -24,11 +24,11 @@ public sealed class PreviewMappingService(LandbridgeDbContext db, TimeProvider c
 {
     /// <summary>
     /// Mint a mapping and return the plaintext label (which exists only in this
-    /// value, once — the store keeps only its hash). <paramref name="ttl"/> bounds
-    /// the preview's life; a public preview must always carry a short one (§8.4),
-    /// enforced by the caller/mint surface. The owning task/service is <b>not</b>
-    /// re-checked here — check 11 is enforced at connect (a task working now may
-    /// not be at connect time), matching how a forward grant re-checks at issue.
+    /// value, once — the store keeps only its hash). <paramref name="ttl"/> is the
+    /// idle window stored on the row; each admitted connection slides expiry by
+    /// that amount. The owning task/service is <b>not</b> re-checked here — check
+    /// 11 is enforced at connect (a task working now may not be at connect time),
+    /// matching how a forward grant re-checks at issue.
     /// </summary>
     public async Task<PreviewMintResult> CreateAsync(
         TeamId team, SessionId task, string serviceName, PreviewAuthPolicy authPolicy, TimeSpan ttl,
@@ -44,8 +44,7 @@ public sealed class PreviewMappingService(LandbridgeDbContext db, TimeProvider c
             SessionId = task.Value,
             ServiceName = serviceName,
             AuthPolicy = authPolicy,
-            // No created-at: a mapping's whole lifetime is ExpiresAt, which is what resolve
-            // checks, so a creation stamp was written and never read.
+            Ttl = ttl,
             ExpiresAt = now + ttl,
         };
         db.PreviewMappings.Add(row);
@@ -97,6 +96,21 @@ public sealed class PreviewMappingService(LandbridgeDbContext db, TimeProvider c
             return PreviewResolveResult.Expired.Instance;
 
         return new PreviewResolveResult.Found(row);
+    }
+
+    /// <summary>
+    /// Slide <see cref="PreviewMappingRow.ExpiresAt"/> to now + the stored idle
+    /// window. Called after a connection is admitted, so a live preview does not
+    /// die under traffic. A missing row is a no-op (the connect already resolved).
+    /// </summary>
+    public async Task SlideExpiryAsync(Guid mappingId, CancellationToken ct = default)
+    {
+        var row = await db.PreviewMappings.FirstOrDefaultAsync(m => m.Id == mappingId, ct);
+        if (row is null)
+            return;
+        var ttl = row.Ttl > TimeSpan.Zero ? row.Ttl : PreviewMint.DefaultTtl;
+        row.ExpiresAt = clock.GetUtcNow() + ttl;
+        await db.SaveChangesAsync(ct);
     }
 
     // ── Internals ───────────────────────────────────────────────────────────

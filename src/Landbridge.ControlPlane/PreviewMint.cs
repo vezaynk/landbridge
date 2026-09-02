@@ -9,27 +9,30 @@ namespace Landbridge.ControlPlane;
 /// </summary>
 public static class PreviewMint
 {
-    /// <summary>Default life of a gated preview when the caller names no TTL.</summary>
-    public static readonly TimeSpan GatedDefaultTtl = TimeSpan.FromHours(24);
+    /// <summary>Idle life of a preview when the caller names no TTL — public and gated.</summary>
+    public static readonly TimeSpan DefaultTtl = TimeSpan.FromHours(2);
 
-    /// <summary>Default life of a public preview — short, because the label alone admits (§8.4).</summary>
-    public static readonly TimeSpan PublicDefaultTtl = TimeSpan.FromMinutes(15);
+    /// <summary>Same as <see cref="DefaultTtl"/>; kept so mint surfaces can name the policy.</summary>
+    public static readonly TimeSpan GatedDefaultTtl = DefaultTtl;
 
-    /// <summary>Hard ceiling for a public preview's TTL — public is always time-boxed (§8.4).</summary>
-    public static readonly TimeSpan PublicMaxTtl = TimeSpan.FromHours(1);
+    /// <summary>Same as <see cref="DefaultTtl"/>; kept so mint surfaces can name the policy.</summary>
+    public static readonly TimeSpan PublicDefaultTtl = DefaultTtl;
+
+    /// <summary>Hard ceiling for a public preview's requested TTL — public stays time-boxed.</summary>
+    public static readonly TimeSpan PublicMaxTtl = TimeSpan.FromHours(24);
 
     /// <summary>
     /// Resolve the mint TTL for <paramref name="policy"/> from an optional caller
-    /// request (minutes). Public is clamped to <see cref="PublicMaxTtl"/> and
-    /// defaults short; gated defaults long. A non-positive request is treated as
-    /// "unspecified".
+    /// request (minutes). Both policies default to <see cref="DefaultTtl"/>. Public
+    /// is clamped to <see cref="PublicMaxTtl"/>. A non-positive request is treated
+    /// as unspecified. Activity slides this window; it is not a wall-clock lifetime.
     /// </summary>
     public static TimeSpan ResolveTtl(PreviewAuthPolicy policy, int? requestedMinutes)
     {
         if (policy == PreviewAuthPolicy.Public)
         {
             var ttl = requestedMinutes is { } m and > 0 ? TimeSpan.FromMinutes(m) : PublicDefaultTtl;
-            return ttl > PublicMaxTtl ? PublicMaxTtl : ttl; // public is mandatory-short (§8.4)
+            return ttl > PublicMaxTtl ? PublicMaxTtl : ttl;
         }
 
         return requestedMinutes is { } g and > 0 ? TimeSpan.FromMinutes(g) : GatedDefaultTtl;

@@ -153,6 +153,48 @@ public sealed class PreviewConnectServiceTests(PostgresFixture pg) : IAsyncLifet
     }
 
     [SkippableFact]
+    public async Task Successful_connect_slides_the_mapping_idle_window()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var clock = new FakeTimeProvider();
+        var team = TeamId.New();
+        var (producerTask, _) = await WorkingServiceAsync(db, clock, team, "web", 3000);
+        var (connect, _, _) = BuildConnect(db, clock, producerTask);
+        var ttl = TimeSpan.FromMinutes(30);
+        var mint = await new PreviewMappingService(db, clock)
+            .CreateAsync(team, producerTask, "web", PreviewAuthPolicy.Public, ttl);
+        var mintedExpiry = mint.Mapping.ExpiresAt;
+
+        clock.Advance(TimeSpan.FromMinutes(10));
+        Assert.IsType<PreviewConnectResult.Established>(
+            await connect.ConnectAsync(mint.Label, null, null, RelayUrl));
+
+        Assert.Equal(clock.GetUtcNow() + ttl, mint.Mapping.ExpiresAt);
+        Assert.True(mint.Mapping.ExpiresAt > mintedExpiry);
+    }
+
+    [SkippableFact]
+    public async Task Gated_refusal_does_not_slide_the_mapping_idle_window()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var clock = new FakeTimeProvider();
+        var team = TeamId.New();
+        var (producerTask, _) = await WorkingServiceAsync(db, clock, team, "web", 3000);
+        var (connect, _, _) = BuildConnect(db, clock, producerTask);
+        var mint = await new PreviewMappingService(db, clock)
+            .CreateAsync(team, producerTask, "web", PreviewAuthPolicy.Gated, TimeSpan.FromMinutes(30));
+        var mintedExpiry = mint.Mapping.ExpiresAt;
+
+        clock.Advance(TimeSpan.FromMinutes(10));
+        Assert.IsType<PreviewConnectResult.Unauthorized>(
+            await connect.ConnectAsync(mint.Label, null, null, RelayUrl));
+
+        Assert.Equal(mintedExpiry, mint.Mapping.ExpiresAt);
+    }
+
+    [SkippableFact]
     public async Task Unknown_and_expired_labels_are_distinct_refusals()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);

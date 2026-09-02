@@ -16,9 +16,9 @@ public enum PreviewAuthPolicy
     Gated,
 
     /// <summary>
-    /// A capability URL: the unguessable label alone admits the request. Always
-    /// carries a short mandatory TTL (§8.4) — public is the time-boxed exception,
-    /// gated is the rule.
+    /// A capability URL: the unguessable label alone admits the request. Same
+    /// idle TTL as gated (2 hours by default, sliding on each admitted
+    /// connection); public stays time-boxed by a requested-TTL ceiling.
     /// </summary>
     Public,
 }
