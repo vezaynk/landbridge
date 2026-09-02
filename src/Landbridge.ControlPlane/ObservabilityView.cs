@@ -138,6 +138,11 @@ public sealed partial class DashboardQueries
                 s.Namespace,
                 s.Profile,
                 s.State,
+                s.Health,
+                s.Hidden,
+                s.OccupancyDesired,
+                s.OccupancyObserved,
+                s.CurrentInstanceId,
                 s.MessageState,
                 s.Attempt,
                 s.ReportUnread,
@@ -237,8 +242,24 @@ public sealed partial class DashboardQueries
                     e.OccurredAt, e.Kind, TailText(e.Kind, e.Detail, e.ToState, e.AuthErrorCode, e.LivenessReason)))
                 .ToList();
 
+            // Occupancy is derived (health / desired / observed / envelope), not
+            // the stored SessionState column — LivenessLost parks as health=failed
+            // and a stale Working column would keep the lane pulsing as live.
+            var occupancy = SessionRecord.DeriveState(new SessionRecord
+            {
+                Id = new SessionId(s.Id),
+                Team = new TeamId(s.TeamId),
+                Namespace = s.Namespace,
+                Hidden = s.Hidden,
+                Health = s.Health,
+                OccupancyDesired = s.OccupancyDesired,
+                OccupancyObserved = s.OccupancyObserved,
+                MessageState = s.MessageState,
+                CurrentInstance = s.CurrentInstanceId is { } inst ? new WorkerInstanceId(inst) : null,
+            });
+
             lanes.Add(new ObservabilityLane(
-                s.Id, s.TeamId, s.Namespace, s.Profile, s.State, s.MessageState, s.Attempt,
+                s.Id, s.TeamId, s.Namespace, s.Profile, occupancy, s.MessageState, s.Attempt,
                 s.ReportUnread, s.MessageOpenedAt, s.BlockedAt, s.InputKind, s.InputQuestion,
                 s.InputAnswer, s.PermissionTool, s.WorkerReport, s.LastRequeueReason, machine,
                 input, output, cacheRead, cacheWrite, cost, reportedAt,
@@ -307,8 +328,8 @@ public sealed partial class DashboardQueries
     private static (ObservabilityMarkKind Kind, string Label)? MapMark(
         string kind, SessionState? from, SessionState? to)
     {
-        if (kind == SessionEventRow.AuthFailedKind)
-            return (ObservabilityMarkKind.Error, "auth-failed");
+        if (kind == SessionEventRow.AuthFailedKind || kind == nameof(LivenessLost))
+            return (ObservabilityMarkKind.Error, kind == nameof(LivenessLost) ? "liveness-lost" : "auth-failed");
         if (kind == nameof(RequestInput))
             return (ObservabilityMarkKind.Ask, "worker → Lead");
         if (kind is nameof(AnswerInput) or nameof(AnswerPermission) or nameof(WakeParked))
@@ -364,14 +385,25 @@ public sealed partial class DashboardQueries
     private static string TailText(
         string kind, string? detail, SessionState? to, string? authError, LivenessLossReason? reason)
     {
-        if (!string.IsNullOrWhiteSpace(detail))
-            return detail;
+        if (kind == nameof(LivenessLost))
+        {
+            var why = reason?.ToString() ?? "infrastructure";
+            var landed = to is { } s ? s.ToString().ToLowerInvariant() : "failed";
+            return $"{why} → {landed}";
+        }
         if (kind == SessionEventRow.AuthFailedKind && !string.IsNullOrWhiteSpace(authError))
             return authError;
+        if (!string.IsNullOrWhiteSpace(detail) && !LooksLikeEffectList(detail))
+            return detail;
         if (reason is { } r)
             return r.ToString();
         if (to is { } state)
             return state.ToString();
         return kind;
     }
+
+    private static bool LooksLikeEffectList(string detail) =>
+        detail.Contains("RevokeWorkerInstanceToken", StringComparison.Ordinal)
+        || detail.Contains("ClearServicesAndForwards", StringComparison.Ordinal)
+        || detail.Contains("WriteParkRecord", StringComparison.Ordinal);
 }

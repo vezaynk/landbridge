@@ -56,14 +56,14 @@
                 }
                 @foreach (var lane in Snapshot.Lanes)
                 {
-                    <SessionRow Lane="lane" IsSelected="lane.SessionId == SelectedId" Now="Now" OnSelect="SelectSession" />
+                    <SessionRow @key="lane.SessionId" Lane="lane" IsSelected="lane.SessionId == SelectedId" Now="Now" OnSelect="SelectSession" />
                 }
             </div>
         </div>
 
         @if (Selected is not null)
         {
-            <DetailPanel Lane="Selected" Now="Now" />
+            <DetailPanel @key="Selected.SessionId" Lane="Selected" Now="Now" />
         }
     </div>
 </div>

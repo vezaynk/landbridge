@@ -8,12 +8,14 @@ namespace Landbridge.Mcp.Dashboard.Components;
 /// <summary>
 /// Shared load + refresh + principal resolution for gated dashboard pages.
 /// Prerender paints a complete HTML document (tests and no-JS); a live circuit
-/// then ticks <see cref="AutoRefresh"/> pages. Status codes are written only
-/// while the HTTP response is still uncommitted.
+/// then ticks <see cref="AutoRefresh"/> pages every 2s. Status codes are written
+/// only while the HTTP response is still uncommitted.
 /// </summary>
 public abstract class DashboardPageBase : ComponentBase, IDisposable
 {
     private readonly DashboardRefresh _refresh = new();
+    private readonly CancellationTokenSource _lifetime = new();
+    private int _reloading;
     private string? _token;
 
     [Inject] protected TokenService Tokens { get; set; } = default!;
@@ -29,8 +31,12 @@ public abstract class DashboardPageBase : ComponentBase, IDisposable
     protected int StatusOnRefuse { get; set; } = StatusCodes.Status403Forbidden;
     protected virtual bool AutoRefresh => true;
 
-    protected CancellationToken RequestAborted =>
-        Http.HttpContext?.RequestAborted ?? CancellationToken.None;
+    /// <summary>
+    /// Circuit lifetime, not the prerender HTTP request. Using
+    /// <c>HttpContext.RequestAborted</c> after the first paint cancels every
+    /// refresh — the GET is already finished.
+    /// </summary>
+    protected CancellationToken RequestAborted => _lifetime.Token;
 
     /// <summary>Null is the instance-wide human view; a list is a Lead's owned Teams.</summary>
     protected IReadOnlyList<Guid>? TeamScope { get; private set; }
@@ -46,11 +52,27 @@ public abstract class DashboardPageBase : ComponentBase, IDisposable
 
     protected override void OnAfterRender(bool firstRender)
     {
-        if (firstRender && AutoRefresh && RefuseReason is null)
-            _refresh.Start(() => InvokeAsync(ReloadAsync));
+        if (!firstRender || !AutoRefresh || RefuseReason is not null)
+            return;
+        _refresh.Start(() => InvokeAsync(ReloadAsync));
     }
 
     protected async Task ReloadAsync()
+    {
+        if (Interlocked.Exchange(ref _reloading, 1) == 1)
+            return;
+        try
+        {
+            await ReloadCoreAsync();
+        }
+        catch (OperationCanceledException) { }
+        finally
+        {
+            Interlocked.Exchange(ref _reloading, 0);
+        }
+    }
+
+    private async Task ReloadCoreAsync()
     {
         var http = Http.HttpContext;
         _token ??= http is null ? null : DashboardAuth.ReadToken(http);
@@ -92,5 +114,10 @@ public abstract class DashboardPageBase : ComponentBase, IDisposable
     /// <see cref="StatusOnRefuse"/> before returning to pick 400/403/404.</summary>
     protected abstract Task<string?> LoadAsync();
 
-    public void Dispose() => _refresh.Dispose();
+    public void Dispose()
+    {
+        _refresh.Dispose();
+        _lifetime.Cancel();
+        _lifetime.Dispose();
+    }
 }

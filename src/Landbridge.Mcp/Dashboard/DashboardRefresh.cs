@@ -1,11 +1,13 @@
 namespace Landbridge.Mcp.Dashboard;
 
 /// <summary>
-/// 5s refresh the string dashboard used a meta-refresh for. On a live Blazor
-/// Server circuit this ticks; prerender (tests, no-JS) paints once and stops.
+/// Circuit-side refresh. Prerender (tests, no-JS) paints once and never
+/// starts this; a live Blazor Server circuit ticks every 2s.
 /// </summary>
 internal sealed class DashboardRefresh : IDisposable
 {
+    internal static readonly TimeSpan Interval = TimeSpan.FromSeconds(2);
+
     private Timer? _timer;
 
     public void Start(Func<Task> tick)
@@ -14,7 +16,8 @@ internal sealed class DashboardRefresh : IDisposable
         {
             try { await tick(); }
             catch (ObjectDisposedException) { }
-        }, null, TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(5));
+            catch (OperationCanceledException) { }
+        }, null, Interval, Interval);
     }
 
     public void Dispose() => _timer?.Dispose();
