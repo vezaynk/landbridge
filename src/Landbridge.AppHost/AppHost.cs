@@ -147,11 +147,14 @@ var mcp = builder.AddProject<Projects.Landbridge_Mcp>("mcp", options => options.
     .WithEnvironment("ASPNETCORE_ENVIRONMENT", "Development")
     .WithEnvironment("Landbridge__MigrateOnStartup", "true")
     .WithEnvironment("Landbridge__DevSeed__TokenDir", seedDir)
-    // §8.3: the shared bearer the plane's /relay/validate endpoint requires (fail-
-    // closed 503 without it), and the relay URL WorkerTools hands landbridged per
-    // open_forward. Both are read from IConfiguration by Landbridge.Mcp; set as env.
+    // §8.3 / §8.4: shared bearer for /relay/validate. RelayUrl is what a
+    // container landbridged dials (open_forward and the preview producer);
+    // PreviewRelayUrl is what the host-side preview frontend dials. Same split
+    // as WorkerMcpUrl / PublicMcpUrl — host.docker.internal does not resolve
+    // on the Mac host.
     .WithEnvironment("Landbridge__RelayValidation__Bearer", relayValidationBearer)
     .WithEnvironment("Landbridge__RelayUrl", workerRelayUrl)
+    .WithEnvironment("Landbridge__PreviewRelayUrl", relayUrl)
     // Workers in the Linux containers cannot reach 127.0.0.1 on the host.
     // OAuth / dashboard stay on PublicMcpUrl (loopback) so a human browser is
     // unchanged; dispatch injects WorkerMcpUrl into mcpServers / {mcp_url}.
