@@ -56,9 +56,9 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
 
         var idText = await tools.CreateSession("build the thing", "default", Tid, CancellationToken.None);
 
-        var id = Guid.Parse(idText);
         await using var v = pg.NewContext();
-        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id);
+        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Slug == idText);
+        var id = row.Id;
         Assert.Equal(SessionState.Submitted, row.State);
         Assert.Equal(Team.Value, row.TeamId);
         Assert.Equal("build the thing", row.Description);
@@ -70,12 +70,13 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         Skip.IfNot(pg.Available, pg.SkipReason);
         var tools = LeadFor(Factory);
         var minted = await tools.CreateTeam(CancellationToken.None);
-        Assert.True(Guid.TryParse(minted, out var g));
+        Assert.True(HaikuSlug.IsWellFormed(minted));
 
         var idText = await tools.CreateSession("on the new team", "default", minted, CancellationToken.None);
         await using var v = pg.NewContext();
-        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == Guid.Parse(idText));
-        Assert.Equal(g, row.TeamId);
+        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Slug == idText);
+        var teamRow = await v.LeadTeams.AsNoTracking().SingleAsync(t => t.Slug == minted);
+        Assert.Equal(teamRow.TeamId, row.TeamId);
 
         var otherTeam = TeamId.New();
         var other = await LeadFactory.SeedAsync(pg, otherTeam, _clock);
@@ -134,7 +135,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
 
         var view = await tools.GetTeamState(Tid, CancellationToken.None);
 
-        Assert.Equal(Team.Value, view.TeamId);
+        Assert.True(HaikuSlug.IsWellFormed(view.TeamId));
         Assert.Equal(2, view.TotalSessions);
         Assert.Equal(2, view.CountsByState[SessionState.Submitted]);
         Assert.All(view.Sessions, t => Assert.StartsWith($"team-{Team}/session-", t.Namespace));
@@ -149,7 +150,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
 
         var inbox = await tools.GetLeadInbox(Tid, ct: CancellationToken.None);
         var item = Assert.Single(inbox.Items);
-        Assert.Equal(id.Value, item.SessionId);
+        Assert.True(HaikuSlug.IsWellFormed(item.SessionId));
         Assert.Equal(LeadInboxKind.Question, item.Kind);
 
         Assert.Empty((await tools.GetLeadInbox(Tid, Guid.NewGuid().ToString(), CancellationToken.None)).Items);
@@ -174,7 +175,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         var id = await SeedBlockedOnInputTask();
 
         var inbox = await pending;
-        Assert.Equal(id.Value, Assert.Single(inbox.Items).SessionId);
+        Assert.True(HaikuSlug.IsWellFormed(Assert.Single(inbox.Items).SessionId));
 
         await fanout.StopAsync(CancellationToken.None);
     }
@@ -221,7 +222,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         await tools.SendInputRequest(idText, Tid, "try it", CancellationToken.None);
 
         await using var v = pg.NewContext();
-        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == Guid.Parse(idText));
+        var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Slug == idText);
         Assert.False(row.Hidden);
         Assert.Equal(PendingSpawn.New, row.PendingSpawn);
     }
@@ -555,7 +556,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         var tools = LeadFor(Factory);
 
         var teamWide = await tools.GetLeadInbox(Tid, ct: CancellationToken.None);
-        var flag = Assert.Single(teamWide.Items, i => i.SessionId == sessionId.Value);
+        var flag = Assert.Single(teamWide.Items);
         Assert.Equal(LeadInboxKind.Report, flag.Kind);
         Assert.Null(flag.Report);
         Assert.Null(flag.ResultReference);
@@ -649,7 +650,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
 
         var view = await tools.GetTeamState(Tid, CancellationToken.None);
 
-        var summary = view.Sessions.Single(t => t.SessionId == sessionId.Value);
+        var summary = Assert.Single(view.Sessions);
         Assert.True(summary.HasQuestion);
         Assert.Equal(InputRequestKind.Question, summary.InputKind);
         // The prose itself appears nowhere in the serialized view.

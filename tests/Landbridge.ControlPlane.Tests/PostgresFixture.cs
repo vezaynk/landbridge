@@ -81,8 +81,8 @@ public sealed class PostgresFixture : IAsyncLifetime
 
     private async Task MigrateAsync()
     {
-        // Applies the checked-in InitialSchema migration, so the tests validate
-        // the migration produces a working schema (not just the EF model).
+        // Applies the checked-in migrations, so the tests validate they produce
+        // a working schema (not just the EF model).
         await using var db = NewContext();
         await db.Database.MigrateAsync();
     }

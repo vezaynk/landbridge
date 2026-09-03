@@ -71,7 +71,9 @@ public static class EnrollmentEndpoints
 
         return Results.Ok(new
         {
-            machineId = credentials.MachineId,
+            machineId = string.IsNullOrEmpty(credentials.Slug)
+                ? credentials.MachineId.ToString("D")
+                : credentials.Slug,
             accessToken = credentials.Access.Token,
             accessExpiresAt = credentials.Access.ExpiresAt,
             refreshToken = credentials.Refresh.Token,

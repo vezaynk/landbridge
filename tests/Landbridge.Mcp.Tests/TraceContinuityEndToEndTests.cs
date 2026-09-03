@@ -96,7 +96,8 @@ public sealed class TraceContinuityEndToEndTests(PostgresFixture pg, ITestOutput
             ["teamId"] = team.Value.ToString(),
             }, cancellationToken: ct);
             Assert.NotEqual(true, created.IsError);
-            sessionId = new SessionId(Guid.Parse(Assert.Single(created.Content.OfType<TextContentBlock>()).Text));
+            sessionId = await TestPublicIds.SessionAsync(
+                pg, Assert.Single(created.Content.OfType<TextContentBlock>()).Text, ct);
         }
 
         var workRoot = NewWorkRoot();

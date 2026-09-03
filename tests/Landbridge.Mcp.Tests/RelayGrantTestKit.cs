@@ -165,6 +165,7 @@ internal static class RelayGrantTestKit
             new RelayGrantService(db, clock),
             new ForwardOrchestrator(registry, new ForwardWaiters(), NullLogger<ForwardOrchestrator>.Instance),
             new TokenService(db, clock),
+            new FriendlyIds(db),
             http,
             new ConfigurationBuilder().Build(),
             inbox);

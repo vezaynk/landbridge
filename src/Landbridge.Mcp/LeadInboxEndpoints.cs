@@ -34,15 +34,16 @@ public static class LeadInboxEndpoints
     }
 
     private static async Task<IResult> GetSnapshotAsync(
-        HttpContext http, SessionStore store, TokenService tokens, CancellationToken ct)
+        HttpContext http, SessionStore store, TokenService tokens, FriendlyIds ids, CancellationToken ct)
     {
         if (RejectUnlessLead(http) is { } reject)
             return reject;
-        if (ParseSessionFilter(http) is { } bad)
+        var filterOrError = await SessionFilterOfAsync(http, ids, ct);
+        if (filterOrError.Error is { } bad)
             return bad;
-        var filter = SessionFilterOf(http);
+        var filter = filterOrError.Ids;
         var factory = LandbridgeClaims.AsLeadPrincipal(http.User)!;
-        var team = await RequireOwnedTeamAsync(http, factory, tokens, ct);
+        var team = await RequireOwnedTeamAsync(http, factory, tokens, ids, ct);
         if (team is null)
             return Results.Json(new { error = "teamId is required: a team id from create_team, or one a human gave you" },
                 statusCode: StatusCodes.Status400BadRequest);
@@ -52,16 +53,17 @@ public static class LeadInboxEndpoints
     }
 
     private static async Task<IResult> StreamEvents(
-        HttpContext http, SessionStore store, SessionEventFanout fanout, TokenService tokens, CancellationToken ct)
+        HttpContext http, SessionStore store, SessionEventFanout fanout, TokenService tokens, FriendlyIds ids,
+        CancellationToken ct)
     {
         if (RejectUnlessLead(http) is { } reject)
             return reject;
-        if (ParseSessionFilter(http) is { } bad)
+        var filterOrError = await SessionFilterOfAsync(http, ids, ct);
+        if (filterOrError.Error is { } bad)
             return bad;
-
-        var filter = SessionFilterOf(http);
+        var filter = filterOrError.Ids;
         var factory = LandbridgeClaims.AsLeadPrincipal(http.User)!;
-        var team = await RequireOwnedTeamAsync(http, factory, tokens, ct);
+        var team = await RequireOwnedTeamAsync(http, factory, tokens, ids, ct);
         if (team is null)
             return Results.Json(new { error = "teamId is required: a team id from create_team, or one a human gave you" },
                 statusCode: StatusCodes.Status400BadRequest);
@@ -117,28 +119,21 @@ public static class LeadInboxEndpoints
         }
     }
 
-    private static IResult? ParseSessionFilter(HttpContext http)
+    private static async Task<(IReadOnlyList<Guid>? Ids, IResult? Error)> SessionFilterOfAsync(
+        HttpContext http, FriendlyIds ids, CancellationToken ct)
     {
+        var list = new List<Guid>();
         foreach (var raw in SessionIdValues(http))
         {
-            if (!Guid.TryParse(raw, out _))
+            var session = await ids.TrySessionAsync(raw, ct);
+            if (session is null)
             {
-                return Results.Json(new { error = "sessionId is not a valid session id" },
-                    statusCode: StatusCodes.Status400BadRequest);
+                return (null, Results.Json(new { error = "sessionId is not a valid session id" },
+                    statusCode: StatusCodes.Status400BadRequest));
             }
+            list.Add(session.Value.Value);
         }
-        return null;
-    }
-
-    private static IReadOnlyList<Guid>? SessionFilterOf(HttpContext http)
-    {
-        var ids = new List<Guid>();
-        foreach (var raw in SessionIdValues(http))
-        {
-            if (Guid.TryParse(raw, out var id))
-                ids.Add(id);
-        }
-        return ids.Count == 0 ? null : ids;
+        return (list.Count == 0 ? null : list, null);
     }
 
     private static IEnumerable<string> SessionIdValues(HttpContext http)
@@ -158,13 +153,13 @@ public static class LeadInboxEndpoints
     }
 
     private static async Task<TeamId?> RequireOwnedTeamAsync(
-        HttpContext http, Principal.Lead factory, TokenService tokens, CancellationToken ct)
+        HttpContext http, Principal.Lead factory, TokenService tokens, FriendlyIds ids, CancellationToken ct)
     {
         var raw = http.Request.Query["teamId"].ToString();
-        if (string.IsNullOrWhiteSpace(raw) || !Guid.TryParse(raw, out var g))
+        var team = await ids.TryTeamAsync(raw, ct);
+        if (team is null)
             return null;
-        var team = new TeamId(g);
-        return await tokens.OwnsTeamAsync(factory.CredentialId, team, ct) ? team : null;
+        return await tokens.OwnsTeamAsync(factory.CredentialId, team.Value, ct) ? team : null;
     }
 
     private static IResult? RejectUnlessLead(HttpContext http)

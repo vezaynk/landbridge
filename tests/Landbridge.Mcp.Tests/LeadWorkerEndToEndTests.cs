@@ -74,7 +74,14 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
 
             Assert.NotEqual(true, created.IsError);
             var idText = Assert.Single(created.Content.OfType<TextContentBlock>()).Text;
-            sessionId = new SessionId(Guid.Parse(idText));
+            await using (var lookup = pg.NewContext())
+            {
+                var sid = await lookup.Sessions.AsNoTracking()
+                    .Where(s => s.Slug == idText)
+                    .Select(s => s.Id)
+                    .SingleAsync(ct);
+                sessionId = new SessionId(sid);
+            }
         }
 
         // ── Control plane: dispatch mints the incumbent worker instance ─────
@@ -153,7 +160,8 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
                 ["profile"] = "default",
             ["teamId"] = team.Value.ToString(),
             }, cancellationToken: ct);
-            sessionId = new SessionId(Guid.Parse(Assert.Single(created.Content.OfType<TextContentBlock>()).Text));
+            sessionId = await TestPublicIds.SessionAsync(
+                pg, Assert.Single(created.Content.OfType<TextContentBlock>()).Text, ct);
         }
 
         var machine = new MachineSnapshot("m1", Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });

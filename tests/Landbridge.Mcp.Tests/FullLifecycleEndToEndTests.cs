@@ -88,7 +88,8 @@ public sealed class FullLifecycleEndToEndTests(PostgresFixture pg) : IAsyncLifet
             ["teamId"] = team.Value.ToString(),
             }, cancellationToken: ct);
             Assert.NotEqual(true, created.IsError);
-            sessionId = new SessionId(Guid.Parse(Assert.Single(created.Content.OfType<TextContentBlock>()).Text));
+            sessionId = await TestPublicIds.SessionAsync(
+                pg, Assert.Single(created.Content.OfType<TextContentBlock>()).Text, ct);
         }
 
         // ── The runner side: the real supervisor spawns the fake worker harness ──

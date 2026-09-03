@@ -70,7 +70,7 @@ public sealed class LeadInboxEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
         var item = Assert.Single(doc.RootElement.GetProperty("items").EnumerateArray());
-        Assert.Equal(sessionId.ToString(), item.GetProperty("sessionId").GetString());
+        Assert.Equal(await SessionSlugAsync(sessionId, ct), item.GetProperty("sessionId").GetString());
         Assert.Equal("question", item.GetProperty("kind").GetString());
         Assert.Equal(messageId.ToString(), item.GetProperty("messageId").GetString());
 
@@ -164,7 +164,7 @@ public sealed class LeadInboxEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         jsonResp.EnsureSuccessStatusCode();
         using var doc = JsonDocument.Parse(await jsonResp.Content.ReadAsStringAsync(ct));
         var item = Assert.Single(doc.RootElement.GetProperty("items").EnumerateArray());
-        Assert.Equal(sessionId.ToString(), item.GetProperty("sessionId").GetString());
+        Assert.Equal(await SessionSlugAsync(sessionId, ct), item.GetProperty("sessionId").GetString());
         Assert.Equal("question", item.GetProperty("kind").GetString());
         Assert.Equal(messageId.ToString(), item.GetProperty("messageId").GetString());
 
@@ -193,12 +193,18 @@ public sealed class LeadInboxEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         using var one = await client.GetAsync($"/lead/inbox?teamId={team.Value}&sessionId={a}", ct);
         using var oneDoc = JsonDocument.Parse(await one.Content.ReadAsStringAsync(ct));
         var item = Assert.Single(oneDoc.RootElement.GetProperty("items").EnumerateArray());
-        Assert.Equal(a.ToString(), item.GetProperty("sessionId").GetString());
+        Assert.Equal(await SessionSlugAsync(a, ct), item.GetProperty("sessionId").GetString());
 
         using var bad = await client.GetAsync($"/lead/inbox?teamId={team.Value}&sessionId=not-a-guid", ct);
         Assert.Equal(HttpStatusCode.BadRequest, bad.StatusCode);
 
         await app.StopAsync(ct);
+    }
+
+    private async Task<string> SessionSlugAsync(Guid id, CancellationToken ct)
+    {
+        await using var db = pg.NewContext();
+        return await db.Sessions.AsNoTracking().Where(s => s.Id == id).Select(s => s.Slug).SingleAsync(ct);
     }
 
     private async Task<string> ClaimLeadAsync(TeamId team, CancellationToken ct)

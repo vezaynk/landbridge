@@ -33,6 +33,15 @@ public sealed class LandbridgeDbContext(DbContextOptions<LandbridgeDbContext> op
     /// <summary>One live lead↔machine binding per machine (§8.3 human path).</summary>
     public const string OneLiveBindingPerMachineIndex = "ix_lead_machine_bindings_one_live_per_machine";
 
+    /// <summary>Dashboard alias for a session. Unique, not the PK.</summary>
+    public const string SessionSlugIndex = HaikuSlug.SessionsIndex;
+
+    /// <summary>Dashboard alias for a Team. Unique, not the PK.</summary>
+    public const string LeadTeamSlugIndex = HaikuSlug.TeamsIndex;
+
+    /// <summary>Dashboard alias for a machine. Unique, not the PK.</summary>
+    public const string MachineSlugIndex = HaikuSlug.MachinesIndex;
+
     /// <summary>
     /// The one place the store's Postgres options are configured — Npgsql plus
     /// snake_case naming, so hand-written SQL (the dispatch transaction, the
@@ -52,6 +61,8 @@ public sealed class LandbridgeDbContext(DbContextOptions<LandbridgeDbContext> op
             e.ToTable("sessions");
             e.HasKey(t => t.Id);
             e.HasIndex(t => t.Namespace).IsUnique();
+            e.HasIndex(t => t.Slug).IsUnique().HasDatabaseName(SessionSlugIndex);
+            e.Property(t => t.Slug).IsRequired();
             // Partial index over the dispatch hot path (§3.1: split hot from cold).
             e.HasIndex(t => new { t.State, t.Profile }).HasFilter("state = 'Submitted'");
             e.HasIndex(t => new { t.Profile, t.OccupancyDesired, t.OccupancyObserved, t.Health })
@@ -146,12 +157,16 @@ public sealed class LandbridgeDbContext(DbContextOptions<LandbridgeDbContext> op
             e.ToTable("lead_teams");
             e.HasKey(t => t.TeamId);
             e.HasIndex(t => t.LeadCredentialId);
+            e.HasIndex(t => t.Slug).IsUnique().HasDatabaseName(LeadTeamSlugIndex);
+            e.Property(t => t.Slug).IsRequired();
         });
 
         b.Entity<MachineRow>(e =>
         {
             e.ToTable("machines");
             e.HasKey(m => m.Id);
+            e.HasIndex(m => m.Slug).IsUnique().HasDatabaseName(MachineSlugIndex);
+            e.Property(m => m.Slug).IsRequired();
         });
 
         b.Entity<LeadEventRow>(e =>

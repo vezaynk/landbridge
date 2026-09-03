@@ -50,7 +50,7 @@ public sealed class SessionStore(
                 policy?.InfrastructureRequeueLimit ?? SessionRecord.DefaultInfrastructureRequeueLimit,
         };
 
-        db.Sessions.Add(new SessionRow
+        var row = new SessionRow
         {
             Id = id.Value,
             TeamId = task.Team.Value,
@@ -71,10 +71,34 @@ public sealed class SessionStore(
             // Read straight off the ambient Activity here, never through a command
             // field — the engine stays content-free (§7). Null when nothing samples.
             TraceContext = Activity.Current?.Id,
-        });
-        AppendEvent(id.Value, task.Team.Value, "created", from: null, to: task.State, detail: null);
-        await CommitAsync(id.Value, ct);
-        return new StoreResult.Applied(task, []);
+            Slug = await HaikuSlug.AllocateAsync(
+                (slug, token) => db.Sessions.AsNoTracking().AnyAsync(s => s.Slug == slug, token),
+                ct),
+        };
+
+        for (var attempt = 0; attempt < HaikuSlug.RetryLimit; attempt++)
+        {
+            if (attempt > 0)
+            {
+                db.ChangeTracker.Clear();
+                row.Slug = HaikuSlug.Mint();
+            }
+            db.Sessions.Add(row);
+            AppendEvent(id.Value, task.Team.Value, "created", from: null, to: task.State,
+                detail: "session created");
+            try
+            {
+                await CommitAsync(id.Value, ct);
+                return new StoreResult.Applied(task, []);
+            }
+            catch (DbUpdateException ex)
+                when (HaikuSlug.IsConflict(ex, HaikuSlug.SessionsIndex) && attempt < HaikuSlug.RetryLimit - 1)
+            {
+                // Unique index held the race; mint another alias and retry the insert.
+            }
+        }
+
+        throw new InvalidOperationException("could not allocate a unique session slug");
     }
 
     /// <summary>Apply a command to an existing task, addressed by id.</summary>
@@ -706,7 +730,7 @@ public sealed class SessionStore(
     /// Enroll-time labels for list_profiles: name and OS, so a Lead can tell
     /// three profiles on one laptop from three Linux boxes.
     /// </summary>
-    public async Task<IReadOnlyDictionary<string, (string Name, string Os)>> GetMachineLabelsAsync(
+    public async Task<IReadOnlyDictionary<string, (string Slug, string Name, string Os)>> GetMachineLabelsAsync(
         IEnumerable<string> machineIds, CancellationToken ct = default)
     {
         var ids = machineIds
@@ -716,13 +740,16 @@ public sealed class SessionStore(
             .Distinct()
             .ToArray();
         if (ids.Length == 0)
-            return new Dictionary<string, (string, string)>(StringComparer.Ordinal);
+            return new Dictionary<string, (string, string, string)>(StringComparer.Ordinal);
 
         var rows = await db.Set<Auth.MachineRow>().AsNoTracking()
             .Where(m => ids.Contains(m.Id))
-            .Select(m => new { m.Id, m.Name, m.Os })
+            .Select(m => new { m.Id, m.Slug, m.Name, m.Os })
             .ToListAsync(ct);
-        return rows.ToDictionary(m => m.Id.ToString(), m => (m.Name, m.Os), StringComparer.Ordinal);
+        return rows.ToDictionary(
+            m => m.Id.ToString(),
+            m => (Slug: string.IsNullOrEmpty(m.Slug) ? m.Id.ToString("D") : m.Slug, Name: m.Name, Os: m.Os),
+            StringComparer.Ordinal);
     }
 
     /// <summary>
@@ -739,6 +766,7 @@ public sealed class SessionStore(
             .Select(t => new
             {
                 t.Id,
+                t.Slug,
                 t.Namespace,
                 t.State,
                 t.Attempt,
@@ -764,15 +792,32 @@ public sealed class SessionStore(
             .GroupBy(t => t.State)
             .ToDictionary(g => g.Key, g => g.Count());
 
+        var continueIds = rows.Select(t => t.ContinuesSessionId).OfType<Guid>().Distinct().ToArray();
+        var continueSlugs = continueIds.Length == 0
+            ? new Dictionary<Guid, string>()
+            : await db.Sessions.AsNoTracking()
+                .Where(s => continueIds.Contains(s.Id))
+                .ToDictionaryAsync(s => s.Id, s => s.Slug, ct);
+        var teamSlug = await db.LeadTeams.AsNoTracking()
+            .Where(t => t.TeamId == team.Value)
+            .Select(t => t.Slug)
+            .FirstOrDefaultAsync(ct);
+
         var summaries = rows
             .Select(t => new TeamSessionSummary(
-                t.Id, t.Namespace, t.State, t.Attempt, t.Parked,
-                t.ContinuesSessionId, t.CompletionProvenance, t.HasReport,
+                string.IsNullOrEmpty(t.Slug) ? t.Id.ToString("D") : t.Slug,
+                t.Namespace, t.State, t.Attempt, t.Parked,
+                t.ContinuesSessionId is { } cid
+                    ? continueSlugs.GetValueOrDefault(cid) is { Length: > 0 } cs ? cs : cid.ToString("D")
+                    : null,
+                t.CompletionProvenance, t.HasReport,
                 t.InputKind, t.HasQuestion,
                 t.InfrastructureRequeues, t.LastRequeueReason))
             .ToList();
 
-        return new TeamStateView(team.Value, rows.Count, counts, summaries);
+        return new TeamStateView(
+            string.IsNullOrEmpty(teamSlug) ? team.Value.ToString("D") : teamSlug,
+            rows.Count, counts, summaries);
     }
 
     /// <summary>
@@ -818,6 +863,7 @@ public sealed class SessionStore(
             .Select(t => new
             {
                 t.Id,
+                t.Slug,
                 t.Namespace,
                 t.Health,
                 t.MessageState,
@@ -841,10 +887,12 @@ public sealed class SessionStore(
 
         var items = rows
             .SelectMany(t => LeadInboxKindMapping.ItemsFor(
-                    t.Id, t.Namespace, t.Health, t.MessageState, t.InputKind, t.MessageId, t.ReportUnread)
+                    string.IsNullOrEmpty(t.Slug) ? t.Id.ToString("D") : t.Slug,
+                    t.Namespace, t.Health, t.MessageState, t.InputKind, t.MessageId, t.ReportUnread)
                 .Select(item => new
                 {
                     Item = deliver ? BodyFor(item, t) : item,
+                    t.Id,
                     Opened = t.MessageOpenedAt ?? t.BlockedAt,
                     t.ReportUnread,
                 }))
@@ -857,7 +905,7 @@ public sealed class SessionStore(
         if (deliver && actor is not null)
         {
             foreach (var session in items.Where(t => t.ReportUnread && t.Item.Kind == LeadInboxKind.Report)
-                         .Select(t => t.Item.SessionId)
+                         .Select(t => t.Id)
                          .Distinct())
             {
                 await ApplyAsync(new SessionId(session), new DeliverReport(actor), ct);

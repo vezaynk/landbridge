@@ -90,6 +90,13 @@ public sealed class LeadTeamRow
     public Guid TeamId { get; set; }
     public Guid LeadCredentialId { get; set; }
     public DateTimeOffset CreatedAt { get; set; }
+
+    /// <summary>
+    /// Allocated dashboard alias (<c>adjective-noun-NNNN</c>). The Team Guid stays
+    /// the capability and PK; humans and dashboard routes use this. Unique, minted
+    /// at insert.
+    /// </summary>
+    public string Slug { get; set; } = "";
 }
 
 /// <summary>
@@ -198,6 +205,12 @@ public sealed class MachineRow
     public DateTimeOffset EnrolledAt { get; set; }
     public bool Revoked { get; set; }
 
+    /// <summary>
+    /// Allocated dashboard alias (<c>adjective-noun-NNNN</c>). The Guid stays the
+    /// wire id; humans see this. Unique, minted at enrollment.
+    /// </summary>
+    public string Slug { get; set; } = "";
+
     /// <summary>When the machine was revoked. Written but read by nothing; kept for §13
     /// forensics, like every other <c>revoked_at</c> in the schema.</summary>
     public DateTimeOffset? RevokedAt { get; set; }
@@ -267,7 +280,7 @@ public abstract record LeadClaimResult
 public sealed record IssuedToken(string Token, Guid CredentialId, DateTimeOffset? ExpiresAt);
 
 /// <summary>Access + refresh pair handed to landbridged at enrollment (§5, §13).</summary>
-public sealed record MachineCredentials(Guid MachineId, IssuedToken Access, IssuedToken Refresh);
+public sealed record MachineCredentials(Guid MachineId, IssuedToken Access, IssuedToken Refresh, string Slug = "");
 
 /// <summary>Declared at enrollment, bound server-side (§11, §13). Name is the
 /// display label; OS is filled by landbridged.</summary>

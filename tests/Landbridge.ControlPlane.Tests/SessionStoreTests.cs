@@ -1,3 +1,4 @@
+using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
 using Landbridge.Core;
 using Microsoft.EntityFrameworkCore;
@@ -42,6 +43,20 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         var row = await db.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
         Assert.Equal(SessionState.Submitted, row.State);
         Assert.Equal($"team-{Team}/session-{id}", row.Namespace);
+        Assert.True(HaikuSlug.IsWellFormed(row.Slug));
+    }
+
+    [SkippableFact]
+    public async Task Create_allocates_distinct_slugs()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        await CreateSubmitted(db);
+        await CreateSubmitted(db);
+        var slugs = await db.Sessions.AsNoTracking().Select(s => s.Slug).ToListAsync();
+        Assert.Equal(2, slugs.Count);
+        Assert.Equal(2, slugs.Distinct(StringComparer.Ordinal).Count());
+        Assert.All(slugs, s => Assert.True(HaikuSlug.IsWellFormed(s)));
     }
 
     [SkippableFact]
@@ -306,7 +321,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         // On the row, verbatim.
         Assert.Equal(report, (await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value)).WorkerReport);
         // get_team_state carries only the FLAG, not the prose (§10 stays prose-free).
-        var summary = (await vstore.GetTeamStateAsync(Team)).Sessions.Single(t => t.SessionId == id.Value);
+        var summary = (await vstore.GetTeamStateAsync(Team)).Sessions.Single();
         Assert.True(summary.HasReport);
         // The Lead fetches the text on get_lead_inbox(sessionId).
         var fetched = Assert.Single(
@@ -335,7 +350,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Null((await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value)).WorkerReport);
         // No report: the flag is false, and the per-task fetch finds the task (it is
         // the Lead's) but returns a null report.
-        Assert.False((await vstore.GetTeamStateAsync(Team)).Sessions.Single(t => t.SessionId == id.Value).HasReport);
+        Assert.False((await vstore.GetTeamStateAsync(Team)).Sessions.Single().HasReport);
         var fetched = Assert.Single(
             (await vstore.GetLeadInboxAsync(Team, [id.Value], actor: Lead)).Items,
             i => i.Kind == LeadInboxKind.Report);
@@ -396,7 +411,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Null(row.InputAnswer); // nobody has answered yet
 
         // get_team_state: the kind and a flag, never the prose (§10).
-        var summary = (await vstore.GetTeamStateAsync(Team)).Sessions.Single(t => t.SessionId == id.Value);
+        var summary = (await vstore.GetTeamStateAsync(Team)).Sessions.Single();
         Assert.True(summary.HasQuestion);
         Assert.Equal(InputRequestKind.Question, summary.InputKind);
 
@@ -548,7 +563,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Null(row.InputAnswer);
         Assert.Null(row.InputKind);
 
-        var summary = (await vstore.GetTeamStateAsync(Team)).Sessions.Single(t => t.SessionId == id.Value);
+        var summary = (await vstore.GetTeamStateAsync(Team)).Sessions.Single();
         Assert.False(summary.HasQuestion);
         Assert.Null(summary.InputKind);
 
@@ -934,7 +949,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal("use staging-pg", row.InputAnswer);
         Assert.Null(row.ParkMachine);
         Assert.Null(row.BlockedAt);
-        Assert.False((await NewStore(v).GetTeamStateAsync(Team)).Sessions.Single(t => t.SessionId == id.Value).HasQuestion);
+        Assert.False((await NewStore(v).GetTeamStateAsync(Team)).Sessions.Single().HasQuestion);
     }
 
     [SkippableFact]

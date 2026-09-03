@@ -180,8 +180,9 @@ var app = builder.Build();
 if (app.Configuration.GetValue<bool>("Landbridge:MigrateOnStartup"))
 {
     using var scope = app.Services.CreateScope();
-    await scope.ServiceProvider.GetRequiredService<LandbridgeDbContext>()
-        .Database.MigrateAsync();
+    var db = scope.ServiceProvider.GetRequiredService<LandbridgeDbContext>();
+    await db.Database.MigrateAsync();
+    await HaikuSlug.ReplaceMachinePlaceholdersAsync(db);
 }
 
 // Dev-loop only (set by the Aspire app host): enroll the standing fleet and
@@ -213,7 +214,9 @@ if (!string.IsNullOrWhiteSpace(devSeedTokenDir))
 
         var seedJson = new JsonObject
         {
-            ["machineId"] = credentials.MachineId.ToString(),
+            ["machineId"] = string.IsNullOrEmpty(credentials.Slug)
+                ? credentials.MachineId.ToString()
+                : credentials.Slug,
             ["machineToken"] = credentials.Access.Token,
         }.ToJsonString();
 
