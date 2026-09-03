@@ -27,8 +27,8 @@ namespace Landbridge.MultiMachine.Tests;
 /// stop-as-signal, and the mixed claude+codex fleet stay in this file.</para>
 ///
 /// <para>The API-key catalog does not serve every slug the CLI lists.
-/// <c>gpt-5.1-codex-mini</c> and an unpinned <c>gpt-5.6-sol</c> 404 on
-/// <c>/v1/responses</c> for this project. The pin is <c>gpt-5.3-codex</c>,
+/// An unpinned adapter default (<c>gpt-5.6-sol</c>) 404s on
+/// <c>/v1/responses</c> for this project. The pin is <c>gpt-5.6-luna</c>,
 /// matching the CI dispatch default. <c>LANDBRIDGE_CODEX_MODEL</c> overrides it.</para>
 ///
 /// <para><b>Source reading is still the authority for every claim below</b>, and that is
@@ -266,12 +266,13 @@ public sealed class RealCodexCollaborationTests(PostgresFixture pg) : IAsyncLife
     /// machine's default deliberately: the default is whatever the operator or the server-side
     /// catalog says, which for a token-spending CI job is an open cheque.
     ///
-    /// <para><c>gpt-5.3-codex</c> is the slug the API-key catalog actually serves. Cheaper
-    /// names the CLI still lists (<c>gpt-5.1-codex-mini</c>, the adapter's fallback) 404 on
-    /// <c>/v1/responses</c> for this project, and an unpinned <c>CODEX_HOME</c> then
-    /// defaults to <c>gpt-5.6-sol</c>, which this key also cannot call. Measured
-    /// 2026-08-16, twice. <c>LANDBRIDGE_CODEX_MODEL</c> overrides without a code change if
-    /// the catalog moves again. The CI dispatch default is the same slug.</para>
+    /// <para><c>gpt-5.6-luna</c> is the slug this tier and the Aspire worker pin.
+    /// An unpinned <c>CODEX_HOME</c> defaults to the adapter's advertised model
+    /// (<c>gpt-5.6-sol</c>), which this project's key cannot call.
+    /// <c>gpt-5.1-codex-mini</c> is listed on <c>/v1/models</c> but retired on
+    /// <c>/v1/responses</c>. <c>LANDBRIDGE_CODEX_MODEL</c> overrides without a
+    /// code change if the catalog moves again. The CI dispatch default is the
+    /// same slug.</para>
     /// </summary>
     private static string CodexModel => RealHarnessProfiles.CodexModel;
 

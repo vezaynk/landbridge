@@ -142,7 +142,7 @@ internal static class RealHarnessProfiles
     };
 
     public static string CodexModel =>
-        Environment.GetEnvironmentVariable("LANDBRIDGE_CODEX_MODEL") is { Length: > 0 } m ? m : "gpt-5.3-codex";
+        Environment.GetEnvironmentVariable("LANDBRIDGE_CODEX_MODEL") is { Length: > 0 } m ? m : "gpt-5.6-luna";
 
     public static string OpenCodeModel =>
         Environment.GetEnvironmentVariable("LANDBRIDGE_OPENCODE_MODEL") is { Length: > 0 } m
@@ -338,8 +338,8 @@ internal static class RealHarnessProfiles
         $"""
 
         Suspect, in order:
-          1. MODEL SLUG. This tier pins '{CodexModel}'. gpt-5.1-codex-mini 404s on
-             the API-key catalog; override with LANDBRIDGE_CODEX_MODEL.
+          1. MODEL SLUG. This tier pins '{CodexModel}'. An unpinned adapter default
+             (gpt-5.6-sol) is not on this catalog; override with LANDBRIDGE_CODEX_MODEL.
           2. MCP WIRING. CODEX_HOME/config.toml uses bearer_token_env_var = LANDBRIDGE_WORKER_TOKEN
              and required = true. A plane 401 or a missing table fails the run.
           3. STDIN. A deadman profile hangs before the first turn. Bar facts declare closed.
