@@ -92,7 +92,7 @@ This is gated by `Landbridge:DevSeed:TokenDir` and **production never sets it**.
 No Team is minted. A human Lead creates work and aims it at one of those
 profile names. Spawn is the real ACP entry point for that harness. AppHost
 generates each box's runner config at startup (prompt, `follow_up`,
-`auth_method` for Codex, a sealed `CODEX_HOME` pinning `gpt-5.3-codex`,
+`auth_method` for Codex, a sealed `CODEX_HOME` pinning `gpt-5.6-luna`,
 `GROK_FOLDER_TRUST=0` for Grok). Override the Codex slug with
 `LANDBRIDGE_CODEX_MODEL` if that catalog changes. The same keys the
 paid MultiMachine e2e uses also feed this loop:

@@ -46,9 +46,11 @@ internal static class DevBoxConfig
     /// (<c>gpt-5.6-sol</c>) is not on this project's API-key catalog; pinning
     /// via <c>CODEX_HOME/config.toml</c> is what actually changes the model,
     /// because ACP <c>config_options</c> only accepts advertised slugs.
+    /// <c>gpt-5.1-codex-mini</c> still appears on <c>/v1/models</c> but
+    /// <c>/v1/responses</c> 404s it (retired 2026-07-23).
     /// </summary>
     public static string CodexModel(IConfiguration config) =>
-        FirstNonEmpty(config, "LANDBRIDGE_CODEX_MODEL") ?? "gpt-5.3-codex";
+        FirstNonEmpty(config, "LANDBRIDGE_CODEX_MODEL") ?? "gpt-5.6-luna";
 
     /// <summary>Container-side <c>CODEX_HOME</c>. Lives under the bind-mounted state dir.</summary>
     public const string ContainerCodexHome = "/state/codex-home";

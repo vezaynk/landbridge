@@ -22,7 +22,7 @@ on:
       codex_model:
         description: "Codex model slug for the real-codex tier (LANDBRIDGE_CODEX_MODEL)"
         required: false
-        default: "gpt-5.3-codex"
+        default: "gpt-5.6-luna"
       opencode_model:
         description: "OpenCode model for the real-opencode tier, provider/model (LANDBRIDGE_OPENCODE_MODEL)"
         required: false
@@ -211,9 +211,9 @@ jobs:
   #     RealGoose cell runs both the direct `goose acp` bar and the ACP-bridge
   #     facts. CONFIGURE=false: goose configure is interactive.
   #
-  # Models are dispatch inputs, not PRs: the catalogs are server-side (Codex 404'd
-  # gpt-5.1-codex-mini then gpt-5.1-codex; OpenCode fetches too). Forks without
-  # the matching secret skip cleanly.
+  # Models are dispatch inputs, not PRs: the catalogs are server-side (an unpinned
+  # Codex adapter default is not on this project's key; OpenCode fetches too).
+  # Forks without the matching secret skip cleanly.
   real-e2e:
     if: github.event_name == 'workflow_dispatch'
     name: real-${{ matrix.harness }}-e2e
@@ -331,7 +331,7 @@ jobs:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_KEY }}
           CODEX_API_KEY: ${{ secrets.OPENAI_KEY }}
           XAI_API_KEY: ${{ secrets.XAI_API_KEY || secrets.XAI_KEY }}
-          LANDBRIDGE_CODEX_MODEL: ${{ inputs.codex_model || 'gpt-5.3-codex' }}
+          LANDBRIDGE_CODEX_MODEL: ${{ inputs.codex_model || 'gpt-5.6-luna' }}
           LANDBRIDGE_OPENCODE_MODEL: ${{ inputs.opencode_model || 'anthropic/claude-haiku-4-5-20251001' }}
           LANDBRIDGE_GROK_MODEL: ${{ inputs.grok_model || 'grok-4.6' }}
           GROK_DEFAULT_MODEL: ${{ inputs.grok_model || 'grok-4.6' }}
