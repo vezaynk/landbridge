@@ -55,6 +55,28 @@ public sealed class PreviewConnectServiceTests(PostgresFixture pg) : IAsyncLifet
     }
 
     [SkippableFact]
+    public async Task Consumer_and_producer_may_be_handed_different_relay_urls()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var clock = new FakeTimeProvider();
+        var team = TeamId.New();
+        var (producerTask, _) = await WorkingServiceAsync(db, clock, team, "web", 3000);
+        var (connect, sent, _) = BuildConnect(db, clock, producerTask);
+        var mint = await new PreviewMappingService(db, clock)
+            .CreateAsync(team, producerTask, "web", PreviewAuthPolicy.Public, TimeSpan.FromMinutes(30));
+
+        const string producerUrl = "http://host.docker.internal:5100";
+        const string consumerUrl = "http://127.0.0.1:5100";
+        var est = Assert.IsType<PreviewConnectResult.Established>(
+            await connect.ConnectAsync(mint.Label, null, null, producerUrl, consumerUrl));
+
+        // Frontend (host) gets loopback; landbridged (container) gets docker-host.
+        Assert.Equal(consumerUrl, est.RelayUrl);
+        Assert.Equal(producerUrl, sent.Single().RelayUrl);
+    }
+
+    [SkippableFact]
     public async Task Each_connection_mints_a_distinct_forward_id()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);

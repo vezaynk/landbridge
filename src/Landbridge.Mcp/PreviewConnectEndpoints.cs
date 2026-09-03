@@ -27,11 +27,26 @@ public static class PreviewConnectEndpoints
     /// <summary>Config key for the shared bearer the preview frontend must present (§8.4).</summary>
     public const string BearerConfigKey = "Landbridge:PreviewConnect:Bearer";
 
-    /// <summary>Config key for the relay base URL the plane hands the frontend and producer (§8.4).</summary>
+    /// <summary>
+    /// Config key for the relay URL the plane hands <c>landbridged</c> (producer
+    /// dial on preview connect, and <c>open_forward</c>). Aspire sets this to
+    /// <c>host.docker.internal</c> so a container can reach the host relay.
+    /// </summary>
     public const string RelayUrlConfigKey = "Landbridge:RelayUrl";
 
     /// <summary>Env fallback for <see cref="RelayUrlConfigKey"/>, mirroring the worker forward path.</summary>
     public const string RelayUrlEnvVar = "LANDBRIDGE_RELAY_URL";
+
+    /// <summary>
+    /// Config key for the relay URL the plane returns to the preview frontend
+    /// (host-side consumer). Unset, it is <see cref="RelayUrlConfigKey"/>. The
+    /// Aspire loop sets this to loopback so the host process does not have to
+    /// resolve <c>host.docker.internal</c>.
+    /// </summary>
+    public const string PreviewRelayUrlConfigKey = "Landbridge:PreviewRelayUrl";
+
+    /// <summary>Env fallback for <see cref="PreviewRelayUrlConfigKey"/>.</summary>
+    public const string PreviewRelayUrlEnvVar = "LANDBRIDGE_PREVIEW_RELAY_URL";
 
     /// <summary>The relay URL used when neither config nor env supplies one (mirrors <c>WorkerTools.DefaultRelayUrl</c>).</summary>
     public const string DefaultRelayUrl = "http://127.0.0.1:5100";
@@ -89,11 +104,16 @@ public static class PreviewConnectEndpoints
         if (body is null || string.IsNullOrWhiteSpace(body.Label))
             return Results.BadRequest(new { reason = "label is required" });
 
-        var relayUrl = config[RelayUrlConfigKey]
+        var producerRelayUrl = config[RelayUrlConfigKey]
             ?? Environment.GetEnvironmentVariable(RelayUrlEnvVar)
             ?? DefaultRelayUrl;
+        var consumerRelayUrl = config[PreviewRelayUrlConfigKey]
+            ?? Environment.GetEnvironmentVariable(PreviewRelayUrlEnvVar)
+            ?? producerRelayUrl;
 
-        return await connect.ConnectAsync(body.Label, body.OperatorSession, body.PreviewSession, relayUrl, ct) switch
+        return await connect.ConnectAsync(
+            body.Label, body.OperatorSession, body.PreviewSession,
+            producerRelayUrl, consumerRelayUrl, ct) switch
         {
             PreviewConnectResult.Established e =>
                 Results.Ok(new ConnectResponse(e.Grant, e.ForwardId, e.RelayUrl)),

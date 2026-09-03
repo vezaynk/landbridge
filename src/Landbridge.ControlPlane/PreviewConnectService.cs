@@ -34,13 +34,17 @@ public sealed class PreviewConnectService(
     /// (<paramref name="previewSession"/> — the browser's <c>landbridge_preview</c>
     /// cookie, minted through the §8.4 redirect flow) OR a §12 operator session
     /// (<paramref name="operatorSession"/> — a bearer, the tooling path). Public
-    /// admits on the label alone. <paramref name="relayUrl"/> is the relay base URL
-    /// the frontend will dial and the producer is told to dial — the plane owns it
-    /// (config), so both ends agree without the frontend guessing.
+    /// admits on the label alone. <paramref name="relayUrl"/> is what the producer
+    /// <c>landbridged</c> dials. <paramref name="consumerRelayUrl"/> is what the
+    /// host-side preview frontend dials; omit it and both ends get
+    /// <paramref name="relayUrl"/> — production, where they share a network. The
+    /// Aspire loop splits them (container <c>host.docker.internal</c> vs host
+    /// loopback) the same way it splits WorkerMcpUrl / PublicMcpUrl. They still
+    /// pair by forward id; only the hostname each end can resolve differs.
     /// </summary>
     public async Task<PreviewConnectResult> ConnectAsync(
         string label, string? operatorSession, string? previewSession, string relayUrl,
-        CancellationToken ct = default)
+        string? consumerRelayUrl = null, CancellationToken ct = default)
     {
         // 1. Resolve the label → mapping (§8.4). Unknown/expired are clean refusals
         // the endpoint renders as distinct statuses (404/410).
@@ -99,10 +103,11 @@ public sealed class PreviewConnectService(
                 $"the machine hosting service '{mapping.ServiceName}' is not connected");
 
         await mappings.SlideExpiryAsync(mapping.Id, ct);
+        var consumer = string.IsNullOrWhiteSpace(consumerRelayUrl) ? relayUrl : consumerRelayUrl;
         logger.LogInformation(
             "preview connect: label resolved to team {Team} service {Service}, forward {ForwardId} armed",
             mapping.TeamId, mapping.ServiceName, forwardId);
-        return new PreviewConnectResult.Established(issued.Grant, forwardId, relayUrl);
+        return new PreviewConnectResult.Established(issued.Grant, forwardId, consumer);
     }
 
     private async Task<bool> IsOperatorAuthorizedAsync(string? session, TeamId team, CancellationToken ct)
@@ -131,7 +136,7 @@ public abstract record PreviewConnectResult
 {
     private PreviewConnectResult() { }
 
-    /// <summary>The producer was armed; the frontend dials the relay as consumer with these.</summary>
+    /// <summary>The producer was armed; <see cref="RelayUrl"/> is the consumer (frontend) dial target.</summary>
     public sealed record Established(string Grant, string ForwardId, string RelayUrl) : PreviewConnectResult;
 
     /// <summary>No mapping for the label.</summary>
