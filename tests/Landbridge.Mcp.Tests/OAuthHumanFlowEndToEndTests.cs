@@ -2,6 +2,7 @@ using System.Net;
 using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
+using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
 using Landbridge.Core;
 using Landbridge.ControlPlane.Tests;
@@ -180,7 +181,7 @@ public sealed class OAuthHumanFlowEndToEndTests(PostgresFixture pg) : IAsyncLife
 
             Assert.NotEqual(true, created.IsError);
             var sessionId = Assert.Single(created.Content.OfType<TextContentBlock>()).Text;
-            Assert.True(Guid.TryParse(sessionId, out _));
+            Assert.True(HaikuSlug.IsWellFormed(sessionId));
         }
         finally
         {
