@@ -5,7 +5,7 @@ namespace Landbridge.ControlPlane;
 
 /// <summary>
 /// The §12 fleet board: every live machine plus every session a human (or a scoped
-/// Lead) should see right now, with the last 15 minutes of marks, usage, forwards,
+/// Lead) should see right now, with the chosen lookback of marks, usage, forwards,
 /// and the current exchange. Built as one read so the Blazor board can refresh as a
 /// unit rather than N Team pages.
 /// </summary>
@@ -30,7 +30,9 @@ public sealed record ObservabilityMachine(
     bool UnderBackPressure,
     DateTimeOffset? LastHeartbeat,
     int RunningSessionCount,
-    int ProcessCount);
+    int ProcessCount,
+    string Slug = "",
+    string Name = "");
 
 public sealed record ObservabilityLane(
     Guid SessionId,
@@ -50,6 +52,9 @@ public sealed record ObservabilityLane(
     string? WorkerReport,
     LivenessLossReason? LastRequeueReason,
     string? Machine,
+    bool MachineLive,
+    DateTimeOffset? LastHeartbeat,
+    DateTimeOffset? LastProgress,
     long InputTokens,
     long OutputTokens,
     long CacheReadTokens,
@@ -59,9 +64,16 @@ public sealed record ObservabilityLane(
     IReadOnlyList<ObservabilityPort> Ports,
     IReadOnlyList<ObservabilityMark> Marks,
     IReadOnlyList<ObservabilityChat> Exchange,
-    IReadOnlyList<ObservabilityTailLine> Tail);
+    IReadOnlyList<ObservabilityTailLine> Tail,
+    string SessionSlug = "",
+    string TeamSlug = "",
+    string MachineSlug = "",
+    IReadOnlyList<ObservabilityPreview>? Previews = null);
 
 public sealed record ObservabilityPort(string Name, int Port, bool Live, DateTimeOffset CreatedAt);
+
+public sealed record ObservabilityPreview(
+    string ServiceName, PreviewAuthPolicy Policy, DateTimeOffset ExpiresAt, Guid Id = default);
 
 public sealed record ObservabilityMark(
     ObservabilityMarkKind Kind,
@@ -87,12 +99,11 @@ public sealed record ObservabilityTailLine(DateTimeOffset At, string Kind, strin
 
 public sealed partial class DashboardQueries
 {
-    public static readonly TimeSpan ObservabilityWindow = TimeSpan.FromMinutes(15);
-
     public async Task<ObservabilitySnapshot> GetObservabilityAsync(
-        DateTimeOffset now, IReadOnlyCollection<Guid>? teamScope = null, CancellationToken ct = default)
+        DateTimeOffset now, TimeSpan window, IReadOnlyCollection<Guid>? teamScope = null,
+        CancellationToken ct = default, Guid? teamId = null)
     {
-        var windowStart = now - ObservabilityWindow;
+        var windowStart = now - window;
 
         IReadOnlyList<MachineView> machineViews = teamScope is null
             ? await GetMachinesAsync(ct)
@@ -119,6 +130,14 @@ public sealed partial class DashboardQueries
             services = services.Where(s => teamScope.Contains(s.TeamId));
             forwards = forwards.Where(u => teamScope.Contains(u.TeamId));
         }
+        if (teamId is { } tid)
+        {
+            sessions = sessions.Where(s => s.TeamId == tid);
+            events = events.Where(e => e.TeamId == tid);
+            usage = usage.Where(u => u.TeamId == tid);
+            services = services.Where(s => s.TeamId == tid);
+            forwards = forwards.Where(u => u.TeamId == tid);
+        }
 
         var liveIds = liveBySession.Keys.ToArray();
         var rows = await sessions
@@ -135,6 +154,7 @@ public sealed partial class DashboardQueries
             {
                 s.Id,
                 s.TeamId,
+                s.Slug,
                 s.Namespace,
                 s.Profile,
                 s.State,
@@ -202,16 +222,66 @@ public sealed partial class DashboardQueries
             .GroupBy(s => s.SessionId)
             .ToDictionary(g => g.Key, g => g.ToList());
 
+        var previewRows = sessionIds.Length == 0
+            ? []
+            : await db.PreviewMappings.AsNoTracking()
+                .Where(p => sessionIds.Contains(p.SessionId) && p.ExpiresAt > now)
+                .Select(p => new { p.SessionId, p.Id, p.ServiceName, p.AuthPolicy, p.ExpiresAt })
+                .ToListAsync(ct);
+        var previewsBySession = previewRows
+            .GroupBy(p => p.SessionId)
+            .ToDictionary(g => g.Key, g => g.ToList());
+
         var relayBytes = await forwards.SumAsync(u => (long?)u.ForwardedBytes, ct) ?? 0;
+
+        var teamIds = rows.Select(r => r.TeamId).Distinct().ToArray();
+        var teamSlugs = teamIds.Length == 0
+            ? new Dictionary<Guid, string>()
+            : await db.LeadTeams.AsNoTracking()
+                .Where(t => teamIds.Contains(t.TeamId))
+                .ToDictionaryAsync(t => t.TeamId, t => t.Slug, ct);
+
+        var machineIdTexts = liveBySession.Values
+            .Concat(rows.Select(r => r.ParkMachine))
+            .Concat(rows.Select(r => r.PreferredMachine))
+            .Concat(lastMachine.Values)
+            .Concat(machineViews.Select(m => m.MachineId))
+            .Where(id => !string.IsNullOrEmpty(id))
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        var machineGuidIds = machineIdTexts
+            .Select(id => Guid.TryParse(id, out var g) ? g : (Guid?)null)
+            .OfType<Guid>()
+            .Distinct()
+            .ToArray();
+        var machineSlugs = machineGuidIds.Length == 0
+            ? new Dictionary<string, string>(StringComparer.Ordinal)
+            : (await db.Machines.AsNoTracking()
+                .Where(m => machineGuidIds.Contains(m.Id))
+                .Select(m => new { m.Id, m.Slug })
+                .ToListAsync(ct))
+            .ToDictionary(m => m.Id.ToString(), m => m.Slug, StringComparer.Ordinal);
+
+        var heartbeatByMachine = machineViews
+            .Where(m => m.LastHeartbeat is not null)
+            .ToDictionary(m => m.MachineId, m => m.LastHeartbeat, StringComparer.Ordinal);
+        var progressBySession = registry.AllTracked()
+            .GroupBy(t => t.Session.Value)
+            .ToDictionary(g => g.Key, g => g.Max(t => t.LastProgress));
 
         var lanes = new List<ObservabilityLane>(rows.Count);
         foreach (var s in rows.OrderBy(r => r.Namespace, StringComparer.Ordinal))
         {
-            var machine = liveBySession.GetValueOrDefault(s.Id)
+            var live = liveBySession.TryGetValue(s.Id, out var liveMachine);
+            var machine = liveMachine
                 ?? s.ParkMachine
                 ?? s.PreferredMachine
                 ?? lastMachine.GetValueOrDefault(s.Id)
                 ?? "—";
+            DateTimeOffset? beat = live && liveMachine is not null
+                ? heartbeatByMachine.GetValueOrDefault(liveMachine)
+                : null;
+            DateTimeOffset? progress = progressBySession.TryGetValue(s.Id, out var at) ? at : null;
 
             var u = usageBySession.GetValueOrDefault(s.Id);
             long input = 0, output = 0, cacheRead = 0, cacheWrite = 0;
@@ -232,6 +302,9 @@ public sealed partial class DashboardQueries
             var ports = servicesBySession.GetValueOrDefault(s.Id)?
                 .Select(p => new ObservabilityPort(p.Name, p.Port, Live: true, p.CreatedAt))
                 .ToList() ?? [];
+            var previews = previewsBySession.GetValueOrDefault(s.Id)?
+                .Select(p => new ObservabilityPreview(p.ServiceName, p.AuthPolicy, p.ExpiresAt, p.Id))
+                .ToList() ?? [];
 
             var sessionEvents = eventRows.Where(e => e.SessionId == s.Id).OrderBy(e => e.OccurredAt).ToList();
             var marks = BuildMarks(sessionEvents, ports, windowStart, now);
@@ -245,6 +318,9 @@ public sealed partial class DashboardQueries
             // Occupancy is derived (health / desired / observed / envelope), not
             // the stored SessionState column — LivenessLost parks as health=failed
             // and a stale Working column would keep the lane pulsing as live.
+            // MachineLive is the runner connection, a different fact: a Working
+            // row whose box has dropped off the registry still occupies a seat
+            // until liveness fails, but the board must not claim a heartbeat.
             var occupancy = SessionRecord.DeriveState(new SessionRecord
             {
                 Id = new SessionId(s.Id),
@@ -262,14 +338,15 @@ public sealed partial class DashboardQueries
                 s.Id, s.TeamId, s.Namespace, s.Profile, occupancy, s.MessageState, s.Attempt,
                 s.ReportUnread, s.MessageOpenedAt, s.BlockedAt, s.InputKind, s.InputQuestion,
                 s.InputAnswer, s.PermissionTool, s.WorkerReport, s.LastRequeueReason, machine,
-                input, output, cacheRead, cacheWrite, cost, reportedAt,
-                ports, marks, exchange, tail));
+                live, beat, progress, input, output, cacheRead, cacheWrite, cost, reportedAt,
+                ports, marks, exchange, tail, s.Slug, teamSlugs.GetValueOrDefault(s.TeamId) ?? "",
+                machineSlugs.GetValueOrDefault(machine) ?? "", previews));
         }
 
         var machines = machineViews
             .Select(m => new ObservabilityMachine(
                 m.MachineId, m.Ready, m.UnderBackPressure, m.LastHeartbeat,
-                m.RunningSessions.Count, m.Processes?.Count ?? 0))
+                m.RunningSessions.Count, m.Processes?.Count ?? 0, m.Slug, m.Name))
             .ToList();
 
         var waiting = lanes.Count(l =>

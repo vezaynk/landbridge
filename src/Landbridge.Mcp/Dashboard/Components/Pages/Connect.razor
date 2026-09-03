@@ -68,7 +68,7 @@ Authorization = "Bearer lbr_l_…"</pre>
                 {
                     @foreach (var id in TeamScope)
                     {
-                        <TeamLink TeamId="@id" />
+                        <TeamLink TeamId="@id" Slug="@(TeamSlugs.GetValueOrDefault(id))" />
                     }
                 }
                 else

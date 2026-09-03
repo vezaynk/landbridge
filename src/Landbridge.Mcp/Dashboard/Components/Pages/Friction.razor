@@ -12,11 +12,11 @@ else if (Ready)
     <h1>Friction</h1>
     <p class="sub">What Leads and workers reported about Landbridge itself — missing
         tools, confusing refusals, awkward loops — not about their assignments.
-        Newest first.</p>
+        Last @WindowLabel, newest first.</p>
 
     @if (List.Count == 0)
     {
-        <EmptyState Message="No friction reported yet." />
+        <EmptyState Message="@($"No friction in the last {WindowLabel}.")" />
     }
     else
     {
@@ -39,11 +39,11 @@ else if (Ready)
                                     <span class="mono nt"> @ShortId(human)</span>
                                 }
                             </td>
-                            <td><TeamLink TeamId="@f.TeamId" /></td>
+                            <td><TeamLink TeamId="@f.TeamId" Slug="@f.TeamSlug" /></td>
                             <td>
                                 @if (f.SessionId is { } session)
                                 {
-                                    <span class="mono">@ShortId(session)</span>
+                                    <span class="mono">@Label(session, f.SessionSlug)</span>
                                 }
                                 else
                                 {
@@ -64,7 +64,8 @@ else if (Ready)
 
     protected override async Task<string?> LoadAsync()
     {
-        List = await Queries.GetFrictionAsync(200, TeamScope, RequestAborted);
+        List = await Queries.GetFrictionAsync(200, TeamScope, RequestAborted,
+            since: Now - WindowDuration);
         return null;
     }
 }

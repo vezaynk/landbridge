@@ -17,6 +17,7 @@ public static class DashboardHosting
     public static IServiceCollection AddDashboard(this IServiceCollection services)
     {
         services.AddScoped<DashboardQueries>();
+        services.AddScoped<DashboardWindowState>();
         services.AddHttpContextAccessor();
         services.TryAddSingleton<OperatorAttemptLimiter>();
         services.AddRazorComponents()

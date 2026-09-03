@@ -1,7 +1,7 @@
 @page "/dashboard/teams/{TeamIdText}"
 @inherits DashboardPageBase
 
-<PageTitle>Team @ShortId(TeamId) · Landbridge</PageTitle>
+<PageTitle>Team @Label(TeamId, Team?.Slug) · Landbridge</PageTitle>
 
 @if (RefuseReason is { } reason)
 {
@@ -9,7 +9,7 @@
 }
 else if (Ready && Team is { } team)
 {
-    <h1>Team <code>@ShortId(team.TeamId)</code></h1>
+    <h1>Team <code title="@team.TeamId">@Label(team.TeamId, team.Slug)</code></h1>
     <p class="sub mono">@team.TeamId</p>
 
     <section class="metrics">
@@ -65,7 +65,7 @@ else if (Ready && Team is { } team)
                     @foreach (var t in team.Sessions)
                     {
                         <tr>
-                            <td><code>@t.Namespace</code></td>
+                            <td><code title="@t.Namespace">@Label(t.SessionId, t.Slug)</code></td>
                             <td><StateBadge State="@t.State" /></td>
                             <td class="num">@t.Attempt</td>
                             <td class="num">
@@ -121,9 +121,10 @@ else if (Ready && Team is { } team)
                                 }
                             </td>
                             <td>
+                                <a href="@SessionEventsHref(t.SessionId, t.Slug)">events</a>
                                 @if (t.State.IsTerminal())
                                 {
-                                    <a href="/dashboard/sessions/@t.SessionId/transcripts">transcript</a>
+                                    <text> · </text><a href="@TranscriptsHref(t.SessionId, t.Slug)">transcript</a>
                                 }
                                 else
                                 {
@@ -215,10 +216,16 @@ else if (Ready && Team is { } team)
 
     protected override async Task<string?> LoadAsync()
     {
-        if (!Guid.TryParse(TeamIdText, out var id))
+        var resolved = await Queries.ResolveTeamAsync(TeamIdText, RequestAborted);
+        if (resolved.Malformed)
         {
             StatusOnRefuse = StatusCodes.Status400BadRequest;
             return "invalid team id";
+        }
+        if (resolved.Id is not { } id)
+        {
+            StatusOnRefuse = StatusCodes.Status404NotFound;
+            return "no such team";
         }
         TeamId = id;
         if (!OperatorMayAccess(new TeamId(TeamId)))

@@ -33,7 +33,7 @@ else if (Ready)
                     {
                         <tr class="@(t.IsIdle ? "idle-row" : "")">
                             <td>
-                                <TeamLink TeamId="@t.TeamId" />
+                                <TeamLink TeamId="@t.TeamId" Slug="@t.Slug" />
                                 <div class="nt">@t.TotalSessions tasks</div>
                             </td>
                             <td>

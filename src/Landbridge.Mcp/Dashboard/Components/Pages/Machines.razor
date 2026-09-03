@@ -16,12 +16,19 @@
 else if (Ready && Snapshot is { } snap)
 {
     <div class="obs-page">
-        <ObservabilityDashboard Snapshot="snap" Now="Now" />
+        <ObservabilityDashboard Snapshot="snap" Now="Now" WindowLabel="@WindowLabel"
+            Teams="Teams" SelectedTeamId="SelectedTeamId"
+            Services="Services" Previews="Previews" Binding="Binding" />
     </div>
 }
 
 @code {
     private ObservabilitySnapshot? Snapshot { get; set; }
+    private IReadOnlyList<TeamOverview> Teams { get; set; } = [];
+    private Guid? SelectedTeamId { get; set; }
+    private IReadOnlyList<ServiceView> Services { get; set; } = [];
+    private IReadOnlyList<ObservabilityPreview> Previews { get; set; } = [];
+    private LeadMachineBinding? Binding { get; set; }
 
     protected override async Task<string?> LoadAsync()
     {
@@ -30,7 +37,48 @@ else if (Ready && Snapshot is { } snap)
             return "the machine group is a human-operator view; a Lead session sees its owned Teams "
                 + "on /dashboard/teams and through get_team_state";
         }
-        Snapshot = await Queries.GetObservabilityAsync(Now, teamScope: null, RequestAborted);
+        Teams = await Queries.GetTeamsAsync(teamScope: null, RequestAborted);
+        SelectedTeamId = ResolveTeam(Teams);
+        if (SelectedTeamId is { } team)
+        {
+            Services = await Queries.ListTeamServicesAsync(team, RequestAborted);
+            Previews = await Queries.ListLivePreviewsAsync(team, Now, RequestAborted);
+        }
+        else
+        {
+            Services = [];
+            Previews = [];
+        }
+        Binding = Principal is Principal.Human h
+            ? await Queries.GetHumanBindingAsync(h.HumanId, RequestAborted)
+            : null;
+        Snapshot = await Queries.GetObservabilityAsync(
+            Now, WindowDuration, teamScope: null, RequestAborted, teamId: SelectedTeamId);
         return null;
+    }
+
+    private Guid? ResolveTeam(IReadOnlyList<TeamOverview> teams)
+    {
+        if (teams.Count == 0)
+            return null;
+        var http = Http.HttpContext;
+        string? key = null;
+        if (http is not null)
+        {
+            key = DashboardTeam.ResolveKey(http);
+            if (http.Request.Query.ContainsKey(DashboardTeam.QueryName) && !string.IsNullOrEmpty(key))
+                DashboardTeam.WriteCookie(http, key);
+        }
+        if (!string.IsNullOrEmpty(key))
+        {
+            var match = teams.FirstOrDefault(t =>
+                t.Slug.Equals(key, StringComparison.OrdinalIgnoreCase)
+                || t.TeamId.ToString().Equals(key, StringComparison.OrdinalIgnoreCase));
+            if (match is not null)
+                return match.TeamId;
+        }
+        if (SelectedTeamId is { } current && teams.Any(t => t.TeamId == current))
+            return current;
+        return teams[0].TeamId;
     }
 }

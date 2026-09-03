@@ -1,0 +1,21 @@
+<DashboardDocument Title="@Title" ActiveKey="machines">
+<section class="card">
+    <h1>@Title</h1>
+    @if (!string.IsNullOrEmpty(Message))
+    {
+        <p class="sub">@Message</p>
+    }
+    @if (!string.IsNullOrEmpty(Detail))
+    {
+        <p class="mono">@Detail</p>
+    }
+    <p><a href="@BackHref">← back to the fleet</a></p>
+</section>
+</DashboardDocument>
+
+@code {
+    [Parameter] public string Title { get; set; } = "Done";
+    [Parameter] public string Message { get; set; } = "";
+    [Parameter] public string? Detail { get; set; }
+    [Parameter] public string BackHref { get; set; } = "/dashboard/machines";
+}

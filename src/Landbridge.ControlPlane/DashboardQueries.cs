@@ -81,6 +81,17 @@ public sealed partial class DashboardQueries(LandbridgeDbContext db, RunnerConne
                 .ToListAsync(ct))
             .ToDictionary(b => b.MachineId.ToString(), b => (b.HumanId, b.BoundAt), StringComparer.Ordinal);
 
+        var machineGuids = ids
+            .Select(id => Guid.TryParse(id, out var g) ? g : (Guid?)null)
+            .OfType<Guid>()
+            .Distinct()
+            .ToArray();
+        var machineLabels = machineGuids.Length == 0
+            ? new Dictionary<Guid, (string Slug, string Name)>()
+            : await db.Machines.AsNoTracking()
+                .Where(m => machineGuids.Contains(m.Id))
+                .ToDictionaryAsync(m => m.Id, m => (m.Slug, m.Name), ct);
+
         // Resolve owning Team + namespace + state for every tracked task in one read.
         var sessionIds = ids.SelectMany(id => registry.SessionsOn(id).Select(t => t.Value)).Distinct().ToArray();
         var taskInfo = sessionIds.Length == 0
@@ -103,6 +114,7 @@ public sealed partial class DashboardQueries(LandbridgeDbContext db, RunnerConne
                 .OrderBy(t => t.Namespace, StringComparer.Ordinal)
                 .ToList();
             var isBound = boundBy.TryGetValue(id, out var bound);
+            var label = Guid.TryParse(id, out var mid) ? machineLabels.GetValueOrDefault(mid) : default;
             machines.Add(new MachineView(
                 id,
                 snapshot.Ready,
@@ -113,7 +125,9 @@ public sealed partial class DashboardQueries(LandbridgeDbContext db, RunnerConne
                 isBound ? bound.HumanId : null,
                 isBound ? bound.BoundAt : null,
                 // §10/§12: passed through from the last heartbeat, unexamined.
-                registry.ProcessesOn(id)));
+                registry.ProcessesOn(id),
+                label.Slug ?? "",
+                label.Name ?? ""));
         }
 
         return machines.OrderBy(m => m.MachineId, StringComparer.Ordinal).ToList();
@@ -182,6 +196,7 @@ public sealed partial class DashboardQueries(LandbridgeDbContext db, RunnerConne
         if (teamScope is not null)
             ownerships = ownerships.Where(t => teamScope.Contains(t.TeamId));
         var owned = await ownerships.ToListAsync(ct);
+        var slugByTeam = owned.ToDictionary(o => o.TeamId, o => o.Slug);
         var ownerIds = owned.Select(o => o.LeadCredentialId).Distinct().ToList();
         var owners = await db.Credentials.AsNoTracking()
             .Where(c => ownerIds.Contains(c.Id) && !c.Revoked)
@@ -217,7 +232,8 @@ public sealed partial class DashboardQueries(LandbridgeDbContext db, RunnerConne
                 leadByTeam.ContainsKey(teamId) ? lead.CreatedAt : null,
                 lastActivity.GetValueOrDefault(teamId) is var la && la == default ? null : la,
                 isIdle,
-                TeamForwardUsageView.From(forwardUsage.GetValueOrDefault(teamId))));
+                TeamForwardUsageView.From(forwardUsage.GetValueOrDefault(teamId)),
+                slugByTeam.GetValueOrDefault(teamId) ?? ""));
         }
 
         // Idle Teams to the bottom (§12), otherwise most-recently-active first.
@@ -244,6 +260,7 @@ public sealed partial class DashboardQueries(LandbridgeDbContext db, RunnerConne
             .Select(t => new
             {
                 t.Id,
+                t.Slug,
                 t.Namespace,
                 t.State,
                 t.Attempt,
@@ -330,7 +347,8 @@ public sealed partial class DashboardQueries(LandbridgeDbContext db, RunnerConne
                 t.InputAnswer,
                 t.InfrastructureRequeues,
                 t.InfrastructureRequeueLimit,
-                t.LastRequeueReason))
+                t.LastRequeueReason,
+                t.Slug))
             .ToList();
 
         var counts = tasks
@@ -345,6 +363,11 @@ public sealed partial class DashboardQueries(LandbridgeDbContext db, RunnerConne
                 t.SessionId, t.Namespace, teamId, t.BlockedAt, t.InputKind, t.Question))
             .ToList();
 
+        var teamSlug = await db.LeadTeams.AsNoTracking()
+            .Where(t => t.TeamId == teamId)
+            .Select(t => t.Slug)
+            .FirstOrDefaultAsync(ct) ?? "";
+
         return new TeamDetail(
             teamId,
             tasks.Count,
@@ -356,7 +379,8 @@ public sealed partial class DashboardQueries(LandbridgeDbContext db, RunnerConne
             lead?.CreatedAt,
             lastActivity,
             forwardUsage,
-            usage);
+            usage,
+            teamSlug);
     }
 
     // ── Human inbox (§12) ─────────────────────────────────────────────────────
@@ -516,7 +540,20 @@ public sealed partial class DashboardQueries(LandbridgeDbContext db, RunnerConne
                 g.Occurrences))
             .ToList();
 
-        return new InboxView(questions, parked, failed, authFailures, permissionRequests);
+        var inboxTeamIds = questions.Select(q => q.TeamId)
+            .Concat(permissionRequests.Select(p => p.TeamId))
+            .Concat(parked.Select(p => p.TeamId))
+            .Concat(failed.Select(f => f.TeamId))
+            .Concat(authFailures.Select(f => f.TeamId))
+            .Distinct()
+            .ToArray();
+        var inboxTeamSlugs = inboxTeamIds.Length == 0
+            ? new Dictionary<Guid, string>()
+            : await db.LeadTeams.AsNoTracking()
+                .Where(t => inboxTeamIds.Contains(t.TeamId))
+                .ToDictionaryAsync(t => t.TeamId, t => t.Slug, ct);
+
+        return new InboxView(questions, parked, failed, authFailures, permissionRequests, inboxTeamSlugs);
     }
 
     // ── Event log (§12) ───────────────────────────────────────────────────────
@@ -531,8 +568,11 @@ public sealed partial class DashboardQueries(LandbridgeDbContext db, RunnerConne
     /// <param name="teamScope">See <see cref="GetInboxAsync"/> — a Lead's owned Teams, or null for
     /// the instance-wide human view. Scoped on both sources, so a Lead's log carries neither
     /// another Team's transitions nor another Team's takeovers.</param>
+    /// <param name="sessionId">When set, only that session's task events. Lead events have no
+    /// session and are omitted.</param>
     public async Task<IReadOnlyList<DashboardEvent>> GetEventsAsync(
-        int limit = 200, IReadOnlyCollection<Guid>? teamScope = null, CancellationToken ct = default)
+        int limit = 200, IReadOnlyCollection<Guid>? teamScope = null, Guid? sessionId = null,
+        CancellationToken ct = default, DateTimeOffset? since = null)
     {
         var scopedTaskEvents = db.SessionEvents.AsNoTracking();
         var scopedLeadEvents = db.LeadEvents.AsNoTracking();
@@ -540,6 +580,13 @@ public sealed partial class DashboardQueries(LandbridgeDbContext db, RunnerConne
         {
             scopedTaskEvents = scopedTaskEvents.Where(e => teamScope.Contains(e.TeamId));
             scopedLeadEvents = scopedLeadEvents.Where(e => teamScope.Contains(e.TeamId));
+        }
+        if (sessionId is { } sid)
+            scopedTaskEvents = scopedTaskEvents.Where(e => e.SessionId == sid);
+        if (since is { } from)
+        {
+            scopedTaskEvents = scopedTaskEvents.Where(e => e.OccurredAt >= from);
+            scopedLeadEvents = scopedLeadEvents.Where(e => e.OccurredAt >= from);
         }
 
         var rawTaskEvents = await scopedTaskEvents
@@ -566,12 +613,19 @@ public sealed partial class DashboardQueries(LandbridgeDbContext db, RunnerConne
         // Resolve namespaces for the events in view in a single follow-up read,
         // rather than a join EF might struggle to translate through the Take.
         var eventSessionIds = rawTaskEvents.Select(e => e.SessionId).Distinct().ToArray();
-        var namespaceById = eventSessionIds.Length == 0
-            ? new Dictionary<Guid, string>()
+        var sessionById = eventSessionIds.Length == 0
+            ? new Dictionary<Guid, (string Namespace, string Slug)>()
             : await db.Sessions.AsNoTracking()
                 .Where(t => eventSessionIds.Contains(t.Id))
-                .Select(t => new { t.Id, t.Namespace })
-                .ToDictionaryAsync(t => t.Id, t => t.Namespace, ct);
+                .Select(t => new { t.Id, t.Namespace, t.Slug })
+                .ToDictionaryAsync(t => t.Id, t => (t.Namespace, t.Slug), ct);
+
+        var taskTeamIds = rawTaskEvents.Select(e => e.TeamId).Distinct().ToArray();
+        var teamSlugById = taskTeamIds.Length == 0
+            ? new Dictionary<Guid, string>()
+            : await db.LeadTeams.AsNoTracking()
+                .Where(t => taskTeamIds.Contains(t.TeamId))
+                .ToDictionaryAsync(t => t.TeamId, t => t.Slug, ct);
 
         var taskEvents = rawTaskEvents.Select(e => new DashboardEvent(
             e.OccurredAt,
@@ -582,7 +636,7 @@ public sealed partial class DashboardQueries(LandbridgeDbContext db, RunnerConne
             e.Detail,
             e.TeamId,
             e.SessionId,
-            namespaceById.GetValueOrDefault(e.SessionId),
+            sessionById.GetValueOrDefault(e.SessionId).Namespace,
             null,
             null,
             e.InputKind,
@@ -594,24 +648,48 @@ public sealed partial class DashboardQueries(LandbridgeDbContext db, RunnerConne
             e.SubagentParentId,
             e.LivenessReason,
             e.PermissionVerdict,
-            e.PermissionAnswerer));
+            e.PermissionAnswerer,
+            teamSlugById.GetValueOrDefault(e.TeamId),
+            sessionById.GetValueOrDefault(e.SessionId).Slug));
 
-        var leadEvents = await scopedLeadEvents
-            .OrderByDescending(e => e.Seq)
-            .Take(limit)
-            .Select(e => new DashboardEvent(
-                e.OccurredAt,
-                "lead",
-                e.Kind.ToString(),
-                null,
-                null,
-                null,
-                e.TeamId,
-                null,
-                null,
-                e.HumanId,
-                e.PriorHumanId))
-            .ToListAsync(ct);
+        IReadOnlyList<DashboardEvent> leadEvents = [];
+        if (sessionId is null)
+        {
+            var rawLead = await scopedLeadEvents
+                .OrderByDescending(e => e.Seq)
+                .Take(limit)
+                .Select(e => new
+                {
+                    e.OccurredAt, e.Kind, e.TeamId, e.HumanId, e.PriorHumanId,
+                })
+                .ToListAsync(ct);
+            var extraTeamIds = rawLead.Select(e => e.TeamId)
+                .Where(id => !teamSlugById.ContainsKey(id))
+                .Distinct()
+                .ToArray();
+            if (extraTeamIds.Length > 0)
+            {
+                var extra = await db.LeadTeams.AsNoTracking()
+                    .Where(t => extraTeamIds.Contains(t.TeamId))
+                    .ToDictionaryAsync(t => t.TeamId, t => t.Slug, ct);
+                foreach (var kv in extra)
+                    teamSlugById[kv.Key] = kv.Value;
+            }
+            leadEvents = rawLead.Select(e => new DashboardEvent(
+                    e.OccurredAt,
+                    "lead",
+                    e.Kind.ToString(),
+                    null,
+                    null,
+                    null,
+                    e.TeamId,
+                    null,
+                    null,
+                    e.HumanId,
+                    e.PriorHumanId,
+                    TeamSlug: teamSlugById.GetValueOrDefault(e.TeamId)))
+                .ToList();
+        }
 
         return taskEvents
             .Concat(leadEvents)
@@ -650,20 +728,100 @@ public sealed partial class DashboardQueries(LandbridgeDbContext db, RunnerConne
     /// only its Team; a human sees the instance.
     /// </summary>
     public async Task<IReadOnlyList<FrictionReportView>> GetFrictionAsync(
-        int limit = 200, IReadOnlyCollection<Guid>? teamScope = null, CancellationToken ct = default)
+        int limit = 200, IReadOnlyCollection<Guid>? teamScope = null, CancellationToken ct = default,
+        DateTimeOffset? since = null)
     {
         var rows = db.FrictionReports.AsNoTracking();
         if (teamScope is not null)
             rows = rows.Where(f => teamScope.Contains(f.TeamId));
+        if (since is { } from)
+            rows = rows.Where(f => f.At >= from);
 
-        return await rows
+        var raw = await rows
             .OrderByDescending(f => f.Seq)
             .Take(limit)
-            .Select(f => new FrictionReportView(
-                f.Seq, f.At, f.Role, f.TeamId, f.SessionId, f.HumanId, f.Message))
+            .Select(f => new { f.Seq, f.At, f.Role, f.TeamId, f.SessionId, f.HumanId, f.Message })
             .ToListAsync(ct);
+        var frictionTeamIds = raw.Select(f => f.TeamId).Distinct().ToArray();
+        var frictionSessionIds = raw.Select(f => f.SessionId).OfType<Guid>().Distinct().ToArray();
+        var frictionTeamSlugs = frictionTeamIds.Length == 0
+            ? new Dictionary<Guid, string>()
+            : await db.LeadTeams.AsNoTracking()
+                .Where(t => frictionTeamIds.Contains(t.TeamId))
+                .ToDictionaryAsync(t => t.TeamId, t => t.Slug, ct);
+        var frictionSessionSlugs = frictionSessionIds.Length == 0
+            ? new Dictionary<Guid, string>()
+            : await db.Sessions.AsNoTracking()
+                .Where(s => frictionSessionIds.Contains(s.Id))
+                .ToDictionaryAsync(s => s.Id, s => s.Slug, ct);
+        return raw.Select(f => new FrictionReportView(
+                f.Seq, f.At, f.Role, f.TeamId, f.SessionId, f.HumanId, f.Message,
+                frictionTeamSlugs.GetValueOrDefault(f.TeamId),
+                f.SessionId is { } sid ? frictionSessionSlugs.GetValueOrDefault(sid) : null))
+            .ToList();
     }
+
+    /// <summary>
+    /// Resolve a dashboard address that may be a Guid or an allocated slug.
+    /// <see cref="DashboardAddress.Malformed"/> is a 400; a well-formed slug that
+    /// names nothing is a 404 (<see cref="DashboardAddress.Id"/> null).
+    /// </summary>
+    public async Task<DashboardAddress> ResolveTeamAsync(string? text, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return new DashboardAddress(null, Malformed: true);
+        if (Guid.TryParse(text, out var id))
+            return new DashboardAddress(id, Malformed: false);
+        if (!HaikuSlug.IsWellFormed(text))
+            return new DashboardAddress(null, Malformed: true);
+        var found = await db.LeadTeams.AsNoTracking()
+            .Where(t => t.Slug == text)
+            .Select(t => (Guid?)t.TeamId)
+            .FirstOrDefaultAsync(ct);
+        return new DashboardAddress(found, Malformed: false);
+    }
+
+    public async Task<DashboardAddress> ResolveSessionAsync(string? text, CancellationToken ct = default)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+            return new DashboardAddress(null, Malformed: true);
+        if (Guid.TryParse(text, out var id))
+            return new DashboardAddress(id, Malformed: false);
+        if (!HaikuSlug.IsWellFormed(text))
+            return new DashboardAddress(null, Malformed: true);
+        var found = await db.Sessions.AsNoTracking()
+            .Where(s => s.Slug == text)
+            .Select(s => (Guid?)s.Id)
+            .FirstOrDefaultAsync(ct);
+        return new DashboardAddress(found, Malformed: false);
+    }
+
+    public async Task<IReadOnlyList<ServiceView>> ListTeamServicesAsync(
+        Guid teamId, CancellationToken ct = default) =>
+        await db.RegisteredServices.AsNoTracking()
+            .Where(s => s.TeamId == teamId)
+            .OrderBy(s => s.Name)
+            .Select(s => new ServiceView(s.Name, s.Port, s.SessionId, s.CreatedAt))
+            .ToListAsync(ct);
+
+    public async Task<IReadOnlyList<ObservabilityPreview>> ListLivePreviewsAsync(
+        Guid teamId, DateTimeOffset now, CancellationToken ct = default) =>
+        await db.PreviewMappings.AsNoTracking()
+            .Where(p => p.TeamId == teamId && p.ExpiresAt > now)
+            .OrderBy(p => p.ServiceName)
+            .Select(p => new ObservabilityPreview(p.ServiceName, p.AuthPolicy, p.ExpiresAt, p.Id))
+            .ToListAsync(ct);
+
+    public Task<LeadMachineBinding?> GetHumanBindingAsync(Guid humanId, CancellationToken ct = default) =>
+        (from b in db.LeadMachineBindings.AsNoTracking()
+         join m in db.Machines.AsNoTracking() on b.MachineId equals m.Id
+         where b.HumanId == humanId && !b.Revoked
+         select new LeadMachineBinding(b.MachineId, m.Name, b.BoundAt))
+        .FirstOrDefaultAsync(ct);
 }
+
+/// <summary>Guid or allocated slug, as a dashboard route presented it.</summary>
+public readonly record struct DashboardAddress(Guid? Id, bool Malformed);
 
 // ── View records (the JSON twin's wire shape) ──────────────────────────────────
 
@@ -681,7 +839,9 @@ public sealed record MachineView(
     IReadOnlyList<MachineSessionView> RunningSessions,
     Guid? BoundToHuman = null,
     DateTimeOffset? BoundAt = null,
-    IReadOnlyList<ProcessStatus>? Processes = null);
+    IReadOnlyList<ProcessStatus>? Processes = null,
+    string Slug = "",
+    string Name = "");
 
 /// <summary>A task running on a machine, tagged with its owning Team (§12).</summary>
 public sealed record MachineSessionView(Guid SessionId, Guid TeamId, string Namespace, SessionState State);
@@ -703,7 +863,8 @@ public sealed record TeamOverview(
     DateTimeOffset? LeadSince,
     DateTimeOffset? LastActivity,
     bool IsIdle,
-    TeamForwardUsageView? ForwardUsage = null);
+    TeamForwardUsageView? ForwardUsage = null,
+    string Slug = "");
 
 /// <summary>One Team in full — the §4 reattachment surface as structured data (§12).</summary>
 public sealed record TeamDetail(
@@ -717,7 +878,8 @@ public sealed record TeamDetail(
     DateTimeOffset? LeadSince,
     DateTimeOffset? LastActivity,
     TeamForwardUsageView? ForwardUsage = null,
-    TeamUsageView? Usage = null);
+    TeamUsageView? Usage = null,
+    string Slug = "");
 
 /// <summary>One task in a Team, with its park count (§12 "parks per task"); for a
 /// continuation task, the prior task it resumed (§6/§11 Y-continues-X lineage); and,
@@ -750,7 +912,8 @@ public sealed record TeamSessionView(
     string? Answer,
     int InfrastructureRequeues = 0,
     int InfrastructureRequeueLimit = SessionRecord.DefaultInfrastructureRequeueLimit,
-    LivenessLossReason? LastRequeueReason = null);
+    LivenessLossReason? LastRequeueReason = null,
+    string Slug = "");
 
 /// <summary>A live registered service on a Team (§8.2, §12).</summary>
 public sealed record ServiceView(string Name, int Port, Guid SessionId, DateTimeOffset CreatedAt);
@@ -821,7 +984,8 @@ public sealed record InboxView(
     IReadOnlyList<ParkedItemView> Parked,
     IReadOnlyList<FailedItemView> Failed,
     IReadOnlyList<AuthFailureItemView> AuthFailures,
-    IReadOnlyList<PermissionRequestView> PermissionRequests);
+    IReadOnlyList<PermissionRequestView> PermissionRequests,
+    IReadOnlyDictionary<Guid, string>? TeamSlugs = null);
 
 /// <summary>
 /// One dispatch of a task and the machine whose disk may hold its transcript (§12
@@ -863,7 +1027,9 @@ public sealed record DashboardEvent(
     string? SubagentParentId = null,
     LivenessLossReason? LivenessReason = null,
     PermissionVerdict? PermissionVerdict = null,
-    PermissionAnswerer? PermissionAnswerer = null);
+    PermissionAnswerer? PermissionAnswerer = null,
+    string? TeamSlug = null,
+    string? SessionSlug = null);
 
 /// <summary>
 /// One (task, model) usage report as a reader sees it (§10 telemetry ingest, §12 measured
@@ -974,4 +1140,6 @@ public sealed record FrictionReportView(
     Guid TeamId,
     Guid? SessionId,
     Guid? HumanId,
-    string Message);
+    string Message,
+    string? TeamSlug = null,
+    string? SessionSlug = null);

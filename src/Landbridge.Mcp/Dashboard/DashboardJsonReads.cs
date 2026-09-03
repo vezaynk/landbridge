@@ -124,13 +124,20 @@ internal static class DashboardJsonReads
         if (path.StartsWith("/dashboard/teams/", StringComparison.OrdinalIgnoreCase))
         {
             var idText = path["/dashboard/teams/".Length..];
-            if (!Guid.TryParse(idText, out var id))
+            var resolved = await queries.ResolveTeamAsync(idText, ct);
+            if (resolved.Malformed)
             {
                 http.Response.StatusCode = 400;
                 await http.Response.WriteAsJsonAsync(new { error = "invalid team id" }, DashboardNegotiate.Json, ct);
                 return true;
             }
-            if (principal is Principal.Lead lead
+            if (resolved.Id is not { } id)
+            {
+                http.Response.StatusCode = 404;
+                await http.Response.WriteAsJsonAsync(new { error = "no such team" }, DashboardNegotiate.Json, ct);
+                return true;
+            }
+            if (principal is Principal.Lead
                 && (teamScope is null || !teamScope.Contains(id)))
             {
                 await WriteError(http, 403, "this session may only read a Team it owns");
@@ -156,14 +163,24 @@ internal static class DashboardJsonReads
 
         if (string.Equals(path, "/dashboard/events", StringComparison.OrdinalIgnoreCase))
         {
-            var events = await queries.GetEventsAsync(200, teamScope, ct);
+            Guid? sessionId = null;
+            var sessionQuery = http.Request.Query["session"].ToString();
+            if (!string.IsNullOrEmpty(sessionQuery))
+            {
+                var resolved = await queries.ResolveSessionAsync(sessionQuery, ct);
+                if (resolved.Malformed)
+                    sessionId = null;
+                else
+                    sessionId = resolved.Id ?? Guid.Empty;
+            }
+            var events = await queries.GetEventsAsync(200, teamScope, sessionId, ct, since: Since(http));
             await http.Response.WriteAsJsonAsync(events, DashboardNegotiate.Json, ct);
             return true;
         }
 
         if (string.Equals(path, "/dashboard/friction", StringComparison.OrdinalIgnoreCase))
         {
-            var friction = await queries.GetFrictionAsync(200, teamScope, ct);
+            var friction = await queries.GetFrictionAsync(200, teamScope, ct, since: Since(http));
             await http.Response.WriteAsJsonAsync(friction, DashboardNegotiate.Json, ct);
             return true;
         }
@@ -188,6 +205,15 @@ internal static class DashboardJsonReads
             return false;
         }
         return true;
+    }
+
+    private static DateTimeOffset Since(HttpContext http)
+    {
+        var window = DashboardWindow.Resolve(http);
+        if (http.Request.Query.ContainsKey(DashboardWindow.QueryName))
+            DashboardWindow.WriteCookie(http, window.Key);
+        var clock = http.RequestServices.GetRequiredService<TimeProvider>();
+        return clock.GetUtcNow() - window.Duration;
     }
 
     private static async Task WriteError(HttpContext http, int status, string error)

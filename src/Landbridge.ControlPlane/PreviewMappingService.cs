@@ -98,6 +98,13 @@ public sealed class PreviewMappingService(LandbridgeDbContext db, TimeProvider c
         return new PreviewResolveResult.Found(row);
     }
 
+    /// <summary>Drop a mapping so new connections are refused. Missing is a no-op.</summary>
+    public async Task<bool> RevokeAsync(Guid mappingId, CancellationToken ct = default)
+    {
+        var n = await db.PreviewMappings.Where(m => m.Id == mappingId).ExecuteDeleteAsync(ct);
+        return n > 0;
+    }
+
     /// <summary>
     /// Slide <see cref="PreviewMappingRow.ExpiresAt"/> to now + the stored idle
     /// window. Called after a connection is admitted, so a live preview does not

@@ -4,9 +4,10 @@
 }
 else
 {
-    <a class="mono" href="/dashboard/teams/@TeamId">@ShortId(TeamId)</a>
+    <a class="mono" href="@TeamHref(TeamId, Slug)" title="@TeamId">@Label(TeamId, Slug)</a>
 }
 
 @code {
     [Parameter] public Guid TeamId { get; set; }
+    [Parameter] public string? Slug { get; set; }
 }

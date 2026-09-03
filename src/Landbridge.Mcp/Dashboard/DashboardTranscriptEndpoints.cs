@@ -71,8 +71,12 @@ public static class DashboardTranscriptEndpoints
     {
         if (await RequireHumanAsync(http, tokens, ct) is { } refusal)
             return refusal;
-        if (!Guid.TryParse(sessionId, out var id))
+        var queries = http.RequestServices.GetRequiredService<DashboardQueries>();
+        var resolved = await queries.ResolveSessionAsync(sessionId, ct);
+        if (resolved.Malformed)
             return Results.BadRequest(new { error = "invalid session id" });
+        if (resolved.Id is not { } id)
+            return Results.NotFound(new { error = "no such session" });
 
         var machine = http.Request.Query["machine"].ToString();
         var stream = http.Request.Query["stream"].ToString() is { Length: > 0 } s ? s : TranscriptStreams.Stdout;
