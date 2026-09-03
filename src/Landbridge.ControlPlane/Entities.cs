@@ -14,6 +14,12 @@ public sealed class SessionRow
     public Guid Id { get; set; }
     public Guid TeamId { get; set; }
     public string Namespace { get; set; } = "";
+
+    /// <summary>
+    /// Allocated dashboard alias (<c>adjective-noun-NNNN</c>). The Guid stays the
+    /// PK; humans and dashboard routes use this. Unique, minted at insert.
+    /// </summary>
+    public string Slug { get; set; } = "";
     public SessionState State { get; set; }
     public Occupancy OccupancyDesired { get; set; } = Occupancy.Running;
     public Occupancy OccupancyObserved { get; set; } = Occupancy.None;

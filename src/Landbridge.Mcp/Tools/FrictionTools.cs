@@ -16,7 +16,7 @@ namespace Landbridge.Mcp.Tools;
 /// session transition — a Lead or worker may call it at any time.
 /// </summary>
 [McpServerToolType]
-public sealed class FrictionTools(FrictionStore store, TokenService tokens, IHttpContextAccessor http)
+public sealed class FrictionTools(FrictionStore store, TokenService tokens, FriendlyIds ids, IHttpContextAccessor http)
 {
     [McpServerTool(Name = "report_friction"),
      Description("Report friction in Landbridge itself — a missing tool, a confusing refusal, " +
@@ -47,15 +47,15 @@ public sealed class FrictionTools(FrictionStore store, TokenService tokens, IHtt
         Guid? humanId;
         if (LandbridgeClaims.AsLeadPrincipal(user) is { } lead)
         {
-            if (string.IsNullOrWhiteSpace(teamId) || !Guid.TryParse(teamId, out var g)
-                || !await tokens.OwnsTeamAsync(lead.CredentialId, new TeamId(g), ct))
+            var owned = await ids.TryTeamAsync(teamId, ct);
+            if (owned is null || !await tokens.OwnsTeamAsync(lead.CredentialId, owned.Value, ct))
             {
                 throw new McpException(
                     "teamId is required for a Lead and must be a team this credential owns; " +
                     "create_team or use a team id you were given.");
             }
             role = FrictionReportRow.LeadRole;
-            team = g;
+            team = owned.Value.Value;
             sessionId = null;
             humanId = lead.HumanId;
         }

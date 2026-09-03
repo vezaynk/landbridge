@@ -51,7 +51,7 @@ public sealed class EnrollmentEndpointsTests(PostgresFixture pg) : IAsyncLifetim
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
         var body = await ReadEnrollAsync(resp, ct);
-        Assert.NotEqual(Guid.Empty, body.MachineId);
+        Assert.True(HaikuSlug.IsWellFormed(body.MachineId));
         Assert.StartsWith("lbr_m_", body.AccessToken);
         Assert.StartsWith("lbr_r_", body.RefreshToken);
         // Expiries reflect the server-side TTLs measured from the (fake) mint instant.
@@ -61,7 +61,12 @@ public sealed class EnrollmentEndpointsTests(PostgresFixture pg) : IAsyncLifetim
         await using var db = pg.NewContext();
         var tokens = new TokenService(db, clock);
         var principal = await tokens.ValidateAsync(body.AccessToken, ct);
-        Assert.Equal(body.MachineId, Assert.IsType<Principal.Machine>(principal).MachineId);
+        var machine = Assert.IsType<Principal.Machine>(principal);
+        var enrolledId = await db.Set<MachineRow>().AsNoTracking()
+            .Where(m => m.Slug == body.MachineId)
+            .Select(m => m.Id)
+            .SingleAsync(ct);
+        Assert.Equal(enrolledId, machine.MachineId);
         // The refresh token authenticates nothing on its own (§5): it only mints.
         Assert.Null(await tokens.ValidateAsync(body.RefreshToken, ct));
 
@@ -150,7 +155,9 @@ public sealed class EnrollmentEndpointsTests(PostgresFixture pg) : IAsyncLifetim
 
         await using var db = pg.NewContext();
         var principal = await new TokenService(db, clock).ValidateAsync(newAccess, ct);
-        Assert.Equal(enrolled.MachineId, Assert.IsType<Principal.Machine>(principal).MachineId);
+        Assert.Equal(
+            await db.Set<MachineRow>().AsNoTracking().Where(m => m.Slug == enrolled.MachineId).Select(m => m.Id).SingleAsync(ct),
+            Assert.IsType<Principal.Machine>(principal).MachineId);
 
         await app.StopAsync(ct);
     }
@@ -171,7 +178,9 @@ public sealed class EnrollmentEndpointsTests(PostgresFixture pg) : IAsyncLifetim
 
         // Un-trusting the machine (§5) kills its refresh: it mints nothing.
         await using (var db = pg.NewContext())
-            await new TokenService(db, clock).RevokeMachineCredentialsAsync(enrolled.MachineId, ct);
+            await new TokenService(db, clock).RevokeMachineCredentialsAsync(
+                await db.Set<MachineRow>().AsNoTracking().Where(m => m.Slug == enrolled.MachineId).Select(m => m.Id).SingleAsync(ct),
+                ct);
 
         var refreshResp = await client.PostAsJsonAsync("/machine/refresh", new { refreshToken = enrolled.RefreshToken }, ct);
         Assert.Equal(HttpStatusCode.Unauthorized, refreshResp.StatusCode);
@@ -186,7 +195,7 @@ public sealed class EnrollmentEndpointsTests(PostgresFixture pg) : IAsyncLifetim
     // ── Helpers ────────────────────────────────────────────────────────────
 
     private sealed record Enrolled(
-        Guid MachineId, string AccessToken, DateTimeOffset AccessExpiresAt,
+        string MachineId, string AccessToken, DateTimeOffset AccessExpiresAt,
         string RefreshToken, DateTimeOffset RefreshExpiresAt);
 
     private async Task<string> IssueEnrollmentAsync(TimeProvider clock, CancellationToken ct)
@@ -209,7 +218,7 @@ public sealed class EnrollmentEndpointsTests(PostgresFixture pg) : IAsyncLifetim
         using var doc = JsonDocument.Parse(await resp.Content.ReadAsStringAsync(ct));
         var r = doc.RootElement;
         return new Enrolled(
-            r.GetProperty("machineId").GetGuid(),
+            r.GetProperty("machineId").GetString()!,
             r.GetProperty("accessToken").GetString()!,
             r.GetProperty("accessExpiresAt").GetDateTimeOffset(),
             r.GetProperty("refreshToken").GetString()!,

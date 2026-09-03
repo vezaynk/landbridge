@@ -36,7 +36,8 @@ public sealed class FrictionToolsTests(PostgresFixture pg) : IAsyncLifetime
         new HttpContextAccessor { HttpContext = new DefaultHttpContext { User = LandbridgeClaims.ToClaimsPrincipal(principal) } };
 
     private FrictionTools ToolsFor(Principal principal) =>
-        new(new FrictionStore(pg.NewContext(), _clock), new TokenService(pg.NewContext(), _clock), AccessorFor(principal));
+        new(new FrictionStore(pg.NewContext(), _clock), new TokenService(pg.NewContext(), _clock),
+            new FriendlyIds(pg.NewContext()), AccessorFor(principal));
 
     [SkippableFact]
     public async Task A_lead_and_a_worker_can_each_record_friction()

@@ -11,7 +11,7 @@
         if you mean to give it to an agent — a preview or reload burns it. Copy
         the URL and paste it.</p>
 </section>
-<p><a href="/dashboard/teams/@TeamId">Open this Team</a>
+<p><a href="@TeamHref(TeamId, TeamSlug)">Open this Team</a>
     · <a href="/dashboard/connect">← back to Connect</a></p>
 </DashboardDocument>
 
@@ -19,4 +19,5 @@
     [Parameter, EditorRequired] public string Url { get; set; } = "";
     [Parameter] public DateTimeOffset ExpiresAt { get; set; }
     [Parameter] public Guid TeamId { get; set; }
+    [Parameter] public string? TeamSlug { get; set; }
 }

@@ -11,12 +11,13 @@
         <span class="mono">create_session</span> with that
         <span class="mono">teamId</span>.</p>
 </section>
-<p><a href="/dashboard/teams/@TeamId">Open this Team</a>
+<p><a href="@TeamHref(TeamId, TeamSlug)">Open this Team</a>
     · <a href="/dashboard/connect">← back to Connect</a></p>
 </DashboardDocument>
 
 @code {
     [Parameter, EditorRequired] public string Token { get; set; } = "";
     [Parameter] public Guid TeamId { get; set; }
+    [Parameter] public string? TeamSlug { get; set; }
     [Parameter, EditorRequired] public string McpUrl { get; set; } = "";
 }

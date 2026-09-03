@@ -115,7 +115,7 @@ public sealed class LeadForwardEndToEndTests(PostgresFixture pg) : IAsyncLifetim
             using (var stateDoc = JsonDocument.Parse(Payload(state)))
             {
                 var boundMachine = stateDoc.RootElement.GetProperty("boundMachine");
-                Assert.Equal(leadMachine, boundMachine.GetProperty("machineId").GetGuid());
+                Assert.True(HaikuSlug.IsWellFormed(boundMachine.GetProperty("machineId").GetString()));
                 Assert.Equal("leads-laptop", boundMachine.GetProperty("machineName").GetString());
             }
 

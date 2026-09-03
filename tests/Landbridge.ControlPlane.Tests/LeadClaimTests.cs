@@ -1,3 +1,4 @@
+using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
 using Landbridge.Core;
 using Microsoft.EntityFrameworkCore;
@@ -192,6 +193,7 @@ public sealed class LeadClaimTests(PostgresFixture pg) : IAsyncLifetime
             TeamId = Team.Value,
             LeadCredentialId = winnerCred,
             CreatedAt = clock.GetUtcNow(),
+            Slug = HaikuSlug.Mint(),
         });
         await winnerDb.SaveChangesAsync();
 
@@ -246,5 +248,9 @@ public sealed class LeadClaimTests(PostgresFixture pg) : IAsyncLifetime
         Assert.False(await tokens.OwnsTeamAsync(b.Token.CredentialId, minted));
         Assert.Contains(minted.Value, await tokens.OwnedTeamIdsAsync(a.Token.CredentialId));
         Assert.DoesNotContain(minted.Value, await tokens.OwnedTeamIdsAsync(b.Token.CredentialId));
+        var slug = await tokens.FindTeamSlugAsync(minted.Value);
+        Assert.True(HaikuSlug.IsWellFormed(slug));
+        var slugs = await tokens.OwnedTeamSlugsAsync(a.Token.CredentialId);
+        Assert.Equal(slug, slugs[minted.Value]);
     }
 }

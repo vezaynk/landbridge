@@ -1,3 +1,4 @@
+using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
 using Landbridge.Core;
 using Microsoft.EntityFrameworkCore;
@@ -31,6 +32,9 @@ public sealed class TokenServiceTests(PostgresFixture pg) : IAsyncLifetime
         Assert.NotNull(creds);
         Assert.StartsWith("lbr_m_", creds!.Access.Token);
         Assert.StartsWith("lbr_r_", creds.Refresh.Token);
+        var machine = await db.Set<MachineRow>().AsNoTracking().SingleAsync(m => m.Id == creds.MachineId);
+        Assert.True(HaikuSlug.IsWellFormed(machine.Slug));
+        Assert.Equal(Decl.Name, machine.Name);
 
         // Single-use (§5): the same enrollment token exchanges nothing again.
         Assert.Null(await tokens.ExchangeEnrollmentAsync(enrollment.Token, Decl));

@@ -125,6 +125,7 @@ public sealed class TokenService(LandbridgeDbContext db, TimeProvider clock)
                 TeamId = team.Value,
                 LeadCredentialId = row.Id,
                 CreatedAt = now,
+                Slug = await AllocateTeamSlugAsync(ct),
             });
             db.Set<LeadEventRow>().Add(new LeadEventRow
             {
@@ -139,9 +140,15 @@ public sealed class TokenService(LandbridgeDbContext db, TimeProvider clock)
         {
             await db.SaveChangesAsync(ct);
         }
-        catch (DbUpdateException ex) when (ex.InnerException is Npgsql.PostgresException { SqlState: "23505" })
+        catch (DbUpdateException ex) when (ex.InnerException is Npgsql.PostgresException { SqlState: "23505" } pg)
         {
             db.ChangeTracker.Clear();
+            if (string.Equals(pg.ConstraintName, HaikuSlug.TeamsIndex, StringComparison.Ordinal))
+            {
+                // Slug race on a vacant-Team insert. Re-run the claim: the Team row
+                // did not land, so this is not a second claimant.
+                return await ClaimLeadAsync(humanToken, team, takeover, ct);
+            }
             var winnerOwn = await db.LeadTeams.AsNoTracking()
                 .FirstOrDefaultAsync(t => t.TeamId == team.Value, ct);
             var winner = winnerOwn is null
@@ -166,15 +173,45 @@ public sealed class TokenService(LandbridgeDbContext db, TimeProvider clock)
             throw new InvalidOperationException("create_team requires a live lead credential");
 
         var team = TeamId.New();
-        db.LeadTeams.Add(new LeadTeamRow
+        var row = new LeadTeamRow
         {
             TeamId = team.Value,
             LeadCredentialId = leadCredentialId,
             CreatedAt = clock.GetUtcNow(),
-        });
-        await db.SaveChangesAsync(ct);
-        return team;
+            Slug = await AllocateTeamSlugAsync(ct),
+        };
+        for (var attempt = 0; attempt < HaikuSlug.RetryLimit; attempt++)
+        {
+            if (attempt > 0)
+            {
+                db.ChangeTracker.Clear();
+                row.Slug = HaikuSlug.Mint();
+            }
+            db.LeadTeams.Add(row);
+            try
+            {
+                await db.SaveChangesAsync(ct);
+                return team;
+            }
+            catch (DbUpdateException ex)
+                when (HaikuSlug.IsConflict(ex, HaikuSlug.TeamsIndex) && attempt < HaikuSlug.RetryLimit - 1)
+            {
+            }
+        }
+
+        throw new InvalidOperationException("could not allocate a unique team slug");
     }
+
+    public Task<string?> FindTeamSlugAsync(Guid teamId, CancellationToken ct = default) =>
+        db.LeadTeams.AsNoTracking()
+            .Where(t => t.TeamId == teamId)
+            .Select(t => (string?)t.Slug)
+            .FirstOrDefaultAsync(ct);
+
+    private Task<string> AllocateTeamSlugAsync(CancellationToken ct) =>
+        HaikuSlug.AllocateAsync(
+            (slug, token) => db.LeadTeams.AsNoTracking().AnyAsync(t => t.Slug == slug, token),
+            ct);
 
     public Task<bool> OwnsTeamAsync(Guid leadCredentialId, TeamId team, CancellationToken ct = default) =>
         db.LeadTeams.AsNoTracking()
@@ -185,6 +222,11 @@ public sealed class TokenService(LandbridgeDbContext db, TimeProvider clock)
             .Where(t => t.LeadCredentialId == leadCredentialId)
             .Select(t => t.TeamId)
             .ToListAsync(ct);
+
+    public Task<Dictionary<Guid, string>> OwnedTeamSlugsAsync(Guid leadCredentialId, CancellationToken ct = default) =>
+        db.LeadTeams.AsNoTracking()
+            .Where(t => t.LeadCredentialId == leadCredentialId)
+            .ToDictionaryAsync(t => t.TeamId, t => t.Slug, ct);
 
     /// <summary>
     /// Voluntary release of a lead claim (§4): the Team becomes leadless and
@@ -274,19 +316,38 @@ public sealed class TokenService(LandbridgeDbContext db, TimeProvider clock)
             Name = declaration.Name,
             Os = declaration.Os,
             EnrolledAt = now,
+            Slug = await HaikuSlug.AllocateAsync(
+                (slug, token) => db.Set<MachineRow>().AsNoTracking().AnyAsync(m => m.Slug == slug, token),
+                ct),
         };
-        db.Set<MachineRow>().Add(machine);
-
         var (access, accessRow) = NewCredential(CredentialKind.MachineAccess, MachineAccessTtl, machineId: machine.Id);
         var (refresh, refreshRow) = NewCredential(CredentialKind.MachineRefresh, MachineRefreshTtl, machineId: machine.Id);
-        db.Set<CredentialRow>().AddRange(accessRow, refreshRow);
-        await db.SaveChangesAsync(ct);
+        for (var attempt = 0; attempt < HaikuSlug.RetryLimit; attempt++)
+        {
+            if (attempt > 0)
+            {
+                db.ChangeTracker.Clear();
+                machine.Slug = HaikuSlug.Mint();
+            }
+            db.Set<MachineRow>().Add(machine);
+            db.Set<CredentialRow>().AddRange(accessRow, refreshRow);
+            try
+            {
+                await db.SaveChangesAsync(ct);
+                break;
+            }
+            catch (DbUpdateException ex)
+                when (HaikuSlug.IsConflict(ex, HaikuSlug.MachinesIndex) && attempt < HaikuSlug.RetryLimit - 1)
+            {
+            }
+        }
         await tx.CommitAsync(ct);
 
         return new MachineCredentials(
             machine.Id,
             new IssuedToken(access, accessRow.Id, accessRow.ExpiresAt),
-            new IssuedToken(refresh, refreshRow.Id, refreshRow.ExpiresAt));
+            new IssuedToken(refresh, refreshRow.Id, refreshRow.ExpiresAt),
+            machine.Slug);
     }
 
     /// <summary>

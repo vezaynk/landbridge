@@ -16,7 +16,7 @@ public sealed record LeadInboxView(IReadOnlyList<LeadInboxItem> Items);
 /// no leftover message, and on unread report mail (not an envelope).
 /// </param>
 public sealed record LeadInboxItem(
-    Guid SessionId,
+    string SessionId,
     LeadInboxKind Kind,
     Guid? MessageId,
     string Namespace,
@@ -70,7 +70,7 @@ public static class LeadInboxKindMapping
     /// <see cref="MessageState.AwaitingPull"/> is included.
     /// </summary>
     public static IEnumerable<LeadInboxItem> ItemsFor(
-        Guid sessionId,
+        string sessionId,
         string ns,
         SessionHealth health,
         MessageState message,

@@ -192,7 +192,8 @@ public sealed class ConnectDashboardTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(HttpStatusCode.Created, first.StatusCode);
         using var claimed = JsonDocument.Parse(await first.Content.ReadAsStringAsync(ct));
         var leadToken = claimed.RootElement.GetProperty("token").GetString();
-        var teamId = claimed.RootElement.GetProperty("teamId").GetGuid();
+        var teamId = claimed.RootElement.GetProperty("teamId").GetString();
+        Assert.True(HaikuSlug.IsWellFormed(teamId));
         Assert.StartsWith("lbr_l_", leadToken);
 
         var second = await PostAsync(app, "/dashboard/connect/claim", new { teamId }, ct);
@@ -203,7 +204,7 @@ public sealed class ConnectDashboardTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(HttpStatusCode.Created, takeover.StatusCode);
         using var took = JsonDocument.Parse(await takeover.Content.ReadAsStringAsync(ct));
         Assert.StartsWith("lbr_l_", took.RootElement.GetProperty("token").GetString());
-        Assert.Equal(teamId, took.RootElement.GetProperty("teamId").GetGuid());
+        Assert.Equal(teamId, took.RootElement.GetProperty("teamId").GetString());
 
         await app.StopAsync(ct);
     }

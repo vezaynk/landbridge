@@ -12,7 +12,7 @@ namespace Landbridge.ControlPlane;
 /// each needs — without ever seeing a task's contents.
 /// </summary>
 public sealed record TeamStateView(
-    Guid TeamId,
+    string TeamId,
     int TotalSessions,
     IReadOnlyDictionary<SessionState, int> CountsByState,
     IReadOnlyList<TeamSessionSummary> Sessions,
@@ -26,7 +26,7 @@ public sealed record TeamStateView(
 /// not inherit it — so it is composed onto the view by the tool that knows the
 /// caller, not read out of the Team's rows. Identifiers only, no prose (§10).
 /// </summary>
-public sealed record LeadMachineView(Guid MachineId, string MachineName, DateTimeOffset BoundAt);
+public sealed record LeadMachineView(string MachineId, string MachineName, DateTimeOffset BoundAt);
 
 /// <summary>
 /// The fleet's declared profiles as <b>routing targets</b>, returned by the Lead's
@@ -120,12 +120,12 @@ public sealed record ProfileMachineView(
 /// requeue cap (§9 check 7) from a cancel someone asked for.
 /// </summary>
 public sealed record TeamSessionSummary(
-    Guid SessionId,
+    string SessionId,
     string Namespace,
     SessionState State,
     int Attempt,
     bool Parked,
-    Guid? ContinuesSessionId,
+    string? ContinuesSessionId,
     VerdictProvenance? CompletionProvenance,
     bool HasReport,
     InputRequestKind? InputKind,

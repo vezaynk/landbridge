@@ -257,7 +257,8 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
             ["teamId"] = team.Value.ToString(),
         }, cancellationToken: ct);
         Assert.NotEqual(true, created.IsError);
-        return new SessionId(Guid.Parse(Assert.Single(created.Content.OfType<TextContentBlock>()).Text));
+        return await TestPublicIds.SessionAsync(
+            pg, Assert.Single(created.Content.OfType<TextContentBlock>()).Text, ct);
     }
 
     private async Task<bool> ServiceExistsAsync(TeamId team, string name, CancellationToken ct)

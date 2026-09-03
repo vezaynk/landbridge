@@ -46,6 +46,7 @@ public sealed class LeadTools(
     RelayGrantService grants,
     ForwardOrchestrator forwards,
     TokenService tokens,
+    FriendlyIds ids,
     IHttpContextAccessor http,
     IConfiguration config,
     SessionEventFanout? inbox = null)
@@ -86,10 +87,9 @@ public sealed class LeadTools(
     private async Task<LeadClaim> LeadOn(string teamId, CancellationToken ct)
     {
         var lead = LeadPrincipal;
-        if (string.IsNullOrWhiteSpace(teamId) || !Guid.TryParse(teamId, out var g))
-            throw new McpException(
+        var team = await ids.TryTeamAsync(teamId, ct)
+            ?? throw new McpException(
                 "teamId is required and must be a team id you minted with create_team, or one a human gave you.");
-        var team = new TeamId(g);
         if (!await tokens.OwnsTeamAsync(lead.CredentialId, team, ct))
             throw new McpException(
                 "this lead credential does not own that team; create_team or use a team id you were given.");
@@ -104,7 +104,7 @@ public sealed class LeadTools(
     public async Task<string> CreateTeam(CancellationToken ct = default)
     {
         var team = await tokens.CreateTeamAsync(LeadPrincipal.CredentialId, ct);
-        return team.Value.ToString();
+        return await ids.TeamAsync(team.Value, ct);
     }
 
     [McpServerTool(Name = "create_session"),
@@ -135,7 +135,7 @@ public sealed class LeadTools(
 
         return result switch
         {
-            StoreResult.Applied a => a.Session.Id.ToString(),
+            StoreResult.Applied a => await ids.SessionAsync(a.Session.Id.Value, ct),
             _ => throw Rejection(result),
         };
     }
@@ -160,7 +160,7 @@ public sealed class LeadTools(
     {
         var ttl = ResolveStopTtl(ttlSeconds);
         var lead = await LeadOn(teamId, ct);
-        var id = ParseSessionId(sessionId);
+        var id = await ParseSessionIdAsync(sessionId, ct);
         var machine = registry.MachineFor(id);
         var applied = await store.ApplyAsync(id, new Landbridge.Core.StopSession(lead), ct);
         if (applied is StoreResult.Applied ok
@@ -196,7 +196,7 @@ public sealed class LeadTools(
         CancellationToken ct)
     {
         var lead = await LeadOn(teamId, ct);
-        var id = ParseSessionId(sessionId);
+        var id = await ParseSessionIdAsync(sessionId, ct);
         var machine = registry.MachineFor(id) ?? "unknown";
         var result = await store.ApplyAsync(id, new Park(lead, new ParkRecord(machine)), ct);
         if (result is StoreResult.Applied && machine != "unknown")
@@ -229,7 +229,7 @@ public sealed class LeadTools(
         CancellationToken ct = default)
     {
         var lead = await LeadOn(teamId, ct);
-        var id = ParseSessionId(sessionId);
+        var id = await ParseSessionIdAsync(sessionId, ct);
         var machine = registry.MachineFor(id);
         var live = registry.HasLiveProcess(id);
         var result = await store.SendInputResponseAsync(lead, id, machine, answer, live, ct);
@@ -255,7 +255,7 @@ public sealed class LeadTools(
         CancellationToken ct = default)
     {
         var lead = await LeadOn(teamId, ct);
-        var id = ParseSessionId(sessionId);
+        var id = await ParseSessionIdAsync(sessionId, ct);
         var machine = registry.MachineFor(id);
         var live = registry.HasLiveProcess(id);
         var result = await store.SendInputRequestAsync(lead, id, machine, text, live, ct);
@@ -302,7 +302,7 @@ public sealed class LeadTools(
         CancellationToken ct = default)
     {
         var lead = await LeadOn(teamId, ct);
-        var id = ParseSessionId(sessionId);
+        var id = await ParseSessionIdAsync(sessionId, ct);
         if (string.IsNullOrWhiteSpace(option))
             throw new McpException(
                 "option is required: pick an optionId from get_lead_inbox(teamId, sessionId), or 'allow'/'deny'.");
@@ -331,7 +331,7 @@ public sealed class LeadTools(
         [Description("Optional: these sessions' outstanding items, with bodies.")] string[]? sessionIds = null)
     {
         var lead = await LeadOn(teamId, ct);
-        var filter = SessionFilter(sessionId, sessionIds);
+        var filter = await SessionFilterAsync(sessionId, sessionIds, ct);
         return await store.GetLeadInboxAsync(lead.Team, filter, ct, filter is { Count: > 0 } ? lead : null);
     }
 
@@ -353,7 +353,7 @@ public sealed class LeadTools(
         if (inbox is null)
             throw new McpException("the inbox feed is not available in this process.");
         var lead = await LeadOn(teamId, ct);
-        var filter = SessionFilter(sessionId, sessionIds);
+        var filter = await SessionFilterAsync(sessionId, sessionIds, ct);
         var actor = filter is { Count: > 0 } ? lead : (Actor?)null;
         await foreach (var snapshot in LeadInboxWatch.Snapshots(store, inbox, lead.Team, filter, actor, ct))
         {
@@ -385,7 +385,8 @@ public sealed class LeadTools(
         if (lead.HumanId is not { } human)
             return state;
         return await bindings.GetAsync(human, ct) is { } bound
-            ? state with { BoundMachine = new LeadMachineView(bound.MachineId, bound.MachineName, bound.BoundAt) }
+            ? state with { BoundMachine = new LeadMachineView(
+                await ids.MachineAsync(bound.MachineId, ct), bound.MachineName, bound.BoundAt) }
             : state;
     }
 
@@ -415,7 +416,7 @@ public sealed class LeadTools(
         {
             Machines = p.Machines.Select(m =>
                 labels.TryGetValue(m.MachineId, out var label)
-                    ? m with { Name = label.Name, Os = label.Os }
+                    ? m with { MachineId = label.Slug, Name = label.Name, Os = label.Os }
                     : m).ToList(),
         }).ToList();
         return view with { Profiles = profiles };
@@ -433,7 +434,7 @@ public sealed class LeadTools(
                  "unbind_machine first. Only bind a machine your human actually controls — a forward will " +
                  "open a listening port on it.")]
     public async Task<string> BindMachine(
-        [Description("The enrolled machine's id (a uuid). On the box you are sitting at, GET http://127.0.0.1:19378 — landbridged answers with it.")]
+        [Description("The enrolled machine's id (allocated name, or uuid). On the box you are sitting at, GET http://127.0.0.1:19378 — landbridged answers with it.")]
         string machineId,
         [Description("A Team this Lead owns. From create_team, or a human-supplied id.")]
         string teamId,
@@ -441,13 +442,13 @@ public sealed class LeadTools(
     {
         _ = await LeadOn(teamId, ct);
         var human = HumanOf(LeadPrincipal);
-        if (!Guid.TryParse(machineId, out var id))
-            throw new McpException($"'{machineId}' is not a valid machine id (expected a uuid).");
+        var id = await ids.TryMachineAsync(machineId, ct)
+            ?? throw new McpException($"'{machineId}' is not a valid machine id.");
 
         return await bindings.BindAsync(human, id, ct) switch
         {
             LeadMachineBindResult.Bound b =>
-                $"ok: machine {b.Binding.MachineName} ({b.Binding.MachineId:D}) is now your machine; " +
+                $"ok: machine {b.Binding.MachineName} ({await ids.MachineAsync(b.Binding.MachineId, ct)}) is now your machine; " +
                 "open_lead_forward will bind its loopback ports.",
             LeadMachineBindResult.Refused r => throw new McpException($"bind_machine refused: {r.Reason}"),
             _ => throw new McpException("unknown bind result"),
@@ -468,7 +469,7 @@ public sealed class LeadTools(
         var released = await bindings.UnbindAsync(HumanOf(LeadPrincipal), ct);
         return released is null
             ? "ok: you had no machine bound; nothing to release."
-            : $"ok: released machine {released.MachineName} ({released.MachineId:D}); " +
+            : $"ok: released machine {released.MachineName} ({await ids.MachineAsync(released.MachineId, ct)}); " +
               "open_lead_forward will refuse until you bind one again.";
     }
 
@@ -526,26 +527,26 @@ public sealed class LeadTools(
         };
     }
 
-    private static SessionId ParseSessionId(string sessionId) =>
-        Guid.TryParse(sessionId, out var g)
-            ? new SessionId(g)
-            : throw new McpException($"'{sessionId}' is not a valid session id.");
+    private async Task<SessionId> ParseSessionIdAsync(string sessionId, CancellationToken ct) =>
+        await ids.TrySessionAsync(sessionId, ct)
+        ?? throw new McpException($"'{sessionId}' is not a valid session id.");
 
-    private static IReadOnlyList<Guid>? SessionFilter(string? sessionId, string[]? sessionIds)
+    private async Task<IReadOnlyList<Guid>?> SessionFilterAsync(
+        string? sessionId, string[]? sessionIds, CancellationToken ct)
     {
-        var ids = new List<Guid>();
+        var list = new List<Guid>();
         if (!string.IsNullOrWhiteSpace(sessionId))
-            ids.Add(ParseSessionId(sessionId).Value);
+            list.Add((await ParseSessionIdAsync(sessionId, ct)).Value);
         if (sessionIds is { Length: > 0 })
         {
             foreach (var raw in sessionIds)
             {
                 if (string.IsNullOrWhiteSpace(raw))
                     continue;
-                ids.Add(ParseSessionId(raw).Value);
+                list.Add((await ParseSessionIdAsync(raw, ct)).Value);
             }
         }
-        return ids.Count == 0 ? null : ids;
+        return list.Count == 0 ? null : list;
     }
 
     private static McpException Unauthorized() =>

@@ -12,7 +12,7 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace Landbridge.ControlPlane.Migrations
 {
     [DbContext(typeof(LandbridgeDbContext))]
-    [Migration("20260817185432_InitialSchema")]
+    [Migration("20260902204909_InitialSchema")]
     partial class InitialSchema
     {
         /// <inheritdoc />
@@ -95,11 +95,6 @@ namespace Landbridge.ControlPlane.Migrations
 
                     b.HasIndex("MachineId")
                         .HasDatabaseName("ix_credentials_machine_id");
-
-                    b.HasIndex("TeamId")
-                        .IsUnique()
-                        .HasDatabaseName("ix_credentials_one_live_lead_per_team")
-                        .HasFilter("kind = 'Lead' AND revoked = false");
 
                     b.HasIndex("TokenHash")
                         .IsUnique()
@@ -190,6 +185,39 @@ namespace Landbridge.ControlPlane.Migrations
                     b.ToTable("lead_machine_bindings", (string)null);
                 });
 
+            modelBuilder.Entity("Landbridge.ControlPlane.Auth.LeadTeamRow", b =>
+                {
+                    b.Property<Guid>("TeamId")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("team_id");
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid>("LeadCredentialId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("lead_credential_id");
+
+                    b.Property<string>("Slug")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("slug");
+
+                    b.HasKey("TeamId")
+                        .HasName("pk_lead_teams");
+
+                    b.HasIndex("LeadCredentialId")
+                        .HasDatabaseName("ix_lead_teams_lead_credential_id");
+
+                    b.HasIndex("Slug")
+                        .IsUnique()
+                        .HasDatabaseName("ix_lead_teams_slug");
+
+                    b.ToTable("lead_teams", (string)null);
+                });
+
             modelBuilder.Entity("Landbridge.ControlPlane.Auth.MachineRow", b =>
                 {
                     b.Property<Guid>("Id")
@@ -211,16 +239,6 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasColumnType("text")
                         .HasColumnName("os");
 
-                    b.Property<string>("PermissionLevel")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("permission_level");
-
-                    b.Property<string>("Purpose")
-                        .IsRequired()
-                        .HasColumnType("text")
-                        .HasColumnName("purpose");
-
                     b.Property<bool>("Revoked")
                         .HasColumnType("boolean")
                         .HasColumnName("revoked");
@@ -229,8 +247,17 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("revoked_at");
 
+                    b.Property<string>("Slug")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("slug");
+
                     b.HasKey("Id")
                         .HasName("pk_machines");
+
+                    b.HasIndex("Slug")
+                        .IsUnique()
+                        .HasDatabaseName("ix_machines_slug");
 
                     b.ToTable("machines", (string)null);
                 });
@@ -366,6 +393,53 @@ namespace Landbridge.ControlPlane.Migrations
                     b.ToTable("relay_grants", (string)null);
                 });
 
+            modelBuilder.Entity("Landbridge.ControlPlane.FrictionReportRow", b =>
+                {
+                    b.Property<long>("Seq")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("seq");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityAlwaysColumn(b.Property<long>("Seq"));
+
+                    b.Property<DateTimeOffset>("At")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("at");
+
+                    b.Property<Guid?>("HumanId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("human_id");
+
+                    b.Property<string>("Message")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("message");
+
+                    b.Property<string>("Role")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("role");
+
+                    b.Property<Guid?>("SessionId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("session_id");
+
+                    b.Property<Guid>("TeamId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("team_id");
+
+                    b.HasKey("Seq")
+                        .HasName("pk_friction_reports");
+
+                    b.HasIndex("At")
+                        .HasDatabaseName("ix_friction_reports_at");
+
+                    b.HasIndex("TeamId")
+                        .HasDatabaseName("ix_friction_reports_team_id");
+
+                    b.ToTable("friction_reports", (string)null);
+                });
+
             modelBuilder.Entity("Landbridge.ControlPlane.PreviewMappingRow", b =>
                 {
                     b.Property<Guid>("Id")
@@ -399,6 +473,10 @@ namespace Landbridge.ControlPlane.Migrations
                     b.Property<Guid>("TeamId")
                         .HasColumnType("uuid")
                         .HasColumnName("team_id");
+
+                    b.Property<TimeSpan>("Ttl")
+                        .HasColumnType("interval")
+                        .HasColumnName("ttl");
 
                     b.HasKey("Id")
                         .HasName("pk_preview_mappings");
@@ -576,6 +654,15 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasColumnType("text")
                         .HasColumnName("harness_session_ref");
 
+                    b.Property<string>("Health")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("health");
+
+                    b.Property<bool>("Hidden")
+                        .HasColumnType("boolean")
+                        .HasColumnName("hidden");
+
                     b.Property<int>("InfrastructureRequeueLimit")
                         .HasColumnType("integer")
                         .HasColumnName("infrastructure_requeue_limit");
@@ -596,14 +683,57 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasColumnType("text")
                         .HasColumnName("input_question");
 
+                    b.Property<DateTimeOffset?>("LastMessageClosedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_message_closed_at");
+
+                    b.Property<Guid?>("LastMessageId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("last_message_id");
+
+                    b.Property<string>("LastMessageTerminal")
+                        .HasColumnType("text")
+                        .HasColumnName("last_message_terminal");
+
                     b.Property<string>("LastRequeueReason")
                         .HasColumnType("text")
                         .HasColumnName("last_requeue_reason");
+
+                    b.Property<Guid?>("MessageId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("message_id");
+
+                    b.Property<DateTimeOffset?>("MessageOpenedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("message_opened_at");
+
+                    b.Property<DateTimeOffset?>("MessagePulledAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("message_pulled_at");
+
+                    b.Property<string>("MessageState")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("message_state");
+
+                    b.Property<string>("MessageVerdict")
+                        .HasColumnType("text")
+                        .HasColumnName("message_verdict");
 
                     b.Property<string>("Namespace")
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("namespace");
+
+                    b.Property<string>("OccupancyDesired")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("occupancy_desired");
+
+                    b.Property<string>("OccupancyObserved")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("occupancy_observed");
 
                     b.Property<string>("OnMachineGone")
                         .HasColumnType("text")
@@ -613,6 +743,10 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasColumnType("text")
                         .HasColumnName("park_machine");
 
+                    b.Property<string>("PendingSpawn")
+                        .HasColumnType("text")
+                        .HasColumnName("pending_spawn");
+
                     b.Property<DateTimeOffset?>("PermissionEscalatedAt")
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("permission_escalated_at");
@@ -620,6 +754,14 @@ namespace Landbridge.ControlPlane.Migrations
                     b.Property<string>("PermissionEscalationReason")
                         .HasColumnType("text")
                         .HasColumnName("permission_escalation_reason");
+
+                    b.Property<string>("PermissionOptionId")
+                        .HasColumnType("text")
+                        .HasColumnName("permission_option_id");
+
+                    b.Property<string>("PermissionOptions")
+                        .HasColumnType("text")
+                        .HasColumnName("permission_options");
 
                     b.Property<string>("PermissionTool")
                         .HasColumnType("text")
@@ -637,9 +779,22 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasColumnType("text")
                         .HasColumnName("profile");
 
+                    b.Property<bool>("PullRedelivered")
+                        .HasColumnType("boolean")
+                        .HasColumnName("pull_redelivered");
+
+                    b.Property<bool>("ReportUnread")
+                        .HasColumnType("boolean")
+                        .HasColumnName("report_unread");
+
                     b.Property<string>("ResultReference")
                         .HasColumnType("text")
                         .HasColumnName("result_reference");
+
+                    b.Property<string>("Slug")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("slug");
 
                     b.Property<string>("State")
                         .IsRequired()
@@ -676,10 +831,6 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasColumnType("text")
                         .HasColumnName("worker_report");
 
-                    b.Property<string>("Workspace")
-                        .HasColumnType("text")
-                        .HasColumnName("workspace");
-
                     b.HasKey("Id")
                         .HasName("pk_sessions");
 
@@ -687,9 +838,23 @@ namespace Landbridge.ControlPlane.Migrations
                         .IsUnique()
                         .HasDatabaseName("ix_sessions_namespace");
 
+                    b.HasIndex("Slug")
+                        .IsUnique()
+                        .HasDatabaseName("ix_sessions_slug");
+
                     b.HasIndex("State", "Profile")
                         .HasDatabaseName("ix_sessions_state_profile")
                         .HasFilter("state = 'Submitted'");
+
+                    b.HasIndex("TeamId", "LastMessageId")
+                        .HasDatabaseName("ix_sessions_team_id_last_message_id");
+
+                    b.HasIndex("TeamId", "MessageId")
+                        .HasDatabaseName("ix_sessions_team_id_message_id");
+
+                    b.HasIndex("Profile", "OccupancyDesired", "OccupancyObserved", "Health")
+                        .HasDatabaseName("ix_sessions_profile_occupancy_desired_occupancy_observed_health")
+                        .HasFilter("occupancy_desired = 'Running' AND health = 'Ok' AND hidden = false AND occupancy_observed IN ('None','OnDisk') AND current_instance_id IS NULL AND pending_spawn IN ('New','Load')");
 
                     b.ToTable("sessions", (string)null);
                 });

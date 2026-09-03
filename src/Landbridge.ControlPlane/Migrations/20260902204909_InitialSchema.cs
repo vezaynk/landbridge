@@ -38,6 +38,24 @@ namespace Landbridge.ControlPlane.Migrations
                 });
 
             migrationBuilder.CreateTable(
+                name: "friction_reports",
+                columns: table => new
+                {
+                    seq = table.Column<long>(type: "bigint", nullable: false)
+                        .Annotation("Npgsql:ValueGenerationStrategy", NpgsqlValueGenerationStrategy.IdentityAlwaysColumn),
+                    at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
+                    role = table.Column<string>(type: "text", nullable: false),
+                    team_id = table.Column<Guid>(type: "uuid", nullable: false),
+                    session_id = table.Column<Guid>(type: "uuid", nullable: true),
+                    human_id = table.Column<Guid>(type: "uuid", nullable: true),
+                    message = table.Column<string>(type: "text", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("pk_friction_reports", x => x.seq);
+                });
+
+            migrationBuilder.CreateTable(
                 name: "lead_events",
                 columns: table => new
                 {
@@ -71,17 +89,30 @@ namespace Landbridge.ControlPlane.Migrations
                 });
 
             migrationBuilder.CreateTable(
+                name: "lead_teams",
+                columns: table => new
+                {
+                    team_id = table.Column<Guid>(type: "uuid", nullable: false),
+                    lead_credential_id = table.Column<Guid>(type: "uuid", nullable: false),
+                    created_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
+                    slug = table.Column<string>(type: "text", nullable: false)
+                },
+                constraints: table =>
+                {
+                    table.PrimaryKey("pk_lead_teams", x => x.team_id);
+                });
+
+            migrationBuilder.CreateTable(
                 name: "machines",
                 columns: table => new
                 {
                     id = table.Column<Guid>(type: "uuid", nullable: false),
                     name = table.Column<string>(type: "text", nullable: false),
-                    purpose = table.Column<string>(type: "text", nullable: false),
                     os = table.Column<string>(type: "text", nullable: false),
-                    permission_level = table.Column<string>(type: "text", nullable: false),
                     enrolled_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false),
                     revoked = table.Column<bool>(type: "boolean", nullable: false),
-                    revoked_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true)
+                    revoked_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
+                    slug = table.Column<string>(type: "text", nullable: false)
                 },
                 constraints: table =>
                 {
@@ -118,6 +149,7 @@ namespace Landbridge.ControlPlane.Migrations
                     session_id = table.Column<Guid>(type: "uuid", nullable: false),
                     service_name = table.Column<string>(type: "text", nullable: false),
                     auth_policy = table.Column<string>(type: "text", nullable: false),
+                    ttl = table.Column<TimeSpan>(type: "interval", nullable: false),
                     expires_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: false)
                 },
                 constraints: table =>
@@ -221,7 +253,23 @@ namespace Landbridge.ControlPlane.Migrations
                     id = table.Column<Guid>(type: "uuid", nullable: false),
                     team_id = table.Column<Guid>(type: "uuid", nullable: false),
                     @namespace = table.Column<string>(name: "namespace", type: "text", nullable: false),
+                    slug = table.Column<string>(type: "text", nullable: false),
                     state = table.Column<string>(type: "text", nullable: false),
+                    occupancy_desired = table.Column<string>(type: "text", nullable: false),
+                    occupancy_observed = table.Column<string>(type: "text", nullable: false),
+                    health = table.Column<string>(type: "text", nullable: false),
+                    hidden = table.Column<bool>(type: "boolean", nullable: false),
+                    message_state = table.Column<string>(type: "text", nullable: false),
+                    message_verdict = table.Column<string>(type: "text", nullable: true),
+                    report_unread = table.Column<bool>(type: "boolean", nullable: false),
+                    message_id = table.Column<Guid>(type: "uuid", nullable: true),
+                    last_message_id = table.Column<Guid>(type: "uuid", nullable: true),
+                    last_message_terminal = table.Column<string>(type: "text", nullable: true),
+                    message_opened_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
+                    last_message_closed_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
+                    pending_spawn = table.Column<string>(type: "text", nullable: true),
+                    pull_redelivered = table.Column<bool>(type: "boolean", nullable: false),
+                    message_pulled_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
                     profile = table.Column<string>(type: "text", nullable: true),
                     attempt = table.Column<int>(type: "integer", nullable: false),
                     infrastructure_requeues = table.Column<int>(type: "integer", nullable: false),
@@ -236,11 +284,12 @@ namespace Landbridge.ControlPlane.Migrations
                     input_question = table.Column<string>(type: "text", nullable: true),
                     input_answer = table.Column<string>(type: "text", nullable: true),
                     permission_tool = table.Column<string>(type: "text", nullable: true),
+                    permission_options = table.Column<string>(type: "text", nullable: true),
+                    permission_option_id = table.Column<string>(type: "text", nullable: true),
                     permission_verdict = table.Column<string>(type: "text", nullable: true),
                     permission_escalated_at = table.Column<DateTimeOffset>(type: "timestamp with time zone", nullable: true),
                     permission_escalation_reason = table.Column<string>(type: "text", nullable: true),
                     description = table.Column<string>(type: "text", nullable: false),
-                    workspace = table.Column<string>(type: "text", nullable: true),
                     result_reference = table.Column<string>(type: "text", nullable: true),
                     worker_report = table.Column<string>(type: "text", nullable: true),
                     trace_context = table.Column<string>(type: "text", nullable: true),
@@ -292,17 +341,20 @@ namespace Landbridge.ControlPlane.Migrations
                 column: "machine_id");
 
             migrationBuilder.CreateIndex(
-                name: "ix_credentials_one_live_lead_per_team",
-                table: "credentials",
-                column: "team_id",
-                unique: true,
-                filter: "kind = 'Lead' AND revoked = false");
-
-            migrationBuilder.CreateIndex(
                 name: "ix_credentials_token_hash",
                 table: "credentials",
                 column: "token_hash",
                 unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "ix_friction_reports_at",
+                table: "friction_reports",
+                column: "at");
+
+            migrationBuilder.CreateIndex(
+                name: "ix_friction_reports_team_id",
+                table: "friction_reports",
+                column: "team_id");
 
             migrationBuilder.CreateIndex(
                 name: "ix_lead_events_team_id",
@@ -322,6 +374,23 @@ namespace Landbridge.ControlPlane.Migrations
                 column: "machine_id",
                 unique: true,
                 filter: "revoked = false");
+
+            migrationBuilder.CreateIndex(
+                name: "ix_lead_teams_lead_credential_id",
+                table: "lead_teams",
+                column: "lead_credential_id");
+
+            migrationBuilder.CreateIndex(
+                name: "ix_lead_teams_slug",
+                table: "lead_teams",
+                column: "slug",
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "ix_machines_slug",
+                table: "machines",
+                column: "slug",
+                unique: true);
 
             migrationBuilder.CreateIndex(
                 name: "ix_oauth_authorization_codes_code_hash",
@@ -380,10 +449,32 @@ namespace Landbridge.ControlPlane.Migrations
                 unique: true);
 
             migrationBuilder.CreateIndex(
+                name: "ix_sessions_slug",
+                table: "sessions",
+                column: "slug",
+                unique: true);
+
+            migrationBuilder.CreateIndex(
+                name: "ix_sessions_profile_occupancy_desired_occupancy_observed_health",
+                table: "sessions",
+                columns: new[] { "profile", "occupancy_desired", "occupancy_observed", "health" },
+                filter: "occupancy_desired = 'Running' AND health = 'Ok' AND hidden = false AND occupancy_observed IN ('None','OnDisk') AND current_instance_id IS NULL AND pending_spawn IN ('New','Load')");
+
+            migrationBuilder.CreateIndex(
                 name: "ix_sessions_state_profile",
                 table: "sessions",
                 columns: new[] { "state", "profile" },
                 filter: "state = 'Submitted'");
+
+            migrationBuilder.CreateIndex(
+                name: "ix_sessions_team_id_last_message_id",
+                table: "sessions",
+                columns: new[] { "team_id", "last_message_id" });
+
+            migrationBuilder.CreateIndex(
+                name: "ix_sessions_team_id_message_id",
+                table: "sessions",
+                columns: new[] { "team_id", "message_id" });
 
             migrationBuilder.CreateIndex(
                 name: "ix_worker_instances_session_id",
@@ -398,10 +489,16 @@ namespace Landbridge.ControlPlane.Migrations
                 name: "credentials");
 
             migrationBuilder.DropTable(
+                name: "friction_reports");
+
+            migrationBuilder.DropTable(
                 name: "lead_events");
 
             migrationBuilder.DropTable(
                 name: "lead_machine_bindings");
+
+            migrationBuilder.DropTable(
+                name: "lead_teams");
 
             migrationBuilder.DropTable(
                 name: "machines");

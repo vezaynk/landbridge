@@ -314,7 +314,8 @@ internal sealed class FleetRig(
     public async Task<SessionId> CreateSessionAsync(string description, CancellationToken ct)
     {
         await using var lead = await PlaneProbe.ConnectMcpAsync(new Uri(_baseUrl + "/"), _leadToken, ct);
-        return await PlaneProbe.CreateSessionAsync(lead, description, ct, Team.Value.ToString());
+        await using var db = pg.NewContext();
+        return await PlaneProbe.CreateSessionAsync(lead, db, description, ct, Team.Value.ToString());
     }
 
     /// <summary>

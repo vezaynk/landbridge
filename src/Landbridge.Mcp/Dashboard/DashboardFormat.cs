@@ -19,6 +19,25 @@ internal static class DashboardFormat
         return dash > 0 ? s[..dash] : s;
     }
 
+    /// <summary>Dashboard path segment: allocated slug, or the Guid if none yet.</summary>
+    public static string Address(Guid id, string? slug) =>
+        string.IsNullOrEmpty(slug) ? id.ToString() : slug;
+
+    public static string Label(Guid id, string? slug) =>
+        string.IsNullOrEmpty(slug) ? ShortId(id) : slug;
+
+    public static string Label(string? id, string? slug) =>
+        string.IsNullOrEmpty(slug) ? (id ?? "—") : slug;
+
+    public static string TeamHref(Guid id, string? slug) =>
+        "/dashboard/teams/" + Address(id, slug);
+
+    public static string SessionEventsHref(Guid id, string? slug) =>
+        "/dashboard/events?session=" + Address(id, slug);
+
+    public static string TranscriptsHref(Guid id, string? slug) =>
+        "/dashboard/sessions/" + Address(id, slug) + "/transcripts";
+
     public static string Age(DateTimeOffset? ts, DateTimeOffset now)
     {
         if (ts is null)
@@ -73,5 +92,4 @@ internal static class DashboardFormat
         < 1024 * 1024 => $"{bytes / 1024.0:N1} KB",
         _ => $"{bytes / (1024.0 * 1024.0):N1} MB",
     };
-
 }

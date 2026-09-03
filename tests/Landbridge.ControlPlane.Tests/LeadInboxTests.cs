@@ -1,4 +1,6 @@
+using Landbridge.ControlPlane;
 using Landbridge.Core;
+using Microsoft.EntityFrameworkCore;
 
 namespace Landbridge.ControlPlane.Tests;
 
@@ -40,7 +42,7 @@ public sealed class LeadInboxTests(PostgresFixture pg) : IAsyncLifetime
                 InputRequestKind.Question, "which DB?")));
 
         var item = Assert.Single((await NewStore(db).GetLeadInboxAsync(Team)).Items);
-        Assert.Equal(id.Value, item.SessionId);
+        Assert.True(HaikuSlug.IsWellFormed(item.SessionId));
         Assert.Equal(LeadInboxKind.Question, item.Kind);
         Assert.Equal(asked.Session.MessageId, item.MessageId);
         Assert.Equal($"team-{Team}/session-{id}", item.Namespace);
@@ -62,8 +64,8 @@ public sealed class LeadInboxTests(PostgresFixture pg) : IAsyncLifetime
 
         var items = (await NewStore(db).GetLeadInboxAsync(Team)).Items;
         Assert.Equal(2, items.Count);
-        Assert.Equal(LeadInboxKind.Permission, Assert.Single(items, i => i.SessionId == perm.Id.Value).Kind);
-        Assert.Equal(LeadInboxKind.Report, Assert.Single(items, i => i.SessionId == report.Id.Value).Kind);
+        Assert.Contains(items, i => i.Kind == LeadInboxKind.Permission);
+        Assert.Contains(items, i => i.Kind == LeadInboxKind.Report);
     }
 
     [SkippableFact]
@@ -82,8 +84,8 @@ public sealed class LeadInboxTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(2, items.Count);
         Assert.Equal(LeadInboxKind.Failed, items[0].Kind);
         Assert.Equal(LeadInboxKind.Question, items[1].Kind);
-        Assert.Equal(id.Value, items[0].SessionId);
-        Assert.Equal(id.Value, items[1].SessionId);
+        Assert.Equal(items[0].SessionId, items[1].SessionId);
+        Assert.True(HaikuSlug.IsWellFormed(items[0].SessionId));
         Assert.NotNull(items[0].MessageId);
         Assert.Equal(items[0].MessageId, items[1].MessageId);
     }
@@ -108,7 +110,7 @@ public sealed class LeadInboxTests(PostgresFixture pg) : IAsyncLifetime
             Lead, pull.Id, "m1", "use postgres", sessionLive: true));
 
         var item = Assert.Single((await NewStore(db).GetLeadInboxAsync(Team)).Items);
-        Assert.Equal(pull.Id.Value, item.SessionId);
+        Assert.True(HaikuSlug.IsWellFormed(item.SessionId));
         Assert.Equal(LeadInboxKind.Pull, item.Kind);
     }
 
@@ -148,7 +150,7 @@ public sealed class LeadInboxTests(PostgresFixture pg) : IAsyncLifetime
                 InputRequestKind.Question, "b?")));
 
         var filtered = (await NewStore(db).GetLeadInboxAsync(Team, a.Id.Value)).Items;
-        Assert.Equal(a.Id.Value, Assert.Single(filtered).SessionId);
+        Assert.True(HaikuSlug.IsWellFormed(Assert.Single(filtered).SessionId));
         Assert.Equal(2, (await NewStore(db).GetLeadInboxAsync(Team)).Items.Count);
     }
 

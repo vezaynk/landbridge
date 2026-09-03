@@ -15,7 +15,7 @@ namespace Landbridge.Mcp.Tools;
 /// MCP Tasks methods projected off the message envelope. Lead-only.
 /// Closing an envelope is answering or <c>stop_session</c> — not <c>tasks/cancel</c>.
 /// </summary>
-public sealed class SessionTaskHandlers(SessionStore store, TokenService tokens, IHttpContextAccessor http)
+public sealed class SessionTaskHandlers(SessionStore store, TokenService tokens, FriendlyIds ids, IHttpContextAccessor http)
 {
     public const int PageSize = 50;
 
@@ -76,11 +76,10 @@ public sealed class SessionTaskHandlers(SessionStore store, TokenService tokens,
     private async Task<TeamId> RequireTeam(Principal.Lead lead, JsonObject? p, CancellationToken ct)
     {
         var raw = p?["teamId"]?.GetValue<string>();
-        if (string.IsNullOrWhiteSpace(raw) || !Guid.TryParse(raw, out var g))
-            throw new McpProtocolException(
+        var team = await ids.TryTeamAsync(raw, ct)
+            ?? throw new McpProtocolException(
                 "teamId is required: a team id from create_team, or one a human gave you",
                 McpErrorCode.InvalidParams);
-        var team = new TeamId(g);
         if (!await tokens.OwnsTeamAsync(lead.CredentialId, team, ct))
             throw new McpProtocolException(
                 "this lead credential does not own that team",

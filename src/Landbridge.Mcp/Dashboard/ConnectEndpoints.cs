@@ -107,7 +107,7 @@ internal static class ConnectEndpoints
     /// factory token is shown once. Same-origin, human-only.
     /// </summary>
     private static async Task<IResult> HandleClaimLeadAsync(
-        HttpContext http, TokenService tokens, IConfiguration config, CancellationToken ct)
+        HttpContext http, TokenService tokens, FriendlyIds ids, IConfiguration config, CancellationToken ct)
     {
         if (CrossOriginRefusal(http, config) is { } refusal)
             return refusal;
@@ -122,30 +122,23 @@ internal static class ConnectEndpoints
             TeamId team;
             if (string.IsNullOrWhiteSpace(teamIdText))
                 team = TeamId.New();
-            else if (!Guid.TryParse(teamIdText, out var parsed))
-                return Results.Json(new { error = "invalid team id" }, Json,
-                    statusCode: StatusCodes.Status400BadRequest);
             else
-                team = new TeamId(parsed);
+            {
+                var resolved = await ids.TryTeamAsync(teamIdText, ct);
+                if (resolved is null && Guid.TryParse(teamIdText, out var parsed))
+                    resolved = new TeamId(parsed);
+                if (resolved is null)
+                    return Results.Json(new { error = "invalid team id" }, Json,
+                        statusCode: StatusCodes.Status400BadRequest);
+                team = resolved.Value;
+            }
 
             var result = await tokens.ClaimLeadAsync(humanToken, team, takeover, ct);
             var mcpUrl = ResolveMcpUrl(config, http);
+            if (result is LeadClaimResult.Claimed claimed)
+                return await WriteClaimedAsync(http, tokens, claimed, mcpUrl, ct);
             return result switch
             {
-                LeadClaimResult.Claimed claimed =>
-                    DashboardNegotiate.WantsJson(http) || http.Request.HasJsonContentType()
-                        ? Results.Json(new
-                        {
-                            token = claimed.Token.Token,
-                            teamId = claimed.Team.Value,
-                            mcpUrl,
-                        }, Json, statusCode: StatusCodes.Status201Created)
-                        : RazorPage<LeadClaimedPage>(new
-                        {
-                            Token = claimed.Token.Token,
-                            TeamId = claimed.Team.Value,
-                            McpUrl = mcpUrl,
-                        }),
                 LeadClaimResult.Refused refused =>
                     RefusedClaim(http,
                         $"team {team.Value:D} is already led by human {ShortId(refused.HeldByHuman)} since {refused.HeldSince:u}; check takeover to evict them"),
@@ -163,7 +156,7 @@ internal static class ConnectEndpoints
     /// human-only. The URL is a capability, not the token.
     /// </summary>
     private static async Task<IResult> HandleMintSetupLinkAsync(
-        HttpContext http, TokenService tokens, LeadSetupLinkStore links,
+        HttpContext http, TokenService tokens, LeadSetupLinkStore links, FriendlyIds ids,
         IConfiguration config, CancellationToken ct)
     {
         if (CrossOriginRefusal(http, config) is { } refusal)
@@ -179,11 +172,16 @@ internal static class ConnectEndpoints
             TeamId team;
             if (string.IsNullOrWhiteSpace(teamIdText))
                 team = TeamId.New();
-            else if (!Guid.TryParse(teamIdText, out var parsed))
-                return Results.Json(new { error = "invalid team id" }, Json,
-                    statusCode: StatusCodes.Status400BadRequest);
             else
-                team = new TeamId(parsed);
+            {
+                var resolved = await ids.TryTeamAsync(teamIdText, ct);
+                if (resolved is null && Guid.TryParse(teamIdText, out var parsed))
+                    resolved = new TeamId(parsed);
+                if (resolved is null)
+                    return Results.Json(new { error = "invalid team id" }, Json,
+                        statusCode: StatusCodes.Status400BadRequest);
+                team = resolved.Value;
+            }
 
             var result = await tokens.ClaimLeadAsync(humanToken, team, takeover, ct);
             if (result is not LeadClaimResult.Claimed claimed)
@@ -207,14 +205,16 @@ internal static class ConnectEndpoints
             // which is what the harness should POST.
             var url = $"{http.Request.Scheme}://{http.Request.Host}/setup/{issued.Code}";
             var expiresAt = issued.ExpiresAt;
+            var teamSlug = await tokens.FindTeamSlugAsync(claimed.Team.Value, ct);
             return DashboardNegotiate.WantsJson(http) || http.Request.HasJsonContentType()
-                ? Results.Json(new { url, expiresAt, teamId = claimed.Team.Value }, Json,
+                ? Results.Json(new { url, expiresAt, teamId = teamSlug ?? claimed.Team.Value.ToString("D") }, Json,
                     statusCode: StatusCodes.Status201Created)
                 : RazorPage<SetupLinkIssuedPage>(new
                 {
                     Url = url,
                     ExpiresAt = expiresAt,
                     TeamId = claimed.Team.Value,
+                    TeamSlug = teamSlug,
                 });
         });
     }
@@ -277,6 +277,27 @@ internal static class ConnectEndpoints
          `create_team`. Call `list_profiles`, then `create_session` with an exact
          profile name that came back and that team id. There is no reserved `default`.
          """;
+
+    private static async Task<IResult> WriteClaimedAsync(
+        HttpContext http, TokenService tokens, LeadClaimResult.Claimed claimed, string mcpUrl,
+        CancellationToken ct)
+    {
+        var teamSlug = await tokens.FindTeamSlugAsync(claimed.Team.Value, ct);
+        return DashboardNegotiate.WantsJson(http) || http.Request.HasJsonContentType()
+            ? Results.Json(new
+            {
+                token = claimed.Token.Token,
+                teamId = teamSlug ?? claimed.Team.Value.ToString("D"),
+                mcpUrl,
+            }, Json, statusCode: StatusCodes.Status201Created)
+            : RazorPage<LeadClaimedPage>(new
+            {
+                Token = claimed.Token.Token,
+                TeamId = claimed.Team.Value,
+                TeamSlug = teamSlug,
+                McpUrl = mcpUrl,
+            });
+    }
 
     private static async Task<(string TeamId, bool Takeover)> ReadClaimAsync(HttpContext http, CancellationToken ct)
     {
