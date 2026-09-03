@@ -31,7 +31,7 @@ else if (Ready && View is { } inbox)
                     {
                         <tr>
                             <td><code>@q.Namespace</code></td>
-                            <td><TeamLink TeamId="@q.TeamId" /></td>
+                            <td><TeamLink TeamId="@q.TeamId" Slug="@Slug(q.TeamId)" /></td>
                             <td><KindCell Kind="@q.Kind" /></td>
                             <td>@Age(q.BlockedAt, Now)</td>
                             <td><QuestionCell Question="@q.Question" /></td>
@@ -59,7 +59,7 @@ else if (Ready && View is { } inbox)
                     {
                         <tr>
                             <td><code>@p.Namespace</code></td>
-                            <td><TeamLink TeamId="@p.TeamId" /></td>
+                            <td><TeamLink TeamId="@p.TeamId" Slug="@Slug(p.TeamId)" /></td>
                             <td class="mono">@(p.ParkMachine ?? "—")</td>
                             <td><KindCell Kind="@p.Kind" /></td>
                             <td><QuestionCell Question="@p.Question" /></td>
@@ -91,7 +91,7 @@ else if (Ready && View is { } inbox)
                     {
                         <tr>
                             <td><code>@f.Namespace</code></td>
-                            <td><TeamLink TeamId="@f.TeamId" /></td>
+                            <td><TeamLink TeamId="@f.TeamId" Slug="@Slug(f.TeamId)" /></td>
                             <td>@(f.Reason?.ToString() ?? "—")</td>
                             <td class="num">@f.InfrastructureRequeues</td>
                         </tr>
@@ -122,7 +122,7 @@ else if (Ready && View is { } inbox)
                     {
                         <tr>
                             <td><code>@f.Namespace</code></td>
-                            <td><TeamLink TeamId="@f.TeamId" /></td>
+                            <td><TeamLink TeamId="@f.TeamId" Slug="@Slug(f.TeamId)" /></td>
                             <td><StateBadge State="@f.State" /></td>
                             <td><AuthFact Value="@f.Operation" /></td>
                             <td><AuthFact Value="@f.Target" /></td>
@@ -162,7 +162,7 @@ else if (Ready && View is { } inbox)
                     {
                         <tr>
                             <td><code>@p.Namespace</code></td>
-                            <td><TeamLink TeamId="@p.TeamId" /></td>
+                            <td><TeamLink TeamId="@p.TeamId" Slug="@Slug(p.TeamId)" /></td>
                             <td><AuthFact Value="@p.Tool" /></td>
                             <td>
                                 @Age(p.BlockedAt, Now)
@@ -216,4 +216,7 @@ else if (Ready && View is { } inbox)
         View = await Queries.GetInboxAsync(TeamScope, RequestAborted);
         return null;
     }
+
+    private string? Slug(Guid teamId) =>
+        View?.TeamSlugs is { } slugs && slugs.TryGetValue(teamId, out var slug) ? slug : null;
 }

@@ -3,7 +3,7 @@
     <div class="obs-header">
         <div class="obs-header__brand">
             <span class="obs-header__brand-name">landbridge</span>
-            <span class="obs-header__brand-sub">instance</span>
+            <span class="obs-header__brand-sub">@(SelectedTeamLabel ?? "instance")</span>
         </div>
         <div class="obs-header__rule"></div>
         <div class="obs-header__counts">
@@ -33,13 +33,15 @@
     </div>
 
     <div class="obs-body @(Selected is null ? "obs-body--no-detail" : "")">
-        <MachineRail Machines="Snapshot.Machines" Now="Now" LaneCount="Snapshot.Lanes.Count" />
+        <MachineRail Machines="Snapshot.Machines" Now="Now" LaneCount="Snapshot.Lanes.Count"
+            Teams="Teams" SelectedTeamId="SelectedTeamId"
+            Services="Services" Previews="Previews" Binding="Binding" />
 
         <div class="obs-lanes">
             <div class="obs-lanes__head">
                 <div>Session</div>
                 <div>Right now</div>
-                <div class="obs-lanes__head-window"><span>Last 15 min</span><span>now</span></div>
+                <div class="obs-lanes__head-window"><span>Last @WindowLabel</span><span>now</span></div>
                 <div class="obs-lanes__head-usage">
                     <span>Usage</span>
                     <span class="obs-usage-key"><span class="obs-usage-key__swatch" style="background:var(--color-accent-600)"></span>in</span>
@@ -52,7 +54,7 @@
             <div class="obs-lanes__body">
                 @if (Snapshot.Lanes.Count == 0)
                 {
-                    <div class="obs-empty">No sessions in the fleet.</div>
+                    <div class="obs-empty">@(Teams.Count == 0 ? "No teams yet." : "No sessions in this team.")</div>
                 }
                 @foreach (var lane in Snapshot.Lanes)
                 {
@@ -63,9 +65,11 @@
 
         @if (Selected is not null)
         {
-            <DetailPanel @key="Selected.SessionId" Lane="Selected" Now="Now" />
+            <DetailPanel Lane="Selected" Now="Now" WindowLabel="@WindowLabel" />
         }
     </div>
+
+    <WindowFooter />
 </div>
 
 @code {
@@ -74,6 +78,24 @@
 
     [Parameter]
     public DateTimeOffset Now { get; set; }
+
+    [Parameter]
+    public string WindowLabel { get; set; } = DashboardWindow.Default.Label;
+
+    [Parameter]
+    public IReadOnlyList<TeamOverview> Teams { get; set; } = [];
+
+    [Parameter]
+    public Guid? SelectedTeamId { get; set; }
+
+    [Parameter]
+    public IReadOnlyList<ServiceView> Services { get; set; } = [];
+
+    [Parameter]
+    public IReadOnlyList<ObservabilityPreview> Previews { get; set; } = [];
+
+    [Parameter]
+    public LeadMachineBinding? Binding { get; set; }
 
     private Guid SelectedId { get; set; }
 
@@ -90,6 +112,15 @@
     }
 
     private int RelayMb => (int)(Snapshot.Summary.RelayBytes / (1024 * 1024));
+
+    private string? SelectedTeamLabel
+    {
+        get
+        {
+            var t = Teams.FirstOrDefault(x => x.TeamId == SelectedTeamId);
+            return t is null ? null : Label(t.TeamId, t.Slug);
+        }
+    }
 
     private void SelectSession(Guid id) => SelectedId = id;
 }

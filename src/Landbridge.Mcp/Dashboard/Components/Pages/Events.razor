@@ -10,12 +10,22 @@
 else if (Ready)
 {
     <h1>Event log</h1>
-    <p class="sub">Recent transitions and Lead events, newest first.
-        Takeovers, reboots, and evictions land here (§12).</p>
+    @if (FilterSessionId is { } sid)
+    {
+        <p class="sub">Session <span class="mono">@(FilterSessionSlug ?? sid.ToString())</span>.
+            <a href="/dashboard/events">All events</a>.</p>
+    }
+    else
+    {
+        <p class="sub">Transitions and Lead events in the last @WindowLabel, newest first.
+            Takeovers, reboots, and evictions land here (§12).</p>
+    }
 
     @if (List.Count == 0)
     {
-        <EmptyState Message="No events yet." />
+        <EmptyState Message="@(FilterSessionId is null
+            ? $"No events in the last {WindowLabel}."
+            : $"No events for this session in the last {WindowLabel}.")" />
     }
     else
     {
@@ -50,7 +60,7 @@ else if (Ready)
                                     <span class="nt">—</span>
                                 }
                             </td>
-                            <td><TeamLink TeamId="@e.TeamId" /></td>
+                            <td><TeamLink TeamId="@e.TeamId" Slug="@e.TeamSlug" /></td>
                             <td>
                                 @if (e.Source == "lead")
                                 {
@@ -60,7 +70,14 @@ else if (Ready)
                                 }
                                 else if (e.Namespace is { } ns)
                                 {
-                                    <code>@ns</code>
+                                    @if (e.SessionId is { } eventSession)
+                                    {
+                                        <a href="@SessionEventsHref(eventSession, e.SessionSlug)" title="@ns"><code>@Label(eventSession, e.SessionSlug)</code></a>
+                                    }
+                                    else
+                                    {
+                                        <code>@ns</code>
+                                    }
                                 }
                                 else
                                 {
@@ -77,11 +94,38 @@ else if (Ready)
 }
 
 @code {
+    [SupplyParameterFromQuery(Name = "session")]
+    public string? SessionQuery { get; set; }
+
+    private Guid? FilterSessionId { get; set; }
+    private string? FilterSessionSlug { get; set; }
     private IReadOnlyList<DashboardEvent> List { get; set; } = [];
 
     protected override async Task<string?> LoadAsync()
     {
-        List = await Queries.GetEventsAsync(200, TeamScope, RequestAborted);
+        FilterSessionId = null;
+        FilterSessionSlug = null;
+        if (!string.IsNullOrEmpty(SessionQuery))
+        {
+            var resolved = await Queries.ResolveSessionAsync(SessionQuery, RequestAborted);
+            if (resolved.Malformed)
+            {
+                // Garbage query: same as no filter, matching the Guid-only parser.
+            }
+            else if (resolved.Id is { } sid)
+            {
+                FilterSessionId = sid;
+                FilterSessionSlug = HaikuSlug.IsWellFormed(SessionQuery) ? SessionQuery : null;
+            }
+            else
+            {
+                FilterSessionId = Guid.Empty;
+            }
+        }
+        List = await Queries.GetEventsAsync(200, TeamScope, FilterSessionId, RequestAborted,
+            since: Now - WindowDuration);
+        if (FilterSessionId is { } id && FilterSessionSlug is null)
+            FilterSessionSlug = List.FirstOrDefault(e => e.SessionId == id)?.SessionSlug;
         return null;
     }
 }

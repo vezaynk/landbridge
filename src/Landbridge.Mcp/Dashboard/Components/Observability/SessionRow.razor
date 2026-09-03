@@ -1,6 +1,10 @@
 @using Landbridge.ControlPlane
 <div class="obs-row @(IsSelected ? "obs-row--selected" : "")" @onclick="() => OnSelect.InvokeAsync(Lane.SessionId)">
     <div class="obs-row__identity">
+        <div class="obs-row__names">
+            <span class="obs-row__ns" style="color:var(@NameColorVar)" title="@Lane.Namespace">@Label(Lane.SessionId, Lane.SessionSlug)</span>
+            <span class="obs-row__sub">@Sub</span>
+        </div>
         <span class="obs-dot">
             @if (Meta.Live)
             {
@@ -8,10 +12,6 @@
             }
             <span class="obs-dot__core" style="background:var(@Meta.ColorVar);opacity:@Fmt.N(Meta.DotOpacity)"></span>
         </span>
-        <div class="obs-row__names">
-            <span class="obs-row__ns" style="color:var(@NameColorVar)">@Lane.Namespace</span>
-            <span class="obs-row__sub">@Sub</span>
-        </div>
     </div>
 
     <div class="obs-row__status">
@@ -19,7 +19,7 @@
             <span class="obs-row__state-label" style="color:var(@Meta.ColorVar)">@Meta.Label</span>
             <span class="obs-row__elapsed">@Elapsed</span>
         </div>
-        <span class="obs-row__now" style="color:var(@NowColorVar)">@LaneNow.Text(Lane)</span>
+        <span class="obs-row__now" style="color:var(@NowColorVar)">@LaneNow.Text(Lane, Now)</span>
     </div>
 
     <TimelineTrack Marks="Lane.Marks" EdgeColorVar="@EdgeColorVar" />
@@ -57,10 +57,12 @@
     [Parameter]
     public EventCallback<Guid> OnSelect { get; set; }
 
-    private LaneMeta Meta => LaneMeta.Of(Lane);
-    private string Sub => $"{Lane.Profile ?? "unprofiled"} · {Lane.Machine} · {ShortId(Lane.TeamId)}";
+    private LaneMeta Meta => LaneMeta.Of(Lane, Now);
+    private string Sub => $"{Lane.Profile ?? "unprofiled"} · {Label(Lane.Machine, Lane.MachineSlug)} · {Label(Lane.TeamId, Lane.TeamSlug)}";
     private string NameColorVar => Lane.State == SessionState.Completed ? "--color-neutral-600" : "--color-neutral-200";
-    private string NowColorVar => Lane.State switch
+    private string NowColorVar => Meta.Label == "lost connection"
+        ? "--state-wait"
+        : Lane.State switch
     {
         SessionState.Failed => "--state-error",
         SessionState.Completed or SessionState.Canceled or SessionState.Rejected => "--color-neutral-700",

@@ -23,8 +23,11 @@ public abstract class DashboardPageBase : ComponentBase, IDisposable
     [Inject] protected TimeProvider Clock { get; set; } = default!;
     [Inject] protected IHttpContextAccessor Http { get; set; } = default!;
     [Inject] protected NavigationManager Nav { get; set; } = default!;
+    [Inject] DashboardWindowState WindowState { get; set; } = default!;
 
     protected Principal? Principal { get; private set; }
+    protected TimeSpan WindowDuration { get; private set; } = DashboardWindow.Default.Duration;
+    protected string WindowLabel { get; private set; } = DashboardWindow.Default.Label;
     protected DateTimeOffset Now { get; private set; }
     protected string? RefuseReason { get; private set; }
     protected bool Ready { get; private set; }
@@ -40,6 +43,10 @@ public abstract class DashboardPageBase : ComponentBase, IDisposable
 
     /// <summary>Null is the instance-wide human view; a list is a Lead's owned Teams.</summary>
     protected IReadOnlyList<Guid>? TeamScope { get; private set; }
+
+    /// <summary>Dashboard aliases for <see cref="TeamScope"/>, empty for a human.</summary>
+    protected IReadOnlyDictionary<Guid, string> TeamSlugs { get; private set; } =
+        new Dictionary<Guid, string>();
 
     protected bool OperatorMayAccess(TeamId team) => Principal switch
     {
@@ -94,14 +101,38 @@ public abstract class DashboardPageBase : ComponentBase, IDisposable
             return;
         }
 
-        TeamScope = Principal switch
+        if (Principal is Principal.Lead lead)
         {
-            Principal.Human => null,
-            Principal.Lead l => await Tokens.OwnedTeamIdsAsync(l.CredentialId, RequestAborted),
-            _ => [],
-        };
+            var slugs = await Tokens.OwnedTeamSlugsAsync(lead.CredentialId, RequestAborted);
+            TeamSlugs = slugs;
+            TeamScope = slugs.Keys.ToList();
+        }
+        else if (Principal is Principal.Human)
+        {
+            TeamSlugs = new Dictionary<Guid, string>();
+            TeamScope = null;
+        }
+        else
+        {
+            TeamSlugs = new Dictionary<Guid, string>();
+            TeamScope = [];
+        }
 
         Now = Clock.GetUtcNow();
+        if (http is not null)
+        {
+            var window = DashboardWindow.Resolve(http);
+            WindowState.Current = window;
+            WindowDuration = window.Duration;
+            WindowLabel = window.Label;
+            if (http.Request.Query.ContainsKey(DashboardWindow.QueryName))
+                DashboardWindow.WriteCookie(http, window.Key);
+        }
+        else
+        {
+            WindowDuration = WindowState.Current.Duration;
+            WindowLabel = WindowState.Current.Label;
+        }
         StatusOnRefuse = StatusCodes.Status403Forbidden;
         RefuseReason = await LoadAsync();
         if (RefuseReason is not null && http is { Response.HasStarted: false })

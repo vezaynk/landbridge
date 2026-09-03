@@ -1,7 +1,97 @@
 @using Landbridge.ControlPlane
+@inject NavigationManager Nav
 <div class="obs-rail">
+    <div class="obs-rail__title">Teams</div>
+    <div class="obs-rail__list obs-rail__list--teams">
+        @if (Teams.Count == 0)
+        {
+            <div class="obs-team">
+                <span class="obs-team__id" style="color:var(--color-neutral-700)">No teams.</span>
+            </div>
+        }
+        @foreach (var t in Teams)
+        {
+            <a class="obs-team @(t.TeamId == SelectedTeamId ? "is-on" : "")" href="@DashboardTeam.Href(Nav.Uri, DashboardTeam.Address(t.TeamId, t.Slug))" title="@t.TeamId">
+                <span class="obs-team__id">@Label(t.TeamId, t.Slug)</span>
+                <span class="obs-team__spacer"></span>
+                <span class="obs-team__n">@t.TotalSessions</span>
+            </a>
+        }
+    </div>
+    <div class="obs-rail__title">Ports</div>
+    <div class="obs-rail__list obs-rail__list--ports">
+        @if (SelectedTeamId is null)
+        {
+            <div class="obs-ports__empty">Select a team.</div>
+        }
+        else
+        {
+            <div class="obs-ports__bind">
+                @if (Binding is { } bound)
+                {
+                    <span class="obs-ports__bound">bound @bound.MachineName</span>
+                    <form method="post" action="/dashboard/machines/unbind">
+                        <input type="hidden" name="return" value="@ReturnPath" />
+                        <button type="submit">unbind</button>
+                    </form>
+                }
+                else
+                {
+                    <span class="obs-ports__bound is-off">no machine bound</span>
+                }
+            </div>
+            @if (Services.Count == 0)
+            {
+                <div class="obs-ports__empty">No registered services.</div>
+            }
+            else
+            {
+                <form class="obs-ports__form" method="post" action="/dashboard/forward">
+                    <input type="hidden" name="teamId" value="@SelectedTeamId" />
+                    <input type="hidden" name="return" value="@ReturnPath" />
+                    <select name="serviceName" aria-label="forward service">
+                        @foreach (var s in Services)
+                        {
+                            <option value="@s.Name">@s.Name:@s.Port</option>
+                        }
+                    </select>
+                    <button type="submit">Forward</button>
+                </form>
+                <form class="obs-ports__form" method="post" action="/dashboard/preview">
+                    <input type="hidden" name="teamId" value="@SelectedTeamId" />
+                    <input type="hidden" name="return" value="@ReturnPath" />
+                    <select name="service" aria-label="preview service">
+                        @foreach (var s in Services)
+                        {
+                            <option value="@s.SessionId:@s.Name">@s.Name:@s.Port</option>
+                        }
+                    </select>
+                    <select name="auth" aria-label="preview visibility">
+                        <option value="gated">gated</option>
+                        <option value="public">public</option>
+                    </select>
+                    <button type="submit">Preview</button>
+                </form>
+            }
+            @if (Previews.Count > 0)
+            {
+                <div class="obs-ports__label">Previews</div>
+                @foreach (var p in Previews)
+                {
+                    <div class="obs-ports__preview">
+                        <span>@p.ServiceName · @p.Policy.ToString().ToLowerInvariant()</span>
+                        <form method="post" action="/dashboard/preview/revoke">
+                            <input type="hidden" name="previewId" value="@p.Id" />
+                            <input type="hidden" name="return" value="@ReturnPath" />
+                            <button type="submit">revoke</button>
+                        </form>
+                    </div>
+                }
+            }
+        }
+    </div>
     <div class="obs-rail__title">Machines</div>
-    <div class="obs-rail__list">
+    <div class="obs-rail__list obs-rail__list--machines">
         @if (Machines.Count == 0)
         {
             <div class="obs-machine">
@@ -12,9 +102,24 @@
         {
             <div class="obs-machine">
                 <span class="obs-machine__dot" style="background:@(m.UnderBackPressure ? "var(--state-wait)" : m.Ready ? "var(--state-live)" : "var(--color-neutral-700)")"></span>
-                <span class="obs-machine__id">@m.MachineId</span>
+                <span class="obs-machine__id" title="@(string.IsNullOrEmpty(m.Name) ? m.MachineId : $"{m.Name} · {m.MachineId}")">@Label(m.MachineId, m.Slug)</span>
                 <span class="obs-machine__spacer"></span>
                 <span class="obs-machine__load">@LoadText(m)</span>
+                @if (IsBoundMachine(m))
+                {
+                    <form class="obs-machine__revoke" method="post" action="/dashboard/machines/unbind">
+                        <input type="hidden" name="return" value="@ReturnPath" />
+                        <button type="submit" title="Unbind this box">unbind</button>
+                    </form>
+                }
+                else
+                {
+                    <form class="obs-machine__revoke" method="post" action="/dashboard/machines/bind">
+                        <input type="hidden" name="machineId" value="@m.MachineId" />
+                        <input type="hidden" name="return" value="@ReturnPath" />
+                        <button type="submit" title="Bind this box as yours">bind</button>
+                    </form>
+                }
                 <form class="obs-machine__revoke" method="post" action="/dashboard/machines/revoke">
                     <input type="hidden" name="machineId" value="@m.MachineId" />
                     <button type="submit" title="Revoke machine">revoke</button>
@@ -43,6 +148,28 @@
 
     [Parameter]
     public int LaneCount { get; set; }
+
+    [Parameter]
+    public IReadOnlyList<TeamOverview> Teams { get; set; } = [];
+
+    [Parameter]
+    public Guid? SelectedTeamId { get; set; }
+
+    [Parameter]
+    public IReadOnlyList<ServiceView> Services { get; set; } = [];
+
+    [Parameter]
+    public IReadOnlyList<ObservabilityPreview> Previews { get; set; } = [];
+
+    [Parameter]
+    public LeadMachineBinding? Binding { get; set; }
+
+    private string ReturnPath => new Uri(Nav.Uri).PathAndQuery;
+
+    private bool IsBoundMachine(ObservabilityMachine m) =>
+        Binding is { } b
+        && Guid.TryParse(m.MachineId, out var id)
+        && id == b.MachineId;
 
     private int BackPressureCount => Machines.Count(m => m.UnderBackPressure);
 

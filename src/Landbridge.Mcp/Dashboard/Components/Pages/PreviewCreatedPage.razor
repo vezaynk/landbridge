@@ -11,7 +11,7 @@
     {
         <p class="nt">Opening this link requires a Landbridge operator session in the browser.</p>
     }
-    <p><a href="/dashboard/teams/@TeamId">← back to the Team</a></p>
+    <p><a href="@Back">← back</a></p>
 </section>
 </DashboardDocument>
 
@@ -20,4 +20,10 @@
     [Parameter] public PreviewAuthPolicy Policy { get; set; }
     [Parameter] public DateTimeOffset ExpiresAt { get; set; }
     [Parameter] public Guid TeamId { get; set; }
+    [Parameter] public string? TeamSlug { get; set; }
+    [Parameter] public string? BackHref { get; set; }
+
+    private string Back => string.IsNullOrEmpty(BackHref)
+        ? TeamHref(TeamId, TeamSlug)
+        : BackHref;
 }

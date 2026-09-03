@@ -3,72 +3,127 @@
     <div class="obs-detail__head">
         <div class="obs-detail__title">
             <span class="obs-detail__title-dot" style="background:var(@Meta.ColorVar)"></span>
-            <span class="obs-detail__title-ns">@Lane.Namespace</span>
+            <span class="obs-detail__title-ns" title="@Lane.Namespace">@Label(Lane.SessionId, Lane.SessionSlug)</span>
         </div>
-        <div class="obs-detail__meta">@Lane.Profile · @Lane.Machine · @Meta.Label · envelope @Meta.Envelope · team @ShortId(Lane.TeamId)</div>
+        <div class="obs-detail__meta">@Lane.Profile · @Label(Lane.Machine, Lane.MachineSlug) · @Meta.Label · envelope @Meta.Envelope · team @Label(Lane.TeamId, Lane.TeamSlug)
+            · <span class="mono">@Lane.Namespace</span></div>
         <div class="obs-detail__actions">
-            <a class="obs-btn obs-btn--primary" href="/dashboard/sessions/@Lane.SessionId/transcripts">Tail transcript</a>
-            <a class="obs-btn obs-btn--ghost" href="/dashboard/events">Event log</a>
-            <a class="obs-btn obs-btn--ghost" href="/dashboard/teams/@Lane.TeamId">Team</a>
+            <a class="obs-btn obs-btn--primary" href="@TranscriptsHref(Lane.SessionId, Lane.SessionSlug)">Tail transcript</a>
+            <a class="obs-btn obs-btn--ghost" href="@SessionEventsHref(Lane.SessionId, Lane.SessionSlug)">Event log</a>
+            <a class="obs-btn obs-btn--ghost" href="@TeamHref(Lane.TeamId, Lane.TeamSlug)">Team</a>
         </div>
     </div>
 
-    <div class="obs-detail__section-title">Exchange</div>
-    <div class="obs-exchange">
-        @if (Lane.Exchange.Count == 0)
-        {
-            <div class="obs-message" style="border-left-color:var(--color-neutral-800);background:transparent">
-                <div class="obs-message__text" style="color:var(--color-neutral-700)">No Lead ↔ worker exchange on this session yet.</div>
-            </div>
-        }
-        @foreach (var m in Lane.Exchange)
-        {
-            var fromLead = string.Equals(m.From, "Lead", StringComparison.Ordinal);
-            var bar = fromLead ? "var(--color-accent-600)" : "var(--color-accent-400)";
-            var bg = fromLead ? "var(--surface-1)" : "var(--surface-2)";
-            <div class="obs-message" style="border-left-color:@bar;background:@bg">
-                <div class="obs-message__head">
-                    <span class="obs-message__from" style="color:@bar">@m.From</span>
-                    <span class="obs-message__spacer"></span>
-                    <span class="obs-message__at">@(m.At is { } at ? Age(at, Now) : "")</span>
-                </div>
-                <div class="obs-message__text">@m.Text</div>
-            </div>
-        }
+    <div class="obs-detail__tabs" role="tablist">
+        <button type="button" role="tab" class="obs-detail__tab @(Tab == "tail" ? "is-on" : "")" aria-selected="@(Tab == "tail")" @onclick="@(() => Tab = "tail")">Event tail</button>
+        <button type="button" role="tab" class="obs-detail__tab @(Tab == "exchange" ? "is-on" : "")" aria-selected="@(Tab == "exchange")" @onclick="@(() => Tab = "exchange")">Exchange</button>
+        <button type="button" role="tab" class="obs-detail__tab @(Tab == "ports" ? "is-on" : "")" aria-selected="@(Tab == "ports")" @onclick="@(() => Tab = "ports")">
+            Ports
+            @if (PortCount > 0)
+            {
+                <span class="obs-detail__tab-n">@PortCount</span>
+            }
+        </button>
     </div>
 
-    <div class="obs-transcript-head">
-        <span class="obs-transcript-head__title">Event tail</span>
-        @if (Meta.Live)
-        {
-            <span class="obs-transcript-head__dot"></span>
-        }
-        <span class="obs-transcript-head__spacer"></span>
-        <span class="obs-transcript-head__tag">a@(Lane.Attempt) · @Lane.Machine</span>
-    </div>
-    <div class="obs-transcript">
-        @foreach (var l in Lane.Tail)
-        {
-            <div class="obs-transcript__line">
-                <span class="obs-transcript__time">@l.At.ToString("HH:mm:ss")</span>
-                <span class="obs-transcript__text" style="color:@LineColor(l.Kind)">@l.Kind @(string.IsNullOrEmpty(l.Text) ? "" : "· " + l.Text)</span>
+    @if (Tab == "tail")
+    {
+        <div class="obs-detail__panel" role="tabpanel">
+            <div class="obs-transcript-head">
+                <span class="obs-transcript-head__title">Event tail</span>
+                @if (Meta.Live)
+                {
+                    <span class="obs-transcript-head__dot"></span>
+                }
+                <span class="obs-transcript-head__spacer"></span>
+                <span class="obs-transcript-head__tag">a@(Lane.Attempt) · @Label(Lane.Machine, Lane.MachineSlug)</span>
             </div>
-        }
-        @if (Lane.Tail.Count == 0)
-        {
-            <div class="obs-transcript__line">
-                <span class="obs-transcript__time">&nbsp;</span>
-                <span class="obs-transcript__text" style="color:var(--color-neutral-700)">no events in the last 15 min</span>
+            <div class="obs-transcript">
+                @foreach (var l in Lane.Tail)
+                {
+                    <div class="obs-transcript__line">
+                        <span class="obs-transcript__time">@l.At.ToString("HH:mm:ss")</span>
+                        <span class="obs-transcript__text" style="color:@LineColor(l.Kind)">@l.Kind @(string.IsNullOrEmpty(l.Text) ? "" : "· " + l.Text)</span>
+                    </div>
+                }
+                @if (Lane.Tail.Count == 0)
+                {
+                    <div class="obs-transcript__line">
+                        <span class="obs-transcript__time">&nbsp;</span>
+                        <span class="obs-transcript__text" style="color:var(--color-neutral-700)">no events in the last @WindowLabel</span>
+                    </div>
+                }
+                @if (Meta.Live)
+                {
+                    <div class="obs-transcript__line">
+                        <span class="obs-transcript__time">&nbsp;</span>
+                        <span class="obs-transcript__cursor"></span>
+                    </div>
+                }
             </div>
-        }
-        @if (Meta.Live)
-        {
-            <div class="obs-transcript__line">
-                <span class="obs-transcript__time">&nbsp;</span>
-                <span class="obs-transcript__cursor"></span>
+        </div>
+    }
+    else if (Tab == "exchange")
+    {
+        <div class="obs-detail__panel" role="tabpanel">
+            <div class="obs-exchange">
+                @if (Lane.Exchange.Count == 0)
+                {
+                    <div class="obs-message" style="border-left-color:var(--color-neutral-800);background:transparent">
+                        <div class="obs-message__text" style="color:var(--color-neutral-700)">No Lead ↔ worker exchange on this session yet.</div>
+                    </div>
+                }
+                @foreach (var m in Lane.Exchange)
+                {
+                    var fromLead = string.Equals(m.From, "Lead", StringComparison.Ordinal);
+                    var bar = fromLead ? "var(--color-accent-600)" : "var(--color-accent-400)";
+                    var bg = fromLead ? "var(--surface-1)" : "var(--surface-2)";
+                    <div class="obs-message" style="border-left-color:@bar;background:@bg">
+                        <div class="obs-message__head">
+                            <span class="obs-message__from" style="color:@bar">@m.From</span>
+                            <span class="obs-message__spacer"></span>
+                            <span class="obs-message__at">@(m.At is { } at ? Age(at, Now) : "")</span>
+                        </div>
+                        <div class="obs-message__text">@m.Text</div>
+                    </div>
+                }
             </div>
-        }
-    </div>
+        </div>
+    }
+    else
+    {
+        <div class="obs-detail__panel" role="tabpanel">
+            <div class="obs-forwards">
+                <div class="obs-forwards__title">Forwarded</div>
+                @if (Lane.Ports.Count == 0)
+                {
+                    <div class="obs-forwards__empty">No forwarded ports.</div>
+                }
+                @foreach (var p in Lane.Ports)
+                {
+                    <div class="obs-forward @(p.Live ? "is-live" : "")">
+                        <span class="obs-port__dot" style="background:@(p.Live ? "var(--forward)" : "var(--color-neutral-700)")"></span>
+                        <span class="obs-forward__name">@p.Name:@p.Port</span>
+                        <span class="obs-forward__meta">@(p.Live ? "live" : "down") · @Age(p.CreatedAt, Now)</span>
+                    </div>
+                }
+
+                <div class="obs-forwards__title">Previews</div>
+                @if (Previews.Count == 0)
+                {
+                    <div class="obs-forwards__empty">No preview ports.</div>
+                }
+                @foreach (var p in Previews)
+                {
+                    <div class="obs-forward is-preview">
+                        <span class="obs-port__dot" style="background:var(--color-accent-400)"></span>
+                        <span class="obs-forward__name">@p.ServiceName</span>
+                        <span class="obs-forward__meta">@p.Policy.ToString().ToLowerInvariant() · expires @Remaining(p.ExpiresAt)</span>
+                    </div>
+                }
+            </div>
+        </div>
+    }
 </div>
 
 @code {
@@ -78,7 +133,28 @@
     [Parameter]
     public DateTimeOffset Now { get; set; }
 
-    private LaneMeta Meta => LaneMeta.Of(Lane);
+    [Parameter]
+    public string WindowLabel { get; set; } = DashboardWindow.Default.Label;
+
+    private string Tab { get; set; } = "tail";
+
+    private LaneMeta Meta => LaneMeta.Of(Lane, Now);
+    private IReadOnlyList<ObservabilityPreview> Previews => Lane.Previews ?? [];
+    private int PortCount => Lane.Ports.Count + Previews.Count;
+
+    private string Remaining(DateTimeOffset at)
+    {
+        var d = at - Now;
+        if (d <= TimeSpan.Zero)
+            return "expired";
+        if (d.TotalSeconds < 60)
+            return $"{(int)d.TotalSeconds}s";
+        if (d.TotalMinutes < 60)
+            return $"{(int)d.TotalMinutes}m";
+        if (d.TotalHours < 24)
+            return $"{(int)d.TotalHours}h";
+        return $"{(int)d.TotalDays}d";
+    }
 
     private static string LineColor(string kind) => kind switch
     {

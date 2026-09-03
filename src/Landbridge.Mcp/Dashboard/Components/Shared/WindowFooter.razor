@@ -1,0 +1,14 @@
+<footer class="window-bar">
+    <span class="window-bar__label">window</span>
+    @foreach (var o in DashboardWindow.Options)
+    {
+        <a class="@(o.Key == Current.Key ? "is-on" : "")" href="@DashboardWindow.Href(Nav.Uri, o.Key)">@o.Label</a>
+    }
+</footer>
+
+@code {
+    [Inject] NavigationManager Nav { get; set; } = default!;
+    [Inject] DashboardWindowState WindowState { get; set; } = default!;
+
+    private DashboardWindowOption Current => WindowState.Current;
+}

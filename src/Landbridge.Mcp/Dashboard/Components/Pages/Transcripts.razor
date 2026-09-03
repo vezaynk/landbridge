@@ -1,8 +1,8 @@
-@page "/dashboard/sessions/{SessionId:guid}/transcripts"
+@page "/dashboard/sessions/{SessionIdText}/transcripts"
 @inherits DashboardPageBase
 @inject TranscriptRelayService Relay
 
-<PageTitle>Transcripts · @ShortId(SessionId) · Landbridge</PageTitle>
+<PageTitle>Transcripts · @Label(SessionId, SessionSlug) · Landbridge</PageTitle>
 
 @if (RefuseReason is { } reason)
 {
@@ -16,7 +16,7 @@
 }
 else if (Ready)
 {
-    <h1>Transcripts · session <code>@ShortId(SessionId)</code></h1>
+    <h1>Transcripts · session <code>@Label(SessionId, SessionSlug)</code></h1>
     <p class="sub mono">@SessionId</p>
     <section class="metrics">
         <div class="metric">
@@ -117,7 +117,9 @@ else if (Ready)
 }
 
 @code {
-    [Parameter] public Guid SessionId { get; set; }
+    [Parameter] public string SessionIdText { get; set; } = "";
+    private Guid SessionId { get; set; }
+    private string? SessionSlug { get; set; }
     private IReadOnlyList<TranscriptLocationView> Locations { get; set; } = [];
     private IReadOnlyList<TranscriptMachineInventory> Inventories { get; set; } = [];
     protected override bool AutoRefresh => false;
@@ -126,6 +128,19 @@ else if (Ready)
     {
         if (Principal is not Principal.Human)
             return "This session is a Lead credential. Transcripts are served only to a human operator session.";
+        var resolved = await Queries.ResolveSessionAsync(SessionIdText, RequestAborted);
+        if (resolved.Malformed)
+        {
+            StatusOnRefuse = StatusCodes.Status400BadRequest;
+            return "invalid session id";
+        }
+        if (resolved.Id is not { } id)
+        {
+            StatusOnRefuse = StatusCodes.Status404NotFound;
+            return "no such session";
+        }
+        SessionId = id;
+        SessionSlug = HaikuSlug.IsWellFormed(SessionIdText) ? SessionIdText : null;
         var ct = RequestAborted;
         Locations = await Queries.GetTranscriptLocationsAsync(SessionId, ct);
         var task = new SessionId(SessionId);
@@ -150,7 +165,7 @@ else if (Ready)
     {
         if (bytes == 0)
             return @<text>—</text>;
-        var href = $"/dashboard/sessions/{SessionId}/transcript?machine={Uri.EscapeDataString(machine)}&ordinal={ordinal}&stream={stream}";
+        var href = $"/dashboard/sessions/{Address(SessionId, SessionSlug)}/transcript?machine={Uri.EscapeDataString(machine)}&ordinal={ordinal}&stream={stream}";
         return @<a href="@href">@StreamBytes(bytes)</a>;
     }
 }

@@ -82,6 +82,10 @@ public static class DashboardEndpoints
         // Lead twin, deliberately: this is the incident-response action, and the §5
         // requirement it serves is that it takes seconds.
         app.MapPost("/dashboard/machines/revoke", HandleRevokeMachineAsync).DisableAntiforgery().WithOrder(-100);
+        app.MapPost("/dashboard/machines/bind", HandleBindMachineAsync).DisableAntiforgery().WithOrder(-100);
+        app.MapPost("/dashboard/machines/unbind", HandleUnbindMachineAsync).DisableAntiforgery().WithOrder(-100);
+        app.MapPost("/dashboard/forward", HandleOpenLeadForwardAsync).DisableAntiforgery().WithOrder(-100);
+        app.MapPost("/dashboard/preview/revoke", HandleRevokePreviewAsync).DisableAntiforgery().WithOrder(-100);
 
         app.MapConformance();
         app.MapConnect();
@@ -240,10 +244,19 @@ public static class DashboardEndpoints
         var mint = await previews.CreateAsync(
             new Landbridge.Core.TeamId(teamId), new Landbridge.Core.SessionId(sessionId), serviceName, policy, ttl, ct);
         var url = PreviewMint.Url(PreviewUrlBase(config), mint.Label);
+        var back = SafeNext(form["return"].ToString());
 
         return DashboardNegotiate.WantsJson(http)
             ? Results.Json(new { url, auth = policy.ToString().ToLowerInvariant(), expiresAt = mint.Mapping.ExpiresAt }, Json)
-            : RazorPage<PreviewCreatedPage>(new { Url = url, Policy = policy, ExpiresAt = mint.Mapping.ExpiresAt, TeamId = teamId });
+            : RazorPage<PreviewCreatedPage>(new
+            {
+                Url = url,
+                Policy = policy,
+                ExpiresAt = mint.Mapping.ExpiresAt,
+                TeamId = teamId,
+                TeamSlug = await tokens.FindTeamSlugAsync(teamId, ct),
+                BackHref = back,
+            });
     }
 
     /// <summary>
@@ -392,6 +405,136 @@ public static class DashboardEndpoints
         });
     }
 
+    private static async Task<IResult> HandleBindMachineAsync(
+        HttpContext http, TokenService tokens,
+        [Microsoft.AspNetCore.Mvc.FromServices] LeadMachineBindingService bindings,
+        IConfiguration config, CancellationToken ct)
+    {
+        if (CrossOriginRefusal(http, config) is { } refusal)
+            return refusal;
+        return await Gated(http, tokens, ct, async principal =>
+        {
+            if (principal is not Principal.Human human)
+                return Refused(http, BindingIsHumanOnly);
+            var form = await http.Request.ReadFormAsync(ct);
+            if (!Guid.TryParse(form["machineId"].ToString(), out var machineId))
+                return Results.BadRequest(new { error = "invalid machine id" });
+            var back = SafeNext(form["return"].ToString());
+            return await bindings.BindAsync(human.HumanId, machineId, ct) switch
+            {
+                LeadMachineBindResult.Bound b => Notice(http, "Machine bound",
+                    $"{b.Binding.MachineName} is your box. Non-HTTP forwards will open loopback ports on it.",
+                    back),
+                LeadMachineBindResult.Refused r => Notice(http, "Could not bind", r.Reason, back, 400),
+                _ => Notice(http, "Could not bind", "unknown bind result", back, 500),
+            };
+        });
+    }
+
+    private static async Task<IResult> HandleUnbindMachineAsync(
+        HttpContext http, TokenService tokens,
+        [Microsoft.AspNetCore.Mvc.FromServices] LeadMachineBindingService bindings,
+        IConfiguration config, CancellationToken ct)
+    {
+        if (CrossOriginRefusal(http, config) is { } refusal)
+            return refusal;
+        return await Gated(http, tokens, ct, async principal =>
+        {
+            if (principal is not Principal.Human human)
+                return Refused(http, BindingIsHumanOnly);
+            var form = await http.Request.ReadFormAsync(ct);
+            var back = SafeNext(form["return"].ToString());
+            var released = await bindings.UnbindAsync(human.HumanId, ct);
+            var msg = released is null
+                ? "You had no machine bound."
+                : $"Released {released.MachineName}. Forwards will refuse until you bind again.";
+            return Notice(http, "Machine unbound", msg, back);
+        });
+    }
+
+    private static async Task<IResult> HandleOpenLeadForwardAsync(
+        HttpContext http, TokenService tokens,
+        [Microsoft.AspNetCore.Mvc.FromServices] LeadMachineBindingService bindings,
+        [Microsoft.AspNetCore.Mvc.FromServices] RelayGrantService grants,
+        [Microsoft.AspNetCore.Mvc.FromServices] ForwardOrchestrator forwards,
+        IConfiguration config, CancellationToken ct)
+    {
+        if (CrossOriginRefusal(http, config) is { } refusal)
+            return refusal;
+        return await Gated(http, tokens, ct, async principal =>
+        {
+            if (principal is not Principal.Human human)
+                return Refused(http, BindingIsHumanOnly);
+            var form = await http.Request.ReadFormAsync(ct);
+            var back = SafeNext(form["return"].ToString());
+            if (!Guid.TryParse(form["teamId"].ToString(), out var teamId))
+                return Results.BadRequest(new { error = "invalid team id" });
+            if (!await OperatorMayAccess(principal, new Landbridge.Core.TeamId(teamId), tokens, ct))
+                return Refused(http, NotYourTeam);
+            var serviceName = form["serviceName"].ToString();
+            if (string.IsNullOrWhiteSpace(serviceName))
+                return Results.BadRequest(new { error = "service name required" });
+
+            var bound = await bindings.GetAsync(human.HumanId, ct);
+            if (bound is null)
+                return Notice(http, "No machine bound",
+                    "Bind a machine in the left rail first. For HTTP, create a preview instead.",
+                    back, 400);
+
+            var issued = await grants.IssueForLeadAsync(new Landbridge.Core.TeamId(teamId), serviceName, ct);
+            if (issued is not RelayGrantResult.Issued grant)
+            {
+                var why = issued is RelayGrantResult.Refused r ? r.Reason : "could not issue a grant";
+                return Notice(http, "Forward refused", why, back, 400);
+            }
+
+            var opened = await forwards.EstablishForLeadAsync(
+                bound.MachineId.ToString(), grant, serviceName, Landbridge.Mcp.Tools.WorkerTools.RelayUrlFrom(config), ct);
+            return opened switch
+            {
+                ForwardEstablishResult.Established e => Notice(http, "Forward open",
+                    $"One connection, promptly. Connect on the bound machine ({bound.MachineName}).",
+                    back, detail: $"{Landbridge.Mcp.Tools.WorkerTools.ForwardLoopbackHost}:{e.Port}"),
+                ForwardEstablishResult.Failed f => Notice(http, "Forward failed", f.Reason, back, 400),
+                _ => Notice(http, "Forward failed", "unknown forward result", back, 500),
+            };
+        });
+    }
+
+    private static async Task<IResult> HandleRevokePreviewAsync(
+        HttpContext http, TokenService tokens,
+        [Microsoft.AspNetCore.Mvc.FromServices] PreviewMappingService previews,
+        IConfiguration config, CancellationToken ct)
+    {
+        if (CrossOriginRefusal(http, config) is { } refusal)
+            return refusal;
+        return await Gated(http, tokens, ct, async principal =>
+        {
+            if (principal is not Principal.Human)
+                return Refused(http, BindingIsHumanOnly);
+            var form = await http.Request.ReadFormAsync(ct);
+            var back = SafeNext(form["return"].ToString());
+            if (!Guid.TryParse(form["previewId"].ToString(), out var previewId))
+                return Results.BadRequest(new { error = "invalid preview id" });
+            await previews.RevokeAsync(previewId, ct);
+            return DashboardNegotiate.WantsJson(http)
+                ? Results.Json(new { revoked = previewId }, Json)
+                : Results.Redirect(back);
+        });
+    }
+
+    private static IResult Notice(
+        HttpContext http, string title, string message, string back, int status = 200, string? detail = null) =>
+        DashboardNegotiate.WantsJson(http)
+            ? Results.Json(new { title, message, detail }, Json, statusCode: status)
+            : RazorPage<DashboardNoticePage>(new
+            {
+                Title = title,
+                Message = message,
+                Detail = detail,
+                BackHref = back,
+            }, status);
+
     /// <summary>
     /// GET /dashboard/preview-auth?label=&amp;return= — the gated-browser-flow confirm
     /// (§8.4). An operator with a live <c>landbridge_session</c> (host-scoped to the
@@ -478,6 +621,10 @@ public static class DashboardEndpoints
     private const string RevokingIsHumanOnly =
         "revoking a machine is a human-operator action; a machine belongs to no Team, so a Lead "
         + "session cannot un-trust one — ask your operator";
+
+    private const string BindingIsHumanOnly =
+        "binding a machine and opening a local forward are human-operator actions; a Lead uses "
+        + "bind_machine and open_lead_forward";
 
     private const string NotYourTeam =
         "this session may only read a Team it owns";

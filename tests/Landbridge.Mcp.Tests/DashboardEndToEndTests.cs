@@ -248,6 +248,60 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Contains(ShortId(team.Value), body, StringComparison.Ordinal);      // its owning Team
         Assert.Contains("no subagents reported", body, StringComparison.Ordinal);  // honest empty tree
         Assert.Contains("Observability center", body, StringComparison.Ordinal);
+        Assert.Contains("Event tail", body, StringComparison.Ordinal);
+        Assert.Contains("Exchange", body, StringComparison.Ordinal);
+        Assert.Contains("Ports", body, StringComparison.Ordinal);
+        Assert.Contains("no machine bound", body, StringComparison.Ordinal);
+        Assert.Contains("No registered services", body, StringComparison.Ordinal);
+        Assert.Contains(">bind<", body, StringComparison.Ordinal);
+        Assert.Contains($"/dashboard/events?session={await SessionSlugAsync(sessionId, ct)}", body, StringComparison.Ordinal);
+
+        await app.StopAsync(ct);
+    }
+
+    [SkippableFact]
+    public async Task Fleet_board_derives_lost_connection_from_a_missing_heartbeat()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var ct = cts.Token;
+
+        await using var app = BuildPlane();
+        await app.StartAsync(ct);
+
+        var team = TeamId.New();
+        var (_, ns) = await SeedWorkingTaskAsync(team, ct);
+
+        var html = await GetAuthedAsync(app, "/dashboard/machines", ct);
+        Assert.Contains(ns, html, StringComparison.Ordinal);
+        Assert.Contains("lost connection", html, StringComparison.Ordinal);
+        var names = html.IndexOf("obs-row__names", StringComparison.Ordinal);
+        var dot = html.IndexOf("obs-dot", StringComparison.Ordinal);
+        Assert.True(names >= 0 && dot > names, "the occupancy dot sits to the right of the session name");
+
+        await app.StopAsync(ct);
+    }
+
+    [SkippableFact]
+    public async Task Fleet_board_shows_only_the_selected_teams_sessions()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var ct = cts.Token;
+
+        await using var app = BuildPlane();
+        await app.StartAsync(ct);
+
+        var teamA = TeamId.New();
+        var teamB = TeamId.New();
+        var (_, nsA) = await SeedWorkingTaskAsync(teamA, ct);
+        var (_, nsB) = await SeedWorkingTaskAsync(teamB, ct);
+
+        var html = await GetAuthedAsync(app, $"/dashboard/machines?team={teamA.Value}", ct);
+        Assert.Contains(nsA, html, StringComparison.Ordinal);
+        Assert.DoesNotContain(nsB, html, StringComparison.Ordinal);
+        Assert.Contains($"team={teamA.Value}", html, StringComparison.Ordinal);
+        Assert.Contains("obs-team is-on", html, StringComparison.Ordinal);
 
         await app.StopAsync(ct);
     }
@@ -306,7 +360,7 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         var team = TeamId.New();
 
         // A working task with a registered service.
-        var (_, workingNs, workingCaller) = await SeedWorkingTaskWithCallerAsync(team, ct);
+        var (workingId, workingNs, workingCaller) = await SeedWorkingTaskWithCallerAsync(team, ct);
         await WithStoreAsync(async store =>
             await store.RegisterServiceAsync(workingCaller, "api", 8080, ct));
 
@@ -362,6 +416,7 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Contains("authhelp", html, StringComparison.Ordinal);
         Assert.Contains("Not yet answered", html, StringComparison.Ordinal);
         Assert.DoesNotContain("not tracked", html, StringComparison.Ordinal); // the kind IS tracked now
+        Assert.Contains($"/dashboard/events?session={await SessionSlugAsync(workingId, ct)}", html, StringComparison.Ordinal);
 
         // ── JSON twin: same fields, machine-readable ─────────────────────────
         var json = await GetAuthedAsync(app, $"/dashboard/teams/{team.Value}?format=json", ct);
@@ -565,6 +620,90 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Contains("Claimed", body, StringComparison.Ordinal);   // lead event
         Assert.Contains("Dispatch", body, StringComparison.Ordinal);  // a task transition
         Assert.Contains("Working", body, StringComparison.Ordinal);   // its target state badge
+        Assert.Contains("window", body, StringComparison.Ordinal);
+        Assert.Contains("5 min", body, StringComparison.Ordinal);
+        Assert.Contains("30 min", body, StringComparison.Ordinal);
+        Assert.Contains("2 hr", body, StringComparison.Ordinal);
+        Assert.Contains("1 day", body, StringComparison.Ordinal);
+        Assert.Contains("window=1d", body, StringComparison.Ordinal);
+
+        await app.StopAsync(ct);
+    }
+
+    [SkippableFact]
+    public async Task Event_log_filters_by_session_query()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var ct = cts.Token;
+
+        await using var app = BuildPlane();
+        await app.StartAsync(ct);
+
+        var team = TeamId.New();
+        await ClaimLeadAsync(team, ct);
+        var (keep, keepNs) = await SeedWorkingTaskAsync(team, ct);
+        var (_, otherNs) = await SeedWorkingTaskAsync(team, ct);
+
+        var keepSlug = await SessionSlugAsync(keep, ct);
+        var filtered = await GetAuthedAsync(app, $"/dashboard/events?session={keep.Value}", ct);
+        Assert.Contains(keepNs, filtered, StringComparison.Ordinal);
+        Assert.DoesNotContain(otherNs, filtered, StringComparison.Ordinal);
+        Assert.DoesNotContain("Claimed", filtered, StringComparison.Ordinal);
+        Assert.Contains($"/dashboard/events?session={keepSlug}", filtered, StringComparison.Ordinal);
+
+        var bySlug = await GetAuthedAsync(app, $"/dashboard/events?session={keepSlug}", ct);
+        Assert.Contains(keepNs, bySlug, StringComparison.Ordinal);
+        Assert.DoesNotContain(otherNs, bySlug, StringComparison.Ordinal);
+
+        var json = await GetAuthedAsync(app, $"/dashboard/events?format=json&session={keep.Value}", ct);
+        using var doc = JsonDocument.Parse(json);
+        var events = doc.RootElement.EnumerateArray().ToList();
+        Assert.NotEmpty(events);
+        Assert.All(events, e =>
+        {
+            Assert.Equal(keep.Value, e.GetProperty("sessionId").GetGuid());
+            Assert.Equal("task", e.GetProperty("source").GetString());
+        });
+
+        await app.StopAsync(ct);
+    }
+
+    [SkippableFact]
+    public async Task Team_page_accepts_guid_or_slug_and_emits_slug_urls()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var ct = cts.Token;
+
+        await using var app = BuildPlane();
+        await app.StartAsync(ct);
+
+        var team = TeamId.New();
+        await ClaimLeadAsync(team, ct);
+        var (sessionId, ns) = await SeedWorkingTaskAsync(team, ct);
+        var sessionSlug = await SessionSlugAsync(sessionId, ct);
+        await using (var db = pg.NewContext())
+        {
+            var teamSlug = await db.LeadTeams.AsNoTracking()
+                .Where(t => t.TeamId == team.Value)
+                .Select(t => t.Slug)
+                .SingleAsync(ct);
+            Assert.True(HaikuSlug.IsWellFormed(teamSlug));
+
+            var byGuid = await GetAuthedAsync(app, $"/dashboard/teams/{team.Value}", ct);
+            var bySlug = await GetAuthedAsync(app, $"/dashboard/teams/{teamSlug}", ct);
+            Assert.Contains(ns, byGuid, StringComparison.Ordinal);
+            Assert.Contains(teamSlug, byGuid, StringComparison.Ordinal);
+            Assert.Contains(sessionSlug, byGuid, StringComparison.Ordinal);
+            Assert.Contains(ns, bySlug, StringComparison.Ordinal);
+            Assert.Contains($"/dashboard/events?session={sessionSlug}", bySlug, StringComparison.Ordinal);
+
+            var json = await GetAuthedAsync(app, $"/dashboard/teams/{teamSlug}?format=json", ct);
+            using var doc = JsonDocument.Parse(json);
+            Assert.Equal(teamSlug, doc.RootElement.GetProperty("slug").GetString());
+            Assert.Equal(team.Value, doc.RootElement.GetProperty("teamId").GetGuid());
+        }
 
         await app.StopAsync(ct);
     }
@@ -621,6 +760,44 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             && e.GetProperty("subagentParentId").GetString() == "root");
         Assert.Contains(events, e =>
             e.TryGetProperty("inputKind", out var k) && k.GetString() == "AuthHelp");
+
+        await app.StopAsync(ct);
+    }
+
+    [SkippableFact]
+    public async Task Event_log_renders_deliver_report_and_created_detail()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var ct = cts.Token;
+
+        await using var app = BuildPlane();
+        await app.StartAsync(ct);
+
+        var team = TeamId.New();
+        await ClaimLeadAsync(team, ct);
+        var (id, _, caller) = await SeedWorkingTaskWithCallerAsync(team, ct);
+        await WithStoreAsync(async store =>
+        {
+            await store.ApplyAsync(id, new ReportResult(caller, "git:ref"), ct);
+            await store.ApplyAsync(id, new DeliverReport(new LeadClaim(team)), ct);
+        });
+
+        var html = await GetAuthedAsync(app, "/dashboard/events", ct);
+        Assert.Contains("session created", html, StringComparison.Ordinal);
+        Assert.Contains("unread report", html, StringComparison.Ordinal);
+        Assert.Contains("unread to read", html, StringComparison.Ordinal);
+        Assert.Contains("Claimed", html, StringComparison.Ordinal);
+
+        var json = await GetAuthedAsync(app, "/dashboard/events?format=json", ct);
+        using var doc = JsonDocument.Parse(json);
+        var events = doc.RootElement.EnumerateArray().ToList();
+        Assert.Contains(events, e =>
+            e.GetProperty("kind").GetString() == nameof(DeliverReport)
+            && e.GetProperty("detail").GetString() == "unread to read");
+        Assert.Contains(events, e =>
+            e.GetProperty("kind").GetString() == "created"
+            && e.GetProperty("detail").GetString() == "session created");
 
         await app.StopAsync(ct);
     }
@@ -895,6 +1072,15 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         var human = await tokens.IssueHumanSessionAsync(ct);
         await tokens.ClaimLeadAsync(human.Token, team, ct: ct);
         return ShortId(human.CredentialId);
+    }
+
+    private async Task<string> SessionSlugAsync(SessionId id, CancellationToken ct)
+    {
+        await using var db = pg.NewContext();
+        return await db.Sessions.AsNoTracking()
+            .Where(s => s.Id == id.Value)
+            .Select(s => s.Slug)
+            .SingleAsync(ct);
     }
 
     /// <summary>Creates one task and dispatches it to working; returns its id and namespace.</summary>

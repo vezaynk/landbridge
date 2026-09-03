@@ -9,8 +9,26 @@ namespace Landbridge.Mcp.Dashboard.Observability;
 /// </summary>
 public sealed record LaneMeta(string ColorVar, string Label, string Envelope, bool Live, double DotOpacity)
 {
-    public static LaneMeta Of(ObservabilityLane lane)
+    /// <summary>
+    /// Board-only: occupancy can still be Working while the runner socket is gone
+    /// or the last heartbeat is older than one default cadence.
+    /// </summary>
+    public static readonly TimeSpan HeartbeatStaleAfter = TimeSpan.FromSeconds(15);
+
+    public static bool ConnectionLost(ObservabilityLane lane, DateTimeOffset now)
     {
+        if (lane.State is not (SessionState.Working or SessionState.BlockedOnInput))
+            return false;
+        if (lane.LastHeartbeat is not { } at)
+            return true;
+        return now - at > HeartbeatStaleAfter;
+    }
+
+    public static LaneMeta Of(ObservabilityLane lane, DateTimeOffset now)
+    {
+        if (ConnectionLost(lane, now))
+            return new("--state-wait", "lost connection", EnvelopeName(lane.MessageState), false, 1.0);
+
         if (lane.State == SessionState.BlockedOnInput
             || (lane.State == SessionState.Working && lane.InputKind == InputRequestKind.Permission && lane.BlockedAt is not null))
             return new("--state-wait", "permission", EnvelopeName(lane.MessageState), true, 1.0);
@@ -31,7 +49,7 @@ public sealed record LaneMeta(string ColorVar, string Label, string Envelope, bo
         };
     }
 
-    private static string EnvelopeName(MessageState state) => state switch
+    public static string EnvelopeName(MessageState state) => state switch
     {
         MessageState.Idle => "idle",
         MessageState.AwaitingLead => "awaiting_lead",
@@ -44,7 +62,7 @@ public sealed record LaneMeta(string ColorVar, string Label, string Envelope, bo
 
 public static class LaneNow
 {
-    public static string Text(ObservabilityLane lane)
+    public static string Text(ObservabilityLane lane, DateTimeOffset now)
     {
         if (lane.State == SessionState.Submitted)
             return "waiting for dispatch";
@@ -56,15 +74,19 @@ public static class LaneNow
             return string.IsNullOrWhiteSpace(lane.WorkerReport) ? "completed" : Truncate(lane.WorkerReport, 72)!;
         if (lane.State is SessionState.Canceled or SessionState.Rejected)
             return lane.State.ToString().ToLowerInvariant();
+        if (LaneMeta.ConnectionLost(lane, now))
+            return $"last heartbeat {DashboardFormat.Age(lane.LastHeartbeat, now)}";
         if (lane.InputKind == InputRequestKind.Permission)
             return string.IsNullOrWhiteSpace(lane.PermissionTool)
                 ? Truncate(lane.Question, 72) ?? "permission"
                 : $"permission: {lane.PermissionTool}";
         if (lane.BlockedAt is not null && !string.IsNullOrWhiteSpace(lane.Question))
             return Truncate(lane.Question, 72)!;
-        if (lane.Tail.Count > 0)
-            return Truncate(lane.Tail[^1].Text, 72)!;
-        return "working";
+        if (lane.MessageState != MessageState.Idle)
+            return LaneMeta.EnvelopeName(lane.MessageState);
+        if (lane.LastProgress is { } progress)
+            return $"progress {DashboardFormat.Age(progress, now)}";
+        return LaneMeta.EnvelopeName(lane.MessageState);
     }
 
     private static string? Truncate(string? s, int n)
