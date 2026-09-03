@@ -1342,8 +1342,9 @@ public sealed class SessionStore(
         SessionRow row, SessionCommand command, CancellationToken ct,
         Microsoft.EntityFrameworkCore.Storage.IDbContextTransaction? outerTx = null)
     {
-        var before = row.State;
-        var result = SessionStateMachine.Apply(row.ToDomain(), command);
+        var beforeRecord = row.ToDomain();
+        var before = beforeRecord.State;
+        var result = SessionStateMachine.Apply(beforeRecord, command);
         if (result is TransitionResult.Rejected r)
             return new StoreResult.Rejected(r.Rule, r.Reason);
 
@@ -1497,17 +1498,17 @@ public sealed class SessionStore(
         // operator needs — where before every requeue row was identical.
         // §11/§12 permission audit: a permission decision's own row carries the verdict and
         // the answerer's class, and its Detail is the message rather than the (empty) effect
-        // list — for these two transitions the words ARE what happened, where for every
-        // other transition the effects are. An escalation's Detail is its required reason,
-        // so the trail says who narrowed the request and why even though the state did not
-        // move.
+        // list. An escalation's Detail is its required reason. Everything else records the
+        // occupancy/message/report delta when derived SessionState did not move
+        // (DeliverReport, PullReceipt, ObserveOccupancy), then the effect type names.
         var detail = command switch
         {
-            AnswerPermission decision => decision.Message,
+            AnswerPermission decision when !string.IsNullOrWhiteSpace(decision.Message)
+                => decision.Message,
             EscalatePermission escalation => $"escalated to human: {escalation.Reason}",
             RequestInput ask when ask.Kind == InputRequestKind.Permission
                 => PermissionWaitDetail(ask),
-            _ => DescribeEffects(ok.Effects),
+            _ => EventLogDetail.Describe(command, beforeRecord, ok.Session, ok.Effects),
         };
         var occupancyFailed = command is ObserveOccupancy && ok.Session.Health == SessionHealth.Failed;
         AppendEvent(row.Id, row.TeamId,
@@ -1690,9 +1691,6 @@ public sealed class SessionStore(
                 await ownTx.DisposeAsync();
         }
     }
-
-    private static string DescribeEffects(IReadOnlyList<Effect> effects) =>
-        effects.Count == 0 ? "" : string.Join(",", effects.Select(e => e.GetType().Name));
 
     /// <summary>
     /// A permission wait has no effects, so the event's Detail would be empty

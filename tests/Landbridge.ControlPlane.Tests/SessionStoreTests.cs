@@ -203,6 +203,31 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task DeliverReport_and_created_events_carry_readable_detail()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var store = NewStore(db);
+        var id = await CreateSubmitted(db);
+        var created = await db.SessionEvents.AsNoTracking()
+            .SingleAsync(e => e.SessionId == id.Value && e.Kind == "created");
+        Assert.Equal("session created", created.Detail);
+
+        var instance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), instance);
+        Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(
+            id, new ReportResult(new WorkerCaller(Team, id, instance), "git:ref")));
+        Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(id, new DeliverReport(Lead)));
+
+        var events = await db.SessionEvents.AsNoTracking()
+            .Where(e => e.SessionId == id.Value)
+            .OrderBy(e => e.Seq)
+            .ToListAsync();
+        Assert.Contains("unread report", events.Single(e => e.Kind == nameof(ReportResult)).Detail);
+        Assert.Equal("unread to read", events.Single(e => e.Kind == nameof(DeliverReport)).Detail);
+    }
+
+    [SkippableFact]
     public async Task Dispatch_respects_profile_match()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);

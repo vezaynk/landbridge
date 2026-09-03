@@ -1,3 +1,12 @@
+@{
+    var prose = Event.Detail;
+    var structured = Event.PermissionVerdict is not null
+        || Event.InputKind is not null
+        || Event.LivenessReason is not null
+        || Event.Kind == SessionEventRow.AuthFailedKind
+        || Event.Kind == SessionEventRow.SubagentSpawnedKind;
+}
+
 @if (Event.PermissionVerdict is { } verdict)
 {
     var css = verdict == PermissionVerdict.Allow ? "state-working" : "state-rejected";
@@ -9,10 +18,6 @@
     else
     {
         <span class="nt">by an unrecorded answerer</span>
-    }
-    @if (!string.IsNullOrEmpty(Event.Detail))
-    {
-        <span class="nt">@Event.Detail</span>
     }
 }
 else if (Event.InputKind is { } kind)
@@ -53,13 +58,14 @@ else if (Event.Kind == SessionEventRow.SubagentSpawnedKind)
         <text> under </text><code>@p</code>
     }
 }
-else if (string.IsNullOrEmpty(Event.Detail))
+
+@if (!string.IsNullOrEmpty(prose))
+{
+    <span class="nt">@prose</span>
+}
+else if (!structured)
 {
     <span class="nt">—</span>
-}
-else
-{
-    <span class="nt">@Event.Detail</span>
 }
 
 @code {
