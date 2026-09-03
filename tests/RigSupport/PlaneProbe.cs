@@ -123,7 +123,9 @@ internal static class PlaneProbe
     }
 
     /// <summary>
-    /// Create a task over the real Lead MCP surface and return its id.
+    /// Create a task over the real Lead MCP surface and return its Guid PK.
+    /// <c>create_session</c> returns an allocated slug; Guid.TryParse is kept
+    /// for back-compat. Other tools still take <c>task.Value.ToString()</c>.
     /// </summary>
     /// <param name="profile">
     /// §10 exact-match profile routing, or null for <c>default</c>. A rig that declares a
@@ -131,6 +133,7 @@ internal static class PlaneProbe
     /// </param>
     public static async Task<SessionId> CreateSessionAsync(
         McpClient lead,
+        LandbridgeDbContext db,
         string description,
         CancellationToken ct,
         string teamId,
@@ -146,7 +149,16 @@ internal static class PlaneProbe
         var text = TextOf(created);
         if (created.IsError == true)
             throw new InvalidOperationException($"create_session was refused: {text}");
-        return new SessionId(Guid.Parse(text));
+        if (Guid.TryParse(text, out var guid))
+            return new SessionId(guid);
+
+        var id = await db.Sessions.AsNoTracking()
+            .Where(s => s.Slug == text)
+            .Select(s => (Guid?)s.Id)
+            .FirstOrDefaultAsync(ct);
+        if (id is not { } sid)
+            throw new InvalidOperationException($"create_session returned unknown id: {text}");
+        return new SessionId(sid);
     }
 
     /// <summary>
