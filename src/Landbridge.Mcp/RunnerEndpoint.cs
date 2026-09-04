@@ -213,7 +213,8 @@ public static class RunnerEndpoint
                     try
                     {
                         await using var db = await dbFactory.CreateDbContextAsync(ct);
-                        await HubOutbox.WriteHeartbeatAsync(db, clock, machineId, ct);
+                        await HubOutbox.WriteHeartbeatAsync(db, clock, machineId, heartbeat, ct);
+
                     }
                     catch (Exception ex) when (ex is not OperationCanceledException)
                     {

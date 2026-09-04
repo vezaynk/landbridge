@@ -155,7 +155,8 @@ Hub routes (wake-only, `event: change` `{ queueId, topic, entityId }`). Refetch 
 | `GET /machines/{id}/processes/events` | `processes` | machine id (same heartbeat) |
 
 
-Outbox writers: `CommitAsync` (session/events/exchange), `RegisterServiceAsync` + `ClearServicesAndForwards` (services), `RelayGrantService.MintAsync` + clear (forwards), `PreviewMappingService` create/slide/revoke, `TokenService.ExchangeEnrollmentAsync` (machines, `landbridge_hub_events`), runner heartbeats (`HubOutbox.WriteHeartbeatAsync` → machines + processes).
+Machine liveness is recent `hub_queue` `machines` rows (90s window), not a table and not the registry clock. The registry keeps the socket and tracked dispatches.
+
 
 
 

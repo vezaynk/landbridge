@@ -7,8 +7,11 @@ namespace Landbridge.ControlPlane;
 
 /// <summary>
 /// The read side of the §12 observability dashboard. Pure reads —
-/// <c>AsNoTracking</c> over the store, plus the in-memory
-/// <see cref="RunnerConnectionRegistry"/> for live machine state — returning small
+/// <c>AsNoTracking</c> over the store. Live machine facts (ready, heartbeat,
+/// processes) come from recent <c>hub_queue</c> rows — there is no liveness
+/// table. The registry is the socket and tracked dispatches (and test ids
+/// that never write the outbox).
+
 /// view records that both the HTML renderer and its JSON twin serialize (§4/§12:
 /// every view is also consumable as structured data by a Lead). Kept deliberately
 /// out of <see cref="SessionStore"/>: the store is the write path (§15), this is a
@@ -38,8 +41,11 @@ namespace Landbridge.ControlPlane;
 /// renders one as an empty slot is a rendering gap that view owns, not a missing
 /// source.
 /// </summary>
-public sealed partial class DashboardQueries(LandbridgeDbContext db, RunnerConnectionRegistry registry)
+public sealed partial class DashboardQueries(
+    LandbridgeDbContext db, RunnerConnectionRegistry registry, TimeProvider? clock = null)
 {
+    private readonly TimeProvider _clock = clock ?? TimeProvider.System;
+
     // The task states that mean a Team is still doing something (§12: idle Teams
     // drift to the bottom). Everything else is terminal or empty.
     private static readonly SessionState[] ActiveStates =
@@ -59,12 +65,12 @@ public sealed partial class DashboardQueries(LandbridgeDbContext db, RunnerConne
     /// Live machines with their running tasks (each tagged with its owning Team), and
     /// whether a human has bound the machine as their own (§8.3 human path — a bound
     /// machine is a forward target, which an operator should be able to see).
-    /// Machines come from the connection registry's full enumeration
-    /// (<see cref="RunnerConnectionRegistry.MachineIds"/>), so a machine that is
-    /// connected, under back-pressure, and holding no dispatched task still appears
-    /// — exactly the operator signal this view exists to surface (§12). A machine that
-    /// is bound but currently disconnected is deliberately absent here, like every other
-    /// disconnected machine; its Lead sees the binding in <c>get_team_state</c>. The
+    /// Machines are the union of connected sockets and recent heartbeat outbox
+    /// rows (90s). Ready / heartbeat / processes prefer the outbox when present
+    /// so a hub still has liveness after Core drops the registry. A bound but
+    /// disconnected machine with a stale outbox is absent, like every other
+    /// silent box; its Lead sees the binding in <c>get_team_state</c>.
+
     /// subagent tree is a documented empty state, but the reason is narrower than "no
     /// data": spawns <em>are</em> persisted as task event rows and do reach the §12 event
     /// log (#51). What this view has no source for is the per-machine <em>nesting</em> —
@@ -72,7 +78,12 @@ public sealed partial class DashboardQueries(LandbridgeDbContext db, RunnerConne
     /// </summary>
     public async Task<IReadOnlyList<MachineView>> GetMachinesAsync(CancellationToken ct = default)
     {
-        var ids = registry.MachineIds();
+        var live = await HubOutbox.LiveAsync(
+            db, _clock.GetUtcNow(), WaitTtlSweeper.DefaultMachineLivenessWindow, ct);
+        var ids = registry.MachineIds()
+            .Concat(live.Keys.Select(g => g.ToString()))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
 
         // Live lead↔machine bindings, one read for the whole view (§8.3).
         var boundBy = (await db.LeadMachineBindings.AsNoTracking()
@@ -105,7 +116,9 @@ public sealed partial class DashboardQueries(LandbridgeDbContext db, RunnerConne
         foreach (var id in ids)
         {
             var snapshot = registry.SnapshotFor(id);
-            if (snapshot is null)
+            var guid = Guid.TryParse(id, out var mid) ? mid : (Guid?)null;
+            var fromOutbox = guid is { } g && live.TryGetValue(g, out var payload);
+            if (snapshot is null && !fromOutbox)
                 continue; // raced away between enumeration and read
             var tasks = registry.SessionsOn(id)
                 .Select(t => taskInfo.TryGetValue(t.Value, out var info)
@@ -114,18 +127,18 @@ public sealed partial class DashboardQueries(LandbridgeDbContext db, RunnerConne
                 .OrderBy(t => t.Namespace, StringComparer.Ordinal)
                 .ToList();
             var isBound = boundBy.TryGetValue(id, out var bound);
-            var label = Guid.TryParse(id, out var mid) ? machineLabels.GetValueOrDefault(mid) : default;
+            var label = guid is { } labeled ? machineLabels.GetValueOrDefault(labeled) : default;
             machines.Add(new MachineView(
                 id,
-                snapshot.Ready,
-                snapshot.UnderBackPressure,
-                registry.LastHeartbeatFor(id),
-                snapshot.DeclaredProfiles.OrderBy(p => p, StringComparer.Ordinal).ToList(),
+                fromOutbox ? payload!.Ready : snapshot!.Ready,
+                fromOutbox ? payload!.UnderBackPressure : snapshot!.UnderBackPressure,
+                fromOutbox ? payload!.At : registry.LastHeartbeatFor(id),
+                (fromOutbox ? payload!.Profiles : snapshot!.DeclaredProfiles)
+                    .OrderBy(p => p, StringComparer.Ordinal).ToList(),
                 tasks,
                 isBound ? bound.HumanId : null,
                 isBound ? bound.BoundAt : null,
-                // §10/§12: passed through from the last heartbeat, unexamined.
-                registry.ProcessesOn(id),
+                fromOutbox ? payload!.Processes : registry.ProcessesOn(id),
                 label.Slug ?? "",
                 label.Name ?? ""));
         }

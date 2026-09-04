@@ -1,3 +1,4 @@
+using Landbridge.Contracts;
 using Landbridge.ControlPlane;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Time.Testing;
@@ -15,17 +16,31 @@ public sealed class HubOutboxTests(PostgresFixture pg) : IAsyncLifetime
     public Task DisposeAsync() => Task.CompletedTask;
 
     [SkippableFact]
-    public async Task Heartbeat_appends_machine_and_process_outbox_rows()
+    public async Task Heartbeat_is_liveness_the_latest_outbox_row_within_the_window()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         await using var db = pg.NewContext();
+        var clock = new FakeTimeProvider();
         var machineId = Guid.NewGuid();
+        var beat = new MachineHeartbeat(
+            machineId.ToString(), Ready: true, UnderBackPressure: false,
+            default, 0, ["default"], clock.GetUtcNow(),
+            Processes: [new ProcessStatus("web", ProcessState.Running, Guid.NewGuid())]);
 
-        await HubOutbox.WriteHeartbeatAsync(db, new FakeTimeProvider(), machineId.ToString(), CancellationToken.None);
+        await HubOutbox.WriteHeartbeatAsync(db, clock, machineId.ToString(), beat, CancellationToken.None);
 
-        var rows = await db.HubQueue.AsNoTracking().ToListAsync();
-        Assert.Contains(rows, r => r.Topic == HubQueueRow.MachinesTopic && r.EntityId == machineId);
-        Assert.Contains(rows, r => r.Topic == HubQueueRow.ProcessesTopic && r.EntityId == machineId);
+        Assert.True(await HubOutbox.IsLiveAsync(
+            db, machineId, clock.GetUtcNow(), WaitTtlSweeper.DefaultMachineLivenessWindow, CancellationToken.None));
+        var live = await HubOutbox.LiveAsync(
+            db, clock.GetUtcNow(), WaitTtlSweeper.DefaultMachineLivenessWindow, CancellationToken.None);
+        var snap = Assert.Contains(machineId, live);
+        Assert.True(snap.Ready);
+        Assert.Equal("default", Assert.Single(snap.Profiles));
+        Assert.Equal("web", Assert.Single(snap.Processes!).Name);
+
+        clock.Advance(WaitTtlSweeper.DefaultMachineLivenessWindow + TimeSpan.FromSeconds(1));
+        Assert.False(await HubOutbox.IsLiveAsync(
+            db, machineId, clock.GetUtcNow(), WaitTtlSweeper.DefaultMachineLivenessWindow, CancellationToken.None));
     }
 
     [SkippableFact]
@@ -34,7 +49,10 @@ public sealed class HubOutboxTests(PostgresFixture pg) : IAsyncLifetime
         Skip.IfNot(pg.Available, pg.SkipReason);
         await using var db = pg.NewContext();
 
-        await HubOutbox.WriteHeartbeatAsync(db, new FakeTimeProvider(), "m1", CancellationToken.None);
+        await HubOutbox.WriteHeartbeatAsync(
+            db, new FakeTimeProvider(), "m1",
+            new MachineHeartbeat("m1", true, false, default, 0, ["default"], DateTimeOffset.UtcNow),
+            CancellationToken.None);
 
         Assert.Empty(await db.HubQueue.AsNoTracking().ToListAsync());
     }

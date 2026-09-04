@@ -146,11 +146,19 @@ public sealed class WaitTtlSweeper : IHostedService
                 // sweep that follows re-adoption, or for the disconnect path to requeue.
                 continue;
 
-            var lastHeartbeat = _registry.LastHeartbeatFor(machine);
-            var machineLive = lastHeartbeat is { } beat && now - beat <= _machineLivenessWindow;
-
             using var scope = _scopes.CreateScope();
             var store = scope.ServiceProvider.GetRequiredService<SessionStore>();
+            var db = scope.ServiceProvider.GetRequiredService<LandbridgeDbContext>();
+
+            bool machineLive;
+            if (Guid.TryParse(machine, out var machineId))
+                machineLive = await HubOutbox.IsLiveAsync(
+                    db, machineId, now, _machineLivenessWindow, ct);
+            else
+            {
+                var lastHeartbeat = _registry.LastHeartbeatFor(machine);
+                machineLive = lastHeartbeat is { } beat && now - beat <= _machineLivenessWindow;
+            }
 
             if (!machineLive)
             {
