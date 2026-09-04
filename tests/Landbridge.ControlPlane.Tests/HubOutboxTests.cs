@@ -1,5 +1,6 @@
 using Landbridge.Contracts;
 using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Auth;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Time.Testing;
 
@@ -16,27 +17,36 @@ public sealed class HubOutboxTests(PostgresFixture pg) : IAsyncLifetime
     public Task DisposeAsync() => Task.CompletedTask;
 
     [SkippableFact]
-    public async Task Heartbeat_is_liveness_the_latest_outbox_row_within_the_window()
+    public async Task Heartbeat_upserts_liveness_columns_and_process_rows()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         await using var db = pg.NewContext();
         var clock = new FakeTimeProvider();
-        var machineId = Guid.NewGuid();
+        var machineId = await EnrollAsync(db, clock, "box");
+        var session = Guid.NewGuid();
         var beat = new MachineHeartbeat(
             machineId.ToString(), Ready: true, UnderBackPressure: false,
-            default, 0, ["default"], clock.GetUtcNow(),
-            Processes: [new ProcessStatus("web", ProcessState.Running, Guid.NewGuid())]);
+            default, 0, ["default", "gpu"], clock.GetUtcNow(),
+            Processes: [new ProcessStatus("web", ProcessState.Running, session, clock.GetUtcNow(), StdinOpen: true)]);
 
         await HubOutbox.WriteHeartbeatAsync(db, clock, machineId.ToString(), beat, CancellationToken.None);
 
+        var row = await db.Machines.AsNoTracking().SingleAsync(m => m.Id == machineId);
+        Assert.Equal(clock.GetUtcNow(), row.LastSpokeAt);
+        Assert.True(row.Ready);
+        Assert.False(row.UnderBackPressure);
+        Assert.Equal(["default", "gpu"], row.Profiles);
+        var proc = Assert.Single(await db.MachineProcesses.AsNoTracking().Where(p => p.MachineId == machineId).ToListAsync());
+        Assert.Equal("web", proc.Name);
+        Assert.Equal(nameof(ProcessState.Running), proc.State);
+        Assert.True(proc.StdinOpen);
+
         Assert.True(await HubOutbox.IsLiveAsync(
             db, machineId, clock.GetUtcNow(), WaitTtlSweeper.DefaultMachineLivenessWindow, CancellationToken.None));
-        var live = await HubOutbox.LiveAsync(
-            db, clock.GetUtcNow(), WaitTtlSweeper.DefaultMachineLivenessWindow, CancellationToken.None);
-        var snap = Assert.Contains(machineId, live);
-        Assert.True(snap.Ready);
-        Assert.Equal("default", Assert.Single(snap.Profiles));
-        Assert.Equal("web", Assert.Single(snap.Processes!).Name);
+        Assert.Contains(await db.HubQueue.AsNoTracking().ToListAsync(),
+            r => r.Topic == HubQueueRow.MachinesTopic && r.EntityId == machineId);
+        Assert.Contains(await db.HubQueue.AsNoTracking().ToListAsync(),
+            r => r.Topic == HubQueueRow.ProcessTopic && r.EntityId == proc.Id);
 
         clock.Advance(WaitTtlSweeper.DefaultMachineLivenessWindow + TimeSpan.FromSeconds(1));
         Assert.False(await HubOutbox.IsLiveAsync(
@@ -55,5 +65,15 @@ public sealed class HubOutboxTests(PostgresFixture pg) : IAsyncLifetime
             CancellationToken.None);
 
         Assert.Empty(await db.HubQueue.AsNoTracking().ToListAsync());
+        Assert.Empty(await db.MachineProcesses.AsNoTracking().ToListAsync());
+    }
+
+    private static async Task<Guid> EnrollAsync(LandbridgeDbContext db, TimeProvider clock, string name)
+    {
+        var tokens = new TokenService(db, clock);
+        var enrollment = await tokens.IssueEnrollmentTokenAsync();
+        var credentials = await tokens.ExchangeEnrollmentAsync(
+            enrollment.Token, new MachineDeclaration(name, "macos"));
+        return credentials!.MachineId;
     }
 }

@@ -44,7 +44,12 @@ public static class HubEndpoints
             Stream(http, db, w, o, HubQueueRow.MachinesTopic, id, after, ct));
         app.MapGet("/machines/{id:guid}/processes/events", (HttpContext http, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, Guid id, long? after, CancellationToken ct) =>
             Stream(http, db, w, o, HubQueueRow.ProcessesTopic, id, after, ct));
+        app.MapGet("/processes/events", (HttpContext http, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, long? after, CancellationToken ct) =>
+            Stream(http, db, w, o, HubQueueRow.ProcessTopic, null, after, ct));
+        app.MapGet("/processes/{id:guid}/events", (HttpContext http, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, Guid id, long? after, CancellationToken ct) =>
+            Stream(http, db, w, o, HubQueueRow.ProcessTopic, id, after, ct));
         return app;
+
     }
 
     private static IResult Stream(

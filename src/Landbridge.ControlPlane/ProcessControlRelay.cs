@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using Landbridge.Contracts;
 using Landbridge.Core;
+using Microsoft.EntityFrameworkCore;
 
 namespace Landbridge.ControlPlane;
 
@@ -21,7 +22,10 @@ namespace Landbridge.ControlPlane;
 /// lets a Lead's cleanup continuation — a new task id, dispatched to the same machine — stop
 /// what an earlier task started. Cleanup is orchestration, not enforcement.</para>
 /// </summary>
-public sealed class ProcessControlRelay(RunnerConnectionRegistry registry)
+public sealed class ProcessControlRelay(
+    RunnerConnectionRegistry registry,
+    IDbContextFactory<LandbridgeDbContext>? dbFactory = null)
+
 {
     /// <summary>How long a machine has to answer a start. Generous: the runner spawns the
     /// OS process and replies once it is up. A process declares no port.</summary>
@@ -106,27 +110,36 @@ public sealed class ProcessControlRelay(RunnerConnectionRegistry registry)
 
     /// <summary>
     /// §10: the agent-started processes the machine holding this task last reported.
-    /// Read from the last heartbeat, so it needs no wire round trip and no new member.
-    ///
-    /// <para>This is the enumeration the cleanup story depends on. A continuation agent that has
-    /// lost its notes cannot otherwise discover what an earlier session left running, and guessing
-    /// names is not a recovery path.</para>
+    /// Read from <c>machine_processes</c> when the machine id is a Guid; otherwise
+    /// the last heartbeat folded into the registry (test ids).
     /// </summary>
-    public IReadOnlyList<RunningThing> List(SessionId task)
+    public async Task<IReadOnlyList<RunningThing>> ListAsync(SessionId task, CancellationToken ct = default)
     {
         var machine = registry.MachineFor(task);
         if (machine is null)
             return [];
 
-        var all = new List<RunningThing>();
-        foreach (var p in registry.ProcessesOn(machine))
+        if (Guid.TryParse(machine, out var machineId) && dbFactory is not null)
         {
-            all.Add(new RunningThing(
-                p.Name, p.State.ToString().ToLowerInvariant(),
-                p.StartedAt, p.ExitCode, p.ExitedAt, p.StdinOpen));
+            await using var db = await dbFactory.CreateDbContextAsync(ct);
+            var rows = await db.MachineProcesses.AsNoTracking()
+                .Where(p => p.MachineId == machineId)
+                .OrderBy(p => p.Name)
+                .ToListAsync(ct);
+            return rows.Select(AsRunning).ToList();
         }
-        return all.OrderBy(x => x.Name, StringComparer.Ordinal).ToList();
+
+        return registry.ProcessesOn(machine)
+            .Select(p => new RunningThing(
+                p.Name, p.State.ToString().ToLowerInvariant(),
+                p.StartedAt, p.ExitCode, p.ExitedAt, p.StdinOpen))
+            .OrderBy(x => x.Name, StringComparer.Ordinal)
+            .ToList();
     }
+
+    private static RunningThing AsRunning(MachineProcessRow p) =>
+        new(p.Name, p.State.ToLowerInvariant(), p.StartedAt, p.ExitCode, p.ExitedAt, p.StdinOpen);
+
 
     private async Task<Answer> AskAsync(
         SessionId task, TimeSpan timeout, Func<string, RunnerCommand> build, CancellationToken ct)

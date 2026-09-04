@@ -22,6 +22,7 @@ public sealed class LandbridgeDbContext(DbContextOptions<LandbridgeDbContext> op
     public DbSet<FrictionReportRow> FrictionReports => Set<FrictionReportRow>();
     public DbSet<LeadTeamRow> LeadTeams => Set<LeadTeamRow>();
     public DbSet<HubQueueRow> HubQueue => Set<HubQueueRow>();
+    public DbSet<MachineProcessRow> MachineProcesses => Set<MachineProcessRow>();
 
     /// <summary>The channel dispatch/transition NOTIFYs land on (§3.1 LISTEN/NOTIFY).</summary>
     public const string EventChannel = "landbridge_session_events";
@@ -174,6 +175,17 @@ public sealed class LandbridgeDbContext(DbContextOptions<LandbridgeDbContext> op
             e.HasKey(m => m.Id);
             e.HasIndex(m => m.Slug).IsUnique().HasDatabaseName(MachineSlugIndex);
             e.Property(m => m.Slug).IsRequired();
+            e.HasIndex(m => m.LastSpokeAt);
+        });
+
+        b.Entity<MachineProcessRow>(e =>
+        {
+            e.ToTable("machine_processes");
+            e.HasKey(p => p.Id);
+            e.HasIndex(p => new { p.MachineId, p.Name }).IsUnique();
+            e.HasIndex(p => p.MachineId);
+            e.Property(p => p.Name).IsRequired();
+            e.Property(p => p.State).IsRequired();
         });
 
         b.Entity<LeadEventRow>(e =>

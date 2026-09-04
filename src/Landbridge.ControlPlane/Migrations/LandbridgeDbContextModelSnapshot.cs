@@ -226,6 +226,10 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("enrolled_at");
 
+                    b.Property<DateTimeOffset?>("LastSpokeAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("last_spoke_at");
+
                     b.Property<string>("Name")
                         .IsRequired()
                         .HasColumnType("text")
@@ -235,6 +239,15 @@ namespace Landbridge.ControlPlane.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("os");
+
+                    b.Property<string[]>("Profiles")
+                        .IsRequired()
+                        .HasColumnType("text[]")
+                        .HasColumnName("profiles");
+
+                    b.Property<bool>("Ready")
+                        .HasColumnType("boolean")
+                        .HasColumnName("ready");
 
                     b.Property<bool>("Revoked")
                         .HasColumnType("boolean")
@@ -249,14 +262,75 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasColumnType("text")
                         .HasColumnName("slug");
 
+                    b.Property<bool>("UnderBackPressure")
+                        .HasColumnType("boolean")
+                        .HasColumnName("under_back_pressure");
+
                     b.HasKey("Id")
                         .HasName("pk_machines");
+
+                    b.HasIndex("LastSpokeAt")
+                        .HasDatabaseName("ix_machines_last_spoke_at");
 
                     b.HasIndex("Slug")
                         .IsUnique()
                         .HasDatabaseName("ix_machines_slug");
 
                     b.ToTable("machines", (string)null);
+                });
+
+            modelBuilder.Entity("Landbridge.ControlPlane.MachineProcessRow", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid")
+                        .HasColumnName("id");
+
+                    b.Property<Guid>("DeclaredBySession")
+                        .HasColumnType("uuid")
+                        .HasColumnName("declared_by_session");
+
+                    b.Property<int?>("ExitCode")
+                        .HasColumnType("integer")
+                        .HasColumnName("exit_code");
+
+                    b.Property<DateTimeOffset?>("ExitedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("exited_at");
+
+                    b.Property<Guid>("MachineId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("machine_id");
+
+                    b.Property<string>("Name")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("name");
+
+                    b.Property<DateTimeOffset?>("StartedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("started_at");
+
+                    b.Property<string>("State")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("state");
+
+                    b.Property<bool>("StdinOpen")
+                        .HasColumnType("boolean")
+                        .HasColumnName("stdin_open");
+
+                    b.HasKey("Id")
+                        .HasName("pk_machine_processes");
+
+                    b.HasIndex("MachineId")
+                        .HasDatabaseName("ix_machine_processes_machine_id");
+
+                    b.HasIndex("MachineId", "Name")
+                        .IsUnique()
+                        .HasDatabaseName("ix_machine_processes_machine_id_name");
+
+                    b.ToTable("machine_processes", (string)null);
                 });
 
             modelBuilder.Entity("Landbridge.ControlPlane.Auth.OAuthAuthorizationCodeRow", b =>

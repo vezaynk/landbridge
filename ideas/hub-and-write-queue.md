@@ -152,10 +152,14 @@ Hub routes (wake-only, `event: change` `{ queueId, topic, entityId }`). Refetch 
 | `GET /previews/{id}/events` | `previews` | mapping id |
 | `GET /machines/events` | `machines` | machine id (heartbeat + enroll) |
 | `GET /machines/{id}/events` | `machines` | machine id |
-| `GET /machines/{id}/processes/events` | `processes` | machine id (same heartbeat) |
+| `GET /machines/{id}/processes/events` | `processes` | machine id (process set) |
+| `GET /processes/events` | `process` | process row id |
+| `GET /processes/{id}/events` | `process` | process row id |
 
 
-Machine liveness is recent `hub_queue` `machines` rows (90s window), not a table and not the registry clock. The registry keeps the socket and tracked dispatches.
+
+Heartbeat upserts `machines.last_spoke_at` / `ready` / `profiles` and `machine_processes` (last-value). `hub_queue` only doorbells (`machines`, `processes` per machine, `process` per row). Live is `last_spoke_at` within 90s. The registry keeps the socket.
+
 
 
 
