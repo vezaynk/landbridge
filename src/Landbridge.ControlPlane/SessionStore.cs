@@ -11,7 +11,8 @@ namespace Landbridge.ControlPlane;
 /// <see cref="SessionStateMachine"/>, then persists the resulting record, its
 /// effects, and an event row in one transaction — so a transition and its
 /// consequences (token mint/revoke, service clearing, park record) are
-/// atomic, and a NOTIFY fires only if the write commits.
+/// atomic, a <c>hub_queue</c> outbox row is inserted, and a NOTIFY fires only if the write commits.
+
 ///
 /// <para>Atomic including the set-based effects, which is why <see cref="RunTransition"/>
 /// opens the transaction itself rather than leaving it to <see cref="CommitAsync"/>: an
@@ -1725,8 +1726,10 @@ public sealed class SessionStore(
         actor is HumanSession ? PermissionAnswerer.Human : PermissionAnswerer.Lead;
 
     /// <summary>
-    /// Persists whatever the caller has staged and fires the task's NOTIFY in the same
-    /// transaction, so subscribers wake only on committed writes.
+    /// Persists whatever the caller has staged, appends a hub outbox row, and
+    /// fires the task's NOTIFY in the same transaction, so subscribers wake
+    /// only on committed writes and the hub can catch up after a restart.
+
     ///
     /// <para><paramref name="outerTx"/> is a transaction this method must not commit —
     /// someone above owns it and commits it (the SKIP LOCKED claim in
@@ -1744,11 +1747,25 @@ public sealed class SessionStore(
             : null;
         try
         {
+            // Outbox + NOTIFY in the same transaction: the hub tails hub_queue
+            // across restarts; NOTIFY is only a doorbell. Both vanish if we roll back.
+            db.HubQueue.Add(new HubQueueRow
+            {
+                Topic = HubQueueRow.SessionTopic,
+                EntityId = sessionId,
+                CreatedAt = clock.GetUtcNow(),
+            });
+            db.HubQueue.Add(new HubQueueRow
+            {
+                Topic = HubQueueRow.SessionsTopic,
+                EntityId = sessionId,
+                CreatedAt = clock.GetUtcNow(),
+            });
             await db.SaveChangesAsync(ct);
-            // NOTIFY in the same transaction: subscribers wake only on committed
-            // writes, and never on a rolled-back one.
             await db.Database.ExecuteSqlAsync(
                 $"SELECT pg_notify({LandbridgeDbContext.EventChannel}, {sessionId.ToString()})", ct);
+
+
             if (ownTx is not null)
                 await ownTx.CommitAsync(ct);
         }

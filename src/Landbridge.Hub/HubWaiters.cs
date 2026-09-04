@@ -4,9 +4,10 @@ using System.Threading.Channels;
 namespace Landbridge.Hub;
 
 /// <summary>
-/// In-process doorbell after a <c>hub_queue</c> insert. Coalesce per subscriber
-/// (single-slot drop-write); the queue rows themselves are not coalesced — SSE
-/// catch-up SELECTs every id since <c>after</c>.
+/// In-process doorbell after NOTIFY. Coalesce per subscriber (single-slot
+/// drop-write). The outbox rows are not coalesced — SSE catch-up SELECTs
+/// every <c>hub_queue.id > after</c>.
+
 /// </summary>
 public sealed class HubWaiters
 {

@@ -1,12 +1,12 @@
 namespace Landbridge.ControlPlane;
 
 /// <summary>
-/// Durable wake log for the hub (<c>ideas/hub-and-write-queue.md</c>). The hub
-/// LISTENs on <see cref="LandbridgeDbContext.EventChannel"/> and inserts a row
-/// naming the topic + entity to refetch. SSE clients catch up with
-/// <c>id > after</c> and follow; a sweeper deletes rows older than the
-/// retain window. Not the session source of truth — that stays <see cref="SessionRow"/>.
-
+/// Transactional outbox for the hub. Inserted in
+/// <see cref="SessionStore"/>'s commit, same transaction as the session write
+/// and <c>pg_notify</c>. The notify is a doorbell; this table is what the hub
+/// tails with <c>id > after</c> so a hub restart does not drop wakes.
+/// Sweeper deletes rows older than the retain window. Not the session source
+/// of truth — that stays <see cref="SessionRow"/>.
 /// </summary>
 public sealed class HubQueueRow
 {

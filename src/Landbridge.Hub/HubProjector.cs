@@ -1,18 +1,14 @@
 using Landbridge.ControlPlane;
-using Microsoft.EntityFrameworkCore;
 
 namespace Landbridge.Hub;
 
 /// <summary>
-/// LISTENs on session NOTIFY, inserts wake rows into <see cref="HubQueueRow"/>
-/// (id + topic only — clients refetch over HTTP), then wakes SSE waiters.
-/// Own connection for LISTEN; factory for the writes.
+/// LISTENs on session NOTIFY and wakes SSE waiters. Does not write — the
+/// outbox row is already in <c>hub_queue</c> from <see cref="SessionStore"/>.
 /// </summary>
 public sealed class HubProjector(
     string connectionString,
-    IDbContextFactory<LandbridgeDbContext> dbFactory,
     HubWaiters waiters,
-    TimeProvider clock,
     ILogger<HubProjector> logger) : IHostedService, IAsyncDisposable
 {
     private readonly SessionEventListener _listener = new(connectionString);
@@ -55,43 +51,16 @@ public sealed class HubProjector(
         {
             await foreach (var sessionId in _listener.ListenAsync(ct))
             {
-                try
-                {
-                    await EnqueueAsync(sessionId, ct);
-                }
-                catch (OperationCanceledException) when (ct.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch (Exception ex)
-                {
-                    logger.LogWarning(ex, "hub enqueue failed for session {SessionId}", sessionId);
-                }
+                waiters.Wake(HubQueueRow.SessionTopic, sessionId);
+                waiters.Wake(HubQueueRow.SessionsTopic, entityId: null);
             }
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {
         }
-    }
-
-    private async Task EnqueueAsync(Guid sessionId, CancellationToken ct)
-    {
-        await using var db = await dbFactory.CreateDbContextAsync(ct);
-        var at = clock.GetUtcNow();
-        db.HubQueue.Add(new HubQueueRow
+        catch (Exception ex)
         {
-            Topic = HubQueueRow.SessionTopic,
-            EntityId = sessionId,
-            CreatedAt = at,
-        });
-        db.HubQueue.Add(new HubQueueRow
-        {
-            Topic = HubQueueRow.SessionsTopic,
-            EntityId = sessionId,
-            CreatedAt = at,
-        });
-        await db.SaveChangesAsync(ct);
-        waiters.Wake(HubQueueRow.SessionTopic, sessionId);
-        waiters.Wake(HubQueueRow.SessionsTopic, entityId: null);
+            logger.LogWarning(ex, "hub LISTEN pump failed");
+        }
     }
 }

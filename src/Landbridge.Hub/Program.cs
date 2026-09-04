@@ -17,10 +17,9 @@ builder.Services.AddOptions<HubOptions>().BindConfiguration(HubOptions.SectionNa
 builder.Services.AddSingleton<HubWaiters>();
 builder.Services.AddSingleton(sp => new HubProjector(
     connectionString,
-    sp.GetRequiredService<IDbContextFactory<LandbridgeDbContext>>(),
     sp.GetRequiredService<HubWaiters>(),
-    sp.GetRequiredService<TimeProvider>(),
     sp.GetRequiredService<ILogger<HubProjector>>()));
+
 builder.Services.AddHostedService(sp => sp.GetRequiredService<HubProjector>());
 builder.Services.AddHostedService<HubRetention>();
 

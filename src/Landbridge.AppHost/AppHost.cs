@@ -175,10 +175,10 @@ var mcp = builder.AddProject<Projects.Landbridge_Mcp>("mcp", options => options.
 
 const int hubPort = 5300;
 var hubListenUrl = $"http://+:{hubPort}";
-// SSE hub (ideas/hub-and-write-queue.md). Same Postgres, own LISTEN, writes
-// hub_queue, serves EventSource on 5300. Nothing consumes it yet; WaitFor(mcp)
-// so the EF migration has run. Un-proxied like the plane so a browser can dial
-// the EventSource on a fixed port.
+// SSE hub (ideas/hub-and-write-queue.md). Tails hub_queue; LISTEN is a doorbell.
+// WaitFor(mcp) so the EF migration has run. Un-proxied like the plane so a
+// browser can dial the EventSource on a fixed port.
+
 builder.AddProject<Projects.Landbridge_Hub>("hub", options => options.ExcludeLaunchProfile = true)
     .WithReference(landbridgeDb)
     .WaitFor(mcp)

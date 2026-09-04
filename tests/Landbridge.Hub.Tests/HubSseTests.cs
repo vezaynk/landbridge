@@ -28,23 +28,31 @@ public sealed class HubSseTests(PostgresFixture pg) : IAsyncLifetime
     private static readonly TimeSpan Patience = TimeSpan.FromSeconds(30);
 
     [SkippableFact]
-    public async Task A_session_commit_writes_queue_rows()
+    public async Task Catch_up_survives_starting_the_hub_after_the_write()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         using var cts = new CancellationTokenSource(Patience);
         var ct = cts.Token;
 
+        var sessionId = await CreateSessionAsync(ct);
+
         await using var app = BuildServer();
         await app.StartAsync(ct);
         await app.Services.GetRequiredService<HubProjector>().WhenListening.WaitAsync(ct);
 
-        var sessionId = await CreateSessionAsync(ct);
+        using var client = Client(app);
+        using var req = new HttpRequestMessage(HttpMethod.Get, "/sessions/events");
+        req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+        using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
 
-        await using var db = pg.NewContext();
-        var rows = await WaitForQueueAsync(n => n >= 2, ct);
-
-        Assert.Contains(rows, r => r.Topic == HubQueueRow.SessionTopic && r.EntityId == sessionId);
-        Assert.Contains(rows, r => r.Topic == HubQueueRow.SessionsTopic && r.EntityId == sessionId);
+        await using var stream = await resp.Content.ReadAsStreamAsync(ct);
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        var ev = await ReadSseEventAsync(reader, ct);
+        Assert.Equal("change", ev.Event);
+        using var doc = JsonDocument.Parse(ev.Data);
+        Assert.Equal("sessions", doc.RootElement.GetProperty("topic").GetString());
+        Assert.Equal(sessionId, doc.RootElement.GetProperty("entityId").GetGuid());
 
         await app.StopAsync(ct);
     }
@@ -93,10 +101,6 @@ public sealed class HubSseTests(PostgresFixture pg) : IAsyncLifetime
         await app.Services.GetRequiredService<HubProjector>().WhenListening.WaitAsync(ct);
 
         var sessionId = await CreateSessionAsync(ct);
-        await using (var db = pg.NewContext())
-            await WaitForQueueAsync(n => n >= 2, ct);
-
-
         long queueId;
         await using (var db = pg.NewContext())
         {
@@ -132,22 +136,6 @@ public sealed class HubSseTests(PostgresFixture pg) : IAsyncLifetime
         return applied.Session.Id.Value;
     }
 
-    private async Task<List<HubQueueRow>> WaitForQueueAsync(Func<int, bool> enough, CancellationToken ct)
-    {
-        for (var i = 0; i < 50; i++)
-        {
-            await using var db = pg.NewContext();
-            var rows = await db.HubQueue.AsNoTracking().OrderBy(r => r.Id).ToListAsync(ct);
-            if (enough(rows.Count))
-                return rows;
-            await Task.Delay(50, ct);
-        }
-
-        await using var lastDb = pg.NewContext();
-        var last = await lastDb.HubQueue.AsNoTracking().OrderBy(r => r.Id).ToListAsync(ct);
-        throw new TimeoutException($"hub_queue stayed at {last.Count} rows");
-    }
-
     private WebApplication BuildServer()
     {
         var builder = WebApplication.CreateBuilder();
@@ -160,10 +148,9 @@ public sealed class HubSseTests(PostgresFixture pg) : IAsyncLifetime
         builder.Services.AddSingleton<HubWaiters>();
         builder.Services.AddSingleton(sp => new HubProjector(
             pg.ConnectionString,
-            sp.GetRequiredService<IDbContextFactory<LandbridgeDbContext>>(),
             sp.GetRequiredService<HubWaiters>(),
-            sp.GetRequiredService<TimeProvider>(),
             sp.GetRequiredService<ILogger<HubProjector>>()));
+
         builder.Services.AddHostedService(sp => sp.GetRequiredService<HubProjector>());
         var app = builder.Build();
         app.MapHub();

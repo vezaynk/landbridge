@@ -33,7 +33,8 @@ A write queue moves **plane commit** off the MCP return. Worker observe does not
 
 | Piece | Where | Notes |
 |---|---|---|
-| Session writes | `Landbridge.Mcp` → `SessionStore` → Core | `SaveChanges` + `pg_notify(landbridge_session_events, sessionId)` in one transaction |
+| Session writes | `Landbridge.Mcp` → `SessionStore` → Core | `SaveChanges` + `hub_queue` outbox + `pg_notify(landbridge_session_events, sessionId)` in one transaction |
+
 | Dispatch wake | `SessionEventListener` | one-consumer `LISTEN`; `SKIP LOCKED` claim |
 | Inbox wake | `SessionEventFanout` | **second** `LISTEN` so a slow snapshot cannot stall dispatch; coalesced single-slot drop-write |
 | Lead live read | `GET /lead/inbox/events`, `watch_lead_inbox` | full **snapshot** on wake, not a delta ([`lead-inbox-sse.md`](lead-inbox-sse.md)) |
@@ -42,7 +43,8 @@ A write queue moves **plane commit** off the MCP return. Worker observe does not
 | Machines | `RunnerConnectionRegistry` | **in-memory**; heartbeats do not `NOTIFY`; evaporate on Core restart; tasks rehydrate (`RehydrateMachineAsync`) |
 | Event log | session-scoped rows + `EventLogDetail` | trail of Apply, not a live entity stream |
 | Runner channel | `/runner` WebSocket | frozen §10 enum; `landbridged` dials out |
-| Hub (started) | `Landbridge.Hub` | LISTENs, writes `hub_queue`, SSE at `:5300`. Nothing consumes it yet. |
+| Hub (started) | `Landbridge.Hub` | LISTENs as doorbell, tails `hub_queue`, SSE at `:5300`. Nothing consumes it yet. |
+
 
 
 `Landbridge.Mcp` is one ASP.NET process: MCP tools, OAuth, `/runner`, dashboard, and `Apply`. The split below is that process cut into three.
@@ -187,7 +189,8 @@ Credentials/tokens (§13), teams list (HTTP), friction (HTTP until it hurts), pe
 
 ### Sessions — already exists
 
-`CommitAsync` stays: write + `pg_notify(landbridge_session_events, sessionId)` in one transaction. Hub `LISTEN`s on that channel.
+`CommitAsync` stays: write + `hub_queue` + `pg_notify(landbridge_session_events, sessionId)` in one transaction. Hub `LISTEN`s on that channel as a doorbell and tails the outbox.
+
 
 ### Machines — missing
 
@@ -206,7 +209,9 @@ Not extra `LISTEN` channels in v1. Session (or machine) NOTIFY is the doorbell; 
 
 ## Resume and TTL
 
-SSE is a **notification log**, not a state stream. Bodies live on HTTP GET.
+SSE is a **notification log** tailed from the Core outbox (`hub_queue`). Bodies live on HTTP GET.
+
+`CommitAsync` inserts the outbox row in the **same transaction** as the session write and `pg_notify`. NOTIFY is a doorbell. Hub restart: `SELECT id > after` (or `0`) — LISTEN cannot lose those rows.
 
 | Kind | Resume | Retention |
 |---|---|---|
@@ -215,7 +220,8 @@ SSE is a **notification log**, not a state stream. Bodies live on HTTP GET.
 
 Postgres, not Redis. Command / runner_command still finish on `applied`/`acked`, not expiry.
 
-A second hub replica is another `LISTEN` + `SELECT` on the same database, not a Redis copy.
+A second hub replica tails the same outbox (`LISTEN` + `SELECT`), not a Redis copy.
+
 
 
 ## Dashboard

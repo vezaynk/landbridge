@@ -9,8 +9,10 @@ namespace Landbridge.Hub;
 
 /// <summary>
 /// Session membership and per-row SSE: <c>event: change</c> names what to
-/// refetch over HTTP. No snapshot body. Unauthenticated on purpose — nothing
-/// calls this host yet; the dashboard still polls Core.
+/// refetch over HTTP. Catch-up is <c>hub_queue</c> (written in Core's
+/// commit). NOTIFY only unblocks the wait. Unauthenticated on purpose —
+/// nothing calls this host yet.
+
 /// </summary>
 public static class HubEndpoints
 {

@@ -47,6 +47,20 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task Create_appends_hub_outbox_rows_in_the_same_commit()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+
+        var id = await CreateSubmitted(db);
+
+        var rows = await db.HubQueue.AsNoTracking().OrderBy(r => r.Id).ToListAsync();
+        Assert.Equal(2, rows.Count);
+        Assert.Contains(rows, r => r.Topic == HubQueueRow.SessionTopic && r.EntityId == id.Value);
+        Assert.Contains(rows, r => r.Topic == HubQueueRow.SessionsTopic && r.EntityId == id.Value);
+    }
+
+    [SkippableFact]
     public async Task Create_allocates_distinct_slugs()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
