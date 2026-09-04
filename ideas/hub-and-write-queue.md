@@ -150,11 +150,13 @@ Hub routes (wake-only, `event: change` `{ queueId, topic, entityId }`). Refetch 
 | `GET /forwards/{id}/events` | `forwards` | `forward_id` |
 | `GET /previews/events` | `previews` | mapping id |
 | `GET /previews/{id}/events` | `previews` | mapping id |
-| `GET /machines/events` | `machines` | machine id (enroll/revoke; not heartbeats yet) |
+| `GET /machines/events` | `machines` | machine id (heartbeat + enroll) |
 | `GET /machines/{id}/events` | `machines` | machine id |
-| `GET /machines/{id}/processes/events` | `processes` | machine id (no writer yet) |
+| `GET /machines/{id}/processes/events` | `processes` | machine id (same heartbeat) |
 
-Outbox writers: `CommitAsync` (session/events/exchange), `RegisterServiceAsync` + `ClearServicesAndForwards` (services), `RelayGrantService.MintAsync` + clear (forwards), `PreviewMappingService` create/slide/revoke, `TokenService.ExchangeEnrollmentAsync` (machines, `landbridge_hub_events`).
+
+Outbox writers: `CommitAsync` (session/events/exchange), `RegisterServiceAsync` + `ClearServicesAndForwards` (services), `RelayGrantService.MintAsync` + clear (forwards), `PreviewMappingService` create/slide/revoke, `TokenService.ExchangeEnrollmentAsync` (machines, `landbridge_hub_events`), runner heartbeats (`HubOutbox.WriteHeartbeatAsync` → machines + processes).
+
 
 
 Runner `/runner/events` (Part 3) is **not** this model: no coalesce, replay unacked.

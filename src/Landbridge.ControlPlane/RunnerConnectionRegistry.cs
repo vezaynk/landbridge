@@ -183,11 +183,14 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// a liveness timestamp on behalf of a socket that is no longer carrying anything. A
     /// stale token is ignored outright.</para>
     /// </summary>
-    public void ApplyHeartbeat(ConnectionToken token, MachineHeartbeat heartbeat)
+    public bool ApplyHeartbeat(ConnectionToken token, MachineHeartbeat heartbeat)
     {
-        if (Current(token) is { } conn)
-            Fold(conn, heartbeat);
+        if (Current(token) is not { } conn)
+            return false;
+        Fold(conn, heartbeat);
+        return true;
     }
+
 
     /// <summary>
     /// Folds a heartbeat into whichever connection a machine currently holds: readiness

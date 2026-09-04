@@ -5,6 +5,8 @@ using Landbridge.Contracts;
 using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
 using Landbridge.Mcp.Auth;
+using Microsoft.EntityFrameworkCore;
+
 
 namespace Landbridge.Mcp;
 
@@ -28,7 +30,10 @@ public static class RunnerEndpoint
         RunnerConnectionRegistry registry,
         RunnerEventSink sink,
         DispatchService dispatch,
+        IDbContextFactory<LandbridgeDbContext> dbFactory,
+        TimeProvider clock,
         ILoggerFactory loggerFactory)
+
     {
         var logger = loggerFactory.CreateLogger("Landbridge.Mcp.RunnerEndpoint");
 
@@ -127,7 +132,8 @@ public static class RunnerEndpoint
             await dispatch.RehydrateMachineAsync(machineId, hangUp.Token);
 
             await ReceiveLoopAsync(
-                socket, connection.Token, registry, sink, dispatch, logger, hangUp.Token);
+                socket, connection.Token, registry, sink, dispatch, dbFactory, clock, logger, hangUp.Token);
+
         }
         catch (OperationCanceledException) { }
         catch (WebSocketException e)
@@ -184,6 +190,7 @@ public static class RunnerEndpoint
     private static async Task ReceiveLoopAsync(
         WebSocket socket, RunnerConnectionRegistry.ConnectionToken connection,
         RunnerConnectionRegistry registry, RunnerEventSink sink, DispatchService dispatch,
+        IDbContextFactory<LandbridgeDbContext> dbFactory, TimeProvider clock,
         ILogger logger, CancellationToken ct)
     {
         var machineId = connection.MachineId;
@@ -201,7 +208,18 @@ public static class RunnerEndpoint
                 // THIS connection (#94), so a heartbeat still arriving on a socket that has
                 // been superseded cannot steer the live connection's readiness or refresh
                 // its timestamp on behalf of a socket that is no longer carrying anything.
-                registry.ApplyHeartbeat(connection, heartbeat);
+                if (registry.ApplyHeartbeat(connection, heartbeat))
+                {
+                    try
+                    {
+                        await using var db = await dbFactory.CreateDbContextAsync(ct);
+                        await HubOutbox.WriteHeartbeatAsync(db, clock, machineId, ct);
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        logger.LogWarning(ex, "hub outbox write failed for heartbeat {Machine}", machineId);
+                    }
+                }
                 dispatch.Signal(); // a newly-ready machine can take work now
                 continue;
             }

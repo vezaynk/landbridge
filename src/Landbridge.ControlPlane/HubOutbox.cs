@@ -33,4 +33,20 @@ public static class HubOutbox
     public static Task NotifyHubAsync(LandbridgeDbContext db, Guid id, CancellationToken ct) =>
         db.Database.ExecuteSqlAsync(
             $"SELECT pg_notify({LandbridgeDbContext.HubChannel}, {id.ToString()})", ct);
+
+    /// <summary>
+    /// Heartbeat → machines + processes outbox on the hub channel. No-op when
+    /// <paramref name="machineId"/> is not a Guid (test fixtures use "m1").
+    /// </summary>
+    public static async Task WriteHeartbeatAsync(
+        LandbridgeDbContext db, TimeProvider clock, string machineId, CancellationToken ct)
+    {
+        if (!Guid.TryParse(machineId, out var id))
+            return;
+        Stage(db, clock, HubQueueRow.MachinesTopic, id);
+        Stage(db, clock, HubQueueRow.ProcessesTopic, id);
+        await db.SaveChangesAsync(ct);
+        await NotifyHubAsync(db, id, ct);
+    }
 }
+
