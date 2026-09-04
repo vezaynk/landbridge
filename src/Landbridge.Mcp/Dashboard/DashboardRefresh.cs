@@ -17,6 +17,12 @@ internal sealed class DashboardRefresh : IDisposable
             try { await tick(); }
             catch (ObjectDisposedException) { }
             catch (OperationCanceledException) { }
+            catch (Exception)
+            {
+                // A failed tick must not take down the plane. The circuit's
+                // DbContext is shared; a mutation in flight used to throw
+                // NpgsqlOperationInProgressException here as unhandled.
+            }
         }, null, Interval, Interval);
     }
 

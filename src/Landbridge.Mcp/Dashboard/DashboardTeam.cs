@@ -20,18 +20,18 @@ internal static class DashboardTeam
         return string.IsNullOrEmpty(cookie) ? null : cookie;
     }
 
+    /// <summary>The <c>team</c> query on a navigation URI, or null when absent.</summary>
+    public static string? QueryValue(string uri)
+    {
+        var parsed = QueryHelpers.ParseQuery(new Uri(uri).Query);
+        return parsed.TryGetValue(QueryName, out var values) ? values.ToString() : null;
+    }
+
     public static void WriteCookie(HttpContext http, string key)
     {
         if (http.Response.HasStarted)
             return;
-        http.Response.Cookies.Append(CookieName, key, new CookieOptions
-        {
-            HttpOnly = true,
-            SameSite = SameSiteMode.Lax,
-            Secure = http.Request.IsHttps,
-            Path = "/dashboard",
-            Expires = DateTimeOffset.UtcNow.AddYears(1),
-        });
+        http.Response.Cookies.Append(CookieName, key, DashboardWindow.PrefCookie(http.Request.IsHttps));
     }
 
     public static string Href(string currentUri, string key)
@@ -51,4 +51,17 @@ internal static class DashboardTeam
 
     public static string Address(Guid id, string? slug) =>
         string.IsNullOrEmpty(slug) ? id.ToString() : slug;
+}
+
+/// <summary>Circuit-scoped Team choice so enhanced navigation does not fall back to a stale cookie.</summary>
+internal sealed class DashboardTeamState
+{
+    public string? Key { get; private set; }
+    public bool Chosen { get; private set; }
+
+    public void Set(string key)
+    {
+        Key = key;
+        Chosen = true;
+    }
 }

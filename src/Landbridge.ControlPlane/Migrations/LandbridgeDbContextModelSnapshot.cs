@@ -327,6 +327,14 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("consumer_instance_id");
 
+                    b.Property<string>("ConsumerMachine")
+                        .HasColumnType("text")
+                        .HasColumnName("consumer_machine");
+
+                    b.Property<int?>("ConsumerPort")
+                        .HasColumnType("integer")
+                        .HasColumnName("consumer_port");
+
                     b.Property<Guid?>("ConsumerSessionId")
                         .HasColumnType("uuid")
                         .HasColumnName("consumer_session_id");
@@ -386,6 +394,9 @@ namespace Landbridge.ControlPlane.Migrations
 
                     b.HasIndex("ProducerSessionId")
                         .HasDatabaseName("ix_relay_grants_producer_session_id");
+
+                    b.HasIndex("ConsumerMachine")
+                        .HasDatabaseName("ix_relay_grants_consumer_machine");
 
                     b.ToTable("relay_grants", (string)null);
                 });
@@ -457,6 +468,11 @@ namespace Landbridge.ControlPlane.Migrations
                         .IsRequired()
                         .HasColumnType("text")
                         .HasColumnName("label_hash");
+
+                    b.Property<string>("Label")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("label");
 
                     b.Property<string>("ServiceName")
                         .IsRequired()

@@ -175,6 +175,31 @@ public sealed class PreviewConnectServiceTests(PostgresFixture pg) : IAsyncLifet
     }
 
     [SkippableFact]
+    public async Task Flipping_auth_policy_takes_effect_on_the_next_connect()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var clock = new FakeTimeProvider();
+        var team = TeamId.New();
+        var (producerTask, _) = await WorkingServiceAsync(db, clock, team, "web", 3000);
+        var (connect, _, _) = BuildConnect(db, clock, producerTask);
+        var mappings = new PreviewMappingService(db, clock);
+        var mint = await mappings.CreateAsync(
+            team, producerTask, "web", PreviewAuthPolicy.Gated, TimeSpan.FromMinutes(30));
+
+        Assert.IsType<PreviewConnectResult.Unauthorized>(
+            await connect.ConnectAsync(mint.Label, null, null, RelayUrl));
+
+        Assert.True(await mappings.SetAuthPolicyAsync(mint.Mapping.Id, PreviewAuthPolicy.Public));
+        Assert.IsType<PreviewConnectResult.Established>(
+            await connect.ConnectAsync(mint.Label, null, null, RelayUrl));
+
+        Assert.True(await mappings.SetAuthPolicyAsync(mint.Mapping.Id, PreviewAuthPolicy.Gated));
+        Assert.IsType<PreviewConnectResult.Unauthorized>(
+            await connect.ConnectAsync(mint.Label, null, null, RelayUrl));
+    }
+
+    [SkippableFact]
     public async Task Successful_connect_slides_the_mapping_idle_window()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);

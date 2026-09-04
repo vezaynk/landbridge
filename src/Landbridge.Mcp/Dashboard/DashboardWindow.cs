@@ -35,6 +35,13 @@ internal static class DashboardWindow
         return Default;
     }
 
+    /// <summary>The <c>window</c> query on a navigation URI, or null when absent.</summary>
+    public static string? QueryValue(string uri)
+    {
+        var parsed = QueryHelpers.ParseQuery(new Uri(uri).Query);
+        return parsed.TryGetValue(QueryName, out var values) ? values.ToString() : null;
+    }
+
     public static bool TryParse(string? key, out DashboardWindowOption option)
     {
         if (!string.IsNullOrEmpty(key))
@@ -56,15 +63,22 @@ internal static class DashboardWindow
     {
         if (http.Response.HasStarted)
             return;
-        http.Response.Cookies.Append(CookieName, key, new CookieOptions
-        {
-            HttpOnly = true,
-            SameSite = SameSiteMode.Lax,
-            Secure = http.Request.IsHttps,
-            Path = "/dashboard",
-            Expires = DateTimeOffset.UtcNow.AddYears(1),
-        });
+        http.Response.Cookies.Append(CookieName, key, PrefCookie(http.Request.IsHttps));
     }
+
+    /// <summary>
+    /// Lookback is a UI preference, not a credential: HttpOnly is off so the
+    /// circuit can keep the cookie in sync after enhanced navigation (the HTTP
+    /// response has already started).
+    /// </summary>
+    public static CookieOptions PrefCookie(bool secure) => new()
+    {
+        HttpOnly = false,
+        SameSite = SameSiteMode.Lax,
+        Secure = secure,
+        Path = "/dashboard",
+        Expires = DateTimeOffset.UtcNow.AddYears(1),
+    };
 
     public static string Href(string currentUri, string key)
     {
@@ -85,5 +99,12 @@ internal static class DashboardWindow
 /// <summary>Circuit-scoped current window so the footer and pages share one choice.</summary>
 internal sealed class DashboardWindowState
 {
-    public DashboardWindowOption Current { get; set; } = DashboardWindow.Default;
+    public DashboardWindowOption Current { get; private set; } = DashboardWindow.Default;
+    public bool Chosen { get; private set; }
+
+    public void Set(DashboardWindowOption option)
+    {
+        Current = option;
+        Chosen = true;
+    }
 }

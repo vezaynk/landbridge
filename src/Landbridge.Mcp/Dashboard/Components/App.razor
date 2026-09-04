@@ -12,6 +12,11 @@
     <Routes @rendermode="InteractiveServer" />
     <script src="@Assets["_framework/blazor.web.js"]" autostart="false"></script>
     <script>
+        function landbridgeSetPref(name, value, secure) {
+            document.cookie = name + '=' + encodeURIComponent(value)
+                + '; Path=/dashboard; SameSite=Lax; Max-Age=31536000'
+                + (secure ? '; Secure' : '');
+        }
         Blazor.start({
             circuit: {
                 configureSignalR: function (builder) {

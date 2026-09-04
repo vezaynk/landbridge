@@ -1,4 +1,6 @@
 @using Landbridge.ControlPlane
+@inject FleetBoardMutations Mutations
+@inject IConfiguration Config
 <div class="obs-detail">
     <div class="obs-detail__head">
         <div class="obs-detail__title">
@@ -26,104 +28,141 @@
         </button>
     </div>
 
-    @if (Tab == "tail")
-    {
-        <div class="obs-detail__panel" role="tabpanel">
-            <div class="obs-transcript-head">
-                <span class="obs-transcript-head__title">Event tail</span>
-                @if (Meta.Live)
-                {
-                    <span class="obs-transcript-head__dot"></span>
-                }
-                <span class="obs-transcript-head__spacer"></span>
-                <span class="obs-transcript-head__tag">a@(Lane.Attempt) · @Label(Lane.Machine, Lane.MachineSlug)</span>
-            </div>
-            <div class="obs-transcript">
-                @foreach (var l in Lane.Tail)
-                {
-                    <div class="obs-transcript__line">
-                        <span class="obs-transcript__time">@l.At.ToString("HH:mm:ss")</span>
-                        <span class="obs-transcript__text" style="color:@LineColor(l.Kind)">@l.Kind @(string.IsNullOrEmpty(l.Text) ? "" : "· " + l.Text)</span>
-                    </div>
-                }
-                @if (Lane.Tail.Count == 0)
-                {
-                    <div class="obs-transcript__line">
-                        <span class="obs-transcript__time">&nbsp;</span>
-                        <span class="obs-transcript__text" style="color:var(--color-neutral-700)">no events in the last @WindowLabel</span>
-                    </div>
-                }
-                @if (Meta.Live)
-                {
-                    <div class="obs-transcript__line">
-                        <span class="obs-transcript__time">&nbsp;</span>
-                        <span class="obs-transcript__cursor"></span>
-                    </div>
-                }
-            </div>
+    <div class="obs-detail__panel" role="tabpanel" hidden="@(Tab != "tail")">
+        <div class="obs-transcript-head">
+            <span class="obs-transcript-head__title">Event tail</span>
+            @if (Meta.Live)
+            {
+                <span class="obs-transcript-head__dot"></span>
+            }
+            <span class="obs-transcript-head__spacer"></span>
+            <span class="obs-transcript-head__tag">a@(Lane.Attempt) · @Label(Lane.Machine, Lane.MachineSlug)</span>
         </div>
-    }
-    else if (Tab == "exchange")
-    {
-        <div class="obs-detail__panel" role="tabpanel">
-            <div class="obs-exchange">
-                @if (Lane.Exchange.Count == 0)
-                {
-                    <div class="obs-message" style="border-left-color:var(--color-neutral-800);background:transparent">
-                        <div class="obs-message__text" style="color:var(--color-neutral-700)">No Lead ↔ worker exchange on this session yet.</div>
+        <div class="obs-transcript">
+            @foreach (var l in Lane.Tail)
+            {
+                <div class="obs-transcript__line">
+                    <span class="obs-transcript__time">@l.At.ToString("HH:mm:ss")</span>
+                    <span class="obs-transcript__text" style="color:@LineColor(l.Kind)">@l.Kind @(string.IsNullOrEmpty(l.Text) ? "" : "· " + l.Text)</span>
+                </div>
+            }
+            @if (Lane.Tail.Count == 0)
+            {
+                <div class="obs-transcript__line">
+                    <span class="obs-transcript__time">&nbsp;</span>
+                    <span class="obs-transcript__text" style="color:var(--color-neutral-700)">no events in the last @WindowLabel</span>
+                </div>
+            }
+            @if (Meta.Live)
+            {
+                <div class="obs-transcript__line">
+                    <span class="obs-transcript__time">&nbsp;</span>
+                    <span class="obs-transcript__cursor"></span>
+                </div>
+            }
+        </div>
+    </div>
+    <div class="obs-detail__panel" role="tabpanel" hidden="@(Tab != "exchange")">
+        <div class="obs-exchange">
+            @if (Lane.Exchange.Count == 0)
+            {
+                <div class="obs-message" style="border-left-color:var(--color-neutral-800);background:transparent">
+                    <div class="obs-message__text" style="color:var(--color-neutral-700)">No Lead ↔ worker exchange on this session yet.</div>
+                </div>
+            }
+            @foreach (var m in Lane.Exchange)
+            {
+                var fromLead = string.Equals(m.From, "Lead", StringComparison.Ordinal);
+                var bar = fromLead ? "var(--color-accent-600)" : "var(--color-accent-400)";
+                var bg = fromLead ? "var(--surface-1)" : "var(--surface-2)";
+                <div class="obs-message" style="border-left-color:@bar;background:@bg">
+                    <div class="obs-message__head">
+                        <span class="obs-message__from" style="color:@bar">@m.From</span>
+                        <span class="obs-message__spacer"></span>
+                        <span class="obs-message__at">@(m.At is { } at ? Age(at, Now) : "")</span>
                     </div>
+                    <div class="obs-message__text">@m.Text</div>
+                </div>
+            }
+        </div>
+    </div>
+    <div class="obs-detail__panel" role="tabpanel" hidden="@(Tab != "ports")">
+        <div class="obs-forwards">
+            <div class="obs-ports__bind">
+                @if (Binding is { } bound)
+                {
+                    <span class="obs-ports__bound">bound @bound.MachineName</span>
+                    <button type="button" disabled="@Busy" @onclick="UnbindMachineAsync">unbind</button>
                 }
-                @foreach (var m in Lane.Exchange)
+                else
                 {
-                    var fromLead = string.Equals(m.From, "Lead", StringComparison.Ordinal);
-                    var bar = fromLead ? "var(--color-accent-600)" : "var(--color-accent-400)";
-                    var bg = fromLead ? "var(--surface-1)" : "var(--surface-2)";
-                    <div class="obs-message" style="border-left-color:@bar;background:@bg">
-                        <div class="obs-message__head">
-                            <span class="obs-message__from" style="color:@bar">@m.From</span>
-                            <span class="obs-message__spacer"></span>
-                            <span class="obs-message__at">@(m.At is { } at ? Age(at, Now) : "")</span>
-                        </div>
-                        <div class="obs-message__text">@m.Text</div>
-                    </div>
+                    <span class="obs-ports__bound is-off">no machine bound</span>
                 }
             </div>
-        </div>
-    }
-    else
-    {
-        <div class="obs-detail__panel" role="tabpanel">
-            <div class="obs-forwards">
-                <div class="obs-forwards__title">Forwarded</div>
-                @if (Lane.Ports.Count == 0)
-                {
-                    <div class="obs-forwards__empty">No forwarded ports.</div>
-                }
-                @foreach (var p in Lane.Ports)
-                {
-                    <div class="obs-forward @(p.Live ? "is-live" : "")">
-                        <span class="obs-port__dot" style="background:@(p.Live ? "var(--forward)" : "var(--color-neutral-700)")"></span>
-                        <span class="obs-forward__name">@p.Name:@p.Port</span>
-                        <span class="obs-forward__meta">@(p.Live ? "live" : "down") · @Age(p.CreatedAt, Now)</span>
-                    </div>
-                }
+            <div class="obs-forwards__title">Forwarding</div>
+            <div class="obs-ports__form">
+                <input @bind="NewName" placeholder="name" aria-label="forward name" disabled="@Busy" />
+                <input @bind="NewPort" type="number" min="1" max="65535" placeholder="port" aria-label="forward port" disabled="@Busy" />
+                <button type="button" disabled="@Busy" @onclick="RegisterAsync">Register</button>
+            </div>
+            @if (Lane.Ports.Count == 0)
+            {
+                <div class="obs-forwards__empty">No registered services.</div>
+            }
+            @foreach (var p in Lane.Ports)
+            {
+                <div class="obs-forward @(p.Live ? "is-live" : "")">
+                    <span class="obs-port__dot" style="background:@(p.Live ? "var(--forward)" : "var(--color-neutral-700)")"></span>
+                    <span class="obs-forward__name">@p.Name:@p.Port</span>
+                    <span class="obs-forward__meta">@(p.Live ? "live" : "down") · @Age(p.CreatedAt, Now)</span>
+                    <button type="button" disabled="@Busy" @onclick="() => BindForwardAsync(p.Name)">bind</button>
+                    <button type="button" disabled="@Busy" @onclick="() => PreviewAsync(p.Name)">preview</button>
+                    <button type="button" disabled="@Busy" @onclick="() => RevokeForwardAsync(p.Name)">revoke</button>
+                </div>
+            }
 
-                <div class="obs-forwards__title">Previews</div>
-                @if (Previews.Count == 0)
-                {
-                    <div class="obs-forwards__empty">No preview ports.</div>
-                }
-                @foreach (var p in Previews)
-                {
-                    <div class="obs-forward is-preview">
-                        <span class="obs-port__dot" style="background:var(--color-accent-400)"></span>
-                        <span class="obs-forward__name">@p.ServiceName</span>
-                        <span class="obs-forward__meta">@p.Policy.ToString().ToLowerInvariant() · expires @Remaining(p.ExpiresAt)</span>
-                    </div>
-                }
-            </div>
+            <div class="obs-forwards__title">Receiving</div>
+            @if (VisibleReceiving.Count == 0)
+            {
+                <div class="obs-forwards__empty">No ports forwarded to this machine.</div>
+            }
+            @foreach (var r in VisibleReceiving)
+            {
+                <div class="obs-forward is-live">
+                    <span class="obs-port__dot" style="background:var(--forward)"></span>
+                    <span class="obs-forward__name">127.0.0.1:@r.Port</span>
+                    <span class="obs-forward__meta">@r.ServiceName</span>
+                    <button type="button" disabled="@Busy" @onclick="() => RevokeReceiptAsync(r.ForwardId)">revoke</button>
+                </div>
+            }
+
+            <div class="obs-forwards__title">Previews</div>
+            @if (Previews.Count == 0)
+            {
+                <div class="obs-forwards__empty">No preview ports.</div>
+            }
+            @foreach (var p in Previews)
+            {
+                var isPublic = p.Policy == PreviewAuthPolicy.Public;
+                <div @key="p.Id" class="obs-forward is-preview @(isPublic ? "is-public" : "")">
+                    <span class="obs-port__dot" style="background:var(--color-accent-400)"></span>
+                    <span class="obs-forward__name">@p.ServiceName</span>
+                    <label class="obs-preview__public @(isPublic ? "is-on" : "")">
+                        <input type="checkbox" checked="@isPublic" disabled="@Busy"
+                               aria-label="public preview"
+                               @onchange="e => SetPreviewPublicAsync(p.Id, e)" />
+                        public
+                    </label>
+                    <span class="obs-forward__meta">expires @Remaining(p.ExpiresAt)</span>
+                    @if (!string.IsNullOrEmpty(p.Label))
+                    {
+                        <a class="obs-forward__open" href="@PreviewUrl(p.Label)" target="_blank" rel="noopener">open</a>
+                    }
+                    <button type="button" disabled="@Busy" @onclick="() => RevokePreviewAsync(p.Id)">revoke</button>
+                </div>
+            }
         </div>
-    }
+    </div>
 </div>
 
 @code {
@@ -136,11 +175,43 @@
     [Parameter]
     public string WindowLabel { get; set; } = DashboardWindow.Default.Label;
 
+    [Parameter]
+    public LeadMachineBinding? Binding { get; set; }
+
+    [Parameter]
+    public Guid HumanId { get; set; }
+
+    [Parameter]
+    public EventCallback OnChanged { get; set; }
+
+    [Parameter]
+    public EventCallback<FleetNotice> OnNotice { get; set; }
+
+    [Parameter]
+    public IReadOnlyList<ObservabilityReceipt> Receipts { get; set; } = [];
+
     private string Tab { get; set; } = "tail";
+    private bool Busy { get; set; }
+    private string NewName { get; set; } = "";
+    private string NewPort { get; set; } = "";
 
     private LaneMeta Meta => LaneMeta.Of(Lane, Now);
     private IReadOnlyList<ObservabilityPreview> Previews => Lane.Previews ?? [];
-    private int PortCount => Lane.Ports.Count + Previews.Count;
+
+    private IReadOnlyList<ObservabilityReceipt> VisibleReceiving
+    {
+        get
+        {
+            var ids = new HashSet<string>(StringComparer.Ordinal);
+            if (!string.IsNullOrEmpty(Lane.Machine) && Lane.Machine != "—")
+                ids.Add(Lane.Machine);
+            if (Binding is { } b)
+                ids.Add(b.MachineId.ToString());
+            return Receipts.Where(r => ids.Contains(r.MachineId)).ToList();
+        }
+    }
+
+    private int PortCount => Lane.Ports.Count + Previews.Count + VisibleReceiving.Count;
 
     private string Remaining(DateTimeOffset at)
     {
@@ -164,4 +235,62 @@
         nameof(ReportResult) => "var(--color-neutral-300)",
         _ => "var(--color-neutral-600)",
     };
+
+    private string PreviewUrl(string label) =>
+        PreviewMint.Url(
+            Config[PreviewMint.UrlBaseConfigKey]
+            ?? Environment.GetEnvironmentVariable("LANDBRIDGE_PREVIEW_URL_BASE")
+            ?? "http://preview.localhost",
+            label);
+
+    private Task UnbindMachineAsync() =>
+        Run(() => Mutations.UnbindMachineAsync(HumanId, CancellationToken.None));
+
+    private Task RegisterAsync() =>
+        Run(() => Mutations.RegisterForwardAsync(
+            Lane.SessionId, NewName, int.TryParse(NewPort, out var port) ? port : 0, CancellationToken.None));
+
+    private Task BindForwardAsync(string name) =>
+        Run(() => Mutations.BindForwardAsync(HumanId, Lane.TeamId, name, CancellationToken.None));
+
+    private Task PreviewAsync(string name) =>
+        Run(() => Mutations.PreviewAsync(Lane.TeamId, Lane.SessionId, name, CancellationToken.None));
+
+    private Task RevokeForwardAsync(string name) =>
+        Run(() => Mutations.RevokeForwardAsync(Lane.SessionId, name, CancellationToken.None));
+
+    private Task RevokePreviewAsync(Guid id) =>
+        Run(() => Mutations.RevokePreviewAsync(id, CancellationToken.None));
+
+    private Task SetPreviewPublicAsync(Guid id, ChangeEventArgs e) =>
+        Run(() => Mutations.SetPreviewPublicAsync(id, IsChecked(e), CancellationToken.None));
+
+    private static bool IsChecked(ChangeEventArgs e) =>
+        e.Value is bool b
+            ? b
+            : string.Equals(e.Value?.ToString(), "true", StringComparison.OrdinalIgnoreCase);
+
+    private Task RevokeReceiptAsync(Guid forwardId) =>
+        Run(() => Mutations.RevokeReceiptAsync(forwardId, CancellationToken.None));
+
+    private async Task Run(Func<Task<FleetNotice>> action)
+    {
+        if (Busy)
+            return;
+        Busy = true;
+        try
+        {
+            var notice = await action();
+            await OnNotice.InvokeAsync(notice);
+            await OnChanged.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            await OnNotice.InvokeAsync(new FleetNotice("Failed", ex.Message, Error: true));
+        }
+        finally
+        {
+            Busy = false;
+        }
+    }
 }

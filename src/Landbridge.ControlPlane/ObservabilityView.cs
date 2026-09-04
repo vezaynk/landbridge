@@ -12,7 +12,8 @@ namespace Landbridge.ControlPlane;
 public sealed record ObservabilitySnapshot(
     IReadOnlyList<ObservabilityMachine> Machines,
     IReadOnlyList<ObservabilityLane> Lanes,
-    ObservabilitySummary Summary);
+    ObservabilitySummary Summary,
+    IReadOnlyList<ObservabilityReceipt>? Receiving = null);
 
 public sealed record ObservabilitySummary(
     int Working,
@@ -68,12 +69,22 @@ public sealed record ObservabilityLane(
     string SessionSlug = "",
     string TeamSlug = "",
     string MachineSlug = "",
-    IReadOnlyList<ObservabilityPreview>? Previews = null);
+    IReadOnlyList<ObservabilityPreview>? Previews = null,
+    IReadOnlyList<ObservabilityReceipt>? Receiving = null);
 
 public sealed record ObservabilityPort(string Name, int Port, bool Live, DateTimeOffset CreatedAt);
 
 public sealed record ObservabilityPreview(
-    string ServiceName, PreviewAuthPolicy Policy, DateTimeOffset ExpiresAt, Guid Id = default);
+    string ServiceName, PreviewAuthPolicy Policy, DateTimeOffset ExpiresAt, Guid Id = default,
+    string Label = "");
+
+public sealed record ObservabilityReceipt(
+    Guid ForwardId,
+    string MachineId,
+    string ServiceName,
+    int Port,
+    Guid ProducerSessionId,
+    DateTimeOffset OpenedAt);
 
 public sealed record ObservabilityMark(
     ObservabilityMarkKind Kind,
@@ -226,13 +237,23 @@ public sealed partial class DashboardQueries
             ? []
             : await db.PreviewMappings.AsNoTracking()
                 .Where(p => sessionIds.Contains(p.SessionId) && p.ExpiresAt > now)
-                .Select(p => new { p.SessionId, p.Id, p.ServiceName, p.AuthPolicy, p.ExpiresAt })
+                .Select(p => new { p.SessionId, p.Id, p.ServiceName, p.AuthPolicy, p.ExpiresAt, p.Label })
                 .ToListAsync(ct);
         var previewsBySession = previewRows
             .GroupBy(p => p.SessionId)
             .ToDictionary(g => g.Key, g => g.ToList());
 
         var relayBytes = await forwards.SumAsync(u => (long?)u.ForwardedBytes, ct) ?? 0;
+
+        var receipts = await db.RelayGrants.AsNoTracking()
+            .Where(g => !g.Revoked && g.ConsumerPort != null && g.ConsumerMachine != null)
+            .Select(g => new ObservabilityReceipt(
+                g.ForwardId, g.ConsumerMachine!, g.ServiceName, g.ConsumerPort!.Value,
+                g.ProducerSessionId, g.CreatedAt))
+            .ToListAsync(ct);
+        var receiptsByMachine = receipts
+            .GroupBy(r => r.MachineId, StringComparer.Ordinal)
+            .ToDictionary(g => g.Key, g => g.ToList(), StringComparer.Ordinal);
 
         var teamIds = rows.Select(r => r.TeamId).Distinct().ToArray();
         var teamSlugs = teamIds.Length == 0
@@ -303,7 +324,7 @@ public sealed partial class DashboardQueries
                 .Select(p => new ObservabilityPort(p.Name, p.Port, Live: true, p.CreatedAt))
                 .ToList() ?? [];
             var previews = previewsBySession.GetValueOrDefault(s.Id)?
-                .Select(p => new ObservabilityPreview(p.ServiceName, p.AuthPolicy, p.ExpiresAt, p.Id))
+                .Select(p => new ObservabilityPreview(p.ServiceName, p.AuthPolicy, p.ExpiresAt, p.Id, p.Label))
                 .ToList() ?? [];
 
             var sessionEvents = eventRows.Where(e => e.SessionId == s.Id).OrderBy(e => e.OccurredAt).ToList();
@@ -340,7 +361,8 @@ public sealed partial class DashboardQueries
                 s.InputAnswer, s.PermissionTool, s.WorkerReport, s.LastRequeueReason, machine,
                 live, beat, progress, input, output, cacheRead, cacheWrite, cost, reportedAt,
                 ports, marks, exchange, tail, s.Slug, teamSlugs.GetValueOrDefault(s.TeamId) ?? "",
-                machineSlugs.GetValueOrDefault(machine) ?? "", previews));
+                machineSlugs.GetValueOrDefault(machine) ?? "", previews,
+                receiptsByMachine.GetValueOrDefault(machine)));
         }
 
         var machines = machineViews
@@ -363,7 +385,7 @@ public sealed partial class DashboardQueries
             RelayBytes: relayBytes,
             OldestHeartbeat: machines.Select(m => m.LastHeartbeat).Where(h => h is not null).Min());
 
-        return new ObservabilitySnapshot(machines, lanes, summary);
+        return new ObservabilitySnapshot(machines, lanes, summary, receipts);
     }
 
     private static IReadOnlyList<ObservabilityMark> BuildMarks(

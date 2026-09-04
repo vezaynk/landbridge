@@ -251,6 +251,37 @@ public sealed class RelayGrantService(
         return affected == 1;
     }
 
+    /// <summary>
+    /// Stamp the consumer loopback after <c>forward-opened</c>. The fleet board's
+    /// Receiving list reads these two columns.
+    /// </summary>
+    public Task RecordConsumerBindAsync(
+        Guid forwardId, string machineId, int port, CancellationToken ct = default) =>
+        db.RelayGrants.Where(g => g.ForwardId == forwardId && !g.Revoked)
+            .ExecuteUpdateAsync(s => s
+                .SetProperty(g => g.ConsumerMachine, machineId)
+                .SetProperty(g => g.ConsumerPort, port), ct);
+
+    /// <summary>The splice ended; the loopback is no longer a live receiving port.</summary>
+    public Task ClearConsumerBindAsync(Guid forwardId, CancellationToken ct = default) =>
+        db.RelayGrants.Where(g => g.ForwardId == forwardId)
+            .ExecuteUpdateAsync(s => s.SetProperty(g => g.ConsumerPort, (int?)null), ct);
+
+    public async Task<(SessionId Producer, SessionId? Consumer, string ServiceName)?> CloseConsumerAsync(
+        Guid forwardId, CancellationToken ct = default)
+    {
+        var row = await db.RelayGrants.FirstOrDefaultAsync(g => g.ForwardId == forwardId && !g.Revoked, ct);
+        if (row is null)
+            return null;
+        row.Revoked = true;
+        row.ConsumerPort = null;
+        await db.SaveChangesAsync(ct);
+        return (
+            new SessionId(row.ProducerSessionId),
+            row.ConsumerSessionId is { } c ? new SessionId(c) : null,
+            row.ServiceName);
+    }
+
     // ── Internals ───────────────────────────────────────────────────────────
 
     private static (string Grant, string Hash) NewGrant()

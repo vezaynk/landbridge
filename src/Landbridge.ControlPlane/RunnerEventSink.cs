@@ -143,6 +143,12 @@ public sealed class RunnerEventSink(
                 // way "an end closed" is not.
                 forwards.Fail(fc.ForwardId, fc.Refusal ?? "the producer or consumer end closed");
                 logger.LogInformation("runner forward-closed: task={Task} forward={ForwardId}", fc.Session, fc.ForwardId);
+                if (Guid.TryParse(fc.ForwardId, out var closedId))
+                {
+                    await using var scope = scopes.CreateAsyncScope();
+                    await scope.ServiceProvider.GetRequiredService<Auth.RelayGrantService>()
+                        .ClearConsumerBindAsync(closedId, ct);
+                }
                 break;
         }
     }

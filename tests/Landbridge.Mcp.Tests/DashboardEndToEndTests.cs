@@ -253,8 +253,54 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Contains("Ports", body, StringComparison.Ordinal);
         Assert.Contains("no machine bound", body, StringComparison.Ordinal);
         Assert.Contains("No registered services", body, StringComparison.Ordinal);
+        Assert.Contains(">Register<", body, StringComparison.Ordinal);
         Assert.Contains(">bind<", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("obs-rail__list--ports", body, StringComparison.Ordinal);
+        Assert.DoesNotContain(">Forwards<", body, StringComparison.Ordinal);
+        Assert.DoesNotContain("obs-attempt", body, StringComparison.Ordinal);
+        var lanes = body.IndexOf("obs-lanes", StringComparison.Ordinal);
+        var windowBar = body.IndexOf("window-bar", StringComparison.Ordinal);
+        var detail = body.IndexOf("obs-detail", StringComparison.Ordinal);
+        Assert.True(lanes >= 0 && windowBar > lanes && windowBar < detail,
+            "the window footer sits in the lanes column, not under the sidebars");
         Assert.Contains($"/dashboard/events?session={await SessionSlugAsync(sessionId, ct)}", body, StringComparison.Ordinal);
+
+        await app.StopAsync(ct);
+    }
+
+    [SkippableFact]
+    public async Task Fleet_board_preview_row_shows_a_public_checkbox_from_the_mapping()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(2));
+        var ct = cts.Token;
+
+        await using var app = BuildPlane();
+        await app.StartAsync(ct);
+
+        var team = TeamId.New();
+        var (sessionId, _) = await SeedWorkingTaskAsync(team, ct);
+        await using (var db = pg.NewContext())
+        {
+            await new PreviewMappingService(db, TimeProvider.System).CreateAsync(
+                team, sessionId, "web", PreviewAuthPolicy.Gated, TimeSpan.FromHours(2), ct);
+        }
+
+        var html = await GetAuthedAsync(app, "/dashboard/machines", ct);
+        Assert.Contains("obs-preview__public", html, StringComparison.Ordinal);
+        Assert.Contains("aria-label=\"public preview\"", html, StringComparison.Ordinal);
+        Assert.DoesNotContain("is-public", html, StringComparison.Ordinal);
+
+        await using (var db = pg.NewContext())
+        {
+            var id = await db.PreviewMappings.Select(m => m.Id).SingleAsync(ct);
+            await new PreviewMappingService(db, TimeProvider.System)
+                .SetAuthPolicyAsync(id, PreviewAuthPolicy.Public, ct);
+        }
+
+        html = await GetAuthedAsync(app, "/dashboard/machines", ct);
+        Assert.Contains("obs-preview__public is-on", html, StringComparison.Ordinal);
+        Assert.Contains("is-public", html, StringComparison.Ordinal);
 
         await app.StopAsync(ct);
     }

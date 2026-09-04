@@ -88,6 +88,15 @@ public sealed class RelayGrantRow
     /// <summary>Revoked when the producer task leaves working (ClearServicesAndForwards, §6/§8.3),
     /// except where a permission block keeps that effect from firing — see the type remarks.</summary>
     public bool Revoked { get; set; }
+
+    /// <summary>
+    /// The consumer machine that bound the loopback, and the port it reported
+    /// via <c>forward-opened</c>. Null until the forward is established; port
+    /// cleared when the splice closes. This is the "receiving" address on that box.
+    /// </summary>
+    public string? ConsumerMachine { get; set; }
+
+    public int? ConsumerPort { get; set; }
 }
 
 /// <summary>

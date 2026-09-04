@@ -26,21 +26,11 @@
 
     <UsageMeter Lane="Lane" Meta="Meta" Now="Now" />
 
-    <div class="obs-ports">
-        @foreach (var p in Lane.Ports)
-        {
-            <span class="obs-port" style="@PortStyle(p)">
-                <span class="obs-port__dot" style="background:@(p.Live ? "var(--forward)" : "var(--color-neutral-700)")"></span>@p.Name:@p.Port
-            </span>
-        }
-    </div>
-
     <div class="obs-row__trail">
         @if (Unread > 0)
         {
             <span class="obs-unread">@Unread</span>
         }
-        <span class="obs-attempt">a@(Lane.Attempt)</span>
     </div>
 </div>
 
@@ -85,13 +75,5 @@
                 ? $"{(int)ts.TotalHours}h{ts.Minutes:00}m"
                 : ts.Minutes > 0 ? $"{ts.Minutes}m{ts.Seconds:00}s" : $"{ts.Seconds}s";
         }
-    }
-
-    private static string PortStyle(ObservabilityPort p)
-    {
-        var border = p.Live ? "var(--forward-line)" : "var(--color-neutral-800)";
-        var bg = p.Live ? "var(--forward-tint)" : "transparent";
-        var fg = p.Live ? "var(--color-neutral-300)" : "var(--color-neutral-600)";
-        return $"border-color:{border};background:{bg};color:{fg};";
     }
 }

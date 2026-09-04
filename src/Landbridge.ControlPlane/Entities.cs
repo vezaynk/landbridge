@@ -426,8 +426,15 @@ public sealed class PreviewMappingRow
 {
     public Guid Id { get; set; }
 
-    /// <summary>SHA-256 of the opaque subdomain label; the label itself is never stored (§5, §8.4).</summary>
+    /// <summary>SHA-256 of the opaque subdomain label; lookups are by hash (§5, §8.4).</summary>
     public string LabelHash { get; set; } = "";
+
+    /// <summary>
+    /// The plaintext label, so the fleet board can reopen a preview it minted.
+    /// Connect still resolves by <see cref="LabelHash"/>; this is the operator's copy
+    /// of the URL, not a second lookup key.
+    /// </summary>
+    public string Label { get; set; } = "";
 
     public Guid TeamId { get; set; }
 
@@ -443,7 +450,7 @@ public sealed class PreviewMappingRow
     /// <summary>The registered service name the preview resolves to (§8.2).</summary>
     public string ServiceName { get; set; } = "";
 
-    /// <summary>Gated (default) requires a §12 operator session; public is the label-only capability (§8.4).</summary>
+    /// <summary>Gated (default) requires a §12 operator session; public is the label-only capability (§8.4). Flipped in place; connect reads this column.</summary>
     public PreviewAuthPolicy AuthPolicy { get; set; }
 
     /// <summary>Idle window stored at mint. Each admitted connection slides <see cref="ExpiresAt"/> by this.</summary>

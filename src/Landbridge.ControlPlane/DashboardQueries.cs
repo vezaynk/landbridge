@@ -809,7 +809,7 @@ public sealed partial class DashboardQueries(LandbridgeDbContext db, RunnerConne
         await db.PreviewMappings.AsNoTracking()
             .Where(p => p.TeamId == teamId && p.ExpiresAt > now)
             .OrderBy(p => p.ServiceName)
-            .Select(p => new ObservabilityPreview(p.ServiceName, p.AuthPolicy, p.ExpiresAt, p.Id))
+            .Select(p => new ObservabilityPreview(p.ServiceName, p.AuthPolicy, p.ExpiresAt, p.Id, p.Label))
             .ToListAsync(ct);
 
     public Task<LeadMachineBinding?> GetHumanBindingAsync(Guid humanId, CancellationToken ct = default) =>

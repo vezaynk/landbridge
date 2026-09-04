@@ -86,6 +86,7 @@ public static class DashboardEndpoints
         app.MapPost("/dashboard/machines/unbind", HandleUnbindMachineAsync).DisableAntiforgery().WithOrder(-100);
         app.MapPost("/dashboard/forward", HandleOpenLeadForwardAsync).DisableAntiforgery().WithOrder(-100);
         app.MapPost("/dashboard/preview/revoke", HandleRevokePreviewAsync).DisableAntiforgery().WithOrder(-100);
+        app.MapPost("/dashboard/preview/auth", HandleSetPreviewAuthAsync).DisableAntiforgery().WithOrder(-100);
 
         app.MapConformance();
         app.MapConnect();
@@ -521,6 +522,49 @@ public static class DashboardEndpoints
                 ? Results.Json(new { revoked = previewId }, Json)
                 : Results.Redirect(back);
         });
+    }
+
+    private static async Task<IResult> HandleSetPreviewAuthAsync(
+        HttpContext http, TokenService tokens,
+        [Microsoft.AspNetCore.Mvc.FromServices] PreviewMappingService previews,
+        IConfiguration config, CancellationToken ct)
+    {
+        if (CrossOriginRefusal(http, config) is { } refusal)
+            return refusal;
+        return await Gated(http, tokens, ct, async principal =>
+        {
+            if (principal is not Principal.Human)
+                return Refused(http, BindingIsHumanOnly);
+            var form = await http.Request.ReadFormAsync(ct);
+            var back = SafeNext(form["return"].ToString());
+            if (!Guid.TryParse(form["previewId"].ToString(), out var previewId))
+                return Results.BadRequest(new { error = "invalid preview id" });
+            var policy = FormIsPublic(form)
+                ? Landbridge.Core.PreviewAuthPolicy.Public
+                : Landbridge.Core.PreviewAuthPolicy.Gated;
+            if (!await previews.SetAuthPolicyAsync(previewId, policy, ct))
+                return Notice(http, "Not found", "that preview is already gone.", back, 404);
+            var auth = policy.ToString().ToLowerInvariant();
+            return DashboardNegotiate.WantsJson(http)
+                ? Results.Json(new { previewId, auth }, Json)
+                : Notice(http, policy == Landbridge.Core.PreviewAuthPolicy.Public
+                    ? "Preview is public" : "Preview is gated",
+                    policy == Landbridge.Core.PreviewAuthPolicy.Public
+                        ? "Anyone with the link can open it."
+                        : "Opening this link requires a Landbridge operator session in the browser.",
+                    back);
+        });
+    }
+
+    private static bool FormIsPublic(IFormCollection form)
+    {
+        var v = form["public"].ToString();
+        if (string.IsNullOrEmpty(v))
+            v = form["auth"].ToString();
+        return v.Equals("true", StringComparison.OrdinalIgnoreCase)
+            || v.Equals("on", StringComparison.OrdinalIgnoreCase)
+            || v.Equals("1", StringComparison.OrdinalIgnoreCase)
+            || v.Equals("public", StringComparison.OrdinalIgnoreCase);
     }
 
     private static IResult Notice(

@@ -207,6 +207,7 @@ public sealed class LandbridgeDbContext(DbContextOptions<LandbridgeDbContext> op
             // Revocation targets every live grant a leaving-working task produced
             // (ClearServicesAndForwards); index the column that join keys on.
             e.HasIndex(g => g.ProducerSessionId);
+            e.HasIndex(g => g.ConsumerMachine);
         });
 
         b.Entity<PreviewMappingRow>(e =>

@@ -635,6 +635,73 @@ public sealed class SessionStore(
     }
 
     /// <summary>
+    /// Dashboard operator path: register a named port on this session as the
+    /// seated incumbent. Same uniqueness rules as <see cref="RegisterServiceAsync"/>.
+    /// </summary>
+    public async Task<StoreResult> RegisterServiceFromDashboardAsync(
+        SessionId session, string name, int port, CancellationToken ct = default)
+    {
+        name = name.Trim();
+        if (string.IsNullOrEmpty(name) || port is < 1 or > 65535)
+            return new StoreResult.Rejected(Rule.InvalidSourceState,
+                "a port forward needs a name and a port between 1 and 65535");
+        var row = await db.Sessions.AsNoTracking().FirstOrDefaultAsync(t => t.Id == session.Value, ct);
+        if (row is null)
+            return new StoreResult.NotFound($"no task {session}");
+        if (row.CurrentInstanceId is null)
+            return new StoreResult.Rejected(Rule.InvalidSourceState,
+                "services register only while a live attempt is seated");
+        return await RegisterServiceAsync(
+            new WorkerCaller(new TeamId(row.TeamId), session, new WorkerInstanceId(row.CurrentInstanceId.Value)),
+            name, port, ct);
+    }
+
+    /// <summary>
+    /// Drop one registered service on this session, revoke its grants, and close
+    /// live splices. Previews of that name go with it.
+    /// </summary>
+    public async Task<StoreResult> UnregisterServiceAsync(
+        SessionId session, string name, CancellationToken ct = default)
+    {
+        var row = await db.Sessions.AsNoTracking().FirstOrDefaultAsync(t => t.Id == session.Value, ct);
+        if (row is null)
+            return new StoreResult.NotFound($"no task {session}");
+
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
+        var deleted = await db.RegisteredServices
+            .Where(s => s.SessionId == session.Value && s.Name == name)
+            .ExecuteDeleteAsync(ct);
+        if (deleted == 0)
+        {
+            await tx.CommitAsync(ct);
+            return new StoreResult.NotFound($"no service '{name}' on {session}");
+        }
+
+        var teardown = await db.RelayGrants
+            .Where(g => g.ProducerSessionId == session.Value && g.ServiceName == name && !g.Revoked)
+            .Select(g => new { g.ForwardId, g.ConsumerSessionId })
+            .ToListAsync(ct);
+        await db.RelayGrants
+            .Where(g => g.ProducerSessionId == session.Value && g.ServiceName == name && !g.Revoked)
+            .ExecuteUpdateAsync(s => s.SetProperty(g => g.Revoked, true), ct);
+        await db.PreviewMappings
+            .Where(p => p.SessionId == session.Value && p.ServiceName == name)
+            .ExecuteDeleteAsync(ct);
+        await tx.CommitAsync(ct);
+
+        if (forwards is not null && teardown.Count > 0)
+        {
+            await forwards.CloseAsync(
+                teardown.Select(g => new ForwardTeardown(
+                    session, g.ForwardId.ToString(),
+                    g.ConsumerSessionId is { } consumer ? new SessionId(consumer) : null)).ToList(),
+                ct);
+        }
+
+        return new StoreResult.Applied(row.ToDomain(), []);
+    }
+
+    /// <summary>
     /// The worker's own assignment (§7, worker-skill.md): the prose description,
     /// namespace, and attempt count a dispatched worker reads before starting.
     /// A pure read gated by the same authority as a worker transition —

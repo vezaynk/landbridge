@@ -1,8 +1,10 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Tests;
 using Landbridge.Core;
+using Microsoft.EntityFrameworkCore;
 using ModelContextProtocol.Protocol;
 
 namespace Landbridge.Mcp.Tests;
@@ -92,6 +94,54 @@ public sealed class PreviewMintSurfaceTests(PostgresFixture pg) : IAsyncLifetime
         var body = await response.Content.ReadFromJsonAsync<JsonElement>(ct);
         Assert.Equal("public", body.GetProperty("auth").GetString());
         Assert.Contains(".preview.localhost", body.GetProperty("url").GetString());
+
+        await plane.StopAsync(ct);
+    }
+
+    [SkippableFact]
+    public async Task Dashboard_auth_post_flips_a_preview_to_public()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(TimeSpan.FromMinutes(1));
+        var ct = cts.Token;
+        var team = TeamId.New();
+
+        var producerTask = await RelayGrantTestKit.RegisterWorkingServiceAsync(pg, team, "web", ct, port: 3000);
+        var lead = await RelayGrantTestKit.LeadSessionAsync(pg, team, ct);
+        Guid previewId;
+        await using (var db = pg.NewContext())
+        {
+            var mint = await new PreviewMappingService(db, TimeProvider.System).CreateAsync(
+                team, producerTask, "web", PreviewAuthPolicy.Gated, TimeSpan.FromHours(2), ct);
+            previewId = mint.Mapping.Id;
+        }
+
+        await using var plane = RelayGrantTestKit.BuildPlane(pg.ConnectionString, relayValidationBearer: null);
+        await plane.StartAsync(ct);
+
+        using var http = new HttpClient { BaseAddress = RelayGrantTestKit.BaseUri(plane) };
+        using var request = new HttpRequestMessage(HttpMethod.Post, "/dashboard/preview/auth?format=json")
+        {
+            Content = new FormUrlEncodedContent(new Dictionary<string, string>
+            {
+                ["previewId"] = previewId.ToString(),
+                ["public"] = "true",
+            }),
+        };
+        request.Headers.Add("Cookie", $"landbridge_session={lead.HumanToken}");
+        request.Headers.Add("Origin", RelayGrantTestKit.BaseUri(plane).GetLeftPart(UriPartial.Authority));
+
+        using var response = await http.SendAsync(request, ct);
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        var body = await response.Content.ReadFromJsonAsync<JsonElement>(ct);
+        Assert.Equal("public", body.GetProperty("auth").GetString());
+        Assert.Equal(previewId, body.GetProperty("previewId").GetGuid());
+
+        await using (var db = pg.NewContext())
+        {
+            var row = await db.PreviewMappings.SingleAsync(m => m.Id == previewId, ct);
+            Assert.Equal(PreviewAuthPolicy.Public, row.AuthPolicy);
+        }
 
         await plane.StopAsync(ct);
     }

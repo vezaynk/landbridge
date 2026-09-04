@@ -1,6 +1,7 @@
 using Landbridge.Contracts;
 using Landbridge.ControlPlane.Auth;
 using Landbridge.Core;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 
 namespace Landbridge.ControlPlane;
@@ -28,7 +29,8 @@ namespace Landbridge.ControlPlane;
 public sealed class ForwardOrchestrator(
     RunnerConnectionRegistry registry,
     ForwardWaiters waiters,
-    ILogger<ForwardOrchestrator> logger)
+    ILogger<ForwardOrchestrator> logger,
+    IServiceScopeFactory? scopes = null)
 {
     /// <summary>
     /// How long to wait for the consumer end to bind and report its port before
@@ -123,6 +125,12 @@ public sealed class ForwardOrchestrator(
             logger.LogInformation(
                 "forward {ForwardId} opened: consumer {ConsumerMachine} bound 127.0.0.1:{Port}, producer {ProducerMachine}",
                 forwardId, consumerMachine, port, producerMachine);
+            if (scopes is not null)
+            {
+                await using var scope = scopes.CreateAsyncScope();
+                await scope.ServiceProvider.GetRequiredService<RelayGrantService>()
+                    .RecordConsumerBindAsync(issued.ForwardId, consumerMachine, port, ct);
+            }
             return new ForwardEstablishResult.Established(port);
         }
         catch (TimeoutException)

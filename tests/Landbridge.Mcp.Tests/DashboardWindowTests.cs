@@ -27,6 +27,8 @@ public sealed class DashboardWindowTests
         Assert.StartsWith("/dashboard/events?", href, StringComparison.Ordinal);
         Assert.Contains("session=quiet-river-0001", href, StringComparison.Ordinal);
         Assert.Contains("window=2h", href, StringComparison.Ordinal);
+        Assert.Equal("2h", DashboardWindow.QueryValue("https://localhost" + href));
+        Assert.Null(DashboardWindow.QueryValue("https://localhost/dashboard/machines"));
     }
 
     [Fact]

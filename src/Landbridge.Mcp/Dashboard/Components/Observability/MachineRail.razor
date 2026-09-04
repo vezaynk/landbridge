@@ -1,5 +1,6 @@
 @using Landbridge.ControlPlane
 @inject NavigationManager Nav
+@inject FleetBoardMutations Mutations
 <div class="obs-rail">
     <div class="obs-rail__title">Teams</div>
     <div class="obs-rail__list obs-rail__list--teams">
@@ -16,78 +17,6 @@
                 <span class="obs-team__spacer"></span>
                 <span class="obs-team__n">@t.TotalSessions</span>
             </a>
-        }
-    </div>
-    <div class="obs-rail__title">Ports</div>
-    <div class="obs-rail__list obs-rail__list--ports">
-        @if (SelectedTeamId is null)
-        {
-            <div class="obs-ports__empty">Select a team.</div>
-        }
-        else
-        {
-            <div class="obs-ports__bind">
-                @if (Binding is { } bound)
-                {
-                    <span class="obs-ports__bound">bound @bound.MachineName</span>
-                    <form method="post" action="/dashboard/machines/unbind">
-                        <input type="hidden" name="return" value="@ReturnPath" />
-                        <button type="submit">unbind</button>
-                    </form>
-                }
-                else
-                {
-                    <span class="obs-ports__bound is-off">no machine bound</span>
-                }
-            </div>
-            @if (Services.Count == 0)
-            {
-                <div class="obs-ports__empty">No registered services.</div>
-            }
-            else
-            {
-                <form class="obs-ports__form" method="post" action="/dashboard/forward">
-                    <input type="hidden" name="teamId" value="@SelectedTeamId" />
-                    <input type="hidden" name="return" value="@ReturnPath" />
-                    <select name="serviceName" aria-label="forward service">
-                        @foreach (var s in Services)
-                        {
-                            <option value="@s.Name">@s.Name:@s.Port</option>
-                        }
-                    </select>
-                    <button type="submit">Forward</button>
-                </form>
-                <form class="obs-ports__form" method="post" action="/dashboard/preview">
-                    <input type="hidden" name="teamId" value="@SelectedTeamId" />
-                    <input type="hidden" name="return" value="@ReturnPath" />
-                    <select name="service" aria-label="preview service">
-                        @foreach (var s in Services)
-                        {
-                            <option value="@s.SessionId:@s.Name">@s.Name:@s.Port</option>
-                        }
-                    </select>
-                    <select name="auth" aria-label="preview visibility">
-                        <option value="gated">gated</option>
-                        <option value="public">public</option>
-                    </select>
-                    <button type="submit">Preview</button>
-                </form>
-            }
-            @if (Previews.Count > 0)
-            {
-                <div class="obs-ports__label">Previews</div>
-                @foreach (var p in Previews)
-                {
-                    <div class="obs-ports__preview">
-                        <span>@p.ServiceName · @p.Policy.ToString().ToLowerInvariant()</span>
-                        <form method="post" action="/dashboard/preview/revoke">
-                            <input type="hidden" name="previewId" value="@p.Id" />
-                            <input type="hidden" name="return" value="@ReturnPath" />
-                            <button type="submit">revoke</button>
-                        </form>
-                    </div>
-                }
-            }
         }
     </div>
     <div class="obs-rail__title">Machines</div>
@@ -107,18 +36,13 @@
                 <span class="obs-machine__load">@LoadText(m)</span>
                 @if (IsBoundMachine(m))
                 {
-                    <form class="obs-machine__revoke" method="post" action="/dashboard/machines/unbind">
-                        <input type="hidden" name="return" value="@ReturnPath" />
-                        <button type="submit" title="Unbind this box">unbind</button>
-                    </form>
+                    <button type="button" class="obs-machine__act" disabled="@Busy" title="Unbind this box"
+                            @onclick="UnbindAsync">unbind</button>
                 }
                 else
                 {
-                    <form class="obs-machine__revoke" method="post" action="/dashboard/machines/bind">
-                        <input type="hidden" name="machineId" value="@m.MachineId" />
-                        <input type="hidden" name="return" value="@ReturnPath" />
-                        <button type="submit" title="Bind this box as yours">bind</button>
-                    </form>
+                    <button type="button" class="obs-machine__act" disabled="@Busy" title="Bind this box as yours"
+                            @onclick="() => BindAsync(m.MachineId)">bind</button>
                 }
                 <form class="obs-machine__revoke" method="post" action="/dashboard/machines/revoke">
                     <input type="hidden" name="machineId" value="@m.MachineId" />
@@ -156,15 +80,18 @@
     public Guid? SelectedTeamId { get; set; }
 
     [Parameter]
-    public IReadOnlyList<ServiceView> Services { get; set; } = [];
-
-    [Parameter]
-    public IReadOnlyList<ObservabilityPreview> Previews { get; set; } = [];
-
-    [Parameter]
     public LeadMachineBinding? Binding { get; set; }
 
-    private string ReturnPath => new Uri(Nav.Uri).PathAndQuery;
+    [Parameter]
+    public Guid HumanId { get; set; }
+
+    [Parameter]
+    public EventCallback OnChanged { get; set; }
+
+    [Parameter]
+    public EventCallback<FleetNotice> OnNotice { get; set; }
+
+    private bool Busy { get; set; }
 
     private bool IsBoundMachine(ObservabilityMachine m) =>
         Binding is { } b
@@ -197,5 +124,33 @@
         if (m.Ready)
             return m.RunningSessionCount > 0 ? $"ready · {m.RunningSessionCount}" : "ready";
         return "not ready";
+    }
+
+    private Task BindAsync(string machineId) =>
+        Guid.TryParse(machineId, out var id)
+            ? Run(() => Mutations.BindMachineAsync(HumanId, id, CancellationToken.None))
+            : Task.CompletedTask;
+
+    private Task UnbindAsync() => Run(() => Mutations.UnbindMachineAsync(HumanId, CancellationToken.None));
+
+    private async Task Run(Func<Task<FleetNotice>> action)
+    {
+        if (Busy)
+            return;
+        Busy = true;
+        try
+        {
+            var notice = await action();
+            await OnNotice.InvokeAsync(notice);
+            await OnChanged.InvokeAsync();
+        }
+        catch (Exception ex)
+        {
+            await OnNotice.InvokeAsync(new FleetNotice("Failed", ex.Message, Error: true));
+        }
+        finally
+        {
+            Busy = false;
+        }
     }
 }
