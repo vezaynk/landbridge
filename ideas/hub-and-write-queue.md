@@ -200,13 +200,37 @@ Rehydrate already restores *tasks*. It does not restore “which sockets are up.
 
 Not extra `LISTEN` channels in v1. Session (or machine) NOTIFY is the doorbell; the hub `SELECT`s the matching row/tail. Dedicated channels later if fan-out is too coarse.
 
-## Redis
+## Resume, TTL, and Redis
 
-Not in v1.
+Two stream kinds. Do not give them the same retention story.
 
-Redis is a fanout cache of an **outbox** when there is a second hub replica. Fill from an outbox row in the same Core commit, then `pg_notify`. Filling Redis from LISTEN alone is not a store.
+| Kind | Examples | Resume | “TTL” |
+|---|---|---|---|
+| **State** | session row, machine liveness, open forward, preview, process | Connect → **snapshot now**. Last pull time is unused. Missed wakes are fine. | The **row** lives until the domain says so (session hidden, grant expired, process exited). Not a message expiry. |
+| **Tail / log** | event log, exchange, optional membership deltas | Cursor: `id > last_id` (or `created_at > last_pull`). Skip ahead to last pull. | Delete or drop partitions older than N. After expiry the cursor is a **gap** → snapshot the tail window, then follow. |
 
-Do not hand the dashboard a Redis URL.
+Entity EventSources are state. `events` / `exchange` tails are logs. Membership can be either: v1 **state** (snapshot of current ids on connect) — then you do not need to retain `added`/`removed`. If membership is a delta log, it needs the same cursor+TTL as tails.
+
+### Postgres equivalent of Redis TTL
+
+- **State:** `expires_at` on the domain row (preview idle TTL already; relay grant expiry already). Sweeper or `WHERE expires_at > now()` on read. Heartbeat death is `last_seen_at < now() - interval`, not `EXPIRE`.
+- **Tails:** `created_at` + `id` (bigserial or ULID). Index `(session_id, id)`. Retention: `DELETE FROM events WHERE created_at < now() - @retention` on a timer, or daily partitions `DROP PARTITION`. Same for a hub **wake buffer** if you ever persist wakes.
+- **Command / runner_command:** not TTL. They die on `applied`/`acked`/`rejected`. A stuck `queued` row is an incident, not an expiry (optional abandon TTL is a product rule, separate).
+
+`Last-Event-ID` is the HTTP name for the tail cursor. State streams still omit it (reconnect = snapshot). If the id has been deleted, the hub returns a snapshot and a new id, not a silent hole.
+
+### Should the hub just use Redis?
+
+No for v1. Redis Streams (`XADD`, `XRANGE`, `MINID` / `MAXLEN`) is a nicer *shape* for an **ephemeral wake log** (high churn, TTL, skip to last id). It is a second copy of facts Postgres already has:
+
+- Event tail **is** `EventLogDetail` / the event log table. Cursor + `DELETE` is the TTL.
+- Session/machine state **is** the row. Snapshot is skip-ahead.
+- Heartbeats **are** last-value upsert. `EXPIRE` on a Redis key is a worse liveness row.
+
+Use Redis when the thing being retained is **not** the domain row: a multi-hub replica’s wake buffer, or a firehose you refuse to keep in the Instance DB. Then: outbox in the same Apply commit → Stream with `MINID`. Still snapshot on gap. Still never `EXPIRE` a session.
+
+**Rule:** if the client can `GET` current state, SSE resume is snapshot, not replay. Replay+TTL is only for tails the client is *following as a log*.
+
 
 ## Dashboard
 
