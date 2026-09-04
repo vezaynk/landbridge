@@ -42,6 +42,8 @@ A write queue moves **plane commit** off the MCP return. Worker observe does not
 | Machines | `RunnerConnectionRegistry` | **in-memory**; heartbeats do not `NOTIFY`; evaporate on Core restart; tasks rehydrate (`RehydrateMachineAsync`) |
 | Event log | session-scoped rows + `EventLogDetail` | trail of Apply, not a live entity stream |
 | Runner channel | `/runner` WebSocket | frozen §10 enum; `landbridged` dials out |
+| Hub (started) | `Landbridge.Hub` | LISTENs, writes `hub_queue`, SSE at `:5300`. Nothing consumes it yet. |
+
 
 `Landbridge.Mcp` is one ASP.NET process: MCP tools, OAuth, `/runner`, dashboard, and `Apply`. The split below is that process cut into three.
 

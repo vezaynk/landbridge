@@ -21,6 +21,7 @@ public sealed class LandbridgeDbContext(DbContextOptions<LandbridgeDbContext> op
     public DbSet<SessionUsageRow> SessionUsage => Set<SessionUsageRow>();
     public DbSet<FrictionReportRow> FrictionReports => Set<FrictionReportRow>();
     public DbSet<LeadTeamRow> LeadTeams => Set<LeadTeamRow>();
+    public DbSet<HubQueueRow> HubQueue => Set<HubQueueRow>();
 
     /// <summary>The channel dispatch/transition NOTIFYs land on (§3.1 LISTEN/NOTIFY).</summary>
     public const string EventChannel = "landbridge_session_events";
@@ -264,5 +265,16 @@ public sealed class LandbridgeDbContext(DbContextOptions<LandbridgeDbContext> op
             e.HasIndex(f => f.At);
             e.HasIndex(f => f.TeamId);
         });
+
+        b.Entity<HubQueueRow>(e =>
+        {
+            e.ToTable("hub_queue");
+            e.HasKey(q => q.Id);
+            e.Property(q => q.Id).UseIdentityAlwaysColumn();
+            e.Property(q => q.Payload).HasColumnType("jsonb");
+            e.HasIndex(q => new { q.Topic, q.EntityId, q.Id });
+            e.HasIndex(q => q.CreatedAt);
+        });
     }
 }
+

@@ -448,6 +448,45 @@ namespace Landbridge.ControlPlane.Migrations
                     b.ToTable("friction_reports", (string)null);
                 });
 
+            modelBuilder.Entity("Landbridge.ControlPlane.HubQueueRow", b =>
+                {
+                    b.Property<long>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("bigint")
+                        .HasColumnName("id");
+
+                    NpgsqlPropertyBuilderExtensions.UseIdentityAlwaysColumn(b.Property<long>("Id"));
+
+                    b.Property<DateTimeOffset>("CreatedAt")
+                        .HasColumnType("timestamp with time zone")
+                        .HasColumnName("created_at");
+
+                    b.Property<Guid?>("EntityId")
+                        .HasColumnType("uuid")
+                        .HasColumnName("entity_id");
+
+                    b.Property<string>("Payload")
+                        .IsRequired()
+                        .HasColumnType("jsonb")
+                        .HasColumnName("payload");
+
+                    b.Property<string>("Topic")
+                        .IsRequired()
+                        .HasColumnType("text")
+                        .HasColumnName("topic");
+
+                    b.HasKey("Id")
+                        .HasName("pk_hub_queue");
+
+                    b.HasIndex("CreatedAt")
+                        .HasDatabaseName("ix_hub_queue_created_at");
+
+                    b.HasIndex("Topic", "EntityId", "Id")
+                        .HasDatabaseName("ix_hub_queue_topic_entity_id_id");
+
+                    b.ToTable("hub_queue", (string)null);
+                });
+
             modelBuilder.Entity("Landbridge.ControlPlane.PreviewMappingRow", b =>
                 {
                     b.Property<Guid>("Id")
