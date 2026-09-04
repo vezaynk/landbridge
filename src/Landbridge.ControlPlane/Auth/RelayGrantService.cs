@@ -1,6 +1,8 @@
 using System.Security.Cryptography;
+using Landbridge.ControlPlane;
 using Landbridge.Core;
 using Microsoft.EntityFrameworkCore;
+
 
 namespace Landbridge.ControlPlane.Auth;
 
@@ -214,7 +216,9 @@ public sealed class RelayGrantService(
             CreatedAt = now,
             ExpiresAt = now + GrantTtl,
         });
+        HubOutbox.Stage(db, clock, HubQueueRow.ForwardsTopic, forwardId);
         await db.SaveChangesAsync(ct);
+        await HubOutbox.NotifyAsync(db, holder.Id, ct);
         return new RelayGrantResult.Issued(
             grant, forwardId, now + GrantTtl, new SessionId(holder.Id), holder.Port);
     }

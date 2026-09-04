@@ -12,6 +12,13 @@ public sealed class HubQueueRow
 {
     public const string SessionTopic = "session";
     public const string SessionsTopic = "sessions";
+    public const string EventsTopic = "events";
+    public const string ExchangeTopic = "exchange";
+    public const string ServicesTopic = "services";
+    public const string ForwardsTopic = "forwards";
+    public const string PreviewsTopic = "previews";
+    public const string MachinesTopic = "machines";
+    public const string ProcessesTopic = "processes";
 
     public long Id { get; set; }
     public string Topic { get; set; } = "";

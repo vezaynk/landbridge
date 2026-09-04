@@ -26,6 +26,12 @@ public sealed class LandbridgeDbContext(DbContextOptions<LandbridgeDbContext> op
     /// <summary>The channel dispatch/transition NOTIFYs land on (§3.1 LISTEN/NOTIFY).</summary>
     public const string EventChannel = "landbridge_session_events";
 
+    /// <summary>
+    /// Hub-only doorbell for wakes whose payload is not a session id (machines).
+    /// Dispatch must not LISTEN here.
+    /// </summary>
+    public const string HubChannel = "landbridge_hub_events";
+
     /// <summary>One live lead↔machine binding per human (§8.3 human path) — named so
     /// <see cref="LeadMachineBindingService"/> can tell the two races apart from the
     /// constraint name on a unique violation.</summary>

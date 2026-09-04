@@ -616,9 +616,11 @@ public sealed class SessionStore(
                 CreatedAt = clock.GetUtcNow(),
             });
         }
+        HubOutbox.Stage(db, clock, HubQueueRow.ServicesTopic, caller.Session.Value);
         try
         {
             await db.SaveChangesAsync(ct);
+            await HubOutbox.NotifyAsync(db, caller.Session.Value, ct);
         }
         catch (DbUpdateException ex)
             when (ex.InnerException is Npgsql.PostgresException { SqlState: "23505" })
@@ -1651,6 +1653,7 @@ public sealed class SessionStore(
 
                 case ClearServicesAndForwards:
                     db.RegisteredServices.Where(s => s.SessionId == row.Id).ExecuteDelete();
+                    HubOutbox.Stage(db, clock, HubQueueRow.ServicesTopic, row.Id);
                     // §8.3: leaving working also releases the task's relay forwards, and
                     // that takes both halves. Read the live ones FIRST — the revoke below
                     // is what makes them stop being live — so the post-commit close knows
@@ -1661,10 +1664,13 @@ public sealed class SessionStore(
                     // them from any other task's — and a transition that loses the xmin race
                     // rolls this back with everything else, so nothing is closed for a
                     // transition that never happened.
-                    teardown = db.RelayGrants
+                    var liveGrants = db.RelayGrants
                         .Where(g => g.ProducerSessionId == row.Id && !g.Revoked)
                         .Select(g => new { g.ForwardId, g.ConsumerSessionId })
-                        .ToList()
+                        .ToList();
+                    foreach (var g in liveGrants)
+                        HubOutbox.Stage(db, clock, HubQueueRow.ForwardsTopic, g.ForwardId);
+                    teardown = liveGrants
                         .Select(g => new ForwardTeardown(
                             new SessionId(row.Id), g.ForwardId.ToString(),
                             g.ConsumerSessionId is { } consumer ? new SessionId(consumer) : null))
@@ -1747,23 +1753,10 @@ public sealed class SessionStore(
             : null;
         try
         {
-            // Outbox + NOTIFY in the same transaction: the hub tails hub_queue
-            // across restarts; NOTIFY is only a doorbell. Both vanish if we roll back.
-            db.HubQueue.Add(new HubQueueRow
-            {
-                Topic = HubQueueRow.SessionTopic,
-                EntityId = sessionId,
-                CreatedAt = clock.GetUtcNow(),
-            });
-            db.HubQueue.Add(new HubQueueRow
-            {
-                Topic = HubQueueRow.SessionsTopic,
-                EntityId = sessionId,
-                CreatedAt = clock.GetUtcNow(),
-            });
+            HubOutbox.StageSession(db, clock, sessionId);
             await db.SaveChangesAsync(ct);
-            await db.Database.ExecuteSqlAsync(
-                $"SELECT pg_notify({LandbridgeDbContext.EventChannel}, {sessionId.ToString()})", ct);
+            await HubOutbox.NotifyAsync(db, sessionId, ct);
+
 
 
             if (ownTx is not null)

@@ -13,7 +13,7 @@ namespace Landbridge.ControlPlane;
 /// <para>One consumer per instance. Dispatch and the Lead inbox each own their
 /// own listener so inbox subscribers cannot stall dispatch.</para>
 /// </summary>
-public sealed class SessionEventListener(string connectionString) : IAsyncDisposable
+public sealed class SessionEventListener(string connectionString, params string[] extraChannels) : IAsyncDisposable
 {
     private readonly TaskCompletionSource _listening = new(TaskCreationOptions.RunContinuationsAsynchronously);
     private NpgsqlConnection? _connection;
@@ -41,6 +41,11 @@ public sealed class SessionEventListener(string connectionString) : IAsyncDispos
             await _connection.OpenAsync(ct);
             await using (var listen = new NpgsqlCommand($"LISTEN {LandbridgeDbContext.EventChannel}", _connection))
                 await listen.ExecuteNonQueryAsync(ct);
+            foreach (var extra in extraChannels)
+            {
+                await using var extraListen = new NpgsqlCommand($"LISTEN {extra}", _connection);
+                await extraListen.ExecuteNonQueryAsync(ct);
+            }
             _listening.TrySetResult();
         }
         catch (OperationCanceledException)

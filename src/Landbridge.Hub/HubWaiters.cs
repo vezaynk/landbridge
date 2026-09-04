@@ -7,8 +7,8 @@ namespace Landbridge.Hub;
 /// In-process doorbell after NOTIFY. Coalesce per subscriber (single-slot
 /// drop-write). The outbox rows are not coalesced — SSE catch-up SELECTs
 /// every <c>hub_queue.id > after</c>.
-
 /// </summary>
+
 public sealed class HubWaiters
 {
     private readonly ConcurrentDictionary<Guid, Subscription> _subscribers = new();
@@ -23,6 +23,12 @@ public sealed class HubWaiters
         var sub = new Subscription(this, id, channel, topic, entityId);
         _subscribers[id] = sub;
         return sub;
+    }
+
+    public void WakeAll()
+    {
+        foreach (var sub in _subscribers.Values)
+            sub.TryWake();
     }
 
     public void Wake(string topic, Guid? entityId)

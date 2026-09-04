@@ -58,6 +58,55 @@ public sealed class HubSseTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task Event_log_and_preview_streams_catch_up()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(Patience);
+        var ct = cts.Token;
+
+        var sessionId = await CreateSessionAsync(ct);
+        Guid previewId;
+        await using (var db = pg.NewContext())
+        {
+            var mint = await new PreviewMappingService(db, new FakeTimeProvider())
+                .CreateAsync(TeamId.New(), new SessionId(sessionId), "web", PreviewAuthPolicy.Gated, TimeSpan.FromMinutes(5), ct);
+            previewId = mint.Mapping.Id;
+        }
+
+        await using var app = BuildServer();
+        await app.StartAsync(ct);
+
+        using var client = Client(app);
+        using (var req = new HttpRequestMessage(HttpMethod.Get, $"/sessions/{sessionId}/events/log"))
+        {
+            req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+            using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+            await using var stream = await resp.Content.ReadAsStreamAsync(ct);
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+            var ev = await ReadSseEventAsync(reader, ct);
+            Assert.Equal("change", ev.Event);
+            using var doc = JsonDocument.Parse(ev.Data);
+            Assert.Equal("events", doc.RootElement.GetProperty("topic").GetString());
+            Assert.Equal(sessionId, doc.RootElement.GetProperty("entityId").GetGuid());
+        }
+
+        using (var req = new HttpRequestMessage(HttpMethod.Get, "/previews/events"))
+        {
+            req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+            using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+            await using var stream = await resp.Content.ReadAsStreamAsync(ct);
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+            var ev = await ReadSseEventAsync(reader, ct);
+            Assert.Equal("change", ev.Event);
+            using var doc = JsonDocument.Parse(ev.Data);
+            Assert.Equal("previews", doc.RootElement.GetProperty("topic").GetString());
+            Assert.Equal(previewId, doc.RootElement.GetProperty("entityId").GetGuid());
+        }
+
+        await app.StopAsync(ct);
+    }
+
+    [SkippableFact]
     public async Task Membership_sse_wakes_on_create()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);

@@ -55,9 +55,11 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         var id = await CreateSubmitted(db);
 
         var rows = await db.HubQueue.AsNoTracking().OrderBy(r => r.Id).ToListAsync();
-        Assert.Equal(2, rows.Count);
+        Assert.Equal(4, rows.Count);
         Assert.Contains(rows, r => r.Topic == HubQueueRow.SessionTopic && r.EntityId == id.Value);
         Assert.Contains(rows, r => r.Topic == HubQueueRow.SessionsTopic && r.EntityId == id.Value);
+        Assert.Contains(rows, r => r.Topic == HubQueueRow.EventsTopic && r.EntityId == id.Value);
+        Assert.Contains(rows, r => r.Topic == HubQueueRow.ExchangeTopic && r.EntityId == id.Value);
     }
 
     [SkippableFact]

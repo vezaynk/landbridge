@@ -11,7 +11,8 @@ public sealed class HubProjector(
     HubWaiters waiters,
     ILogger<HubProjector> logger) : IHostedService, IAsyncDisposable
 {
-    private readonly SessionEventListener _listener = new(connectionString);
+    private readonly SessionEventListener _listener = new(connectionString, LandbridgeDbContext.HubChannel);
+
     private CancellationTokenSource? _cts;
     private Task? _pump;
 
@@ -49,11 +50,8 @@ public sealed class HubProjector(
     {
         try
         {
-            await foreach (var sessionId in _listener.ListenAsync(ct))
-            {
-                waiters.Wake(HubQueueRow.SessionTopic, sessionId);
-                waiters.Wake(HubQueueRow.SessionsTopic, entityId: null);
-            }
+            await foreach (var _ in _listener.ListenAsync(ct))
+                waiters.WakeAll();
         }
         catch (OperationCanceledException) when (ct.IsCancellationRequested)
         {

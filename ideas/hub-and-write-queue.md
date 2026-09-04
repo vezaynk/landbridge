@@ -136,7 +136,26 @@ The client opens a stream for every row it cares about and aborts it when that r
 | `GET /sessions/{id}/events` | that session’s snapshot |
 | same pattern for every topic below | |
 
-Hub: one `LISTEN`, fan out in-process (already `SessionEventFanout.Subscribe(sessionId)`). Each EventSource is a subscriber. Coalesce **per stream** (single-slot drop-write).
+Hub routes (wake-only, `event: change` `{ queueId, topic, entityId }`). Refetch is HTTP GET.
+
+| Route | Topic | Entity |
+|---|---|---|
+| `GET /sessions/events` | `sessions` | session id |
+| `GET /sessions/{id}/events` | `session` | session id |
+| `GET /sessions/{id}/events/log` | `events` | session id |
+| `GET /sessions/{id}/events/exchange` | `exchange` | session id |
+| `GET /services/events` | `services` | session id |
+| `GET /sessions/{id}/services/events` | `services` | session id |
+| `GET /forwards/events` | `forwards` | `forward_id` |
+| `GET /forwards/{id}/events` | `forwards` | `forward_id` |
+| `GET /previews/events` | `previews` | mapping id |
+| `GET /previews/{id}/events` | `previews` | mapping id |
+| `GET /machines/events` | `machines` | machine id (enroll/revoke; not heartbeats yet) |
+| `GET /machines/{id}/events` | `machines` | machine id |
+| `GET /machines/{id}/processes/events` | `processes` | machine id (no writer yet) |
+
+Outbox writers: `CommitAsync` (session/events/exchange), `RegisterServiceAsync` + `ClearServicesAndForwards` (services), `RelayGrantService.MintAsync` + clear (forwards), `PreviewMappingService` create/slide/revoke, `TokenService.ExchangeEnrollmentAsync` (machines, `landbridge_hub_events`).
+
 
 Runner `/runner/events` (Part 3) is **not** this model: no coalesce, replay unacked.
 
