@@ -130,4 +130,23 @@ public sealed class PreviewMappingServiceTests(PostgresFixture pg) : IAsyncLifet
         clock.Advance(TimeSpan.FromSeconds(2));
         Assert.IsType<PreviewResolveResult.Expired>(await svc.ResolveAsync(mint.Label));
     }
+
+    [SkippableFact]
+    public async Task Set_auth_policy_flips_gated_and_public()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var svc = new PreviewMappingService(db, new FakeTimeProvider());
+        var mint = await svc.CreateAsync(Team, SessionId.New(), "web", PreviewAuthPolicy.Gated, TimeSpan.FromMinutes(30));
+
+        Assert.True(await svc.SetAuthPolicyAsync(mint.Mapping.Id, PreviewAuthPolicy.Public));
+        var pub = Assert.IsType<PreviewResolveResult.Found>(await svc.ResolveAsync(mint.Label));
+        Assert.Equal(PreviewAuthPolicy.Public, pub.Mapping.AuthPolicy);
+
+        Assert.True(await svc.SetAuthPolicyAsync(mint.Mapping.Id, PreviewAuthPolicy.Gated));
+        var gated = Assert.IsType<PreviewResolveResult.Found>(await svc.ResolveAsync(mint.Label));
+        Assert.Equal(PreviewAuthPolicy.Gated, gated.Mapping.AuthPolicy);
+
+        Assert.False(await svc.SetAuthPolicyAsync(Guid.NewGuid(), PreviewAuthPolicy.Public));
+    }
 }

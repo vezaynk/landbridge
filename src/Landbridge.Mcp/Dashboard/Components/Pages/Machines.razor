@@ -2,6 +2,7 @@
 @page "/dashboard/machines"
 @layout DashboardLayout
 @inherits DashboardPageBase
+@inject DashboardTeamState TeamState
 
 <PageTitle>Observability center · Landbridge</PageTitle>
 
@@ -17,8 +18,8 @@ else if (Ready && Snapshot is { } snap)
 {
     <div class="obs-page">
         <ObservabilityDashboard Snapshot="snap" Now="Now" WindowLabel="@WindowLabel"
-            Teams="Teams" SelectedTeamId="SelectedTeamId"
-            Services="Services" Previews="Previews" Binding="Binding" />
+            Teams="Teams" SelectedTeamId="SelectedTeamId" Binding="Binding"
+            HumanId="HumanId" OnChanged="ReloadAsync" />
     </div>
 }
 
@@ -26,9 +27,9 @@ else if (Ready && Snapshot is { } snap)
     private ObservabilitySnapshot? Snapshot { get; set; }
     private IReadOnlyList<TeamOverview> Teams { get; set; } = [];
     private Guid? SelectedTeamId { get; set; }
-    private IReadOnlyList<ServiceView> Services { get; set; } = [];
-    private IReadOnlyList<ObservabilityPreview> Previews { get; set; } = [];
     private LeadMachineBinding? Binding { get; set; }
+
+    private Guid HumanId => Principal is Principal.Human h ? h.HumanId : Guid.Empty;
 
     protected override async Task<string?> LoadAsync()
     {
@@ -38,17 +39,7 @@ else if (Ready && Snapshot is { } snap)
                 + "on /dashboard/teams and through get_team_state";
         }
         Teams = await Queries.GetTeamsAsync(teamScope: null, RequestAborted);
-        SelectedTeamId = ResolveTeam(Teams);
-        if (SelectedTeamId is { } team)
-        {
-            Services = await Queries.ListTeamServicesAsync(team, RequestAborted);
-            Previews = await Queries.ListLivePreviewsAsync(team, Now, RequestAborted);
-        }
-        else
-        {
-            Services = [];
-            Previews = [];
-        }
+        SelectedTeamId = await ResolveTeamAsync(Teams);
         Binding = Principal is Principal.Human h
             ? await Queries.GetHumanBindingAsync(h.HumanId, RequestAborted)
             : null;
@@ -57,17 +48,24 @@ else if (Ready && Snapshot is { } snap)
         return null;
     }
 
-    private Guid? ResolveTeam(IReadOnlyList<TeamOverview> teams)
+    private async Task<Guid?> ResolveTeamAsync(IReadOnlyList<TeamOverview> teams)
     {
         if (teams.Count == 0)
             return null;
         var http = Http.HttpContext;
-        string? key = null;
-        if (http is not null)
+        var key = DashboardTeam.QueryValue(Nav.Uri);
+        if (!string.IsNullOrEmpty(key))
+        {
+            TeamState.Set(key);
+            await PersistPrefCookieAsync(DashboardTeam.CookieName, key, http);
+        }
+        else if (TeamState.Chosen)
+            key = TeamState.Key;
+        else if (http is not null)
         {
             key = DashboardTeam.ResolveKey(http);
-            if (http.Request.Query.ContainsKey(DashboardTeam.QueryName) && !string.IsNullOrEmpty(key))
-                DashboardTeam.WriteCookie(http, key);
+            if (!string.IsNullOrEmpty(key))
+                TeamState.Set(key);
         }
         if (!string.IsNullOrEmpty(key))
         {

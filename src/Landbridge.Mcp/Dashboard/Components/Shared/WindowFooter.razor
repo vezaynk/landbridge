@@ -1,3 +1,4 @@
+@implements IDisposable
 <footer class="window-bar">
     <span class="window-bar__label">window</span>
     @foreach (var o in DashboardWindow.Options)
@@ -10,5 +11,33 @@
     [Inject] NavigationManager Nav { get; set; } = default!;
     [Inject] DashboardWindowState WindowState { get; set; } = default!;
 
-    private DashboardWindowOption Current => WindowState.Current;
+    private bool _listening;
+
+    private DashboardWindowOption Current
+    {
+        get
+        {
+            var query = DashboardWindow.QueryValue(Nav.Uri);
+            return DashboardWindow.TryParse(query, out var fromQuery)
+                ? fromQuery
+                : WindowState.Current;
+        }
+    }
+
+    protected override void OnInitialized()
+    {
+        Nav.LocationChanged += OnLocationChanged;
+        _listening = true;
+    }
+
+    private void OnLocationChanged(object? sender, LocationChangedEventArgs e) =>
+        _ = InvokeAsync(StateHasChanged);
+
+    public void Dispose()
+    {
+        if (!_listening)
+            return;
+        Nav.LocationChanged -= OnLocationChanged;
+        _listening = false;
+    }
 }

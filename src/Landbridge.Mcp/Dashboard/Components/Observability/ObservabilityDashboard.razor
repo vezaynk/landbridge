@@ -32,10 +32,29 @@
         </form>
     </div>
 
+    @if (Notice is { } n)
+    {
+        <div class="obs-notice @(n.Error ? "is-error" : "")">
+            <div class="obs-notice__copy">
+                <strong>@n.Title</strong>
+                <span>@n.Message</span>
+                @if (!string.IsNullOrEmpty(n.Detail))
+                {
+                    <code class="mono">@n.Detail</code>
+                }
+                @if (!string.IsNullOrEmpty(n.Url))
+                {
+                    <a class="obs-notice__url mono" href="@n.Url">@n.Url</a>
+                }
+            </div>
+            <button type="button" @onclick="Dismiss">dismiss</button>
+        </div>
+    }
+
     <div class="obs-body @(Selected is null ? "obs-body--no-detail" : "")">
         <MachineRail Machines="Snapshot.Machines" Now="Now" LaneCount="Snapshot.Lanes.Count"
-            Teams="Teams" SelectedTeamId="SelectedTeamId"
-            Services="Services" Previews="Previews" Binding="Binding" />
+            Teams="Teams" SelectedTeamId="SelectedTeamId" Binding="Binding"
+            HumanId="HumanId" OnChanged="Changed" OnNotice="ShowNotice" />
 
         <div class="obs-lanes">
             <div class="obs-lanes__head">
@@ -48,7 +67,6 @@
                     <span class="obs-usage-key"><span class="obs-usage-key__swatch" style="background:var(--color-accent-400)"></span>out</span>
                     <span class="obs-usage-key"><span class="obs-usage-key__swatch" style="background:var(--color-neutral-700)"></span>cache</span>
                 </div>
-                <div>Forwards</div>
                 <div></div>
             </div>
             <div class="obs-lanes__body">
@@ -61,15 +79,16 @@
                     <SessionRow @key="lane.SessionId" Lane="lane" IsSelected="lane.SessionId == SelectedId" Now="Now" OnSelect="SelectSession" />
                 }
             </div>
+            <WindowFooter />
         </div>
 
         @if (Selected is not null)
         {
-            <DetailPanel Lane="Selected" Now="Now" WindowLabel="@WindowLabel" />
+            <DetailPanel Lane="Selected" Now="Now" WindowLabel="@WindowLabel" Binding="Binding"
+                HumanId="HumanId" Receipts="Snapshot.Receiving ?? []"
+                OnChanged="Changed" OnNotice="ShowNotice" />
         }
     </div>
-
-    <WindowFooter />
 </div>
 
 @code {
@@ -89,15 +108,16 @@
     public Guid? SelectedTeamId { get; set; }
 
     [Parameter]
-    public IReadOnlyList<ServiceView> Services { get; set; } = [];
-
-    [Parameter]
-    public IReadOnlyList<ObservabilityPreview> Previews { get; set; } = [];
-
-    [Parameter]
     public LeadMachineBinding? Binding { get; set; }
 
+    [Parameter]
+    public Guid HumanId { get; set; }
+
+    [Parameter]
+    public EventCallback OnChanged { get; set; }
+
     private Guid SelectedId { get; set; }
+    private FleetNotice? Notice { get; set; }
 
     private ObservabilityLane? Selected =>
         Snapshot.Lanes.FirstOrDefault(l => l.SessionId == SelectedId)
@@ -123,4 +143,14 @@
     }
 
     private void SelectSession(Guid id) => SelectedId = id;
+
+    private Task ShowNotice(FleetNotice notice)
+    {
+        Notice = notice;
+        return Task.CompletedTask;
+    }
+
+    private void Dismiss() => Notice = null;
+
+    private Task Changed() => OnChanged.InvokeAsync();
 }

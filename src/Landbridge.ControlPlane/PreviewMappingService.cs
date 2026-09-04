@@ -40,6 +40,7 @@ public sealed class PreviewMappingService(LandbridgeDbContext db, TimeProvider c
         {
             Id = Guid.NewGuid(),
             LabelHash = Hash(label),
+            Label = label,
             TeamId = team.Value,
             SessionId = task.Value,
             ServiceName = serviceName,
@@ -102,6 +103,18 @@ public sealed class PreviewMappingService(LandbridgeDbContext db, TimeProvider c
     public async Task<bool> RevokeAsync(Guid mappingId, CancellationToken ct = default)
     {
         var n = await db.PreviewMappings.Where(m => m.Id == mappingId).ExecuteDeleteAsync(ct);
+        return n > 0;
+    }
+
+    /// <summary>
+    /// Flip gated ↔ public on a live mapping. Connect reads this column on the
+    /// next browser hit; missing is a no-op. Does not retint the idle TTL.
+    /// </summary>
+    public async Task<bool> SetAuthPolicyAsync(
+        Guid mappingId, PreviewAuthPolicy policy, CancellationToken ct = default)
+    {
+        var n = await db.PreviewMappings.Where(m => m.Id == mappingId)
+            .ExecuteUpdateAsync(s => s.SetProperty(m => m.AuthPolicy, policy), ct);
         return n > 0;
     }
 

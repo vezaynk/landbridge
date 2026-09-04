@@ -18,6 +18,11 @@ public static class DashboardHosting
     {
         services.AddScoped<DashboardQueries>();
         services.AddScoped<DashboardWindowState>();
+        services.AddScoped<DashboardTeamState>();
+        services.AddScoped<PreviewMappingService>();
+        services.AddScoped<RelayGrantService>();
+        services.AddScoped<FleetBoardMutations>();
+        services.AddLandbridgeForwarding();
         services.AddHttpContextAccessor();
         services.TryAddSingleton<OperatorAttemptLimiter>();
         services.AddRazorComponents()

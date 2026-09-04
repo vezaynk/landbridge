@@ -1,10 +1,11 @@
 namespace Landbridge.Core;
 
 /// <summary>
-/// How a preview mapping admits a browser connection (spec §8.4). Set once at
-/// mint and stored on the mapping; the preview frontend delegates the check to
-/// the control plane on connect. Domain-neutral like every other Core enum — the
-/// control plane never interprets what a preview is <em>for</em>.
+/// How a preview mapping admits a browser connection (spec §8.4). Chosen at
+/// mint and stored on the mapping; may be flipped later. The preview frontend
+/// delegates the check to the control plane on connect. Domain-neutral like
+/// every other Core enum — the control plane never interprets what a preview is
+/// <em>for</em>.
 /// </summary>
 public enum PreviewAuthPolicy
 {
