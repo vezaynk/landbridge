@@ -1,12 +1,17 @@
 using System;
+using Landbridge.ControlPlane;
+using Microsoft.EntityFrameworkCore.Infrastructure;
 using Microsoft.EntityFrameworkCore.Migrations;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
+
+
 
 #nullable disable
 
 namespace Landbridge.ControlPlane.Migrations
 {
     /// <inheritdoc />
+    [DbContext(typeof(LandbridgeDbContext))]
     [Migration("20260904183000_HubQueue")]
     public partial class HubQueue : Migration
     {

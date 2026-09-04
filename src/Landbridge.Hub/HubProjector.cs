@@ -1,12 +1,12 @@
-using System.Text.Json;
 using Landbridge.ControlPlane;
 using Microsoft.EntityFrameworkCore;
 
 namespace Landbridge.Hub;
 
 /// <summary>
-/// LISTENs on session NOTIFY, snapshots the row, inserts <see cref="HubQueueRow"/>s,
-/// then wakes SSE waiters. Own connection for LISTEN; factory for the writes.
+/// LISTENs on session NOTIFY, inserts wake rows into <see cref="HubQueueRow"/>
+/// (id + topic only — clients refetch over HTTP), then wakes SSE waiters.
+/// Own connection for LISTEN; factory for the writes.
 /// </summary>
 public sealed class HubProjector(
     string connectionString,
@@ -15,8 +15,6 @@ public sealed class HubProjector(
     TimeProvider clock,
     ILogger<HubProjector> logger) : IHostedService, IAsyncDisposable
 {
-    private static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
-
     private readonly SessionEventListener _listener = new(connectionString);
     private CancellationTokenSource? _cts;
     private Task? _pump;
@@ -79,58 +77,21 @@ public sealed class HubProjector(
     private async Task EnqueueAsync(Guid sessionId, CancellationToken ct)
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
-        var session = await db.Sessions.AsNoTracking()
-            .FirstOrDefaultAsync(s => s.Id == sessionId, ct);
-        var ids = await db.Sessions.AsNoTracking()
-            .Select(s => s.Id)
-            .ToListAsync(ct);
         var at = clock.GetUtcNow();
-
-        if (session is not null)
+        db.HubQueue.Add(new HubQueueRow
         {
-            db.HubQueue.Add(new HubQueueRow
-            {
-                Topic = HubQueueRow.SessionTopic,
-                EntityId = session.Id,
-                Payload = JsonSerializer.Serialize(SessionSnapshot.From(session), Json),
-                CreatedAt = at,
-            });
-        }
-
+            Topic = HubQueueRow.SessionTopic,
+            EntityId = sessionId,
+            CreatedAt = at,
+        });
         db.HubQueue.Add(new HubQueueRow
         {
             Topic = HubQueueRow.SessionsTopic,
-            EntityId = null,
-            Payload = JsonSerializer.Serialize(new { ids }, Json),
+            EntityId = sessionId,
             CreatedAt = at,
         });
-
         await db.SaveChangesAsync(ct);
-        if (session is not null)
-            waiters.Wake(HubQueueRow.SessionTopic, session.Id);
+        waiters.Wake(HubQueueRow.SessionTopic, sessionId);
         waiters.Wake(HubQueueRow.SessionsTopic, entityId: null);
     }
-}
-
-internal sealed record SessionSnapshot(
-    Guid Id,
-    Guid TeamId,
-    string Slug,
-    string OccupancyDesired,
-    string OccupancyObserved,
-    string Health,
-    bool Hidden,
-    string MessageState,
-    string? Profile)
-{
-    public static SessionSnapshot From(SessionRow row) => new(
-        row.Id,
-        row.TeamId,
-        row.Slug,
-        row.OccupancyDesired.ToString(),
-        row.OccupancyObserved.ToString(),
-        row.Health.ToString(),
-        row.Hidden,
-        row.MessageState.ToString(),
-        row.Profile);
 }

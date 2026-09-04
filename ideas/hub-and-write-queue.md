@@ -169,14 +169,13 @@ Plane nouns. **Per-row doorbell only if the row mutates.** Append-only logs are 
 
 ### Event shape
 
-- `event: snapshot` — full JSON of **that stream’s** view (the row, or the membership id list).
+- `event: change` — `{ queueId, topic, entityId }` only. **No snapshot.** The client `GET`s the JSON twin.
 - `event: ping` — ~15s, empty. Clients ignore unknown types.
-- No `Last-Event-ID` resume. Reconnect is open-then-snapshot. After a reconnect storm: abort all row streams, `GET` membership, open again.
-- Subscribe (register with fanout) **before** the first snapshot so a write during the first read coalesces into a follow-up.
-- Auth is the JSON twin’s gate. Another Team’s sessions never appear. Workers and machines are 403 on human/Lead feeds.
+- Catch-up: `?after=<queueId>` / `Last-Event-ID`. Replay is “refetch these ids,” not bodies. After TTL gap: `GET` membership, then open row streams.
+- Subscribe (waiter) **before** the first `SELECT` so an insert during catch-up still wakes.
+- Auth is the JSON twin’s gate when a client is wired. Workers and machines are 403 on human/Lead feeds.
 - `X-Accel-Buffering: no`.
 
-Tails (`events`, `exchange`): snapshot is a short window or “since cursor”; later snapshots are appends. Reconnect: `GET` from last id.
 
 NOTIFY payload stays an id. Hub maps one id onto every matching stream (session write → membership, that session entity, inbox, that session’s tails and ports). Each stream coalesces separately.
 
@@ -207,22 +206,14 @@ Not extra `LISTEN` channels in v1. Session (or machine) NOTIFY is the doorbell; 
 
 ## Resume and TTL
 
-Two stream kinds. Do not give them the same retention story.
+SSE is a **notification log**, not a state stream. Bodies live on HTTP GET.
 
-| Kind | Examples | Resume | Retention |
-|---|---|---|---|
-| **State** | session row, machine liveness, open forward, preview, process | Connect → **snapshot now**. Last pull time is unused. Missed wakes are fine. | The **row** lives until the domain says so (session hidden, grant expired, process exited). |
-| **Tail / log** | event log, exchange, optional membership deltas | Cursor: `id > last_id` (or `created_at > last_pull`). Skip ahead to last pull. | `DELETE` or `DROP PARTITION` older than N. After expiry the cursor is a **gap** → snapshot the tail window, then follow. |
+| Kind | Resume | Retention |
+|---|---|---|
+| **`hub_queue` wakes** | `id > after`. Replay names ids to refetch. | `DELETE` older than `Hub:Retain` (24h). After a gap: `GET` the list, then follow. |
+| **Domain rows** | `GET` the JSON twin when `event: change` names them. | The row’s own life (`expires_at`, heartbeat age). |
 
-Entity EventSources are state. `events` / `exchange` tails are logs. Membership v1 is **state** (snapshot of current ids on connect) — no retained `added`/`removed`.
-
-Postgres, not Redis:
-
-- **State:** `expires_at` on the domain row (preview idle TTL and relay grant expiry already). Sweeper or `WHERE expires_at > now()` on read. Heartbeat death is `last_seen_at < now() - interval`.
-- **Tails:** `created_at` + `id`. Index `(session_id, id)`. Retention job: `DELETE FROM … WHERE created_at < now() - @retention`, or daily partitions.
-- **Command / runner_command:** finish on `applied`/`acked`/`rejected`. A stuck `queued` row is an incident, not an expiry.
-
-`Last-Event-ID` is the HTTP name for the tail cursor. State streams omit it (reconnect = snapshot). If the id has been deleted, the hub returns a snapshot and a new id, not a silent hole.
+Postgres, not Redis. Command / runner_command still finish on `applied`/`acked`, not expiry.
 
 A second hub replica is another `LISTEN` + `SELECT` on the same database, not a Redis copy.
 

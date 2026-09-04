@@ -44,9 +44,7 @@ public sealed class HubSseTests(PostgresFixture pg) : IAsyncLifetime
         var rows = await WaitForQueueAsync(n => n >= 2, ct);
 
         Assert.Contains(rows, r => r.Topic == HubQueueRow.SessionTopic && r.EntityId == sessionId);
-        Assert.Contains(rows, r => r.Topic == HubQueueRow.SessionsTopic && r.EntityId == null);
-        using var payload = JsonDocument.Parse(rows.Single(r => r.Topic == HubQueueRow.SessionTopic).Payload);
-        Assert.Equal(sessionId, payload.RootElement.GetProperty("id").GetGuid());
+        Assert.Contains(rows, r => r.Topic == HubQueueRow.SessionsTopic && r.EntityId == sessionId);
 
         await app.StopAsync(ct);
     }
@@ -74,12 +72,11 @@ public sealed class HubSseTests(PostgresFixture pg) : IAsyncLifetime
 
         var sessionId = await CreateSessionAsync(ct);
         var ev = await ReadSseEventAsync(reader, ct);
-        Assert.Equal("snapshot", ev.Event);
+        Assert.Equal("change", ev.Event);
         using var doc = JsonDocument.Parse(ev.Data);
         Assert.True(doc.RootElement.GetProperty("queueId").GetInt64() > 0);
-        var ids = doc.RootElement.GetProperty("payload").GetProperty("ids")
-            .EnumerateArray().Select(x => x.GetGuid()).ToList();
-        Assert.Contains(sessionId, ids);
+        Assert.Equal("sessions", doc.RootElement.GetProperty("topic").GetString());
+        Assert.Equal(sessionId, doc.RootElement.GetProperty("entityId").GetGuid());
 
         await app.StopAsync(ct);
     }
@@ -116,10 +113,11 @@ public sealed class HubSseTests(PostgresFixture pg) : IAsyncLifetime
         await using var stream = await resp.Content.ReadAsStreamAsync(ct);
         using var reader = new StreamReader(stream, Encoding.UTF8);
         var ev = await ReadSseEventAsync(reader, ct);
-        Assert.Equal("snapshot", ev.Event);
+        Assert.Equal("change", ev.Event);
         using var doc = JsonDocument.Parse(ev.Data);
         Assert.Equal(queueId, doc.RootElement.GetProperty("queueId").GetInt64());
-        Assert.Equal(sessionId, doc.RootElement.GetProperty("payload").GetProperty("id").GetGuid());
+        Assert.Equal("session", doc.RootElement.GetProperty("topic").GetString());
+        Assert.Equal(sessionId, doc.RootElement.GetProperty("entityId").GetGuid());
 
         await app.StopAsync(ct);
     }

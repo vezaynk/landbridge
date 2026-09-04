@@ -8,9 +8,9 @@ using Microsoft.Extensions.Options;
 namespace Landbridge.Hub;
 
 /// <summary>
-/// Session membership and per-row SSE. Unauthenticated on purpose — nothing
-/// calls this host yet; the dashboard still polls Core. Auth is the JSON twin's
-/// gate when a client is wired.
+/// Session membership and per-row SSE: <c>event: change</c> names what to
+/// refetch over HTTP. No snapshot body. Unauthenticated on purpose — nothing
+/// calls this host yet; the dashboard still polls Core.
 /// </summary>
 public static class HubEndpoints
 {
@@ -68,6 +68,7 @@ public static class HubEndpoints
         }
 
         var next = sub.Reader.ReadAllAsync(ct).GetAsyncEnumerator(ct);
+
         var wait = next.MoveNextAsync().AsTask();
         while (!ct.IsCancellationRequested)
         {
@@ -116,24 +117,20 @@ public static class HubEndpoints
     {
         await using var db = await dbFactory.CreateDbContextAsync(ct);
         var q = db.HubQueue.AsNoTracking().Where(r => r.Topic == topic && r.Id > after);
-        q = entityId is { } id
-            ? q.Where(r => r.EntityId == id)
-            : q.Where(r => r.EntityId == null);
+        if (entityId is { } id)
+            q = q.Where(r => r.EntityId == id);
         await foreach (var row in q.OrderBy(r => r.Id).AsAsyncEnumerable().WithCancellation(ct))
             yield return row;
     }
 
     private static SseItem<string> Item(HubQueueRow row)
     {
-        using var payload = JsonDocument.Parse(row.Payload);
         var json = JsonSerializer.Serialize(new
         {
             queueId = row.Id,
             topic = row.Topic,
             entityId = row.EntityId,
-            createdAt = row.CreatedAt,
-            payload = payload.RootElement,
         }, Json);
-        return new SseItem<string>(json, eventType: "snapshot") { EventId = row.Id.ToString() };
+        return new SseItem<string>(json, eventType: "change") { EventId = row.Id.ToString() };
     }
 }

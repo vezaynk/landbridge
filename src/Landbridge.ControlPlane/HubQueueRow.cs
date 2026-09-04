@@ -2,10 +2,11 @@ namespace Landbridge.ControlPlane;
 
 /// <summary>
 /// Durable wake log for the hub (<c>ideas/hub-and-write-queue.md</c>). The hub
-/// LISTENs on <see cref="LandbridgeDbContext.EventChannel"/>, snapshots the
-/// entity, and inserts a row here. SSE clients catch up with
+/// LISTENs on <see cref="LandbridgeDbContext.EventChannel"/> and inserts a row
+/// naming the topic + entity to refetch. SSE clients catch up with
 /// <c>id > after</c> and follow; a sweeper deletes rows older than the
 /// retain window. Not the session source of truth — that stays <see cref="SessionRow"/>.
+
 /// </summary>
 public sealed class HubQueueRow
 {
