@@ -13,7 +13,8 @@ Three independent workstreams that share a vocabulary. They are not a package.
 | 2. Write queue | accept without `Apply` | Core restart of **Lead/worker accepts** |
 | 3. Runner transport | §10 over SSE + POST | Core restart of **machine command/event** path |
 
-Postgres stays the source of truth. `SessionStateMachine.Apply` stays the only writer of session facts ([`spec.md`](spec.md) §3). `pg_notify` stays a **private doorbell** for whoever holds `LISTEN`. Consumers never `LISTEN`. Redis, WAL, and table CDC are non-goals until a later phase names a consumer that cannot call this Instance's HTTP.
+Postgres stays the source of truth **and** the queue **and** the tail. `SessionStateMachine.Apply` stays the only writer of session facts ([`spec.md`](spec.md) §3). `pg_notify` stays a **private doorbell** for whoever holds `LISTEN`. Consumers never `LISTEN`. Redis, WAL, and table CDC are non-goals.
+
 
 ## Two clocks
 
@@ -98,12 +99,14 @@ Worker tools are MCP, so they hit the **gateway**. Reads are SELECTs (gateway or
 - HTTP SSE of committed projections. Missed wakes are fine — the next snapshot is complete.
 - Hub process owns the sockets. Core restart does not drop them.
 - Hub reads **without calling Core** (read-only Postgres).
-- Dashboard never `LISTEN`s, never holds a Redis URL, never imports `Landbridge.ControlPlane`.
+- Dashboard never `LISTEN`s, never imports `Landbridge.ControlPlane`.
+
 - Session wakes and machine wakes are **separate doorbells**.
 
 ## Non-goals
 
 - Redis, NATS, Kafka, WAL decoding, Debezium, triggers on all tables.
+
 - Streaming `credentials`, tokens, permission argv, or anything §13.
 - A custom multiplex subscribe protocol (v1 uses one EventSource per topic; HTTP/2 carries them).
 - A write queue (Part 2) or replacing `/runner` (Part 3).
@@ -200,36 +203,26 @@ Rehydrate already restores *tasks*. It does not restore “which sockets are up.
 
 Not extra `LISTEN` channels in v1. Session (or machine) NOTIFY is the doorbell; the hub `SELECT`s the matching row/tail. Dedicated channels later if fan-out is too coarse.
 
-## Resume, TTL, and Redis
+## Resume and TTL
 
 Two stream kinds. Do not give them the same retention story.
 
-| Kind | Examples | Resume | “TTL” |
+| Kind | Examples | Resume | Retention |
 |---|---|---|---|
-| **State** | session row, machine liveness, open forward, preview, process | Connect → **snapshot now**. Last pull time is unused. Missed wakes are fine. | The **row** lives until the domain says so (session hidden, grant expired, process exited). Not a message expiry. |
-| **Tail / log** | event log, exchange, optional membership deltas | Cursor: `id > last_id` (or `created_at > last_pull`). Skip ahead to last pull. | Delete or drop partitions older than N. After expiry the cursor is a **gap** → snapshot the tail window, then follow. |
+| **State** | session row, machine liveness, open forward, preview, process | Connect → **snapshot now**. Last pull time is unused. Missed wakes are fine. | The **row** lives until the domain says so (session hidden, grant expired, process exited). |
+| **Tail / log** | event log, exchange, optional membership deltas | Cursor: `id > last_id` (or `created_at > last_pull`). Skip ahead to last pull. | `DELETE` or `DROP PARTITION` older than N. After expiry the cursor is a **gap** → snapshot the tail window, then follow. |
 
-Entity EventSources are state. `events` / `exchange` tails are logs. Membership can be either: v1 **state** (snapshot of current ids on connect) — then you do not need to retain `added`/`removed`. If membership is a delta log, it needs the same cursor+TTL as tails.
+Entity EventSources are state. `events` / `exchange` tails are logs. Membership v1 is **state** (snapshot of current ids on connect) — no retained `added`/`removed`.
 
-### Postgres equivalent of Redis TTL
+Postgres, not Redis:
 
-- **State:** `expires_at` on the domain row (preview idle TTL already; relay grant expiry already). Sweeper or `WHERE expires_at > now()` on read. Heartbeat death is `last_seen_at < now() - interval`, not `EXPIRE`.
-- **Tails:** `created_at` + `id` (bigserial or ULID). Index `(session_id, id)`. Retention: `DELETE FROM events WHERE created_at < now() - @retention` on a timer, or daily partitions `DROP PARTITION`. Same for a hub **wake buffer** if you ever persist wakes.
-- **Command / runner_command:** not TTL. They die on `applied`/`acked`/`rejected`. A stuck `queued` row is an incident, not an expiry (optional abandon TTL is a product rule, separate).
+- **State:** `expires_at` on the domain row (preview idle TTL and relay grant expiry already). Sweeper or `WHERE expires_at > now()` on read. Heartbeat death is `last_seen_at < now() - interval`.
+- **Tails:** `created_at` + `id`. Index `(session_id, id)`. Retention job: `DELETE FROM … WHERE created_at < now() - @retention`, or daily partitions.
+- **Command / runner_command:** finish on `applied`/`acked`/`rejected`. A stuck `queued` row is an incident, not an expiry.
 
-`Last-Event-ID` is the HTTP name for the tail cursor. State streams still omit it (reconnect = snapshot). If the id has been deleted, the hub returns a snapshot and a new id, not a silent hole.
+`Last-Event-ID` is the HTTP name for the tail cursor. State streams omit it (reconnect = snapshot). If the id has been deleted, the hub returns a snapshot and a new id, not a silent hole.
 
-### Should the hub just use Redis?
-
-No for v1. Redis Streams (`XADD`, `XRANGE`, `MINID` / `MAXLEN`) is a nicer *shape* for an **ephemeral wake log** (high churn, TTL, skip to last id). It is a second copy of facts Postgres already has:
-
-- Event tail **is** `EventLogDetail` / the event log table. Cursor + `DELETE` is the TTL.
-- Session/machine state **is** the row. Snapshot is skip-ahead.
-- Heartbeats **are** last-value upsert. `EXPIRE` on a Redis key is a worse liveness row.
-
-Use Redis when the thing being retained is **not** the domain row: a multi-hub replica’s wake buffer, or a firehose you refuse to keep in the Instance DB. Then: outbox in the same Apply commit → Stream with `MINID`. Still snapshot on gap. Still never `EXPIRE` a session.
-
-**Rule:** if the client can `GET` current state, SSE resume is snapshot, not replay. Replay+TTL is only for tails the client is *following as a log*.
+A second hub replica is another `LISTEN` + `SELECT` on the same database, not a Redis copy.
 
 
 ## Dashboard
@@ -242,8 +235,8 @@ Use Redis when the thing being retained is **not** the domain row: a multi-hub r
 
 1. **Same process, stop polling.** Per-row + membership SSE on `SessionEventFanout`. Machine wake from the registry **in-process**. Dashboard opens EventSources instead of `DashboardRefresh` 2s.
 2. **Machine liveness in Postgres** + machine `NOTIFY`.
-3. **Hub process.** Move `LISTEN` + `SELECT` + SSE out of Core. HTTP/2 at the edge.
-4. **Outbox + Redis** only if a second hub replica exists.
+3. **Hub process.** Move `LISTEN` + `SELECT` + SSE out of Core. HTTP/2 at the edge. A second replica is another hub on the same Postgres, not a broker.
+
 
 ---
 
@@ -443,8 +436,9 @@ Core down: upserts and appends still land (gateway + PG). Occupancy Apply waits.
 | Survives Core restart | sockets + **committed reads** | **unapplied accepts** (gateway up) | unacked **outbound** commands + last heartbeat; new `dispatch` waits on Core mint+claim |
 | New process | hub | MCP gateway | gateway POST + hub SSE (`/runner/events`) |
 | Protocol change | dashboard EventSource (HTTP/2, one per row) | mutating MCP tools | **transport** of §10; verbs frozen |
-| Store | session/event tables + liveness | Lead/worker **command** table | `runner_command` outbox, `runner_event`, `machine_liveness` upsert |
-| Redis | later, multi-hub | never as SoT | never as SoT |
+| Store | Instance Postgres | Instance Postgres | Instance Postgres |
+
+
 
 Ship Part 1 without Part 2. Ship client-minted session ids without Part 2. Do not ship Part 2 without pending-in-snapshot. Part 3 is its own transport migration; do not reuse Part 1 coalescing or Part 2’s table.
 
