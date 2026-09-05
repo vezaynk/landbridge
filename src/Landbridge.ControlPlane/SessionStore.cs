@@ -11,7 +11,7 @@ namespace Landbridge.ControlPlane;
 /// <see cref="SessionStateMachine"/>, then persists the resulting record, its
 /// effects, and an event row in one transaction — so a transition and its
 /// consequences (token mint/revoke, service clearing, park record) are
-/// atomic, and a NOTIFY fires only if the write commits.
+/// atomic, a <c>hub_queue</c> outbox row is inserted, and a NOTIFY fires only if the write commits.
 ///
 /// <para>Atomic including the set-based effects, which is why <see cref="RunTransition"/>
 /// opens the transaction itself rather than leaving it to <see cref="CommitAsync"/>: an
@@ -484,12 +484,9 @@ public sealed class SessionStore(
         MachineSnapshot machine, WorkerInstanceId newInstance, CancellationToken ct = default,
         IReadOnlyCollection<string>? connectedMachines = null)
     {
-        // One fact, read once: the registry already folded back-pressure into Ready when it
-        // took the heartbeat (RunnerConnectionRegistry.Fold), so re-testing UnderBackPressure
-        // here could never refuse anything this line has not already refused. The engine still
-        // re-checks both as §9 check 5's enforcement point — a pure function does not trust its
-        // caller's derivation — which is what this cheap pre-check exists to stay out of the
-        // way of: it only avoids opening a transaction for a machine that cannot be dispatched.
+        // Ready is last-value on machines.ready. The engine still re-checks Ready
+        // and UnderBackPressure as §9 check 5's enforcement point.
+
         if (!machine.Ready)
             return new StoreResult.NotFound($"machine {machine.MachineId} is not accepting dispatch");
 
@@ -615,9 +612,11 @@ public sealed class SessionStore(
                 CreatedAt = clock.GetUtcNow(),
             });
         }
+        HubOutbox.Stage(db, clock, HubQueueRow.ServicesTopic, caller.Session.Value);
         try
         {
             await db.SaveChangesAsync(ct);
+            await HubOutbox.NotifyAsync(db, caller.Session.Value, ct);
         }
         catch (DbUpdateException ex)
             when (ex.InnerException is Npgsql.PostgresException { SqlState: "23505" })
@@ -1650,6 +1649,7 @@ public sealed class SessionStore(
 
                 case ClearServicesAndForwards:
                     db.RegisteredServices.Where(s => s.SessionId == row.Id).ExecuteDelete();
+                    HubOutbox.Stage(db, clock, HubQueueRow.ServicesTopic, row.Id);
                     // §8.3: leaving working also releases the task's relay forwards, and
                     // that takes both halves. Read the live ones FIRST — the revoke below
                     // is what makes them stop being live — so the post-commit close knows
@@ -1660,10 +1660,13 @@ public sealed class SessionStore(
                     // them from any other task's — and a transition that loses the xmin race
                     // rolls this back with everything else, so nothing is closed for a
                     // transition that never happened.
-                    teardown = db.RelayGrants
+                    var liveGrants = db.RelayGrants
                         .Where(g => g.ProducerSessionId == row.Id && !g.Revoked)
                         .Select(g => new { g.ForwardId, g.ConsumerSessionId })
-                        .ToList()
+                        .ToList();
+                    foreach (var g in liveGrants)
+                        HubOutbox.Stage(db, clock, HubQueueRow.ForwardsTopic, g.ForwardId);
+                    teardown = liveGrants
                         .Select(g => new ForwardTeardown(
                             new SessionId(row.Id), g.ForwardId.ToString(),
                             g.ConsumerSessionId is { } consumer ? new SessionId(consumer) : null))
@@ -1725,8 +1728,9 @@ public sealed class SessionStore(
         actor is HumanSession ? PermissionAnswerer.Human : PermissionAnswerer.Lead;
 
     /// <summary>
-    /// Persists whatever the caller has staged and fires the task's NOTIFY in the same
-    /// transaction, so subscribers wake only on committed writes.
+    /// Persists whatever the caller has staged, appends a hub outbox row, and
+    /// fires the task's NOTIFY in the same transaction, so subscribers wake
+    /// only on committed writes and the hub can catch up after a restart.
     ///
     /// <para><paramref name="outerTx"/> is a transaction this method must not commit —
     /// someone above owns it and commits it (the SKIP LOCKED claim in
@@ -1744,11 +1748,12 @@ public sealed class SessionStore(
             : null;
         try
         {
+            HubOutbox.StageSession(db, clock, sessionId);
             await db.SaveChangesAsync(ct);
-            // NOTIFY in the same transaction: subscribers wake only on committed
-            // writes, and never on a rolled-back one.
-            await db.Database.ExecuteSqlAsync(
-                $"SELECT pg_notify({LandbridgeDbContext.EventChannel}, {sessionId.ToString()})", ct);
+            await HubOutbox.NotifyAsync(db, sessionId, ct);
+
+
+
             if (ownTx is not null)
                 await ownTx.CommitAsync(ct);
         }

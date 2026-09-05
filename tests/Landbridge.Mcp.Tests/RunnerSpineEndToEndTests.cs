@@ -347,8 +347,10 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
         builder.Logging.ClearProviders();
         builder.WebHost.UseUrls("http://127.0.0.1:0");
 
-        builder.Services.AddDbContext<LandbridgeDbContext>(o =>
+        builder.Services.AddDbContextFactory<LandbridgeDbContext>(o =>
             o.UseNpgsql(pg.ConnectionString).UseSnakeCaseNamingConvention());
+        builder.Services.AddScoped(sp =>
+            sp.GetRequiredService<IDbContextFactory<LandbridgeDbContext>>().CreateDbContext());
         builder.Services.AddLandbridgeStore();
         builder.Services.AddScoped<RelayGrantService>();
         builder.Services.AddScoped<PreviewMappingService>(); // §8.4: WorkerTools.open_preview

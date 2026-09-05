@@ -65,9 +65,10 @@ public sealed record ProfileRoutingView(
 /// </summary>
 /// <param name="Dispatchable">Whether at least one machine declaring this profile can take a
 /// task <em>now</em>. Equivalent by construction to
-/// <see cref="RunnerConnectionRegistry.TryPickMachine"/> finding a machine for it, which is
-/// the same eligibility dispatch itself runs on: readiness already has back-pressure folded
-/// into it (§10), and the engine's own check is this readiness plus this exact-match. False
+/// <see cref="MachineLive.ReadyAsync"/> finding a machine for it, which is
+/// the same eligibility dispatch itself runs on: <c>machines.ready</c> already
+/// has back-pressure folded into it (§10), and the engine's own check is this
+/// readiness plus this exact-match. False
 /// with a non-empty <see cref="Machines"/> is the informative case — the profile exists and
 /// every machine offering it is saturated or not yet ready, so a task on it will queue and
 /// then run, rather than sit unclaimable forever.</param>

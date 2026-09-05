@@ -76,6 +76,26 @@ internal sealed class FleetRig(
     private string _baseUrl = null!;
 
     private readonly Dictionary<string, MachineRig> _machines = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Guid> _enrolled = new(StringComparer.Ordinal);
+
+    private string Wire(string alias) => _enrolled[alias].ToString();
+
+    /// <summary>The enrolled <c>machines.id</c> for a fleet alias ("A", "B").
+    /// Registry keys, park.machine, and worker_instances.machine_id are this Guid
+    /// string, not the alias.</summary>
+    public string EnrolledId(string alias) => Wire(alias);
+
+    /// <summary>Map a wire machine id back to the fleet alias, or return the id
+    /// unchanged when it was not enrolled here.</summary>
+    public string? AliasOf(string? machineId)
+    {
+        if (machineId is null) return null;
+        foreach (var (alias, id) in _enrolled)
+            if (string.Equals(id.ToString(), machineId, StringComparison.OrdinalIgnoreCase))
+                return alias;
+        return machineId;
+    }
+
 
     /// <summary>Whether to drain each machine's worker-supervisor event ring into the
     /// plane's sink. Off for the scripted tier (its serve workers never exit mid-test
@@ -177,7 +197,13 @@ internal sealed class FleetRig(
                 Prompt = prompt ?? _profile.Prompt,
                 FollowUp = followUp ?? _profile.FollowUp,
             };
+        await using (var db = pg.NewContext())
+        {
+            _enrolled[machineId] = await TestMachines.EnrollAsync(db, TimeProvider.System, machineId);
+        }
+        var wireId = _enrolled[machineId].ToString();
         var workRoot = NewWorkRoot();
+
         var ring = new OutboundEventRing(capacity: 256);
         // §12: a real transcript store per machine, so capture writes real files and the
         // read path answers from them — the same store on both halves, as in production.
@@ -225,7 +251,8 @@ internal sealed class FleetRig(
         // daemon standing the relay data plane up and tearing it down (§8.3 — a splice's
         // authority ends when its owning task leaves working). Nothing else is exercised here.
         var reader = new TranscriptReader(transcripts);
-        _registry.Register(machineId, new HashSet<string> { "default" }, (command, sendCt) => command switch
+        _registry.Register(wireId, new HashSet<string> { "default" }, (command, sendCt) => command switch
+
         {
             DispatchCommand d => Spawn(machine, d),
             OpenForwardCommand or CloseForwardCommand => machine.Daemon.Send(command, sendCt),
@@ -271,7 +298,8 @@ internal sealed class FleetRig(
     public Task<bool> SendStopAsync(
         string machineId, SessionId task, TimeSpan ttl, StopDisposition disposition, string? reason,
         CancellationToken ct) =>
-        _registry.SendAsync(machineId, new StopCommand(task, ttl, disposition, reason), ct);
+        _registry.SendAsync(Wire(machineId), new StopCommand(task, ttl, disposition, reason), ct);
+
 
     /// <summary>How the machine acked the last <c>stop</c> for this task (§10) — the honest
     /// answer to "was the agent told, or just killed".</summary>
@@ -555,7 +583,7 @@ internal sealed class FleetRig(
     {
         await using var db = pg.NewContext();
         var row = await db.Sessions.AsNoTracking().SingleAsync(t => t.Id == task.Value, ct);
-        return (row.ParkMachine, row.HarnessSessionRef);
+        return (AliasOf(row.ParkMachine), row.HarnessSessionRef);
     }
 
     /// <summary>
@@ -580,21 +608,20 @@ internal sealed class FleetRig(
         Beat(machineId);
     }
 
-    /// <summary>
-    /// One machine heartbeat, carrying what that machine is currently running (§10, §12).
-    /// The process list matters: <c>list_processes</c> answers from what a machine last
-    /// <em>reported</em> — the plane holds no process state of its own — so without a beat
-    /// after a start, a cleanup agent cannot discover the survivor it was sent to stop.
-    /// </summary>
     private void Beat(string machineId)
     {
         var machine = _machines[machineId];
-        _registry.ApplyHeartbeat(machineId, new MachineHeartbeat(
-            machineId, Ready: _ready.GetValueOrDefault(machineId), UnderBackPressure: false,
+        var wire = Wire(machineId);
+        var beat = new MachineHeartbeat(
+            wire, Ready: _ready.GetValueOrDefault(machineId), UnderBackPressure: false,
             new SystemLoad(0, 0, 0), RunningSessions: machine.Supervisor.RunningTotal, ["default"],
             DateTimeOffset.UtcNow,
-            Processes: machine.Daemon.ReportProcesses()));
+            Processes: machine.Daemon.ReportProcesses());
+        using var db = pg.NewContext();
+        HubOutbox.WriteHeartbeatAsync(db, TimeProvider.System, wire, beat, CancellationToken.None)
+            .GetAwaiter().GetResult();
     }
+
 
     /// <summary>What the machine reports it is running (§10) — the rig-side read behind
     /// <c>list_processes</c>, for assertions and diagnostics.</summary>
@@ -681,7 +708,12 @@ internal sealed class FleetRig(
 
     /// <summary>The machine a task is currently tracked as dispatched to (§10) — the
     /// fan-out scenario asserts the set of these spans ≥2 distinct machines.</summary>
-    public string? MachineOf(SessionId task) => _registry.MachineFor(task);
+    public string? MachineOf(SessionId task)
+    {
+        var wire = _registry.MachineFor(task);
+        return AliasOf(wire);
+    }
+
 
     /// <summary>The machine a task was last spawned on — sticky, so it survives the
     /// worker's own exit (which untracks the live binding). The real tier asserts on this.</summary>

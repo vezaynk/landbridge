@@ -193,9 +193,8 @@ public abstract record LeadMachineBindResult
 /// <summary>
 /// An enrolled machine (§11). <see cref="Name"/> and <see cref="Os"/> are
 /// declared once at enrollment and written server-side, so a machine cannot
-/// re-declare them for itself (§13). The §12 Machine Group view builds liveness
-/// from the live connection registry; this row is identity
-/// (<see cref="Id"/>, <see cref="Name"/>, <see cref="Revoked"/>).
+/// re-declare them for itself (§13). Liveness (last spoke, ready, profiles) is
+/// last-value columns this heartbeat upserts. The registry is the socket.
 /// </summary>
 public sealed class MachineRow
 {
@@ -214,7 +213,19 @@ public sealed class MachineRow
     /// <summary>When the machine was revoked. Written but read by nothing; kept for §13
     /// forensics, like every other <c>revoked_at</c> in the schema.</summary>
     public DateTimeOffset? RevokedAt { get; set; }
+
+    /// <summary>Last applied heartbeat. Null until the first beat after enroll.</summary>
+    public DateTimeOffset? LastSpokeAt { get; set; }
+
+    /// <summary>Ready unless under back-pressure, as of <see cref="LastSpokeAt"/>.</summary>
+    public bool Ready { get; set; }
+
+    public bool UnderBackPressure { get; set; }
+
+    /// <summary>Declared profiles on the last heartbeat.</summary>
+    public string[] Profiles { get; set; } = [];
 }
+
 
 /// <summary>
 /// What a validated token authenticates as. The worker principal carries the

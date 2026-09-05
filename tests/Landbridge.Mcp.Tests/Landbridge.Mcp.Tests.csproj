@@ -34,6 +34,8 @@
        (single source of truth) rather than duplicating it. -->
   <ItemGroup>
     <Compile Include="..\Landbridge.ControlPlane.Tests\PostgresFixture.cs" Link="PostgresFixture.cs" />
+    <Compile Include="..\Landbridge.ControlPlane.Tests\TestMachines.cs" Link="TestMachines.cs" />
+
   </ItemGroup>
 
   <ItemGroup>

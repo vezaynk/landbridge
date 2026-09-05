@@ -229,7 +229,9 @@ public sealed class WorkerTools(
                  "a name that is not taken, to work out why a start was refused, and above all to find " +
                  "out what an earlier session left running when you have been sent to clean up. Any " +
                  "session on the machine may stop a process.")]
-    public IReadOnlyList<RunningThing> ListProcesses() => processes.List(Caller.Session);
+    public Task<IReadOnlyList<RunningThing>> ListProcesses(CancellationToken ct) =>
+        processes.ListAsync(Caller.Session, ct);
+
 
     [McpServerTool(Name = "write_process"),
      Description("Write text to a background process's stdin — a command for a REPL, an answer a tool is " +

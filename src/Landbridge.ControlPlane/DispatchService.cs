@@ -214,19 +214,21 @@ public sealed class DispatchService : IHostedService
         while (!ct.IsCancellationRequested)
         {
             var progressed = false;
-            foreach (var machineId in _registry.ReadyMachines())
+            IReadOnlyList<(string Id, MachineSnapshot Snapshot)> ready;
+            using (var scope = _scopes.CreateScope())
+            {
+                var db = scope.ServiceProvider.GetRequiredService<LandbridgeDbContext>();
+                ready = await MachineLive.ReadyAsync(
+                    db, _registry, _clock.GetUtcNow(), WaitTtlSweeper.DefaultMachineLivenessWindow, ct);
+            }
+
+            foreach (var (machineId, snapshot) in ready)
             {
                 if (exhausted.Contains(machineId))
                     continue;
 
-                var snapshot = _registry.SnapshotFor(machineId);
-                if (snapshot is null || !snapshot.Ready)
-                {
-                    exhausted.Add(machineId);
-                    continue;
-                }
-
                 switch (await TryDispatchOneAsync(machineId, snapshot, ct))
+
                 {
                     case DispatchOutcome.Dispatched:
                         progressed = true;

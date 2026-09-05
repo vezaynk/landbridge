@@ -45,8 +45,11 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         RelayGrantTestKit.LeadToolsFor(
             pg.NewContext(), _clock, registry ?? new RunnerConnectionRegistry(_clock), AccessorFor(principal));
 
+    private static readonly string M1 = Guid.NewGuid().ToString();
+
     private static MachineSnapshot Machine() =>
-        new("m1", Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });
+        new(M1, Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });
+
 
     [SkippableFact]
     public async Task Create_task_via_the_tool_persists_a_submitted_task()
@@ -264,12 +267,13 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
 
         var sent = new List<RunnerCommand>();
         var registry = new RunnerConnectionRegistry(_clock);
-        registry.Register("m1", new HashSet<string> { "default" }, (cmd, _) =>
+        registry.Register(M1, new HashSet<string> { "default" }, (cmd, _) =>
         {
             sent.Add(cmd);
             return Task.CompletedTask;
         });
-        registry.TrackDispatch("m1", created.Session.Id);
+        registry.TrackDispatch(M1, created.Session.Id);
+
         var tools = LeadFor(Factory, registry);
 
         var msg = await tools.SendInputRequest(
@@ -310,12 +314,12 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         Skip.IfNot(pg.Available, pg.SkipReason);
         var sessionId = await SeedBlockedOnInputTask();
         var registry = new RunnerConnectionRegistry(_clock);
-        registry.Register("m1", new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
-        registry.TrackDispatch("m1", sessionId);
+        registry.Register(M1, new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
+        registry.TrackDispatch(M1, sessionId);
         registry.MarkProcessGone(sessionId);
         var tools = LeadFor(Factory, registry);
 
-        // m1 still holds the lease, so the park record prefers it — but the process
+        // M1 still holds the lease, so the park record prefers it — but the process
         // is gone, so the answer redispatches (→ submitted) rather than prompting
         // a dead session. Resume goes back through dispatch (§11).
         var msg = await tools.SendInputResponse(sessionId.ToString(), Tid, "staging-pg, not docker", CancellationToken.None);
@@ -324,7 +328,8 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         await using var v = pg.NewContext();
         var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == sessionId.Value);
         Assert.Equal(SessionState.Working, row.State);
-        Assert.Equal("m1", row.ParkMachine); // held-lease machine preferred (§11)
+        Assert.Equal(M1, row.ParkMachine); // held-lease machine preferred (§11)
+
         Assert.Equal("staging-pg, not docker", row.InputAnswer);
     }
 
@@ -335,12 +340,13 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         var sessionId = await SeedBlockedOnInputTask();
         var sent = new List<RunnerCommand>();
         var registry = new RunnerConnectionRegistry(_clock);
-        registry.Register("m1", new HashSet<string> { "default" }, (cmd, _) =>
+        registry.Register(M1, new HashSet<string> { "default" }, (cmd, _) =>
         {
             sent.Add(cmd);
             return Task.CompletedTask;
         });
-        registry.TrackDispatch("m1", sessionId);
+        registry.TrackDispatch(M1, sessionId);
+
         var tools = LeadFor(Factory, registry);
 
         var msg = await tools.SendInputResponse(sessionId.ToString(), Tid, "use staging-pg", CancellationToken.None);
@@ -363,9 +369,9 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         // ask: a dispatched worker on m1 requests input → blocked_on_input.
         var sessionId = await SeedBlockedOnInputTask();
 
-        // The registry dispatch set up: m1 live, heartbeating on the fake clock,
+        // The registry dispatch set up: enrolled machine live, heartbeating on the fake clock,
         // tracking the task. The sweep is about to park it and untrack the machine.
-        var registry = LiveMachine("m1", sessionId);
+        var (registry, machineId) = await LiveMachineAsync(sessionId);
 
         // sweeper parks it once the wait TTL elapses — its own seam, FakeTimeProvider.
         var sweeper = NewSweeper(registry, waitTtl: TimeSpan.FromMinutes(30), machineWindow: TimeSpan.FromHours(2));
@@ -390,7 +396,9 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         await using var db = pg.NewContext();
         var store = new SessionStore(db, _clock);
         var successor = WorkerInstanceId.New();
-        var dispatched = Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(Machine(), successor));
+        var dispatched = Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(
+            new MachineSnapshot(machineId.ToString(), Ready: true, UnderBackPressure: false,
+                new HashSet<string> { "default" }), successor));
         Assert.Equal(sessionId, dispatched.Session.Id);
 
         var assignment = await store.GetAssignmentAsync(new WorkerCaller(Team, sessionId, successor));
@@ -437,10 +445,12 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         // names that exist, where each can run, and whether it can run there now — exact
         // match means a guessed name is a task nothing ever claims.
         var registry = new RunnerConnectionRegistry(_clock);
-        registry.Register("m1", new HashSet<string> { "default", "gpu" }, (_, _) => Task.CompletedTask);
-        registry.ApplyHeartbeat("m1", Heartbeat("m1", "default", "gpu"));
-        registry.Register("m2", new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
-        registry.ApplyHeartbeat("m2", Heartbeat("m2", "default"));
+        Guid m1, m2;
+        await using (var db = pg.NewContext())
+        {
+            m1 = await TestMachines.ConnectAsync(db, _clock, registry, "m1", profiles: ["default", "gpu"]);
+            m2 = await TestMachines.ConnectAsync(db, _clock, registry, "m2", profiles: ["default"]);
+        }
         var tools = LeadFor(Factory, registry);
 
         var view = await tools.ListProfiles(CancellationToken.None);
@@ -448,7 +458,8 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(new[] { "default", "gpu" }, view.Profiles.Select(p => p.Profile));
         Assert.Equal(2, view.ConnectedMachines);
         var shared = view.Profiles.Single(p => p.Profile == "default");
-        Assert.Equal(new[] { "m1", "m2" }, shared.Machines.Select(m => m.MachineId));
+        Assert.Equal(new[] { await SlugAsync(m1), await SlugAsync(m2) }.OrderBy(s => s),
+            shared.Machines.Select(m => m.MachineId).OrderBy(s => s));
         Assert.True(shared.Dispatchable);
         // Liveness per machine, so "this profile is reachable NOW" is answerable rather
         // than inferred from the mere fact that a machine once declared it.
@@ -460,7 +471,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         });
 
         // The narrower profile carries only the machine that declares it (§7 exact match).
-        Assert.Equal(new[] { "m1" }, view.Profiles.Single(p => p.Profile == "gpu").Machines
+        Assert.Equal(new[] { await SlugAsync(m1) }, view.Profiles.Single(p => p.Profile == "gpu").Machines
             .Select(m => m.MachineId));
     }
 
@@ -514,15 +525,22 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         return created.Session.Id;
     }
 
-    /// <summary>A registry with one ready machine heartbeating on the fake clock,
-    /// tracking the task — exactly what dispatch would have set up.</summary>
-    private RunnerConnectionRegistry LiveMachine(string machineId, SessionId task)
+    private async Task<(RunnerConnectionRegistry Registry, Guid MachineId)> LiveMachineAsync(SessionId task)
     {
+        await using var db = pg.NewContext();
+        var machine = await TestMachines.EnrollAsync(db, _clock, "box");
         var registry = new RunnerConnectionRegistry(_clock);
-        registry.Register(machineId, new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
-        registry.ApplyHeartbeat(machineId, Heartbeat(machineId, "default"));
-        registry.TrackDispatch(machineId, task);
-        return registry;
+        TestMachines.Register(registry, machine);
+        await TestMachines.HeartbeatAsync(db, _clock, machine);
+        registry.TrackDispatch(machine.ToString(), task);
+        return (registry, machine);
+    }
+
+    private async Task<string> SlugAsync(Guid machineId)
+    {
+        await using var db = pg.NewContext();
+        return await db.Set<MachineRow>().AsNoTracking()
+            .Where(m => m.Id == machineId).Select(m => m.Slug).SingleAsync();
     }
 
     private WaitTtlSweeper NewSweeper(

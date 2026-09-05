@@ -34,8 +34,10 @@ var connectionString = builder.Configuration.GetConnectionString("Landbridge")
 
 // The store: one DbContext per request scope; the state machine is the only
 // write path (spec §15).
-builder.Services.AddDbContext<LandbridgeDbContext>(o =>
+builder.Services.AddDbContextFactory<LandbridgeDbContext>(o =>
     o.UseNpgsql(connectionString).UseSnakeCaseNamingConvention());
+builder.Services.AddScoped(sp =>
+    sp.GetRequiredService<IDbContextFactory<LandbridgeDbContext>>().CreateDbContext());
 // The §15 write path plus the §9.10 per-Team byte accounting it resolves through — one
 // registration, because the two are halves of the same feature.
 // InfrastructureRequeueLimit is §9 check 7's cap, stamped onto each new task: how many

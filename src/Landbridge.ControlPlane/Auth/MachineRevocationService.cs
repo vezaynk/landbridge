@@ -35,7 +35,7 @@ namespace Landbridge.ControlPlane.Auth;
 /// Credentials first — a box whose socket is closed reconnects within its backoff, and a
 /// still-live access token would buy it a fresh channel in the window before the
 /// credential write; dead credentials make that reconnect a 401. The channel second,
-/// which takes the machine out of <see cref="RunnerConnectionRegistry.ReadyMachines"/>
+/// which takes the machine out of <see cref="MachineLive.ReadyAsync"/>
 /// and so closes the only way a <em>new</em> worker instance could still be minted for
 /// it — a dispatch pass claiming a task onto a still-registered machine would otherwise
 /// mint one behind the sweep's back. Then the worker sweep, and only then the requeue:

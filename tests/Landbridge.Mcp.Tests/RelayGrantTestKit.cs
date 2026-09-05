@@ -63,8 +63,10 @@ internal static class RelayGrantTestKit
         if (settings.Count > 0)
             builder.Configuration.AddInMemoryCollection(settings);
 
-        builder.Services.AddDbContext<LandbridgeDbContext>(o =>
+        builder.Services.AddDbContextFactory<LandbridgeDbContext>(o =>
             o.UseNpgsql(connectionString).UseSnakeCaseNamingConvention());
+        builder.Services.AddScoped(sp =>
+            sp.GetRequiredService<IDbContextFactory<LandbridgeDbContext>>().CreateDbContext());
         builder.Services.AddLandbridgeStore();
         builder.Services.AddScoped<TokenService>();
         builder.Services.AddScoped<RelayGrantService>();
@@ -168,7 +170,9 @@ internal static class RelayGrantTestKit
             new FriendlyIds(db),
             http,
             new ConfigurationBuilder().Build(),
+            db,
             inbox);
+
 
     // ── Seeding (against the fixture DB, so the plane's own scope sees it) ─────
 

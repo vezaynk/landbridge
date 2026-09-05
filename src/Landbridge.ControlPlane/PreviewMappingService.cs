@@ -49,7 +49,9 @@ public sealed class PreviewMappingService(LandbridgeDbContext db, TimeProvider c
             ExpiresAt = now + ttl,
         };
         db.PreviewMappings.Add(row);
+        HubOutbox.Stage(db, clock, HubQueueRow.PreviewsTopic, row.Id);
         await db.SaveChangesAsync(ct);
+        await HubOutbox.NotifyAsync(db, task.Value, ct);
         return new PreviewMintResult(label, row);
     }
 
@@ -102,8 +104,19 @@ public sealed class PreviewMappingService(LandbridgeDbContext db, TimeProvider c
     /// <summary>Drop a mapping so new connections are refused. Missing is a no-op.</summary>
     public async Task<bool> RevokeAsync(Guid mappingId, CancellationToken ct = default)
     {
+        var row = await db.PreviewMappings.AsNoTracking()
+            .FirstOrDefaultAsync(m => m.Id == mappingId, ct);
+        if (row is null)
+            return false;
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
         var n = await db.PreviewMappings.Where(m => m.Id == mappingId).ExecuteDeleteAsync(ct);
-        return n > 0;
+        if (n == 0)
+            return false;
+        HubOutbox.Stage(db, clock, HubQueueRow.PreviewsTopic, mappingId);
+        await db.SaveChangesAsync(ct);
+        await HubOutbox.NotifyAsync(db, row.SessionId, ct);
+        await tx.CommitAsync(ct);
+        return true;
     }
 
     /// <summary>
@@ -130,7 +143,9 @@ public sealed class PreviewMappingService(LandbridgeDbContext db, TimeProvider c
             return;
         var ttl = row.Ttl > TimeSpan.Zero ? row.Ttl : PreviewMint.DefaultTtl;
         row.ExpiresAt = clock.GetUtcNow() + ttl;
+        HubOutbox.Stage(db, clock, HubQueueRow.PreviewsTopic, mappingId);
         await db.SaveChangesAsync(ct);
+        await HubOutbox.NotifyAsync(db, row.SessionId, ct);
     }
 
     // ── Internals ───────────────────────────────────────────────────────────

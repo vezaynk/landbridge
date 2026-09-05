@@ -62,6 +62,7 @@ internal static class DashboardJsonReads
                 return true;
             }
             var registry = http.RequestServices.GetRequiredService<RunnerConnectionRegistry>();
+            var db = http.RequestServices.GetRequiredService<LandbridgeDbContext>();
             var rows = await queries.GetConformanceTasksAsync(runId, ct);
             if (rows.Count == 0)
             {
@@ -74,12 +75,8 @@ internal static class DashboardJsonReads
                 r.Id, ConformanceCatalog.KindOf(r.Description) ?? "unknown",
                 r.State, r.Attempt, r.ResultReference, r.LastRequeueReason?.ToString(),
                 r.MessageState)).ToList();
-            var machines = new List<string>();
-            foreach (var id in registry.MachineIds())
-            {
-                if (registry.SnapshotFor(id)?.DeclaredProfiles.Contains(profile) == true)
-                    machines.Add(id);
-            }
+            var machines = await MachineLive.DeclaringAsync(db, registry, profile, ct);
+
             await http.Response.WriteAsJsonAsync(
                 ConformanceRunView.From(runId, profile, tasks, machines), DashboardNegotiate.Json, ct);
             return true;
