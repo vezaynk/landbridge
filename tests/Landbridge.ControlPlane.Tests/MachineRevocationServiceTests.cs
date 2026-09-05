@@ -224,8 +224,12 @@ public sealed class MachineRevocationServiceTests(PostgresFixture pg) : IAsyncLi
         // The claim picks the task, exactly as the dispatch loop's does, so the id comes back
         // from the store rather than being assumed.
         var instance = WorkerInstanceId.New();
+        // SnapshotFor is the socket (Ready=false). Dispatch reads the claim from
+        // a ready snapshot the same way MachineLive hands one to DispatchNext.
         var dispatched = Assert.IsType<StoreResult.Applied>(
-            await store.DispatchNextAsync(registry.SnapshotFor(machineId)!, instance));
+            await store.DispatchNextAsync(
+                new MachineSnapshot(machineId, Ready: true, UnderBackPressure: false, Profiles()),
+                instance));
         registry.TrackDispatch(machineId, dispatched.Session.Id);
         var token = await new TokenService(db, clock)
             .MintWorkerTokenAsync(team, dispatched.Session.Id, instance);
