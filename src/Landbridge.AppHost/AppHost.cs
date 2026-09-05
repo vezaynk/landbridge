@@ -173,20 +173,6 @@ var mcp = builder.AddProject<Projects.Landbridge_Mcp>("mcp", options => options.
         Landbridge.ControlPlane.Auth.OperatorPassphrase.Hash("dev"))
     .WithHttpHealthCheck("/health");
 
-const int hubPort = 5300;
-var hubListenUrl = $"http://+:{hubPort}";
-// SSE hub (ideas/hub-and-write-queue.md). Tails hub_queue; LISTEN is a doorbell.
-// WaitFor(mcp) so the EF migration has run. Un-proxied like the plane so a
-// browser can dial the EventSource on a fixed port.
-
-builder.AddProject<Projects.Landbridge_Hub>("hub", options => options.ExcludeLaunchProfile = true)
-    .WithReference(landbridgeDb)
-    .WaitFor(mcp)
-    .WithHttpEndpoint(port: hubPort, targetPort: hubPort, isProxied: false)
-    .WithEnvironment("ASPNETCORE_URLS", hubListenUrl)
-    .WithEnvironment("ASPNETCORE_ENVIRONMENT", "Development")
-    .WithHttpHealthCheck("/health");
-
 // landbridge-relay as a dev-loop resource (§8.3). Same fixed, un-proxied endpoint
 // treatment as the plane: landbridged dials host.docker.internal:5100, so an
 // ephemeral DCP proxy port would be invisible. ExcludeLaunchProfile drops the

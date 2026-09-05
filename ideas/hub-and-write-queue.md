@@ -40,8 +40,8 @@ Every mutating call sits on two clocks. Collapsing them is how this design goes 
 
 | Dispatch / inbox wake | `SessionEventListener` / `SessionEventFanout` | LISTEN `landbridge_session_events` only |
 | Lead live read | `GET /lead/inbox/events`, `watch_lead_inbox` | full **snapshot** on wake, still in Core ([`lead-inbox-sse.md`](lead-inbox-sse.md)) |
-| Dashboard live read | Blazor `DashboardRefresh` | **still 2s poll**. Hub has no consumer yet |
-| Hub | `Landbridge.Hub` `:5300` | LISTEN session + hub channels, wake in-process, tail `hub_queue` `id > after`, `event: change`. Unauthenticated. Retention `DELETE` older than `Hub:Retain` (24h) |
+| Dashboard live read | Blazor `DashboardRefresh` | **still 2s poll**. Hub process is the stacked PR; nothing consumes SSE yet |
+| Hub | stacked PR | `Landbridge.Hub` `:5300` LISTEN + tail + SSE is not in this change |
 | Runner channel | `/runner` WebSocket | frozen §10; unchanged |
 
 `Landbridge.Mcp` is still one process: MCP, OAuth, `/runner`, dashboard, `Apply`. The split below is that process cut into three.
@@ -237,16 +237,17 @@ A second hub replica tails the same outbox (`LISTEN` + `SELECT`), not a Redis co
 ## Dashboard
 
 - Live (target): EventSource per membership list + per visible row (HTTP/2) on the hub.
-- Live (today): 2s poll. Hub is up; nothing dials it.
+- Live (today): 2s poll. The Hub process is the stacked PR; nothing dials it yet.
 - At-rest / click: HTTP GET (and cookie POSTs) on Core, as today.
 - Core 502 during restart: retry GET; **do not** tear down SSE. Committed session state did not change. Machine rail follows `last_spoke_at`.
 
 ## Phases
 
-1. **Wake log + hub process** — done: `hub_queue`, `Landbridge.Hub`, session/port/machine topics, nothing consuming SSE.
+1. **Wake log** — done: `hub_queue` outbox in `CommitAsync` / enroll / grants / heartbeat. Hub process is the stacked PR.
 2. **Last-value machine facts** — done: columns + `machine_processes`; doorbell only on `hub_queue`.
-3. **Dashboard EventSource** instead of `DashboardRefresh`. Auth on the hub.
-4. Split Lead inbox SSE onto the hub (still a snapshot stream, not this wake shape).
+3. **Hub process** — stacked: `Landbridge.Hub` LISTEN, tail, `event: change`.
+4. **Dashboard EventSource** instead of `DashboardRefresh`. Auth on the hub.
+5. Split Lead inbox SSE onto the hub (still a snapshot stream, not this wake shape).
 
 
 ---
