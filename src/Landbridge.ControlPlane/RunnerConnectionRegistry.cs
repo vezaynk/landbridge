@@ -13,8 +13,6 @@ namespace Landbridge.ControlPlane;
 ///
 /// Ready / profiles / processes / last-spoke live on <c>machines</c> and
 /// <c>machine_processes</c> (heartbeat upsert). This type is the socket.
-
-
 ///
 /// It is transport-agnostic — nothing here knows about WebSockets — so it is
 /// driven directly in tests. All state is process-local and evaporates on restart,
@@ -100,7 +98,6 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     ///
     /// <para>Once the connection is out of the dictionary the machine is invisible to
     /// <see cref="MachineLive.ReadyAsync"/>, <see cref="SnapshotFor"/> and <see cref="SendAsync"/>,
-
     /// so the requeue's own <c>pg_notify</c> cannot wake a dispatch pass that claims a
     /// task straight back onto the dead socket.</para>
     ///
@@ -356,7 +353,6 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// holds a tracked task — the full-enumeration snapshot the §12 Machine Group
     /// view needs so a connected, back-pressured, zero-task machine is still visible
     /// (neither <see cref="MachineLive.ReadyAsync"/> nor <see cref="AllTracked"/> would name
-
     /// it). Membership lives in the concurrent dictionary, so the key snapshot is
     /// consistent without taking any connection's <c>Gate</c> — that lock guards a
     /// connection's mutable fields, which this read does not touch.

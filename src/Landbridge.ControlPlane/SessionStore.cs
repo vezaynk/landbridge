@@ -12,7 +12,6 @@ namespace Landbridge.ControlPlane;
 /// effects, and an event row in one transaction — so a transition and its
 /// consequences (token mint/revoke, service clearing, park record) are
 /// atomic, a <c>hub_queue</c> outbox row is inserted, and a NOTIFY fires only if the write commits.
-
 ///
 /// <para>Atomic including the set-based effects, which is why <see cref="RunTransition"/>
 /// opens the transaction itself rather than leaving it to <see cref="CommitAsync"/>: an
@@ -1732,7 +1731,6 @@ public sealed class SessionStore(
     /// Persists whatever the caller has staged, appends a hub outbox row, and
     /// fires the task's NOTIFY in the same transaction, so subscribers wake
     /// only on committed writes and the hub can catch up after a restart.
-
     ///
     /// <para><paramref name="outerTx"/> is a transaction this method must not commit —
     /// someone above owns it and commits it (the SKIP LOCKED claim in

@@ -143,9 +143,9 @@ public sealed partial class DashboardQueries(
                 fromRow ? row!.Ready : snapshot!.Ready,
                 fromRow ? row!.UnderBackPressure : snapshot!.UnderBackPressure,
                 fromRow ? row!.LastSpokeAt : null,
-                (fromRow ? row!.Profiles : snapshot!.DeclaredProfiles)
-
+                (fromRow ? (IEnumerable<string>)row!.Profiles : snapshot!.DeclaredProfiles)
                     .OrderBy(p => p, StringComparer.Ordinal).ToList(),
+
                 tasks,
                 isBound ? bound.HumanId : null,
                 isBound ? bound.BoundAt : null,

@@ -69,7 +69,6 @@ public sealed record ProfileRoutingView(
 /// the same eligibility dispatch itself runs on: <c>machines.ready</c> already
 /// has back-pressure folded into it (§10), and the engine's own check is this
 /// readiness plus this exact-match. False
-
 /// with a non-empty <see cref="Machines"/> is the informative case — the profile exists and
 /// every machine offering it is saturated or not yet ready, so a task on it will queue and
 /// then run, rather than sit unclaimable forever.</param>

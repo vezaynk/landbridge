@@ -111,8 +111,8 @@ public sealed class ProcessControlRelay(
     /// <summary>
     /// §10: the agent-started processes the machine holding this task last reported.
     /// Read from <c>machine_processes</c>.
-
     /// </summary>
+
     public async Task<IReadOnlyList<RunningThing>> ListAsync(SessionId task, CancellationToken ct = default)
     {
         var machine = registry.MachineFor(task);
