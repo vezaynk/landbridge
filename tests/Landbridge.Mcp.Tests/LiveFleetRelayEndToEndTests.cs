@@ -77,6 +77,14 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
 
         var registry = plane.Services.GetRequiredService<RunnerConnectionRegistry>();
         var sink = plane.Services.GetRequiredService<RunnerEventSink>();
+        Guid mp, mc;
+        await using (var db = pg.NewContext())
+        {
+            mp = await TestMachines.EnrollAsync(db, TimeProvider.System, "mp");
+            mc = await TestMachines.EnrollAsync(db, TimeProvider.System, "mc");
+        }
+        var mpWire = mp.ToString();
+        var mcWire = mc.ToString();
 
         // ── Two machines, each a real landbridged data plane for its end of a forward.
         //    "mp" hosts the producer task, "mc" the consumer. Separate daemons →
@@ -107,17 +115,17 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
             // The registry seam a socket would occupy (§10): each machine routes
             // DispatchCommand → the real supervisor spawn, OpenForwardCommand → the
             // real daemon standing up its relay data plane.
-            registry.Register("mp", new HashSet<string> { "default" }, (command, sendCt) => command switch
+            registry.Register(mpWire, new HashSet<string> { "default" }, (command, sendCt) => command switch
             {
-                DispatchCommand d => Spawn(supervisor, d, profile, "mp"),
+                DispatchCommand d => Spawn(supervisor, d, profile, mpWire),
                 // Both halves of a forward's life go to the daemon: open-forward stands the
                 // data plane up, close-forward ends it when the owning task leaves working.
                 OpenForwardCommand or CloseForwardCommand => producerDaemon.Send(command, sendCt),
                 _ => Task.CompletedTask,
             });
-            registry.Register("mc", new HashSet<string> { "default" }, (command, sendCt) => command switch
+            registry.Register(mcWire, new HashSet<string> { "default" }, (command, sendCt) => command switch
             {
-                DispatchCommand d => Spawn(supervisor, d, profile, "mc"),
+                DispatchCommand d => Spawn(supervisor, d, profile, mcWire),
                 OpenForwardCommand or CloseForwardCommand => consumerDaemon.Send(command, sendCt),
                 _ => Task.CompletedTask,
             });
@@ -134,8 +142,8 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
             //    and the only submitted task), then wait until its worker has bound
             //    the echo service and registered it.
             var taskA = await CreateSessionAsync(baseUrl, leadToken, $"relay-serve:{ServiceName}", ct, team);
-            SetReady(registry, "mp", ready: true);
-            SetReady(registry, "mc", ready: false);
+            await SetReadyAsync(mp, ready: true);
+            await SetReadyAsync(mc, ready: false);
             await dispatch.RunDispatchPassAsync(ct);
 
             var registered = await WaitUntilAsync(() => ServiceExistsAsync(team, ServiceName, ct), TimeSpan.FromSeconds(60));
@@ -145,8 +153,8 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
             // ── Consumer: create + dispatch task B onto "mc" (now the only ready
             //    machine, and A is working so B is the only submitted task).
             var taskB = await CreateSessionAsync(baseUrl, leadToken, $"relay-consume:{ServiceName}", ct, team);
-            SetReady(registry, "mp", ready: false);
-            SetReady(registry, "mc", ready: true);
+            await SetReadyAsync(mp, ready: false);
+            await SetReadyAsync(mc, ready: true);
             await dispatch.RunDispatchPassAsync(ct);
 
             // ── The consumer worker opened the forward, round-tripped bytes through
@@ -242,10 +250,11 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
         return Task.CompletedTask;
     }
 
-    private static void SetReady(RunnerConnectionRegistry registry, string machineId, bool ready) =>
-        registry.ApplyHeartbeat(machineId, new MachineHeartbeat(
-            machineId, Ready: ready, UnderBackPressure: false,
-            new SystemLoad(0, 0, 0), RunningSessions: 0, ["default"], DateTimeOffset.UtcNow));
+    private async Task SetReadyAsync(Guid machineId, bool ready)
+    {
+        await using var db = pg.NewContext();
+        await TestMachines.HeartbeatAsync(db, TimeProvider.System, machineId, ready: ready);
+    }
 
     private async Task<SessionId> CreateSessionAsync(string baseUrl, string leadToken, string description, CancellationToken ct, TeamId team)
     {

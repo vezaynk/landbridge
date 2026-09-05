@@ -26,7 +26,7 @@ namespace Landbridge.Mcp.Tools;
 ///
 /// <para><c>list_profiles</c> is the one tool with no Team in it: a declared
 /// runner profile is machine config no Team owns. It reads last-value machine
-/// rows (and the registry overlay for test ids) through <see cref="MachineLive"/>.
+/// rows through <see cref="MachineLive"/>.
 /// The Lead-principal check at its top is the whole of its authority.</para>
 
 ///

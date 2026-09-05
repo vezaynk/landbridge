@@ -33,10 +33,10 @@ Every mutating call sits on two clocks. Collapsing them is how this design goes 
 | Session writes | `SessionStore.CommitAsync` | `SaveChanges` + `hub_queue` (`session`, `sessions`, `events`, `exchange`) + `pg_notify(landbridge_session_events, sessionId)` in one transaction |
 | Services / forwards / previews | `RegisterServiceAsync`, `RelayGrantService`, `PreviewMappingService`, `ClearServicesAndForwards` | same pattern: mutate the domain row, `HubOutbox.Stage`, `NOTIFY` session channel |
 | Machine enroll | `TokenService.ExchangeEnrollmentAsync` | `hub_queue` `machines` + `NOTIFY landbridge_hub_events` (payload is a machine id; dispatch must not LISTEN here) |
-| Heartbeat | `HubOutbox.WriteHeartbeatAsync` after a successful `ApplyHeartbeat` | **upserts** `machines.last_spoke_at` / `ready` / `under_back_pressure` / `profiles` and replaces `machine_processes` by name. Then doorbells `machines`, `processes` (machine id), `process` (row id). No heartbeat blob in `hub_queue`. Non-guid test ids (`m1`) are a no-op |
+| Heartbeat | `HubOutbox.WriteHeartbeatAsync` after a successful `ApplyHeartbeat` | **upserts** `machines.last_spoke_at` / `ready` / `under_back_pressure` / `profiles` and replaces `machine_processes` by name. Then doorbells `machines`, `processes` (machine id), `process` (row id). No heartbeat blob in `hub_queue`. Non-guid ids are a no-op |
 | Liveness | `machines.last_spoke_at` within 90s (`Landbridge:MachineLivenessTtl`) | dashboard and wait-TTL sweeper. Not `hub_queue`. Not a separate liveness table |
-| Processes | `machine_processes` | last-value, machine-scoped. `list_processes` reads the table when the machine id is a Guid |
-| Socket | `RunnerConnectionRegistry` | send delegate, tracked dispatches, generation. Facts are the columns. Non-guid test ids keep a registry overlay |
+| Processes | `machine_processes` | last-value, machine-scoped. `list_processes` reads the table |
+| Socket | `RunnerConnectionRegistry` | send delegate, tracked dispatches, generation. Facts are the columns. Test machines enroll a real `machines.id` |
 
 | Dispatch / inbox wake | `SessionEventListener` / `SessionEventFanout` | LISTEN `landbridge_session_events` only |
 | Lead live read | `GET /lead/inbox/events`, `watch_lead_inbox` | full **snapshot** on wake, still in Core ([`lead-inbox-sse.md`](lead-inbox-sse.md)) |
@@ -113,7 +113,7 @@ Core restart: gateway and hub stay. SSE stays up (Part 1). Committed session and
 - A custom multiplex subscribe protocol (v1 is one EventSource per topic; HTTP/2 carries them).
 - A write queue (Part 2) or replacing `/runner` (Part 3).
 - Rewriting Blazor in the same change that extracts the process.
-- Collapsing dispatch off an in-memory `Fold` — done: `MachineLive.ReadyAsync` reads columns (overlay only for `"m1"` tests).
+- Collapsing dispatch off an in-memory `Fold` — done: `MachineLive.ReadyAsync` reads columns.
 
 
 ## Two stores
@@ -216,7 +216,7 @@ On each applied beat (Guid machine, enrolled, unrevoked):
 
 Live for the board and the wait-TTL sweeper: `last_spoke_at >= now() - 90s`. After that the box is absent even if the columns remain. `hub_queue` retain (24h) is unrelated — it is catch-up for SSE, not liveness.
 
-The registry keeps the `/runner` socket and tracked dispatches. Ready / profiles / last-spoke are the columns. Dispatch (`MachineLive.ReadyAsync`) and `list_profiles` read those. Non-guid test ids (`m1`) overlay on the registry because they cannot be a `machines` PK.
+The registry keeps the `/runner` socket and tracked dispatches. Ready / profiles / last-spoke are the columns. Dispatch (`MachineLive.ReadyAsync`) and `list_profiles` read those. Tests enroll a real `machines.id`; a non-guid wire id has no row and is not live.
 
 
 ### Events / exchange / ports

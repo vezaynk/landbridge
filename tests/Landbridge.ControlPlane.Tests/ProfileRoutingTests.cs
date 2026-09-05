@@ -1,4 +1,5 @@
 using Landbridge.Contracts;
+using Landbridge.ControlPlane;
 using Landbridge.Core;
 using Microsoft.Extensions.Time.Testing;
 
@@ -6,154 +7,129 @@ namespace Landbridge.ControlPlane.Tests;
 
 /// <summary>
 /// The §7/§10 profile routing projection — what a Lead's <c>list_profiles</c> reads.
-/// Pure registry, no store and no wire: the whole question here is whether the view a Lead
-/// is shown agrees with what dispatch would actually match.
-///
-/// The load-bearing test is
-/// <see cref="Dispatchable_agrees_with_the_pick_dispatch_itself_would_make"/>: everything else
-/// checks that the right names and machines appear, but a view that reported reachability
-/// dispatch disagreed with would be worse than no view at all — a Lead would route a task
-/// somewhere confidently and it would still never start.
+/// Facts come from <c>machines</c> columns; the registry is the socket. Agrees
+/// with <see cref="MachineLive.ReadyAsync"/>.
 /// </summary>
-public sealed class ProfileRoutingTests
+[Collection(PostgresCollection.Name)]
+public sealed class ProfileRoutingTests(PostgresFixture pg) : IAsyncLifetime
 {
     private readonly FakeTimeProvider _clock = new();
 
-    [Fact]
-    public void A_profile_a_machine_declares_appears_with_that_machine_and_one_nothing_declares_does_not()
+    public async Task InitializeAsync()
     {
+        if (pg.Available) await pg.ResetAsync();
+    }
+
+    public Task DisposeAsync() => Task.CompletedTask;
+
+    [SkippableFact]
+    public async Task A_profile_a_machine_declares_appears_with_that_machine_and_one_nothing_declares_does_not()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
         var registry = new RunnerConnectionRegistry(_clock);
-        Connect(registry, "m1", "default", "gpu");
-        Connect(registry, "m2", "default");
+        var m1 = await TestMachines.ConnectAsync(db, _clock, registry, "m1", profiles: ["default", "gpu"]);
+        var m2 = await TestMachines.ConnectAsync(db, _clock, registry, "m2", profiles: ["default"]);
 
-        var view = registry.ProfileRouting();
+        var view = await MachineLive.RoutingAsync(db, registry, CancellationToken.None);
 
-        // Exactly the declared set — the names create_session can match, and no others.
         Assert.Equal(new[] { "default", "gpu" }, view.Profiles.Select(p => p.Profile));
-        // Both machines declaring `default` are listed under it; only m1 offers `gpu`.
-        Assert.Equal(new[] { "m1", "m2" }, Entry(view, "default").Machines.Select(m => m.MachineId));
-        Assert.Equal(new[] { "m1" }, Entry(view, "gpu").Machines.Select(m => m.MachineId));
+        Assert.Equal(new[] { m1.ToString(), m2.ToString() }.OrderBy(s => s),
+            Entry(view, "default").Machines.Select(m => m.MachineId).OrderBy(s => s));
+        Assert.Equal(new[] { m1.ToString() }, Entry(view, "gpu").Machines.Select(m => m.MachineId));
         Assert.Equal(2, view.ConnectedMachines);
-
-        // The unclaimable-profile case this read exists to end: a name nothing declares is
-        // simply absent, so a Lead reading the list never sends a task after it.
         Assert.DoesNotContain("restricted", view.Profiles.Select(p => p.Profile));
     }
 
-    [Fact]
-    public void Dispatchable_agrees_with_the_pick_dispatch_itself_would_make()
+    [SkippableFact]
+    public async Task Dispatchable_agrees_with_the_pick_dispatch_itself_would_make()
     {
-        // The invariant that makes this view trustworthy rather than merely informative:
-        // `dispatchable` must mean what dispatch means. TryPickMachine is the registry read
-        // a dispatch pass uses to find a machine for a required profile, so the two answers
-        // are compared directly across the states a machine can be in — ready, saturated,
-        // and connected-but-never-heartbeat.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
         var registry = new RunnerConnectionRegistry(_clock);
-        Connect(registry, "ready", "default", "gpu");
-        ConnectSaturated(registry, "saturated", "gpu", "restricted");
-        registry.Register("silent", new HashSet<string> { "quiet" }, Send); // no heartbeat yet
+        await TestMachines.ConnectAsync(db, _clock, registry, "ready", profiles: ["default", "gpu"]);
+        await TestMachines.ConnectAsync(
+            db, _clock, registry, "saturated", ready: true, underBackPressure: true,
+            profiles: ["gpu", "restricted"]);
+        var silent = await TestMachines.EnrollAsync(db, _clock, "silent");
+        TestMachines.Register(registry, silent);
 
-        var view = registry.ProfileRouting();
+        var view = await MachineLive.RoutingAsync(db, registry, CancellationToken.None);
+        var ready = await MachineLive.ReadyAsync(
+            db, registry, _clock.GetUtcNow(), WaitTtlSweeper.DefaultMachineLivenessWindow, CancellationToken.None);
 
-        Assert.Equal(
-            new[] { "default", "gpu", "quiet", "restricted" }, view.Profiles.Select(p => p.Profile));
+        Assert.Equal(new[] { "default", "gpu", "restricted" }, view.Profiles.Select(p => p.Profile));
         foreach (var entry in view.Profiles)
-            Assert.Equal(registry.TryPickMachine(entry.Profile) is not null, entry.Dispatchable);
+            Assert.Equal(ready.Any(r => r.Snapshot.DeclaredProfiles.Contains(entry.Profile)), entry.Dispatchable);
 
-        // And concretely, so the loop above cannot pass by both sides being wrong together.
         Assert.True(Entry(view, "default").Dispatchable);
-        Assert.True(Entry(view, "gpu").Dispatchable);         // the ready machine also offers it
-        Assert.False(Entry(view, "restricted").Dispatchable); // only the saturated one does
-        Assert.False(Entry(view, "quiet").Dispatchable);      // declared, never heartbeat
+        Assert.True(Entry(view, "gpu").Dispatchable);
+        Assert.False(Entry(view, "restricted").Dispatchable);
+        Assert.DoesNotContain(view.Profiles, p => p.Profile == "quiet");
+        Assert.Equal(3, view.ConnectedMachines);
     }
 
-    [Fact]
-    public void A_saturated_profile_is_listed_as_present_but_not_dispatchable_rather_than_vanishing()
+    [SkippableFact]
+    public async Task A_saturated_profile_is_listed_as_present_but_not_dispatchable_rather_than_vanishing()
     {
-        // Why the projection enumerates every machine instead of only the ready ones: a
-        // profile whose machines are all busy must read as "wait", not as "no machine
-        // declares this". They are opposite instructions — one says queue the task, the
-        // other says do not create it — and a Lead cannot tell them apart from an absence.
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
         var registry = new RunnerConnectionRegistry(_clock);
-        ConnectSaturated(registry, "m1", "restricted");
+        var m1 = await TestMachines.ConnectAsync(
+            db, _clock, registry, "m1", ready: true, underBackPressure: true, profiles: ["restricted"]);
 
-        var entry = Assert.Single(registry.ProfileRouting().Profiles);
-
+        var view = await MachineLive.RoutingAsync(db, registry, CancellationToken.None);
+        var entry = Assert.Single(view.Profiles);
         Assert.Equal("restricted", entry.Profile);
         Assert.False(entry.Dispatchable);
         var machine = Assert.Single(entry.Machines);
-        Assert.Equal("m1", machine.MachineId);
+        Assert.Equal(m1.ToString(), machine.MachineId);
         Assert.False(machine.Ready);
-        Assert.True(machine.UnderBackPressure); // saturated, not broken — a different wait
+        Assert.True(machine.UnderBackPressure);
     }
 
-    [Fact]
-    public void Liveness_reflects_the_connected_machines_and_a_disconnect_removes_the_profile_with_them()
+    [SkippableFact]
+    public async Task Liveness_reflects_the_connected_machines_and_a_disconnect_removes_the_profile_with_them()
     {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
         var registry = new RunnerConnectionRegistry(_clock);
-        var m1 = Connect(registry, "m1", "default", "gpu");
-        Connect(registry, "m2", "default");
+        var m1 = await TestMachines.ConnectAsync(db, _clock, registry, "m1", profiles: ["default", "gpu"]);
+        var m2 = await TestMachines.ConnectAsync(db, _clock, registry, "m2", profiles: ["default"]);
         var heartbeatAt = _clock.GetUtcNow();
 
         _clock.Advance(TimeSpan.FromSeconds(30));
-        var beforeDrop = registry.ProfileRouting();
-        // The heartbeat timestamp is the machine's own, so a Lead can judge the answer's age.
+        var beforeDrop = await MachineLive.RoutingAsync(db, registry, CancellationToken.None);
         Assert.All(
             beforeDrop.Profiles.SelectMany(p => p.Machines),
             m => Assert.Equal(heartbeatAt, m.LastHeartbeat));
 
-        // m1's socket closes. Its profiles are process-local registry state (§10), so `gpu`
-        // — which only m1 declared — goes with it, while `default` survives on m2.
-        registry.Unregister(m1);
-        var view = registry.ProfileRouting();
+        await registry.DisconnectAsync(m1.ToString());
+
+        var view = await MachineLive.RoutingAsync(db, registry, CancellationToken.None);
 
         Assert.Equal(new[] { "default" }, view.Profiles.Select(p => p.Profile));
-        Assert.Equal(new[] { "m2" }, Entry(view, "default").Machines.Select(m => m.MachineId));
+        Assert.Equal(new[] { m2.ToString() }, Entry(view, "default").Machines.Select(m => m.MachineId));
         Assert.Equal(1, view.ConnectedMachines);
     }
 
-    [Fact]
-    public void An_empty_fleet_and_a_declaring_nothing_fleet_are_told_apart_by_the_machine_count()
+    [SkippableFact]
+    public async Task An_empty_fleet_and_a_declaring_nothing_fleet_are_told_apart_by_the_machine_count()
     {
-        // Both answers have no profiles, and they need different responses: nothing
-        // connected means the fleet is down, while a connected machine that has not yet
-        // declared means its first heartbeat is still coming (§10). The count is the only
-        // thing distinguishing them.
-        var empty = new RunnerConnectionRegistry(_clock).ProfileRouting();
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var empty = await MachineLive.RoutingAsync(db, new RunnerConnectionRegistry(_clock), CancellationToken.None);
         Assert.Empty(empty.Profiles);
         Assert.Equal(0, empty.ConnectedMachines);
 
         var dialling = new RunnerConnectionRegistry(_clock);
-        dialling.Register("m1", new HashSet<string>(), Send);
-        var view = dialling.ProfileRouting();
+        var silent = await TestMachines.EnrollAsync(db, _clock, "m1");
+        TestMachines.Register(dialling, silent);
+        var view = await MachineLive.RoutingAsync(db, dialling, CancellationToken.None);
         Assert.Empty(view.Profiles);
         Assert.Equal(1, view.ConnectedMachines);
     }
 
-    /// <summary>A machine dialled in and heartbeating its declared profiles on the fake
-    /// clock — exactly what the runner endpoint sets up (§10).</summary>
-    private RunnerConnectionRegistry.ConnectionToken Connect(
-        RunnerConnectionRegistry registry, string machineId, params string[] profiles) =>
-        Heartbeat(registry, machineId, underBackPressure: false, profiles);
-
-    /// <summary>The same, but reporting back-pressure — connected and declaring, not
-    /// accepting dispatch (§10).</summary>
-    private RunnerConnectionRegistry.ConnectionToken ConnectSaturated(
-        RunnerConnectionRegistry registry, string machineId, params string[] profiles) =>
-        Heartbeat(registry, machineId, underBackPressure: true, profiles);
-
-    private RunnerConnectionRegistry.ConnectionToken Heartbeat(
-        RunnerConnectionRegistry registry, string machineId, bool underBackPressure, string[] profiles)
-    {
-        var registration = registry.Register(machineId, new HashSet<string>(profiles), Send);
-        registry.ApplyHeartbeat(registration.Token, new MachineHeartbeat(
-            machineId, Ready: true, underBackPressure, new SystemLoad(0, 0, 0),
-            RunningSessions: 0, profiles, _clock.GetUtcNow()));
-        return registration.Token;
-    }
-
     private static ProfileRoutingEntry Entry(ProfileRoutingView view, string profile) =>
         view.Profiles.Single(p => p.Profile == profile);
-
-    private static Task Send(RunnerCommand command, CancellationToken ct) => Task.CompletedTask;
 }

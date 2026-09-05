@@ -78,7 +78,11 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
         try
         {
             var team = TeamId.New();
-            var snapshot = new MachineSnapshot("m1", Ready: true, UnderBackPressure: false, Set("default"));
+            Guid machine;
+            await using (var db = pg.NewContext())
+                machine = await TestMachines.EnrollAsync(db, clock, "m1");
+            var wire = machine.ToString();
+            var snapshot = new MachineSnapshot(wire, Ready: true, UnderBackPressure: false, Set("default"));
 
             // ── Create + initial dispatch (cold: no resume ref yet) ─────────────
             SessionId sessionId;
@@ -90,8 +94,9 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
                 sessionId = created.Session.Id;
             }
 
-            registry.Register("m1", Set("default"), (_, _) => Task.CompletedTask);
-            registry.ApplyHeartbeat("m1", Heartbeat("m1", "default")); // ready, stamped at t0
+            TestMachines.Register(registry, machine);
+            await using (var db = pg.NewContext())
+                await TestMachines.HeartbeatAsync(db, clock, machine);
 
             WorkerInstanceId instance1;
             await using (var db = pg.NewContext())
@@ -102,12 +107,12 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
                 // First dispatch: nothing worked before, so no session ref surfaces.
                 Assert.Null(applied.HarnessSessionRef);
             }
-            registry.TrackDispatch("m1", sessionId);
+            registry.TrackDispatch(wire, sessionId);
 
             var coldDispatch = new DispatchCommand(
                 sessionId, "default", WorkerToken: "worker-1",
                 McpConfigJson: """{"mcpServers":{}}""", ResumeSessionRef: null);
-            supervisor.Spawn(coldDispatch, profile, "m1");
+            supervisor.Spawn(coldDispatch, profile, wire);
 
             // ── The harness reports its session id → sink stamps the row ────────
             Assert.True(
@@ -133,7 +138,7 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
             {
                 var row = await db.Sessions.AsNoTracking().SingleAsync(t => t.Id == sessionId.Value, ct);
                 Assert.Equal(SessionState.Parked, row.State);
-                Assert.Equal("m1", row.ParkMachine);
+                Assert.Equal(wire, row.ParkMachine);
                 // The crown's spine: the harness session ref survives the park on the row
                 // dispatch reads it from.
                 Assert.Equal(HarnessProgram.EmitStreamSessionId, row.HarnessSessionRef);
@@ -190,7 +195,7 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
             // resume under test.
             var sessionRecord = Path.Combine(workRoot, sessionId.ToString(), "acp_session.json");
             File.Delete(sessionRecord);
-            supervisor.Spawn(resumeDispatch, profile, "m1");
+            supervisor.Spawn(resumeDispatch, profile, wire);
 
             // ── The resumed worker opened its session with session/load, not session/new ─
             //
@@ -308,8 +313,4 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
 
     private static IReadOnlySet<string> Set(params string[] names) =>
         new HashSet<string>(names, StringComparer.Ordinal);
-
-    private static MachineHeartbeat Heartbeat(string machineId, params string[] profiles) =>
-        new(machineId, Ready: true, UnderBackPressure: false,
-            new SystemLoad(0, 0, 0), RunningSessions: 0, profiles, DateTimeOffset.UtcNow);
 }

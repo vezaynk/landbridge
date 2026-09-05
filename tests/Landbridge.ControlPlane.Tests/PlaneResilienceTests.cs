@@ -84,6 +84,9 @@ namespace Landbridge.ControlPlane.Tests;
 [Collection(PostgresCollection.Name)]
 public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
 {
+    /// <summary>Valid <c>machines.id</c> shape; no row required for socket-only tests.</summary>
+    private static readonly string M1 = Guid.NewGuid().ToString();
+
     private static readonly TimeSpan Window = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan Ceiling = TimeSpan.FromMinutes(30);
 
@@ -101,18 +104,19 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
-        var seeded = await SeedWorkingAsync(clock, "m1");
+        var seeded = await SeedWorkingAsync(clock);
+        var m1 = seeded.Machine.ToString();
 
         // A restarted plane: a fresh registry that has never heard of this task, and a
         // machine dialing back in that is still running it.
-        var registry = ReconnectedMachine(clock, "m1");
-        var adopted = await NewDispatch(clock, registry).RehydrateMachineAsync("m1", default);
+        var registry = ReconnectedMachine(clock, m1);
+        var adopted = await NewDispatch(clock, registry).RehydrateMachineAsync(m1, default);
 
         Assert.Equal(1, adopted);
-        Assert.Contains(seeded.Session, registry.SessionsOn("m1"));
+        Assert.Contains(seeded.Session, registry.SessionsOn(m1));
         // The lease is held again, which is what the §11 answer path and the forward
         // orchestrator resolve a task's machine through.
-        Assert.Equal("m1", registry.MachineFor(seeded.Session));
+        Assert.Equal(m1, registry.MachineFor(seeded.Session));
         Assert.True(registry.IsLeaseHeld(seeded.Session));
     }
 
@@ -121,7 +125,8 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
-        var seeded = await SeedWorkingAsync(clock, "m1");
+        var seeded = await SeedWorkingAsync(clock);
+        var m1 = seeded.Machine.ToString();
         await BlockOnInputAsync(clock, seeded);
 
         // §11: a blocked task's session is held on its machine, and the machine keeps its
@@ -129,9 +134,9 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         // machine only through the registry. So blocked_on_input has to be re-adopted too,
         // or a task that outlives a restart while waiting on a human can be neither parked
         // nor requeued on machine death. WaitTtlSweeper carried a comment marking this hole.
-        var registry = ReconnectedMachine(clock, "m1");
-        Assert.Equal(1, await NewDispatch(clock, registry).RehydrateMachineAsync("m1", default));
-        Assert.Equal("m1", registry.MachineFor(seeded.Session));
+        var registry = ReconnectedMachine(clock, m1);
+        Assert.Equal(1, await NewDispatch(clock, registry).RehydrateMachineAsync(m1, default));
+        Assert.Equal(m1, registry.MachineFor(seeded.Session));
 
         // And the sweeper can now act on it. The TTL is passed explicitly because the
         // default is infinite — a session is held until park_session, not until a timer — so
@@ -139,7 +144,8 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         // re-adoption bought is the same either way: the sweeper resolved the machine.
         var waitTtl = TimeSpan.FromMinutes(30);
         clock.Advance(waitTtl + TimeSpan.FromMinutes(1));
-        registry.ApplyHeartbeat("m1", Heartbeat("m1", "default")); // still live at the new now
+        await using (var db = pg.NewContext())
+            await TestMachines.HeartbeatAsync(db, clock, seeded.Machine);
         await NewSweeper(clock, registry, waitTtl).SweepAsync(default);
 
         Assert.Equal(SessionState.Parked, await StateAsync(clock, seeded.Session));
@@ -150,18 +156,20 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
-        var mine = await SeedWorkingAsync(clock, "m1");
-        var theirs = await SeedWorkingAsync(clock, "m2");
+        var mine = await SeedWorkingAsync(clock);
+        var m1 = mine.Machine.ToString();
+        var theirs = await SeedWorkingAsync(clock, "peer");
+        var m2 = theirs.Machine.ToString();
 
         // §9.14 fencing: the instance row records the machine its dispatch was minted for,
         // so re-adoption is per-machine. If m1 could adopt m2's task, m1's clocks would
         // govern work it is not running and the sweeper would resolve the wrong machine for
         // a park record.
-        var registry = ReconnectedMachine(clock, "m1");
-        Assert.Equal(1, await NewDispatch(clock, registry).RehydrateMachineAsync("m1", default));
+        var registry = ReconnectedMachine(clock, m1);
+        Assert.Equal(1, await NewDispatch(clock, registry).RehydrateMachineAsync(m1, default));
 
-        Assert.Contains(mine.Session, registry.SessionsOn("m1"));
-        Assert.DoesNotContain(theirs.Session, registry.SessionsOn("m1"));
+        Assert.Contains(mine.Session, registry.SessionsOn(m1));
+        Assert.DoesNotContain(theirs.Session, registry.SessionsOn(m1));
     }
 
     [SkippableFact]
@@ -169,7 +177,8 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
-        var seeded = await SeedWorkingAsync(clock, "m1");
+        var seeded = await SeedWorkingAsync(clock);
+        var m1 = seeded.Machine.ToString();
 
         // The task was already freed — requeued back to submitted, its incumbent instance
         // revoked and cleared off the row. Re-adopting it would resurrect a dispatch that
@@ -179,9 +188,9 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         await RequeueAsync(clock, seeded.Session, LivenessLossReason.MachineReboot);
         Assert.Equal(SessionState.Failed, await StateAsync(clock, seeded.Session));
 
-        var registry = ReconnectedMachine(clock, "m1");
-        Assert.Equal(0, await NewDispatch(clock, registry).RehydrateMachineAsync("m1", default));
-        Assert.Empty(registry.SessionsOn("m1"));
+        var registry = ReconnectedMachine(clock, m1);
+        Assert.Equal(0, await NewDispatch(clock, registry).RehydrateMachineAsync(m1, default));
+        Assert.Empty(registry.SessionsOn(m1));
     }
 
     [SkippableFact]
@@ -189,7 +198,8 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
-        var seeded = await SeedWorkingAsync(clock, "m1");
+        var seeded = await SeedWorkingAsync(clock);
+        var m1 = seeded.Machine.ToString();
 
         // Lead accepted while the plane was down: hidden, occupancy released. Re-adopting
         // it would put a finished session back under the liveness scan.
@@ -199,8 +209,8 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
                 seeded.Session, new VerdictAccept(new LeadClaim(seeded.Team))));
         Assert.Equal(SessionState.Completed, await StateAsync(clock, seeded.Session));
 
-        var registry = ReconnectedMachine(clock, "m1");
-        Assert.Equal(0, await NewDispatch(clock, registry).RehydrateMachineAsync("m1", default));
+        var registry = ReconnectedMachine(clock, m1);
+        Assert.Equal(0, await NewDispatch(clock, registry).RehydrateMachineAsync(m1, default));
     }
 
     // ── #86: the clocks a re-adopted task comes back under ───────────────────────
@@ -210,7 +220,8 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
-        var seeded = await SeedWorkingAsync(clock, "m1");
+        var seeded = await SeedWorkingAsync(clock);
+        var m1 = seeded.Machine.ToString();
 
         // The plane was down far longer than the aliveness window — the interesting case,
         // because the plane heard nothing for all of it. Carrying a pre-restart timestamp
@@ -218,9 +229,9 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         // punishing healthy work for the plane's own downtime; leaving the clocks unset
         // would restore tracking without restoring liveness. Both clocks start now.
         clock.Advance(Window * 10);
-        var registry = ReconnectedMachine(clock, "m1");
+        var registry = ReconnectedMachine(clock, m1);
         var connectedAt = clock.GetUtcNow();
-        await NewDispatch(clock, registry).RehydrateMachineAsync("m1", default);
+        await NewDispatch(clock, registry).RehydrateMachineAsync(m1, default);
 
         var tracked = Assert.Single(registry.AllTracked());
         Assert.Equal(seeded.Session, tracked.Session);
@@ -237,9 +248,10 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
-        var seeded = await SeedWorkingAsync(clock, "m1");
-        var registry = ReconnectedMachine(clock, "m1");
-        await NewDispatch(clock, registry).RehydrateMachineAsync("m1", default);
+        var seeded = await SeedWorkingAsync(clock);
+        var m1 = seeded.Machine.ToString();
+        var registry = ReconnectedMachine(clock, m1);
+        await NewDispatch(clock, registry).RehydrateMachineAsync(m1, default);
 
         // Half one: the machine's alive events land again. Before re-adoption they were
         // dropped for an untracked task, so this walk would have left the clocks frozen.
@@ -265,10 +277,10 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         var registry = new RunnerConnectionRegistry(clock);
         var first = SessionId.New();
         var second = SessionId.New();
-        var connection = registry.Register("m1", Set("default"), (_, _) => Task.CompletedTask);
-        registry.ApplyHeartbeat(connection.Token, Heartbeat("m1", "default"));
-        registry.TrackDispatch("m1", first);
-        registry.TrackDispatch("m1", second);
+        var connection = registry.Register(M1, Set("default"), (_, _) => Task.CompletedTask);
+        registry.ApplyHeartbeat(connection.Token, Heartbeat(M1, "default"));
+        registry.TrackDispatch(M1, first);
+        registry.TrackDispatch(M1, second);
 
         var teardown = registry.Unregister(connection.Token);
 
@@ -278,9 +290,9 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(2, teardown.Held.Count);
         Assert.Contains(first, teardown.Held);
         Assert.Contains(second, teardown.Held);
-        Assert.Empty(registry.ReadyMachines());
-        Assert.Null(registry.SnapshotFor("m1"));
-        Assert.Empty(registry.SessionsOn("m1"));
+        Assert.Null(registry.SnapshotFor(M1));
+        Assert.Empty(registry.SessionsOn(M1));
+
         // Asking a second time yields nothing, so a double teardown cannot double-requeue.
         var again = registry.Unregister(connection.Token);
         Assert.False(again.Unregistered);
@@ -292,13 +304,14 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
-        var seeded = await SeedWorkingAsync(clock, "m1");
-        var (registry, connection) = DeadSocketMachine(clock, "m1", seeded.Session);
+        var seeded = await SeedWorkingAsync(clock);
+        var m1 = seeded.Machine.ToString();
+        var (registry, connection) = DeadSocketMachine(clock, m1, seeded.Session);
         var sink = NewSink(clock, registry);
 
         // The endpoint's teardown order, as shipped: unregister, then requeue.
         var teardown = registry.Unregister(connection);
-        await sink.HandleDisconnectAsync("m1", teardown.Held, default);
+        await sink.HandleDisconnectAsync(m1, teardown.Held, default);
 
         // The requeue's pg_notify wake. The machine is gone, so the pass has nowhere to
         // put the task and it stays submitted for a live machine to claim later.
@@ -316,15 +329,16 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
-        var seeded = await SeedWorkingAsync(clock, "m1");
-        var (registry, connection) = DeadSocketMachine(clock, "m1", seeded.Session);
+        var seeded = await SeedWorkingAsync(clock);
+        var m1 = seeded.Machine.ToString();
+        var (registry, connection) = DeadSocketMachine(clock, m1, seeded.Session);
         var sink = NewSink(clock, registry);
 
         // #87 as it was: requeue while the dying connection is still registered and
         // flagged ready. This test exists to prove the assertion above is load-bearing —
         // it pins the defect to the ORDER and nothing else, since the only difference from
         // the previous test is which of these two lines runs first.
-        await sink.HandleDisconnectAsync("m1", registry.SessionsOn("m1"), default);
+        await sink.HandleDisconnectAsync(m1, registry.SessionsOn(m1), default);
         await NewDispatch(clock, registry).RunDispatchPassAsync(default);
         registry.Unregister(connection);
 
@@ -344,20 +358,21 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
-        var seeded = await SeedWorkingAsync(clock, "m1");
-        var (registry, connection) = DeadSocketMachine(clock, "m1", seeded.Session);
+        var seeded = await SeedWorkingAsync(clock);
+        var m1 = seeded.Machine.ToString();
+        var (registry, connection) = DeadSocketMachine(clock, m1, seeded.Session);
         var sink = NewSink(clock, registry);
 
         // Drop: unregister-then-requeue (#87).
-        await sink.HandleDisconnectAsync("m1", registry.Unregister(connection).Held, default);
+        await sink.HandleDisconnectAsync(m1, registry.Unregister(connection).Held, default);
 
         // Fast reconnect, before anything else could redispatch. Re-adoption (#86) must
         // find nothing to adopt: the disconnect already revoked this task's instance and
         // cleared it off the row, so adopting it here would resurrect a dead dispatch and
         // hand the machine a task the plane has already put back in the queue.
-        var reconnected = LiveConnection(clock, registry, "m1");
+        var reconnected = LiveConnection(clock, registry, m1);
         var dispatch = NewDispatch(clock, registry);
-        Assert.Equal(0, await dispatch.RehydrateMachineAsync("m1", default));
+        Assert.Equal(0, await dispatch.RehydrateMachineAsync(m1, default));
 
         await using (var wake = pg.NewContext())
             Assert.IsType<StoreResult.Applied>(
@@ -367,7 +382,7 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         await dispatch.RunDispatchPassAsync(default);
 
         Assert.Equal(SessionState.Working, await StateAsync(clock, seeded.Session));
-        Assert.Contains(seeded.Session, registry.SessionsOn("m1"));
+        Assert.Contains(seeded.Session, registry.SessionsOn(m1));
         Assert.Single(reconnected.Commands.OfType<DispatchCommand>());
         Assert.Equal(1, await RequeueCountAsync(seeded.Session));
         Assert.Equal([LivenessLossReason.MachineReboot], await RequeueReasonsAsync(seeded.Session));
@@ -387,10 +402,11 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
-        var seeded = await SeedWorkingAsync(clock, "m1");
+        var seeded = await SeedWorkingAsync(clock);
+        var m1 = seeded.Machine.ToString();
         var registry = new RunnerConnectionRegistry(clock);
-        var connection = LiveConnection(clock, registry, "m1");
-        registry.TrackDispatch("m1", seeded.Session);
+        var connection = LiveConnection(clock, registry, m1);
+        registry.TrackDispatch(m1, seeded.Session);
 
         // The wedged-but-alive shape, which is the whole of #84: landbridged keeps asserting the
         // process exists, so the aliveness clock never fires and only the progress ceiling
@@ -410,7 +426,8 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
-        var seeded = await SeedWorkingAsync(clock, "m1");
+        var seeded = await SeedWorkingAsync(clock);
+        var m1 = seeded.Machine.ToString();
         var registry = new RunnerConnectionRegistry(clock);
 
         // The ordering, read from inside the send: what does committed state say at the
@@ -420,13 +437,13 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         // task still looks working and requeue it as ProcessExited, burying the clock that
         // actually fired under the symptom (#73).
         SessionState? whenKilled = null;
-        var conn = registry.Register("m1", Set("default"), async (command, _) =>
+        var conn = registry.Register(m1, Set("default"), async (command, _) =>
         {
             if (command is KillCommand k)
                 whenKilled = await StateAsync(clock, k.Session);
         });
-        registry.ApplyHeartbeat(conn.Token, Heartbeat("m1", "default"));
-        registry.TrackDispatch("m1", seeded.Session);
+        registry.ApplyHeartbeat(conn.Token, Heartbeat(m1, "default"));
+        registry.TrackDispatch(m1, seeded.Session);
 
         clock.Advance(Window + TimeSpan.FromSeconds(1));
         await NewDispatch(clock, registry).CheckLivenessAsync(default);
@@ -440,13 +457,14 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
-        var seeded = await SeedWorkingAsync(clock, "m1");
+        var seeded = await SeedWorkingAsync(clock);
+        var m1 = seeded.Machine.ToString();
         // A machine whose socket has died but whose registration has not been dropped yet:
         // the write throws, so there is no channel to kill over. The requeue has already
         // committed by then, so the failure costs the task nothing — exactly the behaviour
         // before #84, which is the point: the kill is an improvement where it lands and
         // never a dependency.
-        var (registry, _) = DeadSocketMachine(clock, "m1", seeded.Session);
+        var (registry, _) = DeadSocketMachine(clock, m1, seeded.Session);
 
         clock.Advance(Window + TimeSpan.FromSeconds(1));
         await NewDispatch(clock, registry).CheckLivenessAsync(default);
@@ -461,10 +479,11 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
-        var seeded = await SeedWorkingAsync(clock, "m1");
+        var seeded = await SeedWorkingAsync(clock);
+        var m1 = seeded.Machine.ToString();
         var registry = new RunnerConnectionRegistry(clock);
-        LiveConnection(clock, registry, "m1");
-        registry.TrackDispatch("m1", seeded.Session);
+        LiveConnection(clock, registry, m1);
+        registry.TrackDispatch(m1, seeded.Session);
         var dispatch = NewDispatch(clock, registry);
 
         clock.Advance(Window + TimeSpan.FromSeconds(1));
@@ -494,7 +513,7 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         // And the successor keeps its tracking, so it stays under both clocks. Untracking it
         // here would strand it in working with nothing watching — the #86 symptom by a new
         // route.
-        Assert.Contains(seeded.Session, registry.SessionsOn("m1"));
+        Assert.Contains(seeded.Session, registry.SessionsOn(m1));
     }
 
     [SkippableFact]
@@ -502,10 +521,11 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
-        var seeded = await SeedWorkingAsync(clock, "m1");
+        var seeded = await SeedWorkingAsync(clock);
+        var m1 = seeded.Machine.ToString();
         var registry = new RunnerConnectionRegistry(clock);
-        LiveConnection(clock, registry, "m1");
-        registry.TrackDispatch("m1", seeded.Session);
+        LiveConnection(clock, registry, m1);
+        registry.TrackDispatch(m1, seeded.Session);
         var dispatch = NewDispatch(clock, registry);
 
         clock.Advance(Window + TimeSpan.FromSeconds(1));
@@ -536,10 +556,11 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
-        var seeded = await SeedWorkingAsync(clock, "m1");
+        var seeded = await SeedWorkingAsync(clock);
+        var m1 = seeded.Machine.ToString();
         var registry = new RunnerConnectionRegistry(clock);
-        var connection = LiveConnection(clock, registry, "m1");
-        registry.TrackDispatch("m1", seeded.Session);
+        var connection = LiveConnection(clock, registry, m1);
+        registry.TrackDispatch(m1, seeded.Session);
 
         // The worker asks for permission in the window between the scan's read and the requeue
         // that read decided on — the harness's own MCP call, committing at the one instant that
@@ -575,7 +596,7 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         // A refused requeue leaves tracking alone: the wait-TTL sweeper resolves a blocked
         // task's machine through the registry (§11), so untracking here would strand it —
         // never parked on TTL, never requeued if the machine died.
-        Assert.Contains(seeded.Session, registry.SessionsOn("m1"));
+        Assert.Contains(seeded.Session, registry.SessionsOn(m1));
     }
 
     [SkippableFact]
@@ -583,10 +604,11 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
-        var seeded = await SeedWorkingAsync(clock, "m1");
+        var seeded = await SeedWorkingAsync(clock);
+        var m1 = seeded.Machine.ToString();
         var registry = new RunnerConnectionRegistry(clock);
-        var connection = LiveConnection(clock, registry, "m1");
-        registry.TrackDispatch("m1", seeded.Session);
+        var connection = LiveConnection(clock, registry, m1);
+        registry.TrackDispatch(m1, seeded.Session);
 
         // The other move available in that window: something else requeues the task first (a
         // reboot announcement, a dropped socket) and the notify it commits redispatches it. By
@@ -603,7 +625,7 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
             }
             await using var redispatch = pg.NewContext();
             Assert.IsType<StoreResult.Applied>(await new SessionStore(redispatch, clock).DispatchNextAsync(
-                new MachineSnapshot("m1", Ready: true, UnderBackPressure: false, Set("default")),
+                new MachineSnapshot(m1, Ready: true, UnderBackPressure: false, Set("default")),
                 successor));
         });
 
@@ -622,7 +644,7 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         Assert.False(await verify.WorkerInstances.AsNoTracking()
             .Where(w => w.Id == successor.Value).Select(w => w.Revoked).SingleAsync());
         Assert.Empty(connection.Commands.OfType<KillCommand>());
-        Assert.Contains(seeded.Session, registry.SessionsOn("m1"));
+        Assert.Contains(seeded.Session, registry.SessionsOn(m1));
     }
 
     // ── #94: one machine, two connections ────────────────────────────────────────
@@ -633,13 +655,13 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         var clock = new FakeTimeProvider();
         var registry = new RunnerConnectionRegistry(clock);
 
-        var first = registry.Register("m1", Set("default"), (_, _) => Task.CompletedTask);
+        var first = registry.Register(M1, Set("default"), (_, _) => Task.CompletedTask);
         Assert.False(first.SupersededLiveConnection);
 
         // The §17.8 closed-laptop shape: the machine dials in while the plane still believes
         // its previous socket is live. The flag is what the endpoint logs — a machine holding
         // two accepted connections is an operator fact, even though the registry copes.
-        var second = registry.Register("m1", Set("default"), (_, _) => Task.CompletedTask);
+        var second = registry.Register(M1, Set("default"), (_, _) => Task.CompletedTask);
         Assert.True(second.SupersededLiveConnection);
         Assert.NotEqual(first.Token, second.Token);
         Assert.NotEqual(first.Token.Generation, second.Token.Generation);
@@ -651,12 +673,12 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         var clock = new FakeTimeProvider();
         var registry = new RunnerConnectionRegistry(clock);
         var task = SessionId.New();
-        var stale = registry.Register("m1", Set("default"), (_, _) => Task.CompletedTask);
-        registry.ApplyHeartbeat(stale.Token, Heartbeat("m1", "default"));
-        registry.TrackDispatch("m1", task);
+        var stale = registry.Register(M1, Set("default"), (_, _) => Task.CompletedTask);
+        registry.ApplyHeartbeat(stale.Token, Heartbeat(M1, "default"));
+        registry.TrackDispatch(M1, task);
 
-        var live = LiveConnection(clock, registry, "m1");
-        registry.TrackDispatch("m1", task);
+        var live = LiveConnection(clock, registry, M1);
+        registry.TrackDispatch(M1, task);
 
         // The older endpoint's `finally`, running whenever its half-open socket finally
         // errors out. Unregistering by machine id — as it did — would remove the entry that
@@ -668,9 +690,10 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         Assert.False(teardown.Unregistered);
         Assert.Empty(teardown.Held);
 
-        Assert.NotNull(registry.SnapshotFor("m1"));
-        Assert.Contains("m1", registry.ReadyMachines());
-        Assert.Contains(task, registry.SessionsOn("m1"));
+        Assert.NotNull(registry.SnapshotFor(M1));
+        Assert.NotNull(registry.SnapshotFor(M1));
+
+        Assert.Contains(task, registry.SessionsOn(M1));
 
         // The live connection's own teardown still works normally, and still returns what it
         // held — #87's ordering is untouched by any of this.
@@ -685,27 +708,28 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         var clock = new FakeTimeProvider();
         var registry = new RunnerConnectionRegistry(clock);
         var staleReceived = new List<RunnerCommand>();
-        var stale = registry.Register("m1", Set("default"),
+        var stale = registry.Register(M1, Set("default"),
             (cmd, _) => { staleReceived.Add(cmd); return Task.CompletedTask; });
-        registry.ApplyHeartbeat(stale.Token, Heartbeat("m1", "default"));
+        registry.ApplyHeartbeat(stale.Token, Heartbeat(M1, "default"));
 
-        var live = LiveConnection(clock, registry, "m1");
+        var live = LiveConnection(clock, registry, M1);
 
         // A heartbeat still arriving on the stale socket — buffered, or a genuinely
         // overlapping pair — reported back-pressure. Applied by machine id, as it was, this
         // would mark the LIVE connection unready and quietly stop the machine taking work.
         registry.ApplyHeartbeat(
             stale.Token,
-            new MachineHeartbeat("m1", Ready: false, UnderBackPressure: true,
+            new MachineHeartbeat(M1, Ready: false, UnderBackPressure: true,
                 new SystemLoad(0, 0, 0), RunningSessions: 0, ["default"], DateTimeOffset.UtcNow));
 
-        Assert.Contains("m1", registry.ReadyMachines());
-        Assert.False(registry.SnapshotFor("m1")!.UnderBackPressure);
+        Assert.NotNull(registry.SnapshotFor(M1));
+
+        Assert.False(registry.SnapshotFor(M1)!.UnderBackPressure);
 
         // And the machine is reached through the connection that is actually carrying bytes.
         // This one stays machine-keyed on purpose: a send targets the machine, and the newest
         // connection is by definition the way to reach it.
-        Assert.True(await registry.SendAsync("m1", new KillCommand(SessionId.New()), default));
+        Assert.True(await registry.SendAsync(M1, new KillCommand(SessionId.New()), default));
         Assert.Empty(staleReceived);
         Assert.Single(live.Commands);
     }
@@ -715,26 +739,27 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
-        var seeded = await SeedWorkingAsync(clock, "m1");
+        var seeded = await SeedWorkingAsync(clock);
+        var m1 = seeded.Machine.ToString();
         var registry = new RunnerConnectionRegistry(clock);
-        var stale = registry.Register("m1", Set("default"), (_, _) => Task.CompletedTask);
-        registry.ApplyHeartbeat(stale.Token, Heartbeat("m1", "default"));
-        registry.TrackDispatch("m1", seeded.Session);
+        var stale = registry.Register(m1, Set("default"), (_, _) => Task.CompletedTask);
+        registry.ApplyHeartbeat(stale.Token, Heartbeat(m1, "default"));
+        registry.TrackDispatch(m1, seeded.Session);
 
         // The reattach. Registering drops the stale connection's tracked dispatches, and
         // rehydration (#86) re-derives them — instance-fenced, so it re-adopts exactly what
         // this machine's live incumbents say it holds.
         clock.Advance(Window * 3);
-        LiveConnection(clock, registry, "m1");
+        LiveConnection(clock, registry, m1);
         var reconnectedAt = clock.GetUtcNow();
-        Assert.Equal(1, await NewDispatch(clock, registry).RehydrateMachineAsync("m1", default));
+        Assert.Equal(1, await NewDispatch(clock, registry).RehydrateMachineAsync(m1, default));
 
         // Exactly once, on exactly one connection: dispatches are keyed by task, so the two
         // steps cannot compound into a double-tracked task, and the entry that survives is
         // the one rehydration wrote.
         var tracked = Assert.Single(registry.AllTracked());
         Assert.Equal(seeded.Session, tracked.Session);
-        Assert.Equal("m1", tracked.Machine);
+        Assert.Equal(m1, tracked.Machine);
         // Clocks stamped at the reattach, not carried from the stale connection — the same
         // choice re-adoption makes after a plane restart, and for the same reason: the clocks
         // measure the plane's own silence.
@@ -756,22 +781,23 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
-        var seeded = await SeedWorkingAsync(clock, "m1");
+        var seeded = await SeedWorkingAsync(clock);
+        var m1 = seeded.Machine.ToString();
         var registry = new RunnerConnectionRegistry(clock);
-        var stale = registry.Register("m1", Set("default"), (_, _) => Task.CompletedTask);
-        registry.ApplyHeartbeat(stale.Token, Heartbeat("m1", "default"));
-        registry.TrackDispatch("m1", seeded.Session);
+        var stale = registry.Register(m1, Set("default"), (_, _) => Task.CompletedTask);
+        registry.ApplyHeartbeat(stale.Token, Heartbeat(m1, "default"));
+        registry.TrackDispatch(m1, seeded.Session);
 
-        var live = LiveConnection(clock, registry, "m1");
+        var live = LiveConnection(clock, registry, m1);
         var dispatch = NewDispatch(clock, registry);
-        Assert.Equal(1, await dispatch.RehydrateMachineAsync("m1", default));
+        Assert.Equal(1, await dispatch.RehydrateMachineAsync(m1, default));
 
         // The half-open socket errors out at last and its endpoint runs the full teardown it
         // always ran: unregister, then requeue whatever came back (#87). The whole scenario
         // §17.8 calls "close a laptop and reattach", end to end at unit grain.
         var sink = NewSink(clock, registry);
         var teardown = registry.Unregister(stale.Token);
-        await sink.HandleDisconnectAsync("m1", teardown.Held, default);
+        await sink.HandleDisconnectAsync(m1, teardown.Held, default);
         await dispatch.RunDispatchPassAsync(default);
 
         // Nothing moved: the task is still working on a machine that never stopped working
@@ -779,8 +805,9 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(SessionState.Working, await StateAsync(clock, seeded.Session));
         Assert.Equal(0, await RequeueCountAsync(seeded.Session));
         Assert.Empty(await RequeueReasonsAsync(seeded.Session));
-        Assert.Contains(seeded.Session, registry.SessionsOn("m1"));
-        Assert.Contains("m1", registry.ReadyMachines());
+        Assert.Contains(seeded.Session, registry.SessionsOn(m1));
+        Assert.NotNull(registry.SnapshotFor(m1));
+
         // The live connection was handed no work it did not already have — the dispatch pass
         // found nothing eligible, because the task it might have claimed is still working.
         Assert.Empty(live.Commands.OfType<DispatchCommand>());
@@ -793,9 +820,10 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
+        var m1 = await EnrollWireAsync(clock);
         var task = await SeedSubmittedAsync(clock);
         var registry = new RunnerConnectionRegistry(clock);
-        var connection = LiveConnection(clock, registry, "m1");
+        var connection = LiveConnection(clock, registry, m1);
 
         // The worker token is a database write like any other, issued after the claim has
         // already committed submitted→working. Failing its insert is the whole scenario:
@@ -809,7 +837,7 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(SessionState.Failed, await StateAsync(clock, task));
         Assert.Equal([LivenessLossReason.AckTimeout], await RequeueReasonsAsync(task));
         Assert.Equal(1, await RequeueCountAsync(task));
-        Assert.Empty(registry.SessionsOn("m1"));
+        Assert.Empty(registry.SessionsOn(m1));
         Assert.Empty(connection.Commands.OfType<DispatchCommand>());
 
         // And the requeue's own effects landed with it: the instance minted for the dead
@@ -825,17 +853,19 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
+        var m1 = await EnrollWireAsync(clock);
         var task = await SeedSubmittedAsync(clock);
         var registry = new RunnerConnectionRegistry(clock);
         var dispatched = new TaskCompletionSource<DispatchCommand>(
             TaskCreationOptions.RunContinuationsAsynchronously);
-        var connection = registry.Register("m1", Set("default"), (command, _) =>
+        var connection = registry.Register(m1, Set("default"), (command, _) =>
         {
             if (command is DispatchCommand d)
                 dispatched.TrySetResult(d);
             return Task.CompletedTask;
         });
-        registry.ApplyHeartbeat(connection.Token, Heartbeat("m1", "default"));
+        registry.ApplyHeartbeat(connection.Token, Heartbeat(m1, "default"));
+        Beat(clock, m1);
 
         // Break the claim itself — the instance-mint effect's insert, inside
         // DispatchNextAsync's own transaction. Deliberately a failure NO requeue path can
@@ -954,7 +984,7 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
         return await pending;
     }
 
-    private readonly record struct Seeded(SessionId Session, WorkerInstanceId Instance, TeamId Team);
+    private readonly record struct Seeded(SessionId Session, WorkerInstanceId Instance, TeamId Team, Guid Machine);
 
     /// <summary>Create only: a submitted task waiting for a dispatch pass to claim it.</summary>
     private async Task<SessionId> SeedSubmittedAsync(TimeProvider clock)
@@ -967,16 +997,23 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
 
     /// <summary>Create → dispatch, leaving the task <c>working</c> on the machine with a
     /// live worker instance minted for it — the shape a plane restart interrupts.</summary>
-    private async Task<Seeded> SeedWorkingAsync(TimeProvider clock, string machineId)
+    private async Task<Seeded> SeedWorkingAsync(TimeProvider clock, string name = "box")
     {
         await using var db = pg.NewContext();
+        var machineId = await TestMachines.EnrollAsync(db, clock, name);
         var store = new SessionStore(db, clock);
         var team = TeamId.New();
         await store.CreateAsync(new CreateSession(new LeadClaim(team), team, "completion criteria", "default"));
         var instance = WorkerInstanceId.New();
         var applied = (StoreResult.Applied)await store.DispatchNextAsync(
-            new MachineSnapshot(machineId, Ready: true, UnderBackPressure: false, Set("default")), instance);
-        return new Seeded(applied.Session.Id, instance, team);
+            new MachineSnapshot(machineId.ToString(), Ready: true, UnderBackPressure: false, Set("default")), instance);
+        return new Seeded(applied.Session.Id, instance, team, machineId);
+    }
+
+    private async Task<string> EnrollWireAsync(TimeProvider clock, string name = "box")
+    {
+        await using var db = pg.NewContext();
+        return (await TestMachines.EnrollAsync(db, clock, name)).ToString();
     }
 
     /// <summary>
@@ -984,7 +1021,7 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
     /// ready, tracking nothing. This is exactly the registry state a restarted plane has
     /// when <c>landbridged</c> reconnects — the whole of #86.
     /// </summary>
-    private static RunnerConnectionRegistry ReconnectedMachine(TimeProvider clock, string machineId)
+    private RunnerConnectionRegistry ReconnectedMachine(TimeProvider clock, string machineId)
     {
         var registry = new RunnerConnectionRegistry(clock);
         LiveConnection(clock, registry, machineId);
@@ -998,13 +1035,14 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
 
     /// <summary>Registers a working socket on an existing registry, returning its identity
     /// and the commands it receives.</summary>
-    private static Wired LiveConnection(
+    private Wired LiveConnection(
         TimeProvider clock, RunnerConnectionRegistry registry, string machineId)
     {
         var captured = new List<RunnerCommand>();
         var connection = registry.Register(
             machineId, Set("default"), (cmd, _) => { captured.Add(cmd); return Task.CompletedTask; });
         registry.ApplyHeartbeat(connection.Token, Heartbeat(machineId, "default"));
+        Beat(clock, machineId);
         return new Wired(connection.Token, captured);
     }
 
@@ -1014,15 +1052,25 @@ public sealed class PlaneResilienceTests(PostgresFixture pg) : IAsyncLifetime
     /// <see cref="RunnerConnectionRegistry.SendAsync"/> turns into the false that makes a
     /// dispatch pass requeue as <see cref="LivenessLossReason.AckTimeout"/>.
     /// </summary>
-    private static (RunnerConnectionRegistry Registry, RunnerConnectionRegistry.ConnectionToken Connection)
+    private (RunnerConnectionRegistry Registry, RunnerConnectionRegistry.ConnectionToken Connection)
         DeadSocketMachine(TimeProvider clock, string machineId, SessionId task)
     {
         var registry = new RunnerConnectionRegistry(clock);
         var connection = registry.Register(machineId, Set("default"),
             (_, _) => throw new IOException("the socket is gone"));
         registry.ApplyHeartbeat(connection.Token, Heartbeat(machineId, "default"));
+        Beat(clock, machineId);
         registry.TrackDispatch(machineId, task);
         return (registry, connection.Token);
+    }
+
+
+    private void Beat(TimeProvider clock, string machineId)
+    {
+        if (!Guid.TryParse(machineId, out var id))
+            return;
+        using var db = pg.NewContext();
+        TestMachines.HeartbeatAsync(db, clock, id).GetAwaiter().GetResult();
     }
 
     private DispatchService NewDispatch(

@@ -485,9 +485,8 @@ public sealed class SessionStore(
         MachineSnapshot machine, WorkerInstanceId newInstance, CancellationToken ct = default,
         IReadOnlyCollection<string>? connectedMachines = null)
     {
-        // Ready is last-value on machines.ready (or the registry overlay for
-        // non-guid tests). The engine still re-checks Ready and UnderBackPressure
-        // as §9 check 5's enforcement point.
+        // Ready is last-value on machines.ready. The engine still re-checks Ready
+        // and UnderBackPressure as §9 check 5's enforcement point.
 
         if (!machine.Ready)
             return new StoreResult.NotFound($"machine {machine.MachineId} is not accepting dispatch");

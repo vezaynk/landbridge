@@ -137,13 +137,14 @@ public sealed partial class DashboardQueries(
             var isBound = boundBy.TryGetValue(id, out var bound);
             IReadOnlyList<ProcessStatus>? processes = fromRow && guid is { } pid
                 ? processByMachine.GetValueOrDefault(pid)
-                : snapshot is not null ? registry.ProcessesOn(id) : null;
+                : null;
             machines.Add(new MachineView(
                 id,
                 fromRow ? row!.Ready : snapshot!.Ready,
                 fromRow ? row!.UnderBackPressure : snapshot!.UnderBackPressure,
-                fromRow ? row!.LastSpokeAt : registry.LastHeartbeatFor(id),
+                fromRow ? row!.LastSpokeAt : null,
                 (fromRow ? row!.Profiles : snapshot!.DeclaredProfiles)
+
                     .OrderBy(p => p, StringComparer.Ordinal).ToList(),
                 tasks,
                 isBound ? bound.HumanId : null,

@@ -110,8 +110,8 @@ public sealed class ProcessControlRelay(
 
     /// <summary>
     /// §10: the agent-started processes the machine holding this task last reported.
-    /// Read from <c>machine_processes</c> when the machine id is a Guid; otherwise
-    /// the last heartbeat folded into the registry (test ids).
+    /// Read from <c>machine_processes</c>.
+
     /// </summary>
     public async Task<IReadOnlyList<RunningThing>> ListAsync(SessionId task, CancellationToken ct = default)
     {
@@ -119,22 +119,16 @@ public sealed class ProcessControlRelay(
         if (machine is null)
             return [];
 
-        if (Guid.TryParse(machine, out var machineId) && dbFactory is not null)
-        {
-            await using var db = await dbFactory.CreateDbContextAsync(ct);
-            var rows = await db.MachineProcesses.AsNoTracking()
-                .Where(p => p.MachineId == machineId)
-                .OrderBy(p => p.Name)
-                .ToListAsync(ct);
-            return rows.Select(AsRunning).ToList();
-        }
+        if (!Guid.TryParse(machine, out var machineId) || dbFactory is null)
+            return [];
 
-        return registry.ProcessesOn(machine)
-            .Select(p => new RunningThing(
-                p.Name, p.State.ToString().ToLowerInvariant(),
-                p.StartedAt, p.ExitCode, p.ExitedAt, p.StdinOpen))
-            .OrderBy(x => x.Name, StringComparer.Ordinal)
-            .ToList();
+        await using var db = await dbFactory.CreateDbContextAsync(ct);
+        var rows = await db.MachineProcesses.AsNoTracking()
+            .Where(p => p.MachineId == machineId)
+            .OrderBy(p => p.Name)
+            .ToListAsync(ct);
+        return rows.Select(AsRunning).ToList();
+
     }
 
     private static RunningThing AsRunning(MachineProcessRow p) =>

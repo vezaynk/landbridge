@@ -412,11 +412,10 @@ public sealed class PermissionBridgeTests(PostgresFixture pg) : IAsyncLifetime
         // "do not auto-park" — so a zero here would assert the opposite of the intent. A
         // live machine tracking the task is what lets it park rather than requeue.
         var registry = new RunnerConnectionRegistry(TimeProvider.System);
-        registry.Register("m1", new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
-        registry.ApplyHeartbeat("m1", new MachineHeartbeat(
-            "m1", Ready: true, UnderBackPressure: false, new SystemLoad(0, 0, 0), RunningSessions: 0,
-            ["default"], DateTimeOffset.UtcNow));
-        registry.TrackDispatch("m1", caller.Session);
+        Guid box;
+        await using (var db = pg.NewContext())
+            box = await TestMachines.ConnectAsync(db, TimeProvider.System, registry, "box");
+        registry.TrackDispatch(box.ToString(), caller.Session);
         var sweeper = new WaitTtlSweeper(
             ScopeFactory(), registry, TimeProvider.System, NullLogger<WaitTtlSweeper>.Instance,
             waitTtl: TimeSpan.FromMilliseconds(1), machineLivenessWindow: TimeSpan.FromHours(1),

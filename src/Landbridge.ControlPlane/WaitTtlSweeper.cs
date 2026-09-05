@@ -150,15 +150,9 @@ public sealed class WaitTtlSweeper : IHostedService
             var store = scope.ServiceProvider.GetRequiredService<SessionStore>();
             var db = scope.ServiceProvider.GetRequiredService<LandbridgeDbContext>();
 
-            bool machineLive;
-            if (Guid.TryParse(machine, out var machineId))
-                machineLive = await HubOutbox.IsLiveAsync(
-                    db, machineId, now, _machineLivenessWindow, ct);
-            else
-            {
-                var lastHeartbeat = _registry.LastHeartbeatFor(machine);
-                machineLive = lastHeartbeat is { } beat && now - beat <= _machineLivenessWindow;
-            }
+            bool machineLive = Guid.TryParse(machine, out var machineId)
+                && await HubOutbox.IsLiveAsync(db, machineId, now, _machineLivenessWindow, ct);
+
 
             if (!machineLive)
             {

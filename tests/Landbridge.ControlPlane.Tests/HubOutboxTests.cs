@@ -66,7 +66,8 @@ public sealed class HubOutboxTests(PostgresFixture pg) : IAsyncLifetime
         registry.ApplyHeartbeat(id, new MachineHeartbeat(
             id, Ready: true, UnderBackPressure: false, default, 0, ["default"], clock.GetUtcNow()));
 
-        Assert.Empty(registry.ReadyMachines());
+        Assert.Empty(await MachineLive.ReadyAsync(
+            db, registry, clock.GetUtcNow(), WaitTtlSweeper.DefaultMachineLivenessWindow, CancellationToken.None));
 
         await HubOutbox.WriteHeartbeatAsync(
             db, clock, id,

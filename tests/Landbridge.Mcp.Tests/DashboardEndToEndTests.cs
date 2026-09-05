@@ -235,11 +235,10 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
 
         // Register the machine into the live registry and track the dispatched task.
         var registry = app.Services.GetRequiredService<RunnerConnectionRegistry>();
-        registry.Register("box-1", new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
-        registry.ApplyHeartbeat("box-1", new MachineHeartbeat(
-            "box-1", Ready: true, UnderBackPressure: false, new SystemLoad(0, 0, 0),
-            RunningSessions: 1, ["default"], DateTimeOffset.UtcNow));
-        registry.TrackDispatch("box-1", sessionId);
+        Guid box;
+        await using (var db = pg.NewContext())
+            box = await TestMachines.ConnectAsync(db, TimeProvider.System, registry, "box-1");
+        registry.TrackDispatch(box.ToString(), sessionId);
 
         var body = await GetAuthedAsync(app, "/dashboard/machines", ct);
         Assert.Contains("box-1", body, StringComparison.Ordinal);
@@ -368,10 +367,11 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         // no dispatched task: invisible to ReadyMachines() and AllTracked() alike,
         // and only surfaced by the registry's full MachineIds() enumeration.
         var registry = app.Services.GetRequiredService<RunnerConnectionRegistry>();
-        registry.Register("idle-box", new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
-        registry.ApplyHeartbeat("idle-box", new MachineHeartbeat(
-            "idle-box", Ready: false, UnderBackPressure: true, new SystemLoad(0, 0, 0),
-            RunningSessions: 0, ["default"], DateTimeOffset.UtcNow));
+        Guid idle;
+        await using (var db = pg.NewContext())
+            idle = await TestMachines.ConnectAsync(
+                db, TimeProvider.System, registry, "idle-box",
+                ready: false, underBackPressure: true);
 
         // HTML: the machine and its back-pressure badge appear, with an empty task list.
         var html = await GetAuthedAsync(app, "/dashboard/machines", ct);
@@ -383,7 +383,8 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         var json = await GetAuthedAsync(app, "/dashboard/machines?format=json", ct);
         using var doc = JsonDocument.Parse(json);
         Assert.Contains(doc.RootElement.EnumerateArray(), m =>
-            m.GetProperty("machineId").GetString() == "idle-box"
+            m.GetProperty("machineId").GetString() == idle.ToString()
+            && m.GetProperty("name").GetString() == "idle-box"
             && m.GetProperty("underBackPressure").GetBoolean()
             && !m.GetProperty("ready").GetBoolean()
             && m.GetProperty("runningSessions").GetArrayLength() == 0);

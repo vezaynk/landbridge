@@ -33,8 +33,9 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
         var team = TeamId.New();
-        var (id, _) = await SeedBlockedTaskAsync(clock, team, "m1");
-        var registry = LiveMachine(clock, "m1", id);
+        var (id, _, machine) = await SeedBlockedTaskAsync(clock, team);
+        var registry = await LiveMachineAsync(clock, machine, id);
+
 
         // Comfortably under the 30-minute TTL, machine still live.
         var sweeper = NewSweeper(clock, registry,
@@ -43,7 +44,8 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
         await sweeper.SweepAsync(CancellationToken.None);
 
         Assert.Equal(SessionState.Working, await StateAsync(clock, id));
-        Assert.Contains(id, registry.SessionsOn("m1"));
+        Assert.Contains(id, registry.SessionsOn(machine.ToString()));
+
     }
 
     [SkippableFact]
@@ -52,8 +54,9 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
         var team = TeamId.New();
-        var (id, instance) = await SeedBlockedTaskAsync(clock, team, "m1", registerService: true);
-        var registry = LiveMachine(clock, "m1", id);
+        var (id, instance, machine) = await SeedBlockedTaskAsync(clock, team, registerService: true);
+        var registry = await LiveMachineAsync(clock, machine, id);
+
 
         // Machine window > wait TTL, so the machine stays live as the TTL elapses:
         // the task parks, it is not requeued.
@@ -66,7 +69,8 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
         var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
         Assert.Equal(SessionState.Parked, row.State);
         // Park record (§11): the machine, which is the whole record.
-        Assert.Equal("m1", row.ParkMachine);
+        Assert.Equal(machine.ToString(), row.ParkMachine);
+
         // The attempt a redispatch will report stays on the row and is read live from
         // there, never snapshotted into the park.
         Assert.Equal(1, row.Attempt);
@@ -86,7 +90,8 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Empty(await v.RegisteredServices.AsNoTracking().Where(s => s.SessionId == id.Value).ToListAsync());
 
         // The old dispatch is untracked so a later wake/redispatch starts clean.
-        Assert.Empty(registry.SessionsOn("m1"));
+        Assert.Empty(registry.SessionsOn(machine.ToString()));
+
     }
 
     [SkippableFact]
@@ -99,10 +104,11 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
         var team = TeamId.New();
-        var (id, _) = await SeedBlockedTaskAsync(clock, team, "m1");
+        var (id, _, machine) = await SeedBlockedTaskAsync(clock, team);
         await using (var db = pg.NewContext())
             await new SessionStore(db, clock).StampHarnessSessionRefAsync(id, "sess-park");
-        var registry = LiveMachine(clock, "m1", id);
+        var registry = await LiveMachineAsync(clock, machine, id);
+
 
         var sweeper = NewSweeper(clock, registry,
             waitTtl: TimeSpan.FromMinutes(30), machineWindow: TimeSpan.FromHours(2));
@@ -112,7 +118,8 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
         await using var v = pg.NewContext();
         var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
         Assert.Equal(SessionState.Parked, row.State);
-        Assert.Equal("m1", row.ParkMachine);
+        Assert.Equal(machine.ToString(), row.ParkMachine);
+
         // Survives the park on the row it was stamped on — the ref dispatch resumes from.
         Assert.Equal("sess-park", row.HarnessSessionRef);
     }
@@ -123,8 +130,9 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
         var team = TeamId.New();
-        var (id, instance) = await SeedBlockedTaskAsync(clock, team, "m1");
-        var registry = LiveMachine(clock, "m1", id);
+        var (id, instance, machine) = await SeedBlockedTaskAsync(clock, team);
+        var registry = await LiveMachineAsync(clock, machine, id);
+
 
         // The machine stops heartbeating; the sweep runs well before the wait TTL
         // but past the 90-second liveness window — the machine is gone (§6).
@@ -137,12 +145,15 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
         var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
         Assert.Equal(SessionState.Failed, row.State);
         Assert.Equal(1, row.InfrastructureRequeues); // infra counter, never verification (§6)
-        Assert.Equal("m1", row.ParkMachine); // pin session/load to the last box
-        Assert.Equal("m1", row.PreferredMachine);
+        Assert.Equal(machine.ToString(), row.ParkMachine);
+ // pin session/load to the last box
+        Assert.Equal(machine.ToString(), row.PreferredMachine);
+
         Assert.Equal(MachineGonePolicy.Pin, row.OnMachineGone);
         Assert.Null(row.CurrentInstanceId);
         Assert.True((await v.WorkerInstances.AsNoTracking().SingleAsync(w => w.Id == instance.Value)).Revoked);
-        Assert.Empty(registry.SessionsOn("m1"));
+        Assert.Empty(registry.SessionsOn(machine.ToString()));
+
     }
 
     [SkippableFact]
@@ -155,15 +166,18 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
         var team = TeamId.New();
-        var (id, _) = await SeedBlockedTaskAsync(clock, team, "m1");
+        var (id, _, machine) = await SeedBlockedTaskAsync(clock, team);
+
 
         await using var db = pg.NewContext();
         var store = new SessionStore(db, clock);
-        var answerPark = new ParkRecord("m1");
+        var answerPark = new ParkRecord(machine.ToString());
+
         Assert.IsType<StoreResult.Applied>(
             await store.ApplyAsync(id, new AnswerInput(new LeadClaim(team), answerPark)));
 
-        var park = new ParkRecord("m1");
+        var park = new ParkRecord(machine.ToString());
+
         var rejected = Assert.IsType<StoreResult.Rejected>(
             await store.ApplyAsync(id, new WaitTtlExpired(park)));
         Assert.Equal(Rule.InvalidSourceState, rejected.Rule);
@@ -179,10 +193,12 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
         var team = TeamId.New();
-        var (id, _) = await SeedBlockedTaskAsync(clock, team, "m1");
-        var registry = LiveMachine(clock, "m1", id);
+        var (id, _, machine) = await SeedBlockedTaskAsync(clock, team);
+        var registry = await LiveMachineAsync(clock, machine, id);
 
-        var answerPark = new ParkRecord("m1");
+
+        var answerPark = new ParkRecord(machine.ToString());
+
         await using (var db = pg.NewContext())
             await new SessionStore(db, clock).ApplyAsync(id, new AnswerInput(new LeadClaim(team), answerPark));
 
@@ -203,8 +219,9 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = TimeProvider.System;
         var team = TeamId.New();
-        var (id, _) = await SeedBlockedTaskAsync(clock, team, "m1");
-        var registry = LiveMachine(clock, "m1", id);
+        var (id, _, machine) = await SeedBlockedTaskAsync(clock, team);
+        var registry = await LiveMachineAsync(clock, machine, id);
+
 
         var sweeper = NewSweeper(clock, registry,
             waitTtl: TimeSpan.FromMilliseconds(1),     // already expired the instant it blocked
@@ -226,7 +243,8 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
         await using var v = pg.NewContext();
         var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
         Assert.Equal(SessionState.Parked, row.State);
-        Assert.Equal("m1", row.ParkMachine);
+        Assert.Equal(machine.ToString(), row.ParkMachine);
+
     }
 
     // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -239,34 +257,38 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
 
     /// <summary>A registry with one ready machine heartbeating now, tracking the task —
     /// exactly what DispatchService would have set up at dispatch.</summary>
-    private static RunnerConnectionRegistry LiveMachine(TimeProvider clock, string machineId, SessionId task)
+    private async Task<RunnerConnectionRegistry> LiveMachineAsync(
+        TimeProvider clock, Guid machineId, SessionId task)
     {
+        await using var db = pg.NewContext();
         var registry = new RunnerConnectionRegistry(clock);
-        registry.Register(machineId, Set("default"), (_, _) => Task.CompletedTask);
-        registry.ApplyHeartbeat(machineId, Heartbeat(machineId, "default"));
-        registry.TrackDispatch(machineId, task);
+        TestMachines.Register(registry, machineId);
+        await TestMachines.HeartbeatAsync(db, clock, machineId);
+        registry.TrackDispatch(machineId.ToString(), task);
         return registry;
     }
 
     /// <summary>Create → dispatch → block, so the task sits in blocked_on_input with
     /// BlockedAt stamped at the current (fake or real) clock reading.</summary>
-    private async Task<(SessionId Id, WorkerInstanceId Instance)> SeedBlockedTaskAsync(
-        TimeProvider clock, TeamId team, string machineId, bool registerService = false)
+    private async Task<(SessionId Id, WorkerInstanceId Instance, Guid Machine)> SeedBlockedTaskAsync(
+        TimeProvider clock, TeamId team, bool registerService = false)
     {
         await using var db = pg.NewContext();
+        var machineId = await TestMachines.EnrollAsync(db, clock, "box");
         var store = new SessionStore(db, clock);
         var created = (StoreResult.Applied)await store.CreateAsync(
             new CreateSession(new LeadClaim(team), team, "completion criteria", "default"));
         var id = created.Session.Id;
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(
-            new MachineSnapshot(machineId, Ready: true, UnderBackPressure: false, Set("default")), instance);
+            new MachineSnapshot(machineId.ToString(), Ready: true, UnderBackPressure: false, Set("default")), instance);
         var caller = new WorkerCaller(team, id, instance);
         if (registerService)
             Assert.IsType<StoreResult.Applied>(await store.RegisterServiceAsync(caller, "api", 5001));
         await store.ApplyAsync(id, new RequestInput(caller, InputRequestKind.Question));
-        return (id, instance);
+        return (id, instance, machineId);
     }
+
 
     private IServiceScopeFactory ScopeFactory(TimeProvider clock)
     {

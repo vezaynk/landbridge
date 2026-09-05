@@ -5,8 +5,8 @@ namespace Landbridge.ControlPlane;
 
 /// <summary>
 /// Live machine facts (ready, profiles, last spoke, processes) as last-value
-/// rows. The registry is the socket. Non-guid test ids ("m1") have no row and
-/// keep an overlay on the registry.
+/// rows. The registry is the socket. A connected machine with no heartbeat yet
+/// is visible as not-ready with no profiles.
 /// </summary>
 public static class MachineLive
 {
@@ -97,7 +97,7 @@ public static class MachineLive
             }
 
             if (registry.SnapshotFor(id) is { } snap)
-                list.Add(new Connected(id, snap, registry.LastHeartbeatFor(id)));
+                list.Add(new Connected(id, snap, LastSpoke: null));
         }
         return list;
     }

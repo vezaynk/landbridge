@@ -41,6 +41,8 @@
        source of truth) rather than duplicating it, exactly like Landbridge.Mcp.Tests. -->
   <ItemGroup>
     <Compile Include="..\Landbridge.ControlPlane.Tests\PostgresFixture.cs" Link="PostgresFixture.cs" />
+    <Compile Include="..\Landbridge.ControlPlane.Tests\TestMachines.cs" Link="TestMachines.cs" />
+
     <!-- The plane-facing half a fleet rig needs regardless of how it stands its machines
          up: loopback reservation, the bounded poll, the Lead MCP surface, and the
          committed-facts dump. Shared with Landbridge.Chaos.Tests as source (the

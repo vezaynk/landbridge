@@ -151,7 +151,8 @@ public static class RunnerEndpoint
             // socket, and requeues it a second time as AckTimeout — two requeues for one
             // disconnect, which with the §9 check 7 cap of 5 abandons a flapping machine's
             // task in as few as three disconnects. Dropping the registration first takes
-            // the machine out of ReadyMachines/SnapshotFor, so that wake finds nothing to
+            // the machine out of MachineLive/SnapshotFor, so that wake finds nothing to
+
             // dispatch here. Unregister returns what the connection held precisely so this
             // order does not lose it — asking the registry afterwards would yield nothing
             // and requeue nothing.
