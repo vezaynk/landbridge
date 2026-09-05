@@ -36,6 +36,10 @@ var connectionString = builder.Configuration.GetConnectionString("Landbridge")
 // write path (spec §15).
 builder.Services.AddDbContext<LandbridgeDbContext>(o =>
     o.UseNpgsql(connectionString).UseSnakeCaseNamingConvention());
+// Heartbeat outbox (RunnerEndpoint) and list_processes (ProcessControlRelay)
+// open a context off the request scope.
+builder.Services.AddDbContextFactory<LandbridgeDbContext>(o =>
+    o.UseNpgsql(connectionString).UseSnakeCaseNamingConvention());
 // The §15 write path plus the §9.10 per-Team byte accounting it resolves through — one
 // registration, because the two are halves of the same feature.
 // InfrastructureRequeueLimit is §9 check 7's cap, stamped onto each new task: how many

@@ -50,6 +50,8 @@ internal static class MultiMachineKit
 
         builder.Services.AddDbContext<LandbridgeDbContext>(o =>
             o.UseNpgsql(connectionString).UseSnakeCaseNamingConvention());
+        builder.Services.AddDbContextFactory<LandbridgeDbContext>(o =>
+            o.UseNpgsql(connectionString).UseSnakeCaseNamingConvention());
         builder.Services.AddLandbridgeStore();
         builder.Services.AddScoped<TokenService>();
         builder.Services.AddScoped<RelayGrantService>();

@@ -364,7 +364,7 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             var shared = profiles.Single(p => p.GetProperty("profile").GetString() == "default");
             Assert.True(shared.GetProperty("dispatchable").GetBoolean());
             Assert.Equal(
-                new[] { m1.ToString(), m2.ToString() }.OrderBy(s => s),
+                new[] { await SlugAsync(m1), await SlugAsync(m2) }.OrderBy(s => s),
                 shared.GetProperty("machines").EnumerateArray()
                     .Select(m => m.GetProperty("machineId").GetString())
                     .OrderBy(s => s));
@@ -379,7 +379,7 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             // The narrow profile carries only the machine declaring it, which is the whole
             // point of reading this before setting create_session(profile:).
             Assert.Equal(
-                new[] { m1.ToString() },
+                new[] { await SlugAsync(m1) },
                 profiles.Single(p => p.GetProperty("profile").GetString() == "gpu")
                     .GetProperty("machines").EnumerateArray()
                     .Select(m => m.GetProperty("machineId").GetString()));
@@ -405,6 +405,13 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
     private static MachineHeartbeat Heartbeat(string machineId, params string[] profiles) =>
         new(machineId, Ready: true, UnderBackPressure: false,
             new SystemLoad(0, 0, 0), RunningSessions: 0, profiles, DateTimeOffset.UtcNow);
+
+    private async Task<string> SlugAsync(Guid machineId)
+    {
+        await using var db = pg.NewContext();
+        return await db.Set<MachineRow>().AsNoTracking()
+            .Where(m => m.Id == machineId).Select(m => m.Slug).SingleAsync();
+    }
 
     private WebApplication BuildServer()
     {

@@ -371,7 +371,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
 
         // The registry dispatch set up: enrolled machine live, heartbeating on the fake clock,
         // tracking the task. The sweep is about to park it and untrack the machine.
-        var registry = await LiveMachineAsync(sessionId);
+        var (registry, machineId) = await LiveMachineAsync(sessionId);
 
         // sweeper parks it once the wait TTL elapses — its own seam, FakeTimeProvider.
         var sweeper = NewSweeper(registry, waitTtl: TimeSpan.FromMinutes(30), machineWindow: TimeSpan.FromHours(2));
@@ -396,7 +396,9 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         await using var db = pg.NewContext();
         var store = new SessionStore(db, _clock);
         var successor = WorkerInstanceId.New();
-        var dispatched = Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(Machine(), successor));
+        var dispatched = Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(
+            new MachineSnapshot(machineId.ToString(), Ready: true, UnderBackPressure: false,
+                new HashSet<string> { "default" }), successor));
         Assert.Equal(sessionId, dispatched.Session.Id);
 
         var assignment = await store.GetAssignmentAsync(new WorkerCaller(Team, sessionId, successor));
@@ -456,7 +458,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(new[] { "default", "gpu" }, view.Profiles.Select(p => p.Profile));
         Assert.Equal(2, view.ConnectedMachines);
         var shared = view.Profiles.Single(p => p.Profile == "default");
-        Assert.Equal(new[] { m1.ToString(), m2.ToString() }.OrderBy(s => s),
+        Assert.Equal(new[] { await SlugAsync(m1), await SlugAsync(m2) }.OrderBy(s => s),
             shared.Machines.Select(m => m.MachineId).OrderBy(s => s));
         Assert.True(shared.Dispatchable);
         // Liveness per machine, so "this profile is reachable NOW" is answerable rather
@@ -469,7 +471,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         });
 
         // The narrower profile carries only the machine that declares it (§7 exact match).
-        Assert.Equal(new[] { m1.ToString() }, view.Profiles.Single(p => p.Profile == "gpu").Machines
+        Assert.Equal(new[] { await SlugAsync(m1) }, view.Profiles.Single(p => p.Profile == "gpu").Machines
             .Select(m => m.MachineId));
     }
 
@@ -523,7 +525,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         return created.Session.Id;
     }
 
-    private async Task<RunnerConnectionRegistry> LiveMachineAsync(SessionId task)
+    private async Task<(RunnerConnectionRegistry Registry, Guid MachineId)> LiveMachineAsync(SessionId task)
     {
         await using var db = pg.NewContext();
         var machine = await TestMachines.EnrollAsync(db, _clock, "box");
@@ -531,7 +533,14 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         TestMachines.Register(registry, machine);
         await TestMachines.HeartbeatAsync(db, _clock, machine);
         registry.TrackDispatch(machine.ToString(), task);
-        return registry;
+        return (registry, machine);
+    }
+
+    private async Task<string> SlugAsync(Guid machineId)
+    {
+        await using var db = pg.NewContext();
+        return await db.Set<MachineRow>().AsNoTracking()
+            .Where(m => m.Id == machineId).Select(m => m.Slug).SingleAsync();
     }
 
     private WaitTtlSweeper NewSweeper(
