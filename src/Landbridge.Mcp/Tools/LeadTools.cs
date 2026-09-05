@@ -28,7 +28,6 @@ namespace Landbridge.Mcp.Tools;
 /// runner profile is machine config no Team owns. It reads last-value machine
 /// rows through <see cref="MachineLive"/>.
 /// The Lead-principal check at its top is the whole of its authority.</para>
-
 ///
 /// <para>The last three tools are the §8.3 <b>human path</b>: a Lead binds an
 /// enrolled machine as its human's own, then opens a forward whose consumer end is
@@ -48,7 +47,6 @@ public sealed class LeadTools(
     IHttpContextAccessor http,
     IConfiguration config,
     LandbridgeDbContext db,
-    TimeProvider clock,
     SessionEventFanout? inbox = null)
 
 {

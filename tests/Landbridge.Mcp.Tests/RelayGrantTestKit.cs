@@ -168,7 +168,9 @@ internal static class RelayGrantTestKit
             new FriendlyIds(db),
             http,
             new ConfigurationBuilder().Build(),
+            db,
             inbox);
+
 
     // ── Seeding (against the fixture DB, so the plane's own scope sees it) ─────
 

@@ -38,7 +38,8 @@ internal static class TestMachines
         var id = machineId.ToString();
         var beat = new MachineHeartbeat(
             id, ready, underBackPressure, default, 0,
-            profiles ?? ["default"], clock.GetUtcNow(), processes);
+            profiles ?? ["default"], clock.GetUtcNow(), Processes: processes);
+
         await HubOutbox.WriteHeartbeatAsync(db, clock, id, beat, ct);
     }
 
