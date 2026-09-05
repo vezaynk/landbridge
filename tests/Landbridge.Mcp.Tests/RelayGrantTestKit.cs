@@ -63,10 +63,10 @@ internal static class RelayGrantTestKit
         if (settings.Count > 0)
             builder.Configuration.AddInMemoryCollection(settings);
 
-        builder.Services.AddDbContext<LandbridgeDbContext>(o =>
-            o.UseNpgsql(connectionString).UseSnakeCaseNamingConvention());
         builder.Services.AddDbContextFactory<LandbridgeDbContext>(o =>
             o.UseNpgsql(connectionString).UseSnakeCaseNamingConvention());
+        builder.Services.AddScoped(sp =>
+            sp.GetRequiredService<IDbContextFactory<LandbridgeDbContext>>().CreateDbContext());
         builder.Services.AddLandbridgeStore();
         builder.Services.AddScoped<TokenService>();
         builder.Services.AddScoped<RelayGrantService>();

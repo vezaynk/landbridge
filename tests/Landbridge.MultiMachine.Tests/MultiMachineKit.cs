@@ -48,10 +48,10 @@ internal static class MultiMachineKit
             ["Landbridge:PermissionPollIntervalMs"] = "50",
         });
 
-        builder.Services.AddDbContext<LandbridgeDbContext>(o =>
-            o.UseNpgsql(connectionString).UseSnakeCaseNamingConvention());
         builder.Services.AddDbContextFactory<LandbridgeDbContext>(o =>
             o.UseNpgsql(connectionString).UseSnakeCaseNamingConvention());
+        builder.Services.AddScoped(sp =>
+            sp.GetRequiredService<IDbContextFactory<LandbridgeDbContext>>().CreateDbContext());
         builder.Services.AddLandbridgeStore();
         builder.Services.AddScoped<TokenService>();
         builder.Services.AddScoped<RelayGrantService>();
