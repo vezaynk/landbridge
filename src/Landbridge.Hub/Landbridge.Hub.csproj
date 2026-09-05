@@ -1,0 +1,17 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <!-- The SSE hub (ideas/hub-and-write-queue.md): its own ASP.NET host, NOT
+       part of Landbridge.Mcp. LISTENs as a doorbell, tails hub_queue, serves
+       EventSource. Nothing consumes it yet. -->
+  <ItemGroup>
+    <ProjectReference Include="..\Landbridge.ServiceDefaults\Landbridge.ServiceDefaults.csproj" />
+    <ProjectReference Include="..\Landbridge.ControlPlane\Landbridge.ControlPlane.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+</Project>
