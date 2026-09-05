@@ -80,6 +80,22 @@ internal sealed class FleetRig(
 
     private string Wire(string alias) => _enrolled[alias].ToString();
 
+    /// <summary>The enrolled <c>machines.id</c> for a fleet alias ("A", "B").
+    /// Registry keys, park.machine, and worker_instances.machine_id are this Guid
+    /// string, not the alias.</summary>
+    public string EnrolledId(string alias) => Wire(alias);
+
+    /// <summary>Map a wire machine id back to the fleet alias, or return the id
+    /// unchanged when it was not enrolled here.</summary>
+    public string? AliasOf(string? machineId)
+    {
+        if (machineId is null) return null;
+        foreach (var (alias, id) in _enrolled)
+            if (string.Equals(id.ToString(), machineId, StringComparison.OrdinalIgnoreCase))
+                return alias;
+        return machineId;
+    }
+
 
     /// <summary>Whether to drain each machine's worker-supervisor event ring into the
     /// plane's sink. Off for the scripted tier (its serve workers never exit mid-test
@@ -567,7 +583,7 @@ internal sealed class FleetRig(
     {
         await using var db = pg.NewContext();
         var row = await db.Sessions.AsNoTracking().SingleAsync(t => t.Id == task.Value, ct);
-        return (row.ParkMachine, row.HarnessSessionRef);
+        return (AliasOf(row.ParkMachine), row.HarnessSessionRef);
     }
 
     /// <summary>
@@ -695,11 +711,7 @@ internal sealed class FleetRig(
     public string? MachineOf(SessionId task)
     {
         var wire = _registry.MachineFor(task);
-        if (wire is null) return null;
-        foreach (var (alias, id) in _enrolled)
-            if (id.ToString() == wire)
-                return alias;
-        return wire;
+        return AliasOf(wire);
     }
 
 
