@@ -36,7 +36,8 @@ Every mutating call sits on two clocks. Collapsing them is how this design goes 
 | Heartbeat | `HubOutbox.WriteHeartbeatAsync` after a successful `ApplyHeartbeat` | **upserts** `machines.last_spoke_at` / `ready` / `under_back_pressure` / `profiles` and replaces `machine_processes` by name. Then doorbells `machines`, `processes` (machine id), `process` (row id). No heartbeat blob in `hub_queue`. Non-guid test ids (`m1`) are a no-op |
 | Liveness | `machines.last_spoke_at` within 90s (`Landbridge:MachineLivenessTtl`) | dashboard and wait-TTL sweeper. Not `hub_queue`. Not a separate liveness table |
 | Processes | `machine_processes` | last-value, machine-scoped. `list_processes` reads the table when the machine id is a Guid |
-| Socket | `RunnerConnectionRegistry` | send delegate, tracked dispatches, generation. Still folds the beat in RAM for dispatch; that dual-write is leftover |
+| Socket | `RunnerConnectionRegistry` | send delegate, tracked dispatches, generation. Facts are the columns. Non-guid test ids keep a registry overlay |
+
 | Dispatch / inbox wake | `SessionEventListener` / `SessionEventFanout` | LISTEN `landbridge_session_events` only |
 | Lead live read | `GET /lead/inbox/events`, `watch_lead_inbox` | full **snapshot** on wake, still in Core ([`lead-inbox-sse.md`](lead-inbox-sse.md)) |
 | Dashboard live read | Blazor `DashboardRefresh` | **still 2s poll**. Hub has no consumer yet |
@@ -112,7 +113,8 @@ Core restart: gateway and hub stay. SSE stays up (Part 1). Committed session and
 - A custom multiplex subscribe protocol (v1 is one EventSource per topic; HTTP/2 carries them).
 - A write queue (Part 2) or replacing `/runner` (Part 3).
 - Rewriting Blazor in the same change that extracts the process.
-- Collapsing dispatch off the in-memory `Fold` (leftover; registry should keep the socket only).
+- Collapsing dispatch off an in-memory `Fold` — done: `MachineLive.ReadyAsync` reads columns (overlay only for `"m1"` tests).
+
 
 ## Two stores
 
@@ -214,7 +216,8 @@ On each applied beat (Guid machine, enrolled, unrevoked):
 
 Live for the board and the wait-TTL sweeper: `last_spoke_at >= now() - 90s`. After that the box is absent even if the columns remain. `hub_queue` retain (24h) is unrelated — it is catch-up for SSE, not liveness.
 
-The registry keeps the `/runner` socket and tracked dispatches. It still folds the beat in memory for dispatch eligibility; that is leftover dual-write. After Core restart there is no socket anyway — new dispatch waits on reconnect.
+The registry keeps the `/runner` socket and tracked dispatches. Ready / profiles / last-spoke are the columns. Dispatch (`MachineLive.ReadyAsync`) and `list_profiles` read those. Non-guid test ids (`m1`) overlay on the registry because they cannot be a `machines` PK.
+
 
 ### Events / exchange / ports
 
@@ -243,8 +246,8 @@ A second hub replica tails the same outbox (`LISTEN` + `SELECT`), not a Redis co
 1. **Wake log + hub process** — done: `hub_queue`, `Landbridge.Hub`, session/port/machine topics, nothing consuming SSE.
 2. **Last-value machine facts** — done: columns + `machine_processes`; doorbell only on `hub_queue`.
 3. **Dashboard EventSource** instead of `DashboardRefresh`. Auth on the hub.
-4. **Dispatch reads columns**, registry is socket-only.
-5. Split Lead inbox SSE onto the hub (still a snapshot stream, not this wake shape).
+4. Split Lead inbox SSE onto the hub (still a snapshot stream, not this wake shape).
+
 
 ---
 
@@ -450,13 +453,12 @@ Ship Part 1 without Part 2. Ship client-minted session ids without Part 2. Do no
 ## Open questions
 
 1. Membership: `GET` the list on every `change` vs later adding `op`. v1 is GET.
-2. When dispatch should stop folding the beat in RAM and read `machines.ready` / `profiles`.
-3. Mutating snapshot reads (`report_unread` cleared by per-session inbox fetch) — keep those on Core/gateway, even if the hub serves the unread view.
-4. MCP 202 vs optional wait-for-Apply timeout (sync default, 202 if `Prefer: respond-async`). Default sync preserves today's Lead loop.
-5. Whether `fork_session` (when it exists) uses a client-minted child id the same way as create.
-6. Dual-stack duration for `/runner` WS vs SSE+POST.
-7. Whether `alive`/`tool-call` are last-value or still droppable once they are HTTP — bound the table either way.
-8. When a 200-row board of EventSources is too many: cap, or collapse to list-only. Not a v1 decision.
-9. JSON twins for live forwards/previews (wakes exist; GET does not).
+2. Mutating snapshot reads (`report_unread` cleared by per-session inbox fetch) — keep those on Core/gateway, even if the hub serves the unread view.
+3. MCP 202 vs optional wait-for-Apply timeout (sync default, 202 if `Prefer: respond-async`). Default sync preserves today's Lead loop.
+4. Whether `fork_session` (when it exists) uses a client-minted child id the same way as create.
+5. Dual-stack duration for `/runner` WS vs SSE+POST.
+6. Whether `alive`/`tool-call` are last-value or still droppable once they are HTTP — bound the table either way.
+7. When a 200-row board of EventSources is too many: cap, or collapse to list-only. Not a v1 decision.
+8. JSON twins for live forwards/previews (wakes exist; GET does not).
 
 ---

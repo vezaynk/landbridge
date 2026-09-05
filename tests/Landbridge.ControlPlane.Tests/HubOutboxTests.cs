@@ -54,6 +54,34 @@ public sealed class HubOutboxTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task Dispatch_reads_columns_a_guid_heartbeat_does_not_fold_into_the_socket()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var clock = new FakeTimeProvider();
+        var machineId = await EnrollAsync(db, clock, "dispatch-box");
+        var id = machineId.ToString();
+        var registry = new RunnerConnectionRegistry(clock);
+        registry.Register(id, new HashSet<string>(StringComparer.Ordinal), (_, _) => Task.CompletedTask);
+        registry.ApplyHeartbeat(id, new MachineHeartbeat(
+            id, Ready: true, UnderBackPressure: false, default, 0, ["default"], clock.GetUtcNow()));
+
+        Assert.Empty(registry.ReadyMachines());
+
+        await HubOutbox.WriteHeartbeatAsync(
+            db, clock, id,
+            new MachineHeartbeat(id, true, false, default, 0, ["default"], clock.GetUtcNow()),
+            CancellationToken.None);
+
+        var ready = await MachineLive.ReadyAsync(
+            db, registry, clock.GetUtcNow(), WaitTtlSweeper.DefaultMachineLivenessWindow, CancellationToken.None);
+        var hit = Assert.Single(ready);
+        Assert.Equal(id, hit.Id);
+        Assert.True(hit.Snapshot.Ready);
+        Assert.Contains("default", hit.Snapshot.DeclaredProfiles);
+    }
+
+    [SkippableFact]
     public async Task Heartbeat_skips_non_guid_machine_ids()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);

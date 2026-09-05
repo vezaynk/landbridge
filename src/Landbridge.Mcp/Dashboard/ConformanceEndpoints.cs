@@ -37,7 +37,8 @@ internal static class ConformanceEndpoints
     /// </summary>
     private static async Task<IResult> HandleStartAsync(
         HttpContext http, TokenService tokens, SessionStore store,
-        RunnerConnectionRegistry registry, IConfiguration config, CancellationToken ct)
+        RunnerConnectionRegistry registry, LandbridgeDbContext db, IConfiguration config, CancellationToken ct)
+
     {
         if (CrossOriginRefusal(http, config) is { } refusal)
             return refusal;
@@ -67,7 +68,8 @@ internal static class ConformanceEndpoints
                     ResultReference: null, LastRequeueReason: null));
             }
 
-            var machines = MachinesDeclaring(registry, profile);
+            var machines = await MachineLive.DeclaringAsync(db, registry, profile, ct);
+
             var model = ConformanceRunView.From(runId.Value, profile, created, machines);
             return DashboardNegotiate.WantsJson(http) || http.Request.HasJsonContentType()
                 ? Results.Json(model, Json, statusCode: StatusCodes.Status201Created)
@@ -97,19 +99,8 @@ internal static class ConformanceEndpoints
         return string.IsNullOrWhiteSpace(raw) ? null : raw.Trim();
     }
 
-    private static IReadOnlyList<string> MachinesDeclaring(RunnerConnectionRegistry registry, string profile)
-    {
-        var found = new List<string>();
-        foreach (var id in registry.MachineIds())
-        {
-            var snap = registry.SnapshotFor(id);
-            if (snap?.DeclaredProfiles.Contains(profile) == true)
-                found.Add(id);
-        }
-        return found;
-    }
-
     private static async Task<IResult> GatedHuman(
+
         HttpContext http, TokenService tokens, CancellationToken ct,
         Func<Principal.Human, Task<IResult>> body)
     {

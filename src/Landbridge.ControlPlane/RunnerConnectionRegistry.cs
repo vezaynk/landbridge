@@ -7,11 +7,15 @@ namespace Landbridge.ControlPlane;
 /// <summary>
 /// The in-memory registry of live runner connections, spec §10. Single-node v1:
 /// landbridged only dials outbound, so a connection is a WebSocket the control plane
-/// accepted and the send delegate that writes command frames back down it. The
-/// registry holds, per machine, that delegate, the profiles it declares (learned
-/// from its heartbeat), its readiness, its last heartbeat, and the set of tasks
-/// dispatched to it — each with the two liveness clocks §10 needs: when the machine
-/// last said the task's process was alive, and when the task last made progress.
+/// accepted and the send delegate that writes command frames back down it. Per
+/// machine it holds that delegate, generation, tracked dispatches, and the two
+/// liveness clocks §10 needs on those tasks.
+///
+/// Ready / profiles / processes / last-spoke live on <c>machines</c> and
+/// <c>machine_processes</c> (heartbeat upsert). A non-guid test id ("m1") has
+/// no row; <see cref="ApplyHeartbeat"/> keeps a small overlay so those tests
+/// still drive dispatch without enrolling.
+
 ///
 /// It is transport-agnostic — nothing here knows about WebSockets — so it is
 /// driven directly in tests. All state is process-local and evaporates on restart,
@@ -39,6 +43,8 @@ namespace Landbridge.ControlPlane;
 public sealed class RunnerConnectionRegistry(TimeProvider clock)
 {
     private readonly ConcurrentDictionary<string, RunnerConnection> _connections = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, Overlay> _overlay = new(StringComparer.Ordinal);
+
 
     /// <summary>Mints <see cref="ConnectionToken.Generation"/>. Process-wide rather than
     /// per-machine so a token can never be mistaken for another machine's connection.</summary>
@@ -77,13 +83,10 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     {
         var token = new ConnectionToken(machineId, Interlocked.Increment(ref _generations));
         var superseded = _connections.ContainsKey(machineId);
-        _connections[machineId] = new RunnerConnection(send, token.Generation)
-        {
-            Profiles = profiles,
-            LastHeartbeat = clock.GetUtcNow(),
-            Close = close,
-        };
+        _overlay.TryRemove(machineId, out _);
+        _connections[machineId] = new RunnerConnection(send, token.Generation) { Close = close };
         return new Registration(token, superseded);
+
     }
 
     /// <summary>
@@ -118,8 +121,10 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
         // connection registered between the lookup above and here survives.
         if (!_connections.TryRemove(new KeyValuePair<string, RunnerConnection>(token.MachineId, conn)))
             return new UnregisterOutcome(false, []);
+        _overlay.TryRemove(token.MachineId, out _);
         lock (conn.Gate)
             return new UnregisterOutcome(true, conn.Dispatched.Keys.ToArray());
+
     }
 
     /// <summary>
@@ -147,6 +152,8 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     {
         if (!_connections.TryRemove(machineId, out var conn))
             return new UnregisterOutcome(false, []);
+        _overlay.TryRemove(machineId, out _);
+
 
         SessionId[] held;
         lock (conn.Gate)
@@ -172,65 +179,42 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     }
 
     /// <summary>
-    /// Folds a heartbeat into the state of the connection <paramref name="token"/> names;
-    /// see <see cref="ApplyHeartbeat(string, MachineHeartbeat)"/> for what it folds.
-    ///
-    /// <para>This is the overload the runner endpoint uses, and the reason is #94: a
-    /// superseded connection must not steer the live one. Readiness, declared profiles and
-    /// the heartbeat timestamp are all tracking state, and a heartbeat that was in flight
-    /// (or buffered) when a machine's new connection replaced the old one would otherwise
-    /// be applied to the successor — marking a ready machine back-pressured, or refreshing
-    /// a liveness timestamp on behalf of a socket that is no longer carrying anything. A
-    /// stale token is ignored outright.</para>
+    /// Accepts a heartbeat on the connection <paramref name="token"/> names.
+    /// Guid machines persist facts in <c>machines</c> / <c>machine_processes</c>
+    /// via <see cref="HubOutbox.WriteHeartbeatAsync"/>; this only checks the
+    /// token is still live. Non-guid test ids fold into an overlay.
+    /// A stale token is ignored (#94).
     /// </summary>
     public bool ApplyHeartbeat(ConnectionToken token, MachineHeartbeat heartbeat)
     {
-        if (Current(token) is not { } conn)
+        if (Current(token) is not { } _)
             return false;
-        Fold(conn, heartbeat);
+        RememberOverlay(token.MachineId, heartbeat);
         return true;
     }
 
-
     /// <summary>
-    /// Folds a heartbeat into whichever connection a machine currently holds: readiness
-    /// (ready unless under back-pressure), declared profiles, and the heartbeat timestamp
-    /// (§10). Keyed by the <b>authenticated</b> machine id (the caller's token identity),
-    /// never the heartbeat's self-reported <see cref="MachineHeartbeat.MachineId"/> — a
-    /// machine must not be able to steer another's connection state (§13).
-    ///
-    /// <para>For callers holding no <see cref="ConnectionToken"/>, which in practice means
-    /// tests driving a single connection per machine. Anything reading heartbeats off a
-    /// socket has a token and should present it —
-    /// <see cref="ApplyHeartbeat(ConnectionToken, MachineHeartbeat)"/> — so a superseded
-    /// connection cannot write over its successor's state (#94).</para>
+    /// Same as the token overload for tests driving a single connection per machine.
     /// </summary>
     public void ApplyHeartbeat(string machineId, MachineHeartbeat heartbeat)
     {
-        if (_connections.TryGetValue(machineId, out var conn))
-            Fold(conn, heartbeat);
+        if (!_connections.ContainsKey(machineId))
+            return;
+        RememberOverlay(machineId, heartbeat);
     }
 
-    private void Fold(RunnerConnection conn, MachineHeartbeat heartbeat)
+    private void RememberOverlay(string machineId, MachineHeartbeat heartbeat)
     {
-        lock (conn.Gate)
-        {
-            // The single derivation point for dispatch eligibility. Back-pressure is folded
-            // into Ready here and nowhere else, so every downstream reader — ReadyMachines,
-            // TryPickMachine, SnapshotFor, the store's pre-check — gets one already-decided
-            // boolean instead of re-deriving the rule. UnderBackPressure is kept verbatim
-            // beside it for the §12 view, which distinguishes "back-pressured" from "not
-            // ready"; it is a rendering fact, not a second eligibility input. The engine's
-            // Dispatch transition re-checks both anyway as §9 check 5's enforcement point.
-            conn.Ready = heartbeat.Ready && !heartbeat.UnderBackPressure;
-            conn.UnderBackPressure = heartbeat.UnderBackPressure;
-            conn.Profiles = new HashSet<string>(heartbeat.Profiles, StringComparer.Ordinal);
-            // §10/§12: stored verbatim and never interpreted. Null (a runner predating
-            // the field) leaves the previous list rather than blanking it.
-            conn.Processes = heartbeat.Processes ?? conn.Processes;
-            conn.LastHeartbeat = clock.GetUtcNow();
-        }
+        if (Guid.TryParse(machineId, out _))
+            return;
+        _overlay[machineId] = new Overlay(
+            heartbeat.Ready && !heartbeat.UnderBackPressure,
+            heartbeat.UnderBackPressure,
+            new HashSet<string>(heartbeat.Profiles, StringComparer.Ordinal),
+            clock.GetUtcNow(),
+            heartbeat.Processes ?? (_overlay.TryGetValue(machineId, out var prev) ? prev.Processes : []));
     }
+
 
     /// <summary>The connection <paramref name="token"/> names, or null once it has been
     /// superseded or torn down.</summary>
@@ -365,30 +349,16 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     }
 
     /// <summary>
-    /// A machine's most recent heartbeat, or null when it has no live connection.
-    /// A blocked task whose process has exited has frozen per-task activity, so
-    /// the wait-TTL sweeper judges that machine's liveness by this heartbeat and
-    /// requeues when the box itself has gone silent past the liveness window
-    /// (§6: blocked_on_input → submitted on machine liveness loss). A blocked
-    /// task whose process is still up (ACP wait, permission) is also covered
-    /// here: a dead machine takes the session with it either way.
+    /// A machine's most recent overlay heartbeat, or null. Guid machines use
+    /// <c>machines.last_spoke_at</c>; this is the non-guid test path.
     /// </summary>
-    public DateTimeOffset? LastHeartbeatFor(string machineId)
-    {
-        if (!_connections.TryGetValue(machineId, out var conn))
-            return null;
-        lock (conn.Gate)
-            return conn.LastHeartbeat;
-    }
+    public DateTimeOffset? LastHeartbeatFor(string machineId) =>
+        _overlay.TryGetValue(machineId, out var o) ? o.LastHeartbeat : null;
 
-    /// <summary>The agent-started processes a machine last reported (§10, §12).</summary>
-    public IReadOnlyList<ProcessStatus> ProcessesOn(string machineId)
-    {
-        if (!_connections.TryGetValue(machineId, out var conn))
-            return [];
-        lock (conn.Gate)
-            return conn.Processes;
-    }
+    /// <summary>Agent-started processes last reported on a non-guid test id.</summary>
+    public IReadOnlyList<ProcessStatus> ProcessesOn(string machineId) =>
+        _overlay.TryGetValue(machineId, out var o) ? o.Processes : [];
+
 
     /// <summary>The tasks currently tracked as dispatched to a machine.</summary>
     public IReadOnlyList<SessionId> SessionsOn(string machineId)
@@ -399,28 +369,34 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
             return conn.Dispatched.Keys.ToArray();
     }
 
-    /// <summary>Picks a ready machine declaring <paramref name="requiredProfile"/>, or null.</summary>
+    /// <summary>Picks a ready overlay machine declaring <paramref name="requiredProfile"/>, or null.
+    /// Guid machines go through <see cref="MachineLive.ReadyAsync"/>.</summary>
     public string? TryPickMachine(string requiredProfile)
     {
-        foreach (var (id, conn) in _connections)
+        foreach (var (id, facts) in _overlay)
         {
-            lock (conn.Gate)
-                if (conn.Ready && conn.Profiles.Contains(requiredProfile))
-                    return id;
+            if (_connections.ContainsKey(id) && facts.Ready && facts.Profiles.Contains(requiredProfile))
+                return id;
         }
         return null;
     }
 
-    /// <summary>The machine-eligibility snapshot dispatch runs against, or null if gone.</summary>
+    /// <summary>
+    /// Socket presence, plus overlay facts for non-guid ids. Guid machines that
+    /// have not yet spoken are connected and not ready; live facts are the row.
+    /// Null if the socket is gone.
+    /// </summary>
     public MachineSnapshot? SnapshotFor(string machineId)
     {
-        if (!_connections.TryGetValue(machineId, out var conn))
+        if (!_connections.ContainsKey(machineId))
             return null;
-        lock (conn.Gate)
-            return new MachineSnapshot(
-                machineId, conn.Ready, conn.UnderBackPressure,
-                new HashSet<string>(conn.Profiles, StringComparer.Ordinal));
+        if (_overlay.TryGetValue(machineId, out var o))
+            return new MachineSnapshot(machineId, o.Ready, o.UnderBackPressure, o.Profiles);
+        return new MachineSnapshot(
+            machineId, Ready: false, UnderBackPressure: false,
+            new HashSet<string>(StringComparer.Ordinal));
     }
+
 
     /// <summary>
     /// The fleet's declared profiles grouped as routing targets — what a Lead's
@@ -432,12 +408,10 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// hands the store and the engine matches on — plus
     /// <see cref="LastHeartbeatFor"/>. So the profiles listed are exactly the profiles a
     /// task can match, and <see cref="ProfileRoutingEntry.Dispatchable"/> agrees with
-    /// <see cref="TryPickMachine"/> by construction: both are "some machine is
-    /// <c>Ready</c> and declares this name", and <c>Ready</c> is where back-pressure was
-    /// already folded in (<see cref="Fold"/>). A second, hand-rolled notion of
-    /// eligibility here is precisely the divergence that would let a Lead be told a
-    /// profile is reachable when dispatch disagrees.</para>
-    ///
+    /// <see cref="TryPickMachine"/> by construction for overlay ids. Guid machines go
+    /// through <see cref="MachineLive.RoutingAsync"/> so the table is the same input
+    /// dispatch uses.
+    /// </para>
     /// <para>Full enumeration rather than <see cref="ReadyMachines"/>, for the same reason
     /// the §12 view enumerates: a machine that is connected and saturated still declares
     /// its profiles, and a Lead needs the profile to appear — as present but not
@@ -482,18 +456,21 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
         return new ProfileRoutingView(profiles, connected);
     }
 
-    /// <summary>The machine ids currently ready to accept dispatch.</summary>
+    /// <summary>
+    /// Overlay-ready machine ids (non-guid tests). Production dispatch uses
+    /// <see cref="MachineLive.ReadyAsync"/>.
+    /// </summary>
     public IReadOnlyList<string> ReadyMachines()
     {
         var ready = new List<string>();
-        foreach (var (id, conn) in _connections)
+        foreach (var (id, facts) in _overlay)
         {
-            lock (conn.Gate)
-                if (conn.Ready)
-                    ready.Add(id);
+            if (facts.Ready && _connections.ContainsKey(id))
+                ready.Add(id);
         }
         return ready;
     }
+
 
     /// <summary>
     /// Every currently-registered machine id, regardless of readiness or whether it
@@ -712,12 +689,14 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
         /// <summary>Kills the plane ordered on this connection, each with the instant its
         /// echo stops being expected; see <see cref="SendKillAsync"/>.</summary>
         public Dictionary<SessionId, DateTimeOffset> CommandedExits { get; } = new();
-
-        public IReadOnlySet<string> Profiles { get; set; } = new HashSet<string>(StringComparer.Ordinal);
-        public bool Ready { get; set; }
-        public bool UnderBackPressure { get; set; }
-        public DateTimeOffset LastHeartbeat { get; set; }
-        public IReadOnlyList<ProcessStatus> Processes { get; set; } = [];
         public Dictionary<SessionId, TaskActivity> Dispatched { get; } = new();
     }
+
+    private sealed record Overlay(
+        bool Ready,
+        bool UnderBackPressure,
+        HashSet<string> Profiles,
+        DateTimeOffset LastHeartbeat,
+        IReadOnlyList<ProcessStatus> Processes);
 }
+
