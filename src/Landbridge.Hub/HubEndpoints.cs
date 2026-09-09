@@ -64,7 +64,19 @@ public static class HubEndpoints
     {
         http.Response.Headers["X-Accel-Buffering"] = "no";
         return TypedResults.ServerSentEvents(
-            Enumerate(dbFactory, waiters, topic, entityId, after, options.Value.PingInterval, ct));
+            Enumerate(dbFactory, waiters, topic, entityId, ResumeAfter(http, after), options.Value.PingInterval, ct));
+    }
+
+    /// <summary>
+    /// Native EventSource reconnects to the same URL with <c>Last-Event-ID</c>.
+    /// That header wins; <c>?after=</c> is the explicit first-open cursor.
+    /// </summary>
+    internal static long ResumeAfter(HttpContext http, long? after)
+    {
+        var header = http.Request.Headers["Last-Event-ID"].ToString();
+        if (long.TryParse(header, out var id) && id >= 0)
+            return id;
+        return after ?? 0;
     }
 
     private static async IAsyncEnumerable<SseItem<string>> Enumerate(
@@ -72,12 +84,12 @@ public static class HubEndpoints
         HubWaiters waiters,
         string topic,
         Guid? entityId,
-        long? after,
+        long after,
         TimeSpan ping,
         [EnumeratorCancellation] CancellationToken ct)
     {
         using var sub = waiters.Subscribe(topic, entityId);
-        var last = after ?? 0;
+        var last = after;
         await foreach (var row in CatchUpAsync(dbFactory, topic, entityId, last, ct))
         {
             last = row.Id;

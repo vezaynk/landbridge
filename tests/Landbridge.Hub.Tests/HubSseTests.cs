@@ -175,6 +175,45 @@ public sealed class HubSseTests(PostgresFixture pg) : IAsyncLifetime
         await app.StopAsync(ct);
     }
 
+    [SkippableFact]
+    public async Task Last_event_id_header_resumes_catch_up()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(Patience);
+        var ct = cts.Token;
+
+        var first = await CreateSessionAsync(ct);
+        var second = await CreateSessionAsync(ct);
+        long after;
+        await using (var db = pg.NewContext())
+        {
+            after = await db.HubQueue
+                .Where(r => r.Topic == HubQueueRow.SessionsTopic && r.EntityId == first)
+                .Select(r => r.Id).SingleAsync(ct);
+        }
+
+        await using var app = BuildServer();
+        await app.StartAsync(ct);
+        await app.Services.GetRequiredService<HubProjector>().WhenListening.WaitAsync(ct);
+
+        using var client = Client(app);
+        using var req = new HttpRequestMessage(HttpMethod.Get, "/sessions/events");
+        req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+        req.Headers.TryAddWithoutValidation("Last-Event-ID", after.ToString());
+        using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+        Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+
+        await using var stream = await resp.Content.ReadAsStreamAsync(ct);
+        using var reader = new StreamReader(stream, Encoding.UTF8);
+        var ev = await ReadSseEventAsync(reader, ct);
+        Assert.Equal("change", ev.Event);
+        using var doc = JsonDocument.Parse(ev.Data);
+        Assert.Equal("sessions", doc.RootElement.GetProperty("topic").GetString());
+        Assert.Equal(second, doc.RootElement.GetProperty("entityId").GetGuid());
+
+        await app.StopAsync(ct);
+    }
+
     private async Task<Guid> CreateSessionAsync(CancellationToken ct)
     {
         await using var db = pg.NewContext();
