@@ -1,11 +1,14 @@
 using Landbridge.ControlPlane.Auth;
 using Landbridge.Core;
 using Microsoft.EntityFrameworkCore;
+
 namespace Landbridge.ControlPlane;
 
 /// <summary>
 /// Live machine facts (ready, profiles, last spoke, processes) as last-value
-/// rows. The registry is the socket. A connected machine with no heartbeat yet
+/// rows. The registry is the socket. Dispatchable is column <c>ready</c> and
+/// <c>last_spoke_at</c> within the liveness window — <c>list_profiles</c> and
+/// dispatch share that predicate. A connected machine with no heartbeat yet
 /// is visible as not-ready with no profiles.
 /// </summary>
 public static class MachineLive
@@ -19,15 +22,16 @@ public static class MachineLive
     {
         var connected = await ConnectedAsync(db, registry, ct);
         return connected
-            .Where(c => c.Snapshot.Ready && c.LastSpoke is { } at && now - at <= window)
+            .Where(c => IsDispatchable(c, now, window))
             .Select(c => (c.Id, c.Snapshot))
             .ToList();
-
     }
 
     public static async Task<ProfileRoutingView> RoutingAsync(
         LandbridgeDbContext db,
         RunnerConnectionRegistry registry,
+        DateTimeOffset now,
+        TimeSpan window,
         CancellationToken ct)
     {
         var connected = await ConnectedAsync(db, registry, ct);
@@ -35,7 +39,7 @@ public static class MachineLive
         foreach (var c in connected)
         {
             var machine = new ProfileMachineView(
-                c.Id, c.Snapshot.Ready, c.Snapshot.UnderBackPressure, c.LastSpoke);
+                c.Id, IsDispatchable(c, now, window), c.Snapshot.UnderBackPressure, c.LastSpoke);
             foreach (var profile in c.Snapshot.DeclaredProfiles)
             {
                 if (!byProfile.TryGetValue(profile, out var machines))
@@ -66,6 +70,9 @@ public static class MachineLive
             .Select(c => c.Id)
             .ToList();
     }
+
+    private static bool IsDispatchable(Connected c, DateTimeOffset now, TimeSpan window) =>
+        c.Snapshot.Ready && c.LastSpoke is { } at && now - at <= window;
 
     private static async Task<IReadOnlyList<Connected>> ConnectedAsync(
         LandbridgeDbContext db, RunnerConnectionRegistry registry, CancellationToken ct)

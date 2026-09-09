@@ -31,10 +31,10 @@ Every mutating call sits on two clocks. Collapsing them is how this design goes 
 | Piece | Where | Notes |
 |---|---|---|
 | Session writes | `SessionStore.CommitAsync` | `SaveChanges` + `hub_queue` (`session`, `sessions`, `events`, `exchange`) + `pg_notify(landbridge_session_events, sessionId)` in one transaction |
-| Services / forwards / previews | `RegisterServiceAsync`, `RelayGrantService`, `PreviewMappingService`, `ClearServicesAndForwards` | same pattern: mutate the domain row, `HubOutbox.Stage`, `NOTIFY` session channel |
+| Services / forwards / previews | `RegisterServiceAsync`, `UnregisterServiceAsync`, `RelayGrantService` (mint + `CloseConsumerAsync`), `PreviewMappingService`, `ClearServicesAndForwards` | same pattern: mutate the domain row, `HubOutbox.Stage`, `NOTIFY` session channel in one transaction |
 | Machine enroll | `TokenService.ExchangeEnrollmentAsync` | `hub_queue` `machines` + `NOTIFY landbridge_hub_events` (payload is a machine id; dispatch must not LISTEN here) |
 | Heartbeat | `HubOutbox.WriteHeartbeatAsync` after a successful `ApplyHeartbeat` | **upserts** `machines.last_spoke_at` / `ready` / `under_back_pressure` / `profiles` and replaces `machine_processes` by name. Then doorbells `machines`, `processes` (machine id), `process` (row id). No heartbeat blob in `hub_queue`. Non-guid ids are a no-op |
-| Liveness | `machines.last_spoke_at` within 90s (`Landbridge:MachineLivenessTtl`) | dashboard and wait-TTL sweeper. Not `hub_queue`. Not a separate liveness table |
+| Liveness | `machines.last_spoke_at` within 90s (`Landbridge:MachineLivenessTtl`) | dispatch, `list_profiles`, dashboard, wait-TTL sweeper. Same window. Not `hub_queue`. Not a separate liveness table |
 | Processes | `machine_processes` | last-value, machine-scoped. `list_processes` reads the table |
 | Socket | `RunnerConnectionRegistry` | send delegate, tracked dispatches, generation. Facts are the columns. Test machines enroll a real `machines.id` |
 

@@ -615,8 +615,7 @@ public sealed class SessionStore(
         HubOutbox.Stage(db, clock, HubQueueRow.ServicesTopic, caller.Session.Value);
         try
         {
-            await db.SaveChangesAsync(ct);
-            await HubOutbox.NotifyAsync(db, caller.Session.Value, ct);
+            await HubOutbox.SaveAndNotifyAsync(db, caller.Session.Value, ct);
         }
         catch (DbUpdateException ex)
             when (ex.InnerException is Npgsql.PostgresException { SqlState: "23505" })
@@ -680,12 +679,23 @@ public sealed class SessionStore(
             .Where(g => g.ProducerSessionId == session.Value && g.ServiceName == name && !g.Revoked)
             .Select(g => new { g.ForwardId, g.ConsumerSessionId })
             .ToListAsync(ct);
+        var previewIds = await db.PreviewMappings
+            .Where(p => p.SessionId == session.Value && p.ServiceName == name)
+            .Select(p => p.Id)
+            .ToListAsync(ct);
         await db.RelayGrants
             .Where(g => g.ProducerSessionId == session.Value && g.ServiceName == name && !g.Revoked)
             .ExecuteUpdateAsync(s => s.SetProperty(g => g.Revoked, true), ct);
         await db.PreviewMappings
             .Where(p => p.SessionId == session.Value && p.ServiceName == name)
             .ExecuteDeleteAsync(ct);
+        HubOutbox.Stage(db, clock, HubQueueRow.ServicesTopic, session.Value);
+        foreach (var g in teardown)
+            HubOutbox.Stage(db, clock, HubQueueRow.ForwardsTopic, g.ForwardId);
+        foreach (var previewId in previewIds)
+            HubOutbox.Stage(db, clock, HubQueueRow.PreviewsTopic, previewId);
+        await db.SaveChangesAsync(ct);
+        await HubOutbox.NotifyAsync(db, session.Value, ct);
         await tx.CommitAsync(ct);
 
         if (forwards is not null && teardown.Count > 0)

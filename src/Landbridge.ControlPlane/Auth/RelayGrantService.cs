@@ -217,8 +217,7 @@ public sealed class RelayGrantService(
             ExpiresAt = now + GrantTtl,
         });
         HubOutbox.Stage(db, clock, HubQueueRow.ForwardsTopic, forwardId);
-        await db.SaveChangesAsync(ct);
-        await HubOutbox.NotifyAsync(db, holder.Id, ct);
+        await HubOutbox.SaveAndNotifyAsync(db, holder.Id, ct);
         return new RelayGrantResult.Issued(
             grant, forwardId, now + GrantTtl, new SessionId(holder.Id), holder.Port);
     }
@@ -279,7 +278,8 @@ public sealed class RelayGrantService(
             return null;
         row.Revoked = true;
         row.ConsumerPort = null;
-        await db.SaveChangesAsync(ct);
+        HubOutbox.Stage(db, clock, HubQueueRow.ForwardsTopic, forwardId);
+        await HubOutbox.SaveAndNotifyAsync(db, row.ProducerSessionId, ct);
         return (
             new SessionId(row.ProducerSessionId),
             row.ConsumerSessionId is { } c ? new SessionId(c) : null,

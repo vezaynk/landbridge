@@ -47,8 +47,8 @@ public sealed class LeadTools(
     IHttpContextAccessor http,
     IConfiguration config,
     LandbridgeDbContext db,
+    TimeProvider clock,
     SessionEventFanout? inbox = null)
-
 {
     /// <summary>
     /// The live lead principal behind this call — Team and the claiming human (§4).
@@ -405,7 +405,8 @@ public sealed class LeadTools(
     {
         _ = LeadPrincipal;
 
-        var view = await MachineLive.RoutingAsync(db, registry, ct);
+        var view = await MachineLive.RoutingAsync(
+            db, registry, clock.GetUtcNow(), WaitTtlSweeper.DefaultMachineLivenessWindow, ct);
 
         var ids = view.Profiles.SelectMany(p => p.Machines).Select(m => m.MachineId).Distinct();
         var labels = await store.GetMachineLabelsAsync(ids, ct);

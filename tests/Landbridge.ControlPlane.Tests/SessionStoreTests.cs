@@ -783,6 +783,40 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task Unregister_stages_services_forwards_and_previews()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var clock = new FakeTimeProvider();
+        var store = new SessionStore(db, clock);
+        var created = (StoreResult.Applied)await store.CreateAsync(
+            new CreateSession(Lead, Team, "pnpm test", "default"));
+        var id = created.Session.Id;
+        var instance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), instance);
+        var caller = new WorkerCaller(Team, id, instance);
+        Assert.IsType<StoreResult.Applied>(await store.RegisterServiceAsync(caller, "api", 5001));
+
+        var grants = new RelayGrantService(db, clock);
+        var issued = Assert.IsType<RelayGrantResult.Issued>(
+            await grants.IssueAsync(new WorkerCaller(Team, SessionId.New(), WorkerInstanceId.New()), "api"));
+        var mint = await new PreviewMappingService(db, clock)
+            .CreateAsync(Team, id, "api", PreviewAuthPolicy.Gated, TimeSpan.FromMinutes(5));
+
+        Assert.IsType<StoreResult.Applied>(await store.UnregisterServiceAsync(id, "api"));
+
+        var rows = await db.HubQueue.AsNoTracking().ToListAsync();
+        Assert.Contains(rows, r => r.Topic == HubQueueRow.ServicesTopic && r.EntityId == id.Value);
+        Assert.Contains(rows, r => r.Topic == HubQueueRow.ForwardsTopic && r.EntityId == issued.ForwardId);
+        Assert.Contains(rows, r => r.Topic == HubQueueRow.PreviewsTopic && r.EntityId == mint.Mapping.Id);
+
+        await using var verify = pg.NewContext();
+        Assert.Empty(await verify.RegisteredServices.AsNoTracking().Where(s => s.SessionId == id.Value).ToListAsync());
+        Assert.True((await verify.RelayGrants.AsNoTracking().SingleAsync(g => g.ForwardId == issued.ForwardId)).Revoked);
+        Assert.Empty(await verify.PreviewMappings.AsNoTracking().Where(p => p.Id == mint.Mapping.Id).ToListAsync());
+    }
+
+    [SkippableFact]
     public async Task Liveness_loss_requeues_and_revokes_the_instance_row()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);

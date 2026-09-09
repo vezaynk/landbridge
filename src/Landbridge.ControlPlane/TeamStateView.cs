@@ -67,8 +67,9 @@ public sealed record ProfileRoutingView(
 /// task <em>now</em>. Equivalent by construction to
 /// <see cref="MachineLive.ReadyAsync"/> finding a machine for it, which is
 /// the same eligibility dispatch itself runs on: <c>machines.ready</c> already
-/// has back-pressure folded into it (§10), and the engine's own check is this
-/// readiness plus this exact-match. False
+/// has back-pressure folded into it (§10), and last-spoke must be inside the
+/// liveness window. The engine's own check is this readiness plus this
+/// exact-match. False
 /// with a non-empty <see cref="Machines"/> is the informative case — the profile exists and
 /// every machine offering it is saturated or not yet ready, so a task on it will queue and
 /// then run, rather than sit unclaimable forever.</param>

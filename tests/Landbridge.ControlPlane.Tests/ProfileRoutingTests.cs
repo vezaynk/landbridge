@@ -31,7 +31,7 @@ public sealed class ProfileRoutingTests(PostgresFixture pg) : IAsyncLifetime
         var m1 = await TestMachines.ConnectAsync(db, _clock, registry, "m1", profiles: ["default", "gpu"]);
         var m2 = await TestMachines.ConnectAsync(db, _clock, registry, "m2", profiles: ["default"]);
 
-        var view = await MachineLive.RoutingAsync(db, registry, CancellationToken.None);
+        var view = await Routing(db, registry);
 
         Assert.Equal(new[] { "default", "gpu" }, view.Profiles.Select(p => p.Profile));
         Assert.Equal(new[] { m1.ToString(), m2.ToString() }.OrderBy(s => s),
@@ -54,7 +54,7 @@ public sealed class ProfileRoutingTests(PostgresFixture pg) : IAsyncLifetime
         var silent = await TestMachines.EnrollAsync(db, _clock, "silent");
         TestMachines.Register(registry, silent);
 
-        var view = await MachineLive.RoutingAsync(db, registry, CancellationToken.None);
+        var view = await Routing(db, registry);
         var ready = await MachineLive.ReadyAsync(
             db, registry, _clock.GetUtcNow(), WaitTtlSweeper.DefaultMachineLivenessWindow, CancellationToken.None);
 
@@ -78,7 +78,7 @@ public sealed class ProfileRoutingTests(PostgresFixture pg) : IAsyncLifetime
         var m1 = await TestMachines.ConnectAsync(
             db, _clock, registry, "m1", ready: true, underBackPressure: true, profiles: ["restricted"]);
 
-        var view = await MachineLive.RoutingAsync(db, registry, CancellationToken.None);
+        var view = await Routing(db, registry);
         var entry = Assert.Single(view.Profiles);
         Assert.Equal("restricted", entry.Profile);
         Assert.False(entry.Dispatchable);
@@ -99,14 +99,14 @@ public sealed class ProfileRoutingTests(PostgresFixture pg) : IAsyncLifetime
         var heartbeatAt = _clock.GetUtcNow();
 
         _clock.Advance(TimeSpan.FromSeconds(30));
-        var beforeDrop = await MachineLive.RoutingAsync(db, registry, CancellationToken.None);
+        var beforeDrop = await Routing(db, registry);
         Assert.All(
             beforeDrop.Profiles.SelectMany(p => p.Machines),
             m => Assert.Equal(heartbeatAt, m.LastHeartbeat));
 
         await registry.DisconnectAsync(m1.ToString());
 
-        var view = await MachineLive.RoutingAsync(db, registry, CancellationToken.None);
+        var view = await Routing(db, registry);
 
         Assert.Equal(new[] { "default" }, view.Profiles.Select(p => p.Profile));
         Assert.Equal(new[] { m2.ToString() }, Entry(view, "default").Machines.Select(m => m.MachineId));
@@ -118,17 +118,44 @@ public sealed class ProfileRoutingTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         await using var db = pg.NewContext();
-        var empty = await MachineLive.RoutingAsync(db, new RunnerConnectionRegistry(_clock), CancellationToken.None);
+        var empty = await Routing(db, new RunnerConnectionRegistry(_clock));
         Assert.Empty(empty.Profiles);
         Assert.Equal(0, empty.ConnectedMachines);
 
         var dialling = new RunnerConnectionRegistry(_clock);
         var silent = await TestMachines.EnrollAsync(db, _clock, "m1");
         TestMachines.Register(dialling, silent);
-        var view = await MachineLive.RoutingAsync(db, dialling, CancellationToken.None);
+        var view = await Routing(db, dialling);
         Assert.Empty(view.Profiles);
         Assert.Equal(1, view.ConnectedMachines);
     }
+
+    [SkippableFact]
+    public async Task Stale_last_spoke_is_not_dispatchable_while_the_socket_is_still_registered()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var registry = new RunnerConnectionRegistry(_clock);
+        await TestMachines.ConnectAsync(db, _clock, registry, "stale", profiles: ["default"]);
+        var window = WaitTtlSweeper.DefaultMachineLivenessWindow;
+
+        Assert.True(Entry(await Routing(db, registry), "default").Dispatchable);
+
+        _clock.Advance(window + TimeSpan.FromSeconds(1));
+
+        var view = await Routing(db, registry);
+        var ready = await MachineLive.ReadyAsync(
+            db, registry, _clock.GetUtcNow(), window, CancellationToken.None);
+
+        Assert.Empty(ready);
+        Assert.False(Entry(view, "default").Dispatchable);
+        Assert.False(Entry(view, "default").Machines.Single().Ready);
+        Assert.Equal(1, view.ConnectedMachines);
+    }
+
+    private Task<ProfileRoutingView> Routing(LandbridgeDbContext db, RunnerConnectionRegistry registry) =>
+        MachineLive.RoutingAsync(
+            db, registry, _clock.GetUtcNow(), WaitTtlSweeper.DefaultMachineLivenessWindow, CancellationToken.None);
 
     private static ProfileRoutingEntry Entry(ProfileRoutingView view, string profile) =>
         view.Profiles.Single(p => p.Profile == profile);

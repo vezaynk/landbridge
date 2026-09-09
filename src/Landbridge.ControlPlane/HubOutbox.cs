@@ -40,6 +40,21 @@ public static class HubOutbox
             $"SELECT pg_notify({LandbridgeDbContext.HubChannel}, {id.ToString()})", ct);
 
     /// <summary>
+    /// One transaction: flush staged domain + outbox rows, then NOTIFY, then
+    /// commit. Postgres delivers NOTIFY only on commit, so a crash cannot leave
+    /// a committed <c>hub_queue</c> row without a doorbell, and LISTEN cannot
+    /// wake on a rolled-back insert.
+    /// </summary>
+    public static async Task SaveAndNotifyAsync(
+        LandbridgeDbContext db, Guid notifyId, CancellationToken ct)
+    {
+        await using var tx = await db.Database.BeginTransactionAsync(ct);
+        await db.SaveChangesAsync(ct);
+        await NotifyAsync(db, notifyId, ct);
+        await tx.CommitAsync(ct);
+    }
+
+    /// <summary>
     /// Upsert liveness columns and the process set, then doorbell machines /
     /// processes. No-op when <paramref name="machineId"/> is not a Guid or the
     /// machine is not enrolled.

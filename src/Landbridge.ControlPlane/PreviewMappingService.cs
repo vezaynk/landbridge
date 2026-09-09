@@ -50,8 +50,7 @@ public sealed class PreviewMappingService(LandbridgeDbContext db, TimeProvider c
         };
         db.PreviewMappings.Add(row);
         HubOutbox.Stage(db, clock, HubQueueRow.PreviewsTopic, row.Id);
-        await db.SaveChangesAsync(ct);
-        await HubOutbox.NotifyAsync(db, task.Value, ct);
+        await HubOutbox.SaveAndNotifyAsync(db, task.Value, ct);
         return new PreviewMintResult(label, row);
     }
 
@@ -144,8 +143,7 @@ public sealed class PreviewMappingService(LandbridgeDbContext db, TimeProvider c
         var ttl = row.Ttl > TimeSpan.Zero ? row.Ttl : PreviewMint.DefaultTtl;
         row.ExpiresAt = clock.GetUtcNow() + ttl;
         HubOutbox.Stage(db, clock, HubQueueRow.PreviewsTopic, mappingId);
-        await db.SaveChangesAsync(ct);
-        await HubOutbox.NotifyAsync(db, row.SessionId, ct);
+        await HubOutbox.SaveAndNotifyAsync(db, row.SessionId, ct);
     }
 
     // ── Internals ───────────────────────────────────────────────────────────

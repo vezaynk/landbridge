@@ -1,3 +1,4 @@
+using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
 using Landbridge.Core;
 using Microsoft.EntityFrameworkCore;
@@ -236,6 +237,25 @@ public sealed class RelayGrantServiceTests(PostgresFixture pg) : IAsyncLifetime
             .ExecuteUpdateAsync(s => s.SetProperty(g => g.Revoked, true));
 
         Assert.False(await grants.ValidateAsync(issued.Grant, issued.ForwardId, RelayGrantRole.Consumer));
+    }
+
+    [SkippableFact]
+    public async Task Close_consumer_stages_a_forwards_outbox_row()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var clock = new FakeTimeProvider();
+        await WorkingServiceAsync(db, clock, Team, "db");
+        var grants = new RelayGrantService(db, clock);
+        var consumer = new WorkerCaller(Team, SessionId.New(), WorkerInstanceId.New());
+        var issued = Assert.IsType<RelayGrantResult.Issued>(await grants.IssueAsync(consumer, "db"));
+
+        var closed = await grants.CloseConsumerAsync(issued.ForwardId);
+        Assert.NotNull(closed);
+        Assert.Contains(
+            await db.HubQueue.AsNoTracking().ToListAsync(),
+            r => r.Topic == HubQueueRow.ForwardsTopic && r.EntityId == issued.ForwardId);
+        Assert.True((await db.RelayGrants.AsNoTracking().SingleAsync(g => g.ForwardId == issued.ForwardId)).Revoked);
     }
 
     [SkippableFact]
