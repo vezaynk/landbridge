@@ -207,11 +207,10 @@ public sealed class DashboardScopeAndOriginTests(PostgresFixture pg) : IAsyncLif
         var team = TeamId.New();
         var (sessionId, _) = await SeedWorkingTaskAsync(team, ct);
         var registry = app.Services.GetRequiredService<RunnerConnectionRegistry>();
-        registry.Register("box-1", new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
-        registry.ApplyHeartbeat("box-1", new MachineHeartbeat(
-            "box-1", Ready: true, UnderBackPressure: false, new SystemLoad(0, 0, 0),
-            RunningSessions: 1, ["default"], DateTimeOffset.UtcNow));
-        registry.TrackDispatch("box-1", sessionId);
+        Guid box;
+        await using (var db = pg.NewContext())
+            box = await TestMachines.ConnectAsync(db, TimeProvider.System, registry, "box-1");
+        registry.TrackDispatch(box.ToString(), sessionId);
 
         using var client = Client(app);
         var lead = await IssueLeadTokenAsync(team, ct);

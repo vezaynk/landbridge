@@ -1,6 +1,9 @@
 using System.Text.RegularExpressions;
+using Landbridge.ControlPlane;
 using Landbridge.Core;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Time.Testing;
+
 
 namespace Landbridge.ControlPlane.Tests;
 
@@ -38,6 +41,10 @@ public sealed class PreviewMappingServiceTests(PostgresFixture pg) : IAsyncLifet
         Assert.Equal(task.Value, resolved.Mapping.SessionId);
         Assert.Equal("web", resolved.Mapping.ServiceName);
         Assert.Equal(PreviewAuthPolicy.Gated, resolved.Mapping.AuthPolicy);
+        var outbox = await db.HubQueue.AsNoTracking()
+            .SingleAsync(r => r.Topic == HubQueueRow.PreviewsTopic);
+        Assert.Equal(mint.Mapping.Id, outbox.EntityId);
+
     }
 
     [SkippableFact]

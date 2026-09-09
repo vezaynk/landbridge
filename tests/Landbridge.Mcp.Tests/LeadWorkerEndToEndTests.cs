@@ -311,10 +311,14 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         // the same singleton registry a dispatch pass reads, so what the tool reports below
         // is what routing would match.
         var registry = app.Services.GetRequiredService<RunnerConnectionRegistry>();
-        registry.Register("m1", new HashSet<string> { "default", "gpu" }, (_, _) => Task.CompletedTask);
-        registry.ApplyHeartbeat("m1", Heartbeat("m1", "default", "gpu"));
-        registry.Register("m2", new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
-        registry.ApplyHeartbeat("m2", Heartbeat("m2", "default"));
+        Guid m1, m2;
+        await using (var db = pg.NewContext())
+        {
+            m1 = await TestMachines.ConnectAsync(
+                db, TimeProvider.System, registry, "m1", profiles: ["default", "gpu"]);
+            m2 = await TestMachines.ConnectAsync(
+                db, TimeProvider.System, registry, "m2", profiles: ["default"]);
+        }
 
         string leadToken;
         SessionId seeded;
@@ -360,9 +364,10 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             var shared = profiles.Single(p => p.GetProperty("profile").GetString() == "default");
             Assert.True(shared.GetProperty("dispatchable").GetBoolean());
             Assert.Equal(
-                new[] { "m1", "m2" },
+                new[] { await SlugAsync(m1), await SlugAsync(m2) }.OrderBy(s => s),
                 shared.GetProperty("machines").EnumerateArray()
-                    .Select(m => m.GetProperty("machineId").GetString()));
+                    .Select(m => m.GetProperty("machineId").GetString())
+                    .OrderBy(s => s));
             // Liveness per candidate machine — "reachable now", not "declared once" (§10).
             Assert.All(shared.GetProperty("machines").EnumerateArray(), m =>
             {
@@ -374,7 +379,7 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             // The narrow profile carries only the machine declaring it, which is the whole
             // point of reading this before setting create_session(profile:).
             Assert.Equal(
-                new[] { "m1" },
+                new[] { await SlugAsync(m1) },
                 profiles.Single(p => p.GetProperty("profile").GetString() == "gpu")
                     .GetProperty("machines").EnumerateArray()
                     .Select(m => m.GetProperty("machineId").GetString()));
@@ -400,6 +405,13 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
     private static MachineHeartbeat Heartbeat(string machineId, params string[] profiles) =>
         new(machineId, Ready: true, UnderBackPressure: false,
             new SystemLoad(0, 0, 0), RunningSessions: 0, profiles, DateTimeOffset.UtcNow);
+
+    private async Task<string> SlugAsync(Guid machineId)
+    {
+        await using var db = pg.NewContext();
+        return await db.Set<MachineRow>().AsNoTracking()
+            .Where(m => m.Id == machineId).Select(m => m.Slug).SingleAsync();
+    }
 
     private WebApplication BuildServer()
     {

@@ -21,9 +21,17 @@ public sealed class LandbridgeDbContext(DbContextOptions<LandbridgeDbContext> op
     public DbSet<SessionUsageRow> SessionUsage => Set<SessionUsageRow>();
     public DbSet<FrictionReportRow> FrictionReports => Set<FrictionReportRow>();
     public DbSet<LeadTeamRow> LeadTeams => Set<LeadTeamRow>();
+    public DbSet<HubQueueRow> HubQueue => Set<HubQueueRow>();
+    public DbSet<MachineProcessRow> MachineProcesses => Set<MachineProcessRow>();
 
     /// <summary>The channel dispatch/transition NOTIFYs land on (§3.1 LISTEN/NOTIFY).</summary>
     public const string EventChannel = "landbridge_session_events";
+
+    /// <summary>
+    /// Hub-only doorbell for wakes whose payload is not a session id (machines).
+    /// Dispatch must not LISTEN here.
+    /// </summary>
+    public const string HubChannel = "landbridge_hub_events";
 
     /// <summary>One live lead↔machine binding per human (§8.3 human path) — named so
     /// <see cref="LeadMachineBindingService"/> can tell the two races apart from the
@@ -167,6 +175,17 @@ public sealed class LandbridgeDbContext(DbContextOptions<LandbridgeDbContext> op
             e.HasKey(m => m.Id);
             e.HasIndex(m => m.Slug).IsUnique().HasDatabaseName(MachineSlugIndex);
             e.Property(m => m.Slug).IsRequired();
+            e.HasIndex(m => m.LastSpokeAt);
+        });
+
+        b.Entity<MachineProcessRow>(e =>
+        {
+            e.ToTable("machine_processes");
+            e.HasKey(p => p.Id);
+            e.HasIndex(p => new { p.MachineId, p.Name }).IsUnique();
+            e.HasIndex(p => p.MachineId);
+            e.Property(p => p.Name).IsRequired();
+            e.Property(p => p.State).IsRequired();
         });
 
         b.Entity<LeadEventRow>(e =>
@@ -264,5 +283,16 @@ public sealed class LandbridgeDbContext(DbContextOptions<LandbridgeDbContext> op
             e.HasIndex(f => f.At);
             e.HasIndex(f => f.TeamId);
         });
+
+        b.Entity<HubQueueRow>(e =>
+        {
+            e.ToTable("hub_queue");
+            e.HasKey(q => q.Id);
+            e.Property(q => q.Id).UseIdentityAlwaysColumn();
+            e.Property(q => q.Payload).HasColumnType("jsonb");
+            e.HasIndex(q => new { q.Topic, q.EntityId, q.Id });
+            e.HasIndex(q => q.CreatedAt);
+        });
     }
 }
+

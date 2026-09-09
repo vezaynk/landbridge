@@ -24,6 +24,8 @@ namespace Landbridge.ControlPlane.Tests;
 [Collection(PostgresCollection.Name)]
 public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
 {
+    private static readonly string M1 = Guid.NewGuid().ToString();
+
     private static readonly TimeSpan Window = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan Ceiling = TimeSpan.FromMinutes(30);
 
@@ -39,8 +41,8 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
-        var id = await SeedWorkingTaskAsync(clock, "m1");
-        var registry = LiveMachine(clock, "m1", id);
+        var id = await SeedWorkingTaskAsync(clock, M1);
+        var registry = LiveMachine(clock, M1, id);
 
         // Ten minutes of a long tool call: no progress, but landbridged keeps saying the
         // process is there. Under the old single-clock rule this requeued at 60s.
@@ -48,7 +50,7 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
         await NewDispatch(clock, registry).CheckLivenessAsync(CancellationToken.None);
 
         Assert.Equal(SessionState.Working, await StateAsync(clock, id));
-        Assert.Contains(id, registry.SessionsOn("m1"));
+        Assert.Contains(id, registry.SessionsOn(M1));
     }
 
     [SkippableFact]
@@ -56,8 +58,8 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
-        var id = await SeedWorkingTaskAsync(clock, "m1");
-        var registry = LiveMachine(clock, "m1", id);
+        var id = await SeedWorkingTaskAsync(clock, M1);
+        var registry = LiveMachine(clock, M1, id);
 
         // Alive the whole time — the process never dies — but nothing ever progresses.
         // Past the ceiling that is a hang, and aliveness must not shield it.
@@ -65,7 +67,7 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
         await NewDispatch(clock, registry).CheckLivenessAsync(CancellationToken.None);
 
         Assert.Equal(SessionState.Failed, await StateAsync(clock, id));
-        Assert.DoesNotContain(id, registry.SessionsOn("m1"));
+        Assert.DoesNotContain(id, registry.SessionsOn(M1));
     }
 
     [SkippableFact]
@@ -73,8 +75,8 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
-        var id = await SeedWorkingTaskAsync(clock, "m1");
-        var registry = LiveMachine(clock, "m1", id);
+        var id = await SeedWorkingTaskAsync(clock, M1);
+        var registry = LiveMachine(clock, M1, id);
 
         // No alive events at all: the process died without an `exited`, or landbridged is
         // wedged. This is the fast path and it must stay fast.
@@ -82,7 +84,7 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
         await NewDispatch(clock, registry).CheckLivenessAsync(CancellationToken.None);
 
         Assert.Equal(SessionState.Failed, await StateAsync(clock, id));
-        Assert.DoesNotContain(id, registry.SessionsOn("m1"));
+        Assert.DoesNotContain(id, registry.SessionsOn(M1));
     }
 
     [SkippableFact]
@@ -90,8 +92,8 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
-        var id = await SeedWorkingTaskAsync(clock, "m1");
-        var registry = LiveMachine(clock, "m1", id);
+        var id = await SeedWorkingTaskAsync(clock, M1);
+        var registry = LiveMachine(clock, M1, id);
 
         // A worker that is actually getting somewhere runs indefinitely: each
         // tool-call resets the ceiling as well as the window.
@@ -111,8 +113,8 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
-        var id = await SeedWorkingTaskAsync(clock, "m1", registerService: true);
-        var registry = LiveMachine(clock, "m1", id);
+        var id = await SeedWorkingTaskAsync(clock, M1, registerService: true);
+        var registry = LiveMachine(clock, M1, id);
 
         // The babysitting shape: it started a service, said so (§8.2), and now has
         // nothing to do but stay up. Hours of no progress is success, not a hang.
@@ -120,7 +122,7 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
         await NewDispatch(clock, registry).CheckLivenessAsync(CancellationToken.None);
 
         Assert.Equal(SessionState.Working, await StateAsync(clock, id));
-        Assert.Contains(id, registry.SessionsOn("m1"));
+        Assert.Contains(id, registry.SessionsOn(M1));
     }
 
     [SkippableFact]
@@ -128,8 +130,8 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
-        var id = await SeedWorkingTaskAsync(clock, "m1", registerService: true);
-        var registry = LiveMachine(clock, "m1", id);
+        var id = await SeedWorkingTaskAsync(clock, M1, registerService: true);
+        var registry = LiveMachine(clock, M1, id);
 
         // The exemption removes the hang detector, never the liveness floor: once the
         // process stops being reported alive, a service-bearing task requeues like
@@ -146,8 +148,8 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
-        var id = await SeedWorkingTaskAsync(clock, "m1");
-        var registry = LiveMachine(clock, "m1", id);
+        var id = await SeedWorkingTaskAsync(clock, M1);
+        var registry = LiveMachine(clock, M1, id);
 
         // Both clocks are configuration, not constants (the window used to be
         // hardcoded). A deployment that wants a tighter hang detector gets one.
@@ -168,8 +170,8 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
-        var id = await SeedWorkingTaskAsync(clock, "m1");
-        var registry = LiveMachine(clock, "m1", id);
+        var id = await SeedWorkingTaskAsync(clock, M1);
+        var registry = LiveMachine(clock, M1, id);
 
         // A question stays working, idle for the Lead. Neither liveness clock
         // should requeue it — the session is supposed to sit there.
@@ -179,7 +181,7 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
         await NewDispatch(clock, registry).CheckLivenessAsync(CancellationToken.None);
 
         Assert.Equal(SessionState.Working, await StateAsync(clock, id));
-        Assert.Contains(id, registry.SessionsOn("m1"));
+        Assert.Contains(id, registry.SessionsOn(M1));
     }
 
     [SkippableFact]
@@ -187,8 +189,8 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
-        var id = await SeedWorkingTaskAsync(clock, "m1");
-        var registry = LiveMachine(clock, "m1", id);
+        var id = await SeedWorkingTaskAsync(clock, M1);
+        var registry = LiveMachine(clock, M1, id);
         var dispatch = NewDispatch(clock, registry);
 
         // #73: the reason used to be computed here and thrown away, so a task requeued
@@ -200,7 +202,7 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
 
         // Second fault, after a redispatch: landbridged stops asserting the process exists
         // at all. Same counter, different signal, and the row now holds the live one.
-        await RedispatchAsync(clock, registry, "m1", id);
+        await RedispatchAsync(clock, registry, M1, id);
         clock.Advance(Window + TimeSpan.FromSeconds(1));
         await dispatch.CheckLivenessAsync(CancellationToken.None);
         Assert.Equal(LivenessLossReason.LivenessTimeout, await LastReasonAsync(id));
@@ -233,8 +235,8 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
         // SessionRecord.DefaultInfrastructureRequeueLimit. The cap lives on the row, stamped
         // at creation (§9 check 7), which is why seeding it here is enough — nothing in
         // the liveness path needs to know the configured value.
-        var id = await SeedWorkingTaskAsync(clock, "m1", requeueLimit: 2);
-        var registry = LiveMachine(clock, "m1", id);
+        var id = await SeedWorkingTaskAsync(clock, M1, requeueLimit: 2);
+        var registry = LiveMachine(clock, M1, id);
         var dispatch = NewDispatch(clock, registry);
 
         // Requeue one: below the cap, so the task goes back to submitted and gets another
@@ -245,12 +247,12 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
 
         // A second wedge, after the Lead resumes, fails again. No cap abandonment —
         // Failed is not terminal; the Lead decides whether to resume.
-        await RedispatchAsync(clock, registry, "m1", id);
+        await RedispatchAsync(clock, registry, M1, id);
         StayAliveFor(clock, registry, id, Ceiling + TimeSpan.FromMinutes(1));
         await dispatch.CheckLivenessAsync(CancellationToken.None);
 
         Assert.Equal(SessionState.Failed, await StateAsync(clock, id));
-        Assert.DoesNotContain(id, registry.SessionsOn("m1"));
+        Assert.DoesNotContain(id, registry.SessionsOn(M1));
 
         await using var db = pg.NewContext();
         var row = await db.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
@@ -272,8 +274,8 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = new FakeTimeProvider();
-        var id = await SeedWorkingTaskAsync(clock, "m1", requeueLimit: 1);
-        var registry = LiveMachine(clock, "m1", id);
+        var id = await SeedWorkingTaskAsync(clock, M1, requeueLimit: 1);
+        var registry = LiveMachine(clock, M1, id);
 
         // A cap of one abandons on the first loss. The point of the terminal state is that
         // the dispatch loop stops paying for this task: a canceled row is not claimable,
@@ -284,7 +286,7 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
 
         await using var db = pg.NewContext();
         var claim = await new SessionStore(db, clock).DispatchNextAsync(
-            new MachineSnapshot("m1", Ready: true, UnderBackPressure: false, Set("default")),
+            new MachineSnapshot(M1, Ready: true, UnderBackPressure: false, Set("default")),
             WorkerInstanceId.New());
         Assert.IsType<StoreResult.NotFound>(claim);
     }

@@ -101,8 +101,7 @@ public sealed class ProcessToolsEndToEndTests(PostgresFixture pg) : IAsyncLifeti
 
         var registry = plane.Services.GetRequiredService<RunnerConnectionRegistry>();
         var machine = new StubMachine(plane.Services.GetRequiredService<RunnerEventSink>());
-        registry.Register("m1", new HashSet<string> { "default" }, machine.Send);
-        registry.TrackDispatch("m1", worker.Session);
+        _ = await ConnectStubAsync(registry, machine, worker.Session);
 
         await using var client = await RelayGrantTestKit.ConnectMcpAsync(
             RelayGrantTestKit.BaseUri(plane), worker.Token, ct);
@@ -140,8 +139,7 @@ public sealed class ProcessToolsEndToEndTests(PostgresFixture pg) : IAsyncLifeti
 
         var registry = plane.Services.GetRequiredService<RunnerConnectionRegistry>();
         var machine = new StubMachine(plane.Services.GetRequiredService<RunnerEventSink>());
-        registry.Register("m1", new HashSet<string> { "default" }, machine.Send);
-        registry.TrackDispatch("m1", worker.Session);
+        _ = await ConnectStubAsync(registry, machine, worker.Session);
 
         await using var client = await RelayGrantTestKit.ConnectMcpAsync(
             RelayGrantTestKit.BaseUri(plane), worker.Token, ct);
@@ -184,9 +182,7 @@ public sealed class ProcessToolsEndToEndTests(PostgresFixture pg) : IAsyncLifeti
 
         var registry = plane.Services.GetRequiredService<RunnerConnectionRegistry>();
         var machine = new StubMachine(plane.Services.GetRequiredService<RunnerEventSink>());
-        registry.Register("m1", new HashSet<string> { "default" }, machine.Send);
-        registry.TrackDispatch("m1", starter.Session);
-        registry.TrackDispatch("m1", cleaner.Session);
+        var box = await ConnectStubAsync(registry, machine, starter.Session, cleaner.Session);
 
         // 1. The first task starts a long-running process.
         await using (var first = await RelayGrantTestKit.ConnectMcpAsync(
@@ -209,10 +205,10 @@ public sealed class ProcessToolsEndToEndTests(PostgresFixture pg) : IAsyncLifeti
         // list_processes reads what the machine last REPORTED, so it is heartbeat-fresh rather
         // than instant — the plane never holds process state of its own. Beat once, as a real
         // machine does every 15s.
-        registry.ApplyHeartbeat("m1", new MachineHeartbeat(
-            "m1", Ready: true, UnderBackPressure: false, new SystemLoad(0, 0, 0),
-            RunningSessions: 1, ["default"], DateTimeOffset.UtcNow,
-            Processes: [new ProcessStatus("long-build", ProcessState.Running, starter.Session.Value)]));
+        await using (var db = pg.NewContext())
+            await TestMachines.HeartbeatAsync(
+                db, TimeProvider.System, box, processes:
+                [new ProcessStatus("long-build", ProcessState.Running, starter.Session.Value)]);
 
         // 3. The cleanup task — a DIFFERENT task id, as a Lead's continuation carries — can see
         //    it and stop it. This is the half that task-scoped lifetime would have made impossible.
@@ -259,8 +255,7 @@ public sealed class ProcessToolsEndToEndTests(PostgresFixture pg) : IAsyncLifeti
 
         var registry = plane.Services.GetRequiredService<RunnerConnectionRegistry>();
         var machine = new StubMachine(plane.Services.GetRequiredService<RunnerEventSink>());
-        registry.Register("m1", new HashSet<string> { "default" }, machine.Send);
-        registry.TrackDispatch("m1", worker.Session);
+        _ = await ConnectStubAsync(registry, machine, worker.Session);
 
         await using var client = await RelayGrantTestKit.ConnectMcpAsync(
             RelayGrantTestKit.BaseUri(plane), worker.Token, ct);
@@ -336,5 +331,15 @@ public sealed class ProcessToolsEndToEndTests(PostgresFixture pg) : IAsyncLifeti
             ? structured.GetRawText()
             : string.Concat(result.Content.OfType<TextContentBlock>().Select(b => b.Text));
         return JsonDocument.Parse(json).RootElement.Clone();
+    }
+
+    private async Task<Guid> ConnectStubAsync(
+        RunnerConnectionRegistry registry, StubMachine machine, params SessionId[] sessions)
+    {
+        await using var db = pg.NewContext();
+        var id = await TestMachines.ConnectAsync(db, TimeProvider.System, registry, "box", machine.Send);
+        foreach (var session in sessions)
+            registry.TrackDispatch(id.ToString(), session);
+        return id;
     }
 }

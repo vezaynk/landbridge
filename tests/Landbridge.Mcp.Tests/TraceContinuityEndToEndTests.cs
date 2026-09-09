@@ -121,15 +121,17 @@ public sealed class TraceContinuityEndToEndTests(PostgresFixture pg, ITestOutput
             // to the real supervisor — the seam a socket would occupy. The dispatch
             // span is current when Spawn runs, so LANDBRIDGE_TRACEPARENT carries it.
             var registry = new RunnerConnectionRegistry(TimeProvider.System);
-            registry.Register("m1", new HashSet<string> { "default" }, (command, _) =>
+            Guid machineId;
+            await using (var db = pg.NewContext())
+                machineId = await TestMachines.EnrollAsync(db, TimeProvider.System, "m1");
+            TestMachines.Register(registry, machineId, (command, _) =>
             {
                 if (command is DispatchCommand d)
-                    supervisor.Spawn(d, profile, "m1");
+                    supervisor.Spawn(d, profile, machineId.ToString());
                 return Task.CompletedTask;
             });
-            registry.ApplyHeartbeat("m1", new MachineHeartbeat(
-                "m1", Ready: true, UnderBackPressure: false,
-                new SystemLoad(0, 0, 0), RunningSessions: 0, ["default"], DateTimeOffset.UtcNow));
+            await using (var db = pg.NewContext())
+                await TestMachines.HeartbeatAsync(db, TimeProvider.System, machineId);
 
             var dispatch = new DispatchService(
                 app.Services.GetRequiredService<IServiceScopeFactory>(),

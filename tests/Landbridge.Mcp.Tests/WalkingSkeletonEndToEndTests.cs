@@ -108,18 +108,20 @@ public sealed class WalkingSkeletonEndToEndTests(PostgresFixture pg) : IAsyncLif
             // supervisor. This is the seam a socket would occupy in production.
             var registry = new RunnerConnectionRegistry(TimeProvider.System);
             DispatchCommand? seen = null;
-            registry.Register("m1", new HashSet<string> { "default" }, (command, _) =>
+            Guid machineId;
+            await using (var db = pg.NewContext())
+                machineId = await TestMachines.EnrollAsync(db, TimeProvider.System, "m1");
+            TestMachines.Register(registry, machineId, (command, _) =>
             {
                 if (command is DispatchCommand d)
                 {
                     seen = d;
-                    supervisor.Spawn(d, profile, "m1");
+                    supervisor.Spawn(d, profile, machineId.ToString());
                 }
                 return Task.CompletedTask;
             });
-            registry.ApplyHeartbeat("m1", new MachineHeartbeat(
-                "m1", Ready: true, UnderBackPressure: false,
-                new SystemLoad(0, 0, 0), RunningSessions: 0, ["default"], DateTimeOffset.UtcNow));
+            await using (var db = pg.NewContext())
+                await TestMachines.HeartbeatAsync(db, TimeProvider.System, machineId);
 
             // The real dispatch pass, pointed at THIS server's MCP URL so the
             // generated mcp.json reaches the loopback plane the harness dials.

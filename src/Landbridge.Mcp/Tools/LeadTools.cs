@@ -24,13 +24,10 @@ namespace Landbridge.Mcp.Tools;
 /// re-check authority (§9 check 3 for creation, the §7 human-confirmation gate
 /// for review, disposition for cancel), so nothing here interprets session content.
 ///
-/// <para><c>list_profiles</c> is the one tool with no Team in it and no store behind it: a
-/// declared runner profile is machine config no Team owns, and it is read straight off the
-/// live <see cref="RunnerConnectionRegistry"/> (§7 routing, §10 as-built refinement). That
-/// makes the Lead-principal check at its top the whole of its authority rather than a
-/// pre-filter, which is why it is written as a deliberate read of
-/// <see cref="LeadPrincipal"/> rather than left to a downstream re-check that does not
-/// exist for it.</para>
+/// <para><c>list_profiles</c> is the one tool with no Team in it: a declared
+/// runner profile is machine config no Team owns. It reads last-value machine
+/// rows through <see cref="MachineLive"/>.
+/// The Lead-principal check at its top is the whole of its authority.</para>
 ///
 /// <para>The last three tools are the §8.3 <b>human path</b>: a Lead binds an
 /// enrolled machine as its human's own, then opens a forward whose consumer end is
@@ -49,6 +46,8 @@ public sealed class LeadTools(
     FriendlyIds ids,
     IHttpContextAccessor http,
     IConfiguration config,
+    LandbridgeDbContext db,
+    TimeProvider clock,
     SessionEventFanout? inbox = null)
 {
     /// <summary>
@@ -406,7 +405,9 @@ public sealed class LeadTools(
     {
         _ = LeadPrincipal;
 
-        var view = registry.ProfileRouting();
+        var view = await MachineLive.RoutingAsync(
+            db, registry, clock.GetUtcNow(), WaitTtlSweeper.DefaultMachineLivenessWindow, ct);
+
         var ids = view.Profiles.SelectMany(p => p.Machines).Select(m => m.MachineId).Distinct();
         var labels = await store.GetMachineLabelsAsync(ids, ct);
         if (labels.Count == 0)

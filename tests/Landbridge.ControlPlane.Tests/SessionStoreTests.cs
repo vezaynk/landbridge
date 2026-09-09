@@ -47,6 +47,22 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     [SkippableFact]
+    public async Task Create_appends_hub_outbox_rows_in_the_same_commit()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+
+        var id = await CreateSubmitted(db);
+
+        var rows = await db.HubQueue.AsNoTracking().OrderBy(r => r.Id).ToListAsync();
+        Assert.Equal(4, rows.Count);
+        Assert.Contains(rows, r => r.Topic == HubQueueRow.SessionTopic && r.EntityId == id.Value);
+        Assert.Contains(rows, r => r.Topic == HubQueueRow.SessionsTopic && r.EntityId == id.Value);
+        Assert.Contains(rows, r => r.Topic == HubQueueRow.EventsTopic && r.EntityId == id.Value);
+        Assert.Contains(rows, r => r.Topic == HubQueueRow.ExchangeTopic && r.EntityId == id.Value);
+    }
+
+    [SkippableFact]
     public async Task Create_allocates_distinct_slugs()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
@@ -764,6 +780,40 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         Assert.IsType<StoreResult.Applied>(await store.RegisterServiceAsync(secondCaller, "api", 5002));
         Assert.Equal(second.Value,
             (await verify.RegisteredServices.AsNoTracking().SingleAsync(s => s.Name == "api")).SessionId);
+    }
+
+    [SkippableFact]
+    public async Task Unregister_stages_services_forwards_and_previews()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        await using var db = pg.NewContext();
+        var clock = new FakeTimeProvider();
+        var store = new SessionStore(db, clock);
+        var created = (StoreResult.Applied)await store.CreateAsync(
+            new CreateSession(Lead, Team, "pnpm test", "default"));
+        var id = created.Session.Id;
+        var instance = WorkerInstanceId.New();
+        await store.DispatchNextAsync(Machine(), instance);
+        var caller = new WorkerCaller(Team, id, instance);
+        Assert.IsType<StoreResult.Applied>(await store.RegisterServiceAsync(caller, "api", 5001));
+
+        var grants = new RelayGrantService(db, clock);
+        var issued = Assert.IsType<RelayGrantResult.Issued>(
+            await grants.IssueAsync(new WorkerCaller(Team, SessionId.New(), WorkerInstanceId.New()), "api"));
+        var mint = await new PreviewMappingService(db, clock)
+            .CreateAsync(Team, id, "api", PreviewAuthPolicy.Gated, TimeSpan.FromMinutes(5));
+
+        Assert.IsType<StoreResult.Applied>(await store.UnregisterServiceAsync(id, "api"));
+
+        var rows = await db.HubQueue.AsNoTracking().ToListAsync();
+        Assert.Contains(rows, r => r.Topic == HubQueueRow.ServicesTopic && r.EntityId == id.Value);
+        Assert.Contains(rows, r => r.Topic == HubQueueRow.ForwardsTopic && r.EntityId == issued.ForwardId);
+        Assert.Contains(rows, r => r.Topic == HubQueueRow.PreviewsTopic && r.EntityId == mint.Mapping.Id);
+
+        await using var verify = pg.NewContext();
+        Assert.Empty(await verify.RegisteredServices.AsNoTracking().Where(s => s.SessionId == id.Value).ToListAsync());
+        Assert.True((await verify.RelayGrants.AsNoTracking().SingleAsync(g => g.ForwardId == issued.ForwardId)).Revoked);
+        Assert.Empty(await verify.PreviewMappings.AsNoTracking().Where(p => p.Id == mint.Mapping.Id).ToListAsync());
     }
 
     [SkippableFact]

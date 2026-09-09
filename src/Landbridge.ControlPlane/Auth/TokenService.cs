@@ -1,6 +1,8 @@
 using System.Security.Cryptography;
+using Landbridge.ControlPlane;
 using Landbridge.Core;
 using Microsoft.EntityFrameworkCore;
+
 
 namespace Landbridge.ControlPlane.Auth;
 
@@ -334,7 +336,11 @@ public sealed class TokenService(LandbridgeDbContext db, TimeProvider clock)
             try
             {
                 await db.SaveChangesAsync(ct);
+                HubOutbox.Stage(db, clock, HubQueueRow.MachinesTopic, machine.Id);
+                await db.SaveChangesAsync(ct);
+                await HubOutbox.NotifyHubAsync(db, machine.Id, ct);
                 break;
+
             }
             catch (DbUpdateException ex)
                 when (HaikuSlug.IsConflict(ex, HaikuSlug.MachinesIndex) && attempt < HaikuSlug.RetryLimit - 1)

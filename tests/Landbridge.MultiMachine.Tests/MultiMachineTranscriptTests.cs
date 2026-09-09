@@ -58,7 +58,7 @@ public sealed class MultiMachineTranscriptTests(PostgresFixture pg) : IAsyncLife
         // While it is still awaiting_report, the gate refuses: report_result does not revoke the
         // reporting instance's token, so an in-flight transcript can still carry a live
         // credential (§12/§13).
-        var tooEarly = await relay.ListAsync(task, "A", ct);
+        var tooEarly = await relay.ListAsync(task, rig.EnrolledId("A"), ct);
         Assert.Equal(
             TranscriptUnavailable.NotTerminal,
             Assert.IsType<TranscriptResult.Unavailable>(tooEarly).Reason);
@@ -76,23 +76,23 @@ public sealed class MultiMachineTranscriptTests(PostgresFixture pg) : IAsyncLife
         var queries = new DashboardQueries(db, rig.PlaneServices.GetRequiredService<RunnerConnectionRegistry>());
         var locations = await queries.GetTranscriptLocationsAsync(task.Value, ct);
         var location = Assert.Single(locations);
-        Assert.Equal("A", location.Machine);
+        Assert.Equal("A", rig.AliasOf(location.Machine));
         Assert.True(location.Connected);
 
-        var inventory = Assert.IsType<TranscriptResult.Inventory>(await relay.ListAsync(task, "A", ct));
+        var inventory = Assert.IsType<TranscriptResult.Inventory>(await relay.ListAsync(task, rig.EnrolledId("A"), ct));
         var instance = Assert.Single(inventory.Instances);
         Assert.Equal(1, instance.Ordinal);
         Assert.True(instance.StdoutBytes > 0, "the worker's stdout should have been captured");
 
         // Drain it the way the dashboard does: follow the cursor, one small range at a time,
         // so reassembly across many ranges is what is actually proven.
-        var text = await DrainAsync(relay, task, "A", instance.Ordinal, maxBytes: 8, ct);
+        var text = await DrainAsync(relay, task, rig.EnrolledId("A"), instance.Ordinal, maxBytes: 8, ct);
 
         Assert.Contains(PlantedSecret, text);
 
         // Machine B ran nothing for this task and says so — the transcript is not fleet-wide
         // state, it is one machine's disk.
-        var wrongMachine = await relay.ListAsync(task, "B", ct);
+        var wrongMachine = await relay.ListAsync(task, rig.EnrolledId("B"), ct);
         Assert.Equal(
             TranscriptUnavailable.MachineRefused,
             Assert.IsType<TranscriptResult.Unavailable>(wrongMachine).Reason);

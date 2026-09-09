@@ -5,6 +5,8 @@ using Landbridge.Contracts;
 using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
 using Landbridge.Mcp.Auth;
+using Microsoft.EntityFrameworkCore;
+
 
 namespace Landbridge.Mcp;
 
@@ -28,7 +30,10 @@ public static class RunnerEndpoint
         RunnerConnectionRegistry registry,
         RunnerEventSink sink,
         DispatchService dispatch,
+        IDbContextFactory<LandbridgeDbContext> dbFactory,
+        TimeProvider clock,
         ILoggerFactory loggerFactory)
+
     {
         var logger = loggerFactory.CreateLogger("Landbridge.Mcp.RunnerEndpoint");
 
@@ -127,7 +132,8 @@ public static class RunnerEndpoint
             await dispatch.RehydrateMachineAsync(machineId, hangUp.Token);
 
             await ReceiveLoopAsync(
-                socket, connection.Token, registry, sink, dispatch, logger, hangUp.Token);
+                socket, connection.Token, registry, sink, dispatch, dbFactory, clock, logger, hangUp.Token);
+
         }
         catch (OperationCanceledException) { }
         catch (WebSocketException e)
@@ -145,7 +151,8 @@ public static class RunnerEndpoint
             // socket, and requeues it a second time as AckTimeout — two requeues for one
             // disconnect, which with the §9 check 7 cap of 5 abandons a flapping machine's
             // task in as few as three disconnects. Dropping the registration first takes
-            // the machine out of ReadyMachines/SnapshotFor, so that wake finds nothing to
+            // the machine out of MachineLive/SnapshotFor, so that wake finds nothing to
+
             // dispatch here. Unregister returns what the connection held precisely so this
             // order does not lose it — asking the registry afterwards would yield nothing
             // and requeue nothing.
@@ -184,6 +191,7 @@ public static class RunnerEndpoint
     private static async Task ReceiveLoopAsync(
         WebSocket socket, RunnerConnectionRegistry.ConnectionToken connection,
         RunnerConnectionRegistry registry, RunnerEventSink sink, DispatchService dispatch,
+        IDbContextFactory<LandbridgeDbContext> dbFactory, TimeProvider clock,
         ILogger logger, CancellationToken ct)
     {
         var machineId = connection.MachineId;
@@ -201,7 +209,19 @@ public static class RunnerEndpoint
                 // THIS connection (#94), so a heartbeat still arriving on a socket that has
                 // been superseded cannot steer the live connection's readiness or refresh
                 // its timestamp on behalf of a socket that is no longer carrying anything.
-                registry.ApplyHeartbeat(connection, heartbeat);
+                if (registry.ApplyHeartbeat(connection, heartbeat))
+                {
+                    try
+                    {
+                        await using var db = await dbFactory.CreateDbContextAsync(ct);
+                        await HubOutbox.WriteHeartbeatAsync(db, clock, machineId, heartbeat, ct);
+
+                    }
+                    catch (Exception ex) when (ex is not OperationCanceledException)
+                    {
+                        logger.LogWarning(ex, "hub outbox write failed for heartbeat {Machine}", machineId);
+                    }
+                }
                 dispatch.Signal(); // a newly-ready machine can take work now
                 continue;
             }
