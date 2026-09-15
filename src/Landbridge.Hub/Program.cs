@@ -16,6 +16,7 @@ builder.Services.AddScoped(sp =>
     sp.GetRequiredService<IDbContextFactory<LandbridgeDbContext>>().CreateDbContext());
 builder.Services.AddScoped<FriendlyIds>();
 builder.Services.AddScoped<HubReads>();
+builder.Services.AddHubAuth();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddOptions<HubOptions>().BindConfiguration(HubOptions.SectionName);
 builder.Services.AddSingleton<HubWaiters>();
@@ -29,6 +30,8 @@ builder.Services.AddHostedService<HubRetention>();
 
 var app = builder.Build();
 app.MapDefaultEndpoints();
+app.UseAuthentication();
+app.UseAuthorization();
 app.MapHub();
 app.Run();
 

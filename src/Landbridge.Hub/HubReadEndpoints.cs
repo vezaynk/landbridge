@@ -1,14 +1,12 @@
 using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Auth;
 using Landbridge.Core;
 using Microsoft.AspNetCore.Http.HttpResults;
 
 namespace Landbridge.Hub;
 
 /// <summary>
-/// JSON twins for every hub catalog noun (and Teams / friction / lead events,
-/// which are HTTP-only). Same host as the SSE wakes; refetch on
-/// <c>event: change</c>. Still unauthenticated — auth lands when a client
-/// consumes this.
+/// JSON twins. Auth is Bearer; Hub owns the read policy.
 /// </summary>
 public static class HubReadEndpoints
 {
@@ -37,162 +35,275 @@ public static class HubReadEndpoints
     }
 
     private static async Task<IResult> ListSessionsAsync(
-        HubReads reads, FriendlyIds ids, string? teamId, bool hidden = false, CancellationToken ct = default)
+        HttpContext http, TokenService tokens, HubReads reads, FriendlyIds ids,
+        string? teamId, bool hidden = false, CancellationToken ct = default)
     {
-        var team = await ResolveTeamAsync(ids, teamId, ct);
-        if (team.Error is { } err)
+        var caller = await GateAsync(http, tokens, ct);
+        if (caller.Error is { } err)
             return err;
-        return Json(await reads.SessionsAsync(team.Id, hidden, ct));
+        var team = await ResolveTeamAsync(ids, teamId, caller, ct);
+        if (team.Error is { } teamErr)
+            return teamErr;
+        return Json(await reads.SessionsAsync(caller, team.Id, hidden, ct));
     }
 
     private static async Task<IResult> GetSessionAsync(
-        string id, HubReads reads, FriendlyIds ids, CancellationToken ct)
+        HttpContext http, TokenService tokens, string id, HubReads reads, FriendlyIds ids, CancellationToken ct)
     {
-        var session = await ResolveSessionAsync(ids, id, ct);
-        if (session.Error is { } err)
+        var caller = await GateAsync(http, tokens, ct);
+        if (caller.Error is { } err)
             return err;
+        var session = await ResolveSessionAsync(ids, id, ct);
+        if (session.Error is { } sidErr)
+            return sidErr;
         var doc = await reads.SessionAsync(session.Id!.Value, ct);
-        return doc is null ? NotFound() : Json(doc);
+        if (doc is null || !caller.MaySession(doc.Id, doc.TeamId))
+            return NotFound();
+        return Json(doc);
     }
 
     private static async Task<IResult> GetLogAsync(
-        string id, HubReads reads, FriendlyIds ids, int? limit, CancellationToken ct)
+        HttpContext http, TokenService tokens, string id, HubReads reads, FriendlyIds ids,
+        int? limit, CancellationToken ct)
     {
-        var session = await ResolveSessionAsync(ids, id, ct);
-        if (session.Error is { } err)
+        var caller = await GateAsync(http, tokens, ct);
+        if (caller.Error is { } err)
             return err;
-        var doc = await reads.LogAsync(session.Id!.Value, limit ?? HubReads.DefaultLimit, ct);
-        return doc is null ? NotFound() : Json(doc);
+        var session = await ResolveSessionAsync(ids, id, ct);
+        if (session.Error is { } sidErr)
+            return sidErr;
+        var row = await reads.SessionAsync(session.Id!.Value, ct);
+        if (row is null || !caller.MaySession(row.Id, row.TeamId))
+            return NotFound();
+        return Json(await reads.LogAsync(session.Id!.Value, limit ?? HubReads.DefaultLimit, ct) ?? []);
     }
 
     private static async Task<IResult> GetExchangeAsync(
-        string id, HubReads reads, FriendlyIds ids, CancellationToken ct)
+        HttpContext http, TokenService tokens, string id, HubReads reads, FriendlyIds ids, CancellationToken ct)
     {
-        var session = await ResolveSessionAsync(ids, id, ct);
-        if (session.Error is { } err)
+        var caller = await GateAsync(http, tokens, ct);
+        if (caller.Error is { } err)
             return err;
-        var doc = await reads.ExchangeAsync(session.Id!.Value, ct);
-        return doc is null ? NotFound() : Json(doc);
+        var session = await ResolveSessionAsync(ids, id, ct);
+        if (session.Error is { } sidErr)
+            return sidErr;
+        var row = await reads.SessionAsync(session.Id!.Value, ct);
+        if (row is null || !caller.MaySession(row.Id, row.TeamId))
+            return NotFound();
+        var exchange = await reads.ExchangeAsync(session.Id!.Value, ct);
+        return exchange is null ? NotFound() : Json(exchange);
     }
 
     private static async Task<IResult> ListSessionServicesAsync(
-        string id, HubReads reads, FriendlyIds ids, CancellationToken ct)
+        HttpContext http, TokenService tokens, string id, HubReads reads, FriendlyIds ids, CancellationToken ct)
     {
-        var session = await ResolveSessionAsync(ids, id, ct);
-        if (session.Error is { } err)
+        var caller = await GateAsync(http, tokens, ct);
+        if (caller.Error is { } err)
             return err;
-        return Json(await reads.ServicesAsync(teamId: null, session.Id, ct));
+        var session = await ResolveSessionAsync(ids, id, ct);
+        if (session.Error is { } sidErr)
+            return sidErr;
+        var row = await reads.SessionAsync(session.Id!.Value, ct);
+        if (row is null || !caller.MaySession(row.Id, row.TeamId))
+            return NotFound();
+        return Json(await reads.ServicesAsync(caller, teamId: null, session.Id, ct));
     }
 
     private static async Task<IResult> ListServicesAsync(
-        HubReads reads, FriendlyIds ids, string? teamId, string? sessionId, CancellationToken ct)
+        HttpContext http, TokenService tokens, HubReads reads, FriendlyIds ids,
+        string? teamId, string? sessionId, CancellationToken ct)
     {
-        var team = await ResolveTeamAsync(ids, teamId, ct);
+        var caller = await GateAsync(http, tokens, ct);
+        if (caller.Error is { } err)
+            return err;
+        var team = await ResolveTeamAsync(ids, teamId, caller, ct);
         if (team.Error is { } teamErr)
             return teamErr;
         var session = await ResolveSessionAsync(ids, sessionId, ct);
         if (session.Error is { } sessionErr)
             return sessionErr;
-        return Json(await reads.ServicesAsync(team.Id, session.Id, ct));
+        return Json(await reads.ServicesAsync(caller, team.Id, session.Id, ct));
     }
 
     private static async Task<IResult> ListForwardsAsync(
-        HubReads reads, FriendlyIds ids, string? teamId, CancellationToken ct)
+        HttpContext http, TokenService tokens, HubReads reads, FriendlyIds ids,
+        string? teamId, CancellationToken ct)
     {
-        var team = await ResolveTeamAsync(ids, teamId, ct);
-        if (team.Error is { } err)
+        var caller = await GateAsync(http, tokens, ct);
+        if (caller.Error is { } err)
             return err;
-        return Json(await reads.ForwardsAsync(team.Id, ct));
+        var team = await ResolveTeamAsync(ids, teamId, caller, ct);
+        if (team.Error is { } teamErr)
+            return teamErr;
+        return Json(await reads.ForwardsAsync(caller, team.Id, ct));
     }
 
-    private static async Task<IResult> GetForwardAsync(Guid id, HubReads reads, CancellationToken ct)
+    private static async Task<IResult> GetForwardAsync(
+        HttpContext http, TokenService tokens, Guid id, HubReads reads, CancellationToken ct)
     {
+        var caller = await GateAsync(http, tokens, ct);
+        if (caller.Error is { } err)
+            return err;
         var doc = await reads.ForwardAsync(id, ct);
-        return doc is null ? NotFound() : Json(doc);
+        if (doc is null || !caller.MayTeam(doc.TeamId))
+            return NotFound();
+        if (caller.Principal is Principal.Worker
+            && doc.ProducerSessionId != caller.WorkerSession
+            && doc.ConsumerSessionId != caller.WorkerSession)
+            return NotFound();
+        return Json(doc);
     }
 
     private static async Task<IResult> ListPreviewsAsync(
-        HubReads reads, FriendlyIds ids, string? teamId, CancellationToken ct)
+        HttpContext http, TokenService tokens, HubReads reads, FriendlyIds ids,
+        string? teamId, CancellationToken ct)
     {
-        var team = await ResolveTeamAsync(ids, teamId, ct);
-        if (team.Error is { } err)
+        var caller = await GateAsync(http, tokens, ct);
+        if (caller.Error is { } err)
             return err;
-        return Json(await reads.PreviewsAsync(team.Id, ct));
+        var team = await ResolveTeamAsync(ids, teamId, caller, ct);
+        if (team.Error is { } teamErr)
+            return teamErr;
+        return Json(await reads.PreviewsAsync(caller, team.Id, ct));
     }
 
-    private static async Task<IResult> GetPreviewAsync(Guid id, HubReads reads, CancellationToken ct)
+    private static async Task<IResult> GetPreviewAsync(
+        HttpContext http, TokenService tokens, Guid id, HubReads reads, CancellationToken ct)
     {
+        var caller = await GateAsync(http, tokens, ct);
+        if (caller.Error is { } err)
+            return err;
         var doc = await reads.PreviewAsync(id, ct);
-        return doc is null ? NotFound() : Json(doc);
+        if (doc is null || !caller.MaySession(doc.SessionId, doc.TeamId))
+            return NotFound();
+        return Json(doc);
     }
 
-    private static async Task<IResult> ListMachinesAsync(HubReads reads, CancellationToken ct) =>
-        Json(await reads.MachinesAsync(ct));
+    private static async Task<IResult> ListMachinesAsync(
+        HttpContext http, TokenService tokens, HubReads reads, CancellationToken ct)
+    {
+        var caller = await GateAsync(http, tokens, ct);
+        if (caller.Error is { } err)
+            return err;
+        if (!caller.MayMachines)
+            return HubCaller.Forbid();
+        return Json(await reads.MachinesAsync(caller, ct));
+    }
 
     private static async Task<IResult> GetMachineAsync(
-        string id, HubReads reads, FriendlyIds ids, CancellationToken ct)
+        HttpContext http, TokenService tokens, string id, HubReads reads, FriendlyIds ids, CancellationToken ct)
     {
-        var machine = await ResolveMachineAsync(ids, id, ct);
-        if (machine.Error is { } err)
+        var caller = await GateAsync(http, tokens, ct);
+        if (caller.Error is { } err)
             return err;
-        var doc = await reads.MachineAsync(machine.Id!.Value, ct);
+        if (!caller.MayMachines)
+            return HubCaller.Forbid();
+        var machine = await ResolveMachineAsync(ids, id, ct);
+        if (machine.Error is { } midErr)
+            return midErr;
+        var doc = await reads.MachineAsync(caller, machine.Id!.Value, ct);
         return doc is null ? NotFound() : Json(doc);
     }
 
     private static async Task<IResult> ListMachineProcessesAsync(
-        string id, HubReads reads, FriendlyIds ids, CancellationToken ct)
+        HttpContext http, TokenService tokens, string id, HubReads reads, FriendlyIds ids, CancellationToken ct)
     {
-        var machine = await ResolveMachineAsync(ids, id, ct);
-        if (machine.Error is { } err)
+        var caller = await GateAsync(http, tokens, ct);
+        if (caller.Error is { } err)
             return err;
-        return Json(await reads.ProcessesAsync(machine.Id, ct));
+        if (!caller.MayProcesses)
+            return HubCaller.Forbid();
+        var machine = await ResolveMachineAsync(ids, id, ct);
+        if (machine.Error is { } midErr)
+            return midErr;
+        return Json(await reads.ProcessesAsync(caller, machine.Id, ct));
     }
 
     private static async Task<IResult> ListProcessesAsync(
-        HubReads reads, FriendlyIds ids, string? machineId, CancellationToken ct)
+        HttpContext http, TokenService tokens, HubReads reads, FriendlyIds ids,
+        string? machineId, CancellationToken ct)
     {
-        var machine = await ResolveMachineAsync(ids, machineId, ct);
-        if (machine.Error is { } err)
+        var caller = await GateAsync(http, tokens, ct);
+        if (caller.Error is { } err)
             return err;
-        return Json(await reads.ProcessesAsync(machine.Id, ct));
+        if (!caller.MayProcesses)
+            return HubCaller.Forbid();
+        var machine = await ResolveMachineAsync(ids, machineId, ct);
+        if (machine.Error is { } midErr)
+            return midErr;
+        return Json(await reads.ProcessesAsync(caller, machine.Id, ct));
     }
 
-    private static async Task<IResult> GetProcessAsync(Guid id, HubReads reads, CancellationToken ct)
+    private static async Task<IResult> GetProcessAsync(
+        HttpContext http, TokenService tokens, Guid id, HubReads reads, CancellationToken ct)
     {
+        var caller = await GateAsync(http, tokens, ct);
+        if (caller.Error is { } err)
+            return err;
+        if (!caller.MayProcesses)
+            return HubCaller.Forbid();
         var doc = await reads.ProcessAsync(id, ct);
         return doc is null ? NotFound() : Json(doc);
     }
 
-    private static async Task<IResult> ListTeamsAsync(HubReads reads, CancellationToken ct) =>
-        Json(await reads.TeamsAsync(ct));
+    private static async Task<IResult> ListTeamsAsync(
+        HttpContext http, TokenService tokens, HubReads reads, CancellationToken ct)
+    {
+        var caller = await GateAsync(http, tokens, ct);
+        if (caller.Error is { } err)
+            return err;
+        if (caller.Principal is Principal.Worker)
+            return HubCaller.Forbid();
+        return Json(await reads.TeamsAsync(caller, ct));
+    }
 
     private static async Task<IResult> GetTeamAsync(
-        string id, HubReads reads, FriendlyIds ids, CancellationToken ct)
+        HttpContext http, TokenService tokens, string id, HubReads reads, FriendlyIds ids, CancellationToken ct)
     {
-        var team = await ResolveTeamAsync(ids, id, ct, required: true);
-        if (team.Error is { } err)
+        var caller = await GateAsync(http, tokens, ct);
+        if (caller.Error is { } err)
             return err;
+        if (caller.Principal is Principal.Worker)
+            return HubCaller.Forbid();
+        var team = await ResolveTeamAsync(ids, id, caller, ct, required: true);
+        if (team.Error is { } teamErr)
+            return teamErr;
         var doc = await reads.TeamAsync(team.Id!.Value, ct);
         return doc is null ? NotFound() : Json(doc);
     }
 
     private static async Task<IResult> ListFrictionAsync(
-        HubReads reads, FriendlyIds ids, string? teamId, CancellationToken ct)
+        HttpContext http, TokenService tokens, HubReads reads, FriendlyIds ids,
+        string? teamId, CancellationToken ct)
     {
-        var team = await ResolveTeamAsync(ids, teamId, ct);
-        if (team.Error is { } err)
+        var caller = await GateAsync(http, tokens, ct);
+        if (caller.Error is { } err)
             return err;
-        return Json(await reads.FrictionAsync(team.Id, ct));
+        if (caller.Principal is Principal.Worker)
+            return HubCaller.Forbid();
+        var team = await ResolveTeamAsync(ids, teamId, caller, ct);
+        if (team.Error is { } teamErr)
+            return teamErr;
+        return Json(await reads.FrictionAsync(caller, team.Id, ct));
     }
 
     private static async Task<IResult> ListLeadEventsAsync(
-        HubReads reads, FriendlyIds ids, string? teamId, CancellationToken ct)
+        HttpContext http, TokenService tokens, HubReads reads, FriendlyIds ids,
+        string? teamId, CancellationToken ct)
     {
-        var team = await ResolveTeamAsync(ids, teamId, ct);
-        if (team.Error is { } err)
+        var caller = await GateAsync(http, tokens, ct);
+        if (caller.Error is { } err)
             return err;
-        return Json(await reads.LeadEventsAsync(team.Id, ct));
+        if (caller.Principal is Principal.Worker)
+            return HubCaller.Forbid();
+        var team = await ResolveTeamAsync(ids, teamId, caller, ct);
+        if (team.Error is { } teamErr)
+            return teamErr;
+        return Json(await reads.LeadEventsAsync(caller, team.Id, ct));
     }
+
+    private static Task<HubCaller> GateAsync(HttpContext http, TokenService tokens, CancellationToken ct) =>
+        HubCaller.ResolveAsync(http, tokens, ct);
 
     private static JsonHttpResult<object> Json(object body) =>
         TypedResults.Json(body, HubEndpoints.Json);
@@ -204,12 +315,14 @@ public static class HubReadEndpoints
         TypedResults.Json(new { error = "invalid id" }, HubEndpoints.Json, statusCode: StatusCodes.Status400BadRequest);
 
     private static async Task<(Guid? Id, IResult? Error)> ResolveTeamAsync(
-        FriendlyIds ids, string? text, CancellationToken ct, bool required = false)
+        FriendlyIds ids, string? text, HubCaller caller, CancellationToken ct, bool required = false)
     {
         if (string.IsNullOrWhiteSpace(text))
             return required ? (null, BadId()) : (null, null);
         var team = await ids.TryTeamAsync(text, ct);
-        return team is { } t ? (t.Value, null) : (null, NotFound());
+        if (team is not { } t || !caller.MayTeam(t.Value))
+            return (null, NotFound());
+        return (t.Value, null);
     }
 
     private static async Task<(Guid? Id, IResult? Error)> ResolveSessionAsync(

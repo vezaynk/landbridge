@@ -2,7 +2,7 @@
 
   <!-- The hub (ideas/hub-and-write-queue.md): its own ASP.NET host, NOT
        part of Landbridge.Mcp. LISTENs as a doorbell, tails hub_queue, serves
-       EventSource wakes and JSON twins. Nothing consumes it yet. -->
+       EventSource wakes and JSON twins. Internal; Bearer from Blazor/MCP. -->
   <ItemGroup>
     <ProjectReference Include="..\Landbridge.ServiceDefaults\Landbridge.ServiceDefaults.csproj" />
     <ProjectReference Include="..\Landbridge.ControlPlane\Landbridge.ControlPlane.csproj" />
