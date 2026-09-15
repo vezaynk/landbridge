@@ -37,7 +37,7 @@ public sealed class HubSseTests(PostgresFixture pg) : IAsyncLifetime
         await app.StartAsync(ct);
         await app.Services.GetRequiredService<HubProjector>().WhenListening.WaitAsync(ct);
 
-        using var client = HubTestHost.Client(app);
+        using var client = HubTestHost.Client(app, await HubTestHost.HumanTokenAsync(pg, ct));
         using var req = new HttpRequestMessage(HttpMethod.Get, "/sessions/events");
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
         using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
@@ -73,7 +73,7 @@ public sealed class HubSseTests(PostgresFixture pg) : IAsyncLifetime
         await using var app = HubTestHost.Build(pg.ConnectionString);
         await app.StartAsync(ct);
 
-        using var client = HubTestHost.Client(app);
+        using var client = HubTestHost.Client(app, await HubTestHost.HumanTokenAsync(pg, ct));
         using (var req = new HttpRequestMessage(HttpMethod.Get, $"/sessions/{sessionId}/events/log"))
         {
             req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
@@ -114,7 +114,7 @@ public sealed class HubSseTests(PostgresFixture pg) : IAsyncLifetime
         await app.StartAsync(ct);
         await app.Services.GetRequiredService<HubProjector>().WhenListening.WaitAsync(ct);
 
-        using var client = HubTestHost.Client(app);
+        using var client = HubTestHost.Client(app, await HubTestHost.HumanTokenAsync(pg, ct));
         using var req = new HttpRequestMessage(HttpMethod.Get, "/sessions/events");
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
         using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
@@ -154,7 +154,7 @@ public sealed class HubSseTests(PostgresFixture pg) : IAsyncLifetime
                 .Select(r => r.Id).SingleAsync(ct);
         }
 
-        using var client = HubTestHost.Client(app);
+        using var client = HubTestHost.Client(app, await HubTestHost.HumanTokenAsync(pg, ct));
         using var req = new HttpRequestMessage(HttpMethod.Get, $"/sessions/{sessionId}/events?after={queueId - 1}");
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
         using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
@@ -193,7 +193,7 @@ public sealed class HubSseTests(PostgresFixture pg) : IAsyncLifetime
         await app.StartAsync(ct);
         await app.Services.GetRequiredService<HubProjector>().WhenListening.WaitAsync(ct);
 
-        using var client = HubTestHost.Client(app);
+        using var client = HubTestHost.Client(app, await HubTestHost.HumanTokenAsync(pg, ct));
         using var req = new HttpRequestMessage(HttpMethod.Get, "/sessions/events");
         req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
         req.Headers.TryAddWithoutValidation("Last-Event-ID", after.ToString());

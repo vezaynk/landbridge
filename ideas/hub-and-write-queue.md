@@ -137,7 +137,7 @@ The client opens a stream for every row it cares about and aborts it when that r
 - `event: ping` — ~15s, empty. Clients ignore unknown types.
 - Catch-up: `?after=<queueId>` / `Last-Event-ID`. Replay names ids to refetch, not bodies. After TTL gap: `GET` membership, then open row streams.
 - Subscribe (waiter) **before** the first `SELECT` so an insert during catch-up still wakes.
-- Auth is the JSON twin’s gate when a client is wired. Today the hub is unauthenticated because nothing consumes it.
+- Auth is Bearer (`lbr_h_` / `lbr_l_` / `lbr_w_`). No cookies. Blazor and MCP copy the inbound token. Machine tokens are 403. Hub is loopback-only; the browser never dials it.
 - `X-Accel-Buffering: no`.
 
 NOTIFY payload stays an id. Hub wakes **every** subscriber (coalesce per stream); each stream’s catch-up filters by topic / entity.
@@ -262,7 +262,7 @@ A second hub replica tails the same outbox (`LISTEN` + `SELECT`), not a Redis co
 1. **Wake log** — done (base PR): `hub_queue` outbox in `CommitAsync` / enroll / grants / heartbeat.
 2. **Last-value machine facts** — done (base PR): columns + `machine_processes`; doorbell only on `hub_queue`.
 3. **Hub process** — done: `Landbridge.Hub` LISTEN, tail, `event: change`. Unauthenticated; nothing consumes SSE.
-3b. **JSON twins** — done: GET every catalog noun (and teams / friction / lead-events) from Hub Postgres. No Core, no registry. Auth still open.
+3b. **JSON twins** — GET every catalog noun from Hub Postgres. Bearer required; Blazor/MCP passthrough. Loopback only.
 4. **Dashboard EventSource** instead of `DashboardRefresh`. Auth on the hub.
 5. Split Lead inbox SSE onto the hub (still a snapshot stream, not this wake shape).
 

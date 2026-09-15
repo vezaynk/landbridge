@@ -5,8 +5,8 @@ using Microsoft.EntityFrameworkCore;
 namespace Landbridge.Hub;
 
 /// <summary>
-/// Postgres-only reads for the hub JSON twins. No registry, no Apply, no
-/// tokens. Live is <c>machines.last_spoke_at</c> within 90s.
+/// Postgres-only reads for the hub JSON twins. No registry, no Apply.
+/// Live is <c>machines.last_spoke_at</c> within 90s. Caller already authorized.
 /// </summary>
 public sealed class HubReads(LandbridgeDbContext db, TimeProvider clock)
 {
@@ -14,9 +14,13 @@ public sealed class HubReads(LandbridgeDbContext db, TimeProvider clock)
     public const int MaxLimit = 1000;
 
     public async Task<IReadOnlyList<SessionListItem>> SessionsAsync(
-        Guid? teamId, bool includeHidden, CancellationToken ct)
+        HubCaller caller, Guid? teamId, bool includeHidden, CancellationToken ct)
     {
         var q = db.Sessions.AsNoTracking().AsQueryable();
+        if (caller.Principal is Principal.Worker)
+            q = q.Where(s => s.Id == caller.WorkerSession);
+        else if (caller.Teams is { } teams)
+            q = q.Where(s => teams.Contains(s.TeamId));
         if (teamId is { } team)
             q = q.Where(s => s.TeamId == team);
         if (!includeHidden)
@@ -91,9 +95,13 @@ public sealed class HubReads(LandbridgeDbContext db, TimeProvider clock)
     }
 
     public async Task<IReadOnlyList<ServiceDocument>> ServicesAsync(
-        Guid? teamId, Guid? sessionId, CancellationToken ct)
+        HubCaller caller, Guid? teamId, Guid? sessionId, CancellationToken ct)
     {
         var q = db.RegisteredServices.AsNoTracking().AsQueryable();
+        if (caller.Principal is Principal.Worker)
+            q = q.Where(s => s.SessionId == caller.WorkerSession);
+        else if (caller.Teams is { } teams)
+            q = q.Where(s => teams.Contains(s.TeamId));
         if (teamId is { } team)
             q = q.Where(s => s.TeamId == team);
         if (sessionId is { } session)
@@ -104,9 +112,15 @@ public sealed class HubReads(LandbridgeDbContext db, TimeProvider clock)
             .ToListAsync(ct);
     }
 
-    public async Task<IReadOnlyList<ForwardDocument>> ForwardsAsync(Guid? teamId, CancellationToken ct)
+    public async Task<IReadOnlyList<ForwardDocument>> ForwardsAsync(
+        HubCaller caller, Guid? teamId, CancellationToken ct)
     {
         var q = db.Set<RelayGrantRow>().AsNoTracking().AsQueryable();
+        if (caller.Principal is Principal.Worker)
+            q = q.Where(g => g.ProducerSessionId == caller.WorkerSession
+                || g.ConsumerSessionId == caller.WorkerSession);
+        else if (caller.Teams is { } teams)
+            q = q.Where(g => teams.Contains(g.TeamId));
         if (teamId is { } team)
             q = q.Where(g => g.TeamId == team);
         var rows = await q.OrderByDescending(g => g.CreatedAt)
@@ -122,9 +136,14 @@ public sealed class HubReads(LandbridgeDbContext db, TimeProvider clock)
         return g is null ? null : ToForward(g);
     }
 
-    public async Task<IReadOnlyList<PreviewDocument>> PreviewsAsync(Guid? teamId, CancellationToken ct)
+    public async Task<IReadOnlyList<PreviewDocument>> PreviewsAsync(
+        HubCaller caller, Guid? teamId, CancellationToken ct)
     {
         var q = db.Set<PreviewMappingRow>().AsNoTracking().AsQueryable();
+        if (caller.Principal is Principal.Worker)
+            q = q.Where(p => p.SessionId == caller.WorkerSession);
+        else if (caller.Teams is { } teams)
+            q = q.Where(p => teams.Contains(p.TeamId));
         if (teamId is { } team)
             q = q.Where(p => p.TeamId == team);
         var rows = await q.OrderByDescending(p => p.ExpiresAt)
@@ -140,27 +159,30 @@ public sealed class HubReads(LandbridgeDbContext db, TimeProvider clock)
         return p is null ? null : ToPreview(p);
     }
 
-    public async Task<IReadOnlyList<MachineDocument>> MachinesAsync(CancellationToken ct)
+    public async Task<IReadOnlyList<MachineDocument>> MachinesAsync(HubCaller caller, CancellationToken ct)
     {
         var rows = await db.Machines.AsNoTracking()
             .Where(m => !m.Revoked)
             .OrderBy(m => m.Name)
             .Take(MaxLimit)
             .ToListAsync(ct);
-        return await AttachMachineAsync(rows, includeProcesses: false, ct);
+        return await AttachMachineAsync(rows, includeProcesses: caller.MayProcesses, ct);
     }
 
-    public async Task<MachineDocument?> MachineAsync(Guid id, CancellationToken ct)
+    public async Task<MachineDocument?> MachineAsync(HubCaller caller, Guid id, CancellationToken ct)
     {
         var row = await db.Machines.AsNoTracking().FirstOrDefaultAsync(m => m.Id == id, ct);
         if (row is null)
             return null;
-        var list = await AttachMachineAsync([row], includeProcesses: true, ct);
+        var list = await AttachMachineAsync([row], includeProcesses: caller.MayProcesses, ct);
         return list[0];
     }
 
-    public async Task<IReadOnlyList<ProcessDocument>> ProcessesAsync(Guid? machineId, CancellationToken ct)
+    public async Task<IReadOnlyList<ProcessDocument>> ProcessesAsync(
+        HubCaller caller, Guid? machineId, CancellationToken ct)
     {
+        if (!caller.MayProcesses)
+            return [];
         var q = db.MachineProcesses.AsNoTracking().AsQueryable();
         if (machineId is { } machine)
             q = q.Where(p => p.MachineId == machine);
@@ -176,9 +198,12 @@ public sealed class HubReads(LandbridgeDbContext db, TimeProvider clock)
         return p is null ? null : ToProcess(p);
     }
 
-    public async Task<IReadOnlyList<TeamDocument>> TeamsAsync(CancellationToken ct)
+    public async Task<IReadOnlyList<TeamDocument>> TeamsAsync(HubCaller caller, CancellationToken ct)
     {
-        var teams = await db.LeadTeams.AsNoTracking()
+        var q = db.LeadTeams.AsNoTracking().AsQueryable();
+        if (caller.Teams is { } owned)
+            q = q.Where(t => owned.Contains(t.TeamId));
+        var teams = await q
             .OrderBy(t => t.Slug)
             .Take(MaxLimit)
             .ToListAsync(ct);
@@ -201,9 +226,12 @@ public sealed class HubReads(LandbridgeDbContext db, TimeProvider clock)
         return ToTeam(t, usage);
     }
 
-    public async Task<IReadOnlyList<FrictionDocument>> FrictionAsync(Guid? teamId, CancellationToken ct)
+    public async Task<IReadOnlyList<FrictionDocument>> FrictionAsync(
+        HubCaller caller, Guid? teamId, CancellationToken ct)
     {
         var q = db.FrictionReports.AsNoTracking().AsQueryable();
+        if (caller.Teams is { } teams)
+            q = q.Where(f => teams.Contains(f.TeamId));
         if (teamId is { } team)
             q = q.Where(f => f.TeamId == team);
         return await q.OrderByDescending(f => f.Seq)
@@ -212,9 +240,12 @@ public sealed class HubReads(LandbridgeDbContext db, TimeProvider clock)
             .ToListAsync(ct);
     }
 
-    public async Task<IReadOnlyList<LeadEventDocument>> LeadEventsAsync(Guid? teamId, CancellationToken ct)
+    public async Task<IReadOnlyList<LeadEventDocument>> LeadEventsAsync(
+        HubCaller caller, Guid? teamId, CancellationToken ct)
     {
         var q = db.Set<LeadEventRow>().AsNoTracking().AsQueryable();
+        if (caller.Teams is { } teams)
+            q = q.Where(e => teams.Contains(e.TeamId));
         if (teamId is { } team)
             q = q.Where(e => e.TeamId == team);
         var rows = await q.OrderByDescending(e => e.Seq)

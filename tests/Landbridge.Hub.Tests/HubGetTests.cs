@@ -46,7 +46,7 @@ public sealed class HubGetTests(PostgresFixture pg) : IAsyncLifetime
 
         await using var app = HubTestHost.Build(pg.ConnectionString);
         await app.StartAsync(ct);
-        using var client = HubTestHost.Client(app);
+        using var client = HubTestHost.Client(app, await HubTestHost.HumanTokenAsync(pg, ct));
 
         using var byId = await client.GetAsync($"/sessions/{sessionId}", ct);
         Assert.Equal(HttpStatusCode.OK, byId.StatusCode);
@@ -158,7 +158,7 @@ public sealed class HubGetTests(PostgresFixture pg) : IAsyncLifetime
 
         await using var app = HubTestHost.Build(pg.ConnectionString);
         await app.StartAsync(ct);
-        using var client = HubTestHost.Client(app);
+        using var client = HubTestHost.Client(app, await HubTestHost.HumanTokenAsync(pg, ct));
 
         var machine = await client.GetFromJsonAsync<JsonElement>($"/machines/{machineSlug}", Json, ct);
         Assert.Equal(machineId, machine.GetProperty("id").GetGuid());
@@ -191,6 +191,70 @@ public sealed class HubGetTests(PostgresFixture pg) : IAsyncLifetime
 
         using var noCreds = await client.GetAsync("/credentials", ct);
         Assert.Equal(HttpStatusCode.NotFound, noCreds.StatusCode);
+
+        await app.StopAsync(ct);
+    }
+
+    [SkippableFact]
+    public async Task Bearer_is_required_and_scopes_leads_and_workers()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(Patience);
+        var ct = cts.Token;
+
+        Guid ownedSession;
+        Guid otherSession;
+        string leadToken;
+        string workerToken;
+        await using (var db = pg.NewContext())
+        {
+            var clock = new FakeTimeProvider();
+            var tokens = new TokenService(db, clock);
+            var human = await tokens.IssueHumanSessionAsync(ct);
+            var team = TeamId.New();
+            var claimed = Assert.IsType<LeadClaimResult.Claimed>(
+                await tokens.ClaimLeadAsync(human.Token, team, takeover: false, ct));
+            leadToken = claimed.Token.Token;
+
+            var store = new SessionStore(db, clock);
+            ownedSession = Assert.IsType<StoreResult.Applied>(await store.CreateAsync(
+                new CreateSession(new LeadClaim(team), team, "owned", "default"), ct)).Session.Id.Value;
+            var other = TeamId.New();
+            otherSession = Assert.IsType<StoreResult.Applied>(await store.CreateAsync(
+                new CreateSession(new LeadClaim(other), other, "secret", "default"), ct)).Session.Id.Value;
+
+            var instance = WorkerInstanceId.New();
+            db.WorkerInstances.Add(new WorkerInstanceRow
+            {
+                Id = instance.Value,
+                SessionId = ownedSession,
+                CreatedAt = clock.GetUtcNow(),
+            });
+            await db.SaveChangesAsync(ct);
+            workerToken = (await tokens.MintWorkerTokenAsync(team, new SessionId(ownedSession), instance, ct)).Token;
+        }
+
+        await using var app = HubTestHost.Build(pg.ConnectionString);
+        await app.StartAsync(ct);
+
+        using var anon = HubTestHost.Client(app);
+        using var unauth = await anon.GetAsync("/sessions", ct);
+        Assert.Equal(HttpStatusCode.Unauthorized, unauth.StatusCode);
+
+        using var lead = HubTestHost.Client(app, leadToken);
+        var listed = await lead.GetFromJsonAsync<JsonElement>("/sessions", Json, ct);
+        Assert.Equal(1, listed.GetArrayLength());
+        Assert.Equal(ownedSession, listed[0].GetProperty("id").GetGuid());
+        using var hidden = await lead.GetAsync($"/sessions/{otherSession}", ct);
+        Assert.Equal(HttpStatusCode.NotFound, hidden.StatusCode);
+
+        using var worker = HubTestHost.Client(app, workerToken);
+        using var machines = await worker.GetAsync("/machines", ct);
+        Assert.Equal(HttpStatusCode.Forbidden, machines.StatusCode);
+        using var own = await worker.GetAsync($"/sessions/{ownedSession}", ct);
+        Assert.Equal(HttpStatusCode.OK, own.StatusCode);
+        using var otherGet = await worker.GetAsync($"/sessions/{otherSession}", ct);
+        Assert.Equal(HttpStatusCode.NotFound, otherGet.StatusCode);
 
         await app.StopAsync(ct);
     }
