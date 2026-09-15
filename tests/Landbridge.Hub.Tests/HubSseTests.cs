@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Auth;
 using Landbridge.ControlPlane.Tests;
 using Landbridge.Core;
 using Landbridge.Hub;
@@ -207,6 +208,59 @@ public sealed class HubSseTests(PostgresFixture pg) : IAsyncLifetime
         using var doc = JsonDocument.Parse(ev.Data);
         Assert.Equal("sessions", doc.RootElement.GetProperty("topic").GetString());
         Assert.Equal(second, doc.RootElement.GetProperty("entityId").GetGuid());
+
+        await app.StopAsync(ct);
+    }
+
+    [SkippableFact]
+    public async Task Catch_up_omits_sessions_the_lead_does_not_own()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(Patience);
+        var ct = cts.Token;
+
+        Guid owned;
+        Guid other;
+        string leadToken;
+        await using (var db = pg.NewContext())
+        {
+            var clock = new FakeTimeProvider();
+            var tokens = new TokenService(db, clock);
+            var human = await tokens.IssueHumanSessionAsync(ct);
+            var team = TeamId.New();
+            var claimed = Assert.IsType<LeadClaimResult.Claimed>(
+                await tokens.ClaimLeadAsync(human.Token, team, takeover: false, ct));
+            leadToken = claimed.Token.Token;
+            var store = new SessionStore(db, clock);
+            owned = Assert.IsType<StoreResult.Applied>(await store.CreateAsync(
+                new CreateSession(new LeadClaim(team), team, "owned", "default"), ct)).Session.Id.Value;
+            var stranger = TeamId.New();
+            other = Assert.IsType<StoreResult.Applied>(await store.CreateAsync(
+                new CreateSession(new LeadClaim(stranger), stranger, "secret", "default"), ct)).Session.Id.Value;
+        }
+
+        await using var app = HubTestHost.Build(pg.ConnectionString);
+        await app.StartAsync(ct);
+        using var client = HubTestHost.Client(app, leadToken);
+
+        using (var req = new HttpRequestMessage(HttpMethod.Get, "/sessions/events"))
+        {
+            req.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));
+            using var resp = await client.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, ct);
+            Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
+            await using var stream = await resp.Content.ReadAsStreamAsync(ct);
+            using var reader = new StreamReader(stream, Encoding.UTF8);
+            var ev = await ReadSseEventAsync(reader, ct);
+            using var doc = JsonDocument.Parse(ev.Data);
+            Assert.Equal(owned, doc.RootElement.GetProperty("entityId").GetGuid());
+            using var extra = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            extra.CancelAfter(TimeSpan.FromMilliseconds(400));
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                () => ReadSseEventAsync(reader, extra.Token));
+        }
+
+        using var hidden = await client.GetAsync($"/sessions/{other}/events", ct);
+        Assert.Equal(HttpStatusCode.NotFound, hidden.StatusCode);
 
         await app.StopAsync(ct);
     }

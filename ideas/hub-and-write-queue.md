@@ -137,7 +137,7 @@ The client opens a stream for every row it cares about and aborts it when that r
 - `event: ping` — ~15s, empty. Clients ignore unknown types.
 - Catch-up: `?after=<queueId>` / `Last-Event-ID`. Replay names ids to refetch, not bodies. After TTL gap: `GET` membership, then open row streams.
 - Subscribe (waiter) **before** the first `SELECT` so an insert during catch-up still wakes.
-- Auth is Bearer (`lbr_h_` / `lbr_l_` / `lbr_w_`). No cookies. Blazor and MCP copy the inbound token. Machine tokens are 403. Hub is loopback-only; the browser never dials it.
+- Auth is Bearer (`lbr_h_` / `lbr_l_` / `lbr_w_`). No cookies. Blazor and MCP copy the inbound token. Machine tokens are 403. Hub is loopback-only; the browser never dials it. SSE catch-up is the same scope as GET: a Lead does not see another Team's `entityId`.
 - `X-Accel-Buffering: no`.
 
 NOTIFY payload stays an id. Hub wakes **every** subscriber (coalesce per stream); each stream’s catch-up filters by topic / entity.

@@ -3,6 +3,7 @@ using System.Text.Encodings.Web;
 using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
 using Microsoft.AspNetCore.Authentication;
+using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
 namespace Landbridge.Hub;
@@ -107,7 +108,7 @@ public sealed class HubCaller
 
     public bool MayProcesses => Principal is Principal.Human;
 
-    public bool MayWatch(string topic, Guid? entityId)
+    public bool MayWatchCollection(string topic)
     {
         if (Error is not null)
             return false;
@@ -115,15 +116,83 @@ public sealed class HubCaller
             return true;
         if (Principal is Principal.Lead)
             return topic is not (HubQueueRow.ProcessesTopic or HubQueueRow.ProcessTopic);
+        return false;
+    }
+
+    public async Task<bool> MayWatchRowAsync(
+        LandbridgeDbContext db, string topic, Guid entityId, CancellationToken ct)
+    {
+        if (Error is not null)
+            return false;
         if (Principal is Principal.Worker)
         {
-            if (entityId is null || entityId != WorkerSession)
-                return false;
-            return topic is HubQueueRow.SessionTopic or HubQueueRow.EventsTopic
-                or HubQueueRow.ExchangeTopic or HubQueueRow.ServicesTopic;
+            return entityId == WorkerSession
+                && topic is HubQueueRow.SessionTopic or HubQueueRow.EventsTopic
+                    or HubQueueRow.ExchangeTopic or HubQueueRow.ServicesTopic;
         }
 
-        return false;
+        if (topic is HubQueueRow.ProcessesTopic or HubQueueRow.ProcessTopic)
+            return MayProcesses && await db.MachineProcesses.AsNoTracking()
+                .AnyAsync(p => topic == HubQueueRow.ProcessTopic ? p.Id == entityId : p.MachineId == entityId, ct);
+
+        if (topic is HubQueueRow.MachinesTopic)
+            return MayMachines && await db.Machines.AsNoTracking().AnyAsync(m => m.Id == entityId, ct);
+
+        if (topic is HubQueueRow.ForwardsTopic)
+        {
+            var team = await db.Set<RelayGrantRow>().AsNoTracking()
+                .Where(g => g.ForwardId == entityId)
+                .Select(g => (Guid?)g.TeamId)
+                .FirstOrDefaultAsync(ct);
+            return team is { } t && MayTeam(t);
+        }
+
+        if (topic is HubQueueRow.PreviewsTopic)
+        {
+            var row = await db.Set<PreviewMappingRow>().AsNoTracking()
+                .Where(p => p.Id == entityId)
+                .Select(p => new { p.SessionId, p.TeamId })
+                .FirstOrDefaultAsync(ct);
+            return row is not null && MaySession(row.SessionId, row.TeamId);
+        }
+
+        var session = await db.Sessions.AsNoTracking()
+            .Where(s => s.Id == entityId)
+            .Select(s => new { s.Id, s.TeamId })
+            .FirstOrDefaultAsync(ct);
+        return session is not null && MaySession(session.Id, session.TeamId);
+    }
+
+    /// <summary>
+    /// Restrict a <c>hub_queue</c> tail to entities this principal may GET.
+    /// Human is unfiltered. Lead is owned Teams. Worker is that session.
+    /// </summary>
+    public IQueryable<HubQueueRow> ScopeQueue(
+        LandbridgeDbContext db, IQueryable<HubQueueRow> q, string topic)
+    {
+        if (Principal is Principal.Human)
+            return q;
+        if (Principal is Principal.Worker)
+            return WorkerSession is { } sid
+                ? q.Where(r => r.EntityId == sid)
+                : q.Where(r => false);
+        if (Principal is Principal.Lead && Teams is { } teams)
+        {
+            if (topic is HubQueueRow.MachinesTopic)
+                return q;
+            if (topic is HubQueueRow.ProcessesTopic or HubQueueRow.ProcessTopic)
+                return q.Where(r => false);
+            if (topic is HubQueueRow.ForwardsTopic)
+                return q.Where(r => db.Set<RelayGrantRow>()
+                    .Any(g => g.ForwardId == r.EntityId && teams.Contains(g.TeamId)));
+            if (topic is HubQueueRow.PreviewsTopic)
+                return q.Where(r => db.Set<PreviewMappingRow>()
+                    .Any(p => p.Id == r.EntityId && teams.Contains(p.TeamId)));
+            return q.Where(r => db.Sessions
+                .Any(s => s.Id == r.EntityId && teams.Contains(s.TeamId)));
+        }
+
+        return q.Where(r => false);
     }
 
     public static IResult Forbid(string message = "forbidden") =>
