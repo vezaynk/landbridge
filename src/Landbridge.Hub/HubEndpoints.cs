@@ -1,6 +1,7 @@
 using System.Net.ServerSentEvents;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Landbridge.ControlPlane;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
@@ -8,13 +9,16 @@ using Microsoft.Extensions.Options;
 namespace Landbridge.Hub;
 
 /// <summary>
-/// Wake-only SSE: <c>event: change</c> names what to refetch over HTTP.
-/// Catch-up is <c>hub_queue</c>. NOTIFY only unblocks the wait.
-/// Unauthenticated on purpose — nothing calls this host yet.
+/// Hub HTTP: SSE wakes plus JSON twins. Catch-up is <c>hub_queue</c>.
+/// NOTIFY only unblocks the wait. Unauthenticated on purpose — nothing
+/// consumes this host yet.
 /// </summary>
 public static class HubEndpoints
 {
-    internal static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    internal static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
+    {
+        Converters = { new JsonStringEnumConverter() },
+    };
 
     public static IEndpointRouteBuilder MapHub(this IEndpointRouteBuilder app)
     {
@@ -48,8 +52,8 @@ public static class HubEndpoints
             Stream(http, db, w, o, HubQueueRow.ProcessTopic, null, after, ct));
         app.MapGet("/processes/{id:guid}/events", (HttpContext http, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, Guid id, long? after, CancellationToken ct) =>
             Stream(http, db, w, o, HubQueueRow.ProcessTopic, id, after, ct));
+        app.MapHubReads();
         return app;
-
     }
 
     private static IResult Stream(
