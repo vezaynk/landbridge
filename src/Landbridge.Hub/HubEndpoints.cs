@@ -1,55 +1,78 @@
 using System.Net.ServerSentEvents;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Landbridge.ControlPlane;
+using Landbridge.ControlPlane.Auth;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Options;
 
 namespace Landbridge.Hub;
 
 /// <summary>
-/// Wake-only SSE: <c>event: change</c> names what to refetch over HTTP.
-/// Catch-up is <c>hub_queue</c>. NOTIFY only unblocks the wait.
-/// Unauthenticated on purpose — nothing calls this host yet.
+/// Hub HTTP: SSE wakes plus JSON twins. Catch-up is <c>hub_queue</c>.
+/// NOTIFY only unblocks the wait. Bearer required; cookies are not accepted.
 /// </summary>
 public static class HubEndpoints
 {
-    internal static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web);
+    internal static readonly JsonSerializerOptions Json = new(JsonSerializerDefaults.Web)
+    {
+        Converters = { new JsonStringEnumConverter() },
+    };
 
     public static IEndpointRouteBuilder MapHub(this IEndpointRouteBuilder app)
     {
-        app.MapGet("/sessions/events", (HttpContext http, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, long? after, CancellationToken ct) =>
-            Stream(http, db, w, o, HubQueueRow.SessionsTopic, null, after, ct));
-        app.MapGet("/sessions/{id:guid}/events", (HttpContext http, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, Guid id, long? after, CancellationToken ct) =>
-            Stream(http, db, w, o, HubQueueRow.SessionTopic, id, after, ct));
-        app.MapGet("/sessions/{id:guid}/events/log", (HttpContext http, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, Guid id, long? after, CancellationToken ct) =>
-            Stream(http, db, w, o, HubQueueRow.EventsTopic, id, after, ct));
-        app.MapGet("/sessions/{id:guid}/events/exchange", (HttpContext http, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, Guid id, long? after, CancellationToken ct) =>
-            Stream(http, db, w, o, HubQueueRow.ExchangeTopic, id, after, ct));
-        app.MapGet("/services/events", (HttpContext http, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, long? after, CancellationToken ct) =>
-            Stream(http, db, w, o, HubQueueRow.ServicesTopic, null, after, ct));
-        app.MapGet("/sessions/{id:guid}/services/events", (HttpContext http, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, Guid id, long? after, CancellationToken ct) =>
-            Stream(http, db, w, o, HubQueueRow.ServicesTopic, id, after, ct));
-        app.MapGet("/forwards/events", (HttpContext http, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, long? after, CancellationToken ct) =>
-            Stream(http, db, w, o, HubQueueRow.ForwardsTopic, null, after, ct));
-        app.MapGet("/forwards/{id:guid}/events", (HttpContext http, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, Guid id, long? after, CancellationToken ct) =>
-            Stream(http, db, w, o, HubQueueRow.ForwardsTopic, id, after, ct));
-        app.MapGet("/previews/events", (HttpContext http, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, long? after, CancellationToken ct) =>
-            Stream(http, db, w, o, HubQueueRow.PreviewsTopic, null, after, ct));
-        app.MapGet("/previews/{id:guid}/events", (HttpContext http, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, Guid id, long? after, CancellationToken ct) =>
-            Stream(http, db, w, o, HubQueueRow.PreviewsTopic, id, after, ct));
-        app.MapGet("/machines/events", (HttpContext http, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, long? after, CancellationToken ct) =>
-            Stream(http, db, w, o, HubQueueRow.MachinesTopic, null, after, ct));
-        app.MapGet("/machines/{id:guid}/events", (HttpContext http, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, Guid id, long? after, CancellationToken ct) =>
-            Stream(http, db, w, o, HubQueueRow.MachinesTopic, id, after, ct));
-        app.MapGet("/machines/{id:guid}/processes/events", (HttpContext http, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, Guid id, long? after, CancellationToken ct) =>
-            Stream(http, db, w, o, HubQueueRow.ProcessesTopic, id, after, ct));
-        app.MapGet("/processes/events", (HttpContext http, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, long? after, CancellationToken ct) =>
-            Stream(http, db, w, o, HubQueueRow.ProcessTopic, null, after, ct));
-        app.MapGet("/processes/{id:guid}/events", (HttpContext http, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, Guid id, long? after, CancellationToken ct) =>
-            Stream(http, db, w, o, HubQueueRow.ProcessTopic, id, after, ct));
+        var hub = app.MapGroup("").RequireAuthorization();
+        hub.MapGet("/sessions/events", (HttpContext http, TokenService tokens, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, long? after, CancellationToken ct) =>
+            AuthorizedStream(http, tokens, db, w, o, HubQueueRow.SessionsTopic, null, after, ct));
+        hub.MapGet("/sessions/{id:guid}/events", (HttpContext http, TokenService tokens, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, Guid id, long? after, CancellationToken ct) =>
+            AuthorizedStream(http, tokens, db, w, o, HubQueueRow.SessionTopic, id, after, ct));
+        hub.MapGet("/sessions/{id:guid}/events/log", (HttpContext http, TokenService tokens, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, Guid id, long? after, CancellationToken ct) =>
+            AuthorizedStream(http, tokens, db, w, o, HubQueueRow.EventsTopic, id, after, ct));
+        hub.MapGet("/sessions/{id:guid}/events/exchange", (HttpContext http, TokenService tokens, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, Guid id, long? after, CancellationToken ct) =>
+            AuthorizedStream(http, tokens, db, w, o, HubQueueRow.ExchangeTopic, id, after, ct));
+        hub.MapGet("/services/events", (HttpContext http, TokenService tokens, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, long? after, CancellationToken ct) =>
+            AuthorizedStream(http, tokens, db, w, o, HubQueueRow.ServicesTopic, null, after, ct));
+        hub.MapGet("/sessions/{id:guid}/services/events", (HttpContext http, TokenService tokens, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, Guid id, long? after, CancellationToken ct) =>
+            AuthorizedStream(http, tokens, db, w, o, HubQueueRow.ServicesTopic, id, after, ct));
+        hub.MapGet("/forwards/events", (HttpContext http, TokenService tokens, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, long? after, CancellationToken ct) =>
+            AuthorizedStream(http, tokens, db, w, o, HubQueueRow.ForwardsTopic, null, after, ct));
+        hub.MapGet("/forwards/{id:guid}/events", (HttpContext http, TokenService tokens, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, Guid id, long? after, CancellationToken ct) =>
+            AuthorizedStream(http, tokens, db, w, o, HubQueueRow.ForwardsTopic, id, after, ct));
+        hub.MapGet("/previews/events", (HttpContext http, TokenService tokens, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, long? after, CancellationToken ct) =>
+            AuthorizedStream(http, tokens, db, w, o, HubQueueRow.PreviewsTopic, null, after, ct));
+        hub.MapGet("/previews/{id:guid}/events", (HttpContext http, TokenService tokens, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, Guid id, long? after, CancellationToken ct) =>
+            AuthorizedStream(http, tokens, db, w, o, HubQueueRow.PreviewsTopic, id, after, ct));
+        hub.MapGet("/machines/events", (HttpContext http, TokenService tokens, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, long? after, CancellationToken ct) =>
+            AuthorizedStream(http, tokens, db, w, o, HubQueueRow.MachinesTopic, null, after, ct));
+        hub.MapGet("/machines/{id:guid}/events", (HttpContext http, TokenService tokens, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, Guid id, long? after, CancellationToken ct) =>
+            AuthorizedStream(http, tokens, db, w, o, HubQueueRow.MachinesTopic, id, after, ct));
+        hub.MapGet("/machines/{id:guid}/processes/events", (HttpContext http, TokenService tokens, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, Guid id, long? after, CancellationToken ct) =>
+            AuthorizedStream(http, tokens, db, w, o, HubQueueRow.ProcessesTopic, id, after, ct));
+        hub.MapGet("/processes/events", (HttpContext http, TokenService tokens, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, long? after, CancellationToken ct) =>
+            AuthorizedStream(http, tokens, db, w, o, HubQueueRow.ProcessTopic, null, after, ct));
+        hub.MapGet("/processes/{id:guid}/events", (HttpContext http, TokenService tokens, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w, IOptions<HubOptions> o, Guid id, long? after, CancellationToken ct) =>
+            AuthorizedStream(http, tokens, db, w, o, HubQueueRow.ProcessTopic, id, after, ct));
+        hub.MapHubReads();
         return app;
+    }
 
+    private static async Task<IResult> AuthorizedStream(
+        HttpContext http, TokenService tokens, IDbContextFactory<LandbridgeDbContext> db, HubWaiters w,
+        IOptions<HubOptions> o, string topic, Guid? entityId, long? after, CancellationToken ct)
+    {
+        var caller = await HubCaller.ResolveAsync(http, tokens, ct);
+        if (caller.Error is { } err)
+            return err;
+        if (entityId is { } id)
+        {
+            await using var gate = await db.CreateDbContextAsync(ct);
+            if (!await caller.MayWatchRowAsync(gate, topic, id, ct))
+                return TypedResults.Json(new { error = "not found" }, Json, statusCode: StatusCodes.Status404NotFound);
+        }
+        else if (!caller.MayWatchCollection(topic))
+            return HubCaller.Forbid();
+        return Stream(http, db, w, o, caller, topic, entityId, after, ct);
     }
 
     private static IResult Stream(
@@ -57,6 +80,7 @@ public static class HubEndpoints
         IDbContextFactory<LandbridgeDbContext> dbFactory,
         HubWaiters waiters,
         IOptions<HubOptions> options,
+        HubCaller caller,
         string topic,
         Guid? entityId,
         long? after,
@@ -64,7 +88,7 @@ public static class HubEndpoints
     {
         http.Response.Headers["X-Accel-Buffering"] = "no";
         return TypedResults.ServerSentEvents(
-            Enumerate(dbFactory, waiters, topic, entityId, ResumeAfter(http, after), options.Value.PingInterval, ct));
+            Enumerate(dbFactory, waiters, caller, topic, entityId, ResumeAfter(http, after), options.Value.PingInterval, ct));
     }
 
     /// <summary>
@@ -82,6 +106,7 @@ public static class HubEndpoints
     private static async IAsyncEnumerable<SseItem<string>> Enumerate(
         IDbContextFactory<LandbridgeDbContext> dbFactory,
         HubWaiters waiters,
+        HubCaller caller,
         string topic,
         Guid? entityId,
         long after,
@@ -90,7 +115,7 @@ public static class HubEndpoints
     {
         using var sub = waiters.Subscribe(topic, entityId);
         var last = after;
-        await foreach (var row in CatchUpAsync(dbFactory, topic, entityId, last, ct))
+        await foreach (var row in CatchUpAsync(dbFactory, caller, topic, entityId, last, ct))
         {
             last = row.Id;
             yield return Item(row);
@@ -126,7 +151,7 @@ public static class HubEndpoints
             if (!moved)
                 yield break;
 
-            await foreach (var row in CatchUpAsync(dbFactory, topic, entityId, last, ct))
+            await foreach (var row in CatchUpAsync(dbFactory, caller, topic, entityId, last, ct))
             {
                 last = row.Id;
                 yield return Item(row);
@@ -138,6 +163,7 @@ public static class HubEndpoints
 
     private static async IAsyncEnumerable<HubQueueRow> CatchUpAsync(
         IDbContextFactory<LandbridgeDbContext> dbFactory,
+        HubCaller caller,
         string topic,
         Guid? entityId,
         long after,
@@ -147,6 +173,7 @@ public static class HubEndpoints
         var q = db.HubQueue.AsNoTracking().Where(r => r.Topic == topic && r.Id > after);
         if (entityId is { } id)
             q = q.Where(r => r.EntityId == id);
+        q = caller.ScopeQueue(db, q, topic);
         await foreach (var row in q.OrderBy(r => r.Id).AsAsyncEnumerable().WithCancellation(ct))
             yield return row;
     }
