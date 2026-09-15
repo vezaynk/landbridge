@@ -64,9 +64,15 @@ public static class HubEndpoints
         var caller = await HubCaller.ResolveAsync(http, tokens, ct);
         if (caller.Error is { } err)
             return err;
-        if (!caller.MayWatch(topic, entityId))
+        if (entityId is { } id)
+        {
+            await using var gate = await db.CreateDbContextAsync(ct);
+            if (!await caller.MayWatchRowAsync(gate, topic, id, ct))
+                return TypedResults.Json(new { error = "not found" }, Json, statusCode: StatusCodes.Status404NotFound);
+        }
+        else if (!caller.MayWatchCollection(topic))
             return HubCaller.Forbid();
-        return Stream(http, db, w, o, topic, entityId, after, ct);
+        return Stream(http, db, w, o, caller, topic, entityId, after, ct);
     }
 
     private static IResult Stream(
@@ -74,6 +80,7 @@ public static class HubEndpoints
         IDbContextFactory<LandbridgeDbContext> dbFactory,
         HubWaiters waiters,
         IOptions<HubOptions> options,
+        HubCaller caller,
         string topic,
         Guid? entityId,
         long? after,
@@ -81,7 +88,7 @@ public static class HubEndpoints
     {
         http.Response.Headers["X-Accel-Buffering"] = "no";
         return TypedResults.ServerSentEvents(
-            Enumerate(dbFactory, waiters, topic, entityId, ResumeAfter(http, after), options.Value.PingInterval, ct));
+            Enumerate(dbFactory, waiters, caller, topic, entityId, ResumeAfter(http, after), options.Value.PingInterval, ct));
     }
 
     /// <summary>
@@ -99,6 +106,7 @@ public static class HubEndpoints
     private static async IAsyncEnumerable<SseItem<string>> Enumerate(
         IDbContextFactory<LandbridgeDbContext> dbFactory,
         HubWaiters waiters,
+        HubCaller caller,
         string topic,
         Guid? entityId,
         long after,
@@ -107,7 +115,7 @@ public static class HubEndpoints
     {
         using var sub = waiters.Subscribe(topic, entityId);
         var last = after;
-        await foreach (var row in CatchUpAsync(dbFactory, topic, entityId, last, ct))
+        await foreach (var row in CatchUpAsync(dbFactory, caller, topic, entityId, last, ct))
         {
             last = row.Id;
             yield return Item(row);
@@ -143,7 +151,7 @@ public static class HubEndpoints
             if (!moved)
                 yield break;
 
-            await foreach (var row in CatchUpAsync(dbFactory, topic, entityId, last, ct))
+            await foreach (var row in CatchUpAsync(dbFactory, caller, topic, entityId, last, ct))
             {
                 last = row.Id;
                 yield return Item(row);
@@ -155,6 +163,7 @@ public static class HubEndpoints
 
     private static async IAsyncEnumerable<HubQueueRow> CatchUpAsync(
         IDbContextFactory<LandbridgeDbContext> dbFactory,
+        HubCaller caller,
         string topic,
         Guid? entityId,
         long after,
@@ -164,6 +173,7 @@ public static class HubEndpoints
         var q = db.HubQueue.AsNoTracking().Where(r => r.Topic == topic && r.Id > after);
         if (entityId is { } id)
             q = q.Where(r => r.EntityId == id);
+        q = caller.ScopeQueue(db, q, topic);
         await foreach (var row in q.OrderBy(r => r.Id).AsAsyncEnumerable().WithCancellation(ct))
             yield return row;
     }
