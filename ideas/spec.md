@@ -64,8 +64,10 @@ If a field would only make sense for software work, it belongs in an opaque blob
 | Component | Role |
 |---|---|
 | `landbridge` | Control plane: state machine, event log, enforcement. One process, one Postgres, one Instance. |
-| `landbridge-mcp` | MCP server surface agents connect to. Same process as the control plane today. |
-| `landbridge-hub` | Wake SSE (`hub_queue` tail) plus JSON twins. Same Postgres, own process. Internal; Bearer from Blazor/MCP ([`hub-and-write-queue.md`](hub-and-write-queue.md)). |
+| `landbridge-mcp` | Control plane HTTP today: both MCP surfaces, OAuth, `/runner`, dashboard, `Apply`. Splits into Core + LeadMCP + WorkerMCP ([`hub-and-write-queue.md`](hub-and-write-queue.md)). |
+| `landbridge-lead-mcp` | Public MCP for Leads. Packages Hub nouns; hosts the lead skill and lead inbox watch. |
+| `landbridge-worker-mcp` | Worker MCP. Packages Hub nouns; hosts the worker skill and worker inbox watch. |
+| `landbridge-hub` | Wake SSE (`hub_queue` tail) plus JSON twins. Same Postgres, own process. Internal; Bearer from MCP hosts / Blazor ([`hub-and-write-queue.md`](hub-and-write-queue.md)). |
 | `landbridge-relay` | Authenticated byte relay between machines (§8.3). Separate module, separately deployable. |
 
 | `landbridged` | Per-machine runner daemon. Config-driven. |
