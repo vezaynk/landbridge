@@ -206,44 +206,54 @@ public static class HubReadEndpoints
     }
 
     private static async Task<IResult> ListMachineProcessesAsync(
-        HttpContext http, TokenService tokens, string id, HubReads reads, FriendlyIds ids, CancellationToken ct)
+        HttpContext http, TokenService tokens, string id, HubReads reads, FriendlyIds ids,
+        LandbridgeDbContext db, CancellationToken ct)
     {
         var caller = await GateAsync(http, tokens, ct);
         if (caller.Error is { } err)
             return err;
-        if (!caller.MayProcesses)
-            return HubCaller.Forbid();
         var machine = await ResolveMachineAsync(ids, id, ct);
         if (machine.Error is { } midErr)
             return midErr;
+        if (!await caller.MayMachineProcessesAsync(db, machine.Id!.Value, ct))
+            return HubCaller.Forbid();
         return Json(await reads.ProcessesAsync(caller, machine.Id, ct));
     }
 
     private static async Task<IResult> ListProcessesAsync(
         HttpContext http, TokenService tokens, HubReads reads, FriendlyIds ids,
-        string? machineId, CancellationToken ct)
+        LandbridgeDbContext db, string? machineId, CancellationToken ct)
     {
         var caller = await GateAsync(http, tokens, ct);
         if (caller.Error is { } err)
             return err;
-        if (!caller.MayProcesses)
-            return HubCaller.Forbid();
+        if (string.IsNullOrWhiteSpace(machineId))
+        {
+            if (!caller.MayProcesses)
+                return HubCaller.Forbid();
+            return Json(await reads.ProcessesAsync(caller, machineId: null, ct));
+        }
         var machine = await ResolveMachineAsync(ids, machineId, ct);
         if (machine.Error is { } midErr)
             return midErr;
+        if (!await caller.MayMachineProcessesAsync(db, machine.Id!.Value, ct))
+            return HubCaller.Forbid();
         return Json(await reads.ProcessesAsync(caller, machine.Id, ct));
     }
 
     private static async Task<IResult> GetProcessAsync(
-        HttpContext http, TokenService tokens, Guid id, HubReads reads, CancellationToken ct)
+        HttpContext http, TokenService tokens, Guid id, HubReads reads,
+        LandbridgeDbContext db, CancellationToken ct)
     {
         var caller = await GateAsync(http, tokens, ct);
         if (caller.Error is { } err)
             return err;
-        if (!caller.MayProcesses)
-            return HubCaller.Forbid();
         var doc = await reads.ProcessAsync(id, ct);
-        return doc is null ? NotFound() : Json(doc);
+        if (doc is null)
+            return NotFound();
+        if (!await caller.MayMachineProcessesAsync(db, doc.MachineId, ct))
+            return HubCaller.Forbid();
+        return Json(doc);
     }
 
     private static async Task<IResult> ListTeamsAsync(
