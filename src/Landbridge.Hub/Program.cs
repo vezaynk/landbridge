@@ -12,6 +12,10 @@ var connectionString = builder.Configuration.GetConnectionString("Landbridge")
 
 builder.Services.AddDbContextFactory<LandbridgeDbContext>(o =>
     o.UseNpgsql(connectionString).UseSnakeCaseNamingConvention());
+builder.Services.AddScoped(sp =>
+    sp.GetRequiredService<IDbContextFactory<LandbridgeDbContext>>().CreateDbContext());
+builder.Services.AddScoped<FriendlyIds>();
+builder.Services.AddScoped<HubReads>();
 builder.Services.AddSingleton(TimeProvider.System);
 builder.Services.AddOptions<HubOptions>().BindConfiguration(HubOptions.SectionName);
 builder.Services.AddSingleton<HubWaiters>();
