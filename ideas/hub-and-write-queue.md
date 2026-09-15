@@ -41,50 +41,44 @@ Every mutating call sits on two clocks. Collapsing them is how this design goes 
 | Dispatch / inbox wake | `SessionEventListener` / `SessionEventFanout` | LISTEN `landbridge_session_events` only |
 | Lead live read | `GET /lead/inbox/events`, `watch_lead_inbox` | full **snapshot** on wake, still in Core ([`lead-inbox-sse.md`](lead-inbox-sse.md)) |
 | Dashboard live read | Blazor `DashboardRefresh` | **still 2s poll**. Hub has no consumer yet |
-| Hub | `Landbridge.Hub` `:5300` | LISTEN session + hub channels, wake in-process, tail `hub_queue` `id > after`, `event: change`. Unauthenticated. Retention `DELETE` older than `Hub:Retain` (24h) |
+| Hub | `Landbridge.Hub` `:5300` loopback | LISTEN, tail `hub_queue`, JSON twins, Bearer. Retention `DELETE` older than `Hub:Retain` (24h) |
 | Runner channel | `/runner` WebSocket | frozen §10; unchanged |
 
-`Landbridge.Mcp` is still one process: MCP, `/runner`, dashboard, `Apply`. The split below is that process cut into three. The OAuth authorization server is already out (`Landbridge.Auth`) and is listed here as the fourth.
+`Landbridge.Mcp` is still one process: both MCP surfaces, `/runner`, dashboard, `Apply`. The split below cuts that into Core + Hub + two MCP hosts. The OAuth authorization server is already out — `Landbridge.Auth` — and is listed below as what it became rather than as something still to do.
 
 ## Target processes
 
 | Process | Owns | Must not |
 |---|---|---|
-| **MCP gateway** | MCP HTTP, `/enroll`, Lead/worker tool *accept* and *read* façade | `Apply`, dispatch, holding `/runner` sockets |
+| **LeadMCP** | public MCP (`PublicMcpUrl`): Lead tools, lead skill, lead inbox *watch* and team-wide read, MCP Tasks. Packages Hub nouns into tool JSON. Mutations accept (Part 2) or `Apply` in-process until then | dispatch, `/runner`, dashboard, worker tools |
+| **WorkerMCP** | worker MCP (`WorkerMcpUrl`): worker tools, worker skill, `get_session` / inbox *watch*. Packages Hub nouns. Mutations same as LeadMCP | dispatch, `/runner`, dashboard, lead tools |
 | **Auth** | OAuth AS: `/oauth/authorize`, `/oauth/token`, RFC 8414 metadata. Mints the human session | `Apply`, dispatch, MCP, reading session state. It issues credentials and nothing else |
-| **Core** | `Apply`, command drain, `SKIP LOCKED` dispatch, token **mint** at dispatch, heartbeat **upsert** of machine columns | long-lived EventSource, MCP accept |
-| **Hub** | `LISTEN`, tail `hub_queue`, SSE sockets | domain writes, MCP, runner apply of occupancy. Retention `DELETE` on `hub_queue` is the exception |
+| **Core** | `Apply`, command drain, `SKIP LOCKED` dispatch, token **mint** at dispatch, heartbeat **upsert**, `/runner`, `/enroll`, dashboard | long-lived Lead/worker MCP sockets |
+| **Hub** | `LISTEN`, tail `hub_queue`, SSE + JSON twins | domain writes, MCP, occupancy apply. Retention `DELETE` on `hub_queue` is the exception |
 | **`landbridged`** | spawn, §10 consume | — |
 
+A harness has **one** MCP connection. LeadMCP is every Lead tool; WorkerMCP is every worker tool. Reads are Hub; `DeliverReport` / `PullReceipt` stay writes (Core, or the MCP host calling `SessionStore` until Part 2). Dashboard is a human operator surface, not a Lead tool — it stays on Core until it is its own Hub client.
+
 ```
-  harness / dashboard
-           │  MCP / HTTP / EventSource
-           ▼
-   ┌──────────────┐  INSERT queued        ┌──────────────┐
-   │ MCP gateway  │ ───────────────────►  │ Postgres     │
-   │ auth, 202    │                       │ sessions     │
-   └──────────────┘                       │ machines     │
-          │                               │ processes    │
-          │ EventSource                   │ hub_queue    │
-          ▼                               └──┬───────▲───┘
-   ┌──────────────┐                          │       │ LISTEN + SELECT
-   │ Hub          │──────────────────────────┘       │
-   │ SSE sockets  │                                  │
-   └──────────────┘                                  │
-                                                     │ SKIP LOCKED Apply
-                                        ┌────────────┴─┐
-                                        │ Core         │
-                                        │ dispatch,    │
-                                        │ mint tokens  │
-                                        │ heartbeat    │
-                                        │ upsert       │
-                                        └──────┬───────┘
-                                               │  Part 3: runner SSE + POST
-                                               ▼
-                                          landbridged  (dials out)
+  Lead harness              worker harness
+       │                         │
+       ▼                         ▼
+  ┌──────────┐              ┌──────────┐
+  │ LeadMCP  │              │ WorkerMCP│
+  │ package  │              │ package  │
+  └────┬─────┘              └────┬─────┘
+       │ GET + EventSource       │
+       └──────────► Hub ◄────────┘
+                     │
+                     ▼
+                  Postgres
+       mutations ──► Core (Apply, dispatch, /runner)
+       dashboard ──► Core (human)
 ```
 
-Core restart: gateway and hub stay. SSE stays up (Part 1). Committed session and machine **columns** are still readable. New MCP accepts need Part 2. New `dispatch` waits on Core mint+claim. `landbridged` keeps its socket until Part 3.
+Core restart: Hub and both MCP hosts stay. Lead/worker **watches** stay up if they hold Hub SSE (server-side). New `dispatch` waits on Core. `landbridged` keeps `/runner` until Part 3. New accepts need Part 2 once the MCP hosts no longer call `Apply` themselves.
+
+v1 of the two MCP hosts may still `Apply` in-process against the same Postgres (today's fused MCP scaled out). They must **not** run `DispatchService` or hold `/runner`. Two `Apply`s are two web workers; one dispatch loop is the singleton.
 
 ---
 
@@ -179,7 +173,7 @@ JSON twins (same host, no body on the SSE). `{id}` is slug or Guid. No credentia
 | `/friction` | friction reports |
 | `/lead-events` | claim/release/takeover log |
 
-Inbox stays Core (`GET /lead/inbox/events`). Commands (Part 2) and `/runner/events` (Part 3) are not these routes.
+Inbox **watch** moves to LeadMCP/WorkerMCP (Hub SSE + GET). Per-session fetch that clears unread stays a write. Commands (Part 2) and `/runner/events` (Part 3) are not these routes.
 
 ### Topic catalog
 
@@ -189,7 +183,7 @@ Plane nouns. **Per-row doorbell only if the row mutates.** Append-only logs are 
 |---|---|---|---|---|
 | **machines** | instance ids | one box | enroll; heartbeat upsert of columns | `/machines`, `/machines/{id}` |
 | **sessions** | fleet / team ids | occupancy, message, pending | `CommitAsync` | `/sessions`, `/sessions/{id}` |
-| **inbox** | outstanding ids per Team | — (the row is the session) | session NOTIFY (Core snapshot today) | `/lead/inbox` (Core) |
+| **inbox** | outstanding ids per Team | — (the row is the session) | session NOTIFY | Hub session list; watch on LeadMCP/WorkerMCP. Mark-read stays a write |
 | **events** | — | **tail per session** | `CommitAsync` | `/sessions/{id}/log` |
 | **exchange** | — | **tail per session** | `CommitAsync` | `/sessions/{id}/exchange` |
 | **services** | session / team | session (name is not a Guid) | register / clear | `/services`, `/sessions/{id}/services` |
@@ -262,11 +256,58 @@ A second hub replica tails the same outbox (`LISTEN` + `SELECT`), not a Redis co
 
 1. **Wake log** — done (base PR): `hub_queue` outbox in `CommitAsync` / enroll / grants / heartbeat.
 2. **Last-value machine facts** — done (base PR): columns + `machine_processes`; doorbell only on `hub_queue`.
-3. **Hub process** — done: `Landbridge.Hub` LISTEN, tail, `event: change`. Unauthenticated; nothing consumes SSE.
-3b. **JSON twins** — GET every catalog noun from Hub Postgres. Bearer required; Blazor/MCP passthrough. Loopback only.
-4. **Dashboard EventSource** instead of `DashboardRefresh`. Auth on the hub.
-5. Split Lead inbox SSE onto the hub (still a snapshot stream, not this wake shape).
+3. **Hub process** — done: `Landbridge.Hub` LISTEN, tail, `event: change`.
+3b. **JSON twins** — GET catalog nouns. Bearer; loopback; SSE scoped like GET.
+3c. **LeadMCP + WorkerMCP** — two MCP hosts package Hub nouns; inboxes and skills live there. Core keeps dashboard, OAuth, enroll, `/runner`, dispatch, `Apply`.
+4. Hub session list/document fields those hosts need (occupancy-complete membership, remaining last-value columns, worker-scoped processes). Not a fleet-board snapshot.
+5. Dashboard EventSource from Core's Blazor circuit to Hub (server-side Bearer). Not a public Hub.
+6. Inbox **watch** on the MCP hosts via Hub SSE + GET. Mark-read / `PullReceipt` stay writes.
+7. Part 2: MCP hosts stop calling `Apply`; accept queue on Core.
 
+
+---
+
+# LeadMCP and WorkerMCP
+
+Hub stays **nouns**. Anything that repackages those nouns into a Lead or worker tool result is a different process. Today's fused MCP already refuses the wrong principal; two hosts make that structural (a worker token cannot even *see* Lead tools). `PublicMcpUrl` vs `WorkerMcpUrl` already exist.
+
+## What each packages
+
+| | LeadMCP | WorkerMCP | Hub | Core |
+|---|---|---|---|---|
+| Auth | `lbr_l_` / `lbr_h_` | `lbr_w_` | re-check Bearer | `lbr_m_` + Apply |
+| Reads | Hub GET + SSE → tool JSON | Hub GET + SSE → tool JSON | last-value rows + wakes | nothing long-lived for agents |
+| Inboxes | team-wide flags; **watch** | `get_session` shape; **watch** | session list / document | mark-read / `PullReceipt` only |
+| Skills | lead skill | worker skill | — | — |
+| Writes | 202/accept → Core (Part 2); `Apply` until then | same | no | `Apply` |
+
+Shared MCP resources are **not** one bundle. Each host ships its skill. What they share is Hub (and later Core's accept endpoint). MCP Tasks is a LeadMCP projection of Hub session rows, not a Hub route.
+
+`list_profiles` is a LeadMCP package. Hub `/machines` is the machine group (last-spoke `live`, `ready` beside it). Routing is "connected + dispatchable": `live` for membership, `live && ready` for `dispatchable`. Do not feed enrolled-but-silent rows into `ConnectedMachines`. Dispatch on Core still intersects the `/runner` socket; a 90s ghost on the Lead side is the same clock as wait-TTL.
+
+`get_team_state` / team-wide inbox identifiers compose from an occupancy-complete session **list**. The fleet board snapshot (`GetObservabilityAsync`) is **not** a Hub twin and **not** a LeadMCP tool.
+
+## What Hub still has to grow (for these hosts, not the board)
+
+| Add | Why |
+|---|---|
+| Occupancy-complete `GET /sessions` (`CurrentInstanceId` or stored `State`, `ReportUnread`, `InputKind`, `MessageId`, `BlockedAt`, message window timestamps) | else `get_team_state` / inbox ids are N document GETs |
+| Remaining last-value columns on `GET /sessions/{id}` (opened/closed, last message, lineage, escalation, requeue limit) | drawer / Tasks / permission flags |
+| Worker `GET /machines/{id}/processes` only if `{id}` is that instance's machine | `list_processes` |
+
+Skip on Hub: instance-wide `/events`, human `/inbox`, `LastProgress`, `leadHumanId` (dashboard Team page), a credentials noun.
+
+## Stack (plain git; no Graphite required)
+
+Each PR's base is the previous branch.
+
+1. **This doc** (on Hub JSON twins).
+2. **Hub read shapes** those hosts need + `live` = last-spoke only + `HubClient` 5xx → null. Revert fused `list_profiles` off Hub until LeadMCP exists (or filter to `live`).
+3. **LeadMCP host** — `Landbridge.LeadMcp`: Lead tools, lead skill, lead inbox HTTP. Hub for reads; `SessionStore` writes until Part 2. No `DispatchService`, no `/runner`.
+4. **WorkerMCP host** — `Landbridge.WorkerMcp`: worker tools, worker skill. Same write rule. Point `WorkerMcpUrl` here.
+5. **Strip** Lead/worker MCP from Core. Core is dashboard + OAuth + enroll + `/runner` + dispatch + `Apply`.
+
+Do not stand up two hosts that each run dispatch.
 
 ---
 
@@ -276,14 +317,14 @@ A second hub replica tails the same outbox (`LISTEN` + `SELECT`), not a Redis co
 
 Accept a command while `Apply` is down.
 
-It does **not** keep SSE sockets alive (Part 1). It does **not** let Core stop handling writes: Core is still the only `Apply`. It splits **accept** from **apply**. The accept process is the **MCP gateway**.
+It does **not** keep SSE sockets alive (Part 1). It does **not** let Core stop handling writes: Core is still the only `Apply`. It splits **accept** from **apply**. The accept processes are **LeadMCP** and **WorkerMCP**.
 
 ```
-  Lead / worker / dashboard
+  LeadMCP / WorkerMCP
            │  MCP / HTTP
            ▼
    ┌──────────────┐   INSERT command     ┌──────────────┐
-   │ MCP gateway  │ ──────────────────►  │ command row  │
+   │ MCP host     │ ──────────────────►  │ command row  │
    │ auth, id,    │   NOTIFY drain       │ (queued)     │
    │ 202          │                      └──────┬───────┘
    └──────────────┘                             │ SKIP LOCKED
@@ -294,13 +335,13 @@ It does **not** keep SSE sockets alive (Part 1). It does **not** let Core stop h
                                                 + pg_notify (Part 1)
 ```
 
-If the gateway is still in the Core process, a Core restart still drops accepts. The queue only pays for itself when the **gateway is a different process**. MCP retry on 502 already covers a few-second Core bounce while they are fused.
+If LeadMCP/WorkerMCP still live in the Core process, a Core restart still drops accepts. The queue only pays for itself when they are **different processes**. MCP retry on 502 already covers a few-second Core bounce while they are fused.
 
 Pending leaves the snapshot when Core, in **one transaction**, `Apply`s (or records `Rejected`), sets `status = applied|rejected`, and `pg_notify`s. Failed create (no session row) must still notify (team/command id) or the command spins as pending forever. “No longer pending” is **absence from `queued`**, discovered by the same LISTEN → catch-up loop.
 
-### Worker vs Lead on the gateway
+### Worker vs Lead on the MCP hosts
 
-Both classes authenticate at the gateway (hash lookup in Postgres).
+Each class authenticates on its own host (hash lookup in Postgres). A worker token never reaches LeadMCP.
 
 | Surface | Gateway does | Queue? |
 |---|---|---|
@@ -312,7 +353,7 @@ Both classes authenticate at the gateway (hash lookup in Postgres).
 
 ## Goals
 
-- Gateway is request-reply **accept**: auth, idempotency key, allocated ids, `202`.
+- Each MCP host is request-reply **accept**: auth, idempotency key, allocated ids, `202`.
 - Apply is async: `SKIP LOCKED` drain of a **Postgres command table**, then existing `Apply` + `CommitAsync`.
 - Pending commands are **visible** on the same projections the hub wakes (client GETs).
 - Apply rejection is an inbox/dashboard fact for that command id.
@@ -463,7 +504,7 @@ Core down (once ingest is the gateway): upserts and appends still land. Occupanc
 | | SSE hub | Write queue | Runner channel |
 |---|---|---|---|
 | Survives Core restart | sockets + **committed reads** (including `last_spoke_at` / processes) | **unapplied accepts** (gateway up) | unacked **outbound** commands + last heartbeat; new `dispatch` waits on Core mint+claim |
-| New process | hub | MCP gateway | gateway POST + hub SSE (`/runner/events`) |
+| New process | hub | LeadMCP + WorkerMCP | Core POST + hub SSE (`/runner/events`) |
 | Protocol change | dashboard EventSource (HTTP/2, one per row) | mutating MCP tools | **transport** of §10; verbs frozen |
 | Store | Instance Postgres | Instance Postgres | Instance Postgres |
 
@@ -472,12 +513,12 @@ Ship Part 1 without Part 2. Ship client-minted session ids without Part 2. Do no
 ## Open questions
 
 1. Membership: `GET` the list on every `change` vs later adding `op`. v1 is GET.
-2. Mutating snapshot reads (`report_unread` cleared by per-session inbox fetch) — keep those on Core/gateway, even if the hub serves the unread view.
+2. Mutating snapshot reads (`report_unread` cleared by per-session inbox fetch) — keep those writes on Core, even if Hub serves the unread view and LeadMCP/WorkerMCP watch Hub.
 3. MCP 202 vs optional wait-for-Apply timeout (sync default, 202 if `Prefer: respond-async`). Default sync preserves today's Lead loop.
 4. Whether `fork_session` (when it exists) uses a client-minted child id the same way as create.
 5. Dual-stack duration for `/runner` WS vs SSE+POST.
 6. Whether `alive`/`tool-call` are last-value or still droppable once they are HTTP — bound the table either way.
 7. When a 200-row board of EventSources is too many: cap, or collapse to list-only. Not a v1 decision.
-8. JSON twins for live forwards/previews (wakes exist; GET does not).
+8. How long v1 MCP hosts may `Apply` in-process before Part 2. Not a blocker for splitting the processes; a blocker for calling the split "Core owns all writes."
 
 ---
