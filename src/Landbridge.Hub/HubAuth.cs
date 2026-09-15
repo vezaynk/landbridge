@@ -108,6 +108,24 @@ public sealed class HubCaller
 
     public bool MayProcesses => Principal is Principal.Human;
 
+    public async Task<bool> MayMachineProcessesAsync(
+        LandbridgeDbContext db, Guid machineId, CancellationToken ct)
+    {
+        if (Principal is Principal.Human)
+            return true;
+        if (Principal is not Principal.Worker || WorkerSession is not { } sid)
+            return false;
+        var held = await db.Set<WorkerInstanceRow>().AsNoTracking()
+            .Where(i => i.SessionId == sid && !i.Revoked && i.MachineId != null)
+            .Select(i => i.MachineId)
+            .ToListAsync(ct);
+        var d = machineId.ToString("D");
+        var n = machineId.ToString("N");
+        return held.Any(h =>
+            string.Equals(h, d, StringComparison.OrdinalIgnoreCase)
+            || string.Equals(h, n, StringComparison.OrdinalIgnoreCase));
+    }
+
     public bool MayWatchCollection(string topic)
     {
         if (Error is not null)
@@ -126,6 +144,17 @@ public sealed class HubCaller
             return false;
         if (Principal is Principal.Worker)
         {
+            if (topic is HubQueueRow.ProcessesTopic)
+                return await MayMachineProcessesAsync(db, entityId, ct);
+            if (topic is HubQueueRow.ProcessTopic)
+            {
+                var mid = await db.MachineProcesses.AsNoTracking()
+                    .Where(p => p.Id == entityId)
+                    .Select(p => (Guid?)p.MachineId)
+                    .FirstOrDefaultAsync(ct);
+                return mid is { } m && await MayMachineProcessesAsync(db, m, ct);
+            }
+
             return entityId == WorkerSession
                 && topic is HubQueueRow.SessionTopic or HubQueueRow.EventsTopic
                     or HubQueueRow.ExchangeTopic or HubQueueRow.ServicesTopic;
@@ -173,9 +202,13 @@ public sealed class HubCaller
         if (Principal is Principal.Human)
             return q;
         if (Principal is Principal.Worker)
+        {
+            if (topic is HubQueueRow.ProcessesTopic or HubQueueRow.ProcessTopic)
+                return q;
             return WorkerSession is { } sid
                 ? q.Where(r => r.EntityId == sid)
                 : q.Where(r => false);
+        }
         if (Principal is Principal.Lead && Teams is { } teams)
         {
             if (topic is HubQueueRow.MachinesTopic)

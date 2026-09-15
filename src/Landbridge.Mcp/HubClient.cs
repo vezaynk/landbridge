@@ -24,11 +24,27 @@ public sealed class HubClient(HttpClient http)
             return default;
         using var req = new HttpRequestMessage(HttpMethod.Get, path);
         req.Headers.Authorization = new AuthenticationHeaderValue("Bearer", bearer);
-        using var resp = await http.SendAsync(req, ct);
-        if (resp.StatusCode is System.Net.HttpStatusCode.NotFound)
+        try
+        {
+            using var resp = await http.SendAsync(req, ct);
+            if (resp.StatusCode is System.Net.HttpStatusCode.NotFound
+                or System.Net.HttpStatusCode.BadGateway
+                or System.Net.HttpStatusCode.ServiceUnavailable
+                or System.Net.HttpStatusCode.GatewayTimeout)
+                return default;
+            if ((int)resp.StatusCode >= 500)
+                return default;
+            resp.EnsureSuccessStatusCode();
+            return await resp.Content.ReadFromJsonAsync<T>(Json, ct);
+        }
+        catch (HttpRequestException)
+        {
             return default;
-        resp.EnsureSuccessStatusCode();
-        return await resp.Content.ReadFromJsonAsync<T>(Json, ct);
+        }
+        catch (TaskCanceledException) when (!ct.IsCancellationRequested)
+        {
+            return default;
+        }
     }
 }
 
