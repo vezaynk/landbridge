@@ -17,6 +17,7 @@
          Projects.Landbridge_Mcp metadata the app host references. landbridged
          is a Linux container (docker/Landbridge.Landbridged.Dockerfile), not
          an Aspire project resource. -->
+    <ProjectReference Include="..\Landbridge.Hub\Landbridge.Hub.csproj" IsAspireProjectResource="true" />
     <ProjectReference Include="..\Landbridge.Mcp\Landbridge.Mcp.csproj" IsAspireProjectResource="true" />
     <!-- landbridge-relay, brought into the dev loop as its own host (§8.3). -->
     <ProjectReference Include="..\Landbridge.Relay\Landbridge.Relay.csproj" IsAspireProjectResource="true" />

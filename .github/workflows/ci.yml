@@ -102,6 +102,11 @@ jobs:
         env:
           LANDBRIDGE_TEST_PG: Host=localhost;Port=5432;Username=landbridge;Password=landbridge;Database=landbridge_cp
 
+      - name: Test - Landbridge.Hub (Postgres SSE hub)
+        run: dotnet test tests/Landbridge.Hub.Tests --no-build -c Release
+        env:
+          LANDBRIDGE_TEST_PG: Host=localhost;Port=5432;Username=landbridge;Password=landbridge;Database=landbridge_hub
+
       - name: Test - Landbridge.Mcp (Postgres + MCP end-to-end)
         run: dotnet test tests/Landbridge.Mcp.Tests --no-build -c Release
         env:

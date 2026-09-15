@@ -8,6 +8,7 @@
     <Project Path="src/Landbridge.Contracts/Landbridge.Contracts.csproj" />
     <Project Path="src/Landbridge.ControlPlane/Landbridge.ControlPlane.csproj" />
     <Project Path="src/Landbridge.Core/Landbridge.Core.csproj" />
+    <Project Path="src/Landbridge.Hub/Landbridge.Hub.csproj" />
     <Project Path="src/Landbridge.Mcp/Landbridge.Mcp.csproj" />
     <Project Path="src/Landbridge.Meta/Landbridge.Meta.csproj" />
     <Project Path="src/Landbridge.Preview/Landbridge.Preview.csproj" />
@@ -25,6 +26,7 @@
     <Project Path="tests/Landbridge.HarnessBump.Tests/Landbridge.HarnessBump.Tests.csproj" />
     <Project Path="tests/Landbridge.Contracts.Tests/Landbridge.Contracts.Tests.csproj" />
     <Project Path="tests/Landbridge.Core.Tests/Landbridge.Core.Tests.csproj" />
+    <Project Path="tests/Landbridge.Hub.Tests/Landbridge.Hub.Tests.csproj" />
     <Project Path="tests/Landbridge.Mcp.Tests/Landbridge.Mcp.Tests.csproj" />
     <Project Path="tests/Landbridge.Meta.Tests/Landbridge.Meta.Tests.csproj" />
     <Project Path="tests/Landbridge.Preview.Tests/Landbridge.Preview.Tests.csproj" />
