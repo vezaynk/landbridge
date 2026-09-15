@@ -11,6 +11,10 @@
     <Project Path="src/Landbridge.Core/Landbridge.Core.csproj" />
     <Project Path="src/Landbridge.Hub/Landbridge.Hub.csproj" />
     <Project Path="src/Landbridge.Mcp/Landbridge.Mcp.csproj" />
+    <Project Path="src/Landbridge.Mcp.Runtime/Landbridge.Mcp.Runtime.csproj" />
+    <Project Path="src/Landbridge.LeadMcp/Landbridge.LeadMcp.csproj" />
+    <Project Path="src/Landbridge.WorkerMcp/Landbridge.WorkerMcp.csproj" />
+    <Project Path="src/Landbridge.Dashboard/Landbridge.Dashboard.csproj" />
     <Project Path="src/Landbridge.Meta/Landbridge.Meta.csproj" />
     <Project Path="src/Landbridge.Preview/Landbridge.Preview.csproj" />
     <Project Path="src/Landbridge.Relay/Landbridge.Relay.csproj" />
