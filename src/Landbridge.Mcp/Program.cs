@@ -13,12 +13,8 @@ using OpenTelemetry.Trace;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// Aspire service defaults: OpenTelemetry (traces/metrics/logs), health checks,
-// service discovery, and HTTP resilience. The OTLP exporter only activates when
-// OTEL_EXPORTER_OTLP_ENDPOINT is set — the Aspire app host sets it, so the
-// dashboard captures the plane's telemetry; standalone runs and tests leave it
-// unset and simply don't export.
-builder.AddServiceDefaults();
+builder.AddPlane();
+builder.AddClassifier();
 
 // §1 tracing: register the control-plane dispatch span source with the tracer
 // ServiceDefaults configured, so DispatchService's `dispatch {task}` span exports
@@ -27,58 +23,16 @@ builder.AddServiceDefaults();
 // accumulates onto it.
 builder.Services.AddOpenTelemetry()
     .WithTracing(tracing => tracing.AddSource(DispatchService.ActivitySourceName));
-
-var connectionString = builder.Configuration.GetConnectionString("Landbridge")
-    ?? Environment.GetEnvironmentVariable("LANDBRIDGE_DB")
-    ?? "Host=localhost;Database=landbridge;Username=landbridge";
-
-// The store: one DbContext per request scope; the state machine is the only
-// write path (spec §15).
-builder.Services.AddDbContextFactory<LandbridgeDbContext>(o =>
-    o.UseNpgsql(connectionString).UseSnakeCaseNamingConvention());
-builder.Services.AddScoped(sp =>
-    sp.GetRequiredService<IDbContextFactory<LandbridgeDbContext>>().CreateDbContext());
-// The §15 write path plus the §9.10 per-Team byte accounting it resolves through — one
-// registration, because the two are halves of the same feature.
-// InfrastructureRequeueLimit is §9 check 7's cap, stamped onto each new task: how many
-// times a task may be requeued for infrastructure reasons (ack timeout, either liveness
-// clock, process exit, reboot) before it is abandoned rather than redispatched. Unset
-// takes the documented default; a non-positive value configures the cap off.
-builder.Services.AddLandbridgeStore(
-    builder.Configuration.GetValue<int?>("Landbridge:InfrastructureRequeueLimit"));
-builder.Services.AddScoped<TokenService>();
-// §13 un-trust a machine: credentials + command channel + its workers, composed. Scoped
-// like TokenService (it is the same DbContext); the registry and sink it also needs are
-// singletons, which a scoped service may depend on.
-builder.Services.AddScoped<MachineRevocationService>();
-builder.Services.AddScoped<RelayGrantService>();
-// §8.4 HTTP preview: the mapping store (resolve/create) and the per-connection
-// connect orchestrator, both scoped (per-request DbContext) like the grant service.
-builder.Services.AddScoped<PreviewMappingService>();
 builder.Services.AddScoped<PreviewConnectService>();
-// §8.4 gated browser flow: the in-memory one-time-code + per-label preview-session
-// store (short TTL, single-instance per §3 — no schema). Singleton so codes minted
-// by the dashboard survive to be redeemed at /preview/exchange.
 builder.Services.AddSingleton<PreviewAuthStore>();
 builder.Services.AddScoped<OAuthAuthorizationCodeService>();
-// §12 dashboard read side: scoped (per-request DbContext) + the in-memory
-// connection registry singleton it injects for live machine state.
 builder.Services.AddDashboard();
-builder.Services.AddSingleton(TimeProvider.System);
-builder.Services.AddHttpContextAccessor();
 
 // The operator verifier caches the configured passphrase hash. The authorization
 // server is its own host now (Landbridge.Auth), but this one still needs the
 // verifier: the dashboard's own login (§12) checks the same passphrase without
 // going through OAuth at all.
 builder.Services.AddSingleton<IOperatorVerifier, ConfiguredOperatorVerifier>();
-
-// Opaque bearer tokens validated against the store (§5). Every MCP request
-// authenticates as its token's principal; a worker can only reach worker tools.
-builder.Services.AddAuthentication(LandbridgeAuthenticationHandler.SchemeName)
-    .AddScheme<AuthenticationSchemeOptions, LandbridgeAuthenticationHandler>(
-        LandbridgeAuthenticationHandler.SchemeName, configureOptions: null);
-builder.Services.AddAuthorization();
 
 builder.Services.AddMcpServer()
     .WithHttpTransport()
@@ -89,23 +43,6 @@ builder.Services.AddMcpServer()
     // on connect. Stable landbridge:// URIs; scoping is advisory (see SkillResources).
     .WithResources<SkillResources>()
     .WithSessionTaskProjection();
-
-// The runner spine (spec §10): the connection registry and event sink are
-// singletons; the dispatch loop is a hosted service, exposed as a singleton too
-// so the runner endpoint can nudge it when a machine becomes ready. The task-
-// event listener owns its own session-mode Postgres connection (§3.1 LISTEN).
-// The inbox fan-out is a second LISTEN so Lead SSE cannot stall dispatch.
-builder.Services.AddSingleton<RunnerConnectionRegistry>();
-builder.Services.AddSingleton<RunnerEventSink>();
-builder.Services.AddSingleton(new SessionEventListener(connectionString));
-builder.Services.AddSingleton(sp => new SessionEventFanout(
-    connectionString, sp.GetRequiredService<ILogger<SessionEventFanout>>()));
-builder.Services.AddHostedService(sp => sp.GetRequiredService<SessionEventFanout>());
-
-// §8.3: open_forward drives both landbridged ends of a forward. The orchestrator +
-// forward-opened waiter are singletons sharing the connection registry above; the
-// event sink completes the waiter when the consumer reports its bound port.
-builder.Services.AddLandbridgeForwarding();
 
 // §13: the public MCP URL. The dashboard and a human Lead stay on PublicMcpUrl.
 // Workers may need a different reachability (Aspire boxes in Linux containers
@@ -127,26 +64,6 @@ var authUrl = builder.Configuration["Landbridge:AuthUrl"]
     ?? Environment.GetEnvironmentVariable("LANDBRIDGE_AUTH_URL");
 builder.Services.AddSingleton(OAuthServerConfig.FromPublicMcpUrl(publicMcpUrl, authUrl));
 
-// Plane-side permission classifier (argv allowlist, then destroy-guard, then
-// LLM). Unset URL or a down sidecar is Ask — never fail-open, never Deny.
-var classifierUrl = builder.Configuration["Landbridge:Classifier:Url"]
-    ?? Environment.GetEnvironmentVariable("LANDBRIDGE_CLASSIFIER_URL");
-if (!string.IsNullOrWhiteSpace(classifierUrl)
-    && Uri.TryCreate(classifierUrl.TrimEnd('/') + "/", UriKind.Absolute, out var classifierUri))
-{
-    var timeoutMs = builder.Configuration.GetValue("Landbridge:Classifier:TimeoutMs", 2000);
-    if (timeoutMs < 1)
-        timeoutMs = 2000;
-    builder.Services.AddHttpClient<IPermissionClassifier, PermissionClassifierClient>(c =>
-    {
-        c.BaseAddress = classifierUri;
-        c.Timeout = TimeSpan.FromMilliseconds(timeoutMs);
-    });
-}
-else
-{
-    builder.Services.AddSingleton<IPermissionClassifier>(NullPermissionClassifier.Instance);
-}
 // §10 per-task liveness runs on two clocks, both configurable: PerTaskLivenessWindow
 // is how long landbridged may go without asserting the harness process is alive (it
 // asserts every heartbeat), and NoProgressCeiling is how long an alive process may

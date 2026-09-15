@@ -20,6 +20,9 @@
     <ProjectReference Include="..\Landbridge.Auth\Landbridge.Auth.csproj" IsAspireProjectResource="true" />
     <ProjectReference Include="..\Landbridge.Hub\Landbridge.Hub.csproj" IsAspireProjectResource="true" />
     <ProjectReference Include="..\Landbridge.Mcp\Landbridge.Mcp.csproj" IsAspireProjectResource="true" />
+    <ProjectReference Include="..\Landbridge.LeadMcp\Landbridge.LeadMcp.csproj" IsAspireProjectResource="true" />
+    <ProjectReference Include="..\Landbridge.WorkerMcp\Landbridge.WorkerMcp.csproj" IsAspireProjectResource="true" />
+    <ProjectReference Include="..\Landbridge.Dashboard\Landbridge.Dashboard.csproj" IsAspireProjectResource="true" />
     <!-- landbridge-relay, brought into the dev loop as its own host (§8.3). -->
     <ProjectReference Include="..\Landbridge.Relay\Landbridge.Relay.csproj" IsAspireProjectResource="true" />
     <ProjectReference Include="..\Landbridge.Preview\Landbridge.Preview.csproj" IsAspireProjectResource="true" />
