@@ -11,8 +11,12 @@ name: CI
 on:
   push:
     branches: [master]
+  # Every PR, not just the ones targeting master. A stacked PR bases onto its
+  # parent branch rather than master, so a `branches: [master]` filter skipped
+  # the whole stack above the base — the largest changes went unchecked while
+  # the smallest one at the bottom got the full matrix.
   pull_request:
-    branches: [master]
+    branches: ['**']
   # Manual opt-in trigger for the token-spending real-harness E2E matrix below. It
   # is NOT part of the per-push/PR matrix — GitHub forbids referencing secrets in a
   # job-level `if:`, so gating the job on workflow_dispatch (rather than the secret)
