@@ -53,7 +53,7 @@ public static class HubReadEndpoints
         var caller = await GateAsync(http, tokens, ct);
         if (caller.Error is { } err)
             return err;
-        var session = await ResolveSessionAsync(ids, id, ct);
+        var session = await ResolveSessionAsync(ids, id, ct, required: true);
         if (session.Error is { } sidErr)
             return sidErr;
         var doc = await reads.SessionAsync(session.Id!.Value, ct);
@@ -69,7 +69,7 @@ public static class HubReadEndpoints
         var caller = await GateAsync(http, tokens, ct);
         if (caller.Error is { } err)
             return err;
-        var session = await ResolveSessionAsync(ids, id, ct);
+        var session = await ResolveSessionAsync(ids, id, ct, required: true);
         if (session.Error is { } sidErr)
             return sidErr;
         var row = await reads.SessionAsync(session.Id!.Value, ct);
@@ -84,7 +84,7 @@ public static class HubReadEndpoints
         var caller = await GateAsync(http, tokens, ct);
         if (caller.Error is { } err)
             return err;
-        var session = await ResolveSessionAsync(ids, id, ct);
+        var session = await ResolveSessionAsync(ids, id, ct, required: true);
         if (session.Error is { } sidErr)
             return sidErr;
         var row = await reads.SessionAsync(session.Id!.Value, ct);
@@ -100,7 +100,7 @@ public static class HubReadEndpoints
         var caller = await GateAsync(http, tokens, ct);
         if (caller.Error is { } err)
             return err;
-        var session = await ResolveSessionAsync(ids, id, ct);
+        var session = await ResolveSessionAsync(ids, id, ct, required: true);
         if (session.Error is { } sidErr)
             return sidErr;
         var row = await reads.SessionAsync(session.Id!.Value, ct);
@@ -198,7 +198,7 @@ public static class HubReadEndpoints
             return err;
         if (!caller.MayMachines)
             return HubCaller.Forbid();
-        var machine = await ResolveMachineAsync(ids, id, ct);
+        var machine = await ResolveMachineAsync(ids, id, ct, required: true);
         if (machine.Error is { } midErr)
             return midErr;
         var doc = await reads.MachineAsync(caller, machine.Id!.Value, ct);
@@ -213,7 +213,7 @@ public static class HubReadEndpoints
             return err;
         if (!caller.MayProcesses)
             return HubCaller.Forbid();
-        var machine = await ResolveMachineAsync(ids, id, ct);
+        var machine = await ResolveMachineAsync(ids, id, ct, required: true);
         if (machine.Error is { } midErr)
             return midErr;
         return Json(await reads.ProcessesAsync(caller, machine.Id, ct));
@@ -326,19 +326,19 @@ public static class HubReadEndpoints
     }
 
     private static async Task<(Guid? Id, IResult? Error)> ResolveSessionAsync(
-        FriendlyIds ids, string? text, CancellationToken ct)
+        FriendlyIds ids, string? text, CancellationToken ct, bool required = false)
     {
         if (string.IsNullOrWhiteSpace(text))
-            return (null, null);
+            return required ? (null, BadId()) : (null, null);
         var session = await ids.TrySessionAsync(text, ct);
         return session is { } s ? (s.Value, null) : (null, NotFound());
     }
 
     private static async Task<(Guid? Id, IResult? Error)> ResolveMachineAsync(
-        FriendlyIds ids, string? text, CancellationToken ct)
+        FriendlyIds ids, string? text, CancellationToken ct, bool required = false)
     {
         if (string.IsNullOrWhiteSpace(text))
-            return (null, null);
+            return required ? (null, BadId()) : (null, null);
         var machine = await ids.TryMachineAsync(text, ct);
         return machine is { } m ? (m, null) : (null, NotFound());
     }

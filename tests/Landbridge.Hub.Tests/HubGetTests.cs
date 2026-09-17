@@ -258,4 +258,33 @@ public sealed class HubGetTests(PostgresFixture pg) : IAsyncLifetime
 
         await app.StopAsync(ct);
     }
+
+    /// <summary>
+    /// A route id that is present but blank resolves to no entity. It must be
+    /// refused as a bad id, not carried forward as "no filter" — for the id
+    /// routes that meant a null deref, and for the two collection-under-an-id
+    /// routes it meant silently listing everything the caller may see.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData("/sessions/%20")]
+    [InlineData("/sessions/%20/log")]
+    [InlineData("/sessions/%20/exchange")]
+    [InlineData("/sessions/%20/services")]
+    [InlineData("/machines/%20")]
+    [InlineData("/machines/%20/processes")]
+    public async Task Blank_route_id_is_a_bad_request(string path)
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(Patience);
+        var ct = cts.Token;
+
+        await using var app = HubTestHost.Build(pg.ConnectionString);
+        await app.StartAsync(ct);
+        using var client = HubTestHost.Client(app, await HubTestHost.HumanTokenAsync(pg, ct));
+
+        using var resp = await client.GetAsync(path, ct);
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+
+        await app.StopAsync(ct);
+    }
 }
