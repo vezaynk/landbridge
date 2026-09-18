@@ -10,6 +10,13 @@ namespace Landbridge.Mcp;
 /// read them <em>before</em> it has a token, so neither is behind
 /// <c>RequireAuthorization</c>.
 ///
+/// <para><b>They are served by different hosts.</b> RFC 9728 §3 puts the
+/// protected-resource document on the resource server; RFC 8414 §3 puts the
+/// authorization-server document at the issuer. Those are one origin only when one
+/// process is both, so each has its own Map method and each host maps the one it
+/// owns. Mapping the wrong one is how a client ends up fetching metadata whose
+/// <c>issuer</c> does not match the URL it came from, which it MUST reject.</para>
+///
 /// <list type="bullet">
 /// <item><c>GET /.well-known/oauth-protected-resource</c> — RFC 9728 Protected
 ///   Resource Metadata. This is the document the RFC 9728 §5.1
@@ -37,59 +44,30 @@ public static class OAuthMetadataEndpoints
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
     };
 
-    public static IEndpointRouteBuilder MapOAuthMetadataEndpoints(this IEndpointRouteBuilder app)
+    /// <summary>
+    /// The resource server's half (RFC 9728): what this resource is, and which
+    /// authorization server speaks for it. Mapped by every host that answers a 401
+    /// with a resource-metadata challenge.
+    /// </summary>
+    public static IEndpointRouteBuilder MapOAuthResourceMetadata(this IEndpointRouteBuilder app)
     {
-        // Both are anonymous by construction (no .RequireAuthorization()): discovery
-        // precedes authentication (RFC 9728 §3, RFC 8414 §3).
+        // Anonymous by construction (no .RequireAuthorization()): discovery
+        // precedes authentication (RFC 9728 §3).
         app.MapGet("/.well-known/oauth-protected-resource", (OAuthServerConfig server) =>
             Results.Json(new ProtectedResourceMetadata
             {
                 // RFC 9728's one required field; MCP binds tokens to this audience (§5).
                 Resource = server.ResourceId,
-                // MCP upgrades this to required: at least one AS issuer. This
-                // Instance is its own authorization server (§5).
+                // MCP upgrades this to required: at least one AS issuer. This is
+                // the pointer that lets the authorization server live elsewhere (§5).
                 AuthorizationServers = [server.Issuer],
                 // Informational (RFC 9728 §2): Landbridge only ever reads the
                 // Authorization: Bearer header.
                 BearerMethodsSupported = ["header"],
                 ScopesSupported = [OAuthScopes.Landbridge],
             }, JsonOptions));
-
-        app.MapGet("/.well-known/oauth-authorization-server", (OAuthServerConfig server) =>
-            Results.Json(new AuthorizationServerMetadata
-            {
-                // Draft MCP: a client rejects metadata whose issuer differs from the
-                // URL it fetched, so this must equal the origin it is served from.
-                Issuer = server.Issuer,
-                AuthorizationEndpoint = server.AuthorizationEndpoint,
-                TokenEndpoint = server.TokenEndpoint,
-                ResponseTypesSupported = ["code"],
-                GrantTypesSupported = ["authorization_code"],
-                // OAuth 2.1 + MCP: S256 only. Its presence is also how a client
-                // confirms this AS supports PKCE at all (it MUST refuse otherwise).
-                CodeChallengeMethodsSupported = [Pkce.S256],
-                // Public clients (§5): no client authentication at the token endpoint.
-                TokenEndpointAuthMethodsSupported = ["none"],
-                ScopesSupported = [OAuthScopes.Landbridge],
-                // Advertise CIMD support so clients present a URL client_id (§5).
-                ClientIdMetadataDocumentSupported = true,
-            }, JsonOptions));
-
         return app;
     }
-}
-
-/// <summary>The coarse OAuth scope vocabulary for v1 (§5).</summary>
-internal static class OAuthScopes
-{
-    /// <summary>
-    /// A single coarse scope. Landbridge's §5 authority model is structural
-    /// (human → lead → worker), not scope-graded, so a completed flow mints the
-    /// full human session regardless of requested scope; granular OAuth scopes
-    /// are a documented follow-up. Advertised so a client has a concrete value to
-    /// request.
-    /// </summary>
-    public const string Landbridge = "landbridge";
 }
 
 /// <summary>
@@ -110,35 +88,4 @@ public sealed record ProtectedResourceMetadata
 
     [JsonPropertyName("scopes_supported")]
     public IReadOnlyList<string>? ScopesSupported { get; init; }
-}
-
-/// <summary>RFC 8414 Authorization Server Metadata (plus the CIMD-support flag).</summary>
-public sealed record AuthorizationServerMetadata
-{
-    [JsonPropertyName("issuer")]
-    public required string Issuer { get; init; }
-
-    [JsonPropertyName("authorization_endpoint")]
-    public required string AuthorizationEndpoint { get; init; }
-
-    [JsonPropertyName("token_endpoint")]
-    public required string TokenEndpoint { get; init; }
-
-    [JsonPropertyName("response_types_supported")]
-    public required IReadOnlyList<string> ResponseTypesSupported { get; init; }
-
-    [JsonPropertyName("grant_types_supported")]
-    public required IReadOnlyList<string> GrantTypesSupported { get; init; }
-
-    [JsonPropertyName("code_challenge_methods_supported")]
-    public required IReadOnlyList<string> CodeChallengeMethodsSupported { get; init; }
-
-    [JsonPropertyName("token_endpoint_auth_methods_supported")]
-    public required IReadOnlyList<string> TokenEndpointAuthMethodsSupported { get; init; }
-
-    [JsonPropertyName("scopes_supported")]
-    public IReadOnlyList<string>? ScopesSupported { get; init; }
-
-    [JsonPropertyName("client_id_metadata_document_supported")]
-    public bool? ClientIdMetadataDocumentSupported { get; init; }
 }
