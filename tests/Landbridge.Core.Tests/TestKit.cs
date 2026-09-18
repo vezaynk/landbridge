@@ -14,10 +14,10 @@ internal static class Given
         bool ready = true,
         bool backPressure = false,
         params string[] profiles) =>
-        new("machine-a", ready, backPressure,
+        new(TestMachineIds.For("machine-a"), ready, backPressure,
             profiles.Length == 0 ? new HashSet<string> { "default" } : new HashSet<string>(profiles));
 
-    public static ParkRecord Park => new("machine-a");
+    public static ParkRecord Park => new(TestMachineIds.For("machine-a"));
 
     public static SessionRecord Session(
         SessionState state = SessionState.Submitted,

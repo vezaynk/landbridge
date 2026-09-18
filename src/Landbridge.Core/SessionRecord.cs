@@ -17,15 +17,21 @@ namespace Landbridge.Core;
 /// snapshots could drift from them without anyone noticing. So the park record is one fact,
 /// stated once.</para>
 /// </summary>
-public sealed record ParkRecord(string Machine);
+public sealed record ParkRecord(Guid Machine);
 
 /// <summary>
 /// What dispatch needs to know about a machine, as reported by its runner.
 /// Ready/back-pressure are derived by landbridged (§10); profiles are declared
 /// names the control plane never interprets.
+///
+/// <para><see cref="MachineId"/> is the plane's machine identity, the same value as
+/// <c>machines.id</c>. It is not whatever handle the box calls itself locally —
+/// <c>LANDBRIDGE_MACHINE_ID</c> may be a slug, and the runner keeps that string for
+/// stamping its own processes. The runner endpoint takes this from the authenticated
+/// <c>Principal.Machine</c>, so a self-reported id never becomes an identity.</para>
 /// </summary>
 public sealed record MachineSnapshot(
-    string MachineId,
+    Guid MachineId,
     bool Ready,
     bool UnderBackPressure,
     IReadOnlySet<string> DeclaredProfiles);

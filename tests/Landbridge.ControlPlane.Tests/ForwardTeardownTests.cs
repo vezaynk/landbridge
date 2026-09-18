@@ -31,8 +31,8 @@ public sealed class ForwardTeardownTests(PostgresFixture pg) : IAsyncLifetime
 
     public Task DisposeAsync() => Task.CompletedTask;
 
-    private const string ProducerMachine = "producer-machine";
-    private const string ConsumerMachine = "consumer-machine";
+    private static readonly Guid ProducerMachine = TestMachineIds.For("producer-machine");
+    private static readonly Guid ConsumerMachine = TestMachineIds.For("consumer-machine");
     private const string ServiceName = "db";
 
     [SkippableFact]
@@ -186,7 +186,7 @@ public sealed class ForwardTeardownTests(PostgresFixture pg) : IAsyncLifetime
 
         public ForwardTeardownService Teardown { get; }
 
-        public ConcurrentBag<(string Machine, CloseForwardCommand Command)> Closes { get; } = [];
+        public ConcurrentBag<(Guid Machine, CloseForwardCommand Command)> Closes { get; } = [];
     }
 
     private static SessionStore NewStore(LandbridgeDbContext db, TimeProvider clock, Rig rig) =>
@@ -197,7 +197,7 @@ public sealed class ForwardTeardownTests(PostgresFixture pg) : IAsyncLifetime
     /// resolve its machine the way a live forward's ends are resolved (§8.3).
     /// </summary>
     private static async Task<(SessionId Session, WorkerInstanceId Instance)> WorkingOnAsync(
-        LandbridgeDbContext db, TimeProvider clock, TeamId team, string machine, Rig rig)
+        LandbridgeDbContext db, TimeProvider clock, TeamId team, Guid machine, Rig rig)
     {
         var store = NewStore(db, clock, rig);
         var created = (StoreResult.Applied)await store.CreateAsync(

@@ -52,8 +52,8 @@ public sealed class MachineRevokeDashboardTests(PostgresFixture pg) : IAsyncLife
 
         // The machine is dialed in, so it shows on the view — with the control.
         var registry = app.Services.GetRequiredService<RunnerConnectionRegistry>();
-        registry.Register(machineId.ToString(), Profiles(), (_, _) => Task.CompletedTask);
-        registry.ApplyHeartbeat(machineId.ToString(), Ready(machineId.ToString()));
+        registry.Register(machineId, Profiles(), (_, _) => Task.CompletedTask);
+        registry.ApplyHeartbeat(machineId, Ready(machineId.ToString()));
 
         var view = await GetAuthedAsync(app, "/dashboard/machines", ct);
         Assert.Contains("/dashboard/machines/revoke", view, StringComparison.Ordinal);
@@ -65,7 +65,7 @@ public sealed class MachineRevokeDashboardTests(PostgresFixture pg) : IAsyncLife
 
         // Not a cosmetic confirmation: the machine is out of the registry and its row is
         // revoked, so it is undispatchable and cannot bind, refresh, or reconnect.
-        Assert.Null(registry.SnapshotFor(machineId.ToString()));
+        Assert.Null(registry.SnapshotFor(machineId));
         await using var db = pg.NewContext();
         Assert.True((await db.Set<MachineRow>().AsNoTracking().SingleAsync(m => m.Id == machineId, ct)).Revoked);
     }

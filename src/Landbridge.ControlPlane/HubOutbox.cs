@@ -56,15 +56,13 @@ public static class HubOutbox
 
     /// <summary>
     /// Upsert liveness columns and the process set, then doorbell machines /
-    /// processes. No-op when <paramref name="machineId"/> is not a Guid or the
+    /// processes. No-op when <paramref name="id"/> is not a Guid or the
     /// machine is not enrolled.
     /// </summary>
     public static async Task WriteHeartbeatAsync(
-        LandbridgeDbContext db, TimeProvider clock, string machineId, MachineHeartbeat heartbeat,
+        LandbridgeDbContext db, TimeProvider clock, Guid id, MachineHeartbeat heartbeat,
         CancellationToken ct)
     {
-        if (!Guid.TryParse(machineId, out var id))
-            return;
         var machine = await db.Machines.FirstOrDefaultAsync(m => m.Id == id && !m.Revoked, ct);
         if (machine is null)
             return;

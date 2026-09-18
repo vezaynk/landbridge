@@ -45,7 +45,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         RelayGrantTestKit.LeadToolsFor(
             pg.NewContext(), _clock, registry ?? new RunnerConnectionRegistry(_clock), AccessorFor(principal));
 
-    private static readonly string M1 = Guid.NewGuid().ToString();
+    private static readonly Guid M1 = Guid.NewGuid();
 
     private static MachineSnapshot Machine() =>
         new(M1, Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });
@@ -397,7 +397,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         var store = new SessionStore(db, _clock);
         var successor = WorkerInstanceId.New();
         var dispatched = Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(
-            new MachineSnapshot(machineId.ToString(), Ready: true, UnderBackPressure: false,
+            new MachineSnapshot(machineId, Ready: true, UnderBackPressure: false,
                 new HashSet<string> { "default" }), successor));
         Assert.Equal(sessionId, dispatched.Session.Id);
 
@@ -483,8 +483,8 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         // claims on HttpContext.User, so a worker's credential is refused by the same
         // LeadPrincipal check every other tool here makes — no test-only seam.
         var registry = new RunnerConnectionRegistry(_clock);
-        registry.Register("secret-machine", new HashSet<string> { "restricted" }, (_, _) => Task.CompletedTask);
-        registry.ApplyHeartbeat("secret-machine", Heartbeat("secret-machine", "restricted"));
+        registry.Register(TestMachineIds.For("secret-machine"), new HashSet<string> { "restricted" }, (_, _) => Task.CompletedTask);
+        registry.ApplyHeartbeat(TestMachineIds.For("secret-machine"), Heartbeat("secret-machine", "restricted"));
         var worker = new Principal.Worker(new WorkerCaller(Team, SessionId.New(), WorkerInstanceId.New()));
 
         var refused = await Assert.ThrowsAsync<McpException>(
@@ -532,7 +532,7 @@ public sealed class LeadToolsTests(PostgresFixture pg) : IAsyncLifetime
         var registry = new RunnerConnectionRegistry(_clock);
         TestMachines.Register(registry, machine);
         await TestMachines.HeartbeatAsync(db, _clock, machine);
-        registry.TrackDispatch(machine.ToString(), task);
+        registry.TrackDispatch(machine, task);
         return (registry, machine);
     }
 

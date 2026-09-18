@@ -78,10 +78,12 @@ public static class DashboardTranscriptEndpoints
         if (resolved.Id is not { } id)
             return Results.NotFound(new { error = "no such session" });
 
-        var machine = http.Request.Query["machine"].ToString();
+        var machineText = http.Request.Query["machine"].ToString();
         var stream = http.Request.Query["stream"].ToString() is { Length: > 0 } s ? s : TranscriptStreams.Stdout;
-        if (string.IsNullOrWhiteSpace(machine))
+        if (string.IsNullOrWhiteSpace(machineText))
             return Results.BadRequest(new { error = "machine is required" });
+        if (!Guid.TryParse(machineText, out var machine))
+            return Results.BadRequest(new { error = "machine must be a machine id" });
         if (!int.TryParse(http.Request.Query["ordinal"].ToString(), out var ordinal) || ordinal < 1)
             return Results.BadRequest(new { error = "ordinal must be a positive instance number" });
         if (!TranscriptStreams.IsKnown(stream))
@@ -193,4 +195,4 @@ public static class DashboardTranscriptEndpoints
 
 /// <summary>What one machine reports holding for a task, or why it could not say (§12).</summary>
 public sealed record TranscriptMachineInventory(
-    string Machine, IReadOnlyList<TranscriptInstance> Instances, string? Unavailable);
+    Guid Machine, IReadOnlyList<TranscriptInstance> Instances, string? Unavailable);

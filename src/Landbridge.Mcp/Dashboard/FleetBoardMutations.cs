@@ -71,7 +71,7 @@ public sealed class FleetBoardMutations(IServiceScopeFactory scopes, IConfigurat
             }
 
             var opened = await sp.GetRequiredService<ForwardOrchestrator>().EstablishForLeadAsync(
-                bound.MachineId.ToString(), grant, serviceName, WorkerTools.RelayUrlFrom(config), token);
+                bound.MachineId, grant, serviceName, WorkerTools.RelayUrlFrom(config), token);
             return opened switch
             {
                 ForwardEstablishResult.Established e => new FleetNotice(

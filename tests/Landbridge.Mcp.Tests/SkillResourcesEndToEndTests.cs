@@ -143,7 +143,7 @@ public sealed class SkillResourcesEndToEndTests(PostgresFixture pg) : IAsyncLife
             new CreateSession(new LeadClaim(team), team, "seed", "default"), ct);
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(
-            new MachineSnapshot("m1", true, false, new HashSet<string> { "default" }), instance, ct);
+            new MachineSnapshot(TestMachineIds.For("m1"), true, false, new HashSet<string> { "default" }), instance, ct);
         var tokens = new TokenService(db, TimeProvider.System);
         return (await tokens.MintWorkerTokenAsync(team, created.Session.Id, instance, ct)).Token;
     }

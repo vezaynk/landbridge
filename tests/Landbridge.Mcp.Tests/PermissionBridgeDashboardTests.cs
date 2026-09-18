@@ -33,7 +33,7 @@ public sealed class PermissionBridgeDashboardTests(PostgresFixture pg) : IAsyncL
     public Task DisposeAsync() => Task.CompletedTask;
 
     private static readonly MachineSnapshot AnyMachine =
-        new("box-1", Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });
+        new(TestMachineIds.For("box-1"), Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });
 
     private const string Tool = "Bash";
 

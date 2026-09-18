@@ -76,9 +76,9 @@ public sealed class LeadForwardEndToEndTests(PostgresFixture pg) : IAsyncLifetim
 
         // The human's machine is registered under its enrolled id — the key the
         // binding resolves to — and holds no dispatched task at all.
-        registry.Register(leadMachine.ToString(), new HashSet<string> { "default" }, consumerDaemon.Send);
-        registry.Register("mp", new HashSet<string> { "default" }, producerDaemon.Send);
-        registry.TrackDispatch("mp", producerTask);
+        registry.Register(leadMachine, new HashSet<string> { "default" }, consumerDaemon.Send);
+        registry.Register(TestMachineIds.For("mp"), new HashSet<string> { "default" }, producerDaemon.Send);
+        registry.TrackDispatch(TestMachineIds.For("mp"), producerTask);
 
         string forwardId;
         int port;
@@ -171,7 +171,7 @@ public sealed class LeadForwardEndToEndTests(PostgresFixture pg) : IAsyncLifetim
             Assert.True(bound.TryGetProperty("boundAt", out var boundAt) && boundAt.ValueKind != JsonValueKind.Null);
             // The producer's machine belongs to nobody.
             var producerMachine = Assert.Single(doc.RootElement.EnumerateArray()
-                .Where(m => m.GetProperty("machineId").GetString() == "mp")
+                .Where(m => m.GetProperty("machineId").GetString() == TestMachineIds.For("mp").ToString())
                 .ToList());
             Assert.Equal(JsonValueKind.Null, producerMachine.GetProperty("boundToHuman").ValueKind);
         }
@@ -261,9 +261,9 @@ public sealed class LeadForwardEndToEndTests(PostgresFixture pg) : IAsyncLifetim
         await using var plane = RelayGrantTestKit.BuildPlane(pg.ConnectionString, relayValidationBearer: null);
         await plane.StartAsync(ct);
         var registry = plane.Services.GetRequiredService<RunnerConnectionRegistry>();
-        registry.Register(machine.ToString(), new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
-        registry.Register("mp", new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
-        registry.TrackDispatch("mp", producerTask);
+        registry.Register(machine, new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
+        registry.Register(TestMachineIds.For("mp"), new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
+        registry.TrackDispatch(TestMachineIds.For("mp"), producerTask);
 
         await using var leadClient = await RelayGrantTestKit.ConnectMcpAsync(
             RelayGrantTestKit.BaseUri(plane), outsider.Token, ct);

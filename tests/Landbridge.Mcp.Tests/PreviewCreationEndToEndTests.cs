@@ -226,8 +226,8 @@ public sealed class PreviewCreationEndToEndTests(PostgresFixture pg) : IAsyncLif
             var producer = new DaemonHarness(
                 "mp", new SinkForwardingChannel(plane.Services.GetRequiredService<RunnerEventSink>()));
             await producer.StartAsync();
-            registry.Register("mp", new HashSet<string> { "default" }, producer.Send);
-            registry.TrackDispatch("mp", worker.Session);
+            registry.Register(TestMachineIds.For("mp"), new HashSet<string> { "default" }, producer.Send);
+            registry.TrackDispatch(TestMachineIds.For("mp"), worker.Session);
 
             var planeBase = RelayGrantTestKit.BaseUri(plane);
             var frontend = PreviewFrontendHarness.Start(planeBase.ToString(), dashboardUrl: planeBase.ToString());

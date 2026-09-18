@@ -83,8 +83,8 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
             mp = await TestMachines.EnrollAsync(db, TimeProvider.System, "mp");
             mc = await TestMachines.EnrollAsync(db, TimeProvider.System, "mc");
         }
-        var mpWire = mp.ToString();
-        var mcWire = mc.ToString();
+        var mpWire = mp;
+        var mcWire = mc;
 
         // ── Two machines, each a real landbridged data plane for its end of a forward.
         //    "mp" hosts the producer task, "mc" the consumer. Separate daemons →
@@ -117,7 +117,7 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
             // real daemon standing up its relay data plane.
             registry.Register(mpWire, new HashSet<string> { "default" }, (command, sendCt) => command switch
             {
-                DispatchCommand d => Spawn(supervisor, d, profile, mpWire),
+                DispatchCommand d => Spawn(supervisor, d, profile, mpWire.ToString()),
                 // Both halves of a forward's life go to the daemon: open-forward stands the
                 // data plane up, close-forward ends it when the owning task leaves working.
                 OpenForwardCommand or CloseForwardCommand => producerDaemon.Send(command, sendCt),
@@ -125,7 +125,7 @@ public sealed class LiveFleetRelayEndToEndTests(PostgresFixture pg) : IAsyncLife
             });
             registry.Register(mcWire, new HashSet<string> { "default" }, (command, sendCt) => command switch
             {
-                DispatchCommand d => Spawn(supervisor, d, profile, mcWire),
+                DispatchCommand d => Spawn(supervisor, d, profile, mcWire.ToString()),
                 OpenForwardCommand or CloseForwardCommand => consumerDaemon.Send(command, sendCt),
                 _ => Task.CompletedTask,
             });

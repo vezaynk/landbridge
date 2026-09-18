@@ -146,7 +146,7 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
 
         Assert.True(
             await rig.SendStopAsync(
-                "A", task, TimeSpan.FromMinutes(1), StopDisposition.PreserveAndPark,
+                TestMachineIds.For("A"), task, TimeSpan.FromMinutes(1), StopDisposition.PreserveAndPark,
                 "characterizing real-opencode stop delivery", ct),
             "the stop was not delivered to the machine holding the task.\n"
             + await rig.RealWorkerDiagnosticsAsync(task, ct));
@@ -201,7 +201,7 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
         var token = NewToken();
         var stepA = await rig.CreateSessionAsync(EchoDescription("A", token), ct);
         Assert.True(
-            await rig.DispatchUntilReportedAsync(stepA, "A", MaxAttempts, PerLegBudget, ct),
+            await rig.DispatchUntilReportedAsync(stepA, TestMachineIds.For("A"), MaxAttempts, PerLegBudget, ct),
             "the real claude worker never mailed a report on step A.\n"
             + await rig.RealWorkerDiagnosticsAsync(stepA, ct));
 
@@ -212,7 +212,7 @@ public sealed class RealOpenCodeCollaborationTests(PostgresFixture pg) : IAsyncL
         // Step B, on the opencode machine: report the token the claude worker produced.
         var stepB = await rig.CreateSessionAsync(EchoDescription("B", token), ct);
         Assert.True(
-            await rig.DispatchUntilReportedAsync(stepB, "B", MaxAttempts, PerLegBudget, ct),
+            await rig.DispatchUntilReportedAsync(stepB, TestMachineIds.For("B"), MaxAttempts, PerLegBudget, ct),
             "the real opencode worker never confirmed the cross-harness handoff.\n"
             + OpenCodeFailureHypotheses() + await rig.RealWorkerDiagnosticsAsync(stepB, ct));
 

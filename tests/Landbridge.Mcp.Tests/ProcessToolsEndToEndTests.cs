@@ -339,7 +339,7 @@ public sealed class ProcessToolsEndToEndTests(PostgresFixture pg) : IAsyncLifeti
         await using var db = pg.NewContext();
         var id = await TestMachines.ConnectAsync(db, TimeProvider.System, registry, "box", machine.Send);
         foreach (var session in sessions)
-            registry.TrackDispatch(id.ToString(), session);
+            registry.TrackDispatch(id, session);
         return id;
     }
 }

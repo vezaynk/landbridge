@@ -16,7 +16,7 @@ namespace Landbridge.ControlPlane.Tests;
 [Collection(PostgresCollection.Name)]
 public sealed class TranscriptRelayServiceTests(PostgresFixture pg) : IAsyncLifetime
 {
-    private const string Machine = "mac-1";
+    private static readonly Guid Machine = TestMachineIds.For("mac-1");
 
     public async Task InitializeAsync()
     {
@@ -232,7 +232,7 @@ public sealed class TranscriptRelayServiceTests(PostgresFixture pg) : IAsyncLife
             });
             // Ready + a live snapshot, which is what the relay's connectivity check reads.
             registry.ApplyHeartbeat(Machine, new MachineHeartbeat(
-                Machine, Ready: true, UnderBackPressure: false, new SystemLoad(0, 0, 0),
+                Machine.ToString(), Ready: true, UnderBackPressure: false, new SystemLoad(0, 0, 0),
                 RunningSessions: 0, Profiles: ["default"], At: clock.GetUtcNow(), TranscriptsServable: true));
         }
 

@@ -70,14 +70,9 @@ public sealed class MachineRevocationService(
     /// </summary>
     public async Task<MachineRevocation> RevokeAsync(Guid machineId, CancellationToken ct = default)
     {
-        // The registry keys machines by their id's string form (the runner endpoint
-        // registers the authenticated machine id that way), so both halves of this
-        // method are talking about the same box.
-        var id = machineId.ToString();
-
         await tokens.RevokeMachineCredentialsAsync(machineId, ct);
 
-        var teardown = await registry.DisconnectAsync(id, ct);
+        var teardown = await registry.DisconnectAsync(machineId, ct);
 
         // The sweep the credential predicate cannot express. A worker credential has no
         // MachineId — it is scoped to {team, task, instance} — but the instance row
@@ -88,7 +83,7 @@ public sealed class MachineRevocationService(
         // task now running elsewhere names that machine, not this one.
         var now = clock.GetUtcNow();
         var workers = await db.WorkerInstances
-            .Where(w => w.MachineId == id && !w.Revoked)
+            .Where(w => w.MachineId == machineId && !w.Revoked)
             .ExecuteUpdateAsync(s => s
                 .SetProperty(w => w.Revoked, true)
                 .SetProperty(w => w.RevokedAt, now), ct);
@@ -98,11 +93,11 @@ public sealed class MachineRevocationService(
         // RevokeWorkerInstanceToken for its incumbent, which the sweep above has already
         // done — a no-op, not a conflict, since that effect is itself predicated on
         // !Revoked.
-        await sink.HandleDisconnectAsync(id, teardown.Held, ct);
+        await sink.HandleDisconnectAsync(machineId, teardown.Held, ct);
 
         logger.LogWarning(
             "machine revoked: machine={Machine} channel={Closed} requeued={Requeued} workers={Workers}",
-            id, teardown.Unregistered, teardown.Held.Count, workers);
+            machineId, teardown.Unregistered, teardown.Held.Count, workers);
 
         return new MachineRevocation(teardown.Unregistered, teardown.Held.Count, workers);
     }

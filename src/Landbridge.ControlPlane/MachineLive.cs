@@ -13,7 +13,7 @@ namespace Landbridge.ControlPlane;
 /// </summary>
 public static class MachineLive
 {
-    public static async Task<IReadOnlyList<(string Id, MachineSnapshot Snapshot)>> ReadyAsync(
+    public static async Task<IReadOnlyList<(Guid Id, MachineSnapshot Snapshot)>> ReadyAsync(
         LandbridgeDbContext db,
         RunnerConnectionRegistry registry,
         DateTimeOffset now,
@@ -39,7 +39,7 @@ public static class MachineLive
         foreach (var c in connected)
         {
             var machine = new ProfileMachineView(
-                c.Id, IsDispatchable(c, now, window), c.Snapshot.UnderBackPressure, c.LastSpoke);
+                c.Id.ToString(), IsDispatchable(c, now, window), c.Snapshot.UnderBackPressure, c.LastSpoke);
             foreach (var profile in c.Snapshot.DeclaredProfiles)
             {
                 if (!byProfile.TryGetValue(profile, out var machines))
@@ -58,7 +58,7 @@ public static class MachineLive
         return new ProfileRoutingView(profiles, connected.Count);
     }
 
-    public static async Task<IReadOnlyList<string>> DeclaringAsync(
+    public static async Task<IReadOnlyList<Guid>> DeclaringAsync(
         LandbridgeDbContext db,
         RunnerConnectionRegistry registry,
         string profile,
@@ -78,21 +78,16 @@ public static class MachineLive
         LandbridgeDbContext db, RunnerConnectionRegistry registry, CancellationToken ct)
     {
         var ids = registry.MachineIds();
-        var guids = ids
-            .Select(id => Guid.TryParse(id, out var g) ? g : (Guid?)null)
-            .OfType<Guid>()
-            .ToArray();
-        var rows = guids.Length == 0
+        var rows = ids.Count == 0
             ? new Dictionary<Guid, MachineRow>()
             : await db.Machines.AsNoTracking()
-                .Where(m => guids.Contains(m.Id) && !m.Revoked)
+                .Where(m => ids.Contains(m.Id) && !m.Revoked)
                 .ToDictionaryAsync(m => m.Id, ct);
-
 
         var list = new List<Connected>(ids.Count);
         foreach (var id in ids)
         {
-            if (Guid.TryParse(id, out var g) && rows.TryGetValue(g, out var row) && row.LastSpokeAt is not null)
+            if (rows.TryGetValue(id, out var row) && row.LastSpokeAt is not null)
             {
                 list.Add(new Connected(
                     id,
@@ -109,5 +104,5 @@ public static class MachineLive
         return list;
     }
 
-    private readonly record struct Connected(string Id, MachineSnapshot Snapshot, DateTimeOffset? LastSpoke);
+    private readonly record struct Connected(Guid Id, MachineSnapshot Snapshot, DateTimeOffset? LastSpoke);
 }

@@ -490,7 +490,7 @@ public static class DashboardEndpoints
             }
 
             var opened = await forwards.EstablishForLeadAsync(
-                bound.MachineId.ToString(), grant, serviceName, Landbridge.Mcp.Tools.WorkerTools.RelayUrlFrom(config), ct);
+                bound.MachineId, grant, serviceName, Landbridge.Mcp.Tools.WorkerTools.RelayUrlFrom(config), ct);
             return opened switch
             {
                 ForwardEstablishResult.Established e => Notice(http, "Forward open",

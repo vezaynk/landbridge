@@ -15,7 +15,7 @@ public abstract record Effect;
 /// a human wants a terminal task's machine-local transcript (§12) nothing else remembers
 /// which machine to ask.
 /// </param>
-public sealed record MintWorkerInstanceToken(WorkerInstanceId Instance, string Machine) : Effect;
+public sealed record MintWorkerInstanceToken(WorkerInstanceId Instance, Guid Machine) : Effect;
 
 /// <summary>
 /// The named instance is no longer the incumbent. Revocation must land before

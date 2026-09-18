@@ -357,7 +357,7 @@ public sealed class PreviewConnectServiceTests(PostgresFixture pg) : IAsyncLifet
             new CreateSession(new LeadClaim(team), team, "criteria", "default"));
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(
-            new MachineSnapshot("m1", Ready: true, UnderBackPressure: false, new HashSet<string> { "default" }), instance);
+            new MachineSnapshot(TestMachineIds.For("m1"), Ready: true, UnderBackPressure: false, new HashSet<string> { "default" }), instance);
         Assert.IsType<StoreResult.Applied>(
             await store.RegisterServiceAsync(new WorkerCaller(team, created.Session.Id, instance), name, port));
         return (created.Session.Id, instance);
@@ -372,7 +372,7 @@ public sealed class PreviewConnectServiceTests(PostgresFixture pg) : IAsyncLifet
             new CreateSession(new LeadClaim(team), team, "criteria", "default"));
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(
-            new MachineSnapshot("m1", Ready: true, UnderBackPressure: false, new HashSet<string> { "default" }), instance);
+            new MachineSnapshot(TestMachineIds.For("m1"), Ready: true, UnderBackPressure: false, new HashSet<string> { "default" }), instance);
         await store.RegisterServiceAsync(new WorkerCaller(team, created.Session.Id, instance), name, port);
         return (created.Session.Id, port);
     }
@@ -387,7 +387,7 @@ public sealed class PreviewConnectServiceTests(PostgresFixture pg) : IAsyncLifet
     {
         var sent = new List<OpenForwardCommand>();
         var registry = new RunnerConnectionRegistry(clock);
-        registry.Register("mp", new HashSet<string> { "default" }, (cmd, _) =>
+        registry.Register(TestMachineIds.For("mp"), new HashSet<string> { "default" }, (cmd, _) =>
         {
             if (cmd is OpenForwardCommand ofc)
                 sent.Add(ofc);
@@ -396,7 +396,7 @@ public sealed class PreviewConnectServiceTests(PostgresFixture pg) : IAsyncLifet
         // Every task named is live on the one machine, so a producer the connect resolves
         // — right or wrong — is always reachable and therefore always visible in `sent`.
         foreach (var task in trackedTasks)
-            registry.TrackDispatch("mp", task);
+            registry.TrackDispatch(TestMachineIds.For("mp"), task);
         var orch = new ForwardOrchestrator(registry, new ForwardWaiters(), NullLogger<ForwardOrchestrator>.Instance);
         var previewAuth = new PreviewAuthStore(clock);
         var connect = new PreviewConnectService(

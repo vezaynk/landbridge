@@ -166,7 +166,7 @@ public sealed class SessionStore(
     /// <see cref="SendInputRequestAsync"/>.
     /// </summary>
     public async Task<StoreResult> SendInputResponseAsync(
-        LeadClaim lead, SessionId id, string? leaseMachine, string? answer = null,
+        LeadClaim lead, SessionId id, Guid? leaseMachine, string? answer = null,
         bool sessionLive = false,
         CancellationToken ct = default)
     {
@@ -188,7 +188,7 @@ public sealed class SessionStore(
     /// <see cref="SendInputResponseAsync"/> / <c>answer_permission_request</c>.
     /// </summary>
     public async Task<StoreResult> SendInputRequestAsync(
-        LeadClaim lead, SessionId id, string? leaseMachine, string? text = null,
+        LeadClaim lead, SessionId id, Guid? leaseMachine, string? text = null,
         bool sessionLive = false,
         CancellationToken ct = default)
     {
@@ -214,7 +214,7 @@ public sealed class SessionStore(
         row.MessageState is MessageState.AwaitingLead or MessageState.AwaitingReport;
 
     public async Task<StoreResult> AnswerOrWakeAsync(
-        LeadClaim lead, SessionId id, string? leaseMachine, string? answer = null,
+        LeadClaim lead, SessionId id, Guid? leaseMachine, string? answer = null,
         bool sessionLive = false,
         CancellationToken ct = default)
     {
@@ -1070,14 +1070,14 @@ public sealed class SessionStore(
     /// refused rather than reviving a dispatch that has moved on.</para>
     /// </summary>
     public async Task<IReadOnlyList<SessionId>> HeldDispatchesOnAsync(
-        string machineId, CancellationToken ct = default)
+        Guid machine, CancellationToken ct = default)
     {
         var ids = await db.Sessions.AsNoTracking()
             .Where(t => t.OccupancyDesired == Occupancy.Running
                 && t.Health == SessionHealth.Ok
                 && t.CurrentInstanceId != null
                 && db.WorkerInstances.Any(w =>
-                    w.Id == t.CurrentInstanceId && !w.Revoked && w.MachineId == machineId))
+                    w.Id == t.CurrentInstanceId && !w.Revoked && w.MachineId == machine))
             .OrderBy(t => t.Id)
             .Select(t => t.Id)
             .ToListAsync(ct);
@@ -1120,7 +1120,7 @@ public sealed class SessionStore(
             .AnyAsync(t => t.Id == id.Value && t.ReportUnread, ct);
 
     public sealed record OccupancyLookaside(
-        string? HarnessSessionRef, string? PreferredMachine, string? ParkMachine);
+        string? HarnessSessionRef, Guid? PreferredMachine, Guid? ParkMachine);
 
     /// <summary>One MCP Tasks projection of a message envelope.</summary>
     public sealed record SessionTaskSnapshot(
@@ -1274,7 +1274,7 @@ public sealed class SessionStore(
     /// The machine of this task's most recent dispatch — durable on the instance
     /// row, so a fail that never wrote a park record can still pin session/load.
     /// </summary>
-    private string? LastMachineOf(Guid sessionId) =>
+    private Guid? LastMachineOf(Guid sessionId) =>
         db.WorkerInstances.Local
             .Where(w => w.SessionId == sessionId && w.MachineId != null)
             .OrderByDescending(w => w.CreatedAt)
@@ -1540,7 +1540,7 @@ public sealed class SessionStore(
             && row.PreferredMachine is null)
         {
             var lastMachine = row.ParkMachine ?? LastMachineOf(row.Id);
-            if (lastMachine is { Length: > 0 })
+            if (lastMachine is not null)
             {
                 row.ParkMachine ??= lastMachine;
                 row.PreferredMachine = lastMachine;

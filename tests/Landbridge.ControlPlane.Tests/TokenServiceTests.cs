@@ -182,7 +182,7 @@ public sealed class TokenServiceTests(PostgresFixture pg) : IAsyncLifetime
             new CreateSession(new LeadClaim(Team), Team, "criteria", "default"));
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(
-            new MachineSnapshot("m1", true, false, new HashSet<string> { "default" }), instance);
+            new MachineSnapshot(TestMachineIds.For("m1"), true, false, new HashSet<string> { "default" }), instance);
         var minted = await tokens.MintWorkerTokenAsync(Team, created.Session.Id, instance);
 
         Assert.IsType<Principal.Worker>(await tokens.ValidateAsync(minted.Token));

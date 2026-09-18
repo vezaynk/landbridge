@@ -210,11 +210,11 @@ public sealed class DispatchService : IHostedService
     /// </summary>
     public async Task RunDispatchPassAsync(CancellationToken ct)
     {
-        var exhausted = new HashSet<string>(StringComparer.Ordinal);
+        var exhausted = new HashSet<Guid>();
         while (!ct.IsCancellationRequested)
         {
             var progressed = false;
-            IReadOnlyList<(string Id, MachineSnapshot Snapshot)> ready;
+            IReadOnlyList<(Guid Id, MachineSnapshot Snapshot)> ready;
             using (var scope = _scopes.CreateScope())
             {
                 var db = scope.ServiceProvider.GetRequiredService<LandbridgeDbContext>();
@@ -274,7 +274,7 @@ public sealed class DispatchService : IHostedService
     /// most one window of delayed detection for a machine that died during the restart,
     /// which the aliveness clock then catches normally.</para>
     /// </summary>
-    public async Task<int> RehydrateMachineAsync(string machineId, CancellationToken ct)
+    public async Task<int> RehydrateMachineAsync(Guid machineId, CancellationToken ct)
     {
         using var scope = _scopes.CreateScope();
         var store = scope.ServiceProvider.GetRequiredService<SessionStore>();
@@ -291,7 +291,7 @@ public sealed class DispatchService : IHostedService
     private enum DispatchOutcome { Dispatched, NothingEligible, SendFailed }
 
     private async Task<DispatchOutcome> TryDispatchOneAsync(
-        string machineId, MachineSnapshot snapshot, CancellationToken ct)
+        Guid machineId, MachineSnapshot snapshot, CancellationToken ct)
     {
         using var scope = _scopes.CreateScope();
         var store = scope.ServiceProvider.GetRequiredService<SessionStore>();
@@ -402,7 +402,7 @@ public sealed class DispatchService : IHostedService
     /// no-ops and dispatch proceeds unchanged.
     /// </summary>
     private static Activity? StartDispatchActivity(
-        SessionId task, string machineId, string profile, string? parentTraceparent)
+        SessionId task, Guid machineId, string profile, string? parentTraceparent)
     {
         var activity = parentTraceparent is not null
             && ActivityContext.TryParse(parentTraceparent, null, out var parent)
@@ -634,7 +634,7 @@ public sealed class DispatchService : IHostedService
     /// processes; a send-failure requeue never started anything; and a blocked task's harness
     /// has already exited by definition (§11).</para>
     /// </summary>
-    private async Task KillAbandonedDispatchAsync(SessionId task, string machineId, CancellationToken ct)
+    private async Task KillAbandonedDispatchAsync(SessionId task, Guid machineId, CancellationToken ct)
     {
         if (await _registry.SendKillAsync(machineId, task, CommandedExitEchoWindow, ct))
         {

@@ -27,7 +27,7 @@ public sealed class RelayGrantServiceTests(PostgresFixture pg) : IAsyncLifetime
     private static LeadClaim LeadFor(TeamId team) => new(team);
 
     private static MachineSnapshot Machine() =>
-        new("m1", Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });
+        new(TestMachineIds.For("m1"), Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });
 
     /// <summary>
     /// A producer task in <paramref name="team"/> that is working and has

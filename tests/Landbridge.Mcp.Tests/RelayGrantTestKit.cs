@@ -36,7 +36,7 @@ namespace Landbridge.Mcp.Tests;
 internal static class RelayGrantTestKit
 {
     public static MachineSnapshot Machine =>
-        new("m1", Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });
+        new(TestMachineIds.For("m1"), Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });
 
     /// <summary>The plane, with the relay-validation endpoint and its shared bearer configured.</summary>
     /// <param name="relayUrl">
