@@ -25,7 +25,23 @@ public sealed class RunnerEventSink(
     ProcessControlRelay processes,
     ILogger<RunnerEventSink> logger)
 {
-    public async Task HandleAsync(RunnerEvent evt, CancellationToken ct = default)
+    /// <summary>
+    /// For a caller with no connection in hand — every event but <c>rebooted</c> carries
+    /// its own subject, so only that one is affected, and it falls back to the id the
+    /// runner reported for itself.
+    /// </summary>
+    public Task HandleAsync(RunnerEvent evt, CancellationToken ct = default) =>
+        HandleAsync(evt, connectedMachine: null, ct);
+
+    /// <param name="connectedMachine">
+    /// The machine this event arrived from, as the runner endpoint authenticated it.
+    /// Only <c>rebooted</c> needs it, and it needs it for two reasons: the id on that
+    /// event is the runner's own description of itself (whatever <c>--machine-id</c>
+    /// gave it, which need not be a machine id at all), and the requeue it triggers has
+    /// to be scoped to the connection that carried it.
+    /// </param>
+    public async Task HandleAsync(
+        RunnerEvent evt, string? connectedMachine, CancellationToken ct)
     {
         switch (evt)
         {
@@ -78,7 +94,7 @@ public sealed class RunnerEventSink(
                 break;
 
             case RebootedEvent r:
-                await HandleRebootedAsync(r, ct);
+                await HandleRebootedAsync(r, connectedMachine, ct);
                 break;
 
             case UsageReportedEvent u:
@@ -282,12 +298,33 @@ public sealed class RunnerEventSink(
         string machineId, IReadOnlyList<SessionId> held, CancellationToken ct = default) =>
         await RequeueHeldAsync(machineId, held, ct);
 
-    private async Task HandleRebootedAsync(RebootedEvent r, CancellationToken ct) =>
-        // §10 runner restart: the runner adopted nothing, so every task it held
-        // requeues against the infrastructure counter (§6). Unlike the disconnect path
-        // the connection is live here — landbridged announced itself on a working socket —
-        // so the held set is read from the registry as before.
-        await RequeueHeldAsync(r.MachineId, registry.SessionsOn(r.MachineId), ct);
+    /// <summary>
+    /// §10 runner restart: the runner adopted nothing, so the work it was holding has no
+    /// process behind it and requeues against the infrastructure counter (§6).
+    ///
+    /// <para>Which work, exactly, is the whole difficulty. The announcement arrives on a
+    /// connection that is already up, and the plane may have dispatched onto that
+    /// connection in the meantime — the reconnect, the Lead's resume of what the
+    /// disconnect just failed, and the dispatch pass that places it all happen inside a
+    /// few hundred milliseconds. Requeueing everything the machine currently holds
+    /// therefore also requeues dispatches the reboot cannot possibly have killed, which
+    /// burns a second infrastructure requeue per task per restart: at §9's cap of five, a
+    /// flapping machine abandons a task in three disconnects instead of five.</para>
+    ///
+    /// <para>So it requeues only what this connection <em>inherited</em> — the tasks
+    /// re-adopted from committed state when it registered, which are exactly the ones the
+    /// dead daemon was running. A task redispatched since has a live command on this
+    /// socket and is left alone.</para>
+    ///
+    /// <para>The machine is the authenticated one, not the id on the event: that field is
+    /// the runner's own description of itself and need not be a machine id at all, and
+    /// keying the registry on it silently requeued nothing when it was a slug.</para>
+    /// </summary>
+    private async Task HandleRebootedAsync(RebootedEvent r, string? connectedMachine, CancellationToken ct)
+    {
+        var machineId = connectedMachine ?? r.MachineId;
+        await RequeueHeldAsync(machineId, registry.InheritedOn(machineId), ct);
+    }
 
     private async Task RequeueHeldAsync(
         string machineId, IReadOnlyList<SessionId> held, CancellationToken ct)

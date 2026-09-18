@@ -227,7 +227,7 @@ public static class RunnerEndpoint
             }
             if (RunnerWire.DecodeEvent(message) is { } evt)
             {
-                await sink.HandleAsync(evt, ct);
+                await sink.HandleAsync(evt, connection.MachineId, ct);
                 continue;
             }
             logger.LogWarning("runner {Machine} sent an unrecognized frame; ignoring", machineId);

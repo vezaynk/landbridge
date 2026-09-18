@@ -213,13 +213,32 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// instead of being requeued the instant its machine comes back. No-ops when the
     /// machine has no live connection.
     /// </summary>
-    public void TrackDispatch(string machineId, SessionId task)
+    /// <param name="inherited">
+    /// True when re-adopting committed state onto a reconnecting machine
+    /// (<see cref="DispatchService.RehydrateMachineAsync"/>) rather than tracking a
+    /// command this connection was actually sent. A later real dispatch of the same
+    /// task overwrites the mark, because by then there is a live command behind it.
+    /// </param>
+    public void TrackDispatch(string machineId, SessionId task, bool inherited = false)
     {
         if (!_connections.TryGetValue(machineId, out var conn))
             return;
         var now = clock.GetUtcNow();
         lock (conn.Gate)
-            conn.Dispatched[task] = new TaskActivity(now, now);
+            conn.Dispatched[task] = new TaskActivity(now, now, Inherited: inherited);
+    }
+
+    /// <summary>
+    /// The tasks this machine is holding that it was never sent a command for — what a
+    /// reconnecting connection inherited from committed state. Empty once every one of
+    /// them has been redispatched.
+    /// </summary>
+    public IReadOnlyList<SessionId> InheritedOn(string machineId)
+    {
+        if (!_connections.TryGetValue(machineId, out var conn))
+            return [];
+        lock (conn.Gate)
+            return conn.Dispatched.Where(d => d.Value.Inherited).Select(d => d.Key).ToArray();
     }
 
     /// <summary>
@@ -547,8 +566,16 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// <see cref="ProcessGone"/> is set when the harness exits but the task stays
     /// tracked (blocked_on_input): the lease is still this machine's, the process
     /// is not.</summary>
+    /// <summary>
+    /// <paramref name="Inherited"/> marks a task this connection was <em>given</em> at
+    /// re-adoption rather than dispatched — work the plane believes is running here but
+    /// never sent this socket a command for. It is what a <c>rebooted</c> announcement
+    /// requeues, and the reason it must be recorded rather than inferred: once the
+    /// connection is up, "tracked on this machine" stops telling the two apart.
+    /// </summary>
     private readonly record struct TaskActivity(
-        DateTimeOffset LastActivity, DateTimeOffset LastProgress, bool ProcessGone = false);
+        DateTimeOffset LastActivity, DateTimeOffset LastProgress, bool ProcessGone = false,
+        bool Inherited = false);
 
     private sealed class RunnerConnection(Func<RunnerCommand, CancellationToken, Task> send, long generation)
     {

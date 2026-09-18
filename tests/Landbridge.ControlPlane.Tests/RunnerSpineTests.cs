@@ -270,8 +270,13 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Empty(registry.SessionsOn(M1));
     }
 
+    /// <summary>
+    /// The reboot arrives on a connection that has already re-adopted what committed state
+    /// said the machine was running (<see cref="DispatchService.RehydrateMachineAsync"/>),
+    /// so that is what the announcement is about and that is what requeues.
+    /// </summary>
     [SkippableFact]
-    public async Task Rebooted_requeues_every_task_the_machine_held()
+    public async Task Rebooted_requeues_every_task_the_reconnecting_machine_inherited()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         var clock = TimeProvider.System;
@@ -282,15 +287,97 @@ public sealed class RunnerSpineTests(PostgresFixture pg) : IAsyncLifetime
 
         var registry = new RunnerConnectionRegistry(clock);
         registry.Register(M1, Set("default"), (_, _) => Task.CompletedTask);
-        registry.TrackDispatch(M1, first);
-        registry.TrackDispatch(M1, second);
+        registry.TrackDispatch(M1, first, inherited: true);
+        registry.TrackDispatch(M1, second, inherited: true);
 
         var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
-        await sink.HandleAsync(new RebootedEvent(M1, clock.GetUtcNow()));
+        await sink.HandleAsync(new RebootedEvent(M1, clock.GetUtcNow()), M1, default);
 
         Assert.Equal(SessionState.Failed, await StateAsync(clock, first));
         Assert.Equal(SessionState.Failed, await StateAsync(clock, second));
         Assert.Empty(registry.SessionsOn(M1));
+    }
+
+    /// <summary>
+    /// The race this is here to stop. A restart is announced on a connection that is
+    /// already up, and the plane can dispatch onto it before the announcement is read —
+    /// reconnect, the Lead's resume of what the disconnect failed, and the dispatch pass
+    /// that places it all land inside a few hundred milliseconds. Requeueing everything
+    /// held would take the new dispatch with it and charge the task a second
+    /// infrastructure requeue for one restart, which at §9's cap of five abandons a task
+    /// in three disconnects instead of five.
+    /// </summary>
+    [SkippableFact]
+    public async Task Rebooted_leaves_a_task_dispatched_since_the_reconnect_alone()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = TimeProvider.System;
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var inherited = await SeedWorkingTaskAsync(clock, team, M1);
+        var redispatched = await SeedWorkingTaskAsync(clock, team, M1);
+
+        var registry = new RunnerConnectionRegistry(clock);
+        registry.Register(M1, Set("default"), (_, _) => Task.CompletedTask);
+        registry.TrackDispatch(M1, inherited, inherited: true);
+        // Placed on this connection after it came up: there is a live command behind it.
+        registry.TrackDispatch(M1, redispatched);
+
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
+        await sink.HandleAsync(new RebootedEvent(M1, clock.GetUtcNow()), M1, default);
+
+        Assert.Equal(SessionState.Failed, await StateAsync(clock, inherited));
+        Assert.Equal(SessionState.Working, await StateAsync(clock, redispatched));
+        Assert.Equal([redispatched], registry.SessionsOn(M1));
+    }
+
+    /// <summary>
+    /// A redispatch of an inherited task clears the mark: by then the plane has sent this
+    /// connection a command for it, so a later reboot announcement is no longer about it.
+    /// </summary>
+    [SkippableFact]
+    public async Task Redispatching_an_inherited_task_takes_it_out_of_the_reboot_sweep()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = TimeProvider.System;
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var task = await SeedWorkingTaskAsync(clock, team, M1);
+
+        var registry = new RunnerConnectionRegistry(clock);
+        registry.Register(M1, Set("default"), (_, _) => Task.CompletedTask);
+        registry.TrackDispatch(M1, task, inherited: true);
+        registry.TrackDispatch(M1, task);
+
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
+        await sink.HandleAsync(new RebootedEvent(M1, clock.GetUtcNow()), M1, default);
+
+        Assert.Equal(SessionState.Working, await StateAsync(clock, task));
+    }
+
+    /// <summary>
+    /// The id on the event is the runner's own description of itself — <c>--machine-id</c>
+    /// or <c>LANDBRIDGE_MACHINE_ID</c>, which the dev seed fills with a slug. Keying the
+    /// registry on it meant a reboot announced under a name the plane does not file that
+    /// machine under requeued nothing, silently. The authenticated machine wins.
+    /// </summary>
+    [SkippableFact]
+    public async Task Rebooted_uses_the_authenticated_machine_not_the_name_the_runner_reports()
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        var clock = TimeProvider.System;
+        var scopes = ScopeFactory(clock);
+        var team = TeamId.New();
+        var task = await SeedWorkingTaskAsync(clock, team, M1);
+
+        var registry = new RunnerConnectionRegistry(clock);
+        registry.Register(M1, Set("default"), (_, _) => Task.CompletedTask);
+        registry.TrackDispatch(M1, task, inherited: true);
+
+        var sink = new RunnerEventSink(scopes, registry, new ForwardWaiters(), new TranscriptWaiters(), new ProcessControlRelay(registry), NullLogger<RunnerEventSink>.Instance);
+        await sink.HandleAsync(new RebootedEvent("the-name-on-the-box", clock.GetUtcNow()), M1, default);
+
+        Assert.Equal(SessionState.Failed, await StateAsync(clock, task));
     }
 
     // ── Event sink: exit while blocked stays tracked (§6/§11) ────────────────────
