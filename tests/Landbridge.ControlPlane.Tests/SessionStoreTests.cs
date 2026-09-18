@@ -29,7 +29,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
     }
 
     private static MachineSnapshot Machine(params string[] profiles) =>
-        new("m1", Ready: true, UnderBackPressure: false,
+        new(TestMachineIds.For("m1"), Ready: true, UnderBackPressure: false,
             profiles.Length == 0 ? new HashSet<string> { "default" } : [.. profiles]);
 
     [SkippableFact]
@@ -122,7 +122,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
 
         await store.DispatchNextAsync(Machine(), WorkerInstanceId.New());
         Assert.IsType<StoreResult.Applied>(
-            await store.AnswerOrWakeAsync(Lead, id, leaseMachine: "m1", answer: "also cover the error path", sessionLive: true));
+            await store.AnswerOrWakeAsync(Lead, id, leaseMachine: TestMachineIds.For("m1"), answer: "also cover the error path", sessionLive: true));
 
         Assert.Equal(
             ["pnpm test", "also cover the error path"],
@@ -483,7 +483,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
             new WorkerCaller(Team, id, asker), InputRequestKind.Question, "which database?"));
 
         Assert.IsType<StoreResult.Applied>(
-            await store.AnswerOrWakeAsync(Lead, id, leaseMachine: "m1", answer: "staging-pg"));
+            await store.AnswerOrWakeAsync(Lead, id, leaseMachine: TestMachineIds.For("m1"), answer: "staging-pg"));
 
         await using var v = pg.NewContext();
         var vstore = NewStore(v);
@@ -514,7 +514,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         await store.DispatchNextAsync(Machine(), first);
         await store.ApplyAsync(id, new RequestInput(
             new WorkerCaller(Team, id, first), InputRequestKind.Question, "which database?"));
-        await store.AnswerOrWakeAsync(Lead, id, leaseMachine: "m1", answer: "staging-pg");
+        await store.AnswerOrWakeAsync(Lead, id, leaseMachine: TestMachineIds.For("m1"), answer: "staging-pg");
 
         // Redispatch, then ask something else.
         var second = WorkerInstanceId.New();
@@ -545,10 +545,10 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
             new WorkerCaller(Team, id, instance), InputRequestKind.Question, "which database?"));
         // The sweeper parks it first.
         Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(id,
-            new WaitTtlExpired(new ParkRecord("m1"))));
+            new WaitTtlExpired(new ParkRecord(TestMachineIds.For("m1")))));
 
         Assert.IsType<StoreResult.Applied>(
-            await store.AnswerOrWakeAsync(Lead, id, leaseMachine: "m1", answer: "staging-pg"));
+            await store.AnswerOrWakeAsync(Lead, id, leaseMachine: TestMachineIds.For("m1"), answer: "staging-pg"));
 
         await using var v = pg.NewContext();
         var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
@@ -570,13 +570,13 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         await store.DispatchNextAsync(Machine(), instance);
         await store.ApplyAsync(id, new RequestInput(
             new WorkerCaller(Team, id, instance), InputRequestKind.EndpointWait, "waiting on service 'api'"));
-        await store.AnswerOrWakeAsync(Lead, id, leaseMachine: "m1", answer: "'api' is up on 5173");
+        await store.AnswerOrWakeAsync(Lead, id, leaseMachine: TestMachineIds.For("m1"), answer: "'api' is up on 5173");
 
         // Park it again (a Lead stop), then wake with no words.
         var second = WorkerInstanceId.New();
         await store.DispatchNextAsync(Machine(), second);
         await store.ApplyAsync(id, new StopPreserveAndPark(
-            Lead, new ParkRecord("m1")));
+            Lead, new ParkRecord(TestMachineIds.For("m1"))));
         Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(id, new WakeParked()));
 
         await using var v = pg.NewContext();
@@ -651,7 +651,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
 
         var oversized = new string('x', AnswerInput.MaxAnswerBytes + 1);
         var rejected = Assert.IsType<StoreResult.Rejected>(
-            await store.AnswerOrWakeAsync(Lead, id, leaseMachine: "m1", answer: oversized));
+            await store.AnswerOrWakeAsync(Lead, id, leaseMachine: TestMachineIds.For("m1"), answer: oversized));
         Assert.Equal(Rule.AnswerWithinSizeCap, rejected.Rule);
 
         await using var v = pg.NewContext();
@@ -833,8 +833,8 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Equal(1, row.InfrastructureRequeues);
         Assert.Null(row.CurrentInstanceId);
         Assert.True((await verify.WorkerInstances.AsNoTracking().SingleAsync(w => w.Id == instance.Value)).Revoked);
-        Assert.Equal("m1", row.PreferredMachine);
-        Assert.Equal("m1", row.ParkMachine);
+        Assert.Equal(TestMachineIds.For("m1"), row.PreferredMachine);
+        Assert.Equal(TestMachineIds.For("m1"), row.ParkMachine);
         Assert.Equal(MachineGonePolicy.Pin, row.OnMachineGone);
     }
 
@@ -852,7 +852,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
             await store.ApplyAsync(id, new LivenessLost(LivenessLossReason.ProcessExited)));
         Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(id, new WakeParked("try again")));
 
-        var elsewhere = new MachineSnapshot("m2", Ready: true, UnderBackPressure: false,
+        var elsewhere = new MachineSnapshot(TestMachineIds.For("m2"), Ready: true, UnderBackPressure: false,
             new HashSet<string> { "default" });
         Assert.IsType<StoreResult.NotFound>(
             await NewStore(db).DispatchNextAsync(elsewhere, WorkerInstanceId.New(), default, ["m2"]));
@@ -900,15 +900,15 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         await store.DispatchNextAsync(Machine(), instance);
         await store.ApplyAsync(id, new RequestInput(new WorkerCaller(Team, id, instance), InputRequestKind.Question));
 
-        var park = new ParkRecord("m1");
+        var park = new ParkRecord(TestMachineIds.For("m1"));
         await store.ApplyAsync(id, new WaitTtlExpired(park));
 
         await using (var v = pg.NewContext())
         {
             var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
             Assert.Equal(SessionState.Parked, row.State);
-            Assert.Equal("m1", row.ParkMachine);
-            Assert.Equal("m1", row.PreferredMachine);
+            Assert.Equal(TestMachineIds.For("m1"), row.ParkMachine);
+            Assert.Equal(TestMachineIds.For("m1"), row.PreferredMachine);
             Assert.Equal(MachineGonePolicy.Pin, row.OnMachineGone);
         }
 
@@ -918,7 +918,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
             var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
             Assert.Equal(SessionState.Working, row.State);
             // Park record survives into submitted for redispatch affinity (§11).
-            Assert.Equal("m1", row.ParkMachine);
+            Assert.Equal(TestMachineIds.For("m1"), row.ParkMachine);
         }
     }
 
@@ -931,7 +931,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         var id = await SeedBlocked(store);
 
         // The sweeper's outcome (§11): the task parked with the record the plane held.
-        var park = new ParkRecord("m1");
+        var park = new ParkRecord(TestMachineIds.For("m1"));
         await store.ApplyAsync(id, new WaitTtlExpired(park));
 
         // The Lead answers — through the routing method — with no knowledge that
@@ -946,7 +946,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
             var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
             Assert.Equal(SessionState.Working, row.State);
             // Park record survives into submitted for redispatch affinity (§11).
-            Assert.Equal("m1", row.ParkMachine);
+            Assert.Equal(TestMachineIds.For("m1"), row.ParkMachine);
         }
 
         // Redispatch resumes it; the successor sees the incremented attempt (§11).
@@ -978,7 +978,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         await using (var db = pg.NewContext())
         {
             var applied = Assert.IsType<StoreResult.Applied>(
-                await NewStore(db).AnswerOrWakeAsync(Lead, id, leaseMachine: "m1", sessionLive: false));
+                await NewStore(db).AnswerOrWakeAsync(Lead, id, leaseMachine: TestMachineIds.For("m1"), sessionLive: false));
             Assert.Equal(SessionState.Working, applied.Session.State);
         }
 
@@ -986,7 +986,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         {
             var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
             Assert.Equal(SessionState.Working, row.State);      // load in flight, not left running
-            Assert.Equal("m1", row.ParkMachine);               // preferred machine (§11)
+            Assert.Equal(TestMachineIds.For("m1"), row.ParkMachine);               // preferred machine (§11)
             Assert.Equal("sess-answer", row.HarnessSessionRef); // the ref redispatch resumes
             Assert.Equal(0, row.InfrastructureRequeues);       // a Lead answer is not an infra requeue (§6)
             Assert.Null(row.CurrentInstanceId);
@@ -1013,7 +1013,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         var id = await SeedBlocked(store);
 
         var applied = Assert.IsType<StoreResult.Applied>(
-            await store.AnswerOrWakeAsync(Lead, id, leaseMachine: "m1", answer: "use staging-pg", sessionLive: true));
+            await store.AnswerOrWakeAsync(Lead, id, leaseMachine: TestMachineIds.For("m1"), answer: "use staging-pg", sessionLive: true));
         Assert.Equal(SessionState.Working, applied.Session.State);
         Assert.NotNull(applied.Session.CurrentInstance);
 
@@ -1038,7 +1038,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         await store.DispatchNextAsync(Machine(), instance);
 
         var applied = Assert.IsType<StoreResult.Applied>(
-            await store.AnswerOrWakeAsync(Lead, id, leaseMachine: "m1", answer: "keep going on the tests", sessionLive: true));
+            await store.AnswerOrWakeAsync(Lead, id, leaseMachine: TestMachineIds.For("m1"), answer: "keep going on the tests", sessionLive: true));
         Assert.Equal(SessionState.Working, applied.Session.State);
         Assert.Equal(instance, applied.Session.CurrentInstance);
 
@@ -1073,7 +1073,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
             id, new ReportResult(caller, "git:ref")));
 
         var applied = Assert.IsType<StoreResult.Applied>(
-            await store.AnswerOrWakeAsync(Lead, id, leaseMachine: "m1", answer: "the deploy key is in; clone now", sessionLive: true));
+            await store.AnswerOrWakeAsync(Lead, id, leaseMachine: TestMachineIds.For("m1"), answer: "the deploy key is in; clone now", sessionLive: true));
         Assert.Equal(SessionState.Working, applied.Session.State);
         Assert.Equal(instance, applied.Session.CurrentInstance);
 
@@ -1095,7 +1095,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
             id, new ReportResult(new WorkerCaller(Team, id, instance), "git:ref")));
 
         var applied = Assert.IsType<StoreResult.Applied>(
-            await store.AnswerOrWakeAsync(Lead, id, leaseMachine: "m1", answer: "add a test", sessionLive: true));
+            await store.AnswerOrWakeAsync(Lead, id, leaseMachine: TestMachineIds.For("m1"), answer: "add a test", sessionLive: true));
         Assert.Equal(SessionState.Working, applied.Session.State);
         Assert.Equal(instance, applied.Session.CurrentInstance);
 
@@ -1156,7 +1156,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
         await using var db = pg.NewContext();
         var store = NewStore(db);
         var id = await SeedBlocked(store);
-        await store.ApplyAsync(id, new WaitTtlExpired(new ParkRecord("m1")));
+        await store.ApplyAsync(id, new WaitTtlExpired(new ParkRecord(TestMachineIds.For("m1"))));
 
         // A Lead for another Team cannot wake this Team's parked task (§4, §5) —
         // the same Team scope the AnswerInput engine check enforces on the blocked
@@ -1179,11 +1179,11 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
 
         // The Lead answers a beat before the sweep decides to park: the task requeues
         // for redispatch (→ submitted)…
-        Assert.IsType<StoreResult.Applied>(await store.AnswerOrWakeAsync(Lead, id, leaseMachine: "m1"));
+        Assert.IsType<StoreResult.Applied>(await store.AnswerOrWakeAsync(Lead, id, leaseMachine: TestMachineIds.For("m1")));
         // …and the sweep's park lands on a now-submitted task, which the engine refuses.
         // Exactly one transition, no lost answer, no double move.
         var rejected = Assert.IsType<StoreResult.Rejected>(
-            await store.ApplyAsync(id, new WaitTtlExpired(new ParkRecord("m1"))));
+            await store.ApplyAsync(id, new WaitTtlExpired(new ParkRecord(TestMachineIds.For("m1")))));
         Assert.Equal(Rule.InvalidSourceState, rejected.Rule);
         await using var v = pg.NewContext();
         Assert.Equal(SessionState.Working, (await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value)).State);
@@ -1199,7 +1199,7 @@ public sealed class SessionStoreTests(PostgresFixture pg) : IAsyncLifetime
 
         // The sweep parks a beat before the Lead answers…
         Assert.IsType<StoreResult.Applied>(
-            await store.ApplyAsync(id, new WaitTtlExpired(new ParkRecord("m1"))));
+            await store.ApplyAsync(id, new WaitTtlExpired(new ParkRecord(TestMachineIds.For("m1")))));
         // …and the same one answer call now routes to the wake and requeues it.
         // One call, correct outcome either way — exactly one transition, no double move.
         var woken = Assert.IsType<StoreResult.Applied>(await store.AnswerOrWakeAsync(Lead, id, leaseMachine: null));

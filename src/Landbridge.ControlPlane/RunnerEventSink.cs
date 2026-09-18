@@ -27,8 +27,8 @@ public sealed class RunnerEventSink(
 {
     /// <summary>
     /// For a caller with no connection in hand — every event but <c>rebooted</c> carries
-    /// its own subject, so only that one is affected, and it falls back to the id the
-    /// runner reported for itself.
+    /// its own subject, so only that one is affected, and with no machine to attribute
+    /// the announcement to it requeues nothing and says so.
     /// </summary>
     public Task HandleAsync(RunnerEvent evt, CancellationToken ct = default) =>
         HandleAsync(evt, connectedMachine: null, ct);
@@ -36,12 +36,12 @@ public sealed class RunnerEventSink(
     /// <param name="connectedMachine">
     /// The machine this event arrived from, as the runner endpoint authenticated it.
     /// Only <c>rebooted</c> needs it, and it needs it for two reasons: the id on that
-    /// event is the runner's own description of itself (whatever <c>--machine-id</c>
-    /// gave it, which need not be a machine id at all), and the requeue it triggers has
-    /// to be scoped to the connection that carried it.
+    /// event is the runner's own description of itself (a <c>string</c> precisely because
+    /// it need not be a machine id at all), and the requeue it triggers has to be scoped
+    /// to the connection that carried it.
     /// </param>
     public async Task HandleAsync(
-        RunnerEvent evt, string? connectedMachine, CancellationToken ct)
+        RunnerEvent evt, Guid? connectedMachine, CancellationToken ct)
     {
         switch (evt)
         {
@@ -249,7 +249,7 @@ public sealed class RunnerEventSink(
         var commanded = registry.ConsumeCommandedExit(e.Session);
         var keepSuccessor = false;
         var failed = false;
-        string? pin = registry.MachineFor(e.Session);
+        Guid? pin = registry.MachineFor(e.Session);
         await WithStoreAsync(async store =>
         {
             var row = await store.GetOccupancyAsync(e.Session, ct);
@@ -295,7 +295,7 @@ public sealed class RunnerEventSink(
     /// nothing is lost by asking early.</para>
     /// </summary>
     public async Task HandleDisconnectAsync(
-        string machineId, IReadOnlyList<SessionId> held, CancellationToken ct = default) =>
+        Guid machineId, IReadOnlyList<SessionId> held, CancellationToken ct = default) =>
         await RequeueHeldAsync(machineId, held, ct);
 
     /// <summary>
@@ -316,18 +316,27 @@ public sealed class RunnerEventSink(
     /// dead daemon was running. A task redispatched since has a live command on this
     /// socket and is left alone.</para>
     ///
-    /// <para>The machine is the authenticated one, not the id on the event: that field is
-    /// the runner's own description of itself and need not be a machine id at all, and
-    /// keying the registry on it silently requeued nothing when it was a slug.</para>
+    /// <para>The subject is the authenticated machine, never the id on the event: that
+    /// field is the runner's own description of itself, which is a <c>string</c> precisely
+    /// because it need not be a machine id at all. With no connection to attribute the
+    /// announcement to there is nothing to requeue against, and saying so is better than
+    /// guessing at a name.</para>
     /// </summary>
-    private async Task HandleRebootedAsync(RebootedEvent r, string? connectedMachine, CancellationToken ct)
+    private async Task HandleRebootedAsync(RebootedEvent r, Guid? connectedMachine, CancellationToken ct)
     {
-        var machineId = connectedMachine ?? r.MachineId;
+        if (connectedMachine is not { } machineId)
+        {
+            logger.LogWarning(
+                "runner announced a reboot as {Machine} on no identified connection; nothing requeued",
+                r.MachineId);
+            return;
+        }
+
         await RequeueHeldAsync(machineId, registry.InheritedOn(machineId), ct);
     }
 
     private async Task RequeueHeldAsync(
-        string machineId, IReadOnlyList<SessionId> held, CancellationToken ct)
+        Guid machineId, IReadOnlyList<SessionId> held, CancellationToken ct)
     {
         if (held.Count == 0)
             return;

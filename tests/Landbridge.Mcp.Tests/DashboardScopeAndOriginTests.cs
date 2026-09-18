@@ -39,7 +39,7 @@ namespace Landbridge.Mcp.Tests;
 public sealed class DashboardScopeAndOriginTests(PostgresFixture pg) : IAsyncLifetime
 {
     private static readonly MachineSnapshot AnyMachine =
-        new("box-1", Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });
+        new(TestMachineIds.For("box-1"), Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });
 
     public async Task InitializeAsync()
     {
@@ -210,7 +210,7 @@ public sealed class DashboardScopeAndOriginTests(PostgresFixture pg) : IAsyncLif
         Guid box;
         await using (var db = pg.NewContext())
             box = await TestMachines.ConnectAsync(db, TimeProvider.System, registry, "box-1");
-        registry.TrackDispatch(box.ToString(), sessionId);
+        registry.TrackDispatch(box, sessionId);
 
         using var client = Client(app);
         var lead = await IssueLeadTokenAsync(team, ct);
@@ -400,10 +400,10 @@ public sealed class DashboardScopeAndOriginTests(PostgresFixture pg) : IAsyncLif
         // something rather than flipping a row on an absent box.
         var registry = app.Services.GetRequiredService<RunnerConnectionRegistry>();
         registry.Register(
-            machineId.ToString(), new HashSet<string>(StringComparer.Ordinal) { "default" },
+            machineId, new HashSet<string>(StringComparer.Ordinal) { "default" },
             (_, _) => Task.CompletedTask);
         registry.ApplyHeartbeat(
-            machineId.ToString(),
+            machineId,
             new MachineHeartbeat(machineId.ToString(), Ready: true, UnderBackPressure: false,
                 new SystemLoad(0, 0, 0), RunningSessions: 0, ["default"], DateTimeOffset.UtcNow));
 
@@ -419,7 +419,7 @@ public sealed class DashboardScopeAndOriginTests(PostgresFixture pg) : IAsyncLif
         await using (var db = pg.NewContext())
             Assert.False((await db.Set<MachineRow>().AsNoTracking()
                 .SingleAsync(m => m.Id == machineId, ct)).Revoked);
-        Assert.NotNull(registry.SnapshotFor(machineId.ToString()));
+        Assert.NotNull(registry.SnapshotFor(machineId));
 
         // The same POST from the dashboard's own page revokes, so the refusal above was about
         // the origin and not about the action being unreachable.
@@ -431,7 +431,7 @@ public sealed class DashboardScopeAndOriginTests(PostgresFixture pg) : IAsyncLif
         await using (var db = pg.NewContext())
             Assert.True((await db.Set<MachineRow>().AsNoTracking()
                 .SingleAsync(m => m.Id == machineId, ct)).Revoked);
-        Assert.Null(registry.SnapshotFor(machineId.ToString()));
+        Assert.Null(registry.SnapshotFor(machineId));
 
         await app.StopAsync(ct);
     }

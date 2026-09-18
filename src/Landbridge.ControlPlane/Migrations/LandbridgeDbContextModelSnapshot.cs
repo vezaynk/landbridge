@@ -405,8 +405,8 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasColumnType("uuid")
                         .HasColumnName("consumer_instance_id");
 
-                    b.Property<string>("ConsumerMachine")
-                        .HasColumnType("text")
+                    b.Property<Guid?>("ConsumerMachine")
+                        .HasColumnType("uuid")
                         .HasColumnName("consumer_machine");
 
                     b.Property<int?>("ConsumerPort")
@@ -869,8 +869,8 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasColumnType("text")
                         .HasColumnName("on_machine_gone");
 
-                    b.Property<string>("ParkMachine")
-                        .HasColumnType("text")
+                    b.Property<Guid?>("ParkMachine")
+                        .HasColumnType("uuid")
                         .HasColumnName("park_machine");
 
                     b.Property<string>("PendingSpawn")
@@ -901,8 +901,8 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasColumnType("text")
                         .HasColumnName("permission_verdict");
 
-                    b.Property<string>("PreferredMachine")
-                        .HasColumnType("text")
+                    b.Property<Guid?>("PreferredMachine")
+                        .HasColumnType("uuid")
                         .HasColumnName("preferred_machine");
 
                     b.Property<string>("Profile")
@@ -1074,8 +1074,8 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasColumnType("timestamp with time zone")
                         .HasColumnName("created_at");
 
-                    b.Property<string>("MachineId")
-                        .HasColumnType("text")
+                    b.Property<Guid?>("MachineId")
+                        .HasColumnType("uuid")
                         .HasColumnName("machine_id");
 
                     b.Property<bool>("Revoked")

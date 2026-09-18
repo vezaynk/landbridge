@@ -90,7 +90,7 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         await using (var db = pg.NewContext())
         {
             var store = new SessionStore(db, TimeProvider.System);
-            var machine = new MachineSnapshot("m1", Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });
+            var machine = new MachineSnapshot(TestMachineIds.For("m1"), Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });
             var dispatched = Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(machine, instance, ct));
             Assert.Equal(sessionId, dispatched.Session.Id);
 
@@ -164,7 +164,7 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
                 pg, Assert.Single(created.Content.OfType<TextContentBlock>()).Text, ct);
         }
 
-        var machine = new MachineSnapshot("m1", Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });
+        var machine = new MachineSnapshot(TestMachineIds.For("m1"), Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });
 
         // ── Worker: ask, in words ───────────────────────────────────────────
         string firstWorkerToken;
@@ -270,7 +270,7 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
                 new CreateSession(new LeadClaim(team), team, "seed", "default"), ct);
             var instance = WorkerInstanceId.New();
             await store.DispatchNextAsync(
-                new MachineSnapshot("m1", true, false, new HashSet<string> { "default" }), instance, ct);
+                new MachineSnapshot(TestMachineIds.For("m1"), true, false, new HashSet<string> { "default" }), instance, ct);
             var tokens = new TokenService(db, TimeProvider.System);
             workerToken = (await tokens.MintWorkerTokenAsync(team, created.Session.Id, instance, ct)).Token;
         }
@@ -338,7 +338,7 @@ public sealed class LeadWorkerEndToEndTests(PostgresFixture pg) : IAsyncLifetime
             seeded = created.Session.Id;
             var instance = WorkerInstanceId.New();
             await store.DispatchNextAsync(
-                new MachineSnapshot("m1", true, false, new HashSet<string> { "default" }), instance, ct);
+                new MachineSnapshot(TestMachineIds.For("m1"), true, false, new HashSet<string> { "default" }), instance, ct);
             workerToken = (await tokens.MintWorkerTokenAsync(team, seeded, instance, ct)).Token;
         }
 

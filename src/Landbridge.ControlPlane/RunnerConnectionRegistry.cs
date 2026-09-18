@@ -39,7 +39,7 @@ namespace Landbridge.ControlPlane;
 /// </summary>
 public sealed class RunnerConnectionRegistry(TimeProvider clock)
 {
-    private readonly ConcurrentDictionary<string, RunnerConnection> _connections = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<Guid, RunnerConnection> _connections = new();
 
 
     /// <summary>Mints <see cref="ConnectionToken.Generation"/>. Process-wide rather than
@@ -74,7 +74,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// nothing to close, and such a connection simply disconnects without a hang-up.</para>
     /// </summary>
     public Registration Register(
-        string machineId, IReadOnlySet<string> profiles, Func<RunnerCommand, CancellationToken, Task> send,
+        Guid machineId, IReadOnlySet<string> profiles, Func<RunnerCommand, CancellationToken, Task> send,
         Func<CancellationToken, Task>? close = null)
     {
         var token = new ConnectionToken(machineId, Interlocked.Increment(ref _generations));
@@ -115,7 +115,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
             return new UnregisterOutcome(false, []);
         // Compare-and-remove: only drop the entry while it is still this generation, so a
         // connection registered between the lookup above and here survives.
-        if (!_connections.TryRemove(new KeyValuePair<string, RunnerConnection>(token.MachineId, conn)))
+        if (!_connections.TryRemove(new KeyValuePair<Guid, RunnerConnection>(token.MachineId, conn)))
             return new UnregisterOutcome(false, []);
         lock (conn.Gate)
             return new UnregisterOutcome(true, conn.Dispatched.Keys.ToArray());
@@ -144,7 +144,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// held set for a machine holding no connection — a machine that is enrolled but
     /// offline is the ordinary case for a revoke, not an error.</para>
     /// </summary>
-    public async Task<UnregisterOutcome> DisconnectAsync(string machineId, CancellationToken ct = default)
+    public async Task<UnregisterOutcome> DisconnectAsync(Guid machineId, CancellationToken ct = default)
     {
         if (!_connections.TryRemove(machineId, out var conn))
             return new UnregisterOutcome(false, []);
@@ -190,7 +190,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// Same as the token overload for tests driving a single connection per machine.
     /// Does not write facts — call <see cref="HubOutbox.WriteHeartbeatAsync"/>.
     /// </summary>
-    public void ApplyHeartbeat(string machineId, MachineHeartbeat heartbeat)
+    public void ApplyHeartbeat(Guid machineId, MachineHeartbeat heartbeat)
     {
         _ = heartbeat;
         _ = _connections.ContainsKey(machineId);
@@ -219,7 +219,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// command this connection was actually sent. A later real dispatch of the same
     /// task overwrites the mark, because by then there is a live command behind it.
     /// </param>
-    public void TrackDispatch(string machineId, SessionId task, bool inherited = false)
+    public void TrackDispatch(Guid machineId, SessionId task, bool inherited = false)
     {
         if (!_connections.TryGetValue(machineId, out var conn))
             return;
@@ -233,7 +233,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// reconnecting connection inherited from committed state. Empty once every one of
     /// them has been redispatched.
     /// </summary>
-    public IReadOnlyList<SessionId> InheritedOn(string machineId)
+    public IReadOnlyList<SessionId> InheritedOn(Guid machineId)
     {
         if (!_connections.TryGetValue(machineId, out var conn))
             return [];
@@ -338,7 +338,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// <see cref="DispatchService.RehydrateMachineAsync"/>); callers treat that
     /// conservatively.
     /// </summary>
-    public string? MachineFor(SessionId task)
+    public Guid? MachineFor(SessionId task)
     {
         foreach (var (id, conn) in _connections)
         {
@@ -350,7 +350,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     }
 
     /// <summary>Socket presence. Facts are <c>machines</c> columns, not here.</summary>
-    public MachineSnapshot? SnapshotFor(string machineId) =>
+    public MachineSnapshot? SnapshotFor(Guid machineId) =>
         _connections.ContainsKey(machineId)
             ? new MachineSnapshot(
                 machineId, Ready: false, UnderBackPressure: false,
@@ -359,7 +359,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
 
     /// <summary>The tasks currently tracked as dispatched to a machine.</summary>
 
-    public IReadOnlyList<SessionId> SessionsOn(string machineId)
+    public IReadOnlyList<SessionId> SessionsOn(Guid machineId)
     {
         if (!_connections.TryGetValue(machineId, out var conn))
             return [];
@@ -376,7 +376,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// consistent without taking any connection's <c>Gate</c> — that lock guards a
     /// connection's mutable fields, which this read does not touch.
     /// </summary>
-    public IReadOnlyList<string> MachineIds() => _connections.Keys.ToArray();
+    public IReadOnlyList<Guid> MachineIds() => _connections.Keys.ToArray();
 
     /// <summary>
     /// Whether the dispatch lease for <paramref name="task"/> is still held: the
@@ -413,7 +413,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// connection (§10): returns false if the machine is gone or the write
     /// fails, never throws and never queues.
     /// </summary>
-    public async Task<bool> SendAsync(string machineId, RunnerCommand command, CancellationToken ct)
+    public async Task<bool> SendAsync(Guid machineId, RunnerCommand command, CancellationToken ct)
     {
         if (!_connections.TryGetValue(machineId, out var conn))
             return false;
@@ -452,7 +452,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// everything it held anyway.</para>
     /// </summary>
     public async Task<bool> SendKillAsync(
-        string machineId, SessionId task, TimeSpan expectExitWithin, CancellationToken ct)
+        Guid machineId, SessionId task, TimeSpan expectExitWithin, CancellationToken ct)
     {
         if (!_connections.TryGetValue(machineId, out var conn))
             return false;
@@ -532,7 +532,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// Held by the endpoint serving that socket and presented at teardown, so cleanup can
     /// tell "my connection" from "the connection that replaced mine".
     /// </summary>
-    public readonly record struct ConnectionToken(string MachineId, long Generation);
+    public readonly record struct ConnectionToken(Guid MachineId, long Generation);
 
     /// <summary>
     /// What <see cref="Register"/> hands back: this connection's
@@ -560,7 +560,7 @@ public sealed class RunnerConnectionRegistry(TimeProvider clock)
     /// times, and one number cannot carry both.
     /// </summary>
     public readonly record struct TrackedTask(
-        SessionId Session, string Machine, DateTimeOffset LastActivity, DateTimeOffset LastProgress);
+        SessionId Session, Guid Machine, DateTimeOffset LastActivity, DateTimeOffset LastProgress);
 
     /// <summary>The two clocks kept per dispatched task; see <see cref="TrackedTask"/>.
     /// <see cref="ProcessGone"/> is set when the harness exits but the task stays

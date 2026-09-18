@@ -81,7 +81,7 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
             Guid machine;
             await using (var db = pg.NewContext())
                 machine = await TestMachines.EnrollAsync(db, clock, "m1");
-            var wire = machine.ToString();
+            var wire = machine;
             var snapshot = new MachineSnapshot(wire, Ready: true, UnderBackPressure: false, Set("default"));
 
             // ── Create + initial dispatch (cold: no resume ref yet) ─────────────
@@ -112,7 +112,7 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
             var coldDispatch = new DispatchCommand(
                 sessionId, "default", WorkerToken: "worker-1",
                 McpConfigJson: """{"mcpServers":{}}""", ResumeSessionRef: null);
-            supervisor.Spawn(coldDispatch, profile, wire);
+            supervisor.Spawn(coldDispatch, profile, wire.ToString());
 
             // ── The harness reports its session id → sink stamps the row ────────
             Assert.True(
@@ -195,7 +195,7 @@ public sealed class ResumeTranscriptEndToEndTests(PostgresFixture pg) : IAsyncLi
             // resume under test.
             var sessionRecord = Path.Combine(workRoot, sessionId.ToString(), "acp_session.json");
             File.Delete(sessionRecord);
-            supervisor.Spawn(resumeDispatch, profile, wire);
+            supervisor.Spawn(resumeDispatch, profile, wire.ToString());
 
             // ── The resumed worker opened its session with session/load, not session/new ─
             //

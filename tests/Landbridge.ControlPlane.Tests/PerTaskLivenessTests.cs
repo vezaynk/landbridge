@@ -24,7 +24,7 @@ namespace Landbridge.ControlPlane.Tests;
 [Collection(PostgresCollection.Name)]
 public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
 {
-    private static readonly string M1 = Guid.NewGuid().ToString();
+    private static readonly Guid M1 = Guid.NewGuid();
 
     private static readonly TimeSpan Window = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan Ceiling = TimeSpan.FromMinutes(30);
@@ -320,7 +320,7 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
             publicMcpUrl: null,
             noProgressCeiling: ceiling ?? Ceiling);
 
-    private static RunnerConnectionRegistry LiveMachine(TimeProvider clock, string machineId, SessionId task)
+    private static RunnerConnectionRegistry LiveMachine(TimeProvider clock, Guid machineId, SessionId task)
     {
         var registry = new RunnerConnectionRegistry(clock);
         registry.Register(machineId, Set("default"), (_, _) => Task.CompletedTask);
@@ -336,7 +336,7 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
     /// than writing the column by hand.
     /// </summary>
     private async Task<SessionId> SeedWorkingTaskAsync(
-        TimeProvider clock, string machineId, bool registerService = false, int? requeueLimit = null)
+        TimeProvider clock, Guid machineId, bool registerService = false, int? requeueLimit = null)
     {
         await using var db = pg.NewContext();
         var store = new SessionStore(db, clock,
@@ -382,7 +382,7 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
     /// the wedge these tests build is not racing a dispatch loop.
     /// </summary>
     private async Task RedispatchAsync(
-        TimeProvider clock, RunnerConnectionRegistry registry, string machineId, SessionId id)
+        TimeProvider clock, RunnerConnectionRegistry registry, Guid machineId, SessionId id)
     {
         await using var db = pg.NewContext();
         var store = new SessionStore(db, clock);
@@ -413,7 +413,7 @@ public sealed class PerTaskLivenessTests(PostgresFixture pg) : IAsyncLifetime
     private static IReadOnlySet<string> Set(params string[] names) =>
         new HashSet<string>(names, StringComparer.Ordinal);
 
-    private static MachineHeartbeat Heartbeat(string machineId, params string[] profiles) =>
-        new(machineId, Ready: true, UnderBackPressure: false,
+    private static MachineHeartbeat Heartbeat(Guid machineId, params string[] profiles) =>
+        new(machineId.ToString(), Ready: true, UnderBackPressure: false,
             new SystemLoad(0, 0, 0), RunningSessions: 0, profiles, DateTimeOffset.UtcNow);
 }

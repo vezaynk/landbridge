@@ -50,7 +50,7 @@ public static class RunnerEndpoint
             context.Response.StatusCode = StatusCodes.Status403Forbidden;
             return;
         }
-        var machineId = machine.MachineId.ToString();
+        var machineId = machine.MachineId;
 
         using var socket = await context.WebSockets.AcceptWebSocketAsync();
         var sendLock = new SemaphoreSlim(1, 1);

@@ -71,7 +71,7 @@ public sealed class ForwardOrchestrator(
     /// runner-side log honest.</para>
     /// </summary>
     public Task<ForwardEstablishResult> EstablishForLeadAsync(
-        string consumerMachine, RelayGrantResult.Issued issued, string serviceName, string relayUrl,
+        Guid consumerMachine, RelayGrantResult.Issued issued, string serviceName, string relayUrl,
         CancellationToken ct = default) =>
         EstablishCoreAsync(
             registry.SnapshotFor(consumerMachine) is null ? null : consumerMachine,
@@ -86,7 +86,7 @@ public sealed class ForwardOrchestrator(
     /// carries for event correlation only.
     /// </summary>
     private async Task<ForwardEstablishResult> EstablishCoreAsync(
-        string? consumerMachine, SessionId consumerCorrelation, string consumerLabel,
+        Guid? consumerMachine, SessionId consumerCorrelation, string consumerLabel,
         RelayGrantResult.Issued issued, string serviceName, string relayUrl,
         CancellationToken ct)
     {
@@ -113,10 +113,10 @@ public sealed class ForwardOrchestrator(
             consumerCorrelation, forwardId, serviceName,
             RelayTunnel.ConsumerRole, issued.Grant, relayUrl, Port: 0);
 
-        if (!await registry.SendAsync(producerMachine, producerCommand, ct))
+        if (!await registry.SendAsync(producerMachine.Value, producerCommand, ct))
             return new ForwardEstablishResult.Failed(
                 $"could not reach the machine hosting service '{serviceName}'");
-        if (!await registry.SendAsync(consumerMachine, consumerCommand, ct))
+        if (!await registry.SendAsync(consumerMachine.Value, consumerCommand, ct))
             return new ForwardEstablishResult.Failed($"could not reach {consumerLabel} to open the forward");
 
         try
@@ -129,7 +129,7 @@ public sealed class ForwardOrchestrator(
             {
                 await using var scope = scopes.CreateAsyncScope();
                 await scope.ServiceProvider.GetRequiredService<RelayGrantService>()
-                    .RecordConsumerBindAsync(issued.ForwardId, consumerMachine, port, ct);
+                    .RecordConsumerBindAsync(issued.ForwardId, consumerMachine.Value, port, ct);
             }
             return new ForwardEstablishResult.Established(port);
         }
@@ -168,7 +168,7 @@ public sealed class ForwardOrchestrator(
 
         var command = new OpenForwardCommand(
             producer, forwardId, serviceName, RelayTunnel.ProducerRole, grant, relayUrl, port);
-        var sent = await registry.SendAsync(producerMachine, command, ct);
+        var sent = await registry.SendAsync(producerMachine.Value, command, ct);
         if (!sent)
             logger.LogInformation(
                 "preview forward {ForwardId}: could not reach producer machine {Machine}", forwardId, producerMachine);

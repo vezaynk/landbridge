@@ -79,7 +79,7 @@ else if (Ready && Run is { } run)
             ConformanceCatalog.KindOf(r.Description) ?? "unknown",
             r.State, r.Attempt, r.ResultReference, r.LastRequeueReason?.ToString(),
             r.MessageState)).ToList();
-        var machines = new List<string>();
+        var machines = new List<Guid>();
         foreach (var id in Registry.MachineIds())
         {
             var snap = Registry.SnapshotFor(id);

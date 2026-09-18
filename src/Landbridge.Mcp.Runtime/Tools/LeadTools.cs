@@ -164,10 +164,10 @@ public sealed class LeadTools(
         var applied = await store.ApplyAsync(id, new Landbridge.Core.StopSession(lead), ct);
         if (applied is StoreResult.Applied ok
             && ok.Session.OccupancyObserved == Occupancy.Running
-            && machine is { Length: > 0 })
+            && machine is not null)
         {
             await registry.SendAsync(
-                machine,
+                machine.Value,
                 new StopCommand(id, ttl, StopDisposition.Preserve, "stop"),
                 ct);
         }
@@ -196,12 +196,17 @@ public sealed class LeadTools(
     {
         var lead = await LeadOn(teamId, ct);
         var id = await ParseSessionIdAsync(sessionId, ct);
-        var machine = registry.MachineFor(id) ?? "unknown";
-        var result = await store.ApplyAsync(id, new Park(lead, new ParkRecord(machine)), ct);
-        if (result is StoreResult.Applied && machine != "unknown")
+        var machine = registry.MachineFor(id);
+        // Park records where the task ran. Without a tracked machine there is nothing
+        // truthful to write, so the park is refused rather than recorded against a
+        // placeholder the resume path would then try to dispatch to.
+        if (machine is not { } parked)
+            return "this task is not tracked on any machine, so it cannot be parked";
+        var result = await store.ApplyAsync(id, new Park(lead, new ParkRecord(parked)), ct);
+        if (result is StoreResult.Applied)
         {
             await registry.SendAsync(
-                machine,
+                parked,
                 new StopCommand(id, TimeSpan.FromSeconds(30), StopDisposition.PreserveAndPark, "park"),
                 ct);
         }
@@ -262,7 +267,7 @@ public sealed class LeadTools(
     }
 
     private async Task<string> DoorbellIfLive(
-        SessionId id, string? machine, bool live, StoreResult result, CancellationToken ct)
+        SessionId id, Guid? machine, bool live, StoreResult result, CancellationToken ct)
     {
         if (result is StoreResult.Applied applied
             && applied.Session.State == SessionState.Working
@@ -519,7 +524,7 @@ public sealed class LeadTools(
         // the consumer end and reports the loopback port it bound; the grant and
         // relay URL stay inside landbridged and never reach this agent (§8.3).
         return await forwards.EstablishForLeadAsync(
-                bound.MachineId.ToString(), issued, serviceName, WorkerTools.RelayUrlFrom(config), ct) switch
+                bound.MachineId, issued, serviceName, WorkerTools.RelayUrlFrom(config), ct) switch
         {
             ForwardEstablishResult.Established e => new OpenForwardResult(
                 WorkerTools.ForwardLoopbackHost, e.Port, issued.ForwardId.ToString(), issued.ExpiresAt),

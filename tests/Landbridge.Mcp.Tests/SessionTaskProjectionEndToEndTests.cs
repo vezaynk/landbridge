@@ -103,7 +103,7 @@ public sealed class SessionTaskProjectionEndToEndTests(PostgresFixture pg) : IAs
             var store = new SessionStore(db, TimeProvider.System);
             var instance = WorkerInstanceId.New();
             Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(
-                new MachineSnapshot("m1", true, false, new HashSet<string> { "default" }), instance));
+                new MachineSnapshot(TestMachineIds.For("m1"), true, false, new HashSet<string> { "default" }), instance));
             var asked = Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(
                 sessionId,
                 new RequestInput(new WorkerCaller(team, sessionId, instance),
@@ -163,7 +163,7 @@ public sealed class SessionTaskProjectionEndToEndTests(PostgresFixture pg) : IAs
             var store = new SessionStore(db, TimeProvider.System);
             var instance = WorkerInstanceId.New();
             Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(
-                new MachineSnapshot("m1", true, false, new HashSet<string> { "default" }), instance));
+                new MachineSnapshot(TestMachineIds.For("m1"), true, false, new HashSet<string> { "default" }), instance));
             var asked = Assert.IsType<StoreResult.Applied>(await store.ApplyAsync(
                 sessionId,
                 new RequestInput(new WorkerCaller(teamA, sessionId, instance),

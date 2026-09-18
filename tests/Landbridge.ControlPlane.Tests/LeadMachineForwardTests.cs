@@ -29,7 +29,7 @@ public sealed class LeadMachineForwardTests(PostgresFixture pg) : IAsyncLifetime
     private const string RelayUrl = "http://127.0.0.1:5100";
 
     private static MachineSnapshot DispatchTarget() =>
-        new("producer-machine", Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });
+        new(TestMachineIds.For("producer-machine"), Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });
 
     /// <summary>An enrolled machine, as <c>/landbridge-enroll</c> would leave it (§11).</summary>
     private static async Task<Guid> EnrollAsync(LandbridgeDbContext db, TimeProvider clock, string name)
@@ -208,8 +208,8 @@ public sealed class LeadMachineForwardTests(PostgresFixture pg) : IAsyncLifetime
 
         // Both machines connected; only one is somebody's own (§12, §8.3).
         var registry = new RunnerConnectionRegistry(clock);
-        registry.Register(mine.ToString(), new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
-        registry.Register(unbound.ToString(), new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
+        registry.Register(mine, new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
+        registry.Register(unbound, new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
 
         var machines = await new DashboardQueries(db, registry).GetMachinesAsync();
 
@@ -242,7 +242,7 @@ public sealed class LeadMachineForwardTests(PostgresFixture pg) : IAsyncLifetime
         var sent = new ConcurrentBag<(string Machine, OpenForwardCommand Command)>();
         const int boundPort = 45999;
 
-        registry.Register(leadMachine.ToString(), new HashSet<string> { "default" }, (command, _) =>
+        registry.Register(leadMachine, new HashSet<string> { "default" }, (command, _) =>
         {
             if (command is OpenForwardCommand c)
             {
@@ -252,13 +252,13 @@ public sealed class LeadMachineForwardTests(PostgresFixture pg) : IAsyncLifetime
             }
             return Task.CompletedTask;
         });
-        registry.Register("producer-machine", new HashSet<string> { "default" }, (command, _) =>
+        registry.Register(TestMachineIds.For("producer-machine"), new HashSet<string> { "default" }, (command, _) =>
         {
             if (command is OpenForwardCommand c)
                 sent.Add(("producer-machine", c));
             return Task.CompletedTask;
         });
-        registry.TrackDispatch("producer-machine", producerTask);
+        registry.TrackDispatch(TestMachineIds.For("producer-machine"), producerTask);
 
         var grants = new RelayGrantService(db, clock);
         var issued = Assert.IsType<RelayGrantResult.Issued>(await grants.IssueForLeadAsync(team, "db"));
@@ -266,7 +266,7 @@ public sealed class LeadMachineForwardTests(PostgresFixture pg) : IAsyncLifetime
             registry, waiters, NullLogger<ForwardOrchestrator>.Instance);
 
         var established = Assert.IsType<ForwardEstablishResult.Established>(
-            await orchestrator.EstablishForLeadAsync(leadMachine.ToString(), issued, "db", RelayUrl));
+            await orchestrator.EstablishForLeadAsync(leadMachine, issued, "db", RelayUrl));
 
         Assert.Equal(boundPort, established.Port);
 
@@ -315,15 +315,15 @@ public sealed class LeadMachineForwardTests(PostgresFixture pg) : IAsyncLifetime
         // Producer is live; the Lead's machine is enrolled and bound but has no
         // runner connection (landbridged down, laptop closed).
         var registry = new RunnerConnectionRegistry(clock);
-        registry.Register("producer-machine", new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
-        registry.TrackDispatch("producer-machine", producerTask);
+        registry.Register(TestMachineIds.For("producer-machine"), new HashSet<string> { "default" }, (_, _) => Task.CompletedTask);
+        registry.TrackDispatch(TestMachineIds.For("producer-machine"), producerTask);
 
         var issued = (RelayGrantResult.Issued)await new RelayGrantService(db, clock).IssueForLeadAsync(team, "db");
         var orchestrator = new ForwardOrchestrator(
             registry, new ForwardWaiters(), NullLogger<ForwardOrchestrator>.Instance);
 
         var failed = Assert.IsType<ForwardEstablishResult.Failed>(
-            await orchestrator.EstablishForLeadAsync(leadMachine.ToString(), issued, "db", RelayUrl));
+            await orchestrator.EstablishForLeadAsync(leadMachine, issued, "db", RelayUrl));
 
         Assert.Contains("bound machine", failed.Reason);
         Assert.Contains("not connected", failed.Reason);

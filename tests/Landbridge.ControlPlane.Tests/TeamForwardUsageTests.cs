@@ -25,7 +25,7 @@ public sealed class TeamForwardUsageTests(PostgresFixture pg) : IAsyncLifetime
     public Task DisposeAsync() => Task.CompletedTask;
 
     private static MachineSnapshot Machine() =>
-        new("m1", Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });
+        new(TestMachineIds.For("m1"), Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });
 
     [SkippableFact]
     public async Task An_unmeasured_team_is_distinguishable_from_one_measured_at_zero()

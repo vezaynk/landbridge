@@ -133,7 +133,7 @@ public sealed class WorkerPermissionEndpointsTests(PostgresFixture pg) : IAsyncL
             new CreateSession(new LeadClaim(Team), Team, "needs permission", "default"), ct);
         var instance = WorkerInstanceId.New();
         Assert.IsType<StoreResult.Applied>(await store.DispatchNextAsync(
-            new MachineSnapshot("m1", Ready: true, UnderBackPressure: false, new HashSet<string> { "default" }),
+            new MachineSnapshot(TestMachineIds.For("m1"), Ready: true, UnderBackPressure: false, new HashSet<string> { "default" }),
             instance, ct));
         var token = (await new TokenService(db, TimeProvider.System)
             .MintWorkerTokenAsync(Team, created.Session.Id, instance, ct)).Token;
