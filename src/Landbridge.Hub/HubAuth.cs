@@ -113,18 +113,43 @@ public sealed class HubCaller
     {
         if (Principal is Principal.Human)
             return true;
-        if (Principal is not Principal.Worker || WorkerSession is not { } sid)
+        if (Principal is not Principal.Worker)
             return false;
+        return (await HeldMachinesAsync(db, ct)).Contains(machineId);
+    }
+
+    /// <summary>
+    /// The machines this worker holds a live instance on.
+    ///
+    /// <para><see cref="WorkerInstanceRow.MachineId"/> is a string (§12) carrying
+    /// whatever form the dispatcher had, so this parses rather than matching a
+    /// rendering: "D" and "N" are the two written today, and a third would
+    /// otherwise deny silently. A value that will not parse is not a machine this
+    /// worker can be said to hold, so it is dropped.</para>
+    ///
+    /// <para>Resolved once and kept, so the authorization gate and the queue scope
+    /// below agree — and, on an SSE stream, so the scope does not requery per
+    /// catch-up. That makes it a connect-time snapshot for a stream, the same as
+    /// the rest of <see cref="HubCaller"/>.</para>
+    /// </summary>
+    private async Task<HashSet<Guid>> HeldMachinesAsync(LandbridgeDbContext db, CancellationToken ct)
+    {
+        if (_heldMachines is not null)
+            return _heldMachines;
+        if (WorkerSession is not { } sid)
+            return _heldMachines = [];
         var held = await db.Set<WorkerInstanceRow>().AsNoTracking()
             .Where(i => i.SessionId == sid && !i.Revoked && i.MachineId != null)
-            .Select(i => i.MachineId)
+            .Select(i => i.MachineId!)
             .ToListAsync(ct);
-        var d = machineId.ToString("D");
-        var n = machineId.ToString("N");
-        return held.Any(h =>
-            string.Equals(h, d, StringComparison.OrdinalIgnoreCase)
-            || string.Equals(h, n, StringComparison.OrdinalIgnoreCase));
+        var ids = new HashSet<Guid>();
+        foreach (var text in held)
+            if (Guid.TryParse(text, out var id))
+                ids.Add(id);
+        return _heldMachines = ids;
     }
+
+    private HashSet<Guid>? _heldMachines;
 
     public bool MayWatchCollection(string topic)
     {
@@ -203,8 +228,25 @@ public sealed class HubCaller
             return q;
         if (Principal is Principal.Worker)
         {
-            if (topic is HubQueueRow.ProcessesTopic or HubQueueRow.ProcessTopic)
-                return q;
+            // Process topics are the one place a worker may watch something that
+            // is not its own session, so they get their own scope rather than a
+            // pass-through. The per-entity routes already gate on
+            // MayWatchRowAsync and narrow by EntityId; this is what keeps the
+            // tail correct if either ever stops being true.
+            //
+            // The held set is populated by that gate. Unresolved means nothing
+            // authorized this caller for a machine, so nothing is in scope —
+            // which is also the right answer for the collection routes, where
+            // MayWatchCollection refuses a worker outright.
+            if (topic is HubQueueRow.ProcessesTopic)
+                return _heldMachines is { } machines
+                    ? q.Where(r => r.EntityId != null && machines.Contains(r.EntityId.Value))
+                    : q.Where(r => false);
+            if (topic is HubQueueRow.ProcessTopic)
+                return _heldMachines is { } owned
+                    ? q.Where(r => db.MachineProcesses
+                        .Any(p => p.Id == r.EntityId && owned.Contains(p.MachineId)))
+                    : q.Where(r => false);
             return WorkerSession is { } sid
                 ? q.Where(r => r.EntityId == sid)
                 : q.Where(r => false);
