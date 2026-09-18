@@ -326,5 +326,5 @@ public sealed record DeliverReport(Actor Actor) : SessionCommand(Actor);
 /// </summary>
 public sealed record ObserveOccupancy(
     Occupancy Observed,
-    string? PinMachine = null,
+    Guid? PinMachine = null,
     bool CommandedExit = false) : SessionCommand(ControlPlaneActor.Instance);

@@ -94,7 +94,7 @@ public sealed class RelayGrantRow
     /// via <c>forward-opened</c>. Null until the forward is established; port
     /// cleared when the splice closes. This is the "receiving" address on that box.
     /// </summary>
-    public string? ConsumerMachine { get; set; }
+    public Guid? ConsumerMachine { get; set; }
 
     public int? ConsumerPort { get; set; }
 }

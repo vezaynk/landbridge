@@ -99,7 +99,7 @@ public sealed class MultiMachineTranscriptTests(PostgresFixture pg) : IAsyncLife
     }
 
     private static async Task<string> DrainAsync(
-        TranscriptRelayService relay, SessionId task, string machine, int ordinal, int maxBytes,
+        TranscriptRelayService relay, SessionId task, Guid machine, int ordinal, int maxBytes,
         CancellationToken ct)
     {
         var text = new System.Text.StringBuilder();

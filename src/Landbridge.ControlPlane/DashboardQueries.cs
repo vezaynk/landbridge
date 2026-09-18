@@ -81,8 +81,8 @@ public sealed partial class DashboardQueries(
             .Where(m => !m.Revoked && m.LastSpokeAt != null && m.LastSpokeAt >= cutoff)
             .ToListAsync(ct);
         var ids = registry.MachineIds()
-            .Concat(liveRows.Select(m => m.Id.ToString()))
-            .Distinct(StringComparer.Ordinal)
+            .Concat(liveRows.Select(m => m.Id))
+            .Distinct()
             .ToList();
 
         // Live lead↔machine bindings, one read for the whole view (§8.3).
@@ -90,13 +90,9 @@ public sealed partial class DashboardQueries(
                 .Where(b => !b.Revoked)
                 .Select(b => new { b.MachineId, b.HumanId, b.BoundAt })
                 .ToListAsync(ct))
-            .ToDictionary(b => b.MachineId.ToString(), b => (b.HumanId, b.BoundAt), StringComparer.Ordinal);
+            .ToDictionary(b => b.MachineId, b => (b.HumanId, b.BoundAt));
 
-        var machineGuids = ids
-            .Select(id => Guid.TryParse(id, out var g) ? g : (Guid?)null)
-            .OfType<Guid>()
-            .Distinct()
-            .ToArray();
+        var machineGuids = ids.ToArray();
         var machineRows = machineGuids.Length == 0
             ? new Dictionary<Guid, MachineRow>()
             : await db.Machines.AsNoTracking()
@@ -123,8 +119,7 @@ public sealed partial class DashboardQueries(
         foreach (var id in ids)
         {
             var snapshot = registry.SnapshotFor(id);
-            var guid = Guid.TryParse(id, out var mid) ? mid : (Guid?)null;
-            var row = guid is { } g ? machineRows.GetValueOrDefault(g) : null;
+            var row = machineRows.GetValueOrDefault(id);
             var fromRow = row is { LastSpokeAt: not null };
             if (snapshot is null && !fromRow)
                 continue;
@@ -135,11 +130,11 @@ public sealed partial class DashboardQueries(
                 .OrderBy(t => t.Namespace, StringComparer.Ordinal)
                 .ToList();
             var isBound = boundBy.TryGetValue(id, out var bound);
-            IReadOnlyList<ProcessStatus>? processes = fromRow && guid is { } pid
-                ? processByMachine.GetValueOrDefault(pid)
+            IReadOnlyList<ProcessStatus>? processes = fromRow
+                ? processByMachine.GetValueOrDefault(id)
                 : null;
             machines.Add(new MachineView(
-                id,
+                id.ToString(),
                 fromRow ? row!.Ready : snapshot!.Ready,
                 fromRow ? row!.UnderBackPressure : snapshot!.UnderBackPressure,
                 fromRow ? row!.LastSpokeAt : null,
@@ -357,7 +352,7 @@ public sealed partial class DashboardQueries(
             .Select(t => new TeamSessionView(
                 t.Id, t.Namespace, t.State, t.Attempt,
                 parksByTask.GetValueOrDefault(t.Id),
-                t.Parked ? t.ParkMachine : null,
+                t.Parked ? t.ParkMachine?.ToString() : null,
                 t.BlockedAt is not null
                     && (t.State == SessionState.BlockedOnInput
                         || (t.State == SessionState.Working && t.InputKind != InputRequestKind.Permission))
@@ -505,7 +500,7 @@ public sealed partial class DashboardQueries(
             .Where(t => t.State == SessionState.Parked)
             .OrderBy(t => t.Namespace)
             .Select(t => new ParkedItemView(
-                t.Id, t.Namespace, t.TeamId, t.ParkMachine, t.InputKind, t.InputQuestion))
+                t.Id, t.Namespace, t.TeamId, t.ParkMachine.ToString(), t.InputKind, t.InputQuestion))
             .ToListAsync(ct);
 
         var failed = await scopedTasks
@@ -1018,7 +1013,7 @@ public sealed record InboxView(
 /// while their machine is connected.
 /// </summary>
 public sealed record TranscriptLocationView(
-    Guid InstanceId, string? Machine, DateTimeOffset DispatchedAt, bool Connected);
+    Guid InstanceId, Guid? Machine, DateTimeOffset DispatchedAt, bool Connected);
 
 /// <summary>One interleaved event for the event log (§12). <see cref="Source"/> is
 /// "task" or "lead"; the state and human fields are populated per source. The

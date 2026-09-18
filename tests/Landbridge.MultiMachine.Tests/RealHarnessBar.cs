@@ -49,7 +49,7 @@ internal static class RealHarnessBar
         var task = await rig.CreateSessionAsync(RealHarnessProfiles.EchoDescription("A", token), ct);
 
         Assert.True(
-            await rig.DispatchUntilReportedAsync(task, "A", MaxAttempts, PerLegBudget, ct),
+            await rig.DispatchUntilReportedAsync(task, TestMachineIds.For("A"), MaxAttempts, PerLegBudget, ct),
             $"the real {profile.Name} worker never mailed a report.\n"
             + profile.FailureHypotheses + await rig.RealWorkerDiagnosticsAsync(task, ct));
 
@@ -85,7 +85,7 @@ internal static class RealHarnessBar
         var task = await rig.CreateSessionAsync(RealHarnessProfiles.EchoDescription("A", token), ct);
 
         Assert.True(
-            await rig.DispatchUntilReportedAsync(task, "A", MaxAttempts, PerLegBudget, ct),
+            await rig.DispatchUntilReportedAsync(task, TestMachineIds.For("A"), MaxAttempts, PerLegBudget, ct),
             $"no reported session, so no usage to assert on ({profile.Name}).\n"
             + profile.FailureHypotheses + await rig.RealWorkerDiagnosticsAsync(task, ct));
 
@@ -148,7 +148,7 @@ internal static class RealHarnessBar
 
         Assert.True(
             await rig.DispatchUntilAsync(
-                task, "A",
+                task, TestMachineIds.For("A"),
                 async () =>
                 {
                     if (await rig.HasReportAsync(task, ct))
@@ -193,7 +193,7 @@ internal static class RealHarnessBar
         await rig.AnswerAsync(task, "Yes — report the remembered value now.", ct);
 
         Assert.True(
-            await rig.DispatchUntilReportedAsync(task, "A", MaxAttempts, PerLegBudget, ct),
+            await rig.DispatchUntilReportedAsync(task, TestMachineIds.For("A"), MaxAttempts, PerLegBudget, ct),
             $"the resumed {profile.Name} worker never mailed a report.\n"
             + profile.FailureHypotheses + await rig.RealWorkerDiagnosticsAsync(task, ct));
 
@@ -202,12 +202,12 @@ internal static class RealHarnessBar
         Assert.True(
             await FleetRig.WaitUntilAsync(
                 () => Task.FromResult(
-                    rig.InstanceSessionIdsOn("A", task, profile).Count >= 2),
+                    rig.InstanceSessionIdsOn(TestMachineIds.For("A"), task, profile).Count >= 2),
                 TimeSpan.FromSeconds(15)),
             $"resume of {profile.Name} did not produce a second captured instance — the successor "
             + "may have cold-started without a transcript file, or SessionIdFromLine missed the stream.\n"
             + profile.FailureHypotheses + await rig.RealWorkerDiagnosticsAsync(task, ct));
-        var instanceSessions = rig.InstanceSessionIdsOn("A", task, profile);
+        var instanceSessions = rig.InstanceSessionIdsOn(TestMachineIds.For("A"), task, profile);
         Assert.All(instanceSessions, id => Assert.Equal(sessionRef, id));
         Assert.Equal("A", rig.MachineRanOn(task));
         Assert.Equal(sessionRef, await rig.HarnessSessionRefAsync(task, ct));

@@ -150,8 +150,8 @@ public sealed class WaitTtlSweeper : IHostedService
             var store = scope.ServiceProvider.GetRequiredService<SessionStore>();
             var db = scope.ServiceProvider.GetRequiredService<LandbridgeDbContext>();
 
-            bool machineLive = Guid.TryParse(machine, out var machineId)
-                && await HubOutbox.IsLiveAsync(db, machineId, now, _machineLivenessWindow, ct);
+            bool machineLive =
+                await HubOutbox.IsLiveAsync(db, machine.Value, now, _machineLivenessWindow, ct);
 
 
             if (!machineLive)
@@ -175,7 +175,7 @@ public sealed class WaitTtlSweeper : IHostedService
                 // needs — the session ref it resumes and the attempt it reports both stay on
                 // the task row, where dispatch already reads them live rather than from a
                 // snapshot taken here.
-                var park = new ParkRecord(machine);
+                var park = new ParkRecord(machine.Value);
                 if (await TryApplyAsync(store, task, new WaitTtlExpired(park), ct))
                     _logger.LogInformation(
                         "wait-TTL sweep parked task {Task} on machine {Machine}", task, machine);

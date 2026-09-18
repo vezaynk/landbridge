@@ -68,8 +68,8 @@ public sealed class PreviewEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         var producerChannel = new SinkForwardingChannel(sink);
         await using var producerDaemon = new DaemonHarness("mp", producerChannel);
         await producerDaemon.StartAsync();
-        registry.Register("mp", new HashSet<string> { "default" }, producerDaemon.Send);
-        registry.TrackDispatch("mp", producerTask);
+        registry.Register(TestMachineIds.For("mp"), new HashSet<string> { "default" }, producerDaemon.Send);
+        registry.TrackDispatch(TestMachineIds.For("mp"), producerTask);
 
         // ── A real preview mapping (public), minted against the fixture DB ──────
         string label;
@@ -131,8 +131,8 @@ public sealed class PreviewEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         var producerDaemon = new DaemonHarness("mp", new SinkForwardingChannel(plane.Services.GetRequiredService<RunnerEventSink>()));
         await using var _ = producerDaemon;
         await producerDaemon.StartAsync();
-        registry.Register("mp", new HashSet<string> { "default" }, producerDaemon.Send);
-        registry.TrackDispatch("mp", producerTask);
+        registry.Register(TestMachineIds.For("mp"), new HashSet<string> { "default" }, producerDaemon.Send);
+        registry.TrackDispatch(TestMachineIds.For("mp"), producerTask);
 
         string label;
         await using (var db = pg.NewContext())
@@ -188,8 +188,8 @@ public sealed class PreviewEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         var registry = plane.Services.GetRequiredService<RunnerConnectionRegistry>();
         await using var producerDaemon = new DaemonHarness("mp", new SinkForwardingChannel(plane.Services.GetRequiredService<RunnerEventSink>()));
         await producerDaemon.StartAsync();
-        registry.Register("mp", new HashSet<string> { "default" }, producerDaemon.Send);
-        registry.TrackDispatch("mp", producerTask);
+        registry.Register(TestMachineIds.For("mp"), new HashSet<string> { "default" }, producerDaemon.Send);
+        registry.TrackDispatch(TestMachineIds.For("mp"), producerTask);
 
         string label;
         await using (var db = pg.NewContext())

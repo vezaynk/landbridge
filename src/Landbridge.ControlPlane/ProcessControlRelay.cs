@@ -119,8 +119,9 @@ public sealed class ProcessControlRelay(
         if (machine is null)
             return [];
 
-        if (!Guid.TryParse(machine, out var machineId) || dbFactory is null)
+        if (dbFactory is null)
             return [];
+        var machineId = machine.Value;
 
         await using var db = await dbFactory.CreateDbContextAsync(ct);
         var rows = await db.MachineProcesses.AsNoTracking()
@@ -152,7 +153,7 @@ public sealed class ProcessControlRelay(
         _waiters[requestId] = tcs;
         try
         {
-            if (!await registry.SendAsync(machine, build(requestId), ct))
+            if (!await registry.SendAsync(machine.Value, build(requestId), ct))
                 return new Answer.Unreachable("the machine holding this task is unreachable");
 
             using var deadline = CancellationTokenSource.CreateLinkedTokenSource(ct);

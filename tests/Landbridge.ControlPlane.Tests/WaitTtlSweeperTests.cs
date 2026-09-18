@@ -44,7 +44,7 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
         await sweeper.SweepAsync(CancellationToken.None);
 
         Assert.Equal(SessionState.Working, await StateAsync(clock, id));
-        Assert.Contains(id, registry.SessionsOn(machine.ToString()));
+        Assert.Contains(id, registry.SessionsOn(machine));
 
     }
 
@@ -69,7 +69,7 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
         var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
         Assert.Equal(SessionState.Parked, row.State);
         // Park record (§11): the machine, which is the whole record.
-        Assert.Equal(machine.ToString(), row.ParkMachine);
+        Assert.Equal(machine, row.ParkMachine);
 
         // The attempt a redispatch will report stays on the row and is read live from
         // there, never snapshotted into the park.
@@ -90,7 +90,7 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
         Assert.Empty(await v.RegisteredServices.AsNoTracking().Where(s => s.SessionId == id.Value).ToListAsync());
 
         // The old dispatch is untracked so a later wake/redispatch starts clean.
-        Assert.Empty(registry.SessionsOn(machine.ToString()));
+        Assert.Empty(registry.SessionsOn(machine));
 
     }
 
@@ -118,7 +118,7 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
         await using var v = pg.NewContext();
         var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
         Assert.Equal(SessionState.Parked, row.State);
-        Assert.Equal(machine.ToString(), row.ParkMachine);
+        Assert.Equal(machine, row.ParkMachine);
 
         // Survives the park on the row it was stamped on — the ref dispatch resumes from.
         Assert.Equal("sess-park", row.HarnessSessionRef);
@@ -145,14 +145,14 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
         var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
         Assert.Equal(SessionState.Failed, row.State);
         Assert.Equal(1, row.InfrastructureRequeues); // infra counter, never verification (§6)
-        Assert.Equal(machine.ToString(), row.ParkMachine);
+        Assert.Equal(machine, row.ParkMachine);
  // pin session/load to the last box
-        Assert.Equal(machine.ToString(), row.PreferredMachine);
+        Assert.Equal(machine, row.PreferredMachine);
 
         Assert.Equal(MachineGonePolicy.Pin, row.OnMachineGone);
         Assert.Null(row.CurrentInstanceId);
         Assert.True((await v.WorkerInstances.AsNoTracking().SingleAsync(w => w.Id == instance.Value)).Revoked);
-        Assert.Empty(registry.SessionsOn(machine.ToString()));
+        Assert.Empty(registry.SessionsOn(machine));
 
     }
 
@@ -171,12 +171,12 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
 
         await using var db = pg.NewContext();
         var store = new SessionStore(db, clock);
-        var answerPark = new ParkRecord(machine.ToString());
+        var answerPark = new ParkRecord(machine);
 
         Assert.IsType<StoreResult.Applied>(
             await store.ApplyAsync(id, new AnswerInput(new LeadClaim(team), answerPark)));
 
-        var park = new ParkRecord(machine.ToString());
+        var park = new ParkRecord(machine);
 
         var rejected = Assert.IsType<StoreResult.Rejected>(
             await store.ApplyAsync(id, new WaitTtlExpired(park)));
@@ -197,7 +197,7 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
         var registry = await LiveMachineAsync(clock, machine, id);
 
 
-        var answerPark = new ParkRecord(machine.ToString());
+        var answerPark = new ParkRecord(machine);
 
         await using (var db = pg.NewContext())
             await new SessionStore(db, clock).ApplyAsync(id, new AnswerInput(new LeadClaim(team), answerPark));
@@ -243,7 +243,7 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
         await using var v = pg.NewContext();
         var row = await v.Sessions.AsNoTracking().SingleAsync(t => t.Id == id.Value);
         Assert.Equal(SessionState.Parked, row.State);
-        Assert.Equal(machine.ToString(), row.ParkMachine);
+        Assert.Equal(machine, row.ParkMachine);
 
     }
 
@@ -264,7 +264,7 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
         var registry = new RunnerConnectionRegistry(clock);
         TestMachines.Register(registry, machineId);
         await TestMachines.HeartbeatAsync(db, clock, machineId);
-        registry.TrackDispatch(machineId.ToString(), task);
+        registry.TrackDispatch(machineId, task);
         return registry;
     }
 
@@ -281,7 +281,7 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
         var id = created.Session.Id;
         var instance = WorkerInstanceId.New();
         await store.DispatchNextAsync(
-            new MachineSnapshot(machineId.ToString(), Ready: true, UnderBackPressure: false, Set("default")), instance);
+            new MachineSnapshot(machineId, Ready: true, UnderBackPressure: false, Set("default")), instance);
         var caller = new WorkerCaller(team, id, instance);
         if (registerService)
             Assert.IsType<StoreResult.Applied>(await store.RegisterServiceAsync(caller, "api", 5001));
@@ -322,7 +322,7 @@ public sealed class WaitTtlSweeperTests(PostgresFixture pg) : IAsyncLifetime
     private static IReadOnlySet<string> Set(params string[] names) =>
         new HashSet<string>(names, StringComparer.Ordinal);
 
-    private static MachineHeartbeat Heartbeat(string machineId, params string[] profiles) =>
-        new(machineId, Ready: true, UnderBackPressure: false,
+    private static MachineHeartbeat Heartbeat(Guid machineId, params string[] profiles) =>
+        new(machineId.ToString(), Ready: true, UnderBackPressure: false,
             new SystemLoad(0, 0, 0), RunningSessions: 0, profiles, DateTimeOffset.UtcNow);
 }

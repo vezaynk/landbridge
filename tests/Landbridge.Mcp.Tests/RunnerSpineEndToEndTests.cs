@@ -148,7 +148,7 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
 
         var team = TeamId.New();
         string machineToken;
-        string machineId;
+        Guid machineId;
         await using (var db = pg.NewContext())
         {
             var tokens = new TokenService(db, TimeProvider.System);
@@ -158,7 +158,7 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
             machineToken = creds!.Access.Token;
             // The registry keys on the AUTHENTICATED identity, never the name a heartbeat
             // reports for itself (§13), so this — not "box-1" — is what it is filed under.
-            machineId = creds.MachineId.ToString();
+            machineId = creds.MachineId;
         }
         var held = await SeedSubmittedAsync(team, "the first task", ct);
 
@@ -262,7 +262,7 @@ public sealed class RunnerSpineEndToEndTests(PostgresFixture pg) : IAsyncLifetim
             machineToken = creds!.Access.Token;
             machineGuid = creds.MachineId;
         }
-        var machineId = machineGuid.ToString();
+        var machineId = machineGuid;
         var task = await SeedSubmittedAsync(team, "the work the compromised box is running", ct);
 
         await using var channel = new WebSocketControlPlaneChannel(wsUrl, machineToken, TimeProvider.System);

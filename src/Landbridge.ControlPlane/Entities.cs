@@ -73,7 +73,7 @@ public sealed class SessionRow
     /// <see cref="HarnessSessionRef"/> / <see cref="Attempt"/> columns (or, for the
     /// directory, never written at all) and read back by nothing.
     /// </summary>
-    public string? ParkMachine { get; set; }
+    public Guid? ParkMachine { get; set; }
 
     /// <summary>
     /// When the task most recently entered <see cref="SessionState.BlockedOnInput"/>,
@@ -269,7 +269,7 @@ public sealed class SessionRow
     /// box so a later load is claimable only there. If that machine is gone the row
     /// waits. Null for an ordinary first dispatch.
     /// </summary>
-    public string? PreferredMachine { get; set; }
+    public Guid? PreferredMachine { get; set; }
 
     /// <summary>
     /// Written as <see cref="MachineGonePolicy.Pin"/> when
@@ -372,11 +372,16 @@ public sealed class WorkerInstanceRow
     /// covers parked tasks, and <see cref="SessionRow.PreferredMachine"/> is the
     /// continuation pin plus the same-task session/load pin after park or fail.
     ///
+    /// <para>A machine's id — the same value the registry keys a connection by, which the
+    /// runner endpoint takes from the authenticated <c>Principal.Machine</c>. So it is
+    /// always a real machine id, never a slug, whatever <c>LANDBRIDGE_MACHINE_ID</c>
+    /// happens to hold locally on the box.</para>
+    ///
     /// <para>Nullable for rows written before this column existed; a null simply means the
     /// plane cannot say where that attempt ran, and the dashboard says so rather than
     /// guessing.</para>
     /// </summary>
-    public string? MachineId { get; set; }
+    public Guid? MachineId { get; set; }
 }
 
 /// <summary>

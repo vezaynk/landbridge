@@ -28,7 +28,7 @@ namespace Landbridge.Mcp.Tests;
 public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
 {
     private static readonly MachineSnapshot AnyMachine =
-        new("box-1", Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });
+        new(TestMachineIds.For("box-1"), Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });
 
     public async Task InitializeAsync()
     {
@@ -238,7 +238,7 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         Guid box;
         await using (var db = pg.NewContext())
             box = await TestMachines.ConnectAsync(db, TimeProvider.System, registry, "box-1");
-        registry.TrackDispatch(box.ToString(), sessionId);
+        registry.TrackDispatch(box, sessionId);
 
         var body = await GetAuthedAsync(app, "/dashboard/machines", ct);
         Assert.Contains("box-1", body, StringComparison.Ordinal);
@@ -423,7 +423,7 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         await WithStoreAsync(async store =>
         {
             await store.ApplyAsync(parkedId, new RequestInput(parkedCaller, InputRequestKind.Question), ct);
-            await store.ApplyAsync(parkedId, new WaitTtlExpired(new ParkRecord("box-1")), ct);
+            await store.ApplyAsync(parkedId, new WaitTtlExpired(new ParkRecord(TestMachineIds.For("box-1"))), ct);
         });
 
         // A closed session, closed by the Lead (§9 check 4 provenance),
@@ -548,7 +548,7 @@ public sealed class DashboardEndToEndTests(PostgresFixture pg) : IAsyncLifetime
         {
             await store.ApplyAsync(parkedId,
                 new RequestInput(parkedCaller, InputRequestKind.Question, parkedQuestion), ct);
-            await store.ApplyAsync(parkedId, new WaitTtlExpired(new ParkRecord("box-9")), ct);
+            await store.ApplyAsync(parkedId, new WaitTtlExpired(new ParkRecord(TestMachineIds.For("box-9"))), ct);
         });
 
         // §11/§12 (#50): an auth failure on a live task is something only a person can

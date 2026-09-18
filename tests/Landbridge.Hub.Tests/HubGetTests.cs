@@ -132,7 +132,7 @@ public sealed class HubGetTests(PostgresFixture pg) : IAsyncLifetime
                 enrollment.Token, new MachineDeclaration("box", "linux"));
             machineId = credentials!.MachineId;
             await HubOutbox.WriteHeartbeatAsync(
-                db, clock, machineId.ToString(),
+                db, clock, machineId,
                 new MachineHeartbeat(
                     machineId.ToString(), Ready: true, UnderBackPressure: false,
                     default, 0, ["any-linux"], clock.GetUtcNow(),
@@ -290,15 +290,11 @@ public sealed class HubGetTests(PostgresFixture pg) : IAsyncLifetime
 
     /// <summary>
     /// A worker may read processes on a machine it holds a live instance on, and
-    /// only there. The instance column is a string, so the two formats the
-    /// dispatcher writes both have to resolve to the same machine — matching one
-    /// rendering and not the other is how this silently denies.
+    /// only there. The unfiltered collection stays human-only however many
+    /// machines it holds.
     /// </summary>
-    [SkippableTheory]
-    [InlineData("D")]
-    [InlineData("N")]
-    [InlineData("B")]
-    public async Task Worker_reads_processes_on_the_machine_it_holds(string machineIdFormat)
+    [SkippableFact]
+    public async Task Worker_reads_processes_on_the_machine_it_holds()
     {
         Skip.IfNot(pg.Available, pg.SkipReason);
         using var cts = new CancellationTokenSource(Patience);
@@ -331,7 +327,7 @@ public sealed class HubGetTests(PostgresFixture pg) : IAsyncLifetime
                 Id = instance.Value,
                 SessionId = session,
                 CreatedAt = clock.GetUtcNow(),
-                MachineId = heldMachine.ToString(machineIdFormat),
+                MachineId = heldMachine,
             });
             await db.SaveChangesAsync(ct);
             workerToken = (await tokens.MintWorkerTokenAsync(team, new SessionId(session), instance, ct)).Token;
@@ -353,7 +349,6 @@ public sealed class HubGetTests(PostgresFixture pg) : IAsyncLifetime
         using var otherOne = await worker.GetAsync($"/processes/{otherProcess}", ct);
         Assert.Equal(HttpStatusCode.Forbidden, otherOne.StatusCode);
 
-        // The unfiltered collection stays human-only however many machines it holds.
         using var all = await worker.GetAsync("/processes", ct);
         Assert.Equal(HttpStatusCode.Forbidden, all.StatusCode);
 
@@ -369,7 +364,7 @@ public sealed class HubGetTests(PostgresFixture pg) : IAsyncLifetime
             enrollment.Token, new MachineDeclaration(name, "linux"));
         var machineId = credentials!.MachineId;
         await HubOutbox.WriteHeartbeatAsync(
-            db, clock, machineId.ToString(),
+            db, clock, machineId,
             new MachineHeartbeat(
                 machineId.ToString(), Ready: true, UnderBackPressure: false,
                 default, 0, ["any-linux"], clock.GetUtcNow(),

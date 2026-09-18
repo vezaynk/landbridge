@@ -20,7 +20,7 @@ public sealed class LeadInboxTests(PostgresFixture pg) : IAsyncLifetime
     private static SessionStore NewStore(LandbridgeDbContext db) => new(db, TimeProvider.System);
 
     private static MachineSnapshot Machine() =>
-        new("m1", Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });
+        new(TestMachineIds.For("m1"), Ready: true, UnderBackPressure: false, new HashSet<string> { "default" });
 
     [SkippableFact]
     public async Task A_fresh_team_has_an_empty_inbox()
@@ -107,7 +107,7 @@ public sealed class LeadInboxTests(PostgresFixture pg) : IAsyncLifetime
             pull.Id, new RequestInput(new WorkerCaller(Team, pull.Id, pull.Instance),
                 InputRequestKind.Question, "before answer")));
         Assert.IsType<StoreResult.Applied>(await pull.Store.AnswerOrWakeAsync(
-            Lead, pull.Id, "m1", "use postgres", sessionLive: true));
+            Lead, pull.Id, TestMachineIds.For("m1"), "use postgres", sessionLive: true));
 
         var item = Assert.Single((await NewStore(db).GetLeadInboxAsync(Team)).Items);
         Assert.True(HaikuSlug.IsWellFormed(item.SessionId));
