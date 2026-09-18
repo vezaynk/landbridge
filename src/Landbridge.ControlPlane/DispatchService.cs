@@ -280,7 +280,7 @@ public sealed class DispatchService : IHostedService
         var store = scope.ServiceProvider.GetRequiredService<SessionStore>();
         var held = await store.HeldDispatchesOnAsync(machineId, ct);
         foreach (var task in held)
-            _registry.TrackDispatch(machineId, task);
+            _registry.TrackDispatch(machineId, task, inherited: true);
         if (held.Count > 0)
             _logger.LogInformation(
                 "re-adopted {Count} in-flight task(s) on reconnecting machine {Machine}: {Tasks}",
