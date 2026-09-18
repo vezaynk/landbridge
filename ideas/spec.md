@@ -159,7 +159,9 @@ Attaching gives a fresh Lead an empty context window. It must read its way back 
 
 ## 5. Authentication and authorization
 
-The control plane is both the OAuth 2.1 authorization server and the resource server for its Instance.
+The OAuth 2.1 authorization server is its own host (`Landbridge.Auth`); the MCP surface is the resource server. One Instance still means one audience — a token is minted for one resource id — but issuer and resource id are two values, and a deployment that runs both on one origin is the case where they happen to be equal.
+
+The authorization server is separate because of what it is, not how much traffic it takes: it is the only surface that renders HTML to a human, reads a passphrase form, and fetches remote documents (CIMD) over HTTP. None of that belongs in the process that owns `Apply` and `/runner`. It also means a control-plane restart does not close the front door — tokens are validated per-host against Postgres, so a running Instance keeps authenticating while the plane is down, and a human can still log in.
 
 ### Credential classes
 

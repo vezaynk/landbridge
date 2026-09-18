@@ -108,8 +108,50 @@ public sealed class OAuthPrimitivesTests
     {
         var server = OAuthServerConfig.FromPublicMcpUrl("https://mcp.example.com/");
         Assert.Equal("https://mcp.example.com", server.Issuer);
+        Assert.True(server.IssuerIsResource);
         Assert.Equal("https://mcp.example.com/oauth/authorize", server.AuthorizationEndpoint);
         Assert.Equal("https://mcp.example.com/oauth/token", server.TokenEndpoint);
         Assert.Equal("https://mcp.example.com/.well-known/oauth-protected-resource", server.ResourceMetadataUri);
+    }
+
+    /// <summary>
+    /// With the authorization server on its own host, the flow endpoints and the RFC
+    /// 8414 document follow the issuer while the resource id and the RFC 9728 document
+    /// stay with the resource. Getting this backwards is how a client ends up fetching
+    /// authorization-server metadata from an origin whose issuer does not match it —
+    /// which the draft MCP spec requires the client to reject.
+    /// </summary>
+    [Fact]
+    public void Config_sends_flow_endpoints_to_the_issuer_and_keeps_the_resource_document_on_the_resource()
+    {
+        var server = OAuthServerConfig.FromPublicMcpUrl("https://mcp.example.com", "https://auth.example.com/");
+
+        Assert.Equal("https://mcp.example.com", server.ResourceId);
+        Assert.Equal("https://auth.example.com", server.Issuer);
+        Assert.False(server.IssuerIsResource);
+
+        Assert.Equal("https://auth.example.com/oauth/authorize", server.AuthorizationEndpoint);
+        Assert.Equal("https://auth.example.com/oauth/token", server.TokenEndpoint);
+        Assert.Equal(
+            "https://auth.example.com/.well-known/oauth-authorization-server",
+            server.AuthorizationServerMetadataUri);
+
+        // The resource's own document, and the audience a token is bound to, do not move.
+        Assert.Equal(
+            "https://mcp.example.com/.well-known/oauth-protected-resource", server.ResourceMetadataUri);
+        Assert.True(server.ResourceMatches("https://mcp.example.com"));
+        Assert.False(server.ResourceMatches("https://auth.example.com"));
+    }
+
+    /// <summary>An unset auth URL is a single-host Instance: both ends, one origin.</summary>
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public void Config_without_an_auth_url_keeps_both_ends_on_the_resource(string? authUrl)
+    {
+        var server = OAuthServerConfig.FromPublicMcpUrl("https://mcp.example.com", authUrl);
+        Assert.True(server.IssuerIsResource);
+        Assert.Equal("https://mcp.example.com/oauth/authorize", server.AuthorizationEndpoint);
     }
 }
