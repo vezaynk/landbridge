@@ -1,6 +1,7 @@
 using Landbridge.ControlPlane;
 using Landbridge.ControlPlane.Auth;
 using Landbridge.Core;
+using Landbridge.Mcp;
 using Microsoft.AspNetCore.Components;
 using Microsoft.AspNetCore.Components.Routing;
 using Microsoft.JSInterop;
@@ -24,6 +25,7 @@ public abstract class DashboardPageBase : ComponentBase, IDisposable
 
     [Inject] protected TokenService Tokens { get; set; } = default!;
     [Inject] protected DashboardQueries Queries { get; set; } = default!;
+    [Inject] protected HubClient Hub { get; set; } = default!;
     [Inject] protected TimeProvider Clock { get; set; } = default!;
     [Inject] protected IHttpContextAccessor Http { get; set; } = default!;
     [Inject] protected NavigationManager Nav { get; set; } = default!;
@@ -45,6 +47,12 @@ public abstract class DashboardPageBase : ComponentBase, IDisposable
     /// refresh — the GET is already finished.
     /// </summary>
     protected CancellationToken RequestAborted => _lifetime.Token;
+
+    /// <summary>Passthrough GET to the internal hub. Null when Hub is unset or down.</summary>
+    protected Task<T?> HubGetAsync<T>(string path) =>
+        Hub is { Enabled: true } && _token is { Length: > 0 } token
+            ? Hub.GetAsync<T>(path, token, RequestAborted)
+            : Task.FromResult<T?>(default);
 
     /// <summary>Null is the instance-wide human view; a list is a Lead's owned Teams.</summary>
     protected IReadOnlyList<Guid>? TeamScope { get; private set; }

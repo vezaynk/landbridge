@@ -137,7 +137,7 @@ The client opens a stream for every row it cares about and aborts it when that r
 - `event: ping` — ~15s, empty. Clients ignore unknown types.
 - Catch-up: `?after=<queueId>` / `Last-Event-ID`. Replay names ids to refetch, not bodies. After TTL gap: `GET` membership, then open row streams.
 - Subscribe (waiter) **before** the first `SELECT` so an insert during catch-up still wakes.
-- Auth is the JSON twin’s gate when a client is wired. Today the hub is unauthenticated because nothing consumes it.
+- Auth is Bearer (`lbr_h_` / `lbr_l_` / `lbr_w_`). No cookies. Blazor and MCP copy the inbound token. Machine tokens are 403. Hub is loopback-only; the browser never dials it. SSE catch-up is the same scope as GET: a Lead does not see another Team's `entityId`.
 - `X-Accel-Buffering: no`.
 
 NOTIFY payload stays an id. Hub wakes **every** subscriber (coalesce per stream); each stream’s catch-up filters by topic / entity.
@@ -162,6 +162,22 @@ NOTIFY payload stays an id. Hub wakes **every** subscriber (coalesce per stream)
 | `GET /processes/events` | `process` | process row id |
 | `GET /processes/{id}/events` | `process` | process row id |
 
+JSON twins (same host, no body on the SSE). `{id}` is slug or Guid. No credential, grant, or label hashes.
+
+| GET | Row |
+|---|---|
+| `/sessions`, `/sessions/{id}` | session occupancy + brief |
+| `/sessions/{id}/log` | event log tail |
+| `/sessions/{id}/exchange` | Q/A/report |
+| `/services`, `/sessions/{id}/services` | registered services |
+| `/forwards`, `/forwards/{id}` | forward grants (no `grantHash`) |
+| `/previews`, `/previews/{id}` | preview mappings (label plaintext, no hash) |
+| `/machines`, `/machines/{id}` | last-value machine columns; `live` is last-spoke within 90s |
+| `/machines/{id}/processes`, `/processes`, `/processes/{id}` | `machine_processes` |
+| `/teams`, `/teams/{id}` | lead_teams + byte burn |
+| `/friction` | friction reports |
+| `/lead-events` | claim/release/takeover log |
+
 Inbox stays Core (`GET /lead/inbox/events`). Commands (Part 2) and `/runner/events` (Part 3) are not these routes.
 
 ### Topic catalog
@@ -170,15 +186,15 @@ Plane nouns. **Per-row doorbell only if the row mutates.** Append-only logs are 
 
 | Topic | Membership | Per-row | Writer | GET |
 |---|---|---|---|---|
-| **machines** | instance ids | one box | enroll; heartbeat upsert of columns | `/dashboard/machines` |
-| **sessions** | fleet / team ids | occupancy, message, pending | `CommitAsync` | team / session JSON |
-| **inbox** | outstanding ids per Team | — (the row is the session) | session NOTIFY (Core snapshot today) | `/lead/inbox` |
-| **events** | — | **tail per session** | `CommitAsync` | `/dashboard/events?session=` |
-| **exchange** | — | **tail per session** | `CommitAsync` | team session Q/A/report |
-| **services** | session / team | session (name is not a Guid) | register / clear | team JSON `services[]` |
-| **forwards** | instance | `forward_id` | mint / teardown | none yet (wake only) |
-| **previews** | instance | mapping id | mint / slide / revoke | none yet as JSON twin |
-| **processes** | per machine | process row Guid | heartbeat replace-by-name | machine JSON `processes` |
+| **machines** | instance ids | one box | enroll; heartbeat upsert of columns | `/machines`, `/machines/{id}` |
+| **sessions** | fleet / team ids | occupancy, message, pending | `CommitAsync` | `/sessions`, `/sessions/{id}` |
+| **inbox** | outstanding ids per Team | — (the row is the session) | session NOTIFY (Core snapshot today) | `/lead/inbox` (Core) |
+| **events** | — | **tail per session** | `CommitAsync` | `/sessions/{id}/log` |
+| **exchange** | — | **tail per session** | `CommitAsync` | `/sessions/{id}/exchange` |
+| **services** | session / team | session (name is not a Guid) | register / clear | `/services`, `/sessions/{id}/services` |
+| **forwards** | instance | `forward_id` | mint / teardown | `/forwards`, `/forwards/{id}` |
+| **previews** | instance | mapping id | mint / slide / revoke | `/previews`, `/previews/{id}` |
+| **processes** | per machine | process row Guid | heartbeat replace-by-name | `/processes`, `/machines/{id}/processes` |
 | **commands** | `queued` ids | `command_id` | Part 2 | omit until then |
 
 **Harness transcript** (`read-transcript`) is not an SSE. Flow-controlled byte pull (§10).
@@ -238,7 +254,7 @@ A second hub replica tails the same outbox (`LISTEN` + `SELECT`), not a Redis co
 
 - Live (target): EventSource per membership list + per visible row (HTTP/2) on the hub.
 - Live (today): 2s poll. Hub is up; nothing dials it.
-- At-rest / click: HTTP GET (and cookie POSTs) on Core, as today.
+- At-rest / click: HTTP GET on the hub JSON twins; cookie POSTs stay on Core. Dashboard still polls Core today.
 - Core 502 during restart: retry GET; **do not** tear down SSE. Committed session state did not change. Machine rail follows `last_spoke_at`.
 
 ## Phases
@@ -246,6 +262,7 @@ A second hub replica tails the same outbox (`LISTEN` + `SELECT`), not a Redis co
 1. **Wake log** — done (base PR): `hub_queue` outbox in `CommitAsync` / enroll / grants / heartbeat.
 2. **Last-value machine facts** — done (base PR): columns + `machine_processes`; doorbell only on `hub_queue`.
 3. **Hub process** — done: `Landbridge.Hub` LISTEN, tail, `event: change`. Unauthenticated; nothing consumes SSE.
+3b. **JSON twins** — GET every catalog noun from Hub Postgres. Bearer required; Blazor/MCP passthrough. Loopback only.
 4. **Dashboard EventSource** instead of `DashboardRefresh`. Auth on the hub.
 5. Split Lead inbox SSE onto the hub (still a snapshot stream, not this wake shape).
 

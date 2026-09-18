@@ -174,18 +174,19 @@ var mcp = builder.AddProject<Projects.Landbridge_Mcp>("mcp", options => options.
     .WithHttpHealthCheck("/health");
 
 const int hubPort = 5300;
-var hubListenUrl = $"http://+:{hubPort}";
-// SSE hub (ideas/hub-and-write-queue.md). Tails hub_queue; LISTEN is a doorbell.
-// WaitFor(mcp) so the EF migration has run. Un-proxied like the plane so a
-// browser can dial the EventSource on a fixed port.
+var hubUrl = $"http://127.0.0.1:{hubPort}";
+// Internal read path (ideas/hub-and-write-queue.md). Loopback only: Blazor
+// and MCP dial it with the inbound Bearer. WaitFor(mcp) so the EF migration
+// has run. Not on the public edge.
 
 builder.AddProject<Projects.Landbridge_Hub>("hub", options => options.ExcludeLaunchProfile = true)
     .WithReference(landbridgeDb)
     .WaitFor(mcp)
     .WithHttpEndpoint(port: hubPort, targetPort: hubPort, isProxied: false)
-    .WithEnvironment("ASPNETCORE_URLS", hubListenUrl)
+    .WithEnvironment("ASPNETCORE_URLS", hubUrl)
     .WithEnvironment("ASPNETCORE_ENVIRONMENT", "Development")
     .WithHttpHealthCheck("/health");
+mcp.WithEnvironment("Landbridge__HubUrl", hubUrl);
 
 // landbridge-relay as a dev-loop resource (§8.3). Same fixed, un-proxied endpoint
 // treatment as the plane: landbridged dials host.docker.internal:5100, so an
