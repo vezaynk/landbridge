@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using Landbridge.ControlPlane;
+using Landbridge.Auth;
 using Landbridge.ControlPlane.Auth;
 using Landbridge.Mcp.Auth;
 using Landbridge.Mcp.Tools;
@@ -56,7 +57,8 @@ internal static class OAuthTestKit
     /// left unset, so the authorize endpoint is fail-closed (503) — the negative
     /// case.
     /// </summary>
-    public static WebApplication BuildPlane(string connectionString, int port, bool configureOperator)
+    public static WebApplication BuildPlane(
+        string connectionString, int port, bool configureOperator, string? authUrl = null)
     {
         var builder = WebApplication.CreateBuilder();
         builder.Logging.ClearProviders();
@@ -66,6 +68,8 @@ internal static class OAuthTestKit
         var cfg = new Dictionary<string, string?>
         {
             ["Landbridge:PublicMcpUrl"] = url,
+            // Null leaves both ends on this host, which is what most of these tests want.
+            ["Landbridge:AuthUrl"] = authUrl,
             // Dev/test: let the SSRF fetcher accept the loopback CIMD test server.
             [CimdClient.AllowInsecureKey] = "true",
         };
@@ -86,7 +90,7 @@ internal static class OAuthTestKit
         builder.Services.AddLandbridgeForwarding();
         builder.Services.AddHttpContextAccessor();
 
-        builder.Services.AddSingleton(OAuthServerConfig.FromPublicMcpUrl(url));
+        builder.Services.AddSingleton(OAuthServerConfig.FromPublicMcpUrl(url, authUrl));
         builder.Services.AddSingleton<IOperatorVerifier, ConfiguredOperatorVerifier>();
         builder.Services.AddSingleton<OperatorAttemptLimiter>();
         builder.Services.AddSingleton<ICimdClient>(sp =>
@@ -107,7 +111,54 @@ internal static class OAuthTestKit
         app.UseAuthentication();
         app.UseAuthorization();
         app.MapMcp().RequireAuthorization();
-        app.MapOAuthMetadataEndpoints();
+        // The resource server always serves its own document. The authorization
+        // server's half is mapped here only when this host is also the issuer —
+        // the fused shape an Instance still has when AuthUrl is unset.
+        app.MapOAuthResourceMetadata();
+        if (string.IsNullOrWhiteSpace(authUrl))
+        {
+            app.MapOAuthAuthorizationServerMetadata();
+            app.MapOAuthEndpoints();
+        }
+        return app;
+    }
+
+    /// <summary>
+    /// The authorization server on its own host, as <c>Landbridge.Auth</c> runs it:
+    /// the RFC 8414 document and the flow, and nothing else. It knows the resource
+    /// id because that is the audience it mints for.
+    /// </summary>
+    public static WebApplication BuildAuthServer(
+        string connectionString, int port, string resourceUrl, bool configureOperator = true)
+    {
+        var builder = WebApplication.CreateBuilder();
+        builder.Logging.ClearProviders();
+        var url = $"http://127.0.0.1:{port}";
+        builder.WebHost.UseUrls(url);
+
+        var cfg = new Dictionary<string, string?>
+        {
+            [CimdClient.AllowInsecureKey] = "true",
+        };
+        if (configureOperator)
+            cfg[ConfiguredOperatorVerifier.PassphraseHashKey] = PassphraseHash;
+        builder.Configuration.AddInMemoryCollection(cfg);
+
+        builder.Services.AddDbContextFactory<LandbridgeDbContext>(o =>
+            o.UseNpgsql(connectionString).UseSnakeCaseNamingConvention());
+        builder.Services.AddScoped(sp =>
+            sp.GetRequiredService<IDbContextFactory<LandbridgeDbContext>>().CreateDbContext());
+        builder.Services.AddSingleton(TimeProvider.System);
+        builder.Services.AddScoped<TokenService>();
+        builder.Services.AddScoped<OAuthAuthorizationCodeService>();
+        builder.Services.AddSingleton<IOperatorVerifier, ConfiguredOperatorVerifier>();
+        builder.Services.AddSingleton<OperatorAttemptLimiter>();
+        builder.Services.AddSingleton<ICimdClient>(sp =>
+            new CimdClient(sp.GetRequiredService<IConfiguration>().GetValue<bool>(CimdClient.AllowInsecureKey)));
+        builder.Services.AddSingleton(OAuthServerConfig.FromPublicMcpUrl(resourceUrl, url));
+
+        var app = builder.Build();
+        app.MapOAuthAuthorizationServerMetadata();
         app.MapOAuthEndpoints();
         return app;
     }

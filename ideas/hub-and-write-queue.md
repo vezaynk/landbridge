@@ -44,13 +44,14 @@ Every mutating call sits on two clocks. Collapsing them is how this design goes 
 | Hub | `Landbridge.Hub` `:5300` | LISTEN session + hub channels, wake in-process, tail `hub_queue` `id > after`, `event: change`. Unauthenticated. Retention `DELETE` older than `Hub:Retain` (24h) |
 | Runner channel | `/runner` WebSocket | frozen §10; unchanged |
 
-`Landbridge.Mcp` is still one process: MCP, OAuth, `/runner`, dashboard, `Apply`. The split below is that process cut into three.
+`Landbridge.Mcp` is still one process: MCP, `/runner`, dashboard, `Apply`. The split below is that process cut into three. The OAuth authorization server is already out (`Landbridge.Auth`) and is listed here as the fourth.
 
 ## Target processes
 
 | Process | Owns | Must not |
 |---|---|---|
-| **MCP gateway** | MCP HTTP, OAuth AS, `/enroll`, Lead/worker tool *accept* and *read* façade | `Apply`, dispatch, holding `/runner` sockets |
+| **MCP gateway** | MCP HTTP, `/enroll`, Lead/worker tool *accept* and *read* façade | `Apply`, dispatch, holding `/runner` sockets |
+| **Auth** | OAuth AS: `/oauth/authorize`, `/oauth/token`, RFC 8414 metadata. Mints the human session | `Apply`, dispatch, MCP, reading session state. It issues credentials and nothing else |
 | **Core** | `Apply`, command drain, `SKIP LOCKED` dispatch, token **mint** at dispatch, heartbeat **upsert** of machine columns | long-lived EventSource, MCP accept |
 | **Hub** | `LISTEN`, tail `hub_queue`, SSE sockets | domain writes, MCP, runner apply of occupancy. Retention `DELETE` on `hub_queue` is the exception |
 | **`landbridged`** | spawn, §10 consume | — |

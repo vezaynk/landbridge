@@ -4,6 +4,7 @@
   </Folder>
   <Folder Name="/src/">
     <Project Path="src/Landbridge.AppHost/Landbridge.AppHost.csproj" />
+    <Project Path="src/Landbridge.Auth/Landbridge.Auth.csproj" />
     <Project Path="src/Landbridge.Classifier/Landbridge.Classifier.csproj" />
     <Project Path="src/Landbridge.Contracts/Landbridge.Contracts.csproj" />
     <Project Path="src/Landbridge.ControlPlane/Landbridge.ControlPlane.csproj" />
