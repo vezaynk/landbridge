@@ -179,7 +179,7 @@ var hubUrl = $"http://127.0.0.1:{hubPort}";
 // and MCP dial it with the inbound Bearer. WaitFor(mcp) so the EF migration
 // has run. Not on the public edge.
 
-builder.AddProject<Projects.Landbridge_Hub>("hub", options => options.ExcludeLaunchProfile = true)
+var hub = builder.AddProject<Projects.Landbridge_Hub>("hub", options => options.ExcludeLaunchProfile = true)
     .WithReference(landbridgeDb)
     .WaitFor(mcp)
     .WithHttpEndpoint(port: hubPort, targetPort: hubPort, isProxied: false)
@@ -187,6 +187,45 @@ builder.AddProject<Projects.Landbridge_Hub>("hub", options => options.ExcludeLau
     .WithEnvironment("ASPNETCORE_ENVIRONMENT", "Development")
     .WithHttpHealthCheck("/health");
 mcp.WithEnvironment("Landbridge__HubUrl", hubUrl);
+
+const int leadMcpPort = 5060;
+const int workerMcpHostPort = 5070;
+const int dashboardPort = 5080;
+var leadMcpUrl = $"http://127.0.0.1:{leadMcpPort}";
+var workerMcpHostUrl = $"http://+:{workerMcpHostPort}";
+var dashboardUrl = $"http://127.0.0.1:{dashboardPort}";
+
+builder.AddProject<Projects.Landbridge_LeadMcp>("lead-mcp", options => options.ExcludeLaunchProfile = true)
+    .WithReference(landbridgeDb)
+    .WaitFor(mcp)
+    .WaitFor(hub)
+    .WithHttpEndpoint(port: leadMcpPort, targetPort: leadMcpPort, isProxied: false)
+    .WithEnvironment("ASPNETCORE_URLS", leadMcpUrl)
+    .WithEnvironment("ASPNETCORE_ENVIRONMENT", "Development")
+    .WithEnvironment("Landbridge__HubUrl", hubUrl)
+    .WithHttpHealthCheck("/health");
+
+builder.AddProject<Projects.Landbridge_WorkerMcp>("worker-mcp", options => options.ExcludeLaunchProfile = true)
+    .WithReference(landbridgeDb)
+    .WaitFor(mcp)
+    .WaitFor(hub)
+    .WithHttpEndpoint(port: workerMcpHostPort, targetPort: workerMcpHostPort, isProxied: false)
+    .WithEnvironment("ASPNETCORE_URLS", workerMcpHostUrl)
+    .WithEnvironment("ASPNETCORE_ENVIRONMENT", "Development")
+    .WithEnvironment("Landbridge__HubUrl", hubUrl)
+    .WithHttpHealthCheck("/health");
+
+builder.AddProject<Projects.Landbridge_Dashboard>("dashboard", options => options.ExcludeLaunchProfile = true)
+    .WithReference(landbridgeDb)
+    .WaitFor(mcp)
+    .WaitFor(hub)
+    .WithHttpEndpoint(port: dashboardPort, targetPort: dashboardPort, isProxied: false)
+    .WithEnvironment("ASPNETCORE_URLS", dashboardUrl)
+    .WithEnvironment("ASPNETCORE_ENVIRONMENT", "Development")
+    .WithEnvironment("Landbridge__HubUrl", hubUrl)
+    .WithEnvironment("Landbridge__Operator__PassphraseHash",
+        Landbridge.ControlPlane.Auth.OperatorPassphrase.Hash("dev"))
+    .WithHttpHealthCheck("/health");
 
 // landbridge-relay as a dev-loop resource (§8.3). Same fixed, un-proxied endpoint
 // treatment as the plane: landbridged dials host.docker.internal:5100, so an
