@@ -287,4 +287,99 @@ public sealed class HubGetTests(PostgresFixture pg) : IAsyncLifetime
 
         await app.StopAsync(ct);
     }
+
+    /// <summary>
+    /// A worker may read processes on a machine it holds a live instance on, and
+    /// only there. The instance column is a string, so the two formats the
+    /// dispatcher writes both have to resolve to the same machine — matching one
+    /// rendering and not the other is how this silently denies.
+    /// </summary>
+    [SkippableTheory]
+    [InlineData("D")]
+    [InlineData("N")]
+    [InlineData("B")]
+    public async Task Worker_reads_processes_on_the_machine_it_holds(string machineIdFormat)
+    {
+        Skip.IfNot(pg.Available, pg.SkipReason);
+        using var cts = new CancellationTokenSource(Patience);
+        var ct = cts.Token;
+
+        Guid heldMachine;
+        Guid otherMachine;
+        Guid heldProcess;
+        Guid otherProcess;
+        string workerToken;
+        await using (var db = pg.NewContext())
+        {
+            var clock = new FakeTimeProvider();
+            var tokens = new TokenService(db, clock);
+            var team = TeamId.New();
+            var store = new SessionStore(db, clock);
+            var session = Assert.IsType<StoreResult.Applied>(await store.CreateAsync(
+                new CreateSession(new LeadClaim(team), team, "worker task", "default"), ct)).Session.Id.Value;
+
+            heldMachine = await EnrolWithProcessAsync(db, tokens, clock, "held", session, ct);
+            otherMachine = await EnrolWithProcessAsync(db, tokens, clock, "other", session, ct);
+            heldProcess = await db.MachineProcesses
+                .Where(p => p.MachineId == heldMachine).Select(p => p.Id).SingleAsync(ct);
+            otherProcess = await db.MachineProcesses
+                .Where(p => p.MachineId == otherMachine).Select(p => p.Id).SingleAsync(ct);
+
+            var instance = WorkerInstanceId.New();
+            db.WorkerInstances.Add(new WorkerInstanceRow
+            {
+                Id = instance.Value,
+                SessionId = session,
+                CreatedAt = clock.GetUtcNow(),
+                MachineId = heldMachine.ToString(machineIdFormat),
+            });
+            await db.SaveChangesAsync(ct);
+            workerToken = (await tokens.MintWorkerTokenAsync(team, new SessionId(session), instance, ct)).Token;
+        }
+
+        await using var app = HubTestHost.Build(pg.ConnectionString);
+        await app.StartAsync(ct);
+        using var worker = HubTestHost.Client(app, workerToken);
+
+        var held = await worker.GetFromJsonAsync<JsonElement>($"/machines/{heldMachine}/processes", Json, ct);
+        Assert.Equal(1, held.GetArrayLength());
+        Assert.Equal(heldProcess, held[0].GetProperty("id").GetGuid());
+
+        using var heldOne = await worker.GetAsync($"/processes/{heldProcess}", ct);
+        Assert.Equal(HttpStatusCode.OK, heldOne.StatusCode);
+
+        using var otherList = await worker.GetAsync($"/machines/{otherMachine}/processes", ct);
+        Assert.Equal(HttpStatusCode.Forbidden, otherList.StatusCode);
+        using var otherOne = await worker.GetAsync($"/processes/{otherProcess}", ct);
+        Assert.Equal(HttpStatusCode.Forbidden, otherOne.StatusCode);
+
+        // The unfiltered collection stays human-only however many machines it holds.
+        using var all = await worker.GetAsync("/processes", ct);
+        Assert.Equal(HttpStatusCode.Forbidden, all.StatusCode);
+
+        await app.StopAsync(ct);
+    }
+
+    private static async Task<Guid> EnrolWithProcessAsync(
+        LandbridgeDbContext db, TokenService tokens, FakeTimeProvider clock,
+        string name, Guid session, CancellationToken ct)
+    {
+        var enrollment = await tokens.IssueEnrollmentTokenAsync();
+        var credentials = await tokens.ExchangeEnrollmentAsync(
+            enrollment.Token, new MachineDeclaration(name, "linux"));
+        var machineId = credentials!.MachineId;
+        await HubOutbox.WriteHeartbeatAsync(
+            db, clock, machineId.ToString(),
+            new MachineHeartbeat(
+                machineId.ToString(), Ready: true, UnderBackPressure: false,
+                default, 0, ["any-linux"], clock.GetUtcNow(),
+                Processes:
+                [
+                    new ProcessStatus(
+                        $"{name}-proc", ProcessState.Running,
+                        session, clock.GetUtcNow(), null, null, false),
+                ]),
+            ct);
+        return machineId;
+    }
 }
