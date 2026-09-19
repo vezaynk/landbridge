@@ -139,9 +139,18 @@ public sealed class ChaosScenarioTests(PostgresFixture pg) : IAsyncLifetime
         var ct = cts.Token;
         // A long no-progress ceiling keeps the liveness sweeper out of this scenario:
         // the requeue asserted below must be the one the DISCONNECT caused.
+        //
+        // The aliveness clock needs the same treatment, for the reason the replay
+        // scenario already gives: the default 5s cannot cover a cold spawn on a loaded
+        // runner. This scenario loads it harder than most — two wedge workers are running,
+        // landbridged has just restarted and swept strays, and step 4 then cold-starts a
+        // third task on top. Left at the default, that task intermittently requeued as
+        // LivenessTimeout before its harness existed to be alive, and the scenario failed
+        // on an assertion about the restart it had already survived.
         await using var fleet = new ChaosFleet(pg, new ChaosFleetOptions
         {
             NoProgressCeiling = TimeSpan.FromMinutes(10),
+            PerTaskLivenessWindow = TimeSpan.FromSeconds(30),
         });
         await fleet.StartAsync(ct);
 
