@@ -20,7 +20,8 @@ namespace Landbridge.ControlPlane.Auth;
 /// them, which wires §9 check 14 into authentication with no second
 /// bookkeeping path.
 /// </summary>
-public sealed class TokenService(LandbridgeDbContext db, TimeProvider clock)
+public sealed class TokenService(
+    LandbridgeDbContext db, TimeProvider clock, OAuthServerConfig? server = null)
 {
     public static readonly TimeSpan EnrollmentTtl = TimeSpan.FromMinutes(15);
     public static readonly TimeSpan MachineAccessTtl = TimeSpan.FromHours(1);
@@ -41,9 +42,21 @@ public sealed class TokenService(LandbridgeDbContext db, TimeProvider clock)
     /// either way, which is what keeps the human/Lead path testable headlessly: the
     /// tests mint through here directly. No device flow is built.
     /// </summary>
-    public async Task<IssuedToken> IssueHumanSessionAsync(CancellationToken ct = default)
+    public Task<IssuedToken> IssueHumanSessionAsync(CancellationToken ct = default) =>
+        IssueHumanSessionAsync(resource: null, ct);
+
+    /// <summary>
+    /// <paramref name="resource"/> is the RFC 8707 audience this session is minted for —
+    /// the value the authorization server already checked against its own resource id.
+    /// Recording it is what lets a resource server refuse a token minted for a different
+    /// one; null mints an unbound session, which is what every caller inside the plane
+    /// wants (see <see cref="CredentialRow.Resource"/>).
+    /// </summary>
+    public async Task<IssuedToken> IssueHumanSessionAsync(
+        string? resource, CancellationToken ct = default)
     {
         var (token, row) = NewCredential(CredentialKind.Human, HumanSessionTtl);
+        row.Resource = string.IsNullOrWhiteSpace(resource) ? null : OAuthServerConfig.Normalize(resource);
         db.Set<CredentialRow>().Add(row);
         await db.SaveChangesAsync(ct);
         return new IssuedToken(token, row.Id, row.ExpiresAt);
@@ -440,7 +453,11 @@ public sealed class TokenService(LandbridgeDbContext db, TimeProvider clock)
                     : null;
 
             case CredentialKind.Human:
-                return new Principal.Human(row.Id);
+                // RFC 8707: a session minted for another resource is not a credential
+                // here, however live it is elsewhere. Only checkable where this host
+                // knows its own resource id — a host with no OAuthServerConfig (the Hub,
+                // a test host) has no audience to compare against and accepts as before.
+                return IsForThisResource(row) ? new Principal.Human(row.Id) : null;
 
             // A live lead credential; eviction/release already excluded it via
             // Revoked in FindLive. The claiming human rides along (§8.3 human path:
@@ -454,6 +471,15 @@ public sealed class TokenService(LandbridgeDbContext db, TimeProvider clock)
                 return null;
         }
     }
+
+    /// <summary>
+    /// Whether a credential's recorded audience is this resource server. An unbound
+    /// credential (<c>Resource</c> null) is accepted everywhere — see
+    /// <see cref="CredentialRow.Resource"/> for why that is the intended reading and not
+    /// a hole. So is any credential, when this host was not told what resource it is.
+    /// </summary>
+    private bool IsForThisResource(CredentialRow row) =>
+        row.Resource is not { } bound || server is null || server.ResourceMatches(bound);
 
     // ── Revocation (§5: un-trusting a machine must take seconds) ───────────
 

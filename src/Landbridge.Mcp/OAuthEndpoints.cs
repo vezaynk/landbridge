@@ -18,7 +18,7 @@ namespace Landbridge.Mcp;
 /// <see cref="ICimdClient"/>).
 ///
 /// <para><b>The access token is unchanged.</b> A completed flow calls
-/// <see cref="TokenService.IssueHumanSessionAsync"/> — the same seam a §5 human
+/// <see cref="TokenService.IssueHumanSessionAsync(string?, System.Threading.CancellationToken)"/> — the same seam a §5 human
 /// session has always been minted through — so the token the client receives is
 /// the ordinary opaque human session, validated by the unchanged bearer path in
 /// <c>LandbridgeAuthenticationHandler</c>. This endpoint surface only adds the OAuth
@@ -197,8 +197,15 @@ public static class OAuthEndpoints
 
         // The one integration point: a verified authorization becomes the existing
         // opaque human session token (§5). Everything above is the OAuth wrapper;
-        // this is the unchanged mint.
-        var session = await tokens.IssueHumanSessionAsync(ct);
+        // this is the mint.
+        //
+        // RFC 8707: the audience rides along. Every path to here has already checked the
+        // presented resource against this server's own id, so binding it to the
+        // credential does not narrow what the flow grants — it records what was granted,
+        // so a resource server can refuse a token minted for a different one. Unbound
+        // when the client named no resource, which is what a single-resource Instance
+        // has always done.
+        var session = await tokens.IssueHumanSessionAsync(server.ResourceId, ct);
         var expiresIn = session.ExpiresAt is { } exp
             ? Math.Max(0, (int)(exp - clock.GetUtcNow()).TotalSeconds)
             : (int)TokenService.HumanSessionTtl.TotalSeconds;

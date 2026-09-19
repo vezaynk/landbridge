@@ -18,7 +18,7 @@ public enum CredentialKind
     /// <summary>
     /// A human's own session (§5). Every credential descends from a human
     /// (§2 principle 5); this is the root. Obtained via OAuth 2.1 auth-code /
-    /// device flow in production — see <see cref="TokenService.IssueHumanSessionAsync"/>
+    /// device flow in production — see <see cref="TokenService.IssueHumanSessionAsync(string?, System.Threading.CancellationToken)"/>
     /// for where that callback lands.
     /// </summary>
     Human,
@@ -56,6 +56,20 @@ public sealed class CredentialRow
     /// is simply this row's <see cref="Id"/>.
     /// </summary>
     public Guid? HumanId { get; set; }
+
+    /// <summary>
+    /// RFC 8707: the resource this credential was minted <em>for</em> — the audience a
+    /// bearer of it may present it to. Set on a human session that came through the OAuth
+    /// flow, where the client named a resource and the authorization server checked it.
+    ///
+    /// <para>Null means the credential is not audience-bound, and that is the common
+    /// case, not an omission: machine, worker and Lead credentials are minted inside the
+    /// plane rather than requested by a client, and a human session predating this column
+    /// has no recorded audience either. A null is accepted by any resource server —
+    /// tightening that would revoke every credential in flight, and the mint-time check
+    /// already holds for a deployment with one resource id.</para>
+    /// </summary>
+    public string? Resource { get; set; }
 
     public DateTimeOffset CreatedAt { get; set; }
     public DateTimeOffset? ExpiresAt { get; set; }

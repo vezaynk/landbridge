@@ -54,6 +54,10 @@ namespace Landbridge.ControlPlane.Migrations
                         .HasColumnType("text")
                         .HasColumnName("kind");
 
+                    b.Property<string>("Resource")
+                        .HasColumnType("text")
+                        .HasColumnName("resource");
+
                     b.Property<Guid?>("MachineId")
                         .HasColumnType("uuid")
                         .HasColumnName("machine_id");
